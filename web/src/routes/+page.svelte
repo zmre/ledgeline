@@ -2,6 +2,10 @@
     // Journal route (WP-03): filter bar (WP-04) and insights panel (WP-05) mount
     // above the virtualized transaction table; the totals footer stays pinned.
     // On mount (and whenever a server URL is first configured) → journal.refresh().
+    import {onMount} from "svelte";
+    import FilterBar from "$lib/filters/FilterBar.svelte";
+    import {startUrlSync} from "$lib/filters/urlSync";
+    import InsightsPanel from "$lib/insights/InsightsPanel.svelte";
     import TotalsFooter from "$lib/journal/TotalsFooter.svelte";
     import TransactionTable from "$lib/journal/TransactionTable.svelte";
     import {commodityStyles, periodLabel} from "$lib/journal/rowModel";
@@ -13,6 +17,10 @@
     const totals = $derived(getFilteredTotals());
     const styles = $derived(commodityStyles(journal.txns));
     const period = $derived(periodLabel(filters.value.from, filters.value.to));
+
+    // Restore filters from ?from=&to=&acct=&q= once, then mirror changes to the
+    // URL (debounced replaceState). onMount's return value is its cleanup.
+    onMount(() => startUrlSync());
 
     let attemptedUrl: string | null = null;
     $effect(() => {
@@ -27,11 +35,9 @@
 <svelte:head><title>Ledgeline — Journal</title></svelte:head>
 
 <div class="flex min-h-0 flex-col gap-3" style="height: calc(100dvh - 7rem)">
-    <!-- INTEGRATION(WP-04): FilterBar mounts here (replace this placeholder div) -->
-    <div id="filterbar-placeholder" class="border-base-300 text-base-content/40 rounded-box border border-dashed px-3 py-2 text-sm">Filter bar (WP-04)</div>
+    <FilterBar accountNames={journal.accountNames} />
 
-    <!-- INTEGRATION(WP-05): InsightsPanel mounts here (replace this placeholder div) -->
-    <div id="insights-placeholder" class="border-base-300 text-base-content/40 rounded-box border border-dashed px-3 py-2 text-sm">Insights panel (WP-05)</div>
+    <InsightsPanel {txns} />
 
     {#if journal.status === "loading" && journal.txns.length === 0}
         <div class="flex grow items-center justify-center" aria-label="Loading transactions">
