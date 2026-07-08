@@ -41,6 +41,7 @@
         "vitest": "^4.1.8"
     },
     "dependencies": {
+        "exceljs": "^4.4.0",
         "layerchart": "^2.0.1"
     }
 }
