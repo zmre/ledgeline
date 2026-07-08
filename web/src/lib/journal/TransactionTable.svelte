@@ -5,6 +5,7 @@
     // which keeps 50k+ rows smooth. Desktop renders a daisyUI table with a
     // sticky header + spacer rows; narrow widths (<640px) render card-per-txn.
     import type {Transaction} from "$lib/domain/types";
+    import {problems} from "$lib/stores/problems.svelte";
     import {settings} from "$lib/stores/settings.svelte";
     import ColumnMenu from "./ColumnMenu.svelte";
     import TransactionRow from "./TransactionRow.svelte";
@@ -34,6 +35,31 @@
         void txns;
         if (scroller !== null) scroller.scrollTop = 0;
         scrollTop = 0;
+    });
+
+    // WP-08: problems-drawer navigation. Scroll a txn's row into (centered)
+    // view and pulse it briefly so the eye lands on the right record.
+    let pulseIndex = $state<number | null>(null);
+    let pulseTimer: ReturnType<typeof setTimeout> | undefined;
+
+    export function scrollToTxn(index: number): void {
+        const position = txns.findIndex((txn) => txn.index === index);
+        if (position === -1) return;
+        const top = Math.max(0, position * pitch - Math.max(0, viewportHeight - pitch) / 2);
+        if (scroller !== null) scroller.scrollTop = top;
+        scrollTop = top;
+        pulseIndex = index;
+        clearTimeout(pulseTimer);
+        pulseTimer = setTimeout(() => (pulseIndex = null), 2000);
+    }
+
+    // Consume focus requests from the problems store (declared AFTER the
+    // scroll-to-top effect above so it wins when both fire in one flush).
+    $effect(() => {
+        const request = problems.focusRequest;
+        if (request === null) return;
+        scrollToTxn(request.txnIndex);
+        problems.clearFocus();
     });
 </script>
 
@@ -73,7 +99,7 @@
                         <tr aria-hidden="true" style="height: {win.padTop}px"><td colspan={colCount} class="p-0"></td></tr>
                     {/if}
                     {#each visible as txn (txn.index)}
-                        <TransactionRow {txn} {columns} mode="row" />
+                        <TransactionRow {txn} {columns} mode="row" flags={problems.byTxn.get(txn.index)} pulse={pulseIndex === txn.index} />
                     {/each}
                     {#if win.padBottom > 0}
                         <tr aria-hidden="true" style="height: {win.padBottom}px"><td colspan={colCount} class="p-0"></td></tr>
@@ -83,7 +109,7 @@
         {:else}
             <div class="p-2" style="padding-top: {win.padTop + 8}px; padding-bottom: {win.padBottom + 8}px">
                 {#each visible as txn (txn.index)}
-                    <TransactionRow {txn} {columns} mode="card" />
+                    <TransactionRow {txn} {columns} mode="card" flags={problems.byTxn.get(txn.index)} pulse={pulseIndex === txn.index} />
                 {/each}
             </div>
         {/if}

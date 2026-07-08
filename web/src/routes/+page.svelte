@@ -10,7 +10,7 @@
     import TransactionTable from "$lib/journal/TransactionTable.svelte";
     import {commodityStyles, periodLabel} from "$lib/journal/rowModel";
     import {filters} from "$lib/stores/filters.svelte";
-    import {getFilteredTotals, getFilteredTxns, journal} from "$lib/stores/journal.svelte";
+    import {getFilteredTotals, getFilteredTxns, journal, startPolling} from "$lib/stores/journal.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
     const txns = $derived(getFilteredTxns());
@@ -29,6 +29,14 @@
             attemptedUrl = url;
             void journal.refresh();
         }
+    });
+
+    // WP-08: live updates while the journal page is open. startPolling pauses
+    // itself while the tab is hidden; the returned stop fn is the effect cleanup
+    // (runs on unmount and if the server URL changes).
+    $effect(() => {
+        if (settings.serverUrl === null) return;
+        return startPolling();
     });
 </script>
 
