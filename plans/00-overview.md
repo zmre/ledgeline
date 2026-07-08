@@ -79,12 +79,16 @@ Launch (dev): `hledger-web -f FILE --serve-api --cors='*' --allow=view` — port
 
 ### Version drift table (CRITICAL)
 
-The JSON is a dump of hledger's internal Haskell types and is **not a stable contract**:
+The JSON is a dump of hledger's internal Haskell types and is **not a stable contract**.
+(Corrected 2026-07-08 against a live 1.52 server — earlier draft had the columns backwards:)
 
-| hledger 1.52        | hledger 2.0-preview (1.99.x)  |
-|----------------------|-------------------------------|
-| `aprice`             | `acost`                       |
-| `aismultiplier`      | (moved; also `acostbasis` new)|
+| older hledger (pre-1.5x)  | hledger 1.52 (verified live)        |
+|----------------------------|-------------------------------------|
+| `aprice`                   | `acost` (+ `acostbasis`, may be null)|
+| `asdecimalpoint`           | `asdecimalmark` (+ `asrounding`)    |
+| `aismultiplier`            | (moved into cost representation)    |
+
+Also: `/prices` on 1.52 returns `MarketPrice` records (`mpdate`/`mpfrom`/`mpto`/`mprate`, no amount style), not full `pd*` price directives. The normalizer tolerates both spellings of every drifted field.
 
 Rule: **only `web/src/lib/api/normalize.ts` may know wire field names.** Raw types are permissive (drift-prone fields optional); the normalizer tolerates both shapes (`aprice ?? acost`) and emits our own frozen domain types. Nothing outside `api/` imports raw types.
 
