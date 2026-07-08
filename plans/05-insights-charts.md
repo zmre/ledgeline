@@ -29,11 +29,13 @@ Reports (WP-06/07). Filter logic (consumes WP-04's store; stub with the document
 export type AccountSelection = ReadonlySet<string> | undefined;    // filter bar's subtree roots; empty/undefined = all
 export interface PieDatum { account: string; value: number; formatted: string }
 export interface LineSeries { account: string; points: { bucket: string; value: number }[] }
-export function pieData(txns: Transaction[], opts: { depth: number; commodity: string; maxSlices?: number; accounts?: AccountSelection }): PieDatum[];
-export function lineData(txns: Transaction[], opts: { depth: number; commodity: string; interval: "daily" | "weekly" | "monthly"; maxSeries?: number; accounts?: AccountSelection }): LineSeries[];
-export function bigNumbers(txns: Transaction[], commodity: string, accounts?: AccountSelection): { income: Dec; expenses: Dec; net: Dec };
+export function pieData(txns: Transaction[], opts: { depth: number; commodity: string; maxSlices?: number; accounts?: AccountSelection; conventionTxns?: Transaction[] }): PieDatum[];
+export function lineData(txns: Transaction[], opts: { depth: number; commodity: string; interval: "daily" | "weekly" | "monthly"; maxSeries?: number; accounts?: AccountSelection; conventionTxns?: Transaction[] }): LineSeries[];
+export function bigNumbers(txns: Transaction[], commodity: string, accounts?: AccountSelection, conventionTxns?: Transaction[]): { income: Dec; expenses: Dec; net: Dec };
 export function commoditiesInUse(txns: Transaction[], accounts?: AccountSelection): string[];   // sorted by frequency
-export function expenseSignFactor(txns: Transaction[], commodity: string, accounts?: AccountSelection): 1 | -1; // journal spending-sign convention (majority sign)
+export type SignFactor = 1 | -1;
+export interface SignConventions { revenue: SignFactor; expense: SignFactor }
+export function signConventions(txns: Transaction[], commodity: string): SignConventions; // magnitude-weighted dominant sign per category
 ```
 
 Posting-level filtering (added 2026-07-08): insights receive TXN-filtered data, but a
@@ -41,12 +43,15 @@ matching txn still carries its other legs (asset/liability side). All series
 functions therefore take the filter's `accounts` selection and skip non-matching
 postings — filtering to `expenses` must not chart the checking-account legs.
 
-Display signs (added 2026-07-08): revenue postings chart/summarize as money-in
-positive (negated from hledger's raw negative). Expense postings display as
-spending-positive even in journals that record spending as negative (bank-sign
-CSV imports): the convention is detected per view via `expenseSignFactor`
-(majority posting sign; ties → hledger standard), so refund-dominated periods
-under the standard convention still net negative. `net = income − expenses`.
+Display signs (added 2026-07-08): each of revenue/expenses displays with the
+sign that makes its dominant money flow positive — income positive when money
+came in, expenses positive when money was spent — whatever raw signs the
+journal records (hledger standard, bank-sign CSV imports, or fully inverted).
+`signConventions` detects the convention per commodity, magnitude-weighted
+(immune to count skew), over `conventionTxns` = the WHOLE journal (passed down
+from `journal.txns` as the panel's `allTxns` prop) so it never flip-flops
+between filter periods; a refund-dominated filtered period under a standard
+journal still nets negative. `net = income − expenses`.
 
 ## Components (`web/src/lib/insights/`)
 

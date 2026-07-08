@@ -13,10 +13,13 @@
     import DepthSlider from "./DepthSlider.svelte";
     import {bigNumbers, commoditiesInUse, maxAccountDepth, styleFor, type AccountSelection} from "./series";
 
-    let {txns, accounts}: {txns: Transaction[]; accounts?: AccountSelection} = $props();
+    // txns: the filtered view to summarize/chart. allTxns: the whole journal —
+    // used only to detect the journal's sign conventions so they stay stable
+    // across filter changes (see series.signConventions).
+    let {txns, accounts, allTxns}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]} = $props();
 
     const primary = $derived(commoditiesInUse(txns, accounts)[0] ?? "$");
-    const net = $derived(bigNumbers(txns, primary, accounts).net);
+    const net = $derived(bigNumbers(txns, primary, accounts, allTxns).net);
     const netFormatted = $derived(formatAmount({commodity: primary, qty: net, style: styleFor(txns, primary)}));
 
     let depth = $state(2);
@@ -39,8 +42,8 @@
         </span>
     </div>
     <div class="collapse-content flex flex-col gap-4">
-        <BigNumbers {txns} {accounts} />
-        <ChartWidget {txns} {accounts} depth={clampedDepth} />
+        <BigNumbers {txns} {accounts} {allTxns} />
+        <ChartWidget {txns} {accounts} {allTxns} depth={clampedDepth} />
         <DepthSlider bind:depth {max} />
     </div>
 </section>

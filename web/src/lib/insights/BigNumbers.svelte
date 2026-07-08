@@ -6,7 +6,7 @@
     import type {Transaction} from "$lib/domain/types";
     import {bigNumbers, commoditiesInUse, styleFor, type AccountSelection} from "./series";
 
-    let {txns, accounts}: {txns: Transaction[]; accounts?: AccountSelection} = $props();
+    let {txns, accounts, allTxns}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]} = $props();
 
     const commodities = $derived(commoditiesInUse(txns, accounts));
     const primary = $derived(commodities[0] ?? "$");
@@ -22,8 +22,8 @@
     }
 
     const stats: Stat[] = $derived.by(() => {
-        const primaryNums = bigNumbers(txns, primary, accounts);
-        const otherNums = others.map((c) => ({commodity: c, nums: bigNumbers(txns, c, accounts)}));
+        const primaryNums = bigNumbers(txns, primary, accounts, allTxns);
+        const otherNums = others.map((c) => ({commodity: c, nums: bigNumbers(txns, c, accounts, allTxns)}));
         const extras = (pick: (nums: {income: Dec; expenses: Dec; net: Dec}) => Dec): string[] =>
             otherNums.filter(({nums}) => pick(nums).m !== 0n).map(({commodity, nums}) => fmt(commodity, pick(nums)));
         return [

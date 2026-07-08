@@ -13,7 +13,7 @@
     import type {Transaction} from "$lib/domain/types";
     import {commoditiesInUse, formatChartValue, lineData, pieData, styleFor, OTHER, type AccountSelection, type Interval, type PieDatum} from "./series";
 
-    let {txns, depth, accounts}: {txns: Transaction[]; depth: number; accounts?: AccountSelection} = $props();
+    let {txns, depth, accounts, allTxns}: {txns: Transaction[]; depth: number; accounts?: AccountSelection; allTxns?: Transaction[]} = $props();
 
     // Dark-mode categorical slots 1..6 from the dataviz reference palette (app theme is dark-only).
     const PALETTE = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767"];
@@ -28,8 +28,8 @@
     const commodity = $derived(chosenCommodity !== null && commodities.includes(chosenCommodity) ? chosenCommodity : (commodities[0] ?? "$"));
     const style = $derived(styleFor(txns, commodity));
 
-    const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts}));
-    const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts}));
+    const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts, conventionTxns: allTxns}));
+    const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts, conventionTxns: allTxns}));
 
     // Color follows the account, not the mode: both datasets come from the same
     // magnitude ranking, so slot assignment by first appearance stays consistent.

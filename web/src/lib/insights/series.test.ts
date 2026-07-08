@@ -286,13 +286,48 @@ describe("UNIT inverted expense convention (bank-sign journals)", () => {
         expect(pie.find((s) => s.account === "expenses:food")?.value).toBeCloseTo(50, 10);
     });
 
-    it("standard-convention refunds still net against spending (majority sign, no blanket abs)", () => {
+    it("standard-convention refunds still net against spending (no blanket abs)", () => {
         const standard = [
             txn("2025-03-01", posting("expenses:rent", usd(900_00)), posting("assets:bank", usd(-900_00))),
             txn("2025-03-02", posting("expenses:food", usd(50_00)), posting("assets:bank", usd(-50_00))),
             txn("2025-03-03", posting("expenses:food", usd(-20_00)), posting("assets:bank", usd(20_00))), // refund
         ];
         expect(fmt(bigNumbers(standard, "$").expenses)).toBe("930.00");
+    });
+
+    it("detection is magnitude-weighted: many small positives can't outvote dominant negative spending", () => {
+        const skewed = [
+            txn("2025-04-01", posting("expenses:rent", usd(-2000_00)), posting("assets:bank", usd(2000_00))),
+            txn("2025-04-02", posting("expenses:fees", usd(1_00)), posting("assets:bank", usd(-1_00))),
+            txn("2025-04-03", posting("expenses:fees", usd(1_00)), posting("assets:bank", usd(-1_00))),
+            txn("2025-04-04", posting("expenses:fees", usd(1_00)), posting("assets:bank", usd(-1_00))),
+        ];
+        // dominant flow is -2000 despite 3 positive postings vs 1 negative
+        expect(fmt(bigNumbers(skewed, "$").expenses)).toBe("1,997.00");
+    });
+
+    it("fully inverted journals (income recorded positive) display income positive too", () => {
+        const inverted = [
+            txn("2025-05-01", posting("income:salary", usd(3000_00)), posting("assets:bank", usd(-3000_00))),
+            txn("2025-05-02", posting("expenses:rent", usd(-900_00)), posting("assets:bank", usd(900_00))),
+        ];
+        const {income, expenses, net} = bigNumbers(inverted, "$");
+        expect(fmt(income)).toBe("3,000.00");
+        expect(fmt(expenses)).toBe("900.00");
+        expect(fmt(net)).toBe("2,100.00");
+    });
+
+    it("conventionTxns keeps the convention stable in refund-only filtered periods", () => {
+        const journal = [
+            txn("2025-06-01", posting("expenses:rent", usd(900_00)), posting("assets:bank", usd(-900_00))),
+            txn("2025-06-02", posting("expenses:food", usd(50_00)), posting("assets:bank", usd(-50_00))),
+            txn("2025-07-01", posting("expenses:food", usd(-20_00)), posting("assets:bank", usd(20_00))), // July: refund only
+        ];
+        const july = journal.filter((t) => t.date.startsWith("2025-07"));
+        // journal-wide convention is standard, so July's refund shows as negative spending — not flipped
+        expect(fmt(bigNumbers(july, "$", undefined, journal).expenses)).toBe("-20.00");
+        // without conventionTxns, July alone would look inverted and flip
+        expect(fmt(bigNumbers(july, "$").expenses)).toBe("20.00");
     });
 });
 

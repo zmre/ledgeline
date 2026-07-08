@@ -128,38 +128,49 @@ function postingIncluded(account: string, accounts: AccountSelection): boolean {
     return false;
 }
 
-/**
- * Detect the journal's expense sign convention: hledger's standard makes
- * expense postings positive (debits), but real-world journals (typically CSV
- * imports keeping the bank statement's sign) record spending as negative.
- * Majority sign of the included expense postings wins (ties → standard), so a
- * genuinely refund-dominated period under the standard convention still nets
- * negative rather than being silently flipped.
- */
-export function expenseSignFactor(txns: Transaction[], commodity: string, accounts?: AccountSelection): 1 | -1 {
-    let positive = 0;
-    let negative = 0;
-    for (const txn of txns) {
-        for (const posting of txn.postings) {
-            if (categorize(posting.account) !== "expense" || !postingIncluded(posting.account, accounts)) continue;
-            for (const amount of posting.amounts) {
-                if (amount.commodity !== commodity) continue;
-                if (amount.qty.m > 0n) positive += 1;
-                else if (amount.qty.m < 0n) negative += 1;
-            }
-        }
-    }
-    return negative > positive ? -1 : 1;
+export type SignFactor = 1 | -1;
+export interface SignConventions {
+    revenue: SignFactor;
+    expense: SignFactor;
 }
 
 /**
- * Display sign for a posting amount: revenue flips (hledger revenue postings
- * are negative; money-in charts positive), expenses flip only when the journal
- * records spending as negative (see expenseSignFactor), everything else is raw.
+ * Detect the journal's sign conventions for revenue and expense postings, per
+ * commodity. Display rule: each category shows with the sign that makes its
+ * DOMINANT money flow positive — income displays positive when money came in,
+ * expenses display positive when money was spent. hledger's standard records
+ * revenue negative / expenses positive, but real-world journals (typically CSV
+ * imports keeping the bank statement's sign) invert one or both. Dominance is
+ * magnitude-weighted (total |negative| vs total |positive|, ties → positive
+ * dominant, i.e. don't flip), so a few large outliers or refunds can't fool a
+ * count-based majority. Pass the WHOLE journal, not the filtered period, so
+ * the detected convention is stable across filter changes.
  */
-function displayQty(qty: Dec, category: RootCategory, expenseSign: 1 | -1): Dec {
-    if (category === "revenue") return neg(qty);
-    if (category === "expense" && expenseSign === -1) return neg(qty);
+export function signConventions(txns: Transaction[], commodity: string): SignConventions {
+    const flows = {
+        revenue: {pos: ZERO, neg: ZERO},
+        expense: {pos: ZERO, neg: ZERO},
+    };
+    for (const txn of txns) {
+        for (const posting of txn.postings) {
+            const category = categorize(posting.account);
+            if (category !== "revenue" && category !== "expense") continue;
+            for (const amount of posting.amounts) {
+                if (amount.commodity !== commodity) continue;
+                const flow = flows[category];
+                if (amount.qty.m > 0n) flow.pos = add(flow.pos, amount.qty);
+                else if (amount.qty.m < 0n) flow.neg = add(flow.neg, absDec(amount.qty));
+            }
+        }
+    }
+    const factor = (flow: {pos: Dec; neg: Dec}): SignFactor => (cmp(flow.neg, flow.pos) > 0 ? -1 : 1);
+    return {revenue: factor(flows.revenue), expense: factor(flows.expense)};
+}
+
+/** Display sign for a posting amount per the detected conventions; non-revenue/expense categories are raw. */
+function displayQty(qty: Dec, category: RootCategory, signs: SignConventions): Dec {
+    if (category === "revenue") return signs.revenue === -1 ? neg(qty) : qty;
+    if (category === "expense") return signs.expense === -1 ? neg(qty) : qty;
     return qty;
 }
 
@@ -223,13 +234,17 @@ export function maxAccountDepth(txns: Transaction[], accounts?: AccountSelection
  * magnitude with the tail folded into OTHER (`maxSlices` groups at most,
  * default 6). Only postings matching `accounts` contribute. Values are signed
  * after display adjustment (revenue money-in positive, expenses spending
- * positive per detected convention); zero-total accounts are dropped.
+ * positive per detected convention — pass the unfiltered journal as
+ * `conventionTxns` for a stable convention); zero-total accounts are dropped.
  */
-export function pieData(txns: Transaction[], opts: {depth: number; commodity: string; maxSlices?: number; accounts?: AccountSelection}): PieDatum[] {
-    const {depth, commodity, maxSlices = 6, accounts} = opts;
+export function pieData(
+    txns: Transaction[],
+    opts: {depth: number; commodity: string; maxSlices?: number; accounts?: AccountSelection; conventionTxns?: Transaction[]}
+): PieDatum[] {
+    const {depth, commodity, maxSlices = 6, accounts, conventionTxns} = opts;
     const ranked = rankedAccounts(txns, depth, commodity, accounts);
     const groupOf = foldTail(ranked, Math.max(1, maxSlices));
-    const expenseSign = expenseSignFactor(txns, commodity, accounts);
+    const signs = signConventions(conventionTxns ?? txns, commodity);
     const totals = new Map<string, Dec>();
     for (const txn of txns) {
         for (const posting of txn.postings) {
@@ -238,7 +253,7 @@ export function pieData(txns: Transaction[], opts: {depth: number; commodity: st
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
                 const group = groupOf.get(clampAccount(posting.account, depth)) ?? OTHER;
-                totals.set(group, add(totals.get(group) ?? ZERO, displayQty(amount.qty, category, expenseSign)));
+                totals.set(group, add(totals.get(group) ?? ZERO, displayQty(amount.qty, category, signs)));
             }
         }
     }
@@ -262,12 +277,12 @@ export function pieData(txns: Transaction[], opts: {depth: number; commodity: st
  */
 export function lineData(
     txns: Transaction[],
-    opts: {depth: number; commodity: string; interval: Interval; maxSeries?: number; accounts?: AccountSelection}
+    opts: {depth: number; commodity: string; interval: Interval; maxSeries?: number; accounts?: AccountSelection; conventionTxns?: Transaction[]}
 ): LineSeries[] {
-    const {depth, commodity, interval, maxSeries = 6, accounts} = opts;
+    const {depth, commodity, interval, maxSeries = 6, accounts, conventionTxns} = opts;
     const ranked = rankedAccounts(txns, depth, commodity, accounts);
     const groupOf = foldTail(ranked, Math.max(1, maxSeries));
-    const expenseSign = expenseSignFactor(txns, commodity, accounts);
+    const signs = signConventions(conventionTxns ?? txns, commodity);
     const sums = new Map<string, Map<string, Dec>>();
     let minBucket: string | null = null;
     let maxBucket: string | null = null;
@@ -286,7 +301,7 @@ export function lineData(
                     perBucket = new Map();
                     sums.set(group, perBucket);
                 }
-                perBucket.set(bucket, add(perBucket.get(bucket) ?? ZERO, displayQty(amount.qty, category, expenseSign)));
+                perBucket.set(bucket, add(perBucket.get(bucket) ?? ZERO, displayQty(amount.qty, category, signs)));
             }
         }
     }
@@ -304,15 +319,20 @@ export function lineData(
 
 /**
  * Income / Expenses / Net for the given (already filtered) transactions, one
- * commodity, counting only postings that match `accounts`. Sign-adjusted for
- * display: income is positive when money came in (hledger revenue postings are
- * negative), and expenses are positive when money was spent — including in
- * journals that record spending as negative (see expenseSignFactor).
- * net = income - expenses.
+ * commodity, counting only postings that match `accounts`. Sign-adjusted per
+ * the detected conventions (see signConventions — pass the unfiltered journal
+ * as `conventionTxns` for stability): income displays positive when money came
+ * in, expenses display positive when money was spent, whichever raw sign the
+ * journal records them with. net = income - expenses.
  */
-export function bigNumbers(txns: Transaction[], commodity: string, accounts?: AccountSelection): {income: Dec; expenses: Dec; net: Dec} {
-    const expenseSign = expenseSignFactor(txns, commodity, accounts);
-    let revenue = ZERO;
+export function bigNumbers(
+    txns: Transaction[],
+    commodity: string,
+    accounts?: AccountSelection,
+    conventionTxns?: Transaction[]
+): {income: Dec; expenses: Dec; net: Dec} {
+    const signs = signConventions(conventionTxns ?? txns, commodity);
+    let income = ZERO;
     let expenses = ZERO;
     for (const txn of txns) {
         for (const posting of txn.postings) {
@@ -321,12 +341,11 @@ export function bigNumbers(txns: Transaction[], commodity: string, accounts?: Ac
             if (!postingIncluded(posting.account, accounts)) continue;
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
-                if (category === "revenue") revenue = add(revenue, amount.qty);
-                else expenses = add(expenses, displayQty(amount.qty, category, expenseSign));
+                if (category === "revenue") income = add(income, displayQty(amount.qty, category, signs));
+                else expenses = add(expenses, displayQty(amount.qty, category, signs));
             }
         }
     }
-    const income = neg(revenue);
     return {income, expenses, net: sub(income, expenses)};
 }
 

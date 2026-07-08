@@ -45,7 +45,7 @@
 <div class="flex min-h-0 flex-col gap-3" style="height: calc(100dvh - 7rem)">
     <FilterBar accountNames={journal.accountNames} />
 
-    <InsightsPanel {txns} accounts={filters.value.accounts} />
+    <InsightsPanel {txns} accounts={filters.value.accounts} allTxns={journal.txns} />
 
     {#if journal.status === "loading" && journal.txns.length === 0}
         <div class="flex grow items-center justify-center" aria-label="Loading transactions">
