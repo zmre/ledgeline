@@ -1,0 +1,2860 @@
+{
+  "cbrDates": [
+    [
+      {
+        "contents": "2024-07-01",
+        "tag": "Exact"
+      },
+      {
+        "contents": "2026-07-01",
+        "tag": "Exact"
+      }
+    ]
+  ],
+  "cbrSubreports": [
+    [
+      "Assets",
+      {
+        "prDates": [
+          [
+            {
+              "contents": "2024-07-01",
+              "tag": "Exact"
+            },
+            {
+              "contents": "2026-07-01",
+              "tag": "Exact"
+            }
+          ]
+        ],
+        "prRows": [
+          {
+            "prrAmounts": [
+              [
+                {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 4016781,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 40167.81
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                }
+              ]
+            ],
+            "prrAverage": [
+              {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 4016781,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 40167.81
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": [
+                    ",",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ],
+            "prrName": "assets:bank:checking",
+            "prrTotal": [
+              {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 4016781,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 40167.81
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": [
+                    ",",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ]
+          },
+          {
+            "prrAmounts": [
+              [
+                {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 1350000,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 13500
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                }
+              ]
+            ],
+            "prrAverage": [
+              {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 13500,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 13500
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": [
+                    ",",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ],
+            "prrName": "assets:bank:savings",
+            "prrTotal": [
+              {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 1350000,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 13500
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": [
+                    ",",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ]
+          },
+          {
+            "prrAmounts": [
+              [
+                {
+                  "acommodity": "EUR",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": -93325,
+                    "decimalPlaces": 2,
+                    "floatingPoint": -933.25
+                  },
+                  "astyle": {
+                    "ascommodityside": "R",
+                    "ascommodityspaced": true,
+                    "asdecimalmark": ",",
+                    "asdigitgroups": [
+                      ".",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                {
+                  "acommodity": "EUR",
+                  "acost": {
+                    "contents": {
+                      "acommodity": "$",
+                      "acost": null,
+                      "acostbasis": null,
+                      "aquantity": {
+                        "decimalMantissa": 10850,
+                        "decimalPlaces": 4,
+                        "floatingPoint": 1.085
+                      },
+                      "astyle": {
+                        "ascommodityside": "L",
+                        "ascommodityspaced": false,
+                        "asdecimalmark": ".",
+                        "asdigitgroups": [
+                          ",",
+                          [
+                            3
+                          ]
+                        ],
+                        "asprecision": 4,
+                        "asrounding": "HardRounding"
+                      }
+                    },
+                    "tag": "UnitCost"
+                  },
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 100000,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 1000
+                  },
+                  "astyle": {
+                    "ascommodityside": "R",
+                    "ascommodityspaced": true,
+                    "asdecimalmark": ",",
+                    "asdigitgroups": [
+                      ".",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                {
+                  "acommodity": "EUR",
+                  "acost": {
+                    "contents": {
+                      "acommodity": "$",
+                      "acost": null,
+                      "acostbasis": null,
+                      "aquantity": {
+                        "decimalMantissa": 11420,
+                        "decimalPlaces": 4,
+                        "floatingPoint": 1.142
+                      },
+                      "astyle": {
+                        "ascommodityside": "L",
+                        "ascommodityspaced": false,
+                        "asdecimalmark": ".",
+                        "asdigitgroups": [
+                          ",",
+                          [
+                            3
+                          ]
+                        ],
+                        "asprecision": 4,
+                        "asrounding": "HardRounding"
+                      }
+                    },
+                    "tag": "UnitCost"
+                  },
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 50000,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 500
+                  },
+                  "astyle": {
+                    "ascommodityside": "R",
+                    "ascommodityspaced": true,
+                    "asdecimalmark": ",",
+                    "asdigitgroups": [
+                      ".",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                }
+              ]
+            ],
+            "prrAverage": [
+              {
+                "acommodity": "EUR",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": -93325,
+                  "decimalPlaces": 2,
+                  "floatingPoint": -933.25
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ",",
+                  "asdigitgroups": [
+                    ".",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "EUR",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 10850,
+                      "decimalPlaces": 4,
+                      "floatingPoint": 1.085
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 4,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 1000,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 1000
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ",",
+                  "asdigitgroups": [
+                    ".",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "EUR",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 11420,
+                      "decimalPlaces": 4,
+                      "floatingPoint": 1.142
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 4,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 500,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 500
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ",",
+                  "asdigitgroups": [
+                    ".",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ],
+            "prrName": "assets:bank:wise",
+            "prrTotal": [
+              {
+                "acommodity": "EUR",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": -93325,
+                  "decimalPlaces": 2,
+                  "floatingPoint": -933.25
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ",",
+                  "asdigitgroups": [
+                    ".",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "EUR",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 10850,
+                      "decimalPlaces": 4,
+                      "floatingPoint": 1.085
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 4,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 100000,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 1000
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ",",
+                  "asdigitgroups": [
+                    ".",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "EUR",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 11420,
+                      "decimalPlaces": 4,
+                      "floatingPoint": 1.142
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 4,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 50000,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 500
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ",",
+                  "asdigitgroups": [
+                    ".",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ]
+          },
+          {
+            "prrAmounts": [
+              [
+                {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 28515,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 285.15
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                {
+                  "acommodity": "AAPL",
+                  "acost": {
+                    "contents": {
+                      "acommodity": "$",
+                      "acost": null,
+                      "acostbasis": null,
+                      "aquantity": {
+                        "decimalMantissa": 20575,
+                        "decimalPlaces": 2,
+                        "floatingPoint": 205.75
+                      },
+                      "astyle": {
+                        "ascommodityside": "L",
+                        "ascommodityspaced": false,
+                        "asdecimalmark": ".",
+                        "asdigitgroups": [
+                          ",",
+                          [
+                            3
+                          ]
+                        ],
+                        "asprecision": 2,
+                        "asrounding": "HardRounding"
+                      }
+                    },
+                    "tag": "UnitCost"
+                  },
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 5,
+                    "decimalPlaces": 0,
+                    "floatingPoint": 5
+                  },
+                  "astyle": {
+                    "ascommodityside": "R",
+                    "ascommodityspaced": true,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": null,
+                    "asprecision": 4,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                {
+                  "acommodity": "AAPL",
+                  "acost": {
+                    "contents": {
+                      "acommodity": "$",
+                      "acost": null,
+                      "acostbasis": null,
+                      "aquantity": {
+                        "decimalMantissa": 22000,
+                        "decimalPlaces": 2,
+                        "floatingPoint": 220
+                      },
+                      "astyle": {
+                        "ascommodityside": "L",
+                        "ascommodityspaced": false,
+                        "asdecimalmark": ".",
+                        "asdigitgroups": [
+                          ",",
+                          [
+                            3
+                          ]
+                        ],
+                        "asprecision": 2,
+                        "asrounding": "HardRounding"
+                      }
+                    },
+                    "tag": "UnitCost"
+                  },
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 10,
+                    "decimalPlaces": 0,
+                    "floatingPoint": 10
+                  },
+                  "astyle": {
+                    "ascommodityside": "R",
+                    "ascommodityspaced": true,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": null,
+                    "asprecision": 4,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                {
+                  "acommodity": "AAPL",
+                  "acost": {
+                    "contents": {
+                      "acommodity": "$",
+                      "acost": null,
+                      "acostbasis": null,
+                      "aquantity": {
+                        "decimalMantissa": 24830,
+                        "decimalPlaces": 2,
+                        "floatingPoint": 248.3
+                      },
+                      "astyle": {
+                        "ascommodityside": "L",
+                        "ascommodityspaced": false,
+                        "asdecimalmark": ".",
+                        "asdigitgroups": [
+                          ",",
+                          [
+                            3
+                          ]
+                        ],
+                        "asprecision": 2,
+                        "asrounding": "HardRounding"
+                      }
+                    },
+                    "tag": "UnitCost"
+                  },
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 45,
+                    "decimalPlaces": 1,
+                    "floatingPoint": 4.5
+                  },
+                  "astyle": {
+                    "ascommodityside": "R",
+                    "ascommodityspaced": true,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": null,
+                    "asprecision": 4,
+                    "asrounding": "HardRounding"
+                  }
+                }
+              ]
+            ],
+            "prrAverage": [
+              {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 28515,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 285.15
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": [
+                    ",",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "AAPL",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 20575,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 205.75
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 5,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 5
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 4,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "AAPL",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 22000,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 220
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 10,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 10
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 4,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "AAPL",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 24830,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 248.3
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 45,
+                  "decimalPlaces": 1,
+                  "floatingPoint": 4.5
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 4,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ],
+            "prrName": "assets:broker:taxable",
+            "prrTotal": [
+              {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 28515,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 285.15
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": [
+                    ",",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "AAPL",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 20575,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 205.75
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 5,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 5
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 4,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "AAPL",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 22000,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 220
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 10,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 10
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 4,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "AAPL",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 24830,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 248.3
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 45,
+                  "decimalPlaces": 1,
+                  "floatingPoint": 4.5
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 4,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ]
+          }
+        ],
+        "prTotals": {
+          "prrAmounts": [
+            [
+              {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 5395296,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 53952.96
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": [
+                    ",",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "AAPL",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 20575,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 205.75
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 5,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 5
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 4,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "AAPL",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 22000,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 220
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 10,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 10
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 4,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "AAPL",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 24830,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 248.3
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 45,
+                  "decimalPlaces": 1,
+                  "floatingPoint": 4.5
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 4,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "EUR",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": -93325,
+                  "decimalPlaces": 2,
+                  "floatingPoint": -933.25
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ",",
+                  "asdigitgroups": [
+                    ".",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "EUR",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 10850,
+                      "decimalPlaces": 4,
+                      "floatingPoint": 1.085
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 4,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 100000,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 1000
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ",",
+                  "asdigitgroups": [
+                    ".",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "EUR",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 11420,
+                      "decimalPlaces": 4,
+                      "floatingPoint": 1.142
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 4,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 50000,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 500
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ",",
+                  "asdigitgroups": [
+                    ".",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ]
+          ],
+          "prrAverage": [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 5395296,
+                "decimalPlaces": 2,
+                "floatingPoint": 53952.96
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [
+                  ",",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "AAPL",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 20575,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 205.75
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 5,
+                "decimalPlaces": 0,
+                "floatingPoint": 5
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 4,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "AAPL",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 22000,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 220
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 10,
+                "decimalPlaces": 0,
+                "floatingPoint": 10
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 4,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "AAPL",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 24830,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 248.3
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 45,
+                "decimalPlaces": 1,
+                "floatingPoint": 4.5
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 4,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "EUR",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": -93325,
+                "decimalPlaces": 2,
+                "floatingPoint": -933.25
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ",",
+                "asdigitgroups": [
+                  ".",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "EUR",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 10850,
+                    "decimalPlaces": 4,
+                    "floatingPoint": 1.085
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 4,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 1000,
+                "decimalPlaces": 0,
+                "floatingPoint": 1000
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ",",
+                "asdigitgroups": [
+                  ".",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "EUR",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 11420,
+                    "decimalPlaces": 4,
+                    "floatingPoint": 1.142
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 4,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 500,
+                "decimalPlaces": 0,
+                "floatingPoint": 500
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ",",
+                "asdigitgroups": [
+                  ".",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            }
+          ],
+          "prrName": [],
+          "prrTotal": [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 5395296,
+                "decimalPlaces": 2,
+                "floatingPoint": 53952.96
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [
+                  ",",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "AAPL",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 20575,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 205.75
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 5,
+                "decimalPlaces": 0,
+                "floatingPoint": 5
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 4,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "AAPL",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 22000,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 220
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 10,
+                "decimalPlaces": 0,
+                "floatingPoint": 10
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 4,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "AAPL",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 24830,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 248.3
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 45,
+                "decimalPlaces": 1,
+                "floatingPoint": 4.5
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 4,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "EUR",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": -93325,
+                "decimalPlaces": 2,
+                "floatingPoint": -933.25
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ",",
+                "asdigitgroups": [
+                  ".",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "EUR",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 10850,
+                    "decimalPlaces": 4,
+                    "floatingPoint": 1.085
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 4,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 100000,
+                "decimalPlaces": 2,
+                "floatingPoint": 1000
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ",",
+                "asdigitgroups": [
+                  ".",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "EUR",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 11420,
+                    "decimalPlaces": 4,
+                    "floatingPoint": 1.142
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 4,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 50000,
+                "decimalPlaces": 2,
+                "floatingPoint": 500
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ",",
+                "asdigitgroups": [
+                  ".",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            }
+          ]
+        }
+      },
+      true
+    ],
+    [
+      "Liabilities",
+      {
+        "prDates": [
+          [
+            {
+              "contents": "2024-07-01",
+              "tag": "Exact"
+            },
+            {
+              "contents": "2026-07-01",
+              "tag": "Exact"
+            }
+          ]
+        ],
+        "prRows": [
+          {
+            "prrAmounts": [
+              [
+                {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 6211,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 62.11
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                }
+              ]
+            ],
+            "prrAverage": [
+              {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 6211,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 62.11
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": [
+                    ",",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ],
+            "prrName": "liabilities:cc:visa",
+            "prrTotal": [
+              {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 6211,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 62.11
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": [
+                    ",",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ]
+          }
+        ],
+        "prTotals": {
+          "prrAmounts": [
+            [
+              {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 6211,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 62.11
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": [
+                    ",",
+                    [
+                      3
+                    ]
+                  ],
+                  "asprecision": 2,
+                  "asrounding": "HardRounding"
+                }
+              }
+            ]
+          ],
+          "prrAverage": [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 6211,
+                "decimalPlaces": 2,
+                "floatingPoint": 62.11
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [
+                  ",",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            }
+          ],
+          "prrName": [],
+          "prrTotal": [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 6211,
+                "decimalPlaces": 2,
+                "floatingPoint": 62.11
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [
+                  ",",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            }
+          ]
+        }
+      },
+      false
+    ]
+  ],
+  "cbrTitle": "Balance Sheet 2026-06-30",
+  "cbrTotals": {
+    "prrAmounts": [
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 5389085,
+            "decimalPlaces": 2,
+            "floatingPoint": 53890.85
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        },
+        {
+          "acommodity": "AAPL",
+          "acost": {
+            "contents": {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 20575,
+                "decimalPlaces": 2,
+                "floatingPoint": 205.75
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [
+                  ",",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            },
+            "tag": "UnitCost"
+          },
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 5,
+            "decimalPlaces": 0,
+            "floatingPoint": 5
+          },
+          "astyle": {
+            "ascommodityside": "R",
+            "ascommodityspaced": true,
+            "asdecimalmark": ".",
+            "asdigitgroups": null,
+            "asprecision": 4,
+            "asrounding": "HardRounding"
+          }
+        },
+        {
+          "acommodity": "AAPL",
+          "acost": {
+            "contents": {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 22000,
+                "decimalPlaces": 2,
+                "floatingPoint": 220
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [
+                  ",",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            },
+            "tag": "UnitCost"
+          },
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 10,
+            "decimalPlaces": 0,
+            "floatingPoint": 10
+          },
+          "astyle": {
+            "ascommodityside": "R",
+            "ascommodityspaced": true,
+            "asdecimalmark": ".",
+            "asdigitgroups": null,
+            "asprecision": 4,
+            "asrounding": "HardRounding"
+          }
+        },
+        {
+          "acommodity": "AAPL",
+          "acost": {
+            "contents": {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 24830,
+                "decimalPlaces": 2,
+                "floatingPoint": 248.3
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [
+                  ",",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            },
+            "tag": "UnitCost"
+          },
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 45,
+            "decimalPlaces": 1,
+            "floatingPoint": 4.5
+          },
+          "astyle": {
+            "ascommodityside": "R",
+            "ascommodityspaced": true,
+            "asdecimalmark": ".",
+            "asdigitgroups": null,
+            "asprecision": 4,
+            "asrounding": "HardRounding"
+          }
+        },
+        {
+          "acommodity": "EUR",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": -93325,
+            "decimalPlaces": 2,
+            "floatingPoint": -933.25
+          },
+          "astyle": {
+            "ascommodityside": "R",
+            "ascommodityspaced": true,
+            "asdecimalmark": ",",
+            "asdigitgroups": [
+              ".",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        },
+        {
+          "acommodity": "EUR",
+          "acost": {
+            "contents": {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 10850,
+                "decimalPlaces": 4,
+                "floatingPoint": 1.085
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [
+                  ",",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 4,
+                "asrounding": "HardRounding"
+              }
+            },
+            "tag": "UnitCost"
+          },
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 100000,
+            "decimalPlaces": 2,
+            "floatingPoint": 1000
+          },
+          "astyle": {
+            "ascommodityside": "R",
+            "ascommodityspaced": true,
+            "asdecimalmark": ",",
+            "asdigitgroups": [
+              ".",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        },
+        {
+          "acommodity": "EUR",
+          "acost": {
+            "contents": {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 11420,
+                "decimalPlaces": 4,
+                "floatingPoint": 1.142
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [
+                  ",",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 4,
+                "asrounding": "HardRounding"
+              }
+            },
+            "tag": "UnitCost"
+          },
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 50000,
+            "decimalPlaces": 2,
+            "floatingPoint": 500
+          },
+          "astyle": {
+            "ascommodityside": "R",
+            "ascommodityspaced": true,
+            "asdecimalmark": ",",
+            "asdigitgroups": [
+              ".",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    "prrAverage": [
+      {
+        "acommodity": "$",
+        "acost": null,
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 5389085,
+          "decimalPlaces": 2,
+          "floatingPoint": 53890.85
+        },
+        "astyle": {
+          "ascommodityside": "L",
+          "ascommodityspaced": false,
+          "asdecimalmark": ".",
+          "asdigitgroups": [
+            ",",
+            [
+              3
+            ]
+          ],
+          "asprecision": 2,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "AAPL",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 20575,
+              "decimalPlaces": 2,
+              "floatingPoint": 205.75
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 2,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 5,
+          "decimalPlaces": 0,
+          "floatingPoint": 5
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ".",
+          "asdigitgroups": null,
+          "asprecision": 4,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "AAPL",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 22000,
+              "decimalPlaces": 2,
+              "floatingPoint": 220
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 2,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 10,
+          "decimalPlaces": 0,
+          "floatingPoint": 10
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ".",
+          "asdigitgroups": null,
+          "asprecision": 4,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "AAPL",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 24830,
+              "decimalPlaces": 2,
+              "floatingPoint": 248.3
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 2,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 45,
+          "decimalPlaces": 1,
+          "floatingPoint": 4.5
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ".",
+          "asdigitgroups": null,
+          "asprecision": 4,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "EUR",
+        "acost": null,
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": -93325,
+          "decimalPlaces": 2,
+          "floatingPoint": -933.25
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ",",
+          "asdigitgroups": [
+            ".",
+            [
+              3
+            ]
+          ],
+          "asprecision": 2,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "EUR",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 10850,
+              "decimalPlaces": 4,
+              "floatingPoint": 1.085
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 4,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 1000,
+          "decimalPlaces": 0,
+          "floatingPoint": 1000
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ",",
+          "asdigitgroups": [
+            ".",
+            [
+              3
+            ]
+          ],
+          "asprecision": 2,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "EUR",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 11420,
+              "decimalPlaces": 4,
+              "floatingPoint": 1.142
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 4,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 500,
+          "decimalPlaces": 0,
+          "floatingPoint": 500
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ",",
+          "asdigitgroups": [
+            ".",
+            [
+              3
+            ]
+          ],
+          "asprecision": 2,
+          "asrounding": "HardRounding"
+        }
+      }
+    ],
+    "prrName": [],
+    "prrTotal": [
+      {
+        "acommodity": "$",
+        "acost": null,
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 5389085,
+          "decimalPlaces": 2,
+          "floatingPoint": 53890.85
+        },
+        "astyle": {
+          "ascommodityside": "L",
+          "ascommodityspaced": false,
+          "asdecimalmark": ".",
+          "asdigitgroups": [
+            ",",
+            [
+              3
+            ]
+          ],
+          "asprecision": 2,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "AAPL",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 20575,
+              "decimalPlaces": 2,
+              "floatingPoint": 205.75
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 2,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 5,
+          "decimalPlaces": 0,
+          "floatingPoint": 5
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ".",
+          "asdigitgroups": null,
+          "asprecision": 4,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "AAPL",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 22000,
+              "decimalPlaces": 2,
+              "floatingPoint": 220
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 2,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 10,
+          "decimalPlaces": 0,
+          "floatingPoint": 10
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ".",
+          "asdigitgroups": null,
+          "asprecision": 4,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "AAPL",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 24830,
+              "decimalPlaces": 2,
+              "floatingPoint": 248.3
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 2,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 45,
+          "decimalPlaces": 1,
+          "floatingPoint": 4.5
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ".",
+          "asdigitgroups": null,
+          "asprecision": 4,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "EUR",
+        "acost": null,
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": -93325,
+          "decimalPlaces": 2,
+          "floatingPoint": -933.25
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ",",
+          "asdigitgroups": [
+            ".",
+            [
+              3
+            ]
+          ],
+          "asprecision": 2,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "EUR",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 10850,
+              "decimalPlaces": 4,
+              "floatingPoint": 1.085
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 4,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 100000,
+          "decimalPlaces": 2,
+          "floatingPoint": 1000
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ",",
+          "asdigitgroups": [
+            ".",
+            [
+              3
+            ]
+          ],
+          "asprecision": 2,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "EUR",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 11420,
+              "decimalPlaces": 4,
+              "floatingPoint": 1.142
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 4,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 50000,
+          "decimalPlaces": 2,
+          "floatingPoint": 500
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ",",
+          "asdigitgroups": [
+            ".",
+            [
+              3
+            ]
+          ],
+          "asprecision": 2,
+          "asrounding": "HardRounding"
+        }
+      }
+    ]
+  }
+}

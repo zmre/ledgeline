@@ -28,6 +28,10 @@ check:
 golden:
     ./scripts/gen-golden.sh
 
+# Snapshot raw hledger-web JSON API responses into fixtures/api/vVERSION/
+snapshot-api:
+    ./scripts/snapshot-api.sh
+
 # Production build (static SPA)
 build:
     cd web && bun run build

@@ -1,0 +1,210 @@
+[
+  [
+    [
+      "assets:bank:checking",
+      "assets:bank:checking",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 4016781,
+            "decimalPlaces": 2,
+            "floatingPoint": 40167.81
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "assets:bank:savings",
+      "assets:bank:savings",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 1350000,
+            "decimalPlaces": 2,
+            "floatingPoint": 13500
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "assets:bank:wise:eur",
+      "assets:bank:wise:eur",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 65743,
+            "decimalPlaces": 2,
+            "floatingPoint": 657.43
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "assets:broker:taxable:cash",
+      "assets:broker:taxable:cash",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 28515,
+            "decimalPlaces": 2,
+            "floatingPoint": 285.15
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "assets:broker:taxable:aapl",
+      "assets:broker:taxable:aapl",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 5269875,
+            "decimalPlaces": 3,
+            "floatingPoint": 5269.875
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "liabilities:cc:visa",
+      "liabilities:cc:visa",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": -6211,
+            "decimalPlaces": 2,
+            "floatingPoint": -62.11
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ]
+  ],
+  [
+    {
+      "acommodity": "$",
+      "acost": null,
+      "acostbasis": null,
+      "aquantity": {
+        "decimalMantissa": 59818155,
+        "decimalPlaces": 3,
+        "floatingPoint": 59818.155
+      },
+      "astyle": {
+        "ascommodityside": "L",
+        "ascommodityspaced": false,
+        "asdecimalmark": ".",
+        "asdigitgroups": [
+          ",",
+          [
+            3
+          ]
+        ],
+        "asprecision": 2,
+        "asrounding": "HardRounding"
+      }
+    }
+  ]
+]
+

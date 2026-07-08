@@ -1,0 +1,831 @@
+; Ledgeline sample journal — hand-authored fixture (WP-09 Phase A).
+; ~24 months (2024-07 .. 2026-07) of a small household ledger.
+;
+; Coverage checklist (plans/09-fixtures-testing.md):
+;   - multi-commodity: USD ($), EUR (comma-decimal, symbol right), AAPL bought with @ cost
+;   - P price directives for EUR and AAPL at several dates
+;   - deep accounts (4 segments): assets:broker:taxable:aapl, assets:bank:wise:eur
+;   - account declarations with type: tags; commodity declarations with digit groups
+;   - all three statuses: * cleared (most), ! pending (2026-07-02), unmarked (June/July 2026)
+;   - transaction + posting comments; tags (trip:, payroll:, receipt:)
+;   - multi-posting splits (salary: 4 postings); elided amounts (most txns); balance assertions
+;   - varied amount styles: digit-grouped $1,234.56 and comma-decimal 1.000,00 EUR
+;
+; Deliberate problem records for WP-08 (do not "fix" these):
+;   - 2026-06-20  posting to expenses:unknown (also left undeclared)
+;   - 2026-06-28  transaction with an empty description
+;   - 2026-07-02  pending (!) transaction
+;
+; Strict mode note: `hledger check` (basic) passes. `hledger check -s` fails
+; ONLY on the deliberately undeclared account `expenses:unknown` above.
+
+; ---------- account declarations ----------
+
+account assets                        ; type: A
+account assets:bank:checking          ; type: C
+account assets:bank:savings           ; type: C
+account assets:bank:wise:eur          ; type: C
+account assets:broker:taxable:cash    ; type: C
+account assets:broker:taxable:aapl    ; type: A
+account liabilities                   ; type: L
+account liabilities:cc:visa           ; type: L
+account equity                        ; type: E
+account equity:opening                ; type: E
+account income                        ; type: R
+account income:salary                 ; type: R
+account income:dividends              ; type: R
+account expenses                      ; type: X
+account expenses:food:groceries
+account expenses:food:restaurants
+account expenses:housing:rent
+account expenses:utilities:electric
+account expenses:taxes:federal
+account expenses:taxes:state
+account expenses:transport:fuel
+account expenses:travel:lodging
+account expenses:travel:activities
+account expenses:travel:flights
+account expenses:shopping
+
+; ---------- commodity declarations (display styles) ----------
+
+commodity $1,000.00
+commodity 1.000,00 EUR
+commodity 1.0000 AAPL
+
+; ---------- market prices (net-worth valuation) ----------
+
+P 2024-09-30 EUR $1.11
+P 2024-09-30 AAPL $228.00
+P 2025-03-31 EUR $1.08
+P 2025-03-31 AAPL $221.50
+P 2025-12-31 EUR $1.10
+P 2025-12-31 AAPL $255.00
+P 2026-06-30 EUR $1.16
+P 2026-06-30 AAPL $270.25
+
+; ---------- 2024 ----------
+
+2024-07-01 * Opening balances
+    assets:bank:checking       $5,000.00 = $5,000.00
+    assets:bank:savings       $10,000.00
+    liabilities:cc:visa         $-450.00
+    equity:opening
+
+2024-07-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2024-07-08 * Safeway | weekly groceries
+    expenses:food:groceries      $187.42
+    liabilities:cc:visa
+
+2024-07-12 * City Power & Light | electricity
+    expenses:utilities:electric  $132.50
+    assets:bank:checking
+
+2024-07-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2024-07-21 * Thai Basil | dinner out
+    expenses:food:restaurants     $84.20
+    liabilities:cc:visa
+
+2024-07-27 * Acme Corp | July salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2024-08-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2024-08-08 * Costco | groceries
+    expenses:food:groceries      $203.18  ; receipt: yes
+    liabilities:cc:visa
+
+2024-08-12 * City Power & Light | electricity
+    expenses:utilities:electric  $141.75
+    assets:bank:checking
+
+2024-08-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2024-08-19 * Shell | fuel
+    expenses:transport:fuel       $58.40
+    liabilities:cc:visa
+
+2024-08-27 * Acme Corp | August salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2024-09-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2024-09-02 * Fidelity | fund brokerage account
+    assets:broker:taxable:cash  $3,000.00
+    assets:bank:checking
+
+2024-09-08 * Trader Joe's | groceries
+    expenses:food:groceries      $176.55
+    liabilities:cc:visa
+
+2024-09-12 * City Power & Light | electricity
+    expenses:utilities:electric  $118.20
+    assets:bank:checking
+
+2024-09-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2024-09-16 * Fidelity | buy AAPL
+    assets:broker:taxable:aapl    10 AAPL @ $220.00
+    assets:broker:taxable:cash
+
+2024-09-21 * La Fonda | dinner out
+    expenses:food:restaurants     $96.75
+    liabilities:cc:visa
+
+2024-09-27 * Acme Corp | September salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2024-10-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+; Quarterly transfer to savings per the household financial plan.
+2024-10-05 * transfer to savings
+    assets:bank:savings          $500.00
+    assets:bank:checking
+
+2024-10-08 * Safeway | weekly groceries
+    expenses:food:groceries      $231.09
+    liabilities:cc:visa
+
+2024-10-12 * City Power & Light | electricity
+    expenses:utilities:electric  $102.35
+    assets:bank:checking
+
+2024-10-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2024-10-19 * Chevron | fuel
+    expenses:transport:fuel       $61.22
+    liabilities:cc:visa
+
+2024-10-27 * Acme Corp | October salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2024-11-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2024-11-08 * Costco | groceries
+    expenses:food:groceries      $198.76
+    liabilities:cc:visa
+
+2024-11-12 * City Power & Light | electricity
+    expenses:utilities:electric  $115.80
+    assets:bank:checking
+
+2024-11-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2024-11-15 * Fidelity | AAPL dividend
+    assets:broker:taxable:cash    $12.50
+    income:dividends
+
+2024-11-21 * Thai Basil | dinner out
+    expenses:food:restaurants     $78.50
+    liabilities:cc:visa
+
+2024-11-27 * Acme Corp | November salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2024-12-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2024-12-08 * Safeway | holiday groceries
+    expenses:food:groceries      $245.33
+    liabilities:cc:visa
+
+2024-12-12 * City Power & Light | electricity
+    expenses:utilities:electric  $128.44
+    assets:bank:checking
+
+2024-12-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2024-12-19 * Shell | fuel
+    expenses:transport:fuel       $55.18
+    liabilities:cc:visa
+
+2024-12-27 * Acme Corp | December salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+; ---------- 2025 ----------
+
+2025-01-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2025-01-05 * transfer to savings
+    assets:bank:savings          $500.00
+    assets:bank:checking
+
+2025-01-08 * Trader Joe's | groceries
+    expenses:food:groceries      $189.64
+    liabilities:cc:visa
+
+2025-01-12 * City Power & Light | electricity
+    expenses:utilities:electric  $134.90
+    assets:bank:checking
+
+2025-01-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-01-21 * Bistro Nouveau | anniversary dinner  ; occasion: anniversary
+    expenses:food:restaurants    $112.40
+    liabilities:cc:visa
+
+2025-01-27 * Acme Corp | January salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2025-02-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2025-02-08 * Costco | groceries
+    expenses:food:groceries      $224.87
+    liabilities:cc:visa
+
+2025-02-12 * City Power & Light | electricity
+    expenses:utilities:electric  $129.35
+    assets:bank:checking
+
+2025-02-14 * Fidelity | AAPL dividend
+    assets:broker:taxable:cash    $12.50
+    income:dividends
+
+2025-02-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-02-19 * Chevron | fuel
+    expenses:transport:fuel       $63.75
+    liabilities:cc:visa
+
+2025-02-27 * Acme Corp | February salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2025-03-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2025-03-08 * Safeway | weekly groceries
+    expenses:food:groceries      $206.41
+    liabilities:cc:visa
+
+2025-03-12 * City Power & Light | electricity
+    expenses:utilities:electric  $108.62
+    assets:bank:checking
+
+2025-03-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-03-21 * La Fonda | dinner out
+    expenses:food:restaurants     $88.20
+    liabilities:cc:visa
+
+2025-03-27 * Acme Corp | March salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2025-04-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2025-04-05 * transfer to savings
+    assets:bank:savings          $500.00
+    assets:bank:checking
+
+2025-04-08 * Trader Joe's | groceries
+    expenses:food:groceries      $194.28
+    liabilities:cc:visa
+
+2025-04-12 * City Power & Light | electricity
+    expenses:utilities:electric   $96.47
+    assets:bank:checking
+
+2025-04-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-04-19 * Shell | fuel
+    expenses:transport:fuel       $59.90
+    liabilities:cc:visa
+
+2025-04-27 * Acme Corp | April salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2025-05-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2025-05-08 * Costco | groceries
+    expenses:food:groceries      $218.90
+    liabilities:cc:visa
+
+2025-05-12 * City Power & Light | electricity
+    expenses:utilities:electric   $92.13
+    assets:bank:checking
+
+2025-05-15 * Fidelity | fund brokerage account
+    assets:broker:taxable:cash  $1,500.00
+    assets:bank:checking
+
+2025-05-15 * Fidelity | AAPL dividend
+    assets:broker:taxable:cash    $18.75
+    income:dividends
+
+2025-05-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-05-20 * Fidelity | buy AAPL
+    assets:broker:taxable:aapl    5 AAPL @ $205.75
+    assets:broker:taxable:cash
+
+2025-05-21 * Bistro Nouveau | dinner out
+    expenses:food:restaurants    $104.65
+    liabilities:cc:visa
+
+2025-05-27 * Acme Corp | May salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2025-06-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2025-06-08 * Safeway | weekly groceries
+    expenses:food:groceries      $182.73
+    liabilities:cc:visa
+
+2025-06-10 * Wise | convert USD to EUR
+    assets:bank:wise:eur       1.000,00 EUR @ $1.0850
+    assets:bank:checking
+
+2025-06-12 * City Power & Light | electricity
+    expenses:utilities:electric  $110.28
+    assets:bank:checking
+
+2025-06-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-06-19 * Chevron | fuel
+    expenses:transport:fuel       $66.35
+    liabilities:cc:visa
+
+2025-06-27 * Acme Corp | June salary  ; payroll: acme
+    income:salary             $-5,400.00
+    expenses:taxes:federal     $1,050.00
+    expenses:taxes:state         $300.00
+    assets:bank:checking       $4,050.00
+
+2025-07-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,800.00
+    assets:bank:checking
+
+2025-07-05 * transfer to savings
+    assets:bank:savings          $500.00
+    assets:bank:checking
+
+2025-07-08 * Trader Joe's | groceries
+    expenses:food:groceries      $209.55
+    liabilities:cc:visa
+
+2025-07-12 * City Power & Light | electricity
+    expenses:utilities:electric  $138.72
+    assets:bank:checking
+
+2025-07-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-07-21 * Thai Basil | dinner out
+    expenses:food:restaurants     $93.10
+    liabilities:cc:visa
+
+2025-07-27 * Acme Corp | July salary (raise)  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+2025-08-01 * Oakview Properties | rent (new lease)
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2025-08-08 * Costco | groceries
+    expenses:food:groceries      $226.14
+    liabilities:cc:visa
+
+2025-08-12 * City Power & Light | electricity
+    expenses:utilities:electric  $144.95
+    assets:bank:checking
+
+2025-08-15 * Fidelity | AAPL dividend
+    assets:broker:taxable:cash    $18.75
+    income:dividends
+
+2025-08-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-08-19 * Shell | fuel
+    expenses:transport:fuel       $57.62
+    liabilities:cc:visa
+
+2025-08-27 * Acme Corp | August salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+2025-09-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2025-09-08 * Safeway | weekly groceries
+    expenses:food:groceries      $171.98
+    liabilities:cc:visa
+
+2025-09-12 * Hotel Adlon | lodging, Berlin  ; trip: berlin
+    expenses:travel:lodging     645,00 EUR
+    assets:bank:wise:eur
+
+2025-09-12 * City Power & Light | electricity
+    expenses:utilities:electric  $121.40
+    assets:bank:checking
+
+2025-09-14 * Curry 36 | dinner  ; trip: berlin
+    expenses:food:restaurants    23,50 EUR
+    assets:bank:wise:eur
+
+2025-09-15 * Museumsinsel | museum tickets  ; trip: berlin
+    expenses:travel:activities   36,00 EUR
+    assets:bank:wise:eur
+
+2025-09-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-09-21 * Pho Corner | dinner out
+    expenses:food:restaurants     $45.30
+    liabilities:cc:visa
+
+2025-09-27 * Acme Corp | September salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+2025-10-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2025-10-05 * transfer to savings
+    assets:bank:savings          $500.00
+    assets:bank:checking
+
+2025-10-08 * Trader Joe's | groceries
+    expenses:food:groceries      $233.47
+    liabilities:cc:visa
+
+2025-10-12 * City Power & Light | electricity
+    expenses:utilities:electric   $99.85
+    assets:bank:checking
+
+2025-10-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-10-19 * Chevron | fuel
+    expenses:transport:fuel       $64.08
+    liabilities:cc:visa
+
+2025-10-27 * Acme Corp | October salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+2025-11-01 * (2101) Oakview Properties | rent (paid by check)
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2025-11-08 * Costco | groceries
+    expenses:food:groceries      $201.26
+    liabilities:cc:visa
+
+2025-11-12 * City Power & Light | electricity
+    expenses:utilities:electric  $117.53
+    assets:bank:checking
+
+2025-11-14 * Fidelity | AAPL dividend
+    assets:broker:taxable:cash    $18.75
+    income:dividends
+
+2025-11-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-11-21 * La Fonda | dinner out
+    expenses:food:restaurants     $86.90
+    liabilities:cc:visa
+
+2025-11-27 * Acme Corp | November salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+2025-12-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2025-12-08 * Safeway | holiday groceries
+    expenses:food:groceries      $252.80
+    liabilities:cc:visa
+
+2025-12-12 * City Power & Light | electricity
+    expenses:utilities:electric  $131.66
+    assets:bank:checking
+
+2025-12-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2025-12-19 * Shell | fuel
+    expenses:transport:fuel       $60.45
+    liabilities:cc:visa
+
+2025-12-27 * Acme Corp | December salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+; ---------- 2026 ----------
+
+2026-01-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2026-01-05 * transfer to savings
+    assets:bank:savings          $500.00
+    assets:bank:checking
+
+2026-01-08 * Trader Joe's | groceries
+    expenses:food:groceries      $190.37
+    liabilities:cc:visa
+
+2026-01-12 * City Power & Light | electricity
+    expenses:utilities:electric  $139.28
+    assets:bank:checking
+
+2026-01-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2026-01-21 * Bistro Nouveau | birthday dinner  ; occasion: birthday
+    expenses:food:restaurants    $118.75
+    liabilities:cc:visa
+
+2026-01-27 * Acme Corp | January salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+2026-02-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2026-02-08 * Costco | groceries
+    expenses:food:groceries      $217.62
+    liabilities:cc:visa
+
+2026-02-12 * City Power & Light | electricity
+    expenses:utilities:electric  $126.84
+    assets:bank:checking
+
+2026-02-13 * Fidelity | AAPL dividend
+    assets:broker:taxable:cash    $25.00
+    income:dividends
+
+2026-02-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2026-02-19 * Chevron | fuel
+    expenses:transport:fuel       $62.19
+    liabilities:cc:visa
+
+2026-02-27 * Acme Corp | February salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+2026-03-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2026-03-08 * Safeway | weekly groceries
+    expenses:food:groceries      $205.93
+    liabilities:cc:visa
+
+2026-03-10 * Fidelity | buy AAPL (fractional)
+    assets:broker:taxable:aapl    4.5 AAPL @ $248.30
+    assets:broker:taxable:cash
+
+2026-03-12 * City Power & Light | electricity
+    expenses:utilities:electric  $105.47
+    assets:bank:checking
+
+2026-03-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2026-03-21 * Thai Basil | dinner out
+    expenses:food:restaurants     $91.35
+    liabilities:cc:visa
+
+2026-03-27 * Acme Corp | March salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+2026-04-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+; Seventh quarterly transfer; assert the running savings balance.
+2026-04-05 * transfer to savings
+    assets:bank:savings          $500.00 = $13,500.00
+    assets:bank:checking
+
+2026-04-08 * Trader Joe's | groceries
+    expenses:food:groceries      $196.71
+    liabilities:cc:visa
+
+2026-04-12 * City Power & Light | electricity
+    expenses:utilities:electric   $94.60
+    assets:bank:checking
+
+2026-04-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2026-04-19 * Shell | fuel
+    expenses:transport:fuel       $58.83
+    liabilities:cc:visa
+
+2026-04-27 * Acme Corp | April salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+2026-05-01 * Oakview Properties | rent
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2026-05-08 * Wise | convert USD to EUR (Munich trip float)
+    assets:bank:wise:eur        500,00 EUR @ $1.1420
+    assets:bank:checking
+
+2026-05-08 * Costco | groceries
+    expenses:food:groceries      $221.48
+    liabilities:cc:visa
+
+2026-05-12 * City Power & Light | electricity
+    expenses:utilities:electric   $90.22
+    assets:bank:checking
+
+2026-05-15 * Fidelity | AAPL dividend
+    assets:broker:taxable:cash    $25.00
+    income:dividends
+
+2026-05-15 * Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2026-05-21 * Bistro Nouveau | dinner out
+    expenses:food:restaurants    $107.90
+    liabilities:cc:visa
+
+2026-05-27 * Acme Corp | May salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+
+; June 2026 onward: recent activity, not yet reconciled (unmarked).
+
+2026-06-01 Oakview Properties | rent
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2026-06-08 Safeway | weekly groceries
+    expenses:food:groceries      $184.15
+    liabilities:cc:visa
+
+2026-06-12 City Power & Light | electricity
+    expenses:utilities:electric  $112.75
+    assets:bank:checking
+
+2026-06-15 Chase | visa autopay
+    liabilities:cc:visa          $300.00
+    assets:bank:checking
+
+2026-06-18 Bäckerei Rischart | breakfast  ; trip: munich
+    expenses:food:restaurants    18,75 EUR
+    assets:bank:wise:eur
+
+2026-06-19 Hotel Laimer Hof | lodging, Munich  ; trip: munich
+    expenses:travel:lodging     210,00 EUR
+    assets:bank:wise:eur
+
+2026-06-19 Chevron | fuel
+    expenses:transport:fuel       $65.52
+    liabilities:cc:visa
+
+2026-06-20 Venmo payment
+    expenses:unknown              $75.00  ; WP-08 problem record: uncategorized
+    assets:bank:checking
+
+2026-06-27 Acme Corp | June salary  ; payroll: acme
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    * assets:bank:checking     $4,200.00  ; direct deposit confirmed
+
+2026-06-28
+    expenses:food:restaurants     $42.13
+    assets:bank:checking
+
+; ---------- July 2026 (current month) ----------
+
+2026-07-01 Oakview Properties | rent
+    expenses:housing:rent      $1,875.00
+    assets:bank:checking
+
+2026-07-02 ! Delta Airlines | flight to Denver  ; trip: denver
+    expenses:travel:flights      $412.80
+    liabilities:cc:visa
+
+2026-07-03 Safeway | weekly groceries
+    expenses:food:groceries       $56.24
+    liabilities:cc:visa
