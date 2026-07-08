@@ -1,3 +1,4 @@
+import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
 import {ApiShapeError} from "./client";
 import {normalizePrices, normalizeTransactions} from "./normalize";
@@ -242,6 +243,72 @@ describe("UNIT normalizeTransactions", () => {
     it("throws ApiShapeError on non-array input and missing tindex/tdate", () => {
         expect(() => normalizeTransactions({})).toThrow(ApiShapeError);
         expect(() => normalizeTransactions([{tdescription: "no index"}])).toThrow(ApiShapeError);
+    });
+
+    it("normalizes a legacy-shaped (aprice/asdecimalpoint) sample identically to its modern equivalent", () => {
+        expect(normalizeTransactions([toLegacyShape(modernTxn)])).toEqual(normalizeTransactions([modernTxn]));
+    });
+});
+
+/** Deep-rewrite a modern (1.52/2.0) wire object into its pre-1.5x spelling per the plans/00 drift table. */
+function toLegacyShape(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(toLegacyShape);
+    if (typeof value !== "object" || value === null) return value;
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value)) {
+        if (key === "asrounding" || key === "acostbasis") continue; // did not exist pre-1.5x
+        if (key === "asdecimalmark") out.asdecimalpoint = toLegacyShape(v);
+        else if (key === "acost") out.aprice = toLegacyShape(v);
+        else if (key === "tag" && v === "UnitCost") out.tag = "UnitPrice";
+        else if (key === "tag" && v === "TotalCost") out.tag = "TotalPrice";
+        else out[key] = toLegacyShape(v);
+    }
+    if ("aprice" in out) out.aismultiplier = false; // it's an Amount — legacy carried this flag
+    return out;
+}
+
+// Regression net over the RAW committed API snapshot (WP-09) — the same bytes
+// a live hledger-web 1.52 serves. Counts/statuses verified against
+// `hledger -f fixtures/sample.journal stats` and the fixture journal itself.
+describe("UNIT normalizeTransactions over the fixtures/api/v1.52 snapshot", () => {
+    const raw: unknown = JSON.parse(readFileSync(new URL("../../../../fixtures/api/v1.52/transactions.json", import.meta.url), "utf8"));
+    const txns = normalizeTransactions(raw);
+
+    it("normalizes every transaction and posting", () => {
+        expect(txns).toHaveLength(176);
+        expect(txns.reduce((n, t) => n + t.postings.length, 0)).toBe(402);
+    });
+
+    it("preserves the status distribution", () => {
+        const counts = {cleared: 0, pending: 0, unmarked: 0};
+        for (const txn of txns) counts[txn.status] += 1;
+        expect(counts).toEqual({cleared: 163, pending: 1, unmarked: 12});
+    });
+
+    it("carries exact Dec quantities (opening checking balance)", () => {
+        const opening = txns[0];
+        expect(opening.index).toBe(1);
+        expect(opening.date).toBe("2024-07-01");
+        expect(opening.description).toBe("Opening balances");
+        const checking = opening.postings.find((p) => p.account === "assets:bank:checking");
+        expect(checking?.amounts[0].qty).toEqual({m: 500000n, p: 2});
+    });
+
+    it("builds lowercase haystacks (the pending flight)", () => {
+        const flight = txns.find((t) => t.index === 175);
+        expect(flight?.status).toBe("pending");
+        expect(flight?.date).toBe("2026-07-02");
+        expect(flight?.haystack).toContain("delta airlines");
+        expect(flight?.haystack).toContain("expenses:travel:flights");
+        expect(flight?.haystack).toContain("$412.80");
+        expect(flight?.haystack).not.toMatch(/[A-Z]/);
+    });
+
+    it("freezes normalized snapshot objects", () => {
+        expect(Object.isFrozen(txns[0])).toBe(true);
+        expect(Object.isFrozen(txns[0].postings[0])).toBe(true);
+        expect(Object.isFrozen(txns[0].postings[0].amounts[0])).toBe(true);
+        expect(Object.isFrozen(txns[0].postings[0].amounts[0].qty)).toBe(true);
     });
 });
 
