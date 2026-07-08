@@ -1,0 +1,21 @@
+# Nix / direnv
+.direnv/
+result
+
+# JS / SvelteKit (web/)
+node_modules/
+.svelte-kit/
+build/
+dist/
+*.tsbuildinfo
+.bun/
+
+# Testing
+test-results/
+playwright-report/
+coverage/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
