@@ -3,6 +3,8 @@
     import favicon from "$lib/assets/favicon.svg";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
+    import ServerSetupModal from "$lib/components/ServerSetupModal.svelte";
+    import {settings} from "$lib/stores/settings.svelte";
 
     let {children} = $props();
 </script>
@@ -25,8 +27,15 @@
             </ul>
         </nav>
         <div class="navbar-end pr-2">
-            <!-- Connection-status indicator mounts here (WP-02). -->
-            <span id="connection-status"></span>
+            <span id="connection-status" class="flex items-center gap-2 text-sm" title={settings.serverUrl ?? "No hledger-web server configured"}>
+                {#if settings.serverUrl !== null}
+                    <span class="status status-success" aria-hidden="true"></span>
+                    <span class="text-base-content/70 hidden sm:inline">{settings.serverUrl}</span>
+                {:else}
+                    <span class="status status-error" aria-hidden="true"></span>
+                    <span class="text-base-content/70 hidden sm:inline">not connected</span>
+                {/if}
+            </span>
         </div>
     </header>
 
@@ -34,3 +43,7 @@
         {@render children()}
     </main>
 </div>
+
+{#if settings.serverUrl === null}
+    <ServerSetupModal />
+{/if}
