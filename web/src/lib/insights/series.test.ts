@@ -227,6 +227,75 @@ describe("UNIT commoditiesInUse", () => {
     });
 });
 
+// ---------- account selection and display signs ----------
+
+describe("UNIT account selection and display signs", () => {
+    const txns = [
+        txn("2025-01-05", posting("income:salary", usd(-5000_00)), posting("assets:bank:checking", usd(5000_00))),
+        txn("2025-01-06", posting("expenses:food", usd(40_00)), posting("assets:bank:checking", usd(-40_00))),
+        txn("2025-01-07", posting("expenses:rent", usd(1000_00)), posting("liabilities:cc", usd(-1000_00))),
+    ];
+
+    it("charts only include postings matching the selection, not the txns' other legs", () => {
+        const accounts = new Set(["income", "expenses"]);
+        const pie = pieData(txns, {depth: 1, commodity: "$", accounts});
+        expect(pie.map((s) => s.account).sort()).toEqual(["expenses", "income"]);
+        const line = lineData(txns, {depth: 1, commodity: "$", interval: "monthly", accounts});
+        expect(line.map((s) => s.account).sort()).toEqual(["expenses", "income"]);
+        expect(rankedAccounts(txns, 1, "$", accounts).sort()).toEqual(["expenses", "income"]);
+    });
+
+    it("revenue charts money-in positive; standard expenses stay positive", () => {
+        const accounts = new Set(["income", "expenses"]);
+        const pie = pieData(txns, {depth: 1, commodity: "$", accounts});
+        expect(pie.find((s) => s.account === "income")?.value).toBeCloseTo(5000, 10);
+        expect(pie.find((s) => s.account === "expenses")?.value).toBeCloseTo(1040, 10);
+    });
+
+    it("maxAccountDepth and commoditiesInUse respect the selection", () => {
+        expect(maxAccountDepth(txns)).toBe(3);
+        expect(maxAccountDepth(txns, new Set(["expenses"]))).toBe(2);
+        const mixed = [...txns, txn("2025-01-08", posting("assets:wise", eur(1_00)), posting("equity:opening", eur(-1_00)))];
+        expect(commoditiesInUse(mixed, new Set(["expenses"]))).toEqual(["$"]);
+    });
+
+    it("empty selection means all postings", () => {
+        const pie = pieData(txns, {depth: 1, commodity: "$", accounts: new Set<string>()});
+        expect(pie.map((s) => s.account).sort()).toEqual(["assets", "expenses", "income", "liabilities"]);
+    });
+});
+
+describe("UNIT inverted expense convention (bank-sign journals)", () => {
+    // Spending recorded negative, e.g. CSV imports keeping the bank statement's sign.
+    const inverted = [
+        txn("2025-02-01", posting("income:salary", usd(-3000_00)), posting("assets:bank", usd(3000_00))),
+        txn("2025-02-02", posting("expenses:food", usd(-50_00)), posting("assets:bank", usd(50_00))),
+        txn("2025-02-03", posting("expenses:rent", usd(-900_00)), posting("assets:bank", usd(900_00))),
+    ];
+
+    it("bigNumbers shows spending positive and net = income - spending", () => {
+        const {income, expenses, net} = bigNumbers(inverted, "$");
+        expect(fmt(income)).toBe("3,000.00");
+        expect(fmt(expenses)).toBe("950.00");
+        expect(fmt(net)).toBe("2,050.00");
+    });
+
+    it("charts flip inverted expense accounts positive", () => {
+        const pie = pieData(inverted, {depth: 2, commodity: "$", accounts: new Set(["expenses"])});
+        expect(pie.find((s) => s.account === "expenses:rent")?.value).toBeCloseTo(900, 10);
+        expect(pie.find((s) => s.account === "expenses:food")?.value).toBeCloseTo(50, 10);
+    });
+
+    it("standard-convention refunds still net against spending (majority sign, no blanket abs)", () => {
+        const standard = [
+            txn("2025-03-01", posting("expenses:rent", usd(900_00)), posting("assets:bank", usd(-900_00))),
+            txn("2025-03-02", posting("expenses:food", usd(50_00)), posting("assets:bank", usd(-50_00))),
+            txn("2025-03-03", posting("expenses:food", usd(-20_00)), posting("assets:bank", usd(20_00))), // refund
+        ];
+        expect(fmt(bigNumbers(standard, "$").expenses)).toBe("930.00");
+    });
+});
+
 // ---------- fixture cross-check against hledger CLI ----------
 
 describe("INTEGRATION fixture big numbers vs hledger is", () => {
@@ -256,19 +325,14 @@ describe("INTEGRATION fixture big numbers vs hledger is", () => {
         expect(fmt(eurNums.net)).toBe("-704.50");
     });
 
-    it("pie slices sum to the period total for the commodity", () => {
+    it("pie slices for an `expenses` selection sum to the big-numbers expenses total", () => {
         const txns = month("2025-03");
-        let expected = 0;
-        for (const t of txns) {
-            for (const p of t.postings) {
-                for (const a of p.amounts) {
-                    if (a.commodity === "$") expected += toNumber(a.qty);
-                }
-            }
-        }
-        const slices = pieData(txns, {depth: 2, commodity: "$", maxSlices: 6});
+        const accounts: ReadonlySet<string> = new Set(["expenses"]);
+        const slices = pieData(txns, {depth: 2, commodity: "$", maxSlices: 6, accounts});
+        expect(slices.length).toBeGreaterThan(0);
+        expect(slices.every((s) => s.account.startsWith("expenses"))).toBe(true);
         const sum = slices.reduce((acc, s) => acc + s.value, 0);
-        expect(sum).toBeCloseTo(expected, 6);
+        expect(sum).toBeCloseTo(toNumber(bigNumbers(txns, "$", accounts).expenses), 6);
     });
 
     it("commoditiesInUse on the fixture leads with $", () => {

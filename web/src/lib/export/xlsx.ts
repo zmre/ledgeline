@@ -4,7 +4,7 @@
 // export boundary is acceptable per plans/07; the Excel number format keeps
 // the Dec's decimal places.
 
-import {toNumber, type Dec, type MixedAmount} from "$lib/domain/money";
+import {MAX_DISPLAY_DECIMALS, toNumber, type Dec, type MixedAmount} from "$lib/domain/money";
 import {bucketLabel} from "$lib/reports/periods";
 import type {PeriodReport, SectionedReport} from "$lib/reports/types";
 import {compressPeriodRows, compressSectionRows} from "$lib/reports/ui/displayRows";
@@ -13,9 +13,10 @@ import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build 
 const HEADER_ARGB = "FF1E293B";
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
-/** Excel number format for a quantity: grouping + the Dec's decimal places + commodity affix. */
+/** Excel number format for a quantity: grouping + the Dec's decimal places (display-capped) + commodity affix. */
 export function numberFormat(commodity: string, places: number): string {
-    const base = places > 0 ? `#,##0.${"0".repeat(places)}` : "#,##0";
+    const shown = Math.min(places, MAX_DISPLAY_DECIMALS);
+    const base = shown > 0 ? `#,##0.${"0".repeat(shown)}` : "#,##0";
     if (commodity === "") return base;
     const quoted = `"${commodity.replace(/"/g, '""')}"`;
     // Single-symbol commodities ($ € £ ¥) read best as prefixes; codes (USD, AAPL) as suffixes.
@@ -35,7 +36,9 @@ function setAmount(cell: Cell, ma: MixedAmount): void {
         cell.value = 0;
         cell.numFmt = "#,##0";
     } else {
-        cell.value = entries.map(([commodity, qty]: [string, Dec]) => `${toNumber(qty).toFixed(qty.p)} ${commodity}`).join(", ");
+        cell.value = entries
+            .map(([commodity, qty]: [string, Dec]) => `${toNumber(qty).toFixed(Math.min(qty.p, MAX_DISPLAY_DECIMALS))} ${commodity}`)
+            .join(", ");
     }
     cell.alignment = {...cell.alignment, horizontal: "right"};
 }

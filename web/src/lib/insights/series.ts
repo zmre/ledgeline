@@ -6,13 +6,13 @@
 // canonical one; reconcile when it lands — same keys: daily "YYYY-MM-DD",
 // weekly = ISO date of the week's Monday, monthly "YYYY-MM").
 
-import {categorize, clampAccount} from "$lib/domain/accounts";
+import {accountMatches, categorize, clampAccount, type RootCategory} from "$lib/domain/accounts";
 import {add, cmp, dec, formatAmount, neg, sub, toNumber, type Dec} from "$lib/domain/money";
 import type {AmountStyle, ISODate, Transaction} from "$lib/domain/types";
 
 export interface PieDatum {
     account: string;
-    /** Signed period total (display-boundary number); slices sum to the period total. */
+    /** Display-sign-adjusted period total (display-boundary number); see displayQty. */
     value: number;
     /** formatAmount string for tooltips. */
     formatted: string;
@@ -112,14 +112,67 @@ function absDec(d: Dec): Dec {
 }
 
 /**
+ * Optional account selection (the filter bar's subtree roots). Insights receive
+ * transactions filtered at the TXN level (a txn matches when ANY posting
+ * matches), but charts/summaries must not count the txn's other legs — e.g.
+ * filtering to `expenses` must not chart the checking-account side. Empty or
+ * undefined = all postings.
+ */
+export type AccountSelection = ReadonlySet<string> | undefined;
+
+function postingIncluded(account: string, accounts: AccountSelection): boolean {
+    if (accounts === undefined || accounts.size === 0) return true;
+    for (const sel of accounts) {
+        if (accountMatches(sel, account)) return true;
+    }
+    return false;
+}
+
+/**
+ * Detect the journal's expense sign convention: hledger's standard makes
+ * expense postings positive (debits), but real-world journals (typically CSV
+ * imports keeping the bank statement's sign) record spending as negative.
+ * Majority sign of the included expense postings wins (ties → standard), so a
+ * genuinely refund-dominated period under the standard convention still nets
+ * negative rather than being silently flipped.
+ */
+export function expenseSignFactor(txns: Transaction[], commodity: string, accounts?: AccountSelection): 1 | -1 {
+    let positive = 0;
+    let negative = 0;
+    for (const txn of txns) {
+        for (const posting of txn.postings) {
+            if (categorize(posting.account) !== "expense" || !postingIncluded(posting.account, accounts)) continue;
+            for (const amount of posting.amounts) {
+                if (amount.commodity !== commodity) continue;
+                if (amount.qty.m > 0n) positive += 1;
+                else if (amount.qty.m < 0n) negative += 1;
+            }
+        }
+    }
+    return negative > positive ? -1 : 1;
+}
+
+/**
+ * Display sign for a posting amount: revenue flips (hledger revenue postings
+ * are negative; money-in charts positive), expenses flip only when the journal
+ * records spending as negative (see expenseSignFactor), everything else is raw.
+ */
+function displayQty(qty: Dec, category: RootCategory, expenseSign: 1 | -1): Dec {
+    if (category === "revenue") return neg(qty);
+    if (category === "expense" && expenseSign === -1) return neg(qty);
+    return qty;
+}
+
+/**
  * Accounts (clamped to `depth`) that have postings in `commodity`, ranked by
  * total absolute posting volume (descending; ties alphabetical). Both pie and
  * line rank from this list so an account keeps the same color in either mode.
  */
-export function rankedAccounts(txns: Transaction[], depth: number, commodity: string): string[] {
+export function rankedAccounts(txns: Transaction[], depth: number, commodity: string, accounts?: AccountSelection): string[] {
     const magnitude = new Map<string, Dec>();
     for (const txn of txns) {
         for (const posting of txn.postings) {
+            if (!postingIncluded(posting.account, accounts)) continue;
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
                 const account = clampAccount(posting.account, depth);
@@ -150,11 +203,12 @@ export function styleFor(txns: Transaction[], commodity: string): AmountStyle {
     return DEFAULT_STYLE;
 }
 
-/** Deepest account name (segment count) appearing in the postings; ≥ 1 for non-empty input. */
-export function maxAccountDepth(txns: Transaction[]): number {
+/** Deepest account name (segment count) among postings matching `accounts`; ≥ 1 for non-empty input. */
+export function maxAccountDepth(txns: Transaction[], accounts?: AccountSelection): number {
     let max = 1;
     for (const txn of txns) {
         for (const posting of txn.postings) {
+            if (!postingIncluded(posting.account, accounts)) continue;
             const depth = posting.account.split(":").length;
             if (depth > max) max = depth;
         }
@@ -167,19 +221,24 @@ export function maxAccountDepth(txns: Transaction[]): number {
 /**
  * Period totals per account clamped to `depth`, one commodity, ranked by
  * magnitude with the tail folded into OTHER (`maxSlices` groups at most,
- * default 6). Values are signed; zero-total accounts are dropped.
+ * default 6). Only postings matching `accounts` contribute. Values are signed
+ * after display adjustment (revenue money-in positive, expenses spending
+ * positive per detected convention); zero-total accounts are dropped.
  */
-export function pieData(txns: Transaction[], opts: {depth: number; commodity: string; maxSlices?: number}): PieDatum[] {
-    const {depth, commodity, maxSlices = 6} = opts;
-    const ranked = rankedAccounts(txns, depth, commodity);
+export function pieData(txns: Transaction[], opts: {depth: number; commodity: string; maxSlices?: number; accounts?: AccountSelection}): PieDatum[] {
+    const {depth, commodity, maxSlices = 6, accounts} = opts;
+    const ranked = rankedAccounts(txns, depth, commodity, accounts);
     const groupOf = foldTail(ranked, Math.max(1, maxSlices));
+    const expenseSign = expenseSignFactor(txns, commodity, accounts);
     const totals = new Map<string, Dec>();
     for (const txn of txns) {
         for (const posting of txn.postings) {
+            if (!postingIncluded(posting.account, accounts)) continue;
+            const category = categorize(posting.account);
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
                 const group = groupOf.get(clampAccount(posting.account, depth)) ?? OTHER;
-                totals.set(group, add(totals.get(group) ?? ZERO, amount.qty));
+                totals.set(group, add(totals.get(group) ?? ZERO, displayQty(amount.qty, category, expenseSign)));
             }
         }
     }
@@ -197,17 +256,25 @@ export function pieData(txns: Transaction[], opts: {depth: number; commodity: st
 /**
  * Activity per bucket per account (clamped to `depth`, one commodity), top
  * `maxSeries` (default 6) groups by magnitude with the tail folded into OTHER.
- * Every series carries the full bucket range (gaps zero-filled) so lines are continuous.
+ * Only postings matching `accounts` contribute; values are display-sign
+ * adjusted like pieData. Every series carries the full bucket range (gaps
+ * zero-filled) so lines are continuous.
  */
-export function lineData(txns: Transaction[], opts: {depth: number; commodity: string; interval: Interval; maxSeries?: number}): LineSeries[] {
-    const {depth, commodity, interval, maxSeries = 6} = opts;
-    const ranked = rankedAccounts(txns, depth, commodity);
+export function lineData(
+    txns: Transaction[],
+    opts: {depth: number; commodity: string; interval: Interval; maxSeries?: number; accounts?: AccountSelection}
+): LineSeries[] {
+    const {depth, commodity, interval, maxSeries = 6, accounts} = opts;
+    const ranked = rankedAccounts(txns, depth, commodity, accounts);
     const groupOf = foldTail(ranked, Math.max(1, maxSeries));
+    const expenseSign = expenseSignFactor(txns, commodity, accounts);
     const sums = new Map<string, Map<string, Dec>>();
     let minBucket: string | null = null;
     let maxBucket: string | null = null;
     for (const txn of txns) {
         for (const posting of txn.postings) {
+            if (!postingIncluded(posting.account, accounts)) continue;
+            const category = categorize(posting.account);
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
                 const group = groupOf.get(clampAccount(posting.account, depth)) ?? OTHER;
@@ -219,7 +286,7 @@ export function lineData(txns: Transaction[], opts: {depth: number; commodity: s
                     perBucket = new Map();
                     sums.set(group, perBucket);
                 }
-                perBucket.set(bucket, add(perBucket.get(bucket) ?? ZERO, amount.qty));
+                perBucket.set(bucket, add(perBucket.get(bucket) ?? ZERO, displayQty(amount.qty, category, expenseSign)));
             }
         }
     }
@@ -237,20 +304,25 @@ export function lineData(txns: Transaction[], opts: {depth: number; commodity: s
 
 /**
  * Income / Expenses / Net for the given (already filtered) transactions, one
- * commodity. Sign-adjusted for display: income is positive when money came in
- * (hledger revenue postings are negative). net = income - expenses.
+ * commodity, counting only postings that match `accounts`. Sign-adjusted for
+ * display: income is positive when money came in (hledger revenue postings are
+ * negative), and expenses are positive when money was spent — including in
+ * journals that record spending as negative (see expenseSignFactor).
+ * net = income - expenses.
  */
-export function bigNumbers(txns: Transaction[], commodity: string): {income: Dec; expenses: Dec; net: Dec} {
+export function bigNumbers(txns: Transaction[], commodity: string, accounts?: AccountSelection): {income: Dec; expenses: Dec; net: Dec} {
+    const expenseSign = expenseSignFactor(txns, commodity, accounts);
     let revenue = ZERO;
     let expenses = ZERO;
     for (const txn of txns) {
         for (const posting of txn.postings) {
             const category = categorize(posting.account);
             if (category !== "revenue" && category !== "expense") continue;
+            if (!postingIncluded(posting.account, accounts)) continue;
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
                 if (category === "revenue") revenue = add(revenue, amount.qty);
-                else expenses = add(expenses, amount.qty);
+                else expenses = add(expenses, displayQty(amount.qty, category, expenseSign));
             }
         }
     }
@@ -270,11 +342,12 @@ export function formatChartValue(value: number, commodity: string, style: Amount
     return formatAmount({commodity, qty: dec(scaled, style.precision), style});
 }
 
-/** Commodities appearing in posting amounts, most-used first (ties alphabetical). */
-export function commoditiesInUse(txns: Transaction[]): string[] {
+/** Commodities appearing in posting amounts matching `accounts`, most-used first (ties alphabetical). */
+export function commoditiesInUse(txns: Transaction[], accounts?: AccountSelection): string[] {
     const counts = new Map<string, number>();
     for (const txn of txns) {
         for (const posting of txn.postings) {
+            if (!postingIncluded(posting.account, accounts)) continue;
             for (const amount of posting.amounts) {
                 counts.set(amount.commodity, (counts.get(amount.commodity) ?? 0) + 1);
             }

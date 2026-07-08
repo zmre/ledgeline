@@ -131,9 +131,16 @@ function groupDigits(intDigits: string, [separator, sizes]: [string, number[]]):
     return groups.reverse().join(separator);
 }
 
-/** Format a Dec per style. Rounding (to style.precision) happens HERE only. */
+/**
+ * Display cap: never render more than two decimal places, whatever the wire
+ * style or Dec precision says. Exact Decs keep full precision internally;
+ * only formatting rounds.
+ */
+export const MAX_DISPLAY_DECIMALS = 2;
+
+/** Format a Dec per style. Rounding (to min(style.precision, 2)) happens HERE only. */
 export function formatDec(d: Dec, style: AmountStyle): string {
-    const rounded = roundTo(d, style.precision);
+    const rounded = roundTo(d, Math.min(style.precision, MAX_DISPLAY_DECIMALS));
     const negative = rounded.m < 0n;
     const digits = (negative ? -rounded.m : rounded.m).toString().padStart(rounded.p + 1, "0");
     const intDigits = digits.slice(0, digits.length - rounded.p);

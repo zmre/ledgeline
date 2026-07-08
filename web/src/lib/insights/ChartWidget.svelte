@@ -11,9 +11,9 @@
 <script lang="ts">
     import {LineChart, PieChart, Tooltip} from "layerchart";
     import type {Transaction} from "$lib/domain/types";
-    import {commoditiesInUse, formatChartValue, lineData, pieData, styleFor, OTHER, type Interval, type PieDatum} from "./series";
+    import {commoditiesInUse, formatChartValue, lineData, pieData, styleFor, OTHER, type AccountSelection, type Interval, type PieDatum} from "./series";
 
-    let {txns, depth}: {txns: Transaction[]; depth: number} = $props();
+    let {txns, depth, accounts}: {txns: Transaction[]; depth: number; accounts?: AccountSelection} = $props();
 
     // Dark-mode categorical slots 1..6 from the dataviz reference palette (app theme is dark-only).
     const PALETTE = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767"];
@@ -24,12 +24,12 @@
     let interval = $state<Interval>("monthly");
     let chosenCommodity = $state<string | null>(null);
 
-    const commodities = $derived(commoditiesInUse(txns));
+    const commodities = $derived(commoditiesInUse(txns, accounts));
     const commodity = $derived(chosenCommodity !== null && commodities.includes(chosenCommodity) ? chosenCommodity : (commodities[0] ?? "$"));
     const style = $derived(styleFor(txns, commodity));
 
-    const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS}));
-    const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS}));
+    const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts}));
+    const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts}));
 
     // Color follows the account, not the mode: both datasets come from the same
     // magnitude ranking, so slot assignment by first appearance stays consistent.

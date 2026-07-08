@@ -106,7 +106,7 @@ hledger-web JSON
 
 ## Non-negotiable conventions
 
-1. **Money is exact.** `type Dec = { m: bigint; p: number }` built from `decimalMantissa`/`decimalPlaces`. NEVER use `floatingPoint` for accumulation. `toNumber()` only at chart/export display boundaries. Round only at format time. Multi-commodity totals are `MixedAmount = Map<string, Dec>`.
+1. **Money is exact.** `type Dec = { m: bigint; p: number }` built from `decimalMantissa`/`decimalPlaces`. NEVER use `floatingPoint` for accumulation. `toNumber()` only at chart/export display boundaries. Round only at format time. Multi-commodity totals are `MixedAmount = Map<string, Dec>`. Display precision is capped at 2 decimal places (`formatDec`/`MAX_DISPLAY_DECIMALS`, incl. xlsx number formats) — exact Decs keep full precision internally.
 2. **Guard mantissa:** if `!Number.isSafeInteger(decimalMantissa)`, throw `ApiShapeError` / flag the record — never silently fall back to floats.
 3. **Dates are ISO strings** (`"YYYY-MM-DD"`) end-to-end, compared lexically. NEVER `new Date('YYYY-MM-DD')` (parses UTC, shifts a day in negative-offset zones). "Today" is computed once from local `Date` parts, then pure string math (`lib/reports/periods.ts`).
 4. **Runes state lives in `.svelte.ts` modules** (`$state`/`$derived.by`), not legacy `writable` stores, not component-local globals.

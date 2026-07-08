@@ -141,6 +141,12 @@ describe("UNIT money", () => {
             expect(formatDec(dec(5, 0), style())).toBe("5.00");
         });
 
+        it("caps display at two decimal places regardless of style/Dec precision", () => {
+            expect(formatDec(dec(195000, 4), style({precision: 4}))).toBe("19.50"); // 19.5000 shares
+            expect(formatDec(dec(12345, 3), style({precision: 3}))).toBe("12.35"); // rounds, half away from zero
+            expect(formatDec(dec(15, 1), style({precision: 1}))).toBe("1.5"); // lower precisions untouched
+        });
+
         it("rounds half away from zero at the style precision", () => {
             expect(formatDec(dec(1005, 3), style())).toBe("1.01");
             expect(formatDec(dec(-1005, 3), style())).toBe("-1.01");

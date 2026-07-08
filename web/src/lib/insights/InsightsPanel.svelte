@@ -11,16 +11,16 @@
     import BigNumbers from "./BigNumbers.svelte";
     import ChartWidget from "./ChartWidget.svelte";
     import DepthSlider from "./DepthSlider.svelte";
-    import {bigNumbers, commoditiesInUse, maxAccountDepth, styleFor} from "./series";
+    import {bigNumbers, commoditiesInUse, maxAccountDepth, styleFor, type AccountSelection} from "./series";
 
-    let {txns}: {txns: Transaction[]} = $props();
+    let {txns, accounts}: {txns: Transaction[]; accounts?: AccountSelection} = $props();
 
-    const primary = $derived(commoditiesInUse(txns)[0] ?? "$");
-    const net = $derived(bigNumbers(txns, primary).net);
+    const primary = $derived(commoditiesInUse(txns, accounts)[0] ?? "$");
+    const net = $derived(bigNumbers(txns, primary, accounts).net);
     const netFormatted = $derived(formatAmount({commodity: primary, qty: net, style: styleFor(txns, primary)}));
 
     let depth = $state(2);
-    const max = $derived(maxAccountDepth(txns));
+    const max = $derived(maxAccountDepth(txns, accounts));
     const clampedDepth = $derived(Math.min(depth, max));
 </script>
 
@@ -39,8 +39,8 @@
         </span>
     </div>
     <div class="collapse-content flex flex-col gap-4">
-        <BigNumbers {txns} />
-        <ChartWidget {txns} depth={clampedDepth} />
+        <BigNumbers {txns} {accounts} />
+        <ChartWidget {txns} {accounts} depth={clampedDepth} />
         <DepthSlider bind:depth {max} />
     </div>
 </section>

@@ -22,10 +22,10 @@ async function roundTrip(report: SectionedReport | PeriodReport, meta: {title: s
 
 describe("UNIT export/xlsx", () => {
     describe("numberFormat", () => {
-        it("derives decimals from the Dec's places and affixes the commodity", () => {
+        it("derives decimals from the Dec's places (capped at 2) and affixes the commodity", () => {
             expect(numberFormat("$", 2)).toBe('"$"#,##0.00');
             expect(numberFormat("EUR", 0)).toBe('#,##0 "EUR"');
-            expect(numberFormat("", 3)).toBe("#,##0.000");
+            expect(numberFormat("", 3)).toBe("#,##0.00"); // display cap: never more than 2 decimals
         });
     });
 

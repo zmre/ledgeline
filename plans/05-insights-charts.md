@@ -26,13 +26,27 @@ Reports (WP-06/07). Filter logic (consumes WP-04's store; stub with the document
 ### `web/src/lib/insights/series.ts` (pure, unit-tested)
 
 ```ts
+export type AccountSelection = ReadonlySet<string> | undefined;    // filter bar's subtree roots; empty/undefined = all
 export interface PieDatum { account: string; value: number; formatted: string }
 export interface LineSeries { account: string; points: { bucket: string; value: number }[] }
-export function pieData(txns: Transaction[], opts: { depth: number; commodity: string; maxSlices?: number }): PieDatum[];
-export function lineData(txns: Transaction[], opts: { depth: number; commodity: string; interval: "daily" | "weekly" | "monthly"; maxSeries?: number }): LineSeries[];
-export function bigNumbers(txns: Transaction[], commodity: string): { income: Dec; expenses: Dec; net: Dec };
-export function commoditiesInUse(txns: Transaction[]): string[];   // sorted by frequency
+export function pieData(txns: Transaction[], opts: { depth: number; commodity: string; maxSlices?: number; accounts?: AccountSelection }): PieDatum[];
+export function lineData(txns: Transaction[], opts: { depth: number; commodity: string; interval: "daily" | "weekly" | "monthly"; maxSeries?: number; accounts?: AccountSelection }): LineSeries[];
+export function bigNumbers(txns: Transaction[], commodity: string, accounts?: AccountSelection): { income: Dec; expenses: Dec; net: Dec };
+export function commoditiesInUse(txns: Transaction[], accounts?: AccountSelection): string[];   // sorted by frequency
+export function expenseSignFactor(txns: Transaction[], commodity: string, accounts?: AccountSelection): 1 | -1; // journal spending-sign convention (majority sign)
 ```
+
+Posting-level filtering (added 2026-07-08): insights receive TXN-filtered data, but a
+matching txn still carries its other legs (asset/liability side). All series
+functions therefore take the filter's `accounts` selection and skip non-matching
+postings — filtering to `expenses` must not chart the checking-account legs.
+
+Display signs (added 2026-07-08): revenue postings chart/summarize as money-in
+positive (negated from hledger's raw negative). Expense postings display as
+spending-positive even in journals that record spending as negative (bank-sign
+CSV imports): the convention is detected per view via `expenseSignFactor`
+(majority posting sign; ties → hledger standard), so refund-dominated periods
+under the standard convention still net negative. `net = income − expenses`.
 
 ## Components (`web/src/lib/insights/`)
 
