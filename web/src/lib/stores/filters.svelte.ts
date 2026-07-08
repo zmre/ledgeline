@@ -15,6 +15,13 @@ export interface JournalFilter {
     to: ISODate | null; // inclusive
     accounts: ReadonlySet<string>; // selected account subtree roots (empty = all)
     query: string; // free text, matched against txn.haystack lowercased
+    /**
+     * Which preset produced from/to, or null for a hand-picked range. Presets
+     * stay LIVE: the URL stores the preset name instead of frozen dates, so a
+     * restored "ytd" recomputes against the current day rather than pinning
+     * the range to whenever it was clicked.
+     */
+    preset?: DatePreset | null;
 }
 
 export type DatePreset = "thisMonth" | "lastMonth" | "last90" | "ytd" | "thisYear" | "lastYear" | "all";
@@ -71,7 +78,7 @@ export function presetRange(p: DatePreset, today: ISODate): {from: ISODate | nul
 /** The first-load default: current month, no accounts, empty query. */
 export function defaultFilter(): JournalFilter {
     const {from, to} = presetRange("thisMonth", localToday());
-    return {from, to, accounts: new Set<string>(), query: ""};
+    return {from, to, accounts: new Set<string>(), query: "", preset: "thisMonth"};
 }
 
 let value = $state<JournalFilter>(defaultFilter());
@@ -94,10 +101,10 @@ export const filters = {
         return value;
     },
     setRange(from: ISODate | null, to: ISODate | null): void {
-        value = {...value, from, to};
+        value = {...value, from, to, preset: null};
     },
     applyPreset(p: DatePreset): void {
-        value = {...value, ...presetRange(p, localToday())};
+        value = {...value, ...presetRange(p, localToday()), preset: p};
     },
     /**
      * Toggle an account's selection, keeping the subtree-root invariant:
@@ -134,6 +141,6 @@ export const filters = {
     },
     /** Replace the whole filter at once (urlSync startup restore). */
     replace(f: JournalFilter): void {
-        value = {from: f.from, to: f.to, accounts: new Set(f.accounts), query: f.query};
+        value = {from: f.from, to: f.to, accounts: new Set(f.accounts), query: f.query, preset: f.preset ?? null};
     },
 };

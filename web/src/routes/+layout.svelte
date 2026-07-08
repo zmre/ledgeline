@@ -57,6 +57,28 @@
                 </nav>
                 <div class="navbar-end gap-1 pr-2">
                     <ProblemsBadge />
+                    {#if conn !== "none"}
+                        <button
+                            type="button"
+                            class="btn btn-ghost btn-xs btn-circle"
+                            title="Refresh journal data now"
+                            aria-label="Refresh journal data now"
+                            disabled={conn === "loading"}
+                            onclick={() => void journal.refresh()}
+                        >
+                            <svg
+                                class="h-4 w-4 {conn === 'loading' ? 'animate-spin' : ''}"
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                aria-hidden="true"
+                            >
+                                <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                        </button>
+                    {/if}
                     <span id="connection-status" class="flex items-center gap-2 text-sm" title={connTitle}>
                         <span class="status {dotClass}" aria-hidden="true"></span>
                         <span class="text-base-content/70 hidden sm:inline">{connLabel}</span>

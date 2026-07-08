@@ -22,14 +22,35 @@ let error = $state<string | null>(null);
 let fetchedAt = $state<number | null>(null);
 
 let inFlight: Promise<void> | null = null;
+let lastFingerprint = 0;
 
-/** Cheap change fingerprint (txn count + last tindex + last txn date) so polling refreshes don't churn every $derived. */
-function sameFingerprint(a: readonly Transaction[], b: readonly Transaction[]): boolean {
-    if (a.length !== b.length) return false;
-    if (a.length === 0) return true;
-    const lastA = a[a.length - 1];
-    const lastB = b[b.length - 1];
-    return lastA.index === lastB.index && lastA.date === lastB.date;
+/**
+ * Content-aware change fingerprint so polling refreshes don't churn every
+ * $derived when nothing changed, while never discarding a REAL change — an
+ * in-place edit to any transaction (recategorize, amount fix) must swap state,
+ * not just appends. djb2 over each txn's index/date/status/haystack (the
+ * haystack covers description, comments, accounts, amounts, commodities) plus
+ * account names and price directives. Exported for unit tests.
+ */
+export function contentFingerprint(list: readonly Transaction[], names: readonly string[], priceList: readonly PriceDirective[]): number {
+    let h = 5381;
+    const mixStr = (s: string): void => {
+        for (let i = 0; i < s.length; i += 1) h = (Math.imul(h, 33) + s.charCodeAt(i)) >>> 0;
+    };
+    for (const t of list) {
+        h = (Math.imul(h, 33) + t.index) >>> 0;
+        mixStr(t.date);
+        mixStr(t.status);
+        mixStr(t.haystack);
+    }
+    for (const name of names) mixStr(name);
+    for (const p of priceList) {
+        mixStr(p.date);
+        mixStr(p.commodity);
+        mixStr(p.price.commodity);
+        h = (Math.imul(h, 33) + Number(BigInt.asIntN(32, p.price.qty.m))) >>> 0;
+    }
+    return h;
 }
 
 async function doRefresh(): Promise<void> {
@@ -45,7 +66,8 @@ async function doRefresh(): Promise<void> {
         const [rawTxns, nextNames, rawPrices] = await Promise.all([api.transactions(), api.accountNames(), api.prices()]);
         const nextTxns = normalizeTransactions(rawTxns);
         const nextPrices = normalizePrices(rawPrices);
-        if (fetchedAt === null || !sameFingerprint(txns, nextTxns)) {
+        const nextFingerprint = contentFingerprint(nextTxns, nextNames, nextPrices);
+        if (fetchedAt === null || nextFingerprint !== lastFingerprint) {
             txns = nextTxns;
             accountNames = nextNames;
             prices = nextPrices;
@@ -53,6 +75,7 @@ async function doRefresh(): Promise<void> {
         } else if (import.meta.env.DEV) {
             console.debug("[journal] poll unchanged — state swap skipped");
         }
+        lastFingerprint = nextFingerprint;
         fetchedAt = Date.now();
         status = "ready";
         error = null;

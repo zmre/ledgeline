@@ -35,7 +35,8 @@ export class HledgerApi {
         const url = `${this.baseUrl}${route}`;
         let response: Response;
         try {
-            response = await fetch(url, {headers: {Accept: "application/json"}});
+            // no-store: journal data must always come from the live server, never the HTTP cache
+            response = await fetch(url, {headers: {Accept: "application/json"}, cache: "no-store"});
         } catch (cause) {
             throw new ApiUnreachableError(`Cannot reach hledger-web at ${this.baseUrl} (network or CORS failure)`, {cause});
         }

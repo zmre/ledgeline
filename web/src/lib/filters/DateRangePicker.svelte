@@ -1,7 +1,7 @@
 <script lang="ts">
     // Date range with quick presets (WP-04). Native date inputs for good
     // mobile UX; all range math goes through presetRange (pure, tested).
-    import {filters, localToday, presetRange, type DatePreset} from "$lib/stores/filters.svelte";
+    import {filters, type DatePreset} from "$lib/stores/filters.svelte";
 
     const presets: ReadonlyArray<{id: DatePreset; label: string}> = [
         {id: "thisMonth", label: "This month"},
@@ -13,13 +13,8 @@
         {id: "all", label: "All time"},
     ];
 
-    const today = localToday();
-    const activePreset = $derived(
-        presets.find((p) => {
-            const r = presetRange(p.id, today);
-            return r.from === filters.value.from && r.to === filters.value.to;
-        })
-    );
+    // The store tracks which preset produced the range (null = hand-picked).
+    const activePreset = $derived(presets.find((p) => p.id === (filters.value.preset ?? null)));
 
     let dropdown: HTMLDetailsElement | undefined = $state();
 

@@ -72,4 +72,33 @@ describe("UNIT urlCodec", () => {
         const parsed = searchToFilter("acct=", dflt);
         expect(parsed.accounts.size).toBe(0);
     });
+
+    it("stores preset names instead of frozen dates and recomputes on parse (live YTD)", () => {
+        const dfltP = filter({preset: "thisMonth"});
+        const f = filter({from: "2026-01-01", to: "2026-07-08", preset: "ytd"});
+        expect(filterToSearch(f, dfltP)).toBe("preset=ytd");
+        const parsed = searchToFilter("preset=ytd", dfltP, "2026-09-15"); // restored on a later day
+        expect(parsed.preset).toBe("ytd");
+        expect(parsed.from).toBe("2026-01-01");
+        expect(parsed.to).toBe("2026-09-15"); // recomputed against the current day — never pinned
+    });
+
+    it("the default preset serializes to an empty string", () => {
+        const dfltP = filter({preset: "thisMonth"});
+        expect(filterToSearch(filter({preset: "thisMonth"}), dfltP)).toBe("");
+    });
+
+    it("hand-picked ranges (preset null) still write explicit date pairs", () => {
+        const f = filter({from: "2025-01-01", to: "2025-06-30", preset: null});
+        const params = new URLSearchParams(filterToSearch(f, dflt));
+        expect(params.get("from")).toBe("2025-01-01");
+        expect(params.get("to")).toBe("2025-06-30");
+        expect(params.get("preset")).toBeNull();
+    });
+
+    it("ignores unknown preset names, falling back to explicit dates/defaults", () => {
+        const parsed = searchToFilter("preset=nonsense", dflt);
+        expect(parsed.from).toBe(dflt.from);
+        expect(parsed.to).toBe(dflt.to);
+    });
 });

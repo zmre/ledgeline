@@ -20,6 +20,7 @@ export interface JournalFilter {
     to: ISODate | null;                // inclusive
     accounts: ReadonlySet<string>;     // selected account names (empty = all)
     query: string;                     // free text, matched against txn.haystack lowercased
+    preset?: DatePreset | null;        // which preset produced from/to; null = hand-picked range (added 2026-07-08)
 }
 export const filters: {
     readonly value: JournalFilter;     // $state backed
@@ -39,8 +40,13 @@ Default on first load: `thisMonth`.
 ### `web/src/lib/filters/urlSync.ts`
 
 ```ts
-export function startUrlSync(): () => void;  // filters → ?from=&to=&acct=a,b&q= via debounced replaceState (~250ms); parse URL → store once at startup. Store is source of truth; URL is a projection (no history entries, no loops).
+export function startUrlSync(): () => void;  // filters → ?preset=|?from=&to= + &acct=a,b&q= via debounced replaceState (~250ms); parse URL → store once at startup. Store is source of truth; URL is a projection (no history entries, no loops).
 ```
+
+URL date semantics (updated 2026-07-08): preset-produced ranges are stored as
+the PRESET NAME (`?preset=ytd`) and recomputed against the current day on
+restore, so a kept-open or bookmarked "year to date" never pins stale dates.
+Hand-picked ranges are still written as an explicit `from`/`to` pair.
 
 ## Components (`web/src/lib/filters/`)
 
