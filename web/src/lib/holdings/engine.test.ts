@@ -166,6 +166,34 @@ describe("UNIT holdings/engine taint and pricing", () => {
     });
 });
 
+describe("UNIT holdings/engine firstBasisDate", () => {
+    const prices = [pd("2025-02-01", "VTI", 25000)];
+
+    it("a simple buy sets the buy date", () => {
+        const txns = [txn(1, "2025-01-10", [buy("a", "VTI", 10, 20000)])];
+        expect(only(computeHoldings(txns, prices, scope("2025-06-30")), "VTI").firstBasisDate).toBe("2025-01-10");
+    });
+
+    it("a full sell-out then re-buy resets to the re-buy date (basis semantics)", () => {
+        const txns = [
+            txn(1, "2025-01-10", [buy("a", "VTI", 10, 20000)]),
+            txn(2, "2025-02-10", [sell("a", "VTI", 10)]),
+            txn(3, "2025-03-10", [buy("a", "VTI", 4, 21000)]),
+        ];
+        expect(only(computeHoldings(txns, prices, scope("2025-06-30")), "VTI").firstBasisDate).toBe("2025-03-10");
+    });
+
+    it("a partial sell keeps the original buy date", () => {
+        const txns = [txn(1, "2025-01-10", [buy("a", "VTI", 10, 20000)]), txn(2, "2025-02-10", [sell("a", "VTI", 4)])];
+        expect(only(computeHoldings(txns, prices, scope("2025-06-30")), "VTI").firstBasisDate).toBe("2025-01-10");
+    });
+
+    it("buying more on top of an open position keeps the earliest buy date", () => {
+        const txns = [txn(1, "2025-01-10", [buy("a", "VTI", 10, 20000)]), txn(2, "2025-02-10", [buy("a", "VTI", 5, 22000)])];
+        expect(only(computeHoldings(txns, prices, scope("2025-06-30")), "VTI").firstBasisDate).toBe("2025-01-10");
+    });
+});
+
 describe("UNIT holdings/engine row filtering", () => {
     it("drops a fully sold (zero-share) symbol silently", () => {
         const txns = [txn(1, "2025-01-10", [buy("a", "VTI", 10, 20000)]), txn(2, "2025-02-10", [sell("a", "VTI", 10)])];

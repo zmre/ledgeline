@@ -80,6 +80,8 @@ export interface SymbolPool {
     costlessBuyTxns: number[];
     /** Most recent txn that took the running share total negative, if any. */
     negativeCrossTxn: number | null;
+    /** Date the current position was opened (first buy since shares were last ≤ 0); null until a buy is seen. */
+    firstBasisDate: ISODate | null;
     /** Accounts whose own net shares are > 0, sorted. */
     accounts: string[];
     /** Latest `name:` tag seen (posting tags first, then txn tags), else the symbol. */
@@ -133,6 +135,7 @@ export function buildPools(txns: Transaction[], db: PriceDb, base: string, asOf:
                 tainted: false,
                 costlessBuyTxns: [],
                 negativeCrossTxn: null,
+                firstBasisDate: null,
                 accounts: [],
                 name: symbol,
                 lastTxnIndex: txnIndex,
@@ -176,6 +179,7 @@ export function buildPools(txns: Transaction[], db: PriceDb, base: string, asOf:
                 const legBefore = pool.shares;
                 const legAfter = add(legBefore, entry.qty);
                 if (entry.qty.m > 0n) {
+                    if (legBefore.m <= 0n) pool.firstBasisDate = txn.date; // (re)opening the position resets its basis date
                     const lotCost = costInBase(entry.qty, entry.cost, db, base, txn.date);
                     if (lotCost === null) {
                         pool.tainted = true;
@@ -290,7 +294,18 @@ export function computeHoldings(txns: Transaction[], prices: PriceDirective[], s
         const marketValue = price === null ? null : mul(pool.shares, price.qty);
         const gain = marketValue !== null && basis !== null ? sub(marketValue, basis) : null;
         const gainPct = gain !== null && basis !== null && !isZero(basis) ? (toNumber(gain) / toNumber(basis)) * 100 : null;
-        holdings.push({symbol: pool.symbol, name: pool.name, accounts: pool.accounts, shares: pool.shares, basis, price, marketValue, gain, gainPct});
+        holdings.push({
+            symbol: pool.symbol,
+            name: pool.name,
+            accounts: pool.accounts,
+            shares: pool.shares,
+            basis,
+            firstBasisDate: pool.firstBasisDate,
+            price,
+            marketValue,
+            gain,
+            gainPct,
+        });
     }
 
     // Market value desc; unpriced last; ties (and unpriced) by symbol asc. Pools iterate symbol-sorted, so a stable sort on value alone would also do.

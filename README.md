@@ -29,3 +29,11 @@ just serve-journal ~/path/to/your.journal
 ## Status
 
 Bootstrapping. See `plans/00-overview.md` for architecture and the execution schedule.
+
+## Future
+
+I want an all-in-one GUI that launches a local app in a browser with a private API server, much like I do in ~/src/sideprojects/mbr-markdown-browser/main.
+
+I also want to create a quicklook plugin for journal files that can nicely display the transactions (or whatever) in any particular file for fast browsing from Finder.  (See mbr for how to do this).
+
+

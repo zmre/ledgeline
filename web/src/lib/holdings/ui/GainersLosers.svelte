@@ -1,8 +1,11 @@
 <!-- Top gainers / losers (WP-10): two compact lists (≤5 each) of symbol,
-     gain %, gain $ — green/red per sign. Each list holds only holdings with
-     that gain sign, so an empty list is hidden individually; the whole
-     component is hidden when fewer than two holdings are priced (a
-     single-entry "top 5" is noise, per plans/10). -->
+     gain %, gain $ — green/red per sign. Each symbol carries a daisyUI
+     tooltip with the holding's full name; the focusable button makes it
+     reachable by tap/keyboard on mobile (same pattern as CommentIndicator),
+     and tooltip-right keeps it from clipping at the viewport's left edge.
+     Each list holds only holdings with that gain sign, so an empty list is
+     hidden individually; the whole component is hidden when fewer than two
+     holdings are priced (a single-entry "top 5" is noise, per plans/10). -->
 <script lang="ts">
     import {toNumber, type Dec} from "$lib/domain/money";
     import type {Holding, HoldingsReport} from "$lib/holdings/types";
@@ -21,7 +24,9 @@
             {#each entries as h (h.symbol)}
                 {@const negative = (h.gainPct ?? 0) < 0}
                 <li class="flex items-baseline gap-2 text-sm">
-                    <span class="font-medium">{h.symbol}</span>
+                    <span class="tooltip tooltip-right before:max-w-64 before:whitespace-normal" data-tip={h.name}>
+                        <button type="button" class="cursor-help font-medium">{h.symbol}</button>
+                    </span>
                     <span class={negative ? "text-error" : "text-success"}>{formatGainPct(h.gainPct)}</span>
                     {#if h.gain !== null}
                         <span class="ml-auto font-mono text-xs tabular-nums {toNumber(h.gain) < 0 ? 'text-error' : 'text-success'}">{format(h.gain)}</span>

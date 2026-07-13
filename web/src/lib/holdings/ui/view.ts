@@ -1,6 +1,6 @@
 // Pure display helpers for the holdings UI (WP-10). No Svelte/DOM imports —
 // unit-tested under node; the .svelte components stay thin.
-import {add, dec, formatDec, toNumber, type Dec} from "$lib/domain/money";
+import {add, cmp, dec, formatDec, toNumber, type Dec} from "$lib/domain/money";
 import type {AmountStyle, Transaction} from "$lib/domain/types";
 import {isCurrency} from "$lib/holdings/commodities";
 import type {Holding} from "$lib/holdings/types";
@@ -77,4 +77,62 @@ export function formatShares(shares: Dec): string {
 export function formatGainPct(pct: number | null): string {
     if (pct === null) return EM_DASH;
     return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+}
+
+/** Sortable holdings-table columns; `price`/`priceDate` read the nested price field. */
+export type SortKey = "name" | "symbol" | "shares" | "basis" | "firstBasisDate" | "price" | "priceDate" | "marketValue" | "gain" | "gainPct";
+
+/** The raw sortable value for a column, null when the holding has none. */
+function sortValue(h: Holding, key: SortKey): Dec | number | string | null {
+    switch (key) {
+        case "name":
+            return h.name;
+        case "symbol":
+            return h.symbol;
+        case "shares":
+            return h.shares;
+        case "basis":
+            return h.basis;
+        case "firstBasisDate":
+            return h.firstBasisDate;
+        case "price":
+            return h.price?.qty ?? null;
+        case "priceDate":
+            return h.price?.date ?? null;
+        case "marketValue":
+            return h.marketValue;
+        case "gain":
+            return h.gain;
+        case "gainPct":
+            return h.gainPct;
+    }
+}
+
+/**
+ * Non-mutating sort of the holdings table by one column. Dec columns compare
+ * exactly via cmp, gainPct numerically, name/symbol case-insensitively
+ * (localeCompare), and ISO dates lexically (chronological by construction).
+ * Nulls always sort LAST regardless of direction; equal keys and null ties
+ * both break by symbol asc, so the order is deterministic.
+ */
+export function sortHoldings(holdings: readonly Holding[], key: SortKey, dir: "asc" | "desc"): Holding[] {
+    const bySymbol = (a: Holding, b: Holding): number => (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0);
+    const compare = (a: Dec | number | string, b: Dec | number | string): number => {
+        if (typeof a === "number" && typeof b === "number") return a - b;
+        if (typeof a === "string" && typeof b === "string") {
+            if (key === "name" || key === "symbol") return a.toLowerCase().localeCompare(b.toLowerCase());
+            return a < b ? -1 : a > b ? 1 : 0; // ISO dates: lexical is chronological
+        }
+        return cmp(a as Dec, b as Dec);
+    };
+    return [...holdings].sort((a, b) => {
+        const va = sortValue(a, key);
+        const vb = sortValue(b, key);
+        if (va === null || vb === null) {
+            if (va === null && vb === null) return bySymbol(a, b);
+            return va === null ? 1 : -1; // nulls last regardless of direction
+        }
+        const ordered = dir === "asc" ? compare(va, vb) : compare(vb, va);
+        return ordered !== 0 ? ordered : bySymbol(a, b);
+    });
 }

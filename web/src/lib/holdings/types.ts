@@ -22,6 +22,8 @@ export interface Holding {
     shares: Dec;
     /** null = tainted (some lot lacks a cost). */
     basis: Dec | null;
+    /** Date the current position was opened (first lot since shares were last ≤ 0); null only if never bought in scope. */
+    firstBasisDate: ISODate | null;
     price: {qty: Dec; date: ISODate; source: "directive" | "cost"} | null;
     /** shares × price, null when unpriced. */
     marketValue: Dec | null;

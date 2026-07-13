@@ -1,20 +1,9 @@
-<!-- xlsx export trigger (WP-07). exportXlsx lazy-loads exceljs on first click,
-     so the button shows a spinner while the chunk loads + the file builds. -->
+<!-- xlsx export trigger (WP-07). The caller's `run` does the actual export
+     (the export helpers lazy-load exceljs on first click), so the button
+     shows a spinner while the chunk loads + the file builds; failures land
+     in a dismissible error toast. -->
 <script lang="ts">
-    import {exportXlsx} from "$lib/export/xlsx";
-    import type {PeriodReport, SectionedReport} from "$lib/reports/types";
-
-    let {
-        report,
-        title,
-        params,
-        filename,
-    }: {
-        report: SectionedReport | PeriodReport;
-        title: string;
-        params: string;
-        filename: string;
-    } = $props();
+    let {run}: {run: () => Promise<void>} = $props();
 
     let busy = $state(false);
     let error = $state<string | null>(null);
@@ -23,7 +12,7 @@
         busy = true;
         error = null;
         try {
-            await exportXlsx(report, {title, params}, filename);
+            await run();
         } catch (cause) {
             error = cause instanceof Error ? cause.message : String(cause);
         } finally {

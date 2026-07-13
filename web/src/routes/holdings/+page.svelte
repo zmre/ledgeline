@@ -7,6 +7,7 @@
     // replaceState pattern — absent params always mean today/empty/include.
     import {onMount} from "svelte";
     import {formatAmount, type Dec} from "$lib/domain/money";
+    import {exportHoldingsXlsx} from "$lib/export/xlsx";
     import GainersLosers from "$lib/holdings/ui/GainersLosers.svelte";
     import HoldingsPie from "$lib/holdings/ui/HoldingsPie.svelte";
     import HoldingsStats from "$lib/holdings/ui/HoldingsStats.svelte";
@@ -15,6 +16,7 @@
     import {startHoldingsUrlSync} from "$lib/holdings/ui/urlSync";
     import {stockAccounts} from "$lib/holdings/ui/view";
     import {styleFor} from "$lib/insights/series";
+    import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import {getHoldingsReport} from "$lib/stores/holdings.svelte";
     import {journal} from "$lib/stores/journal.svelte";
     import {settings} from "$lib/stores/settings.svelte";
@@ -94,7 +96,10 @@
                 </div>
             </div>
         {:else}
-            <HoldingsTable holdings={report.holdings} {format} />
+            <div class="flex justify-end">
+                <ExportButton run={() => exportHoldingsXlsx(report, {title: "Holdings", params: `As of ${report.asOf}`}, `holdings-${report.asOf}.xlsx`)} />
+            </div>
+            <HoldingsTable holdings={report.holdings} totals={report.totals} {format} />
         {/if}
     {/if}
 </div>

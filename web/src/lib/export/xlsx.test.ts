@@ -5,19 +5,23 @@
 import {describe, expect, it} from "vitest";
 import {Workbook} from "exceljs";
 import {dec, type MixedAmount} from "$lib/domain/money";
+import type {Holding, HoldingsReport} from "$lib/holdings/types";
 import type {PeriodReport, SectionedReport} from "$lib/reports/types";
-import {buildWorkbook, numberFormat} from "./xlsx";
+import {buildHoldingsWorkbook, buildWorkbook, numberFormat} from "./xlsx";
 
 const usd = (cents: number): MixedAmount => new Map([["$", dec(cents, 2)]]);
 
-async function roundTrip(report: SectionedReport | PeriodReport, meta: {title: string; params: string}) {
-    const built = await buildWorkbook(report, meta);
+async function readBack(built: Workbook, title: string) {
     const buffer = await built.xlsx.writeBuffer();
     const loaded = new Workbook();
     await loaded.xlsx.load(buffer as never);
-    const ws = loaded.getWorksheet(meta.title);
-    if (ws === undefined) throw new Error(`worksheet "${meta.title}" missing after round trip`);
+    const ws = loaded.getWorksheet(title);
+    if (ws === undefined) throw new Error(`worksheet "${title}" missing after round trip`);
     return ws;
+}
+
+async function roundTrip(report: SectionedReport | PeriodReport, meta: {title: string; params: string}) {
+    return readBack(await buildWorkbook(report, meta), meta.title);
 }
 
 describe("UNIT export/xlsx", () => {
@@ -109,5 +113,74 @@ describe("UNIT export/xlsx", () => {
         const ws = await roundTrip(report, {title: "Net Worth", params: "last 1 yearly periods ending 2026-07-08"});
         expect(ws.getCell("B5").value).toBe("25.00 $, 10.00 EUR"); // sorted by commodity ("$" < "EUR")
         expect(ws.getCell("B6").value).toBe(0);
+    });
+
+    it("holdings workbook: headers, data rows, nulls → empty cells, percent format, honest totals row", async () => {
+        const aapl: Holding = {
+            symbol: "AAPL",
+            name: "Apple Inc.",
+            accounts: ["assets:broker"],
+            shares: dec(105n, 1), // 10.5
+            basis: dec(100000n, 2), // $1,000.00
+            firstBasisDate: "2024-05-01",
+            price: {qty: dec(20000n, 2), date: "2026-06-30", source: "directive"},
+            marketValue: dec(210000n, 2),
+            gain: dec(110000n, 2),
+            gainPct: 110,
+        };
+        const gld: Holding = {
+            symbol: "GLD",
+            name: "GLD",
+            accounts: [],
+            shares: dec(5n, 0),
+            basis: null,
+            firstBasisDate: null,
+            price: null,
+            marketValue: null,
+            gain: null,
+            gainPct: null,
+        };
+        const report: HoldingsReport = {
+            asOf: "2026-07-08",
+            base: "$",
+            holdings: [aapl, gld],
+            totals: {marketValue: dec(210000n, 2), basis: null, gain: null, gainPct: null}, // honest: GLD is tainted/unpriced
+            topGainers: [],
+            topLosers: [],
+            warnings: [],
+        };
+        const ws = await readBack(await buildHoldingsWorkbook(report, {title: "Holdings", params: "As of 2026-07-08"}), "Holdings");
+
+        expect(ws.getCell("A1").value).toBe("Holdings");
+        expect(ws.getCell("A2").value).toBe("As of 2026-07-08");
+        const headers = Array.from({length: 10}, (_, i) => ws.getCell(4, i + 1).value);
+        expect(headers).toEqual(["Name", "Symbol", "Shares", "Basis", "First basis", "Price", "Price date", "Market value", "Gain", "Gain %"]);
+
+        // AAPL data row: shares numFmt from its own precision, money via the base commodity, dates as text.
+        expect(ws.getCell("A5").value).toBe("Apple Inc.");
+        expect(ws.getCell("B5").value).toBe("AAPL");
+        expect(ws.getCell("C5").value).toBe(10.5);
+        expect(ws.getCell("C5").numFmt).toBe("#,##0.0");
+        expect(ws.getCell("D5").value).toBe(1000);
+        expect(ws.getCell("D5").numFmt).toBe('"$"#,##0.00');
+        expect(ws.getCell("E5").value).toBe("2024-05-01");
+        expect(ws.getCell("F5").value).toBe(200);
+        expect(ws.getCell("G5").value).toBe("2026-06-30");
+        expect(ws.getCell("H5").value).toBe(2100);
+        expect(ws.getCell("I5").value).toBe(1100);
+        expect(ws.getCell("J5").value).toBeCloseTo(1.1, 12); // 110% stored as a real ratio; Excel's % format ×100s it back
+        expect(ws.getCell("J5").numFmt).toBe("+0.0%;-0.0%");
+
+        // GLD row: every null field is an empty cell, not 0 or an em-dash.
+        expect(ws.getCell("A6").value).toBe("GLD");
+        expect(ws.getCell("C6").value).toBe(5);
+        for (const col of ["D", "E", "F", "G", "H", "I", "J"]) expect(ws.getCell(`${col}6`).value, `${col}6`).toBeNull();
+
+        // Totals row: bold label, values ONLY in Basis and Market value — and the null basis stays blank.
+        expect(ws.getCell("A7").value).toBe("Total (2 holdings)");
+        expect(ws.getCell("A7").font.bold).toBe(true);
+        expect(ws.getCell("H7").value).toBe(2100);
+        expect(ws.getCell("H7").font.bold).toBe(true);
+        for (const col of ["B", "C", "D", "E", "F", "G", "I", "J"]) expect(ws.getCell(`${col}7`).value, `${col}7`).toBeNull();
     });
 });

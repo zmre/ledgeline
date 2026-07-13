@@ -5,6 +5,7 @@
 // the Dec's decimal places.
 
 import {MAX_DISPLAY_DECIMALS, toNumber, type Dec, type MixedAmount} from "$lib/domain/money";
+import type {HoldingsReport} from "$lib/holdings/types";
 import {bucketLabel} from "$lib/reports/periods";
 import type {PeriodReport, SectionedReport} from "$lib/reports/types";
 import {compressPeriodRows, compressSectionRows} from "$lib/reports/ui/displayRows";
@@ -40,6 +41,13 @@ function setAmount(cell: Cell, ma: MixedAmount): void {
             .map(([commodity, qty]: [string, Dec]) => `${toNumber(qty).toFixed(Math.min(qty.p, MAX_DISPLAY_DECIMALS))} ${commodity}`)
             .join(", ");
     }
+    cell.alignment = {...cell.alignment, horizontal: "right"};
+}
+
+/** A single Dec quantity as a real number + numFmt, right-aligned (setAmount's single-commodity case, sans MixedAmount). */
+function setDec(cell: Cell, commodity: string, qty: Dec): void {
+    cell.value = toNumber(qty);
+    cell.numFmt = numberFormat(commodity, qty.p);
     cell.alignment = {...cell.alignment, horizontal: "right"};
 }
 
@@ -116,9 +124,53 @@ export async function buildWorkbook(report: SectionedReport | PeriodReport, meta
     return workbook;
 }
 
-/** Build the .xlsx and trigger a browser download (Blob + anchor). */
-export async function exportXlsx(report: SectionedReport | PeriodReport, meta: {title: string; params: string}, filename: string): Promise<void> {
-    const workbook = await buildWorkbook(report, meta);
+/**
+ * Holdings workbook: one row per holding mirroring the UI table (Name …
+ * Gain %), then a bold totals row with values ONLY in Basis and Market value
+ * — the engine's honest totals, never recomputed (basis blank when any
+ * holding is tainted or unpriced). Nulls are empty cells; gain % is stored
+ * as gainPct/100 with a real Excel percent format (which multiplies by 100).
+ */
+export async function buildHoldingsWorkbook(report: HoldingsReport, meta: {title: string; params: string}): Promise<Workbook> {
+    const {Workbook: ExcelWorkbook} = await import("exceljs");
+    const workbook = new ExcelWorkbook();
+    const ws = workbook.addWorksheet(meta.title);
+    addTitleRows(ws, meta, ["Name", "Symbol", "Shares", "Basis", "First basis", "Price", "Price date", "Market value", "Gain", "Gain %"]);
+
+    let rowIx = 5;
+    for (const h of report.holdings) {
+        ws.getCell(rowIx, 1).value = h.name;
+        ws.getCell(rowIx, 2).value = h.symbol;
+        setDec(ws.getCell(rowIx, 3), "", h.shares);
+        if (h.basis !== null) setDec(ws.getCell(rowIx, 4), report.base, h.basis);
+        if (h.firstBasisDate !== null) ws.getCell(rowIx, 5).value = h.firstBasisDate;
+        if (h.price !== null) {
+            setDec(ws.getCell(rowIx, 6), report.base, h.price.qty);
+            ws.getCell(rowIx, 7).value = h.price.date;
+        }
+        if (h.marketValue !== null) setDec(ws.getCell(rowIx, 8), report.base, h.marketValue);
+        if (h.gain !== null) setDec(ws.getCell(rowIx, 9), report.base, h.gain);
+        if (h.gainPct !== null) {
+            const cell = ws.getCell(rowIx, 10);
+            cell.value = h.gainPct / 100; // Excel's % format multiplies by 100
+            cell.numFmt = "+0.0%;-0.0%";
+            cell.alignment = {...cell.alignment, horizontal: "right"};
+        }
+        rowIx += 1;
+    }
+
+    labelCell(ws, rowIx, `Total (${report.holdings.length} holdings)`, 0, true);
+    if (report.totals.basis !== null) {
+        setDec(ws.getCell(rowIx, 4), report.base, report.totals.basis);
+        ws.getCell(rowIx, 4).font = {bold: true};
+    }
+    setDec(ws.getCell(rowIx, 8), report.base, report.totals.marketValue);
+    ws.getCell(rowIx, 8).font = {bold: true};
+    return workbook;
+}
+
+/** Serialize the workbook and trigger a browser download (Blob + anchor). */
+async function downloadWorkbook(workbook: Workbook, filename: string): Promise<void> {
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer as ArrayBuffer], {type: XLSX_MIME});
     const url = URL.createObjectURL(blob);
@@ -132,4 +184,14 @@ export async function exportXlsx(report: SectionedReport | PeriodReport, meta: {
     } finally {
         URL.revokeObjectURL(url);
     }
+}
+
+/** Build the .xlsx and trigger a browser download (Blob + anchor). */
+export async function exportXlsx(report: SectionedReport | PeriodReport, meta: {title: string; params: string}, filename: string): Promise<void> {
+    await downloadWorkbook(await buildWorkbook(report, meta), filename);
+}
+
+/** Build the holdings .xlsx and trigger a browser download. */
+export async function exportHoldingsXlsx(report: HoldingsReport, meta: {title: string; params: string}, filename: string): Promise<void> {
+    await downloadWorkbook(await buildHoldingsWorkbook(report, meta), filename);
 }

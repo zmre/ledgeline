@@ -2,12 +2,24 @@ import {describe, expect, it} from "vitest";
 import {dec, formatDec, type Dec} from "$lib/domain/money";
 import type {Holding} from "$lib/holdings/types";
 import {amt, txn, usd} from "$lib/holdings/test-helpers";
-import {EM_DASH, formatGainPct, formatShares, PIE_OTHER, pieSlices, stockAccounts} from "./view";
+import {EM_DASH, formatGainPct, formatShares, PIE_OTHER, pieSlices, sortHoldings, stockAccounts, type SortKey} from "./view";
 
-/** Priced holding with marketValue in whole dollars (other fields irrelevant to the pie). */
-function holding(symbol: string, marketValueDollars: number | null): Holding {
+/** Priced holding with marketValue in whole dollars; `overrides` fills whichever other fields a test sorts on. */
+function holding(symbol: string, marketValueDollars: number | null, overrides: Partial<Holding> = {}): Holding {
     const marketValue = marketValueDollars === null ? null : dec(BigInt(marketValueDollars) * 100n, 2);
-    return {symbol, name: `${symbol} Inc.`, accounts: [], shares: dec(1n, 0), basis: null, price: null, marketValue, gain: null, gainPct: null};
+    return {
+        symbol,
+        name: `${symbol} Inc.`,
+        accounts: [],
+        shares: dec(1n, 0),
+        basis: null,
+        firstBasisDate: null,
+        price: null,
+        marketValue,
+        gain: null,
+        gainPct: null,
+        ...overrides,
+    };
 }
 
 const fmt = (v: Dec): string => `$${formatDec(v, {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: null})}`;
@@ -85,6 +97,59 @@ describe("UNIT holdings view helpers", () => {
             expect(formatGainPct(-3.44)).toBe("-3.4%");
             expect(formatGainPct(0)).toBe("+0.0%");
             expect(formatGainPct(null)).toBe(EM_DASH);
+        });
+    });
+
+    describe("sortHoldings", () => {
+        const symbols = (holdings: readonly Holding[], key: SortKey, dir: "asc" | "desc"): string[] => sortHoldings(holdings, key, dir).map((h) => h.symbol);
+
+        it("sorts Dec columns exactly via cmp across mixed precisions", () => {
+            // 10.00 vs 9.5 vs 100: numeric order, not string/mantissa order.
+            const rows = [
+                holding("AAA", null, {basis: dec(1000n, 2)}),
+                holding("BBB", null, {basis: dec(95n, 1)}),
+                holding("CCC", null, {basis: dec(100n, 0)}),
+            ];
+            expect(symbols(rows, "basis", "asc")).toEqual(["BBB", "AAA", "CCC"]);
+            expect(symbols(rows, "basis", "desc")).toEqual(["CCC", "AAA", "BBB"]);
+        });
+
+        it("keeps nulls last in BOTH directions, null ties broken by symbol asc", () => {
+            const rows = [holding("NUL2", null), holding("AAA", 10), holding("NUL1", null), holding("BBB", 20)];
+            expect(symbols(rows, "marketValue", "asc")).toEqual(["AAA", "BBB", "NUL1", "NUL2"]);
+            expect(symbols(rows, "marketValue", "desc")).toEqual(["BBB", "AAA", "NUL1", "NUL2"]);
+        });
+
+        it("compares name and symbol case-insensitively", () => {
+            const rows = [holding("ZZZ", null, {name: "apple"}), holding("MMM", null, {name: "Banana"}), holding("AAA", null, {name: "CHERRY"})];
+            expect(symbols(rows, "name", "asc")).toEqual(["ZZZ", "MMM", "AAA"]);
+            expect(symbols(rows, "name", "desc")).toEqual(["AAA", "MMM", "ZZZ"]);
+        });
+
+        it("sorts gainPct numerically and ISO dates lexically (chronological)", () => {
+            const rows = [
+                holding("AAA", null, {gainPct: -3.5, firstBasisDate: "2025-06-01"}),
+                holding("BBB", null, {gainPct: 12, firstBasisDate: "2024-12-31"}),
+                holding("CCC", null, {gainPct: 2, firstBasisDate: "2025-01-02"}),
+            ];
+            expect(symbols(rows, "gainPct", "desc")).toEqual(["BBB", "CCC", "AAA"]);
+            expect(symbols(rows, "firstBasisDate", "asc")).toEqual(["BBB", "CCC", "AAA"]);
+        });
+
+        it("reads price and priceDate from the nested price field, null when unpriced", () => {
+            const rows = [
+                holding("AAA", null, {price: {qty: dec(500n, 2), date: "2025-03-01", source: "directive"}}),
+                holding("BBB", null, {price: {qty: dec(100n, 2), date: "2025-04-01", source: "cost"}}),
+                holding("CCC", null),
+            ];
+            expect(symbols(rows, "price", "desc")).toEqual(["AAA", "BBB", "CCC"]);
+            expect(symbols(rows, "priceDate", "asc")).toEqual(["AAA", "BBB", "CCC"]);
+        });
+
+        it("breaks equal keys by symbol asc and never mutates the input", () => {
+            const rows = [holding("BBB", 10), holding("AAA", 10), holding("CCC", 10)];
+            expect(symbols(rows, "marketValue", "desc")).toEqual(["AAA", "BBB", "CCC"]);
+            expect(rows.map((h) => h.symbol)).toEqual(["BBB", "AAA", "CCC"]); // input untouched
         });
     });
 });

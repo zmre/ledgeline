@@ -6,6 +6,7 @@
     // filters/urlSync.ts). All dates are INCLUSIVE (engine semantics).
     import {onMount} from "svelte";
     import {replaceState} from "$app/navigation";
+    import {exportXlsx} from "$lib/export/xlsx";
     import {balanceSheet} from "$lib/reports/balanceSheet";
     import {cashFlow} from "$lib/reports/cashFlow";
     import {incomeStatement} from "$lib/reports/incomeStatement";
@@ -106,7 +107,7 @@
 <div class="flex flex-col gap-3">
     <div class="flex flex-wrap items-center justify-between gap-2">
         <ReportTabs bind:tab={params.tab} />
-        <ExportButton {report} title={exportInfo.title} params={exportInfo.params} filename={exportInfo.filename} />
+        <ExportButton run={() => exportXlsx(report, {title: exportInfo.title, params: exportInfo.params}, exportInfo.filename)} />
     </div>
 
     <ReportControls bind:params {maxDepth} />
