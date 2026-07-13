@@ -7,8 +7,8 @@
 /* eslint-disable svelte/prefer-svelte-reactivity -- the account Sets are
    immutable snapshots: every change replaces `value` wholesale, so plain Set
    is correct (and the contract exposes ReadonlySet); Date is read-once. */
-import {accountMatches} from "$lib/domain/accounts";
 import type {ISODate} from "$lib/domain/types";
+import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
 
 export interface JournalFilter {
     from: ISODate | null; // inclusive
@@ -106,29 +106,9 @@ export const filters = {
     applyPreset(p: DatePreset): void {
         value = {...value, ...presetRange(p, localToday()), preset: p};
     },
-    /**
-     * Toggle an account's selection, keeping the subtree-root invariant:
-     * - name is selected → deselect it;
-     * - name is covered by a selected ancestor → deselect that ancestor
-     *   (drops the covering subtree; we cannot know its siblings here);
-     * - otherwise → select it, pruning any now-redundant selected descendants.
-     */
+    /** Toggle an account's selection, keeping the subtree-root invariant (see treeSelect.toggleSubtreeRoot). */
     toggleAccount(name: string): void {
-        const accounts = new Set(value.accounts);
-        if (accounts.has(name)) {
-            accounts.delete(name);
-        } else {
-            const coveringAncestors = [...accounts].filter((sel) => accountMatches(sel, name));
-            if (coveringAncestors.length > 0) {
-                for (const sel of coveringAncestors) accounts.delete(sel);
-            } else {
-                for (const sel of [...accounts]) {
-                    if (accountMatches(name, sel)) accounts.delete(sel);
-                }
-                accounts.add(name);
-            }
-        }
-        value = {...value, accounts};
+        value = {...value, accounts: toggleSubtreeRoot(value.accounts, name)};
     },
     clearAccounts(): void {
         value = {...value, accounts: new Set<string>()};

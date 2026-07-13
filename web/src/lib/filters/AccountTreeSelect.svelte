@@ -1,18 +1,22 @@
 <script lang="ts">
     // Account-tree multi-select (WP-04): dropdown with search, tri-state
-    // checkboxes over the subtree-root selection in the filters store.
-    // `accountNames` is a prop (the page passes journal.accountNames) so this
-    // component has no dependency on the journal store module.
+    // checkboxes over a subtree-root selection set. Selection state and its
+    // mutators are props so any store can drive it (journal filters, WP-10
+    // holdings scope); `accountNames` is a prop for the same reason.
     import {buildAccountTree, type AccountNode} from "$lib/domain/accounts";
-    import {filters} from "$lib/stores/filters.svelte";
     import {filterTree, selectionState} from "./treeSelect";
 
-    let {accountNames}: {accountNames: string[]} = $props();
+    let {
+        accountNames,
+        selected,
+        onToggle,
+        onClear,
+    }: {accountNames: string[]; selected: ReadonlySet<string>; onToggle: (name: string) => void; onClear: () => void} = $props();
 
     let search = $state("");
     const tree = $derived(buildAccountTree(accountNames));
     const visible = $derived(filterTree(tree, search));
-    const selectedCount = $derived(filters.value.accounts.size);
+    const selectedCount = $derived(selected.size);
 </script>
 
 <details class="dropdown">
@@ -44,7 +48,7 @@
                 autocomplete="off"
             />
             {#if selectedCount > 0}
-                <button type="button" class="btn btn-ghost btn-xs shrink-0" onclick={() => filters.clearAccounts()}>Clear</button>
+                <button type="button" class="btn btn-ghost btn-xs shrink-0" onclick={() => onClear()}>Clear</button>
             {/if}
         </div>
         <ul class="max-h-64 overflow-y-auto">
@@ -59,7 +63,7 @@
 
 {#snippet nodes(list: AccountNode[], depth: number)}
     {#each list as node (node.fullName)}
-        {@const state = selectionState(filters.value.accounts, node.fullName)}
+        {@const state = selectionState(selected, node.fullName)}
         <li>
             <label class="hover:bg-base-300 flex cursor-pointer items-center gap-2 rounded px-2 py-1" style="padding-left: {0.5 + depth}rem">
                 <input
@@ -67,7 +71,7 @@
                     class="checkbox checkbox-xs"
                     checked={state === "checked"}
                     indeterminate={state === "indeterminate"}
-                    onchange={() => filters.toggleAccount(node.fullName)}
+                    onchange={() => onToggle(node.fullName)}
                 />
                 <span class="truncate text-sm" title={node.fullName}>{node.name}</span>
             </label>

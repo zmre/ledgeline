@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {buildAccountTree} from "$lib/domain/accounts";
-import {filterTree, selectionState} from "./treeSelect";
+import {filterTree, selectionState, toggleSubtreeRoot} from "./treeSelect";
 
 const names = ["assets:bank:checking", "assets:bank:savings", "assets:broker", "expenses:food:groceries", "expenses:rent"];
 
@@ -27,6 +27,31 @@ describe("UNIT treeSelect", () => {
 
         it("is unchecked everywhere when nothing is selected", () => {
             expect(selectionState(new Set(), "assets")).toBe("unchecked");
+        });
+    });
+
+    describe("toggleSubtreeRoot (shared by the filters and holdings stores)", () => {
+        it("adds then removes a plain selection without mutating the input", () => {
+            const empty = new Set<string>();
+            const added = toggleSubtreeRoot(empty, "expenses:food");
+            expect([...added]).toEqual(["expenses:food"]);
+            expect(empty.size).toBe(0);
+            expect(toggleSubtreeRoot(added, "expenses:food").size).toBe(0);
+        });
+
+        it("selecting a parent prunes selected descendants (stores only the subtree root)", () => {
+            let selected: ReadonlySet<string> = new Set(["assets:bank:checking", "assets:bank:savings", "expenses:food"]);
+            selected = toggleSubtreeRoot(selected, "assets:bank");
+            expect([...selected].sort()).toEqual(["assets:bank", "expenses:food"]);
+        });
+
+        it("toggling a covered descendant deselects the covering ancestor", () => {
+            expect(toggleSubtreeRoot(new Set(["assets"]), "assets:bank:checking").size).toBe(0);
+        });
+
+        it("does not treat name prefixes as ancestors (assets:bank vs assets:bankx)", () => {
+            const selected = toggleSubtreeRoot(new Set(["assets:bank"]), "assets:bankx");
+            expect([...selected].sort()).toEqual(["assets:bank", "assets:bankx"]);
         });
     });
 

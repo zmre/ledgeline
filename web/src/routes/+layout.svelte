@@ -51,6 +51,9 @@
                             <a href={resolve("/")} class={page.url.pathname === "/" ? "menu-active" : ""}>Journal</a>
                         </li>
                         <li>
+                            <a href={resolve("/holdings")} class={page.url.pathname.startsWith("/holdings") ? "menu-active" : ""}>Holdings</a>
+                        </li>
+                        <li>
                             <a href={resolve("/reports")} class={page.url.pathname.startsWith("/reports") ? "menu-active" : ""}>Reports</a>
                         </li>
                     </ul>
