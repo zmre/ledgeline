@@ -6,10 +6,11 @@ Reference doc for all work packages. Every implementing agent reads this FIRST, 
 
 A modern, fast, responsive (mobile + desktop) web GUI for hledger. MVP is **read-only**: a pure static SvelteKit SPA that talks directly to the hledger-web JSON API from the browser. No app server of our own. Server URL is prompted on first run and stored in localStorage.
 
-Two routes:
+Three routes:
 
 - `/` — journal view: filterable transaction list (defaults to current month), filter bar (dates, account tree multi-select, free-text search), collapsible insights panel (big numbers + pie/line charts + depth slider), pinned period totals
 - `/reports` — balance sheet, income statement (P&L), cash flow, net worth as spreadsheet-style tables with xlsx export
+- `/holdings` — stock holdings (WP-10, post-MVP-1): pie + stats + gainers/losers over an include/exclude account scope and as-of date, details table with basis and unrealized gains
 
 Post-MVP (design for, don't build): transaction editing, Rust journal engine + API server, encrypted p2p-ish sync (rebellion-db), imports, AI.
 
