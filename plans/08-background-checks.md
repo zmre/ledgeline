@@ -17,10 +17,13 @@ Fixing/editing records (post-MVP). Server push (API has no websockets; polling o
 ```ts
 export type Severity = "error" | "warning" | "info";
 export interface Problem { txnIndex: number; rule: string; severity: Severity; message: string }
-export interface CheckRule { id: string; run(txns: Transaction[]): Problem[] }
-export function runChecks(txns: Transaction[], rules?: CheckRule[]): Problem[];  // defaults to ALL_RULES
+export interface CheckContext { prices: PriceDirective[] }  // WP-10 contract change: stock rules need P directives
+export interface CheckRule { id: string; run(txns: Transaction[], ctx: CheckContext): Problem[] }
+export function runChecks(txns: Transaction[], ctx: CheckContext, rules?: CheckRule[]): Problem[];  // defaults to ALL_RULES
 export const ALL_RULES: CheckRule[];
 ```
+
+(Contract updated by WP-10 per convention #9: `run` gained a `ctx` argument carrying the journal's price directives; the five MVP rules ignore it, WP-10's `stock-*` rules consume it.)
 
 MVP rules (`rules.ts`):
 

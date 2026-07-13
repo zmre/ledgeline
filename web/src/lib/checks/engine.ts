@@ -2,7 +2,7 @@
 // normalized journal. Pure TS — no Svelte/DOM imports; rules live in
 // ./rules.ts and adding one is a single entry in ALL_RULES.
 
-import type {Transaction} from "../domain/types";
+import type {PriceDirective, Transaction} from "../domain/types";
 import {ALL_RULES} from "./rules";
 
 export type Severity = "error" | "warning" | "info";
@@ -14,16 +14,21 @@ export interface Problem {
     message: string;
 }
 
+/** Journal-wide inputs beyond the transactions themselves (WP-10 contract change: stock rules need P directives). */
+export interface CheckContext {
+    prices: PriceDirective[];
+}
+
 export interface CheckRule {
     id: string;
-    run(txns: Transaction[]): Problem[];
+    run(txns: Transaction[], ctx: CheckContext): Problem[];
 }
 
 export {ALL_RULES} from "./rules";
 
 /** Run `rules` (default: ALL_RULES) over the journal, concatenating their findings in rule order. */
-export function runChecks(txns: Transaction[], rules: CheckRule[] = ALL_RULES): Problem[] {
-    return rules.flatMap((rule) => rule.run(txns));
+export function runChecks(txns: Transaction[], ctx: CheckContext, rules: CheckRule[] = ALL_RULES): Problem[] {
+    return rules.flatMap((rule) => rule.run(txns, ctx));
 }
 
 const SEVERITY_RANK: Record<Severity, number> = {info: 0, warning: 1, error: 2};

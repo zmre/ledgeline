@@ -7,7 +7,7 @@
 import {groupByTxn, maxSeverity, runChecks, type Problem, type Severity} from "$lib/checks/engine";
 import {journal} from "$lib/stores/journal.svelte";
 
-const all = $derived.by(() => runChecks(journal.txns));
+const all = $derived.by(() => runChecks(journal.txns, {prices: journal.prices}));
 const byTxn = $derived.by(() => groupByTxn(all));
 const worst = $derived.by(() => maxSeverity(all));
 

@@ -44,7 +44,8 @@ function txn(index: number, postings: PostingSpec[], spec: TxnSpec = {}): Transa
 }
 
 const byRule = (problems: Problem[], rule: string): Problem[] => problems.filter((p) => p.rule === rule);
-const run1 = (t: Transaction, rule: string): Problem[] => byRule(runChecks([t]), rule);
+const NO_PRICES = {prices: []};
+const run1 = (t: Transaction, rule: string): Problem[] => byRule(runChecks([t], NO_PRICES), rule);
 
 describe("UNIT checks/rules unbalanced", () => {
     it("accepts a fully amounted transaction that sums to zero per commodity", () => {
@@ -121,7 +122,7 @@ describe("UNIT checks/rules unbalanced", () => {
             {account: "assets:broker:aapl", amounts: [aapl(-45000, 111735, false)]},
             {account: "assets:broker:cash", amounts: [usd(111735)]},
         ]);
-        expect(byRule(runChecks([buy, sell]), "unbalanced")).toEqual([]);
+        expect(byRule(runChecks([buy, sell], NO_PRICES), "unbalanced")).toEqual([]);
     });
 
     it("flags a cost-converted residue", () => {
@@ -139,7 +140,10 @@ describe("UNIT checks/rules unbalanced", () => {
 
 describe("UNIT checks/rules pending", () => {
     it("flags pending transactions as warnings; cleared/unmarked pass", () => {
-        const problems = byRule(runChecks([txn(1, [], {status: "pending"}), txn(2, [], {status: "cleared"}), txn(3, [], {status: "unmarked"})]), "pending");
+        const problems = byRule(
+            runChecks([txn(1, [], {status: "pending"}), txn(2, [], {status: "cleared"}), txn(3, [], {status: "unmarked"})], NO_PRICES),
+            "pending"
+        );
         expect(problems).toEqual([{txnIndex: 1, rule: "pending", severity: "warning", message: "transaction is marked pending (!)"}]);
     });
 });
@@ -171,7 +175,7 @@ describe("UNIT checks/rules uncategorized", () => {
 describe("UNIT checks/rules missing-description", () => {
     it("flags empty and whitespace-only descriptions as info", () => {
         const problems = byRule(
-            runChecks([txn(1, [], {description: ""}), txn(2, [], {description: "   "}), txn(3, [], {description: "rent"})]),
+            runChecks([txn(1, [], {description: ""}), txn(2, [], {description: "   "}), txn(3, [], {description: "rent"})], NO_PRICES),
             "missing-description"
         );
         expect(problems.map((p) => p.txnIndex)).toEqual([1, 2]);
@@ -181,7 +185,10 @@ describe("UNIT checks/rules missing-description", () => {
 
 describe("UNIT checks/rules future-date", () => {
     it("flags dates strictly after today as info; today and the past pass", () => {
-        const problems = byRule(runChecks([txn(1, [], {date: "9999-12-31"}), txn(2, [], {date: today()}), txn(3, [], {date: "1970-01-01"})]), "future-date");
+        const problems = byRule(
+            runChecks([txn(1, [], {date: "9999-12-31"}), txn(2, [], {date: today()}), txn(3, [], {date: "1970-01-01"})], NO_PRICES),
+            "future-date"
+        );
         expect(problems).toEqual([{txnIndex: 1, rule: "future-date", severity: "info", message: "transaction is dated in the future (9999-12-31)"}]);
     });
 });
@@ -190,9 +197,9 @@ describe("UNIT checks/engine", () => {
     it("runChecks defaults to ALL_RULES and honors an explicit subset", () => {
         const t = txn(1, [{account: "expenses:unknown", amounts: [usd(100)]}], {status: "pending", description: ""});
         // one elided-less residue-free txn: postings sum to +$1.00 → also unbalanced
-        const all = runChecks([t]);
+        const all = runChecks([t], NO_PRICES);
         expect(new Set(all.map((p) => p.rule))).toEqual(new Set(["unbalanced", "pending", "uncategorized", "missing-description"]));
-        const onlyPending = runChecks([t], [ALL_RULES[1]]);
+        const onlyPending = runChecks([t], NO_PRICES, [ALL_RULES[1]]);
         expect(onlyPending.map((p) => p.rule)).toEqual(["pending"]);
     });
 

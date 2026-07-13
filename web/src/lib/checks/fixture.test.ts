@@ -4,12 +4,13 @@
 
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
-import {normalizeTransactions} from "../api/normalize";
+import {normalizePrices, normalizeTransactions} from "../api/normalize";
 import {runChecks, type Problem} from "./engine";
 
 const raw: unknown = JSON.parse(readFileSync(new URL("../../../../fixtures/api/v1.52/transactions.json", import.meta.url), "utf8"));
+const rawPrices: unknown = JSON.parse(readFileSync(new URL("../../../../fixtures/api/v1.52/prices.json", import.meta.url), "utf8"));
 const txns = normalizeTransactions(raw);
-const problems = runChecks(txns);
+const problems = runChecks(txns, {prices: normalizePrices(rawPrices)});
 
 const dateOf = (p: Problem): string => txns.find((t) => t.index === p.txnIndex)?.date ?? "?";
 const byRule = (rule: string): Problem[] => problems.filter((p) => p.rule === rule);

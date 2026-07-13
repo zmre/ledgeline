@@ -4,8 +4,10 @@
 
 import {add, isZero, mul, neg, type Dec} from "../domain/money";
 import type {Amount, Transaction} from "../domain/types";
+import {buildPools, latestCostPrices, latestDirectivePrice, type SymbolPool} from "../holdings/engine";
 import {today} from "../reports/periods";
-import type {CheckRule, Problem} from "./engine";
+import {buildPriceDb, type PriceDb} from "../reports/prices";
+import type {CheckContext, CheckRule, Problem} from "./engine";
 
 /** Plain decimal rendering for problem messages (no locale styling — messages are diagnostics). */
 function decToString(d: Dec): string {
@@ -121,5 +123,60 @@ const futureDate: CheckRule = {
     },
 };
 
-/** All MVP rules, in report order. Adding a rule = one object here. */
-export const ALL_RULES: CheckRule[] = [unbalanced, pending, uncategorized, missingDescription, futureDate];
+/** Journal-wide (unscoped) average-cost pools at today, sorted by symbol for deterministic report order (WP-10 stock rules). */
+function stockPools(txns: Transaction[], ctx: CheckContext): {db: PriceDb; base: string; asOf: string; pools: SymbolPool[]} {
+    const db = buildPriceDb(ctx.prices);
+    const base = db.baseCommodity() ?? "$";
+    const asOf = today();
+    const pools = [...buildPools(txns, db, base, asOf, () => true).values()].sort((a, b) => (a.symbol < b.symbol ? -1 : 1));
+    return {db, base, asOf, pools};
+}
+
+const stockMissingBasis: CheckRule = {
+    id: "stock-missing-basis",
+    run(txns: Transaction[], ctx: CheckContext): Problem[] {
+        return stockPools(txns, ctx)
+            .pools.filter((pool) => pool.shares.m > 0n)
+            .flatMap((pool) =>
+                pool.costlessBuyTxns.map((txnIndex) => ({
+                    txnIndex,
+                    rule: "stock-missing-basis",
+                    severity: "warning" as const,
+                    message: `${pool.symbol} lot acquired without a cost annotation — cost basis is unknown`,
+                }))
+            );
+    },
+};
+
+const stockNegative: CheckRule = {
+    id: "stock-negative",
+    run(txns: Transaction[], ctx: CheckContext): Problem[] {
+        return stockPools(txns, ctx)
+            .pools.filter((pool) => pool.shares.m < 0n)
+            .map((pool) => ({
+                txnIndex: pool.negativeCrossTxn ?? pool.lastTxnIndex,
+                rule: "stock-negative",
+                severity: "warning" as const,
+                message: `${pool.symbol} net shares are negative (${decToString(pool.shares)}) — the opening position was likely never entered`,
+            }));
+    },
+};
+
+const stockUnpriced: CheckRule = {
+    id: "stock-unpriced",
+    run(txns: Transaction[], ctx: CheckContext): Problem[] {
+        const {db, base, asOf, pools} = stockPools(txns, ctx);
+        const costPrices = latestCostPrices(txns, db, base, asOf);
+        return pools
+            .filter((pool) => pool.shares.m > 0n && latestDirectivePrice(ctx.prices, pool.symbol, base, asOf) === null && !costPrices.has(pool.symbol))
+            .map((pool) => ({
+                txnIndex: pool.lastTxnIndex,
+                rule: "stock-unpriced",
+                severity: "warning" as const,
+                message: `${pool.symbol} has no P price directive and no usable cost annotation — market value is unknown`,
+            }));
+    },
+};
+
+/** All rules, in report order. Adding a rule = one object here. */
+export const ALL_RULES: CheckRule[] = [unbalanced, pending, uncategorized, missingDescription, futureDate, stockMissingBasis, stockNegative, stockUnpriced];
