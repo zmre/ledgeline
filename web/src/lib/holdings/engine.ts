@@ -312,9 +312,17 @@ export function computeHoldings(txns: Transaction[], prices: PriceDirective[], s
     const gainTotal = basisTotal === null ? null : sub(marketValue, basisTotal);
     const gainPctTotal = gainTotal !== null && basisTotal !== null && !isZero(basisTotal) ? (toNumber(gainTotal) / toNumber(basisTotal)) * 100 : null;
 
+    // Only real signs: gainers are gainPct > 0, losers gainPct < 0 — zero-gain
+    // (and null-gainPct) holdings appear in neither list.
     const ranked = holdings.filter((h): h is Holding & {gainPct: number} => h.gainPct !== null);
-    const topGainers = [...ranked].sort((a, b) => b.gainPct - a.gainPct).slice(0, 5);
-    const topLosers = [...ranked].sort((a, b) => a.gainPct - b.gainPct).slice(0, 5);
+    const topGainers = ranked
+        .filter((h) => h.gainPct > 0)
+        .sort((a, b) => b.gainPct - a.gainPct)
+        .slice(0, 5);
+    const topLosers = ranked
+        .filter((h) => h.gainPct < 0)
+        .sort((a, b) => a.gainPct - b.gainPct)
+        .slice(0, 5);
 
     return {
         asOf: scope.asOf,

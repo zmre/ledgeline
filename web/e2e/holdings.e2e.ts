@@ -58,6 +58,13 @@ test("holdings: table shows fixture holdings with honest (null) totals", async (
     await expect(page.getByTestId("holding-NVDA")).toHaveCount(0);
     await expect(page.getByTestId("holding-TSLA")).toHaveCount(0);
 
+    // Both priced holdings are gainers (AAPL +21.3%, VTI +12.6%): only the
+    // gainers list renders — an empty losers list is hidden individually.
+    const gainers = page.getByTestId("top-gainers");
+    await expect(gainers).toContainText("AAPL");
+    await expect(gainers).toContainText("VTI");
+    await expect(page.getByTestId("top-losers")).toHaveCount(0);
+
     // Honest totals: GLD in scope ⇒ market value real, basis/gain em-dash, warnings explain.
     await expect(stat(page, "Market value")).toContainText("$10,552.63");
     await expect(stat(page, "Cost basis")).toContainText(EM_DASH);

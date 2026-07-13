@@ -71,8 +71,8 @@ export interface HoldingsReport {
     base: string;
     holdings: Holding[];                // shares > 0, sorted market value desc (unpriced last, by symbol)
     totals: {marketValue: Dec; basis: Dec | null; gain: Dec | null; gainPct: number | null};
-    topGainers: Holding[];              // ≤ 5 by gainPct desc, gainPct != null only
-    topLosers: Holding[];               // ≤ 5 by gainPct asc, gainPct != null only
+    topGainers: Holding[];              // gainPct > 0 only, sorted desc, ≤ 5
+    topLosers: Holding[];               // gainPct < 0 only, sorted asc, ≤ 5 (zero-gain in neither)
     warnings: HoldingsWarning[];        // scope-local, rendered inline on the page
 }
 
@@ -104,7 +104,7 @@ Engine contract change (flagged per convention #9): `CheckRule.run(txns, ctx)` w
 - **As-of:** date input, default `localToday()` on every visit; picking a date recomputes everything (pure derived, no refetch). URL-synced (`?asof=`, `?acct=`, `?mode=`) via the WP-04 replaceState pattern so reload/share works — but absent params always mean *today*, never a remembered date.
 - **Pie** (`dataviz` skill BEFORE writing chart code; LayerChart like WP-05): slice per symbol by `toNumber(marketValue)`, top 9 + "other" bucket when more, legend with symbol + % share, tooltip with name + formatted value. Unpriced holdings are excluded from the pie (inline warning covers them).
 - **Stat tiles** (daisyUI `stats`, style of WP-05 BigNumbers): Market value | Cost basis | Unrealized gain $ (with sign/color) | Unrealized gain % — em-dash when null.
-- **Gainers/losers:** two compact lists (≤5 each) beside/below the pie: symbol, gain %, gain $; green/red per sign; hidden when fewer than 2 priced holdings.
+- **Gainers/losers:** two compact lists (≤5 each) beside/below the pie: symbol, gain %, gain $; green/red per sign; an empty list (no holdings with that sign) is hidden individually, and the whole component is hidden when fewer than 2 priced holdings.
 - **Table:** columns Name | Symbol | Shares | Basis | Price (+ "inferred" badge when `source === "cost"`) | Price date | Market value | Gain % — right-aligned numerics via `formatDec`/`formatAmount` (2dp display cap), negatives `text-error`, sticky header, default sort market value desc, horizontal scroll at 375px. Em-dash for null cells.
 - **Inline warnings:** one daisyUI `alert alert-warning` block above the table listing scope-local `warnings` (missing basis, negative dropped, unpriced) — mirrors drawer content but respects scope/asOf.
 - **Empty state:** friendly "no stock holdings in scope" card when the report is empty.

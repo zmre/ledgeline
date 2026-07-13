@@ -209,16 +209,36 @@ describe("UNIT holdings/engine asOf time travel", () => {
 });
 
 describe("UNIT holdings/engine gainers and losers", () => {
-    it("ranks by gainPct, caps at 5, and skips null-gainPct holdings", () => {
-        const symbols = ["G1", "G2", "G3", "G4", "G5", "G6", "G7"];
-        const txns = symbols.map((symbol, i) => txn(i + 1, "2025-01-10", [buy("a", symbol, 1, 10000)]));
-        txns.push(txn(8, "2025-01-10", [buyNoCost("a", "T0", 1)])); // tainted: gainPct null
-        const prices = symbols.map((symbol, i) => pd("2025-02-01", symbol, 17000 - i * 1000)); // G1 +70% … G7 +10%
+    it("splits by gain sign (gainers desc, losers asc), caps at 5, and skips zero/null gainPct", () => {
+        // All bought at $100/share: G1 +60% … G6 +10%, L1 -30% L2 -20% L3 -10%, Z0 flat, T0 tainted (gainPct null).
+        const priced: [string, number][] = [
+            ["G1", 16000],
+            ["G2", 15000],
+            ["G3", 14000],
+            ["G4", 13000],
+            ["G5", 12000],
+            ["G6", 11000],
+            ["L1", 7000],
+            ["L2", 8000],
+            ["L3", 9000],
+            ["Z0", 10000],
+        ];
+        const txns = priced.map(([symbol], i) => txn(i + 1, "2025-01-10", [buy("a", symbol, 1, 10000)]));
+        txns.push(txn(priced.length + 1, "2025-01-10", [buyNoCost("a", "T0", 1)]));
+        const prices = priced.map(([symbol, cents]) => pd("2025-02-01", symbol, cents));
         prices.push(pd("2025-02-01", "T0", 99900));
         const report = computeHoldings(txns, prices, scope("2025-06-30"));
 
-        expect(report.topGainers.map((h) => h.symbol)).toEqual(["G1", "G2", "G3", "G4", "G5"]);
-        expect(report.topLosers.map((h) => h.symbol)).toEqual(["G7", "G6", "G5", "G4", "G3"]);
-        expect(report.holdings.map((h) => h.symbol)).toEqual(["T0", "G1", "G2", "G3", "G4", "G5", "G6", "G7"]); // market value desc
+        expect(report.topGainers.map((h) => h.symbol)).toEqual(["G1", "G2", "G3", "G4", "G5"]); // > 0 only, desc, G6 capped off
+        expect(report.topLosers.map((h) => h.symbol)).toEqual(["L1", "L2", "L3"]); // < 0 only, asc — Z0 and T0 in neither
+    });
+
+    it("returns an empty losers list when every priced holding gained", () => {
+        const txns = [txn(1, "2025-01-10", [buy("a", "AAA", 1, 10000)]), txn(2, "2025-01-10", [buy("a", "BBB", 1, 10000)])];
+        const prices = [pd("2025-02-01", "AAA", 12000), pd("2025-02-01", "BBB", 11000)];
+        const report = computeHoldings(txns, prices, scope("2025-06-30"));
+
+        expect(report.topGainers.map((h) => h.symbol)).toEqual(["AAA", "BBB"]);
+        expect(report.topLosers).toEqual([]);
     });
 });

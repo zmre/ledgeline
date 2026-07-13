@@ -1,6 +1,8 @@
 <!-- Top gainers / losers (WP-10): two compact lists (≤5 each) of symbol,
-     gain %, gain $ — green/red per sign. Hidden entirely when fewer than two
-     holdings are priced (a single-entry "top 5" is noise, per plans/10). -->
+     gain %, gain $ — green/red per sign. Each list holds only holdings with
+     that gain sign, so an empty list is hidden individually; the whole
+     component is hidden when fewer than two holdings are priced (a
+     single-entry "top 5" is noise, per plans/10). -->
 <script lang="ts">
     import {toNumber, type Dec} from "$lib/domain/money";
     import type {Holding, HoldingsReport} from "$lib/holdings/types";
@@ -9,7 +11,7 @@
     let {report, format}: {report: HoldingsReport; format: (v: Dec) => string} = $props();
 
     const pricedCount = $derived(report.holdings.filter((h) => h.marketValue !== null).length);
-    const visible = $derived(pricedCount >= 2 && report.topGainers.length > 0);
+    const visible = $derived(pricedCount >= 2 && (report.topGainers.length > 0 || report.topLosers.length > 0));
 </script>
 
 {#snippet list(title: string, entries: Holding[], testid: string)}
@@ -32,7 +34,11 @@
 
 {#if visible}
     <div class="flex flex-col gap-4 sm:flex-row" data-testid="gainers-losers">
-        {@render list("Top gainers", report.topGainers, "top-gainers")}
-        {@render list("Top losers", report.topLosers, "top-losers")}
+        {#if report.topGainers.length > 0}
+            {@render list("Top gainers", report.topGainers, "top-gainers")}
+        {/if}
+        {#if report.topLosers.length > 0}
+            {@render list("Top losers", report.topLosers, "top-losers")}
+        {/if}
     </div>
 {/if}

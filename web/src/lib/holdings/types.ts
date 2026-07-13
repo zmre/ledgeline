@@ -43,9 +43,9 @@ export interface HoldingsReport {
     /** shares > 0, sorted market value desc (unpriced last, by symbol). */
     holdings: Holding[];
     totals: {marketValue: Dec; basis: Dec | null; gain: Dec | null; gainPct: number | null};
-    /** ≤ 5 by gainPct desc, gainPct != null only. */
+    /** gainPct > 0 only, sorted desc, ≤ 5. */
     topGainers: Holding[];
-    /** ≤ 5 by gainPct asc, gainPct != null only. */
+    /** gainPct < 0 only, sorted asc, ≤ 5 (zero-gain holdings in neither list). */
     topLosers: Holding[];
     /** Scope-local, rendered inline on the page. */
     warnings: HoldingsWarning[];
