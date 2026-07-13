@@ -10,6 +10,8 @@ export default defineConfig({
         },
         {command: "bun run build && bun run preview", port: 4173},
     ],
+    // With multiple webServers playwright does not infer baseURL from `port`.
+    use: {baseURL: "http://localhost:4173"},
     testDir: "e2e",
     testMatch: "**/*.e2e.{ts,js}",
 });
