@@ -22,7 +22,12 @@ export interface Amount {
     commodity: string;
     qty: Dec;
     style: AmountStyle;
-    /** Cost/price annotation (`@` per-unit when `per`, `@@` total otherwise). */
+    /**
+     * Cost/price annotation (`@` per-unit when `per`, `@@` total otherwise).
+     * `qty` is ALWAYS the unsigned magnitude: the normalizer canonicalizes
+     * hledger 1.52's signed `@@`/inferred totals to their absolute value, so
+     * consumers apply the posting amount's sign themselves.
+     */
     cost?: {commodity: string; qty: Dec; per: boolean};
 }
 

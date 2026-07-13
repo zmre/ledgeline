@@ -248,6 +248,89 @@ describe("UNIT normalizeTransactions", () => {
     it("normalizes a legacy-shaped (aprice/asdecimalpoint) sample identically to its modern equivalent", () => {
         expect(normalizeTransactions([toLegacyShape(modernTxn)])).toEqual(normalizeTransactions([modernTxn]));
     });
+
+    it("canonicalizes a 1.52 signed @@ total cost (sell) to its unsigned magnitude", () => {
+        // Verified empirically: hledger 1.52 emits TotalCost aquantity SIGNED on
+        // sells (-4.5 AAPL @@ $-1,117.35 on the wire) — the domain contract is
+        // an unsigned cost.qty with the sign carried by the posting amount.
+        const signedSell = {
+            tindex: 9,
+            tdate: "2026-04-01",
+            tdate2: null,
+            tstatus: "Cleared",
+            tdescription: "Sell AAPL",
+            tcode: "",
+            tcomment: "",
+            ttags: [],
+            tprecedingcomment: "",
+            tsourcepos: [],
+            tpostings: [
+                {
+                    paccount: "assets:broker:aapl",
+                    pstatus: "Unmarked",
+                    pcomment: "",
+                    ptags: [],
+                    pdate: null,
+                    pdate2: null,
+                    pbalanceassertion: null,
+                    ptype: "RegularPosting",
+                    poriginal: null,
+                    ptransaction_: "9",
+                    pamount: [
+                        {
+                            acommodity: "AAPL",
+                            aquantity: {decimalMantissa: -45000, decimalPlaces: 4, floatingPoint: -4.5},
+                            astyle: {
+                                ascommodityside: "R",
+                                ascommodityspaced: true,
+                                asdecimalmark: ".",
+                                asdigitgroups: null,
+                                asprecision: 4,
+                                asrounding: "NoRounding",
+                            },
+                            acost: {
+                                tag: "TotalCost",
+                                contents: {
+                                    acommodity: "$",
+                                    aquantity: {decimalMantissa: -111735, decimalPlaces: 2, floatingPoint: -1117.35},
+                                    astyle: usdStyleModern,
+                                    acost: null,
+                                    acostbasis: null,
+                                },
+                            },
+                            acostbasis: null,
+                        },
+                    ],
+                },
+                {
+                    paccount: "assets:broker:cash",
+                    pstatus: "Unmarked",
+                    pcomment: "",
+                    ptags: [],
+                    pdate: null,
+                    pdate2: null,
+                    pbalanceassertion: null,
+                    ptype: "RegularPosting",
+                    poriginal: null,
+                    ptransaction_: "9",
+                    pamount: [
+                        {
+                            acommodity: "$",
+                            aquantity: {decimalMantissa: 111735, decimalPlaces: 2, floatingPoint: 1117.35},
+                            astyle: usdStyleModern,
+                            acost: null,
+                            acostbasis: null,
+                        },
+                    ],
+                },
+            ],
+        };
+        const [txn] = normalizeTransactions([signedSell]);
+        const aapl = txn.postings[0].amounts[0];
+        expect(aapl.qty).toEqual({m: -45000n, p: 4}); // posting amount keeps its sign
+        expect(aapl.cost).toEqual({commodity: "$", qty: {m: 111735n, p: 2}, per: false}); // cost magnitude comes out positive
+        expect(Object.isFrozen(aapl.cost!.qty)).toBe(true);
+    });
 });
 
 /** Deep-rewrite a modern (1.52/2.0) wire object into its pre-1.5x spelling per the plans/00 drift table. */

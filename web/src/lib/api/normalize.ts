@@ -61,9 +61,14 @@ function toAmount(raw: RawAmount, context: string): Amount {
     const rawCost = raw.acost ?? raw.aprice; // 1.5x/2.0 vs older releases
     const amount: Amount = {commodity: raw.acommodity ?? "", qty, style: toStyle(raw.astyle, qty)};
     if (rawCost !== null && rawCost !== undefined && rawCost.contents !== undefined) {
+        // hledger 1.52's JSON emits `@@`/inferred total costs SIGNED (negative on
+        // sells), unlike journal syntax. Cost magnitudes are inherently positive,
+        // so canonicalize to the absolute value — the domain contract is
+        // "cost.qty is always unsigned" (see Amount.cost in domain/types.ts).
+        const costQty = toDec(rawCost.contents.aquantity, `${context} cost`);
         amount.cost = Object.freeze({
             commodity: rawCost.contents.acommodity ?? "",
-            qty: toDec(rawCost.contents.aquantity, `${context} cost`),
+            qty: costQty.m < 0n ? Object.freeze({m: -costQty.m, p: costQty.p}) : costQty,
             per: rawCost.tag === "UnitCost" || rawCost.tag === "UnitPrice",
         });
     }

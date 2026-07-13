@@ -125,6 +125,17 @@ describe("UNIT checks/rules unbalanced", () => {
         expect(byRule(runChecks([buy, sell], NO_PRICES), "unbalanced")).toEqual([]);
     });
 
+    it("does not false-positive a sell whose @@ total is unsigned (the domain cost.qty contract)", () => {
+        // The normalizer canonicalizes hledger 1.52's signed wire totals to their
+        // absolute magnitude, so a sell always arrives here with an unsigned total
+        // and balanceValue applies the posting amount's sign itself.
+        const t = txn(12, [
+            {account: "assets:broker:aapl", amounts: [aapl(-45000, 111735, false)]}, // -4.5 AAPL @@ $1,117.35
+            {account: "assets:broker:cash", amounts: [usd(111735)]},
+        ]);
+        expect(run1(t, "unbalanced")).toEqual([]);
+    });
+
     it("flags a cost-converted residue", () => {
         const t = txn(10, [
             {account: "assets:broker:aapl", amounts: [aapl(100000, 22000, true)]},
