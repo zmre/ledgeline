@@ -110,15 +110,17 @@ describe("GOLDEN reports vs hledger CLI", () => {
 
     it("balanceSheet matches `hledger bs --depth 2 -e 2026-07-01` (CLI-derived, embedded)", () => {
         // No committed golden at depth 2; expectations generated once from
-        // hledger 1.52 (same flags as gen-golden.sh, --depth 2) on 2026-07-08.
+        // hledger 1.52 (same flags as gen-golden.sh, --depth 2) on 2026-07-13
+        // after the WP-10 stock fixtures landed (NVDA nets to zero → dropped).
         const report = balanceSheet(txns, {asOf: "2026-06-30", depth: 2});
         const rows = Object.fromEntries(report.sections.flatMap((s) => s.rows.map((r) => [r.account, canonMap(r.inclusive)])));
-        expect(rows["assets:bank"]).toEqual({$: {m: 5366781n, p: 2}, EUR: {m: 56675n, p: 2}});
-        expect(rows["assets:broker"]).toEqual({$: {m: 28515n, p: 2}, AAPL: {m: 195n, p: 1}});
+        const stocks = {AAPL: {m: 195n, p: 1}, GLD: {m: 5n, p: 0}, TSLA: {m: -2n, p: 0}, VTI: {m: 17n, p: 0}};
+        expect(rows["assets:bank"]).toEqual({$: {m: 4366781n, p: 2}, EUR: {m: 56675n, p: 2}});
+        expect(rows["assets:broker"]).toEqual({$: {m: 660975n, p: 2}, ...stocks});
         expect(rows["liabilities:cc"]).toEqual({$: {m: 6211n, p: 2}});
-        expect(canonMap(report.sections[0].total)).toEqual({$: {m: 5395296n, p: 2}, AAPL: {m: 195n, p: 1}, EUR: {m: 56675n, p: 2}});
+        expect(canonMap(report.sections[0].total)).toEqual({$: {m: 5027756n, p: 2}, EUR: {m: 56675n, p: 2}, ...stocks});
         expect(canonMap(report.sections[1].total)).toEqual({$: {m: 6211n, p: 2}});
-        expect(canonMap(report.grandTotal)).toEqual({$: {m: 5389085n, p: 2}, AAPL: {m: 195n, p: 1}, EUR: {m: 56675n, p: 2}});
+        expect(canonMap(report.grandTotal)).toEqual({$: {m: 5021545n, p: 2}, EUR: {m: 56675n, p: 2}, ...stocks});
     });
 
     it("balanceSheet matches `hledger bs --depth 3 -e 2026-07-01`", () => {
@@ -150,7 +152,12 @@ describe("GOLDEN reports vs hledger CLI", () => {
 
     it("netWorth matches `hledger bal --value=end,$ -e 2026-07-01 assets liabilities`", () => {
         const report = netWorth(txns, priceDb, {end: "2026-06-30", interval: "monthly", count: 1});
-        expect(report.meta, "every commodity priced at 2026-06-30").toBeUndefined();
+        // GLD and TSLA deliberately have no P directive (WP-10 fixtures):
+        // hledger leaves them unvalued in place; our engine skips them and
+        // reports them in meta.unpriced instead — filter them from the golden.
+        const unpriced = ["GLD", "TSLA"];
+        expect(report.meta, "exactly the deliberately unpriced commodities are skipped").toEqual({unpriced});
+        const valued = (amounts: GAmount[]): GAmount[] => amounts.filter((amount) => !unpriced.includes(amount.acommodity));
 
         const [goldenRows, goldenTotal] = fixture("golden/networth-spot.json") as GBalReport;
         const byRoot = new Map<string, GAmount[]>();
@@ -161,8 +168,8 @@ describe("GOLDEN reports vs hledger CLI", () => {
         expect(report.rows.map((r) => r.account).sort()).toEqual([...byRoot.keys()].sort());
         for (const [root, amounts] of byRoot) {
             const mine = report.rows.find((r) => r.account === root);
-            expect(canonMap(mine!.values[0]), `valued ${root}`).toEqual(sumGolden(amounts));
+            expect(canonMap(mine!.values[0]), `valued ${root}`).toEqual(sumGolden(valued(amounts)));
         }
-        expect(canonMap(report.totals[0]), "net worth").toEqual(sumGolden(goldenTotal));
+        expect(canonMap(report.totals[0]), "net worth").toEqual(sumGolden(valued(goldenTotal)));
     });
 });

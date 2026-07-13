@@ -275,14 +275,14 @@ describe("UNIT normalizeTransactions over the fixtures/api/v1.52 snapshot", () =
     const txns = normalizeTransactions(raw);
 
     it("normalizes every transaction and posting", () => {
-        expect(txns).toHaveLength(176);
-        expect(txns.reduce((n, t) => n + t.postings.length, 0)).toBe(402);
+        expect(txns).toHaveLength(185);
+        expect(txns.reduce((n, t) => n + t.postings.length, 0)).toBe(420);
     });
 
     it("preserves the status distribution", () => {
         const counts = {cleared: 0, pending: 0, unmarked: 0};
         for (const txn of txns) counts[txn.status] += 1;
-        expect(counts).toEqual({cleared: 163, pending: 1, unmarked: 12});
+        expect(counts).toEqual({cleared: 171, pending: 1, unmarked: 13});
     });
 
     it("carries exact Dec quantities (opening checking balance)", () => {
@@ -295,7 +295,7 @@ describe("UNIT normalizeTransactions over the fixtures/api/v1.52 snapshot", () =
     });
 
     it("builds lowercase haystacks (the pending flight)", () => {
-        const flight = txns.find((t) => t.index === 175);
+        const flight = txns.find((t) => t.index === 184);
         expect(flight?.status).toBe("pending");
         expect(flight?.date).toBe("2026-07-02");
         expect(flight?.haystack).toContain("delta airlines");

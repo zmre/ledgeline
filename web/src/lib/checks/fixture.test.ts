@@ -1,6 +1,7 @@
-// WP-08 DoD: the fixture journal's deliberate problem records (WP-09) are all
-// flagged with the correct severities. Input is the RAW v1.52 API snapshot
-// through the normalizer — the same path production data takes.
+// WP-08/WP-10 DoD: the fixture journal's deliberate problem records (WP-09,
+// plus the WP-10 stock records) are all flagged with the correct severities.
+// Input is the RAW v1.52 API snapshot through the normalizer — the same path
+// production data takes.
 
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
@@ -40,6 +41,30 @@ describe("UNIT checks over fixture API snapshot", () => {
 
     it("reports no unbalanced transactions (hledger already validated the journal; costs balance at cost)", () => {
         expect(byRule("unbalanced")).toEqual([]);
+    });
+
+    it("flags the 2025-08-20 GLD gift lot as missing basis (warning)", () => {
+        const missingBasis = byRule("stock-missing-basis");
+        expect(missingBasis).toHaveLength(1);
+        expect(missingBasis[0].severity).toBe("warning");
+        expect(missingBasis[0].message).toContain("GLD");
+        expect(dateOf(missingBasis[0])).toBe("2025-08-20");
+    });
+
+    it("flags GLD as unpriced (no P directive, no usable cost annotation)", () => {
+        const unpriced = byRule("stock-unpriced");
+        expect(unpriced).toHaveLength(1);
+        expect(unpriced[0].severity).toBe("warning");
+        expect(unpriced[0].message).toContain("GLD");
+        expect(dateOf(unpriced[0])).toBe("2025-08-20");
+    });
+
+    it("flags the 2026-06-22 never-bought TSLA sell as negative shares (warning)", () => {
+        const negative = byRule("stock-negative");
+        expect(negative).toHaveLength(1);
+        expect(negative[0].severity).toBe("warning");
+        expect(negative[0].message).toContain("TSLA");
+        expect(dateOf(negative[0])).toBe("2026-06-22");
     });
 
     it("flags exactly the transactions dated after today as future-dated (clock-independent)", () => {

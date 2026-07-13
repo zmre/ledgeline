@@ -15,13 +15,15 @@ Two phases with different dependencies:
 
 Hand-authored, ~24 months ending recently, deliberately covering:
 
-- Multi-commodity: USD (`$`), EUR, and a stock (e.g. `AAPL`) bought with cost `@` notation
-- `P` price directives for EUR and AAPL at several dates (net-worth valuation)
+- Multi-commodity: USD (`$`), EUR, and stocks (`AAPL`, `VTI`) bought with cost `@` notation and `name:` posting tags (WP-10)
+- `P` price directives for EUR, AAPL, and VTI at several dates (net-worth valuation)
 - Deep accounts (≥4 segments, e.g. `assets:broker:taxable:aapl`), plus `assets:bank:checking`, `liabilities:cc:visa`, `equity:opening`, `income:salary`, `expenses:{food:groceries,housing:rent,...}`
 - Account + commodity declarations (`account ... ; type:` tags, `commodity` styles incl. digit groups)
 - All three statuses (`*`, `!`, unmarked); transaction + posting comments; tags (`tag:value`)
 - A multi-posting split (one txn, 3+ postings); an elided-amount posting; a balance assertion
+- WP-10 stock coverage: VTI average-cost math (2 buys + 1 partial sell), NVDA bought then fully sold (must not appear in holdings)
 - Deliberate problem records for WP-08: one posting to `expenses:unknown`, one pending txn, one txn with empty description
+- Deliberate problem records for WP-10 (2026-07-08 clock → 6 problems total): 2025-08-20 GLD gift with no cost annotation on the GLD lot and no P directive (`stock-missing-basis` + `stock-unpriced`; the currency counter-leg carries the conversion so the txn balances), 2026-06-22 TSLA sold without ever being bought (`stock-negative`)
 - Varied amount styles: digit-grouped `$1,234.56`, comma-decimal EUR style
 
 Must pass `hledger -f fixtures/sample.journal check` (basic; document any strict-mode exceptions).

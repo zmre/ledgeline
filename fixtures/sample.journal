@@ -1,20 +1,27 @@
 ; Ledgeline sample journal — hand-authored fixture (WP-09 Phase A).
 ; ~24 months (2024-07 .. 2026-07) of a small household ledger.
 ;
-; Coverage checklist (plans/09-fixtures-testing.md):
+; Coverage checklist (plans/09-fixtures-testing.md, stock additions per plans/10):
 ;   - multi-commodity: USD ($), EUR (comma-decimal, symbol right), AAPL bought with @ cost
-;   - P price directives for EUR and AAPL at several dates
+;   - P price directives for EUR, AAPL, and VTI at several dates
 ;   - deep accounts (4 segments): assets:broker:taxable:aapl, assets:bank:wise:eur
 ;   - account declarations with type: tags; commodity declarations with digit groups
 ;   - all three statuses: * cleared (most), ! pending (2026-07-02), unmarked (June/July 2026)
-;   - transaction + posting comments; tags (trip:, payroll:, receipt:)
+;   - transaction + posting comments; tags (trip:, payroll:, receipt:, name:)
 ;   - multi-posting splits (salary: 4 postings); elided amounts (most txns); balance assertions
 ;   - varied amount styles: digit-grouped $1,234.56 and comma-decimal 1.000,00 EUR
+;   - stock holdings (WP-10): AAPL + VTI with @ costs and name: tags (average-cost math
+;     incl. the 2026-04-14 partial VTI sell), NVDA bought then fully sold (must NOT appear
+;     in holdings), GLD held with unknown basis and no P price, TSLA never bought
 ;
-; Deliberate problem records for WP-08 (do not "fix" these):
+; Deliberate problem records for WP-08/WP-10 (do not "fix" these):
 ;   - 2026-06-20  posting to expenses:unknown (also left undeclared)
 ;   - 2026-06-28  transaction with an empty description
 ;   - 2026-07-02  pending (!) transaction
+;   - 2025-08-20  GLD gift: no cost annotation on the GLD lot and no P directive
+;                 → stock-missing-basis AND stock-unpriced (the counter-leg carries the
+;                 conversion so the txn still balances; the GLD posting itself has no cost)
+;   - 2026-06-22  TSLA sold without ever being bought → stock-negative
 ;
 ; Strict mode note: `hledger check` (basic) passes. `hledger check -s` fails
 ; ONLY on the deliberately undeclared account `expenses:unknown` above.
@@ -27,10 +34,15 @@ account assets:bank:savings           ; type: C
 account assets:bank:wise:eur          ; type: C
 account assets:broker:taxable:cash    ; type: C
 account assets:broker:taxable:aapl    ; type: A
+account assets:broker:taxable:vti     ; type: A
+account assets:broker:taxable:gld     ; type: A
+account assets:broker:taxable:nvda    ; type: A
+account assets:broker:taxable:tsla    ; type: A
 account liabilities                   ; type: L
 account liabilities:cc:visa           ; type: L
 account equity                        ; type: E
 account equity:opening                ; type: E
+account equity:transfers              ; type: E
 account income                        ; type: R
 account income:salary                 ; type: R
 account income:dividends              ; type: R
@@ -52,6 +64,10 @@ account expenses:shopping
 commodity $1,000.00
 commodity 1.000,00 EUR
 commodity 1.0000 AAPL
+commodity 1.0 VTI
+commodity 1.0 GLD
+commodity 1.0 NVDA
+commodity 1.0 TSLA
 
 ; ---------- market prices (net-worth valuation) ----------
 
@@ -59,10 +75,13 @@ P 2024-09-30 EUR $1.11
 P 2024-09-30 AAPL $228.00
 P 2025-03-31 EUR $1.08
 P 2025-03-31 AAPL $221.50
+P 2025-03-31 VTI $268.90
 P 2025-12-31 EUR $1.10
 P 2025-12-31 AAPL $255.00
+P 2025-12-31 VTI $298.40
 P 2026-06-30 EUR $1.16
 P 2026-06-30 AAPL $270.25
+P 2026-06-30 VTI $310.75
 
 ; ---------- 2024 ----------
 
@@ -145,7 +164,7 @@ P 2026-06-30 AAPL $270.25
     assets:bank:checking
 
 2024-09-16 * Fidelity | buy AAPL
-    assets:broker:taxable:aapl    10 AAPL @ $220.00
+    assets:broker:taxable:aapl    10 AAPL @ $220.00  ; name: Apple Inc.
     assets:broker:taxable:cash
 
 2024-09-21 * La Fonda | dinner out
@@ -297,9 +316,17 @@ P 2026-06-30 AAPL $270.25
     liabilities:cc:visa          $300.00
     assets:bank:checking
 
+2025-02-18 * Fidelity | fund brokerage account
+    assets:broker:taxable:cash  $5,000.00
+    assets:bank:checking
+
 2025-02-19 * Chevron | fuel
     expenses:transport:fuel       $63.75
     liabilities:cc:visa
+
+2025-02-20 * Fidelity | buy VTI
+    assets:broker:taxable:vti     15 VTI @ $265.40  ; name: Vanguard Total Market
+    assets:broker:taxable:cash
 
 2025-02-27 * Acme Corp | February salary  ; payroll: acme
     income:salary             $-5,400.00
@@ -388,7 +415,7 @@ P 2026-06-30 AAPL $270.25
     assets:bank:checking
 
 2025-05-20 * Fidelity | buy AAPL
-    assets:broker:taxable:aapl    5 AAPL @ $205.75
+    assets:broker:taxable:aapl    5 AAPL @ $205.75  ; name: Apple Inc.
     assets:broker:taxable:cash
 
 2025-05-21 * Bistro Nouveau | dinner out
@@ -485,6 +512,13 @@ P 2026-06-30 AAPL $270.25
     expenses:transport:fuel       $57.62
     liabilities:cc:visa
 
+; WP-10 problem record: gift of GLD shares with no basis records and no P price.
+; The conversion rides on the equity leg so the txn balances while the GLD lot
+; itself carries NO cost annotation (→ stock-missing-basis + stock-unpriced).
+2025-08-20 * Vaulted | gold ETF gift from grandpa
+    assets:broker:taxable:gld     5 GLD
+    equity:transfers          $-1,000.00 @ 0.005 GLD
+
 2025-08-27 * Acme Corp | August salary  ; payroll: acme
     income:salary             $-5,660.00
     expenses:taxes:federal     $1,150.00
@@ -541,6 +575,14 @@ P 2026-06-30 AAPL $270.25
     expenses:food:groceries      $233.47
     liabilities:cc:visa
 
+2025-10-08 * Fidelity | fund brokerage account
+    assets:broker:taxable:cash  $5,000.00
+    assets:bank:checking
+
+2025-10-10 * Fidelity | buy VTI
+    assets:broker:taxable:vti     10 VTI @ $292.10  ; name: Vanguard Total Market
+    assets:broker:taxable:cash
+
 2025-10-12 * City Power & Light | electricity
     expenses:utilities:electric   $99.85
     assets:bank:checking
@@ -562,6 +604,10 @@ P 2026-06-30 AAPL $270.25
 2025-11-01 * (2101) Oakview Properties | rent (paid by check)
     expenses:housing:rent      $1,875.00
     assets:bank:checking
+
+2025-11-05 * Fidelity | buy NVDA
+    assets:broker:taxable:nvda    12 NVDA @ $190.25
+    assets:broker:taxable:cash
 
 2025-11-08 * Costco | groceries
     expenses:food:groceries      $201.26
@@ -637,6 +683,10 @@ P 2026-06-30 AAPL $270.25
     liabilities:cc:visa          $300.00
     assets:bank:checking
 
+2026-01-20 * Fidelity | sell NVDA (close position)
+    assets:broker:taxable:nvda    -12 NVDA @ $205.60
+    assets:broker:taxable:cash
+
 2026-01-21 * Bistro Nouveau | birthday dinner  ; occasion: birthday
     expenses:food:restaurants    $118.75
     liabilities:cc:visa
@@ -686,7 +736,7 @@ P 2026-06-30 AAPL $270.25
     liabilities:cc:visa
 
 2026-03-10 * Fidelity | buy AAPL (fractional)
-    assets:broker:taxable:aapl    4.5 AAPL @ $248.30
+    assets:broker:taxable:aapl    4.5 AAPL @ $248.30  ; name: Apple Inc.
     assets:broker:taxable:cash
 
 2026-03-12 * City Power & Light | electricity
@@ -723,6 +773,10 @@ P 2026-06-30 AAPL $270.25
 2026-04-12 * City Power & Light | electricity
     expenses:utilities:electric   $94.60
     assets:bank:checking
+
+2026-04-14 * Fidelity | sell VTI (partial)
+    assets:broker:taxable:vti     -8 VTI @ $301.55  ; name: Vanguard Total Market
+    assets:broker:taxable:cash
 
 2026-04-15 * Chase | visa autopay
     liabilities:cc:visa          $300.00
@@ -805,6 +859,11 @@ P 2026-06-30 AAPL $270.25
 2026-06-20 Venmo payment
     expenses:unknown              $75.00  ; WP-08 problem record: uncategorized
     assets:bank:checking
+
+; WP-10 problem record: TSLA sold but never bought (→ stock-negative).
+2026-06-22 Fidelity | sell TSLA (position was never entered)
+    assets:broker:taxable:tsla    -2 TSLA @ $315.00
+    assets:broker:taxable:cash
 
 2026-06-27 Acme Corp | June salary  ; payroll: acme
     income:salary             $-5,660.00
