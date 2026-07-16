@@ -12,12 +12,13 @@
     import HoldingsPie from "$lib/holdings/ui/HoldingsPie.svelte";
     import HoldingsStats from "$lib/holdings/ui/HoldingsStats.svelte";
     import HoldingsTable from "$lib/holdings/ui/HoldingsTable.svelte";
+    import HoldingsTrend from "$lib/holdings/ui/HoldingsTrend.svelte";
     import ScopeBar from "$lib/holdings/ui/ScopeBar.svelte";
     import {startHoldingsUrlSync} from "$lib/holdings/ui/urlSync";
     import {stockAccounts} from "$lib/holdings/ui/view";
-    import {styleFor} from "$lib/insights/series";
+    import {formatChartValue, styleFor} from "$lib/insights/series";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
-    import {getHoldingsReport} from "$lib/stores/holdings.svelte";
+    import {getHoldingsReport, getHoldingsTrend} from "$lib/stores/holdings.svelte";
     import {journal} from "$lib/stores/journal.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
@@ -37,8 +38,10 @@
     });
 
     const report = $derived(getHoldingsReport());
+    const trend = $derived(getHoldingsTrend());
     const style = $derived(styleFor(journal.txns, report.base));
     const format = (qty: Dec): string => formatAmount({commodity: report.base, qty, style});
+    const formatTrendValue = (v: number): string => formatChartValue(v, report.base, style);
     const accountNames = $derived(stockAccounts(journal.txns));
 
     let insightsOpen = $state(true);
@@ -72,6 +75,7 @@
                         </div>
                         <GainersLosers {report} {format} />
                     </div>
+                    <HoldingsTrend {trend} formatValue={formatTrendValue} />
                 </div>
             </section>
         {/if}

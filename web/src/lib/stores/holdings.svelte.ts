@@ -8,6 +8,7 @@
    is correct (and the contract exposes ReadonlySet). */
 import type {HoldingsReport, HoldingsScope} from "$lib/holdings/types";
 import {computeHoldings} from "$lib/holdings/engine";
+import {holdingsSeries, type HoldingsSeries} from "$lib/holdings/series";
 import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
 import type {ISODate} from "$lib/domain/types";
 import {localToday} from "./filters.svelte";
@@ -64,4 +65,11 @@ const report = $derived.by(() => computeHoldings(journal.txns, journal.prices, v
 /** The holdings report for the current journal + scope (pure derivation, no refetch). */
 export function getHoldingsReport(): HoldingsReport {
     return report;
+}
+
+/** Trailing-12-month monthly market-value/basis series for the current scope, ending at scope.asOf. */
+const trend = $derived.by(() => holdingsSeries(journal.txns, journal.prices, value, {interval: "monthly", count: 12}));
+
+export function getHoldingsTrend(): HoldingsSeries {
+    return trend;
 }

@@ -109,6 +109,16 @@ test("holdings: as-of time travel recomputes shares, prices, and warnings", asyn
     await expect(page.getByTestId("holdings-warnings")).toHaveCount(0);
 });
 
+test("holdings: value-over-time trend renders and time-travel shrinks the window", async ({page}) => {
+    await page.goto("/holdings");
+    // Priced holdings exist within the trailing 12 months at the pinned clock → the chart draws.
+    await expect(page.getByTestId("holdings-trend")).toBeVisible();
+
+    // Time-travel before any position was opened: the 12-month window is all zero → empty-state copy, no chart.
+    await page.getByLabel("As of date").fill("2024-01-01");
+    await expect(page.getByTestId("holdings-empty")).toBeVisible();
+});
+
 test("holdings: nav link works and the problems badge still shows 6", async ({page}) => {
     await page.goto("/");
     await page.getByRole("link", {name: "Holdings"}).click();
