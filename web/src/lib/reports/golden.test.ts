@@ -15,7 +15,8 @@
 
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
-import {normalizePrices, normalizeTransactions} from "../api/normalize";
+import {normalizeAccounts, normalizePrices, normalizeTransactions} from "../api/normalize";
+import {cashPredicate} from "../domain/accountTypes";
 import {add, dec, type Dec, type MixedAmount} from "../domain/money";
 import {balanceSheet} from "./balanceSheet";
 import {cashFlow} from "./cashFlow";
@@ -30,6 +31,7 @@ const fixture = (rel: string): unknown => JSON.parse(readFileSync(new URL(`../..
 
 const txns = normalizeTransactions(fixture("api/v1.52/transactions.json"));
 const priceDb = buildPriceDb(normalizePrices(fixture("api/v1.52/prices.json")));
+const accountDecls = normalizeAccounts(fixture("api/v1.52/accounts.json"));
 
 // ---- minimal shapes of hledger's report JSON (adapter-local; NOT our domain) ----
 
@@ -131,8 +133,15 @@ describe("GOLDEN reports vs hledger CLI", () => {
         checkSectioned(incomeStatement(txns, {from: "2026-01-01", to: "2026-06-30", depth: 2}), fixture("golden/is-d2.json") as GCompound);
     });
 
-    it("cashFlow matches `hledger cashflow -M -b 2026-01-01 -e 2026-07-01`", () => {
-        const report = cashFlow(txns, {end: "2026-06-30", interval: "monthly", count: 6, depth: 99});
+    // hledger's cashflow honors the `type: C` account declarations. We run our
+    // engine both with the name-only fallback (default) and with the declared
+    // predicate built from the real /accounts snapshot: both must reproduce
+    // hledger's selection, proving the declared-type path is faithful.
+    it.each([
+        ["name heuristic (default)", undefined],
+        ["declared /accounts types", cashPredicate(accountDecls)],
+    ])("cashFlow matches `hledger cashflow -M -b 2026-01-01 -e 2026-07-01` — %s", (_label, isCash) => {
+        const report = cashFlow(txns, {end: "2026-06-30", interval: "monthly", count: 6, depth: 99, isCash});
         expect(report.buckets).toEqual(["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"]);
 
         const golden = fixture("golden/cf-monthly.json") as GCompound;

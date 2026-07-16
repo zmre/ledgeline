@@ -1,7 +1,7 @@
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
 import {ApiShapeError} from "./client";
-import {normalizePrices, normalizeTransactions} from "./normalize";
+import {normalizeAccounts, normalizePrices, normalizeTransactions} from "./normalize";
 
 // Hand-rolled wire samples (fixtures/api snapshots are WP-09).
 // "Modern" shape verified against a live hledger 1.52: acost/asdecimalmark/UnitCost.
@@ -428,5 +428,34 @@ describe("UNIT normalizePrices", () => {
     it("throws ApiShapeError on unrecognized shapes", () => {
         expect(() => normalizePrices("nope")).toThrow(ApiShapeError);
         expect(() => normalizePrices([{bogus: true}])).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT normalizeAccounts", () => {
+    it("extracts the declared `type:` tag; missing/absent declaration → null", () => {
+        const raw = [
+            {aname: "assets:bank:checking", adeclarationinfo: {adicomment: "type: C\n", aditags: [["type", "C"]]}},
+            {aname: "assets:wallet", adeclarationinfo: {aditags: [["type", "Cash"]]}},
+            {aname: "expenses:food", adeclarationinfo: {aditags: []}}, // declared without a type
+            {aname: "assets:broker", adeclarationinfo: null}, // never declared (tree-only)
+        ];
+        expect(normalizeAccounts(raw)).toEqual([
+            {name: "assets:bank:checking", type: "cash"},
+            {name: "assets:wallet", type: "cash"},
+            {name: "expenses:food", type: null},
+            {name: "assets:broker", type: null},
+        ]);
+    });
+
+    it("skips the empty root account and unknown type letters", () => {
+        const raw = [
+            {aname: "", adeclarationinfo: null},
+            {aname: "assets", adeclarationinfo: {aditags: [["type", "Z"]]}}, // unrecognized → null, not dropped
+        ];
+        expect(normalizeAccounts(raw)).toEqual([{name: "assets", type: null}]);
+    });
+
+    it("throws ApiShapeError when the payload is not an array", () => {
+        expect(() => normalizeAccounts({nope: true})).toThrow(ApiShapeError);
     });
 });

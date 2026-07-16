@@ -73,4 +73,9 @@ export class HledgerApi {
     async commodities(): Promise<string[]> {
         return stringArray(await this.get("/commodities"), "/commodities");
     }
+
+    /** Raw wire JSON (account tree with declaration info); pass through normalizeAccounts separately. */
+    accounts(): Promise<unknown> {
+        return this.get("/accounts");
+    }
 }

@@ -30,8 +30,8 @@ VERSION=$(curl -fsS "$BASE/version" | tr -d '"' | cut -d',' -f1 | tr -d ' ')
 OUT="fixtures/api/v$VERSION"
 mkdir -p "$OUT"
 
-for ep in version transactions accountnames prices commodities; do
+for ep in version transactions accountnames prices commodities accounts; do
     curl -fsS "$BASE/$ep" > "$OUT/$ep.json"
 done
 
-echo "snapshotted 5 endpoints into $OUT"
+echo "snapshotted 6 endpoints into $OUT"

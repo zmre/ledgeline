@@ -85,4 +85,15 @@ describe("UNIT reports/cashFlow", () => {
         expect(report.rows).toEqual([{account: "assets", depth: 1, values: [ma(-16001), new Map()]}]);
         expect(report.totals).toEqual([ma(-16001), new Map()]);
     });
+
+    it("honors a custom isCash predicate that diverges from the name heuristic", () => {
+        // Treat the AAPL holding account as cash and the name-cash checking account as NOT cash.
+        const isCash = (account: string): boolean => account === "assets:broker:taxable:aapl";
+        const report = cashFlow(txns, {end: "2026-03-15", interval: "monthly", count: 3, depth: 4, isCash});
+        expect(report.rows.map((r) => r.account)).toEqual(["assets", "assets:broker", "assets:broker:taxable", "assets:broker:taxable:aapl"]);
+        // Only the AAPL leg (2 shares, Feb) is counted now — no $ flows at all.
+        const byAccount = new Map(report.rows.map((r) => [r.account, r.values]));
+        expect(byAccount.get("assets:broker:taxable:aapl")).toEqual([new Map(), new Map([["AAPL", dec(2, 0)]]), new Map()]);
+        expect(report.totals).toEqual([new Map(), new Map([["AAPL", dec(2, 0)]]), new Map()]);
+    });
 });

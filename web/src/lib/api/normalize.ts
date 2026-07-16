@@ -6,11 +6,13 @@
 // Emits frozen domain objects; Dec is built from decimalMantissa/decimalPlaces
 // with a Number.isSafeInteger guard (never a silent float fallback).
 
+import type {AccountDecl} from "$lib/domain/accountTypes";
+import {parseAccountTypeTag} from "$lib/domain/accountTypes";
 import type {Dec} from "$lib/domain/money";
 import {formatAmount} from "$lib/domain/money";
 import type {Amount, AmountStyle, Posting, PriceDirective, Transaction, TxnStatus} from "$lib/domain/types";
 import {ApiShapeError} from "./client";
-import type {RawAmount, RawAmountStyle, RawMarketPrice, RawPosting, RawPriceDirective, RawQuantity, RawTransaction} from "./types.raw";
+import type {RawAccount, RawAmount, RawAmountStyle, RawMarketPrice, RawPosting, RawPriceDirective, RawQuantity, RawTransaction} from "./types.raw";
 
 /** Shallow-freeze an array without losing its mutable-typed contract. */
 function frozen<T>(items: T[]): T[] {
@@ -172,4 +174,21 @@ function toPriceDirective(raw: unknown): PriceDirective {
 export function normalizePrices(raw: unknown): PriceDirective[] {
     if (!Array.isArray(raw)) throw new ApiShapeError("GET /prices: expected a JSON array");
     return raw.map(toPriceDirective);
+}
+
+/**
+ * /accounts → the declared `type:` per account (the only field we read).
+ * Accounts inherited into the tree but never declared carry `type: null`; the
+ * `type:` tag lives in adeclarationinfo.aditags as ["type", "C"|"Cash"|…].
+ */
+export function normalizeAccounts(raw: unknown): AccountDecl[] {
+    if (!Array.isArray(raw)) throw new ApiShapeError("GET /accounts: expected a JSON array");
+    const decls: AccountDecl[] = [];
+    for (const item of raw) {
+        const account = item as RawAccount;
+        if (typeof account.aname !== "string" || account.aname === "") continue;
+        const typeTag = toTags(account.adeclarationinfo?.aditags).find(([key]) => key === "type");
+        decls.push(Object.freeze({name: account.aname, type: typeTag !== undefined ? parseAccountTypeTag(typeTag[1]) : null}));
+    }
+    return frozen(decls);
 }

@@ -5,7 +5,8 @@
 // visible on error (the route shows an error toast from `status`/`error`).
 
 import {HledgerApi} from "$lib/api/client";
-import {normalizePrices, normalizeTransactions} from "$lib/api/normalize";
+import {normalizeAccounts, normalizePrices, normalizeTransactions} from "$lib/api/normalize";
+import type {AccountDecl} from "$lib/domain/accountTypes";
 import type {MixedAmount} from "$lib/domain/money";
 import type {PriceDirective, Transaction} from "$lib/domain/types";
 import {filteredTotals, filterTxns, sortTxnsDesc} from "$lib/journal/rowModel";
@@ -16,6 +17,7 @@ type JournalStatus = "idle" | "loading" | "ready" | "error";
 
 let txns = $state<Transaction[]>([]);
 let accountNames = $state<string[]>([]);
+let accountDecls = $state<AccountDecl[]>([]);
 let prices = $state<PriceDirective[]>([]);
 let status = $state<JournalStatus>("idle");
 let error = $state<string | null>(null);
@@ -30,9 +32,15 @@ let lastFingerprint = 0;
  * in-place edit to any transaction (recategorize, amount fix) must swap state,
  * not just appends. djb2 over each txn's index/date/status/haystack (the
  * haystack covers description, comments, accounts, amounts, commodities) plus
- * account names and price directives. Exported for unit tests.
+ * account names and price directives, plus declared account types (a `type:`
+ * edit must recompute the cash-flow report). Exported for unit tests.
  */
-export function contentFingerprint(list: readonly Transaction[], names: readonly string[], priceList: readonly PriceDirective[]): number {
+export function contentFingerprint(
+    list: readonly Transaction[],
+    names: readonly string[],
+    priceList: readonly PriceDirective[],
+    decls: readonly AccountDecl[] = []
+): number {
     let h = 5381;
     const mixStr = (s: string): void => {
         for (let i = 0; i < s.length; i += 1) h = (Math.imul(h, 33) + s.charCodeAt(i)) >>> 0;
@@ -50,6 +58,10 @@ export function contentFingerprint(list: readonly Transaction[], names: readonly
         mixStr(p.price.commodity);
         h = (Math.imul(h, 33) + Number(BigInt.asIntN(32, p.price.qty.m))) >>> 0;
     }
+    for (const d of decls) {
+        mixStr(d.name);
+        mixStr(d.type ?? "");
+    }
     return h;
 }
 
@@ -63,14 +75,16 @@ async function doRefresh(): Promise<void> {
     status = "loading";
     try {
         const api = new HledgerApi(baseUrl);
-        const [rawTxns, nextNames, rawPrices] = await Promise.all([api.transactions(), api.accountNames(), api.prices()]);
+        const [rawTxns, nextNames, rawPrices, rawAccounts] = await Promise.all([api.transactions(), api.accountNames(), api.prices(), api.accounts()]);
         const nextTxns = normalizeTransactions(rawTxns);
         const nextPrices = normalizePrices(rawPrices);
-        const nextFingerprint = contentFingerprint(nextTxns, nextNames, nextPrices);
+        const nextDecls = normalizeAccounts(rawAccounts);
+        const nextFingerprint = contentFingerprint(nextTxns, nextNames, nextPrices, nextDecls);
         if (fetchedAt === null || nextFingerprint !== lastFingerprint) {
             txns = nextTxns;
             accountNames = nextNames;
             prices = nextPrices;
+            accountDecls = nextDecls;
             if (import.meta.env.DEV) console.debug(`[journal] state swapped (${nextTxns.length} txns)`);
         } else if (import.meta.env.DEV) {
             console.debug("[journal] poll unchanged — state swap skipped");
@@ -93,6 +107,10 @@ export const journal = {
     get accountNames(): string[] {
         return accountNames;
     },
+    /** Declared account types from /accounts (name + `type:` tag); [] until the first successful refresh. */
+    get accountDecls(): AccountDecl[] {
+        return accountDecls;
+    },
     get prices(): PriceDirective[] {
         return prices;
     },
@@ -105,7 +123,7 @@ export const journal = {
     get fetchedAt(): number | null {
         return fetchedAt;
     },
-    /** Full refetch of /transactions, /accountnames, /prices. Concurrent calls share one in-flight request. */
+    /** Full refetch of /transactions, /accountnames, /prices, /accounts. Concurrent calls share one in-flight request. */
     refresh(): Promise<void> {
         inFlight ??= doRefresh().finally(() => {
             inFlight = null;

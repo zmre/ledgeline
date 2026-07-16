@@ -34,4 +34,12 @@ describe("UNIT journal contentFingerprint", () => {
         const price = {date: "2026-07-01", commodity: "EUR", price: {commodity: "$", qty: {m: 117n, p: 2}, style}};
         expect(contentFingerprint(base, ["expenses"], [price])).not.toBe(contentFingerprint(base, ["expenses"], []));
     });
+
+    it("changes when a declared account type changes (cash-flow must recompute)", () => {
+        const asAsset = [{name: "assets:bank:checking", type: "asset" as const}];
+        const asCash = [{name: "assets:bank:checking", type: "cash" as const}];
+        expect(contentFingerprint(base, ["expenses"], [], asCash)).not.toBe(contentFingerprint(base, ["expenses"], [], asAsset));
+        // The default (no decls) stays backward-compatible with the 3-arg call.
+        expect(contentFingerprint(base, ["expenses"], [])).toBe(contentFingerprint(base, ["expenses"], [], []));
+    });
 });

@@ -6,6 +6,7 @@
     // filters/urlSync.ts). All dates are INCLUSIVE (engine semantics).
     import {onMount} from "svelte";
     import {replaceState} from "$app/navigation";
+    import {cashPredicate} from "$lib/domain/accountTypes";
     import {exportXlsx} from "$lib/export/xlsx";
     import {balanceSheet} from "$lib/reports/balanceSheet";
     import {cashFlow} from "$lib/reports/cashFlow";
@@ -65,6 +66,8 @@
 
     const styles = $derived(reportStyles(journal.txns));
     const priceDb = $derived(buildPriceDb(journal.prices));
+    // Cash-flow honors declared `type:` tags from /accounts (own → nearest ancestor → name inference); falls back to the name heuristic when a journal declares none.
+    const cashIsCash = $derived(cashPredicate(journal.accountDecls));
     const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
 
     const report = $derived.by(() => {
@@ -74,7 +77,7 @@
             case "is":
                 return incomeStatement(journal.txns, {from: params.from, to: params.to, depth: params.depth});
             case "cf":
-                return cashFlow(journal.txns, {end: params.end, interval: params.interval, count: params.count, depth: params.depth});
+                return cashFlow(journal.txns, {end: params.end, interval: params.interval, count: params.count, depth: params.depth, isCash: cashIsCash});
             case "nw":
                 return netWorth(journal.txns, priceDb, {end: params.end, interval: params.interval, count: params.count});
         }
