@@ -29,76 +29,12 @@ use std::path::{Path, PathBuf};
 /// Known parser gaps: fixture stem -> one-line reason. Each entry currently
 /// diverges from hledger's golden (the test enforces that). Kept alphabetized.
 const GAPS: &[(&str, &str)] = &[
-    // GAP: balanced virtual postings `[a]` — the brackets are kept in the
-    // account name, they are not balanced separately, and ptype stays
-    // RegularPosting instead of BalancedVirtualPosting.
-    (
-        "balanced-virtual-postings",
-        "[a] brackets kept in paccount, not balanced separately, ptype not BalancedVirtualPosting",
-    ),
-    // GAP: symbol-only `commodity $` directive is a parse error (we require a
-    // number), so the whole journal fails; commodity tags are also not
-    // propagated to postings.
-    (
-        "commodity-tags",
-        "symbol-only `commodity $` directive rejected; commodity tags not propagated to ptags",
-    ),
-    // GAP: amounts with no commodity symbol (bare `1`) are a parse error — we
-    // require a commodity token.
-    (
-        "commodityless-amounts",
-        "amounts without a commodity symbol are rejected (empty-commodity unsupported)",
-    ),
-    // GAP: the `D` default-commodity directive is rejected outright.
-    (
-        "default-commodity",
-        "D default-commodity directive is a fail-loud UnsupportedDirective",
-    ),
-    // GAP: no per-commodity canonical style — an inferred (elided) counter-leg
-    // for a right-side, grouped commodity gets a bare left-side style instead of
-    // the commodity's `1,000.00 EUR` shape (wrong ascommodityside/asdigitgroups).
-    (
-        "inferred-commodity-style",
-        "inferred elided leg does not adopt the commodity's canonical style",
-    ),
     // GAP: no per-commodity canonical style — a commodity that never appears
     // with a decimal mark (e.g. `-1712 D`) should have asdecimalmark null; we
     // always emit ".".
     (
         "precision",
         "asdecimalmark is '.' for a no-decimal commodity where hledger emits null",
-    ),
-    // GAP: no per-commodity canonical style — a space digit-group separator in a
-    // `commodity` directive is not recognized (number truncated at the space),
-    // so amounts keep their as-written "," groups instead of the canonical " ".
-    (
-        "numbers-space-groups",
-        "space digit-group separator in commodity directive unsupported",
-    ),
-    // GAP: a `date:` posting tag is not lifted into pdate (stays null).
-    ("posting-dates", "date: posting tag not applied to pdate"),
-    // GAP: E-notation behind a left commodity (`$1.05e2`) is a Dec parse error.
-    (
-        "scientific-commodity",
-        "scientific notation with a commodity is a parse error",
-    ),
-    // GAP: E-notation with no commodity (`1.05e2`) parses as number + bogus
-    // commodity `e2` instead of the scientific value.
-    (
-        "scientific",
-        "scientific notation parsed as number + commodity instead of its value",
-    ),
-    // GAP: hledger normalizes a `@@` total-cost amount (strips trailing zeros:
-    // `$135.00` -> 135 / 0 places); we keep it as written (13500 / 2 places).
-    (
-        "total-cost-trailing-zeros",
-        "@@ total-cost amount not normalized (trailing zeros kept)",
-    ),
-    // GAP: unbalanced virtual posting `(a)` — parens kept in the account name,
-    // it wrongly participates in balancing, and ptype stays RegularPosting.
-    (
-        "virtual-postings",
-        "(a) parens kept in paccount, participates in balancing, ptype not VirtualPosting",
     ),
 ];
 

@@ -44,6 +44,20 @@ pub enum Status {
     Cleared,
 }
 
+/// Whether a posting is real, an unbalanced virtual (`(a)`), or a balanced
+/// virtual (`[a]`) posting. Mirrors hledger's `ptype`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostingType {
+    /// A normal, balanced posting.
+    Regular,
+    /// An unbalanced virtual posting, written `(account)`; excluded from the
+    /// transaction balance.
+    Virtual,
+    /// A balanced virtual posting, written `[account]`; balanced among the
+    /// other balanced-virtual postings only.
+    BalancedVirtual,
+}
+
 /// Which side of the number the commodity symbol is written on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommoditySide {
@@ -69,8 +83,10 @@ pub struct AmountStyle {
     pub side: CommoditySide,
     /// Whether a space separates the symbol and the number.
     pub spaced: bool,
-    /// Decimal mark character.
-    pub decimal_mark: char,
+    /// Decimal mark character, or `None` when the commodity is displayed without
+    /// one (hledger's `asdecimalpoint`: `Nothing` for a commodity that only
+    /// appears as integers within priced transactions).
+    pub decimal_mark: Option<char>,
     /// Digit grouping, if any.
     pub digit_groups: Option<DigitGroups>,
     /// Display precision (as-written fractional digit count, or the precision
@@ -138,12 +154,20 @@ pub struct BalanceAssertion {
 pub struct Posting {
     /// Posting-level status.
     pub status: Status,
+    /// Real / virtual / balanced-virtual (hledger's `ptype`).
+    pub ptype: PostingType,
     /// The posting's account.
     pub account: AccountName,
     /// The posting's amounts (a mixed amount; length 1 for explicit postings).
     pub amounts: Vec<Amount>,
     /// Optional balance assertion.
     pub balance_assertion: Option<BalanceAssertion>,
+    /// Posting date (hledger's `pdate`), set from a `date:` comment tag and
+    /// normalized to ISO `YYYY-MM-DD` (yearless values take the transaction's
+    /// year). `None` when the posting has no `date:` tag.
+    pub date: Option<String>,
+    /// Secondary posting date (`pdate2`), from a `date2:` tag.
+    pub date2: Option<String>,
     /// Raw comment text, including a trailing newline, or empty.
     pub comment: String,
     /// The posting's **own** comment tags (not account-inherited ones).
@@ -215,6 +239,10 @@ pub struct Journal {
     /// Canonical display style per commodity (from `commodity` directives or
     /// first occurrence).
     pub commodity_styles: Vec<(Commodity, AmountStyle)>,
+    /// Tags declared on `commodity` directives, in declaration order. hledger
+    /// propagates these to the `ptags` of postings whose amounts use that
+    /// commodity (account and posting tags of the same name take precedence).
+    pub commodity_tags: Vec<(Commodity, Vec<(String, String)>)>,
     /// Market-price directives.
     pub prices: Vec<PriceDirective>,
 }

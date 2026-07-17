@@ -20,8 +20,8 @@
 use crate::decimal::{Dec, DecError};
 use crate::model::{
     AccountDeclaration, AccountName, Amount, AmountStyle, BalanceAssertion, Commodity,
-    CommoditySide, Cost, CostKind, DigitGroups, Journal, Posting, PriceDirective, SourcePos,
-    Status, Tindex, Transaction,
+    CommoditySide, Cost, CostKind, DigitGroups, Journal, Posting, PostingType, PriceDirective,
+    SourcePos, Status, Tindex, Transaction,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -71,13 +71,15 @@ pub enum ParseError {
 /// first occurrence).
 type Styles = HashMap<Commodity, AmountStyle>;
 
-/// The context needed to parse an amount token: the known commodity styles plus
-/// the journal-wide default decimal mark (from a `decimal-mark` directive, if
-/// any). `Copy` so it threads cheaply through the parse helpers.
+/// The context needed to parse an amount token: the known commodity styles, the
+/// journal-wide default decimal mark (from a `decimal-mark` directive), and the
+/// default commodity + style (from a `D` directive) applied to bare numbers.
+/// `Copy` so it threads cheaply through the parse helpers.
 #[derive(Clone, Copy)]
 struct AmountCtx<'a> {
     styles: &'a Styles,
     default_mark: Option<char>,
+    default_commodity: Option<&'a (Commodity, AmountStyle)>,
 }
 
 /// Mutable accumulators shared across the top-level file and any `include`d
@@ -85,8 +87,10 @@ struct AmountCtx<'a> {
 struct Ctx {
     styles: Styles,
     default_decimal_mark: Option<char>,
+    default_commodity: Option<(Commodity, AmountStyle)>,
     default_year: Option<i32>,
     commodity_styles: Vec<(Commodity, AmountStyle)>,
+    commodity_tags: Vec<(Commodity, Vec<(String, String)>)>,
     accounts: Vec<AccountDeclaration>,
     prices: Vec<PriceDirective>,
     transactions: Vec<Transaction>,
@@ -99,8 +103,10 @@ pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseErro
     let mut ctx = Ctx {
         styles: HashMap::new(),
         default_decimal_mark: None,
+        default_commodity: None,
         default_year: None,
         commodity_styles: Vec::new(),
+        commodity_tags: Vec::new(),
         accounts: Vec::new(),
         prices: Vec::new(),
         transactions: Vec::new(),
@@ -113,6 +119,7 @@ pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseErro
         transactions: ctx.transactions,
         accounts: ctx.accounts,
         commodity_styles: ctx.commodity_styles,
+        commodity_tags: ctx.commodity_tags,
         prices: ctx.prices,
     })
 }
@@ -157,6 +164,7 @@ fn parse_source(text: &str, source_name: &str, ctx: &mut Ctx) -> Result<(), Pars
             let amt = AmountCtx {
                 styles: &ctx.styles,
                 default_mark: ctx.default_decimal_mark,
+                default_commodity: ctx.default_commodity.as_ref(),
             };
             let (txn, next) =
                 parse_transaction(&lines, i, ctx.tindex, amt, source_name, ctx.default_year)?;
@@ -173,10 +181,17 @@ fn parse_source(text: &str, source_name: &str, ctx: &mut Ctx) -> Result<(), Pars
                 ctx.accounts.push(decl);
             }
             "commodity" => {
-                let (commodity, style) = parse_commodity_directive(trimmed)
+                let (commodity, style, tags) = parse_commodity_directive(trimmed)
                     .map_err(|e| locate(source_name, line_no, line, e))?;
-                ctx.styles.insert(commodity.clone(), style.clone());
-                ctx.commodity_styles.push((commodity, style));
+                // A symbol-only `commodity $` declares no style (its amounts
+                // style themselves); a full spec establishes the canonical style.
+                if let Some(style) = style {
+                    ctx.styles.insert(commodity.clone(), style.clone());
+                    ctx.commodity_styles.push((commodity.clone(), style));
+                }
+                if !tags.is_empty() {
+                    ctx.commodity_tags.push((commodity, tags));
+                }
             }
             "decimal-mark" => {
                 ctx.default_decimal_mark = Some(
@@ -188,10 +203,22 @@ fn parse_source(text: &str, source_name: &str, ctx: &mut Ctx) -> Result<(), Pars
                 let amt = AmountCtx {
                     styles: &ctx.styles,
                     default_mark: ctx.default_decimal_mark,
+                    default_commodity: ctx.default_commodity.as_ref(),
                 };
                 let price = parse_price_directive(trimmed, amt, ctx.default_year)
                     .map_err(|e| locate(source_name, line_no, line, e))?;
                 ctx.prices.push(price);
+            }
+            // `D AMOUNT` declares the default commodity + its style; bare-number
+            // amounts adopt both. It also establishes that commodity's style,
+            // like a `commodity` directive.
+            "D" => {
+                let (commodity, style) = parse_default_commodity_directive(trimmed)
+                    .map_err(|e| locate(source_name, line_no, line, e))?;
+                ctx.styles.insert(commodity.clone(), style.clone());
+                ctx.commodity_styles
+                    .push((commodity.clone(), style.clone()));
+                ctx.default_commodity = Some((commodity, style));
             }
             "include" => {
                 let path = resolve_include(trimmed, source_name)
@@ -285,19 +312,49 @@ fn parse_account_directive(line: &str, line_no: u32) -> Result<AccountDeclaratio
     })
 }
 
-fn parse_commodity_directive(line: &str) -> Result<(Commodity, AmountStyle), ParseError> {
+/// Parse a `commodity` directive into its commodity, optional style (absent for
+/// a symbol-only `commodity $`), and comment tags.
+#[allow(clippy::type_complexity)]
+fn parse_commodity_directive(
+    line: &str,
+) -> Result<(Commodity, Option<AmountStyle>, Vec<(String, String)>), ParseError> {
     let after = line
         .strip_prefix("commodity")
         .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?
         .trim_start();
-    let (spec_part, _comment) = split_comment(after);
+    let (spec_part, comment) = split_comment(after);
     let spec = spec_part.trim();
-    let (commodity, number, side, spaced) = split_commodity_number(spec)?;
+    let (_comment_text, tags) = build_comment(comment);
+    if spec.is_empty() {
+        return Err(ParseError::MalformedDirective(line.to_string()));
+    }
+    // A symbol-only spec (no number, e.g. `commodity $`) declares the commodity
+    // without a style; a full spec (`commodity $1,000.00`) yields both.
+    match parse_commodity_style_spec(spec) {
+        Ok((commodity, style)) => Ok((commodity, Some(style), tags)),
+        Err(_) => Ok((Commodity(spec.to_string()), None, tags)),
+    }
+}
+
+/// Parse a `D AMOUNT` default-commodity directive into its commodity + style.
+fn parse_default_commodity_directive(line: &str) -> Result<(Commodity, AmountStyle), ParseError> {
+    let after = line
+        .strip_prefix('D')
+        .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?
+        .trim_start();
+    let (spec_part, _comment) = split_comment(after);
+    parse_commodity_style_spec(spec_part.trim())
+}
+
+/// Parse a commodity + amount-style specimen (e.g. `$1,000.00`, `1.000,00 EUR`)
+/// into the commodity symbol and its canonical display style.
+fn parse_commodity_style_spec(spec: &str) -> Result<(Commodity, AmountStyle), ParseError> {
+    let (commodity, number, side, spaced) = split_commodity_spec(spec)?;
     let (decimal_mark, digit_groups, precision) = analyze_number(&number, None);
     let style = AmountStyle {
         side,
         spaced,
-        decimal_mark: decimal_mark.unwrap_or('.'),
+        decimal_mark,
         digit_groups,
         precision,
     };
@@ -480,9 +537,12 @@ struct Header {
 /// A posting before amount inference (its amount may be `None` if elided).
 struct RawPosting {
     status: Status,
+    ptype: PostingType,
     account: String,
     amount: Option<Amount>,
     balance_assertion: Option<BalanceAssertion>,
+    date: Option<String>,
+    date2: Option<String>,
     comment: String,
     tags: Vec<(String, String)>,
 }
@@ -506,6 +566,9 @@ fn parse_transaction(
         .map(|d| normalize_date(d, default_year))
         .transpose()
         .map_err(|e| locate(source_name, header_no, lines[start], e))?;
+    // A posting's `date:`/`date2:` tag may be yearless (`3/4`); hledger infers
+    // the year from the transaction's primary date.
+    let txn_year = iso_year(&date);
 
     let mut raw_postings: Vec<RawPosting> = Vec::new();
     let mut last_posting_line = header_no;
@@ -522,14 +585,14 @@ fn parse_transaction(
             continue;
         }
         let posting_no = to_u32(j + 1);
-        let posting = parse_posting(line, posting_no, amt)
+        let posting = parse_posting(line, posting_no, amt, txn_year)
             .map_err(|e| locate(source_name, posting_no, line, e))?;
         raw_postings.push(posting);
         last_posting_line = posting_no;
         j += 1;
     }
 
-    let postings = balance_postings(raw_postings, header_no, amt.styles)
+    let postings = balance_postings(raw_postings, header_no)
         .map_err(|e| locate(source_name, header_no, lines[start], e))?;
     let source_span = (
         SourcePos {
@@ -604,9 +667,16 @@ fn split_date(token: &str) -> (String, Option<String>) {
     }
 }
 
-fn parse_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<RawPosting, ParseError> {
+fn parse_posting(
+    line: &str,
+    line_no: u32,
+    amt: AmountCtx,
+    txn_year: Option<i32>,
+) -> Result<RawPosting, ParseError> {
     let (main, comment) = split_comment(line);
     let (comment_text, tags) = build_comment(comment);
+    let date = posting_date_tag(&tags, "date", txn_year)?;
+    let date2 = posting_date_tag(&tags, "date2", txn_year)?;
 
     let trimmed = main.trim_start();
     let (status, after_status) = if let Some(r) = trimmed.strip_prefix('*') {
@@ -618,7 +688,7 @@ fn parse_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<RawPosting,
     };
 
     let (account_part, amount_part) = split_account_amount(after_status);
-    let account = account_part.trim().to_string();
+    let (ptype, account) = posting_type_and_account(account_part.trim());
     let amount_expr = amount_part.trim();
 
     let (amount, balance_assertion) = if amount_expr.is_empty() {
@@ -629,12 +699,46 @@ fn parse_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<RawPosting,
 
     Ok(RawPosting {
         status,
+        ptype,
         account,
         amount,
         balance_assertion,
+        date,
+        date2,
         comment: comment_text,
         tags,
     })
+}
+
+/// Classify a posting's account field by its wrapping brackets and return the
+/// bare account name: `(a)` -> unbalanced virtual, `[a]` -> balanced virtual,
+/// anything else (including parens/brackets in the middle) -> regular.
+fn posting_type_and_account(account: &str) -> (PostingType, String) {
+    if let Some(inner) = account.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        (PostingType::Virtual, inner.trim().to_string())
+    } else if let Some(inner) = account.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        (PostingType::BalancedVirtual, inner.trim().to_string())
+    } else {
+        (PostingType::Regular, account.to_string())
+    }
+}
+
+/// The ISO-normalized value of the first posting comment tag named `key`
+/// (`date`/`date2`), or `None` when absent. Yearless values take `txn_year`.
+fn posting_date_tag(
+    tags: &[(String, String)],
+    key: &str,
+    txn_year: Option<i32>,
+) -> Result<Option<String>, ParseError> {
+    match tags.iter().find(|(k, _)| k == key) {
+        Some((_, value)) => Ok(Some(normalize_date(value.trim(), txn_year)?)),
+        None => Ok(None),
+    }
+}
+
+/// The year component of an ISO `YYYY-MM-DD` date string.
+fn iso_year(date: &str) -> Option<i32> {
+    date.split('-').next().and_then(|year| year.parse().ok())
 }
 
 fn parse_amount_and_assertion(
@@ -676,7 +780,10 @@ fn parse_amount_and_assertion(
 fn parse_primary_and_cost(expr: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
     if let Some((primary, price)) = expr.split_once("@@") {
         let mut amount = parse_amount(primary.trim(), amt)?;
-        let cost_amount = parse_amount(price.trim(), amt)?;
+        let mut cost_amount = parse_amount(price.trim(), amt)?;
+        // hledger stores a total-cost (@@) amount at its natural scale (trailing
+        // zeros stripped), while keeping the as-written display precision.
+        cost_amount.quantity = cost_amount.quantity.normalized();
         amount.cost = Some(Box::new(Cost {
             kind: CostKind::Total,
             amount: cost_amount,
@@ -700,11 +807,25 @@ fn parse_primary_and_cost(expr: &str, amt: AmountCtx) -> Result<Amount, ParseErr
 /// `decimal-mark` default before falling back to literal inference.
 fn parse_amount(token: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
     let (symbol, number, side, spaced) = split_commodity_number(token)?;
-    let commodity = Commodity(symbol);
 
+    // A bare number adopts the default commodity and its full style (including
+    // its precision) from a `D` directive, if one is in effect.
+    if symbol.is_empty()
+        && let Some((commodity, style)) = amt.default_commodity
+    {
+        let quantity = Dec::parse(&number, style.decimal_mark.unwrap_or('.'))?;
+        return Ok(Amount {
+            commodity: commodity.clone(),
+            quantity,
+            style: style.clone(),
+            cost: None,
+        });
+    }
+
+    let commodity = Commodity(symbol);
     let canonical = amt.styles.get(&commodity);
     let decimal_mark = canonical
-        .map(|style| style.decimal_mark)
+        .and_then(|style| style.decimal_mark)
         .or(amt.default_mark)
         .unwrap_or('.');
     let quantity = Dec::parse(&number, decimal_mark)?;
@@ -725,7 +846,12 @@ fn parse_amount(token: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
             AmountStyle {
                 side,
                 spaced,
-                decimal_mark: mark.unwrap_or('.'),
+                // hledger emits "." even for a no-decimal amount of a commodity
+                // that is never written with one (e.g. `$1`), so default to
+                // Some here. The true per-commodity canonical null (a commodity
+                // seen ONLY without a decimal, e.g. `-1712 D`) needs a post-parse
+                // style pass — that's the still-open `precision` corpus gap.
+                decimal_mark: Some(mark.unwrap_or('.')),
                 digit_groups,
                 precision,
             }
@@ -744,47 +870,85 @@ fn parse_amount(token: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
 // Amount inference (balancing)
 // ---------------------------------------------------------------------------
 
+/// One commodity's running balance while inferring an elided posting: the
+/// signed total, the maximum contributing precision, and the display style of
+/// the first contributing amount. Any inferred leg adopts that style (its
+/// side/spacing/mark/groups), so a right-side or grouped commodity infers
+/// correctly instead of defaulting to a bare left-side style.
+struct CommoditySum {
+    commodity: Commodity,
+    total: Dec,
+    precision: u32,
+    style: AmountStyle,
+}
+
 /// Fill in the single elided posting (if any) so the transaction balances per
 /// commodity, then finalize all postings.
-fn balance_postings(
-    raw: Vec<RawPosting>,
-    line_no: u32,
-    styles: &Styles,
-) -> Result<Vec<Posting>, ParseError> {
-    let elided = raw.iter().filter(|p| p.amount.is_none()).count();
-    if elided > 1 {
-        return Err(ParseError::MultipleElidedPostings(line_no));
-    }
-
-    // Accumulate each explicit posting's cost value, per commodity, preserving
-    // first-seen order and the maximum contributing precision.
-    let mut sums: Vec<(Commodity, Dec, u32)> = Vec::new();
-    for posting in &raw {
-        if let Some(amount) = &posting.amount {
-            let (commodity, quantity, precision) = cost_contribution(amount)?;
-            match sums.iter_mut().find(|(c, _, _)| *c == commodity) {
-                Some(entry) => {
-                    entry.1 = entry.1.add(quantity)?;
-                    entry.2 = entry.2.max(precision);
-                }
-                None => sums.push((commodity, quantity, precision)),
-            }
-        }
-    }
+///
+/// Real and balanced-virtual (`[a]`) postings balance within their own separate
+/// groups; an unbalanced virtual (`(a)`) posting is excluded from balancing (and
+/// only ever keeps an explicit amount here).
+fn balance_postings(raw: Vec<RawPosting>, line_no: u32) -> Result<Vec<Posting>, ParseError> {
+    let regular_sums = group_sums(&raw, PostingType::Regular, line_no)?;
+    let balanced_virtual_sums = group_sums(&raw, PostingType::BalancedVirtual, line_no)?;
 
     raw.into_iter()
-        .map(|posting| finalize_posting(posting, &sums, styles))
+        .map(|posting| {
+            let sums = match posting.ptype {
+                PostingType::Regular => regular_sums.as_slice(),
+                PostingType::BalancedVirtual => balanced_virtual_sums.as_slice(),
+                PostingType::Virtual => &[],
+            };
+            finalize_posting(posting, sums)
+        })
         .collect()
 }
 
-/// A posting's contribution to the transaction balance: its cost value if
-/// priced, otherwise the amount itself.
-fn cost_contribution(amount: &Amount) -> Result<(Commodity, Dec, u32), ParseError> {
+/// Accumulate the per-commodity balance of the `ptype` postings, preserving
+/// first-seen order, the maximum contributing precision, and the first-seen
+/// style. Errors if more than one posting in the group is elided (only one can
+/// be inferred).
+fn group_sums(
+    raw: &[RawPosting],
+    ptype: PostingType,
+    line_no: u32,
+) -> Result<Vec<CommoditySum>, ParseError> {
+    let group = || raw.iter().filter(|posting| posting.ptype == ptype);
+    if group().filter(|posting| posting.amount.is_none()).count() > 1 {
+        return Err(ParseError::MultipleElidedPostings(line_no));
+    }
+
+    let mut sums: Vec<CommoditySum> = Vec::new();
+    for posting in group() {
+        if let Some(amount) = &posting.amount {
+            let (commodity, quantity, precision, style) = cost_contribution(amount)?;
+            match sums.iter_mut().find(|entry| entry.commodity == commodity) {
+                Some(entry) => {
+                    entry.total = entry.total.add(quantity)?;
+                    entry.precision = entry.precision.max(precision);
+                }
+                None => sums.push(CommoditySum {
+                    commodity,
+                    total: quantity,
+                    precision,
+                    style,
+                }),
+            }
+        }
+    }
+    Ok(sums)
+}
+
+/// A posting's contribution to the transaction balance: its cost value (and the
+/// cost commodity's style) if priced, otherwise the amount itself (and its own
+/// style).
+fn cost_contribution(amount: &Amount) -> Result<(Commodity, Dec, u32, AmountStyle), ParseError> {
     match &amount.cost {
         None => Ok((
             amount.commodity.clone(),
             amount.quantity,
             amount.style.precision,
+            amount.style.clone(),
         )),
         Some(cost) => {
             let price = &cost.amount;
@@ -799,26 +963,32 @@ fn cost_contribution(amount: &Amount) -> Result<(Commodity, Dec, u32), ParseErro
                     }
                 }
             };
-            Ok((price.commodity.clone(), quantity, price.style.precision))
+            Ok((
+                price.commodity.clone(),
+                quantity,
+                price.style.precision,
+                price.style.clone(),
+            ))
         }
     }
 }
 
-fn finalize_posting(
-    raw: RawPosting,
-    sums: &[(Commodity, Dec, u32)],
-    styles: &Styles,
-) -> Result<Posting, ParseError> {
+fn finalize_posting(raw: RawPosting, sums: &[CommoditySum]) -> Result<Posting, ParseError> {
     let amounts = match raw.amount {
         Some(amount) => vec![amount],
         None => sums
             .iter()
-            .filter(|(_, value, _)| !value.is_zero())
-            .map(|(commodity, value, precision)| {
+            .filter(|entry| !entry.total.is_zero())
+            .map(|entry| {
                 Ok(Amount {
-                    commodity: commodity.clone(),
-                    quantity: value.neg()?,
-                    style: inferred_style(commodity, *precision, styles),
+                    commodity: entry.commodity.clone(),
+                    quantity: entry.total.neg()?,
+                    // The commodity's own style bits, with the precision carried
+                    // through from the contributing amounts.
+                    style: AmountStyle {
+                        precision: entry.precision,
+                        ..entry.style.clone()
+                    },
                     cost: None,
                 })
             })
@@ -827,33 +997,15 @@ fn finalize_posting(
 
     Ok(Posting {
         status: raw.status,
+        ptype: raw.ptype,
         account: AccountName(raw.account),
         amounts,
         balance_assertion: raw.balance_assertion,
+        date: raw.date,
+        date2: raw.date2,
         comment: raw.comment,
         tags: raw.tags,
     })
-}
-
-/// The style for an inferred amount: canonical format bits plus the precision
-/// carried through from the contributing amounts.
-fn inferred_style(commodity: &Commodity, precision: u32, styles: &Styles) -> AmountStyle {
-    match styles.get(commodity) {
-        Some(style) => AmountStyle {
-            side: style.side,
-            spaced: style.spaced,
-            decimal_mark: style.decimal_mark,
-            digit_groups: style.digit_groups.clone(),
-            precision,
-        },
-        None => AmountStyle {
-            side: CommoditySide::Left,
-            spaced: false,
-            decimal_mark: '.',
-            digit_groups: None,
-            precision,
-        },
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -931,6 +1083,77 @@ fn is_commodity_char(c: char) -> bool {
         && !matches!(c, '-' | '+' | '.' | ',' | '@' | '=' | ';' | '(' | ')')
 }
 
+/// The byte length of the leading numeric literal in `token`: an optional sign,
+/// digits and decimal/group marks, and a scientific exponent (`e`/`E`, optional
+/// sign, one or more digits). A trailing `e`/`E` with no exponent digits is left
+/// for the commodity (hledger parses `1.00005e` as `1.00005` in commodity `e`).
+fn numeric_prefix_len(token: &str) -> usize {
+    let bytes = token.as_bytes();
+    let mut i = 0;
+    if i < bytes.len() && matches!(bytes[i], b'-' | b'+') {
+        i += 1;
+    }
+    while i < bytes.len() && (bytes[i].is_ascii_digit() || matches!(bytes[i], b'.' | b',')) {
+        i += 1;
+    }
+    if i < bytes.len() && matches!(bytes[i], b'e' | b'E') {
+        let mut j = i + 1;
+        if j < bytes.len() && matches!(bytes[j], b'-' | b'+') {
+            j += 1;
+        }
+        let exponent_start = j;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > exponent_start {
+            i = j;
+        }
+    }
+    i
+}
+
+/// Split a `commodity`/`D` directive specimen into `(commodity, number, side,
+/// spaced)`. Unlike [`split_commodity_number`], the number may contain a space
+/// digit-group separator (`1 000.00 EUR`), so the commodity is taken as the
+/// maximal run of commodity characters at whichever end it occupies.
+fn split_commodity_spec(spec: &str) -> Result<(String, String, CommoditySide, bool), ParseError> {
+    let spec = spec.trim();
+    let first = spec
+        .chars()
+        .next()
+        .ok_or_else(|| ParseError::MalformedAmount(spec.to_string()))?;
+    if is_commodity_char(first) {
+        let end = spec
+            .char_indices()
+            .find(|(_, c)| !is_commodity_char(*c))
+            .map_or(spec.len(), |(idx, _)| idx);
+        let commodity = spec[..end].to_string();
+        let rest = &spec[end..];
+        let spaced = rest.starts_with(char::is_whitespace);
+        let number = rest.trim().to_string();
+        if number.is_empty() {
+            return Err(ParseError::MalformedAmount(spec.to_string()));
+        }
+        Ok((commodity, number, CommoditySide::Left, spaced))
+    } else {
+        let start = spec
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| is_commodity_char(*c))
+            .map(|(idx, _)| idx)
+            .last()
+            .ok_or_else(|| ParseError::MalformedAmount(spec.to_string()))?;
+        let commodity = spec[start..].to_string();
+        let prefix = &spec[..start];
+        let spaced = prefix.ends_with(char::is_whitespace);
+        let number = prefix.trim().to_string();
+        if number.is_empty() {
+            return Err(ParseError::MalformedAmount(spec.to_string()));
+        }
+        Ok((commodity, number, CommoditySide::Right, spaced))
+    }
+}
+
 /// Split an amount token into `(commodity, number, side, spaced)`.
 fn split_commodity_number(
     token: &str,
@@ -979,22 +1202,19 @@ fn split_commodity_number(
             return Ok((commodity, number, CommoditySide::Left, spaced));
         }
 
-        let mut end = 0;
-        for (idx, ch) in token.char_indices() {
-            let is_sign = idx == 0 && matches!(ch, '-' | '+');
-            if is_sign || ch.is_ascii_digit() || ch == '.' || ch == ',' {
-                end = idx + ch.len_utf8();
-            } else {
-                break;
-            }
-        }
+        let end = numeric_prefix_len(token);
         let number = token[..end].to_string();
         let rest = &token[end..];
-        let spaced = rest.starts_with(char::is_whitespace);
         let commodity = rest.trim().to_string();
-        if number.is_empty() || commodity.is_empty() {
+        if number.is_empty() {
             return Err(ParseError::MalformedAmount(token.to_string()));
         }
+        if commodity.is_empty() {
+            // A bare number with no commodity symbol: hledger models this as the
+            // empty commodity, displayed left-side with no spacing.
+            return Ok((commodity, number, CommoditySide::Left, false));
+        }
+        let spaced = rest.starts_with(char::is_whitespace);
         Ok((commodity, number, CommoditySide::Right, spaced))
     }
 }
@@ -1043,6 +1263,11 @@ fn analyze_number(
         },
     };
 
+    // A whitespace character (e.g. the space in `1 000.00`) is always a
+    // digit-group separator, never a decimal mark; adopt it when no `.`/`,`
+    // group was found.
+    let group_mark = group_mark.or_else(|| body.chars().find(|c| c.is_whitespace()));
+
     let precision = match decimal_mark {
         Some(mark) => {
             let pos = body.rfind(mark).map_or(body.len(), |p| p + mark.len_utf8());
@@ -1073,9 +1298,10 @@ mod tests {
     use super::*;
 
     fn eur_styles() -> Styles {
-        let (commodity, style) = parse_commodity_directive("commodity 1.000,00 EUR").unwrap();
+        let (commodity, style, _tags) =
+            parse_commodity_directive("commodity 1.000,00 EUR").unwrap();
         let mut styles = HashMap::new();
-        styles.insert(commodity, style);
+        styles.insert(commodity, style.unwrap());
         styles
     }
 
@@ -1084,16 +1310,18 @@ mod tests {
         AmountCtx {
             styles,
             default_mark: None,
+            default_commodity: None,
         }
     }
 
     #[test]
     fn commodity_directive_dollar_style() {
-        let (commodity, style) = parse_commodity_directive("commodity $1,000.00").unwrap();
+        let (commodity, style, _tags) = parse_commodity_directive("commodity $1,000.00").unwrap();
+        let style = style.unwrap();
         assert_eq!(commodity, Commodity("$".to_string()));
         assert_eq!(style.side, CommoditySide::Left);
         assert!(!style.spaced);
-        assert_eq!(style.decimal_mark, '.');
+        assert_eq!(style.decimal_mark, Some('.'));
         assert_eq!(
             style.digit_groups,
             Some(DigitGroups {
@@ -1106,11 +1334,13 @@ mod tests {
 
     #[test]
     fn commodity_directive_eur_comma_style() {
-        let (commodity, style) = parse_commodity_directive("commodity 1.000,00 EUR").unwrap();
+        let (commodity, style, _tags) =
+            parse_commodity_directive("commodity 1.000,00 EUR").unwrap();
+        let style = style.unwrap();
         assert_eq!(commodity, Commodity("EUR".to_string()));
         assert_eq!(style.side, CommoditySide::Right);
         assert!(style.spaced);
-        assert_eq!(style.decimal_mark, ',');
+        assert_eq!(style.decimal_mark, Some(','));
         assert_eq!(
             style.digit_groups,
             Some(DigitGroups {
@@ -1126,7 +1356,7 @@ mod tests {
         let styles = eur_styles();
         let amount = parse_amount("645,00 EUR", ctx(&styles)).unwrap();
         assert_eq!(amount.quantity, Dec::new(64500, 2));
-        assert_eq!(amount.style.decimal_mark, ',');
+        assert_eq!(amount.style.decimal_mark, Some(','));
         assert_eq!(amount.style.precision, 2);
     }
 
@@ -1203,7 +1433,7 @@ mod tests {
         let amount = &postings[0].amounts[0];
         assert_eq!(amount.commodity, Commodity("CHF".to_string()));
         assert_eq!(amount.quantity, Dec::new(123450, 2));
-        assert_eq!(amount.style.decimal_mark, ',');
+        assert_eq!(amount.style.decimal_mark, Some(','));
         assert_eq!(
             amount.style.digit_groups,
             Some(DigitGroups {

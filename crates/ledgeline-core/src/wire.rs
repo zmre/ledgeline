@@ -6,8 +6,8 @@
 //! exactly (camelCase ones via `#[serde(rename = ...)]`).
 
 use crate::model::{
-    AccountDeclaration, Amount, CommoditySide, CostKind, Journal, Posting, PriceDirective,
-    SourcePos, Status, Transaction,
+    AccountDeclaration, Amount, CommoditySide, CostKind, Journal, Posting, PostingType,
+    PriceDirective, SourcePos, Status, Transaction,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -86,7 +86,7 @@ pub struct WireQuantity {
 pub struct WireStyle {
     ascommodityside: &'static str,
     ascommodityspaced: bool,
-    asdecimalmark: String,
+    asdecimalmark: Option<String>,
     asdigitgroups: Option<(String, Vec<u8>)>,
     asprecision: u32,
     asrounding: &'static str,
@@ -120,11 +120,23 @@ pub fn journal_to_transactions(journal: &Journal) -> Vec<WireTransaction> {
         .iter()
         .map(|decl| (decl.name.0.as_str(), decl.tags.as_slice()))
         .collect();
+    let commodity_tags: HashMap<&str, &[(String, String)]> = journal
+        .commodity_tags
+        .iter()
+        .map(|(commodity, tags)| (commodity.0.as_str(), tags.as_slice()))
+        .collect();
 
     journal
         .transactions
         .iter()
-        .map(|transaction| transaction_to_wire(transaction, &account_tags, &journal.source_name))
+        .map(|transaction| {
+            transaction_to_wire(
+                transaction,
+                &account_tags,
+                &commodity_tags,
+                &journal.source_name,
+            )
+        })
         .collect()
 }
 
@@ -140,6 +152,7 @@ pub fn journal_to_value(journal: &Journal) -> Result<serde_json::Value, serde_js
 fn transaction_to_wire(
     transaction: &Transaction,
     account_tags: &HashMap<&str, &[(String, String)]>,
+    commodity_tags: &HashMap<&str, &[(String, String)]>,
     source_name: &str,
 ) -> WireTransaction {
     let tindex = transaction.index.0;
@@ -156,7 +169,9 @@ fn transaction_to_wire(
         tpostings: transaction
             .postings
             .iter()
-            .map(|posting| posting_to_wire(posting, tindex, account_tags, source_name))
+            .map(|posting| {
+                posting_to_wire(posting, tindex, account_tags, commodity_tags, source_name)
+            })
             .collect(),
         tsourcepos: [
             pos_to_wire(transaction.source_span.0, source_name),
@@ -169,6 +184,7 @@ fn posting_to_wire(
     posting: &Posting,
     tindex: u32,
     account_tags: &HashMap<&str, &[(String, String)]>,
+    commodity_tags: &HashMap<&str, &[(String, String)]>,
     source_name: &str,
 ) -> WirePosting {
     WirePosting {
@@ -183,13 +199,21 @@ fn posting_to_wire(
             }
         }),
         pcomment: posting.comment.clone(),
-        pdate: None,
-        pdate2: None,
+        pdate: posting.date.clone(),
+        pdate2: posting.date2.clone(),
         poriginal: None,
         pstatus: status_str(posting.status),
-        ptags: posting_tags(posting, account_tags),
+        ptags: posting_tags(posting, account_tags, commodity_tags),
         ptransaction_: tindex.to_string(),
-        ptype: "RegularPosting",
+        ptype: ptype_str(posting.ptype),
+    }
+}
+
+fn ptype_str(ptype: PostingType) -> &'static str {
+    match ptype {
+        PostingType::Regular => "RegularPosting",
+        PostingType::Virtual => "VirtualPosting",
+        PostingType::BalancedVirtual => "BalancedVirtualPosting",
     }
 }
 
@@ -215,7 +239,7 @@ fn amount_to_wire(amount: &Amount) -> WireAmount {
                 CommoditySide::Right => "R",
             },
             ascommodityspaced: amount.style.spaced,
-            asdecimalmark: amount.style.decimal_mark.to_string(),
+            asdecimalmark: amount.style.decimal_mark.map(|mark| mark.to_string()),
             asdigitgroups: amount
                 .style
                 .digit_groups
@@ -229,10 +253,14 @@ fn amount_to_wire(amount: &Amount) -> WireAmount {
 
 /// Compute a posting's `ptags`: its own comment tags first, then account tags
 /// inherited from the account and its ancestors (most-specific first),
-/// de-duplicated on exact `(key, value)` keeping the first occurrence.
+/// de-duplicated on exact `(key, value)` keeping the first occurrence. Finally,
+/// tags from the `commodity` directives of the posting's amounts are appended,
+/// but only for names not already present (a posting or account tag of the same
+/// name takes precedence, matching hledger).
 fn posting_tags(
     posting: &Posting,
     account_tags: &HashMap<&str, &[(String, String)]>,
+    commodity_tags: &HashMap<&str, &[(String, String)]>,
 ) -> Vec<(String, String)> {
     let mut tags: Vec<(String, String)> = posting.tags.clone();
     for ancestor in posting.account.self_and_ancestors() {
@@ -242,9 +270,24 @@ fn posting_tags(
     }
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
-    tags.into_iter()
+    let mut result: Vec<(String, String)> = tags
+        .into_iter()
         .filter(|pair| seen.insert(pair.clone()))
-        .collect()
+        .collect();
+
+    let existing_names: HashSet<String> = result.iter().map(|(name, _)| name.clone()).collect();
+    let mut added: HashSet<(String, String)> = HashSet::new();
+    for amount in &posting.amounts {
+        let Some(declared) = commodity_tags.get(amount.commodity.0.as_str()) else {
+            continue;
+        };
+        for pair in declared.iter() {
+            if !existing_names.contains(&pair.0) && added.insert(pair.clone()) {
+                result.push(pair.clone());
+            }
+        }
+    }
+    result
 }
 
 fn pos_to_wire(pos: SourcePos, source_name: &str) -> WirePos {

@@ -157,9 +157,23 @@ impl Dec {
     /// digits (so `"5.00"` yields scale 2, not the normalized scale 0).
     pub fn parse(input: &str, decimal_mark: char) -> Result<Self, DecError> {
         let trimmed = input.trim();
-        let (negative, body) = match trimmed.strip_prefix('-') {
+        // Scientific notation: split off an `e`/`E` exponent (optionally signed).
+        // hledger evaluates `1.05e2` to 105 and `31415926e-7` to 3.1415926.
+        let (mantissa_input, exponent) = match trimmed.find(['e', 'E']) {
+            Some(pos) => {
+                let exponent = trimmed[pos + 1..]
+                    .parse::<i32>()
+                    .map_err(|_| DecError::InvalidNumber(input.to_string()))?;
+                (&trimmed[..pos], exponent)
+            }
+            None => (trimmed, 0),
+        };
+        let (negative, body) = match mantissa_input.strip_prefix('-') {
             Some(rest) => (true, rest),
-            None => (false, trimmed.strip_prefix('+').unwrap_or(trimmed)),
+            None => (
+                false,
+                mantissa_input.strip_prefix('+').unwrap_or(mantissa_input),
+            ),
         };
         let body = body.trim();
         if body.is_empty() {
@@ -195,7 +209,8 @@ impl Dec {
         // hledger reads at most `MAX_PARSE_PLACES` fractional digits, rounding the
         // remainder half-to-even; match that so parsed prices/amounts agree
         // byte-for-byte (e.g. a 13-place price stores 10 places).
-        Ok(Self::new(mantissa, places).rounded_half_even(MAX_PARSE_PLACES))
+        let base = Self::new(mantissa, places);
+        Ok(apply_exponent(base, exponent)?.rounded_half_even(MAX_PARSE_PLACES))
     }
 
     /// Round to `target` fractional places using round-half-to-even (banker's
@@ -234,6 +249,25 @@ const MAX_PARSE_PLACES: u32 = 10;
 /// `10^exp` as an `i128`, checked for overflow.
 fn pow10(exp: u32) -> Result<i128, DecError> {
     10i128.checked_pow(exp).ok_or(DecError::Overflow)
+}
+
+/// Apply a base-10 `exponent` (scientific notation) to a parsed decimal: the
+/// value becomes `mantissa × 10^exponent`. When the exponent exceeds the
+/// fractional places the scale drops to zero and the mantissa is scaled up.
+fn apply_exponent(dec: Dec, exponent: i32) -> Result<Dec, DecError> {
+    if exponent == 0 {
+        return Ok(dec);
+    }
+    let net = i64::from(dec.places) - i64::from(exponent);
+    if net >= 0 {
+        let places = u32::try_from(net).map_err(|_| DecError::Overflow)?;
+        Ok(Dec::new(dec.mantissa, places))
+    } else {
+        let shift = u32::try_from(-net).map_err(|_| DecError::Overflow)?;
+        let factor = pow10(shift)?;
+        let mantissa = dec.mantissa.checked_mul(factor).ok_or(DecError::Overflow)?;
+        Ok(Dec::new(mantissa, 0))
+    }
 }
 
 impl PartialEq for Dec {
