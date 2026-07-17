@@ -1,0 +1,155 @@
+[
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2010-01-01",
+    "tdate2": null,
+    "tdescription": "x",
+    "tindex": 1,
+    "tpostings": [
+      {
+        "paccount": "balanced virtual",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 10,
+              "decimalPlaces": 0,
+              "floatingPoint": 10
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "BalancedVirtualPosting"
+      },
+      {
+        "paccount": "balanced virtual",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -10,
+              "decimalPlaces": 0,
+              "floatingPoint": -10
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "BalancedVirtualPosting"
+      },
+      {
+        "paccount": "a",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 1,
+              "decimalPlaces": 0,
+              "floatingPoint": 1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "b",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -1,
+              "decimalPlaces": 0,
+              "floatingPoint": -1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 4,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/balanced-virtual-postings.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 9,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/balanced-virtual-postings.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  }
+]

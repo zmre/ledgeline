@@ -1,0 +1,9 @@
+; blank-description.test cases 1 and 2: an empty description, with and
+; without a separating space after the date.
+2010-01-01
+    a   $1
+    b
+
+2010-01-02
+    a   $1
+    b

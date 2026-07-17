@@ -1,0 +1,5 @@
+; posting-dates.test case 1: a `date:` tag in a posting comment sets that
+; posting's pdate (the year is inferred from the transaction).
+2000-01-02
+    a   $1  ; date: 3/4
+    b

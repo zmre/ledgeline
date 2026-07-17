@@ -1,0 +1,269 @@
+[
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2000-02-29",
+    "tdate2": null,
+    "tdescription": "leap day",
+    "tindex": 1,
+    "tpostings": [
+      {
+        "paccount": "a",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 1,
+              "decimalPlaces": 0,
+              "floatingPoint": 1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "b",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -1,
+              "decimalPlaces": 0,
+              "floatingPoint": -1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 3,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/dates.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 6,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/dates.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  },
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2020-01-05",
+    "tdate2": null,
+    "tdescription": "dashes",
+    "tindex": 2,
+    "tpostings": [
+      {
+        "paccount": "a",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 1,
+              "decimalPlaces": 0,
+              "floatingPoint": 1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "2",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "b",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -1,
+              "decimalPlaces": 0,
+              "floatingPoint": -1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "2",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 7,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/dates.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 10,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/dates.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  },
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2020-01-06",
+    "tdate2": null,
+    "tdescription": "dots",
+    "tindex": 3,
+    "tpostings": [
+      {
+        "paccount": "a",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 1,
+              "decimalPlaces": 0,
+              "floatingPoint": 1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "3",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "b",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -1,
+              "decimalPlaces": 0,
+              "floatingPoint": -1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "3",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 11,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/dates.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 14,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/dates.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  }
+]

@@ -1,0 +1,5 @@
+; numbers.test case 2: no digits before the decimal separator (.01). Both
+; legs explicit so the number parsing is what is exercised.
+2017-01-01
+    a   .01 EUR
+    b  -.01 EUR

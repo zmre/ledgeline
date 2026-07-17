@@ -1,0 +1,5 @@
+; assertions/dates/etc. throughout hledger's suite use amounts with no
+; commodity symbol; hledger treats the empty string as the commodity.
+2020-01-01
+    a  1
+    b  -1

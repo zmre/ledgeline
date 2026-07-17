@@ -1,0 +1,7 @@
+; costs.test: hledger normalizes a @@ total-cost amount (strips trailing
+; zeros), so `@@ $135.00` is stored as mantissa 135 / 0 places; our engine
+; keeps the as-written 13500 / 2 places. (The regular `$-135.00` posting
+; amount is NOT normalized by either.)
+2011-01-01
+    a    €100.00 @@ $135.00
+    b    $-135.00

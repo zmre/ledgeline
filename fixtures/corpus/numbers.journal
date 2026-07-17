@@ -1,0 +1,5 @@
+; hledger test/journal/numbers.test case 1: comma digit groups + period
+; decimal, right-side EUR commodity. Real postings so it is self-contained.
+2017-01-01
+    a   1,000.00 EUR
+    b  -1,000.00 EUR

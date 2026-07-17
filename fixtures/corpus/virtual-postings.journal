@@ -1,0 +1,7 @@
+; virtual-postings.test case 1: an unbalanced virtual posting `(name)` is
+; excluded from balancing and printed as a bare account with ptype
+; VirtualPosting.
+2009-01-01 x
+    (virtual)  $100
+    a   $1
+    b

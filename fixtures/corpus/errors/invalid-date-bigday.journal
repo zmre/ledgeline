@@ -1,0 +1,4 @@
+; dates.test case 2: day 32 is out of range.
+2010/12/32 x
+    a   $1
+    b

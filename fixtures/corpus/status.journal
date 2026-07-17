@@ -1,0 +1,14 @@
+; status.test: unmarked / ! pending / * cleared marks on both the
+; transaction and individual postings (examples/status.journal, adapted
+; to carry a $ commodity so the amounts parse).
+2017-01-01 unmarked
+    a   $1
+    b  $-1
+
+2017-01-02 ! pending
+    a   $1
+    ! b  $-1
+
+2017-01-03 * cleared
+    a   $1
+    * b  $-1

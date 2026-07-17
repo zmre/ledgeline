@@ -1,0 +1,7 @@
+; The inferred (elided) counter-leg should adopt the commodity's canonical
+; style. For a right-side, digit-grouped commodity like EUR, hledger infers
+; `-1,000.00 EUR` (side R, comma groups); our engine falls back to a bare
+; left-side style. Distilled from numbers.test / directive-decimal-mark.test.
+2017-01-01
+    a   1,000.00 EUR
+    b

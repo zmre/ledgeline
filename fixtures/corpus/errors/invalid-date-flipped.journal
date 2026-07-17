@@ -1,0 +1,4 @@
+; dates.test case 1: month and day transposed (month 31 is invalid).
+2010/31/12 x
+    a   $1
+    b

@@ -1,0 +1,4 @@
+; dates.test case 5: a date must be followed by whitespace or newline,
+; not a `*`.
+2015/9/6*
+    a   $0

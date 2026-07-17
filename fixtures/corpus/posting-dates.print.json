@@ -1,0 +1,96 @@
+[
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2000-01-02",
+    "tdate2": null,
+    "tdescription": "",
+    "tindex": 1,
+    "tpostings": [
+      {
+        "paccount": "a",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 1,
+              "decimalPlaces": 0,
+              "floatingPoint": 1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "date: 3/4\n",
+        "pdate": "2000-03-04",
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [
+          [
+            "date",
+            "3/4"
+          ]
+        ],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "b",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -1,
+              "decimalPlaces": 0,
+              "floatingPoint": -1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 3,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/posting-dates.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 6,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/posting-dates.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  }
+]

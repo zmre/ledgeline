@@ -1,0 +1,11 @@
+; directive-account.test case 2: `account NAME ; type:X` declarations whose
+; tags are inherited by postings (most-specific first), including an
+; intermediate declared parent.
+account asset  ; type:L
+account b:bb   ; type:A
+account b      ; type:L
+
+2018-01-01
+    asset:a   $1
+    b:bb      $2
+    b        $-3

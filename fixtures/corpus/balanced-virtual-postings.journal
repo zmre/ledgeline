@@ -1,0 +1,8 @@
+; virtual-postings.test case 3: balanced virtual postings `[name]` balance
+; among themselves, separately from the real postings, and print with ptype
+; BalancedVirtualPosting.
+2010-01-01 x
+    [balanced virtual]  $10
+    [balanced virtual]  $-10
+    a   $1
+    b

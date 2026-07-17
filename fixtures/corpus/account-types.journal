@@ -1,0 +1,13 @@
+; account-types.test: Asset/Cash account-type tags are declared; the
+; explicit `type:` tags propagate to postings' ptags (inferred types do not).
+account assets        ; type:Asset
+account assets:cash   ; type:Cash
+account liabilities
+
+2020-01-01
+    assets           $1
+    assets:cash      $1
+    liabilities     $-1
+    revenues        $-1
+    expenses         $1
+    equity

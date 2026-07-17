@@ -1,0 +1,7 @@
+; commodity-tags.test case 1: a tag on a symbol-only `commodity` directive
+; propagates to postings whose amount uses that commodity.
+commodity $           ; type:currency
+
+2024-01-01 test
+    assets:bank   $100
+    income

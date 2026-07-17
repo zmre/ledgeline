@@ -1,0 +1,4 @@
+; numbers.test case 18: number begins with a decimal char (.1 / -.1).
+2017-01-01
+    a   .1 EUR
+    b  -.1 EUR

@@ -1,0 +1,143 @@
+[
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2016-01-01",
+    "tdate2": null,
+    "tdescription": "",
+    "tindex": 1,
+    "tpostings": [
+      {
+        "paccount": "saving-card",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -10500,
+              "decimalPlaces": 2,
+              "floatingPoint": -105
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "snacks",
+        "pamount": [
+          {
+            "acommodity": "EUR",
+            "acost": {
+              "contents": {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 10055,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 100.55
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 2,
+                  "asrounding": "NoRounding"
+                }
+              },
+              "tag": "TotalCost"
+            },
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 9500,
+              "decimalPlaces": 2,
+              "floatingPoint": 95
+            },
+            "astyle": {
+              "ascommodityside": "R",
+              "ascommodityspaced": true,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "Equity:Unbalanced",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 445,
+              "decimalPlaces": 2,
+              "floatingPoint": 4.45
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 4,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/amounts-commodities.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 8,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/amounts-commodities.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  }
+]

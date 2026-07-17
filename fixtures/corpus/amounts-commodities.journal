@@ -1,0 +1,7 @@
+; amounts-and-commodities.test case 5: autobalance a two-commodity
+; transaction where one leg carries a total cost (@@); the inferred leg
+; absorbs the residual. Non-trailing-zero amounts (see the costs-total note).
+2016-01-01
+    saving-card  $-105.00
+    snacks  95.00 EUR @@ $100.55
+    Equity:Unbalanced

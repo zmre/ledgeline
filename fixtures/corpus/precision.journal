@@ -1,0 +1,5 @@
+; precision.test case 1: a priced posting whose price precision (8 places)
+; must not disturb the as-written display precisions used by print.
+2010-01-01 x
+    A  55.3653 C @ 30.92189512 D
+    A  -1712 D
