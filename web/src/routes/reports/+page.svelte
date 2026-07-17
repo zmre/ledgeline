@@ -15,7 +15,7 @@
     import ReportControls from "$lib/reports/ui/ReportControls.svelte";
     import ReportTable from "$lib/reports/ui/ReportTable.svelte";
     import ReportTabs from "$lib/reports/ui/ReportTabs.svelte";
-    import {defaultReportParams, paramsToSearch, searchToParams, type ReportParams} from "$lib/reports/ui/params";
+    import {defaultReportParams, paramsToSearch, searchToParams, TAB_DEFAULTS, type ReportParams, type ReportTab} from "$lib/reports/ui/params";
     import {reportStyles} from "$lib/reports/ui/styles";
     import {buildReportQuery, reports} from "$lib/stores/reports.svelte";
     import {journal} from "$lib/stores/journal.svelte";
@@ -23,14 +23,27 @@
 
     let params = $state<ReportParams>(defaultReportParams());
     let restored = $state(false);
+    let activeTab: ReportTab = defaultReportParams().tab;
 
     // Restore params from the URL exactly once, at startup.
     onMount(() => {
         if (window.location.search !== "") Object.assign(params, searchToParams(window.location.search, defaultReportParams()));
+        activeTab = params.tab; // the restored/initial tab keeps its (URL or default) interval/count
         restored = true;
         return () => {
             if (timer !== null) clearTimeout(timer);
         };
+    });
+
+    // Each tab seeds its own interval/count on activation (cash flow wants
+    // monthly/12, net worth yearly/5; bs/is ignore these). Depth stays shared.
+    $effect(() => {
+        const tab = params.tab;
+        if (!restored || tab === activeTab) return;
+        activeTab = tab;
+        const d = TAB_DEFAULTS[tab];
+        params.interval = d.interval;
+        params.count = d.count;
     });
 
     // Mirror params → URL, debounced, replaceState (no history entries, no loops).
@@ -94,7 +107,7 @@
             case "cf":
                 return {title: "Cash Flow", params: `${span}, depth ${params.depth}`, filename: `cash-flow-${params.end}.xlsx`};
             case "nw":
-                return {title: "Net Worth", params: span, filename: `net-worth-${params.end}.xlsx`};
+                return {title: "Net Worth", params: `${span}, depth ${params.depth}`, filename: `net-worth-${params.end}.xlsx`};
         }
     });
 </script>

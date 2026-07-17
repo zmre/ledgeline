@@ -8,7 +8,7 @@
 
 use super::mixed_amount::MixedAmount;
 use crate::decimal::{Dec, DecError};
-use crate::model::{Amount, Commodity, PriceDirective};
+use crate::model::{Amount, Commodity, CostKind, PriceDirective, Transaction};
 use std::collections::BTreeMap;
 
 /// A market-price lookup table built from `P` directives.
@@ -133,6 +133,145 @@ pub(crate) fn mul_raw(a: Dec, b: Dec) -> Result<Dec, DecError> {
     Ok(Dec::new(mantissa, places))
 }
 
+/// `10^exp` as an `i128`, checked for overflow (mirrors `decimal::pow10`, which
+/// is private to that module).
+pub(crate) fn pow10(exp: u32) -> Result<i128, DecError> {
+    10i128.checked_pow(exp).ok_or(DecError::Overflow)
+}
+
+/// Rounded division, half-even (banker's rounding) — port of the TS
+/// `divRoundHalfEven`. `domain/money` has no `Dec` division on purpose; this is
+/// the one place price/holdings math needs it.
+///
+/// The denominator is always positive at every call site (a share count or a
+/// `|qty|`); a zero denominator is unreachable and is surfaced as the same
+/// never-unwrapped overflow arm rather than panicking.
+pub(crate) fn div_round_half_even(numerator: i128, denominator: i128) -> Result<i128, DecError> {
+    if denominator == 0 {
+        return Err(DecError::Overflow);
+    }
+    let negative = (numerator < 0) != (denominator < 0);
+    let n = numerator.checked_abs().ok_or(DecError::Overflow)?;
+    let d = denominator.checked_abs().ok_or(DecError::Overflow)?;
+    let mut q = n / d;
+    let r = n % d;
+    let twice = r.checked_mul(2).ok_or(DecError::Overflow)?;
+    if twice > d || (twice == d && q % 2 == 1) {
+        q = q.checked_add(1).ok_or(DecError::Overflow)?;
+    }
+    Ok(if negative { -q } else { q })
+}
+
+/// Per-unit price from a `@@` total: `total / |qty|`, rounded half-even to
+/// `total.p + qty.p` decimal places (port of the TS `perUnitFromTotal`). Shared
+/// by the holdings engine and net-worth cost inference.
+pub(crate) fn per_unit_from_total(total: Dec, qty: Dec) -> Result<Dec, DecError> {
+    let places = total
+        .places
+        .checked_add(qty.places)
+        .ok_or(DecError::Overflow)?;
+    let factor = pow10(qty.places.checked_mul(2).ok_or(DecError::Overflow)?)?;
+    let scaled_total = total
+        .mantissa
+        .checked_mul(factor)
+        .ok_or(DecError::Overflow)?;
+    let abs_qty = qty.mantissa.checked_abs().ok_or(DecError::Overflow)?;
+    Ok(Dec::new(
+        div_round_half_even(scaled_total, abs_qty)?,
+        places,
+    ))
+}
+
+/// The exact multiplicative reciprocal of `unit` as a terminating `Dec`, or
+/// `None` when `1/unit` does not terminate in base 10 (its reduced denominator
+/// has a prime factor other than 2 or 5) or when `unit` is zero.
+///
+/// Used to mirror hledger's price-graph reversal: from an inferred `P` directive
+/// the reverse rate is derived so a commodity that appears only as a cost
+/// DENOMINATOR (e.g. the GLD gift's `… @ 0.005 GLD` leg) is still valued.
+fn exact_reciprocal(unit: Dec) -> Option<Dec> {
+    if unit.mantissa == 0 {
+        return None;
+    }
+    let sign = unit.mantissa.signum();
+    let magnitude = unit.mantissa.checked_abs()?;
+    // 1/unit = 10^p / |m|; grow the decimal places `k` (from 0) until |m| divides
+    // 10^(p+k) — i.e. the reciprocal terminates. `checked_pow` returning `None`
+    // (10^exp overflowing i128) means it never will → non-terminating.
+    let mut exp = unit.places;
+    loop {
+        let numerator = 10i128.checked_pow(exp)?;
+        if numerator % magnitude == 0 {
+            return Some(Dec::new(sign * (numerator / magnitude), exp - unit.places));
+        }
+        exp = exp.checked_add(1)?;
+    }
+}
+
+/// Market-price directives INFERRED from `@`/`@@` cost annotations, mirroring
+/// hledger's `--infer-market-prices`. For each posting amount carrying a cost,
+/// infer `P <txn.date> <amount.commodity> <unit cost>` (a `@@` total is divided
+/// by `|qty|` to a per-unit price). When the unit cost's reciprocal terminates,
+/// the reverse directive `P <txn.date> <cost.commodity> <1/unit cost>` is
+/// inferred too — matching hledger's valuation-time price-graph reversal, so a
+/// commodity seen only as a cost DENOMINATOR (the GLD gift's
+/// `equity … @ 0.005 GLD`) is still valued.
+///
+/// The result is in journal order (date asc, then txn index). Callers append the
+/// explicit `P` directives AFTER these so an explicit price wins a same-date tie
+/// (hledger's precedence).
+///
+/// # Errors
+/// Returns [`DecError`] on decimal overflow (never for realistic journals).
+pub fn infer_market_prices(txns: &[Transaction]) -> Result<Vec<PriceDirective>, DecError> {
+    let mut ordered: Vec<&Transaction> = txns.iter().collect();
+    ordered.sort_by(|a, b| a.date.cmp(&b.date).then_with(|| a.index.0.cmp(&b.index.0)));
+
+    let mut inferred: Vec<PriceDirective> = Vec::new();
+    for txn in ordered {
+        for posting in &txn.postings {
+            for amount in &posting.amounts {
+                let Some(cost) = amount.cost.as_deref() else {
+                    continue;
+                };
+                if amount.quantity.is_zero() {
+                    continue;
+                }
+                let unit = match cost.kind {
+                    CostKind::Unit => cost.amount.quantity,
+                    CostKind::Total => per_unit_from_total(cost.amount.quantity, amount.quantity)?,
+                };
+                // Forward: the posting's commodity priced in the cost commodity.
+                inferred.push(PriceDirective {
+                    date: txn.date.clone(),
+                    commodity: amount.commodity.clone(),
+                    price: Amount {
+                        commodity: cost.amount.commodity.clone(),
+                        quantity: unit,
+                        style: cost.amount.style.clone(),
+                        cost: None,
+                    },
+                });
+                // Reverse (only when 1/unit terminates): lets a commodity that
+                // appears solely as a cost denominator still be valued.
+                if let Some(reciprocal) = exact_reciprocal(unit) {
+                    inferred.push(PriceDirective {
+                        date: txn.date.clone(),
+                        commodity: cost.amount.commodity.clone(),
+                        price: Amount {
+                            commodity: amount.commodity.clone(),
+                            quantity: reciprocal,
+                            style: amount.style.clone(),
+                            cost: None,
+                        },
+                    });
+                }
+            }
+        }
+    }
+    Ok(inferred)
+}
+
 /// Value a [`MixedAmount`] in `target` at `as_of`: identity for `target` itself,
 /// exact `mul_raw` via the latest direct price otherwise. Commodities without a
 /// direct price are SKIPPED and, when `meta` is given, recorded there (deduped).
@@ -170,8 +309,26 @@ pub fn value_at(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{amount, price};
+    use super::super::test_support::{amount, price, txn, usd};
     use super::*;
+    use crate::model::Cost;
+
+    /// An amount carrying a per-unit (`@`) cost, for cost-inference tests.
+    fn unit_cost(
+        commodity: &str,
+        mantissa: i128,
+        places: u32,
+        cost_commodity: &str,
+        cost_mantissa: i128,
+        cost_places: u32,
+    ) -> Amount {
+        let mut a = amount(commodity, mantissa, places);
+        a.cost = Some(Box::new(Cost {
+            kind: CostKind::Unit,
+            amount: amount(cost_commodity, cost_mantissa, cost_places),
+        }));
+        a
+    }
 
     fn directives() -> Vec<PriceDirective> {
         vec![
@@ -299,6 +456,75 @@ mod tests {
         assert_eq!(
             value_at(&ma, &c("$"), &db, "2026-07-08", None).unwrap(),
             Dec::new(0, 0)
+        );
+    }
+
+    #[test]
+    fn exact_reciprocal_terminating_and_not() {
+        assert_eq!(exact_reciprocal(Dec::new(5, 3)), Some(Dec::new(200, 0))); // 1/0.005
+        assert_eq!(exact_reciprocal(Dec::new(2, 0)), Some(Dec::new(5, 1))); // 1/2 = 0.5
+        assert_eq!(exact_reciprocal(Dec::new(4, 0)), Some(Dec::new(25, 2))); // 1/4 = 0.25
+        assert_eq!(exact_reciprocal(Dec::new(8, 0)), Some(Dec::new(125, 3))); // 1/8 = 0.125
+        assert_eq!(exact_reciprocal(Dec::new(3, 0)), None); // 1/3 never terminates
+        assert_eq!(exact_reciprocal(Dec::new(22000, 2)), None); // 1/220 (factor 11)
+        assert_eq!(exact_reciprocal(Dec::zero()), None);
+    }
+
+    fn gld_gift() -> Vec<crate::model::Transaction> {
+        // The fixture's GLD gift: the GLD lot has no cost, the equity leg prices
+        // $ in GLD (`$-1,000.00 @ 0.005 GLD`).
+        vec![txn(
+            2,
+            "2025-08-20",
+            vec![
+                ("assets:broker:gld", vec![amount("GLD", 5, 0)]),
+                (
+                    "equity:transfers",
+                    vec![unit_cost("$", -100_000, 2, "GLD", 5, 3)],
+                ),
+            ],
+        )]
+    }
+
+    #[test]
+    fn infers_forward_and_reverse_from_costs() {
+        let mut txns = vec![txn(
+            1,
+            "2024-09-16",
+            vec![
+                (
+                    "assets:broker",
+                    vec![unit_cost("AAPL", 10, 0, "$", 22000, 2)],
+                ),
+                ("assets:cash", vec![usd(-220_000)]),
+            ],
+        )];
+        txns.extend(gld_gift());
+        let inferred = infer_market_prices(&txns).unwrap();
+
+        // AAPL forward (1/220 does not terminate → no reverse), then the GLD
+        // gift's $→GLD forward and its GLD→$ reverse. Journal order.
+        assert_eq!(inferred.len(), 3);
+        assert_eq!(inferred[0].commodity, c("AAPL"));
+        assert_eq!(inferred[0].date, "2024-09-16");
+        assert_eq!(inferred[0].price.commodity, c("$"));
+        assert_eq!(inferred[0].price.quantity, Dec::new(22000, 2));
+        assert_eq!(inferred[1].commodity, c("$"));
+        assert_eq!(inferred[1].price.commodity, c("GLD"));
+        assert_eq!(inferred[1].price.quantity, Dec::new(5, 3));
+        assert_eq!(inferred[2].commodity, c("GLD"));
+        assert_eq!(inferred[2].price.commodity, c("$"));
+        assert_eq!(inferred[2].price.quantity, Dec::new(200, 0));
+    }
+
+    #[test]
+    fn inferred_reverse_values_a_cost_denominator_commodity() {
+        let db = PriceDb::build(&infer_market_prices(&gld_gift()).unwrap());
+        let ma = MixedAmount::single(c("GLD"), Dec::new(5, 0));
+        // 5 GLD × $200 (= 1/0.005) = $1000, exact.
+        assert_eq!(
+            value_at(&ma, &c("$"), &db, "2026-01-01", None).unwrap(),
+            Dec::new(1000, 0)
         );
     }
 }

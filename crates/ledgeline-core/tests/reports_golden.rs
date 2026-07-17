@@ -19,7 +19,7 @@ mod common;
 use common::fixture_journal;
 use ledgeline_core::Dec;
 use ledgeline_core::reports::{
-    Interval, MixedAmount, PriceDb, SectionedReport, account_decls, balance_sheet, cash_flow,
+    Interval, MixedAmount, SectionedReport, account_decls, balance_sheet, cash_flow,
     cash_predicate, income_statement, net_worth,
 };
 use serde_json::Value;
@@ -296,30 +296,21 @@ fn cash_flow_monthly_matches_golden_both_predicates() {
 #[test]
 fn net_worth_spot_matches_golden() {
     let journal = fixture_journal();
-    let prices = PriceDb::build(&journal.prices);
+    // depth 1 → one row per root; compared against the golden leaves grouped by
+    // root. With `--infer-market-prices` every held commodity is valued
+    // (incl. GLD via the reverse of the gift's `@ 0.005 GLD` leg), so nothing is
+    // left unpriced and no golden amounts need filtering.
     let report = net_worth(
         &journal.transactions,
-        &prices,
+        &journal.prices,
         "2026-06-30",
         Interval::Monthly,
+        1,
         1,
         None,
     )
     .unwrap();
-
-    // GLD and TSLA deliberately have no P directive: hledger leaves them
-    // unvalued in place; our engine skips them → meta.unpriced. Filter them from
-    // the golden before comparing.
-    let unpriced = ["GLD", "TSLA"];
-    let meta_unpriced: Vec<String> = report
-        .meta
-        .as_ref()
-        .expect("net worth reports unpriced commodities")
-        .unpriced
-        .iter()
-        .map(|c| c.0.clone())
-        .collect();
-    assert_eq!(meta_unpriced, unpriced);
+    assert!(report.meta.is_none(), "nothing should be left unpriced");
 
     let g = golden("networth-spot.json");
     let golden_rows = g[0].as_array().expect("bal rows");
@@ -338,16 +329,6 @@ fn net_worth_spot_matches_golden() {
         }
     }
 
-    let valued = |amounts: &[Value]| -> Value {
-        Value::Array(
-            amounts
-                .iter()
-                .filter(|a| !unpriced.contains(&a["acommodity"].as_str().unwrap_or("")))
-                .cloned()
-                .collect(),
-        )
-    };
-
     let mut my_roots: Vec<String> = report.rows.iter().map(|r| r.account.clone()).collect();
     my_roots.sort();
     let mut golden_root_keys: Vec<String> = by_root.keys().cloned().collect();
@@ -362,15 +343,50 @@ fn net_worth_spot_matches_golden() {
             .unwrap_or_else(|| panic!("row {root} exists"));
         assert_eq!(
             canon_map(&mine.values[0]),
-            sum_golden(&valued(amounts)),
+            sum_golden(&Value::Array(amounts.clone())),
             "valued {root}"
         );
     }
 
-    let total_amounts: Vec<Value> = golden_total.as_array().expect("total amounts").clone();
     assert_eq!(
         canon_map(&report.totals[0]),
-        sum_golden(&valued(&total_amounts)),
+        sum_golden(golden_total),
         "net worth"
     );
+}
+
+/// Depth-5 net worth: hledger's flat `bal --depth 5` lists the leaf accounts;
+/// every leaf must appear as a row in our depth-5 output with the same valued
+/// amount, and the grand total must match.
+#[test]
+fn net_worth_depth_5_matches_golden() {
+    let journal = fixture_journal();
+    let report = net_worth(
+        &journal.transactions,
+        &journal.prices,
+        "2026-06-30",
+        Interval::Monthly,
+        1,
+        5,
+        None,
+    )
+    .unwrap();
+    assert!(report.meta.is_none(), "nothing should be left unpriced");
+
+    let g = golden("networth-d5.json");
+    for row in g[0].as_array().expect("bal rows") {
+        let account = row[0].as_str().expect("row account");
+        let mine = report
+            .rows
+            .iter()
+            .find(|r| r.account == account)
+            .unwrap_or_else(|| panic!("row {account} exists"));
+        assert_eq!(
+            canon_map(&mine.values[0]),
+            sum_golden(&row[3]),
+            "valued {account}"
+        );
+    }
+
+    assert_eq!(canon_map(&report.totals[0]), sum_golden(&g[1]), "net worth");
 }

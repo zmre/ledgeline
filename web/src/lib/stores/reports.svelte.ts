@@ -17,7 +17,7 @@ export type ReportQuery =
     | {tab: "bs"; asOf: string; depth: number}
     | {tab: "is"; from: string; to: string; depth: number}
     | {tab: "cf"; end: string; interval: ReportInterval; count: number; depth: number}
-    | {tab: "nw"; end: string; interval: ReportInterval; count: number};
+    | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number};
 
 /** Map ReportParams → the active tab's endpoint query (drives both the fetch and the refetch key). */
 export function buildReportQuery(params: ReportParams): ReportQuery {
@@ -29,7 +29,7 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
         case "cf":
             return {tab: "cf", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
         case "nw":
-            return {tab: "nw", end: params.end, interval: params.interval, count: params.count};
+            return {tab: "nw", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
     }
 }
 
@@ -42,7 +42,7 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<Secti
         case "cf":
             return decodePeriodReport(await api.cashFlow({end: query.end, interval: query.interval, count: query.count, depth: query.depth}));
         case "nw":
-            return decodePeriodReport(await api.netWorth({end: query.end, interval: query.interval, count: query.count}));
+            return decodePeriodReport(await api.netWorth({end: query.end, interval: query.interval, count: query.count, depth: query.depth}));
     }
 }
 

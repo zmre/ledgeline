@@ -9,9 +9,9 @@
 //!     commodity with exact `Dec` math.
 //!   - comparisons are on canonical `(mantissa, places)` (trailing zeros stripped,
 //!     zero commodities dropped) — never floats.
-//!   - net worth's GLD/TSLA are deliberately unpriced (no `P` directive): the
-//!     engine skips them into `meta.unpriced`, so they are filtered from the
-//!     golden before comparing.
+//!   - net worth uses `--infer-market-prices`: the endpoint infers prices from
+//!     `@`/`@@` costs (incl. the GLD gift's reverse `@ 0.005 GLD`), so every held
+//!     commodity is valued and `meta` is absent.
 
 mod common;
 
@@ -288,27 +288,15 @@ async fn cashflow_matches_cf_monthly_golden() {
 }
 
 // ===========================================================================
-// Net worth — vs fixtures/golden/networth-spot.json (GLD/TSLA unpriced)
+// Net worth — vs fixtures/golden/networth-spot.json (--infer-market-prices)
 // ===========================================================================
-
-/// Filter the deliberately-unpriced commodities out of a golden amount array.
-fn priced_only(amounts: &[Value]) -> Value {
-    const UNPRICED: [&str; 2] = ["GLD", "TSLA"];
-    Value::Array(
-        amounts
-            .iter()
-            .filter(|a| !UNPRICED.contains(&a["acommodity"].as_str().unwrap_or("")))
-            .cloned()
-            .collect(),
-    )
-}
 
 #[tokio::test]
 async fn networth_matches_networth_spot_golden() {
     let journal = sample_journal();
     let body = body_ok(
         &journal,
-        "/api/reports/networth?end=2026-06-30&interval=monthly&count=1",
+        "/api/reports/networth?end=2026-06-30&interval=monthly&count=1&depth=1",
     )
     .await;
 
@@ -320,18 +308,12 @@ async fn networth_matches_networth_spot_golden() {
         .collect();
     assert_eq!(buckets, ["2026-06"]);
 
-    // The unpriced commodities surface in meta.
-    let unpriced: Vec<&str> = body["meta"]["unpriced"]
-        .as_array()
-        .expect("meta.unpriced present")
-        .iter()
-        .map(|c| c.as_str().unwrap())
-        .collect();
-    assert_eq!(unpriced, ["GLD", "TSLA"]);
+    // Inference values every held commodity, so nothing is left unpriced.
+    assert!(body["meta"].is_null(), "meta should be absent");
 
     let g = golden("golden", "networth-spot.json");
 
-    // Group golden leaf rows by root account, filtering the unpriced commodities.
+    // Group golden leaf rows by root account.
     let mut by_root: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for row in g[0].as_array().expect("bal rows") {
         let account = row[0].as_str().expect("row account");
@@ -357,7 +339,7 @@ async fn networth_matches_networth_spot_golden() {
     for (root, amounts) in &by_root {
         assert_eq!(
             my_row(root),
-            sum_golden(&priced_only(amounts)),
+            sum_golden(&Value::Array(amounts.clone())),
             "valued net worth for {root}"
         );
     }
@@ -365,9 +347,37 @@ async fn networth_matches_networth_spot_golden() {
     let golden_total = g[1].as_array().expect("total amounts").clone();
     assert_eq!(
         wire_ma(&body["totals"][0]),
-        sum_golden(&priced_only(&golden_total)),
+        sum_golden(&Value::Array(golden_total)),
         "net worth total"
     );
+}
+
+/// The `depth` query param surfaces valued sub-account rows (e.g. cost-priced
+/// `assets:broker:taxable:aapl`).
+#[tokio::test]
+async fn networth_depth_surfaces_valued_sub_accounts() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/networth?end=2026-06-30&interval=monthly&count=1&depth=5",
+    )
+    .await;
+
+    let g = golden("golden", "networth-d5.json");
+    let aapl = g[0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row[0] == "assets:broker:taxable:aapl")
+        .expect("golden has the aapl leaf");
+
+    let row = body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["account"] == "assets:broker:taxable:aapl")
+        .expect("depth-5 output has the aapl sub-account");
+    assert_eq!(wire_ma(&row["values"][0]), sum_golden(&aapl[3]));
 }
 
 // ===========================================================================

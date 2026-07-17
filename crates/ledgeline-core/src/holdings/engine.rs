@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{AccountDeclaration, Commodity, Cost, CostKind, PriceDirective, Transaction};
-use crate::reports::prices::mul_raw;
+use crate::reports::prices::{div_round_half_even, mul_raw, per_unit_from_total, pow10};
 use crate::reports::{PriceDb, ReportError, account_matches};
 use crate::wire::{account_tag_map, inherited_account_tags};
 
@@ -26,35 +26,6 @@ use super::types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
     PriceSource, ScopeMode, WarningKind,
 };
-
-/// `10^exp` as an `i128`, checked for overflow (mirrors `decimal::pow10`, which
-/// is private to that module).
-fn pow10(exp: u32) -> Result<i128, DecError> {
-    10i128.checked_pow(exp).ok_or(DecError::Overflow)
-}
-
-/// Rounded division, half-even (banker's rounding) — port of the TS
-/// `divRoundHalfEven`. `domain/money` has no `Dec` division on purpose; this is
-/// the one place holdings math needs it.
-///
-/// The denominator is always positive at every call site (a share count or a
-/// `|qty|`); a zero denominator is unreachable and is surfaced as the same
-/// never-unwrapped overflow arm rather than panicking.
-fn div_round_half_even(numerator: i128, denominator: i128) -> Result<i128, ReportError> {
-    if denominator == 0 {
-        return Err(ReportError::Decimal(DecError::Overflow));
-    }
-    let negative = (numerator < 0) != (denominator < 0);
-    let n = numerator.checked_abs().ok_or(DecError::Overflow)?;
-    let d = denominator.checked_abs().ok_or(DecError::Overflow)?;
-    let mut q = n / d;
-    let r = n % d;
-    let twice = r.checked_mul(2).ok_or(DecError::Overflow)?;
-    if twice > d || (twice == d && q % 2 == 1) {
-        q = q.checked_add(1).ok_or(DecError::Overflow)?;
-    }
-    Ok(if negative { -q } else { q })
-}
 
 /// Rescale both operands to a common precision and return the mantissa pair
 /// (port of the TS `commonMantissas`).
@@ -79,25 +50,6 @@ fn reduce_basis(basis: Dec, shares_after: Dec, shares_before: Dec) -> Result<Dec
     Ok(Dec::new(
         div_round_half_even(numerator, before_m)?,
         basis.places,
-    ))
-}
-
-/// Per-unit price from a `@@` total: `total / |qty|`, rounded half-even to
-/// `total.p + qty.p` decimal places (port of the TS `perUnitFromTotal`).
-fn per_unit_from_total(total: Dec, qty: Dec) -> Result<Dec, ReportError> {
-    let places = total
-        .places
-        .checked_add(qty.places)
-        .ok_or(DecError::Overflow)?;
-    let factor = pow10(qty.places.checked_mul(2).ok_or(DecError::Overflow)?)?;
-    let scaled_total = total
-        .mantissa
-        .checked_mul(factor)
-        .ok_or(DecError::Overflow)?;
-    let abs_qty = qty.mantissa.checked_abs().ok_or(DecError::Overflow)?;
-    Ok(Dec::new(
-        div_round_half_even(scaled_total, abs_qty)?,
-        places,
     ))
 }
 

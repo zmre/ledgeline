@@ -49,6 +49,7 @@ export interface NetWorthQuery {
     end?: string;
     interval?: string;
     count?: number;
+    depth?: number;
     valueIn?: string;
 }
 export interface HoldingsQuery {
@@ -107,7 +108,9 @@ export class LedgelineApi {
     }
 
     netWorth(query: NetWorthQuery = {}): Promise<unknown> {
-        return this.getJson(`/api/reports/networth${queryString({end: query.end, interval: query.interval, count: query.count, valueIn: query.valueIn})}`);
+        return this.getJson(
+            `/api/reports/networth${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, valueIn: query.valueIn})}`
+        );
     }
 
     holdings(query: HoldingsQuery = {}): Promise<unknown> {

@@ -30,9 +30,9 @@ use ledgeline_core::holdings::{
 };
 use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
-    BudgetCell, BudgetOpts, BudgetReport, Interval, MixedAmount, PeriodReport, PriceDb,
-    ReportError, SectionedReport, account_decls, balance_sheet, budget_report, cash_flow,
-    cash_predicate, income_statement, net_worth,
+    BudgetCell, BudgetOpts, BudgetReport, Interval, MixedAmount, PeriodReport, ReportError,
+    SectionedReport, account_decls, balance_sheet, budget_report, cash_flow, cash_predicate,
+    income_statement, net_worth,
 };
 use serde::{Deserialize, Serialize};
 
@@ -505,13 +505,14 @@ pub(crate) struct CashFlowQuery {
     depth: Option<usize>,
 }
 
-/// `?end=&interval=&count=&valueIn=` — net worth.
+/// `?end=&interval=&count=&depth=&valueIn=` — net worth.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NetWorthQuery {
     end: Option<String>,
     interval: Option<String>,
     count: Option<usize>,
+    depth: Option<usize>,
     value_in: Option<String>,
 }
 
@@ -605,7 +606,9 @@ pub(crate) async fn cashflow(
 }
 
 /// `GET /api/reports/networth` — market-valued net worth per bucket. Prices come
-/// from the journal's `P` directives; `valueIn` overrides the target commodity.
+/// from the journal's explicit `P` directives PLUS prices inferred from `@`/`@@`
+/// cost annotations (hledger `--infer-market-prices`); `depth` clamps the account
+/// rows; `valueIn` overrides the target commodity.
 pub(crate) async fn networth(
     State(state): State<AppState>,
     Query(query): Query<NetWorthQuery>,
@@ -613,18 +616,19 @@ pub(crate) async fn networth(
     let end = query.end.unwrap_or_else(today_utc);
     let interval = parse_interval(query.interval.as_deref())?;
     let count = query.count.unwrap_or(DEFAULT_COUNT);
+    let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
     let value_in = query
         .value_in
         .filter(|symbol| !symbol.is_empty())
         .map(Commodity);
 
-    let prices = PriceDb::build(&state.journal.prices);
     let report = net_worth(
         &state.journal.transactions,
-        &prices,
+        &state.journal.prices,
         &end,
         interval,
         count,
+        depth,
         value_in,
     )
     .map_err(|err| report_error(&err))?;
