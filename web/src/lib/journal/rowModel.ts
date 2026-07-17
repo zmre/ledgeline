@@ -3,8 +3,9 @@
 // the fixed-pitch windowing math for the virtualized table. No runtime Svelte
 // imports (the filter shape is a type-only import) so vitest runs these in node.
 
-import {accountMatches} from "$lib/domain/accounts";
-import {add, formatAmount, isZero, neg, type Dec, type MixedAmount} from "$lib/domain/money";
+import {accountMatches, categorize} from "$lib/domain/accounts";
+import {accountTotals} from "$lib/domain/aggregate";
+import {add, formatAmount, isZero, maAdd, neg, type Dec, type MixedAmount} from "$lib/domain/money";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "$lib/domain/types";
 import type {JournalFilter} from "$lib/stores/filters.svelte";
 
@@ -56,6 +57,60 @@ export function filteredTotals(txns: readonly Transaction[], accounts: ReadonlyS
         if (isZero(qty)) totals.delete(commodity);
     }
     return totals;
+}
+
+/** Flow accounts (revenue/expense) report a period P&L; every other root reports a balance. */
+function isFlow(account: string): boolean {
+    const category = categorize(account);
+    return category === "revenue" || category === "expense";
+}
+
+/** Collapse per-account totals (from `accountTotals`) into one MixedAmount; zero commodities drop via `maAdd`. */
+function sumAccounts(byAccount: Map<string, MixedAmount>): MixedAmount {
+    let total: MixedAmount = new Map();
+    for (const ma of byAccount.values()) total = maAdd(total, ma);
+    return total;
+}
+
+/**
+ * Footer pinned totals for the current selection — the balance-vs-period
+ * distinction that the transaction-scoped `filteredTotals` cannot make. Mirrors
+ * the reports layer (`accountTotals` → filter by category → `maAdd`).
+ *
+ * With NO account selected we keep the pre-existing behavior EXACTLY: the signed
+ * net of every posting across the filtered (date + query) window — the
+ * "0 (balanced)" figure — so the footer never blends a net-worth + P&L number
+ * unasked.
+ *
+ * With accounts selected, each selected subtree root is classified and summed
+ * over the WHOLE journal (`accountTotals`):
+ *   - balance accounts (asset/liability/equity/other) → HISTORICAL: opening
+ *     balance at the range start PLUS the in-range change (hledger `-H`), so a
+ *     position bought before the range and sold within it nets to its true
+ *     end-of-range holding (zero), never a spurious negative.
+ *   - flow accounts (revenue/expense) → PERIOD: the in-range change only
+ *     (hledger `-b/-e`, no `-H`), i.e. the usual P&L for the window.
+ * The two sums are combined commodity-wise; commodities that net to zero drop.
+ *
+ * Query note: an account-scoped figure is a BALANCE keyed to an account, which a
+ * free-text description substring cannot meaningfully narrow — so the search box
+ * does NOT affect this total (the table rows still honor it). `accountTotals`
+ * has no query parameter for the same reason. The empty-selection path above
+ * DOES honor the query, because that is the pre-existing behavior we preserve.
+ */
+export function selectedTotals(allTxns: Transaction[], filter: JournalFilter): MixedAmount {
+    if (filter.accounts.size === 0) {
+        return filteredTotals(filterTxns(allTxns, filter), filter.accounts);
+    }
+    const selected = [...filter.accounts];
+    const flowAccts = selected.filter(isFlow);
+    const balanceAccts = selected.filter((account) => !isFlow(account));
+    const from = filter.from ?? undefined;
+    const to = filter.to ?? undefined;
+    let total: MixedAmount = new Map();
+    if (balanceAccts.length > 0) total = maAdd(total, sumAccounts(accountTotals(allTxns, {to, accounts: balanceAccts})));
+    if (flowAccts.length > 0) total = maAdd(total, sumAccounts(accountTotals(allTxns, {from, to, accounts: flowAccts})));
+    return total;
 }
 
 type Sign = -1 | 0 | 1;

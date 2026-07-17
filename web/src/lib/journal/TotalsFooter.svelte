@@ -25,7 +25,10 @@
         <span class="whitespace-nowrap"><span class="text-base-content font-medium">{count}</span> {count === 1 ? "transaction" : "transactions"}</span>
         <span class="whitespace-nowrap">{period}</span>
     </div>
-    <div class="flex flex-wrap items-center gap-x-3 font-mono text-sm tabular-nums" title="Sum of postings in the selected accounts">
+    <div
+        class="flex flex-wrap items-center gap-x-3 font-mono text-sm tabular-nums"
+        title="Balance of the selected accounts: asset/liability/equity carry their opening balance; income/expense show the period total"
+    >
         {#if lines.length === 0}
             <span class="text-base-content/50">0 (balanced)</span>
         {:else}
