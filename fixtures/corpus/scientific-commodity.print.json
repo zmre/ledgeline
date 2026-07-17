@@ -1,0 +1,175 @@
+[
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2018-01-01",
+    "tdate2": null,
+    "tdescription": "",
+    "tindex": 1,
+    "tpostings": [
+      {
+        "paccount": "a",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 105,
+              "decimalPlaces": 0,
+              "floatingPoint": 105
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "b",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 31415926,
+              "decimalPlaces": 7,
+              "floatingPoint": 3.1415926
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 7,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "c",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 1000,
+              "decimalPlaces": 0,
+              "floatingPoint": 1000
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "d",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -11081415926,
+              "decimalPlaces": 7,
+              "floatingPoint": -1108.1415926
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 7,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 5,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/scientific-commodity.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 10,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/scientific-commodity.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  }
+]

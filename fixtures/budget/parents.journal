@@ -1,0 +1,24 @@
+; Parent aggregation: goals on the leaf accounts; the expenses:food parent row
+; shows the aggregated goal ($300 + $150) and inclusive actual. The parent is
+; kept visible because an unbudgeted child (snacks) remaps onto it.
+
+~ monthly  category goals
+    (expenses:food:groceries)  $300
+    (expenses:food:dining)     $150
+    (expenses:transport:bus)   $60
+
+2026-01-03 groceries
+    expenses:food:groceries   $280
+    assets:checking
+
+2026-01-09 dining
+    expenses:food:dining      $120
+    assets:checking
+
+2026-01-14 snacks
+    expenses:food:snacks      $25
+    assets:checking
+
+2026-01-20 bus
+    expenses:transport:bus    $55
+    assets:checking

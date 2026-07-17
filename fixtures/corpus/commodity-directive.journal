@@ -1,0 +1,8 @@
+; directive-commodity.test / numbers.test: a `commodity` directive with a
+; decimal separator establishes the canonical style ($ left, comma groups,
+; two-place precision). Amounts written at that precision.
+commodity $1,000.00
+
+2017-01-01
+    a   $1,000.00
+    b  -$1,000.00

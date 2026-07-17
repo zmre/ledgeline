@@ -1,0 +1,11 @@
+Budget performance in 2026-01:
+
+                         ||                 Jan 
+=========================++=====================
+ <unbudgeted>            || $-480               
+ expenses:food           ||  $425 [94% of $450] 
+ expenses:food:dining    ||  $120 [80% of $150] 
+ expenses:food:groceries ||  $280 [93% of $300] 
+ expenses:transport:bus  ||   $55 [92% of  $60] 
+-------------------------++---------------------
+                         ||     0 [ 0% of $510] 

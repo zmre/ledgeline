@@ -1,0 +1,7 @@
+; numbers.test case 7: a `D` default-commodity directive supplies the
+; commodity and style for amounts written as bare numbers.
+D 1,000.00 EUR
+
+2017-01-01
+    a   1,000
+    b  -1,000 EUR

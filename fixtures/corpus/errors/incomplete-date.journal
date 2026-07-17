@@ -1,0 +1,2 @@
+; parse-errors.test case 1: a bare year is an incomplete date.
+2018

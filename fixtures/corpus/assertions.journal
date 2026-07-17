@@ -1,0 +1,5 @@
+; assertions.test case 1 (adapted to real postings): single-commodity
+; balance assertions with `=`, checked against the running account balance.
+2013-01-01
+    a    $1  = $1
+    b   $-1  = $-1

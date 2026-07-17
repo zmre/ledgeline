@@ -1,0 +1,6 @@
+; scientific.test case 4: E-notation numbers with no commodity symbol.
+2018-01-01
+    a  1.05e2
+    b  31415926e-7
+    c  1E+3
+    d

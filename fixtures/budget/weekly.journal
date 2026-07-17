@@ -1,0 +1,14 @@
+; A weekly goal viewed in a monthly budget report: hledger sums the weekly
+; occurrences that fall in the month (with the first partial week clamped to
+; the report start). This exercises cross-interval goal accumulation, which the
+; monthly-only fixtures do not.
+~ weekly  coffee budget
+    (expenses:coffee)    $10
+
+2026-01-05 c1
+    expenses:coffee   $8
+    assets:cash
+
+2026-01-20 c2
+    expenses:coffee   $12
+    assets:cash

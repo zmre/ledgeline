@@ -1,0 +1,7 @@
+; costs.test case 1: an explicit per-unit cost (@) with an inferred
+; counter-leg valued at the cost commodity. Amounts carry two decimals so the
+; commodities' canonical decimal mark is unambiguous (see the inferred-style
+; GAP fixture for the no-decimal case).
+2011-01-01
+    expenses:foreign currency       €100.00 @ $1.35
+    assets

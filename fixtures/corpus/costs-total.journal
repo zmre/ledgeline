@@ -1,0 +1,6 @@
+; costs.test case 5: an explicit total cost (@@). Both legs explicit and the
+; price has no trailing zeros, isolating @@ parsing from hledger's total-cost
+; normalization (see the total-cost-trailing-zeros GAP fixture).
+2011-01-01
+    a    €100.00 @@ $135.55
+    b    $-135.55

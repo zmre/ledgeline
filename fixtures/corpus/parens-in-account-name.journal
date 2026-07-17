@@ -1,0 +1,6 @@
+; parens-in-account-name.test case 1: parentheses in the MIDDLE of an account
+; name are part of the name (only a leading `(` marks a virtual posting).
+2009-01-01 x
+    a         $2
+    b (b) b  $-1
+    c

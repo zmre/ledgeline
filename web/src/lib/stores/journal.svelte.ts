@@ -9,7 +9,7 @@ import {normalizeAccounts, normalizePrices, normalizeTransactions} from "$lib/ap
 import type {AccountDecl} from "$lib/domain/accountTypes";
 import type {MixedAmount} from "$lib/domain/money";
 import type {PriceDirective, Transaction} from "$lib/domain/types";
-import {filteredTotals, filterTxns, sortTxnsDesc} from "$lib/journal/rowModel";
+import {filterTxns, selectedTotals, sortTxnsDesc} from "$lib/journal/rowModel";
 import {filters} from "$lib/stores/filters.svelte";
 import {settings} from "$lib/stores/settings.svelte";
 
@@ -172,14 +172,22 @@ export function startPolling(intervalMs = 30_000): () => void {
 // lib/journal/rowModel.ts; these wrappers just wire it to the runes graph.
 const filtered = $derived.by(() => filterTxns(txns, filters.value));
 const filteredSorted = $derived.by(() => sortTxnsDesc(filtered));
-const totals = $derived.by(() => filteredTotals(filtered, filters.value.accounts));
+// Footer totals are balance-type: they derive from the FULL journal (opening
+// balances at the range start matter), not the pre-filtered in-range slice.
+// See rowModel.selectedTotals for the historical-vs-period category rule.
+const totals = $derived.by(() => selectedTotals(txns, filters.value));
 
 /** Transactions matching the current filters, sorted for display (date desc, index desc). */
 export function getFilteredTxns(): Transaction[] {
     return filteredSorted;
 }
 
-/** Sum of postings in the selected accounts (all postings when none selected) within the filtered txns. */
+/**
+ * Footer totals for the selected accounts: balance accounts (asset/liability/
+ * equity/other) carry their opening balance at the range start (historical),
+ * flow accounts (revenue/expense) show the period total. When none are selected
+ * this is the signed net across the filtered window. See rowModel.selectedTotals.
+ */
 export function getFilteredTotals(): MixedAmount {
     return totals;
 }

@@ -1,0 +1,22 @@
+; --budget=DESCPAT selection: two described rules. Selecting one still shows the
+; other rule's accounts (they remain "budgeted"), but only the selected rule
+; contributes goal amounts; the unselected accounts show a blank (null) goal.
+
+~ monthly  groceries and transit
+    (expenses:food)    $400
+    (expenses:bus)     $30
+
+~ monthly  housing costs
+    (expenses:rent)    $1500
+
+2026-01-06 grocery
+    expenses:food   $352
+    assets:checking
+
+2026-01-11 bus
+    expenses:bus    $28
+    assets:checking
+
+2026-01-15 rent
+    expenses:rent   $1500
+    assets:checking

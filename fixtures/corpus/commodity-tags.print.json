@@ -1,0 +1,101 @@
+[
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2024-01-01",
+    "tdate2": null,
+    "tdescription": "test",
+    "tindex": 1,
+    "tpostings": [
+      {
+        "paccount": "assets:bank",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 100,
+              "decimalPlaces": 0,
+              "floatingPoint": 100
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [
+          [
+            "type",
+            "currency"
+          ]
+        ],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "income",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -100,
+              "decimalPlaces": 0,
+              "floatingPoint": -100
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [
+          [
+            "type",
+            "currency"
+          ]
+        ],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 5,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/commodity-tags.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 8,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/commodity-tags.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  }
+]

@@ -35,3 +35,21 @@ snapshot-api:
 # Production build (static SPA)
 build:
     cd web && bun run build
+
+# --- Rust engine (crates/) ---
+
+# Build the Rust journal engine
+engine-build:
+    cargo build
+
+# Test the Rust journal engine
+engine-test:
+    cargo test
+
+# Format + lint the Rust engine (clippy warnings are errors)
+engine-check:
+    cargo fmt --check && cargo clippy --all-targets -- -D warnings
+
+# Run the local engine server (Phase 2+): `just serve-engine ~/finance/2026.journal`
+serve-engine file="fixtures/sample.journal":
+    cargo run -p ledgeline-server -- {{file}}

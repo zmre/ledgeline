@@ -1,0 +1,4 @@
+; numbers.test case 4: an amount with no digits at all (. EUR).
+2017-01-01
+    a   . EUR
+    b

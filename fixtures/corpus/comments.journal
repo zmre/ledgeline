@@ -1,0 +1,4 @@
+; comments.test: same-line transaction and posting comments (the ; form).
+2010-01-01 x  ; a transaction comment
+    a   $1  ; a posting comment
+    b

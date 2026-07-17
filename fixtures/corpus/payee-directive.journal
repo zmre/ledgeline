@@ -1,0 +1,7 @@
+; directive-payee.test: a `payee` declaration is accepted and does not alter
+; the transactions it names (subdirectives omitted; see GAP list).
+payee KFC
+
+2024-01-01 KFC
+    a   $1
+    b

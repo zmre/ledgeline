@@ -2,6 +2,9 @@
 .direnv/
 result
 
+# Rust engine (crates/)
+/target/
+
 # JS / SvelteKit (web/)
 node_modules/
 .svelte-kit/

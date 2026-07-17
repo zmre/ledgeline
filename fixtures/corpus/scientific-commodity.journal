@@ -1,0 +1,9 @@
+; scientific.test case 2: E-notation numbers behind a left-side commodity,
+; with a commodity directive fixing the display precision.
+commodity $1,000.00000000
+
+2018-01-01
+    a  $1.05e2
+    b  $31415926e-7
+    c  $1E+3
+    d

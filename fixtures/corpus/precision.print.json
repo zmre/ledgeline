@@ -1,0 +1,111 @@
+[
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2010-01-01",
+    "tdate2": null,
+    "tdescription": "x",
+    "tindex": 1,
+    "tpostings": [
+      {
+        "paccount": "A",
+        "pamount": [
+          {
+            "acommodity": "C",
+            "acost": {
+              "contents": {
+                "acommodity": "D",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 3092189512,
+                  "decimalPlaces": 8,
+                  "floatingPoint": 30.92189512
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": null,
+                  "asdigitgroups": null,
+                  "asprecision": 8,
+                  "asrounding": "NoRounding"
+                }
+              },
+              "tag": "UnitCost"
+            },
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 553653,
+              "decimalPlaces": 4,
+              "floatingPoint": 55.3653
+            },
+            "astyle": {
+              "ascommodityside": "R",
+              "ascommodityspaced": true,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 4,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "A",
+        "pamount": [
+          {
+            "acommodity": "D",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -1712,
+              "decimalPlaces": 0,
+              "floatingPoint": -1712
+            },
+            "astyle": {
+              "ascommodityside": "R",
+              "ascommodityspaced": true,
+              "asdecimalmark": null,
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 3,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/precision.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 6,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/precision.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  }
+]

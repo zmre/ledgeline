@@ -1,0 +1,8 @@
+; directive-decimal-mark.test / commas.journal: a `decimal-mark ,`
+; directive makes comma the decimal separator for undeclared commodities.
+; Both legs are explicit so no counter-leg inference is needed (see the
+; inferred-commodity-style GAP fixture for the elided-leg case).
+decimal-mark ,
+2021-05-01 YANDEX.PLUS
+    Assets:Yandex            -199,00 RUB
+    Expenses:Unknown:RUB      199,00 RUB

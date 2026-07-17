@@ -1,0 +1,13 @@
+; dates.test case 3 (leap day accepted) plus the three date separators
+; hledger accepts (/ - .); all normalize to ISO YYYY-MM-DD.
+2000/2/29 leap day
+    a   $1
+    b
+
+2020-01-05 dashes
+    a   $1
+    b
+
+2020.01.06 dots
+    a   $1
+    b

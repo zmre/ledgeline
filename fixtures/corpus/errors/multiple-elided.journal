@@ -1,0 +1,6 @@
+; parse-errors.test case 5: more than one real posting with no amount
+; cannot be balanced.
+2018-01-01
+    a   $1
+    b
+    c
