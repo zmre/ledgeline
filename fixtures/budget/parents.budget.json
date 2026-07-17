@@ -1,0 +1,746 @@
+{
+  "prDates": [
+    [
+      {
+        "contents": "2026-01-01",
+        "tag": "Exact"
+      },
+      {
+        "contents": "2026-02-01",
+        "tag": "Exact"
+      }
+    ]
+  ],
+  "prRows": [
+    {
+      "prrAmounts": [
+        [
+          [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": -480,
+                "decimalPlaces": 0,
+                "floatingPoint": -480
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 0,
+                "asrounding": "HardRounding"
+              }
+            }
+          ],
+          null
+        ]
+      ],
+      "prrAverage": [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -480,
+              "decimalPlaces": 0,
+              "floatingPoint": -480
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        []
+      ],
+      "prrName": "<unbudgeted>",
+      "prrTotal": [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -480,
+              "decimalPlaces": 0,
+              "floatingPoint": -480
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        []
+      ]
+    },
+    {
+      "prrAmounts": [
+        [
+          [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 425,
+                "decimalPlaces": 0,
+                "floatingPoint": 425
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 0,
+                "asrounding": "HardRounding"
+              }
+            }
+          ],
+          [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 450,
+                "decimalPlaces": 0,
+                "floatingPoint": 450
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 0,
+                "asrounding": "HardRounding"
+              }
+            }
+          ]
+        ]
+      ],
+      "prrAverage": [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 425,
+              "decimalPlaces": 0,
+              "floatingPoint": 425
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 450,
+              "decimalPlaces": 0,
+              "floatingPoint": 450
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ]
+      ],
+      "prrName": "expenses:food",
+      "prrTotal": [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 425,
+              "decimalPlaces": 0,
+              "floatingPoint": 425
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 450,
+              "decimalPlaces": 0,
+              "floatingPoint": 450
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ]
+      ]
+    },
+    {
+      "prrAmounts": [
+        [
+          [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 120,
+                "decimalPlaces": 0,
+                "floatingPoint": 120
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 0,
+                "asrounding": "HardRounding"
+              }
+            }
+          ],
+          [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 150,
+                "decimalPlaces": 0,
+                "floatingPoint": 150
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 0,
+                "asrounding": "HardRounding"
+              }
+            }
+          ]
+        ]
+      ],
+      "prrAverage": [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 120,
+              "decimalPlaces": 0,
+              "floatingPoint": 120
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 150,
+              "decimalPlaces": 0,
+              "floatingPoint": 150
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ]
+      ],
+      "prrName": "expenses:food:dining",
+      "prrTotal": [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 120,
+              "decimalPlaces": 0,
+              "floatingPoint": 120
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 150,
+              "decimalPlaces": 0,
+              "floatingPoint": 150
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ]
+      ]
+    },
+    {
+      "prrAmounts": [
+        [
+          [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 280,
+                "decimalPlaces": 0,
+                "floatingPoint": 280
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 0,
+                "asrounding": "HardRounding"
+              }
+            }
+          ],
+          [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 300,
+                "decimalPlaces": 0,
+                "floatingPoint": 300
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 0,
+                "asrounding": "HardRounding"
+              }
+            }
+          ]
+        ]
+      ],
+      "prrAverage": [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 280,
+              "decimalPlaces": 0,
+              "floatingPoint": 280
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 300,
+              "decimalPlaces": 0,
+              "floatingPoint": 300
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ]
+      ],
+      "prrName": "expenses:food:groceries",
+      "prrTotal": [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 280,
+              "decimalPlaces": 0,
+              "floatingPoint": 280
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 300,
+              "decimalPlaces": 0,
+              "floatingPoint": 300
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ]
+      ]
+    },
+    {
+      "prrAmounts": [
+        [
+          [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 55,
+                "decimalPlaces": 0,
+                "floatingPoint": 55
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 0,
+                "asrounding": "HardRounding"
+              }
+            }
+          ],
+          [
+            {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 60,
+                "decimalPlaces": 0,
+                "floatingPoint": 60
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 0,
+                "asrounding": "HardRounding"
+              }
+            }
+          ]
+        ]
+      ],
+      "prrAverage": [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 55,
+              "decimalPlaces": 0,
+              "floatingPoint": 55
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 60,
+              "decimalPlaces": 0,
+              "floatingPoint": 60
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ]
+      ],
+      "prrName": "expenses:transport:bus",
+      "prrTotal": [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 55,
+              "decimalPlaces": 0,
+              "floatingPoint": 55
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 60,
+              "decimalPlaces": 0,
+              "floatingPoint": 60
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ]
+      ]
+    }
+  ],
+  "prTotals": {
+    "prrAmounts": [
+      [
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 0,
+              "decimalPlaces": 0,
+              "floatingPoint": 0
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ],
+        [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 510,
+              "decimalPlaces": 0,
+              "floatingPoint": 510
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "HardRounding"
+            }
+          }
+        ]
+      ]
+    ],
+    "prrAverage": [
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 0,
+            "decimalPlaces": 0,
+            "floatingPoint": 0
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": null,
+            "asprecision": 0,
+            "asrounding": "HardRounding"
+          }
+        }
+      ],
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 510,
+            "decimalPlaces": 0,
+            "floatingPoint": 510
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": null,
+            "asprecision": 0,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    "prrName": [],
+    "prrTotal": [
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 0,
+            "decimalPlaces": 0,
+            "floatingPoint": 0
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": null,
+            "asprecision": 0,
+            "asrounding": "HardRounding"
+          }
+        }
+      ],
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 510,
+            "decimalPlaces": 0,
+            "floatingPoint": 510
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": null,
+            "asprecision": 0,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ]
+  }
+}
+

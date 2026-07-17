@@ -6,10 +6,11 @@
 //! descriptions, comments/tags, multi-space account/amount separation, costs
 //! (`@`/`@@`), balance assertions (`=`), and single-posting amount inference.
 //!
-//! Periodic (`~`) and auto-posting (`=`) rule blocks are recognized and skipped:
-//! hledger's `/transactions` (`jtxns`) likewise excludes periodic and
-//! auto-generated postings, so skipping them keeps wire parity. They will be
-//! captured for the budget report in a later phase.
+//! Periodic (`~`) rule blocks are parsed into [`model::PeriodicTransaction`]s
+//! and stored on `Journal.periodic_transactions` (they feed the budget report),
+//! but are still kept out of `Journal.transactions` — hledger's `/transactions`
+//! (`jtxns`) likewise excludes periodic and auto-generated postings, so wire
+//! parity is preserved. Auto-posting (`=`) and `comment` blocks remain skipped.
 //!
 //! `Y` sets the default year for yearless dates; every transaction/`P` date is
 //! normalized to ISO `YYYY-MM-DD` (accepting `-`/`/`/`.` separators). Directives
@@ -20,8 +21,8 @@
 use crate::decimal::{Dec, DecError};
 use crate::model::{
     AccountDeclaration, AccountName, Amount, AmountStyle, BalanceAssertion, Commodity,
-    CommoditySide, Cost, CostKind, DigitGroups, Journal, Posting, PostingType, PriceDirective,
-    SourcePos, Status, Tindex, Transaction,
+    CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr, PeriodicTransaction, Posting,
+    PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,6 +47,12 @@ pub enum ParseError {
     /// A directive keyword we do not (yet) support was encountered.
     #[error("unsupported directive: '{0}'")]
     UnsupportedDirective(String),
+    /// A `~` periodic rule's period expression is not one of the supported fixed
+    /// intervals (`daily`/`weekly`/`monthly`/`quarterly`/`yearly`). Richer period
+    /// expressions are deferred; the period expr and description must be
+    /// separated by two-or-more spaces.
+    #[error("unsupported period expression: '{0}'")]
+    UnsupportedPeriodExpr(String),
     /// An `include`d file could not be read.
     #[error("include error: {0}")]
     Include(String),
@@ -94,6 +101,7 @@ struct Ctx {
     accounts: Vec<AccountDeclaration>,
     prices: Vec<PriceDirective>,
     transactions: Vec<Transaction>,
+    periodic_transactions: Vec<PeriodicTransaction>,
     tindex: u32,
 }
 
@@ -110,6 +118,7 @@ pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseErro
         accounts: Vec::new(),
         prices: Vec::new(),
         transactions: Vec::new(),
+        periodic_transactions: Vec::new(),
         tindex: 0,
     };
     parse_source(text, source_name, &mut ctx)?;
@@ -117,6 +126,7 @@ pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseErro
     Ok(Journal {
         source_name: source_name.to_string(),
         transactions: ctx.transactions,
+        periodic_transactions: ctx.periodic_transactions,
         accounts: ctx.accounts,
         commodity_styles: ctx.commodity_styles,
         commodity_tags: ctx.commodity_tags,
@@ -235,9 +245,23 @@ fn parse_source(text: &str, source_name: &str, ctx: &mut Ctx) -> Result<(), Pars
             }
             // Declarations with no effect on transaction parsing.
             "payee" | "tag" => {}
-            // Periodic / auto-posting rule blocks: skip (excluded from `jtxns`,
-            // like hledger-web's `/transactions`).
-            "~" | "=" => {
+            // A periodic (`~`) rule: parse it into `periodic_transactions` (for
+            // the budget report) but keep it out of `transactions`/`jtxns`.
+            "~" => {
+                let amt = AmountCtx {
+                    styles: &ctx.styles,
+                    default_mark: ctx.default_decimal_mark,
+                    default_commodity: ctx.default_commodity.as_ref(),
+                };
+                let (periodic, next) =
+                    parse_periodic_transaction(&lines, i, amt, source_name, ctx.default_year)?;
+                ctx.periodic_transactions.push(periodic);
+                i = next;
+                continue;
+            }
+            // Auto-posting (`=`) rule blocks: still skipped (excluded from
+            // `jtxns`, like hledger-web's `/transactions`).
+            "=" => {
                 i = skip_indented_block(&lines, i);
                 continue;
             }
@@ -517,6 +541,83 @@ fn skip_comment_block(lines: &[&str], start: usize) -> usize {
         j += 1;
     }
     j
+}
+
+/// Parse a `~ PERIODEXPR  [DESCRIPTION]` periodic rule and its indented
+/// postings, returning the rule and the index of the first following line.
+///
+/// The postings are parsed and balanced exactly like a normal transaction's
+/// (reusing [`parse_posting`]/[`balance_postings`]), so an elided balancing
+/// posting is inferred and unbalanced-virtual `(account)` postings are excluded
+/// from balancing. The period expression and description must be separated by
+/// two-or-more spaces (matching hledger); only the fixed intervals are
+/// supported (see [`parse_period_expr`]).
+fn parse_periodic_transaction(
+    lines: &[&str],
+    start: usize,
+    amt: AmountCtx,
+    source_name: &str,
+    default_year: Option<i32>,
+) -> Result<(PeriodicTransaction, usize), ParseError> {
+    let header_no = to_u32(start + 1);
+    let header_line = lines[start];
+    let after_tilde = header_line
+        .trim_start()
+        .strip_prefix('~')
+        .unwrap_or("")
+        .trim_start();
+    let (main, _comment) = split_comment(after_tilde);
+    // hledger requires a two-space gap between the period expression and the
+    // description; `split_account_amount` splits on exactly that.
+    let (period_part, desc_part) = split_account_amount(main.trim());
+    let period = parse_period_expr(period_part.trim())
+        .map_err(|e| locate(source_name, header_no, header_line, e))?;
+    let description = desc_part.trim().to_string();
+
+    let mut raw_postings: Vec<RawPosting> = Vec::new();
+    let mut j = start + 1;
+    while j < lines.len() {
+        let line = lines[j];
+        if line.trim().is_empty() || !line.starts_with([' ', '\t']) {
+            break;
+        }
+        if line.trim_start().starts_with(';') {
+            j += 1;
+            continue;
+        }
+        let posting_no = to_u32(j + 1);
+        // A periodic rule's postings carry no transaction date, so a yearless
+        // `date:` posting tag has no year to inherit (`None`).
+        let posting = parse_posting(line, posting_no, amt, default_year)
+            .map_err(|e| locate(source_name, posting_no, line, e))?;
+        raw_postings.push(posting);
+        j += 1;
+    }
+
+    let postings = balance_postings(raw_postings, header_no)
+        .map_err(|e| locate(source_name, header_no, header_line, e))?;
+    Ok((
+        PeriodicTransaction {
+            period,
+            description,
+            postings,
+        },
+        j,
+    ))
+}
+
+/// Parse a periodic rule's period expression. Only the fixed intervals are
+/// supported; anything else (multi-word/anchored/bounded expressions, or a
+/// description not separated by two spaces) is deferred with a clear error.
+fn parse_period_expr(expr: &str) -> Result<PeriodExpr, ParseError> {
+    match expr {
+        "daily" => Ok(PeriodExpr::Daily),
+        "weekly" => Ok(PeriodExpr::Weekly),
+        "monthly" => Ok(PeriodExpr::Monthly),
+        "quarterly" => Ok(PeriodExpr::Quarterly),
+        "yearly" => Ok(PeriodExpr::Yearly),
+        other => Err(ParseError::UnsupportedPeriodExpr(other.to_string())),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1446,9 +1547,12 @@ mod tests {
     }
 
     #[test]
-    fn periodic_and_auto_posting_blocks_are_skipped() {
+    fn periodic_rule_parsed_but_excluded_from_transactions() {
+        // A `~` rule is parsed into `periodic_transactions` (balanced like a real
+        // transaction, so the elided `assets:bank` leg is inferred), yet it is
+        // kept out of `transactions`. An `=` auto-posting block stays skipped.
         let text = concat!(
-            "~ monthly budget\n",
+            "~ monthly  household budget\n",
             "    expenses:rent    $1000\n",
             "    assets:bank\n",
             "\n",
@@ -1460,9 +1564,59 @@ mod tests {
             "    assets:bank\n",
         );
         let journal = parse_journal(text, "t.journal").unwrap();
+
+        // The regular transaction, and only it, lands in `transactions`.
         assert_eq!(journal.transactions.len(), 1);
         assert_eq!(journal.transactions[0].description, "real");
         assert_eq!(journal.transactions[0].index, Tindex(1));
+
+        // The periodic rule is captured separately, with its balancing leg.
+        assert_eq!(journal.periodic_transactions.len(), 1);
+        let periodic = &journal.periodic_transactions[0];
+        assert_eq!(periodic.period, PeriodExpr::Monthly);
+        assert_eq!(periodic.description, "household budget");
+        assert_eq!(periodic.postings.len(), 2);
+        assert_eq!(
+            periodic.postings[0].account,
+            AccountName("expenses:rent".into())
+        );
+        assert_eq!(periodic.postings[0].amounts[0].quantity, Dec::new(1000, 0));
+        assert_eq!(
+            periodic.postings[1].account,
+            AccountName("assets:bank".into())
+        );
+        assert_eq!(periodic.postings[1].amounts[0].quantity, Dec::new(-1000, 0));
+    }
+
+    #[test]
+    fn periodic_rule_period_forms_and_deferrals() {
+        // The five fixed intervals parse; a two-space gap separates an optional
+        // description; a single space (or a richer period expression) is a clear
+        // deferral error rather than a misparse.
+        for (src, expected) in [
+            ("~ daily\n    (a)  $1\n", PeriodExpr::Daily),
+            ("~ weekly\n    (a)  $1\n", PeriodExpr::Weekly),
+            ("~ monthly\n    (a)  $1\n", PeriodExpr::Monthly),
+            ("~ quarterly\n    (a)  $1\n", PeriodExpr::Quarterly),
+            ("~ yearly\n    (a)  $1\n", PeriodExpr::Yearly),
+        ] {
+            let journal = parse_journal(src, "t.journal").unwrap();
+            assert_eq!(journal.periodic_transactions[0].period, expected);
+            assert_eq!(journal.periodic_transactions[0].description, "");
+        }
+
+        // Single-space "description" is part of the period expression → deferred.
+        let err = parse_journal("~ monthly budget\n    (a)  $1\n", "t.journal").unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported period expression"),
+            "{err}"
+        );
+        // A richer period expression is deferred too.
+        let err = parse_journal("~ every 2 weeks\n    (a)  $1\n", "t.journal").unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported period expression"),
+            "{err}"
+        );
     }
 
     #[test]

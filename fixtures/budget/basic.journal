@@ -1,0 +1,23 @@
+; Basic monthly budget: food & bus goals, cash is unbudgeted.
+; Exercises subaccount-inclusive actuals (expenses:food:dining rolls into
+; expenses:food) and the synthetic <unbudgeted> row (assets:checking).
+
+~ monthly  household budget
+    (expenses:food)    $400
+    (expenses:bus)     $20
+
+2026-01-05 grocery
+    expenses:food    $352
+    assets:checking
+
+2026-01-12 bus pass
+    expenses:bus     $23
+    assets:checking
+
+2026-02-04 grocery
+    expenses:food    $310
+    assets:checking
+
+2026-02-18 dinner out
+    expenses:food:dining   $80
+    assets:checking

@@ -247,6 +247,19 @@ pub fn last_n_buckets(end: &str, interval: Interval, n: usize) -> Result<Vec<Str
     Ok(out)
 }
 
+/// The bucket key immediately following `key` for the same `interval` (the
+/// bucket containing the day after `key`'s last day). Companion to
+/// [`last_n_buckets`], for forward iteration (used by the budget report to walk
+/// a periodic rule's occurrences across a report span).
+///
+/// # Errors
+/// Returns [`ReportError::InvalidBucketKey`] for an unrecognized key.
+pub fn next_bucket(key: &str, interval: Interval) -> Result<String, ReportError> {
+    let (y, m, d) = parts(&bucket_end(key)?);
+    let (ny, nm, nd) = civil_from_days(days_from_civil(y, m, d) + 1);
+    Ok(bucket_key(&to_iso(ny, nm, nd), interval))
+}
+
 /// Lexical ISO-date comparison.
 #[must_use]
 pub fn compare_iso(a: &str, b: &str) -> Ordering {

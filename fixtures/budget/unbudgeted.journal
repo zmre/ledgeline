@@ -1,0 +1,18 @@
+; <unbudgeted> case: only budget:food has a goal; expenses:rent, assets:checking
+; and income:salary have no budgeted ancestor, so they all collapse into the
+; single synthetic <unbudgeted> row.
+
+~ monthly  food only
+    (budget:food)   $500
+
+2026-01-04 grocery
+    budget:food     $420
+    assets:checking
+
+2026-01-16 rent
+    expenses:rent   $1200
+    assets:checking
+
+2026-01-25 salary
+    assets:checking  $5000
+    income:salary

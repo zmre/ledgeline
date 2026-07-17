@@ -220,6 +220,45 @@ pub struct AccountDeclaration {
     pub position: SourcePos,
 }
 
+/// The period of a `~` periodic transaction rule.
+///
+/// Only hledger's standard fixed intervals are modeled. Richer period
+/// expressions (`every 2 weeks`, `every 15th of month`, `from…to…`) are
+/// deferred: the parser rejects them with a clear error rather than misreading
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeriodExpr {
+    /// `daily`.
+    Daily,
+    /// `weekly` (ISO weeks, Mon–Sun).
+    Weekly,
+    /// `monthly`.
+    Monthly,
+    /// `quarterly`.
+    Quarterly,
+    /// `yearly`.
+    Yearly,
+}
+
+/// A `~ PERIODEXPR  [DESCRIPTION]` periodic transaction rule.
+///
+/// Its postings are parsed and balanced exactly like a normal transaction's (so
+/// an elided balancing posting is inferred). The rule is stored apart from
+/// [`Journal::transactions`] and is deliberately never surfaced through the wire
+/// `/transactions` view — it exists only to supply budget goals to the budget
+/// report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeriodicTransaction {
+    /// The rule's recurrence period.
+    pub period: PeriodExpr,
+    /// The rule description: the text after the period expression (separated by
+    /// two-or-more spaces). `--budget=DESCPAT` matches a case-insensitive
+    /// substring of it. Empty when the rule has no description.
+    pub description: String,
+    /// The rule's postings, after amount inference/balancing.
+    pub postings: Vec<Posting>,
+}
+
 /// A `P DATE COMMODITY PRICE` market-price directive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PriceDirective {
@@ -238,6 +277,10 @@ pub struct Journal {
     pub source_name: String,
     /// Transactions in file order.
     pub transactions: Vec<Transaction>,
+    /// Periodic (`~`) transaction rules in file order. Kept out of
+    /// `transactions` (and thus the wire `/transactions` view); consumed only by
+    /// the budget report.
+    pub periodic_transactions: Vec<PeriodicTransaction>,
     /// Account declarations in file order.
     pub accounts: Vec<AccountDeclaration>,
     /// Canonical display style per commodity (from `commodity` directives or

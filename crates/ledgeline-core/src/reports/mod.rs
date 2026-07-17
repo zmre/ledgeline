@@ -24,6 +24,7 @@ pub mod account_types;
 pub mod accounts;
 pub mod aggregate;
 pub mod balance_sheet;
+pub mod budget;
 pub mod cash_flow;
 pub mod income_statement;
 pub mod mixed_amount;
@@ -43,12 +44,14 @@ pub use account_types::{AccountDecl, AccountType, account_decls, cash_predicate}
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 pub use balance_sheet::balance_sheet;
+pub use budget::{BudgetCell, BudgetOpts, BudgetReport, BudgetRow, UNBUDGETED, budget_report};
 pub use cash_flow::{cash_flow, is_cash_like};
 pub use income_statement::income_statement;
 pub use mixed_amount::MixedAmount;
 pub use net_worth::net_worth;
 pub use periods::{
     Interval, bucket_end, bucket_key, bucket_label, bucket_start, compare_iso, last_n_buckets,
+    next_bucket,
 };
 pub use prices::{PriceDb, ValuationMeta, value_at};
 pub use types::{PeriodReport, PeriodRow, ReportMeta, ReportRow, Section, SectionedReport};
