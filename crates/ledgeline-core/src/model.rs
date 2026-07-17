@@ -8,7 +8,11 @@
 use crate::decimal::Dec;
 
 /// A commodity symbol, e.g. `$`, `EUR`, `AAPL`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// `Ord`/`PartialOrd` compare by the inner symbol so a `Commodity` can key a
+/// `BTreeMap` (the report engine's `MixedAmount`), giving deterministic,
+/// lexically-sorted commodity iteration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Commodity(pub String);
 
 /// A full, colon-delimited account name, e.g. `assets:bank:checking`.

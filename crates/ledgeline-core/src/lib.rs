@@ -17,11 +17,13 @@
 pub mod decimal;
 pub mod model;
 pub mod parse;
+pub mod reports;
 pub mod wire;
 
 pub use decimal::{Dec, DecError};
 pub use model::Journal;
 pub use parse::{ParseError, parse_journal};
+pub use reports::ReportError;
 
 /// Parse `text` and serialize its transactions to the hledger-compatible JSON
 /// array in one step.
