@@ -5,8 +5,13 @@
 //! app is exposed here as a library so integration tests can drive the real
 //! HTTP layer with `tower`'s `oneshot` (no sockets required).
 //!
-//! Each endpoint's JSON body is precomputed once from the journal at startup and
-//! stored behind an `Arc` in [`AppState`]; handlers hand back the cached value.
+//! Each wire endpoint's JSON body is precomputed once from the journal at
+//! startup and stored behind an `Arc` in [`AppState`]; handlers hand back the
+//! cached value. The native report/budget endpoints ([`reports_api`]) instead
+//! depend on request query params, so they are computed per request from the
+//! parsed [`Journal`] that [`AppState`] also holds.
+
+mod reports_api;
 
 use axum::{Json, Router, extract::State, routing::get};
 use ledgeline_core::{Journal, wire};
@@ -15,10 +20,12 @@ use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 /// Immutable, cheaply-cloneable application state: one precomputed JSON value per
-/// endpoint, each shared via `Arc` so handler dispatch never re-serializes the
-/// journal or clones large trees.
+/// wire endpoint (each shared via `Arc` so handler dispatch never re-serializes
+/// the journal), plus the parsed [`Journal`] the report endpoints compute from.
 #[derive(Clone)]
 pub struct AppState {
+    /// The parsed journal, shared with the per-request report handlers.
+    journal: Arc<Journal>,
     version: Arc<Value>,
     accountnames: Arc<Value>,
     transactions: Arc<Value>,
@@ -36,6 +43,7 @@ impl AppState {
     #[must_use]
     pub fn from_journal(journal: &Journal) -> Self {
         Self {
+            journal: Arc::new(journal.clone()),
             version: Arc::new(wire::version_value()),
             accountnames: Arc::new(value_or_null(wire::journal_to_accountnames_value(journal))),
             transactions: Arc::new(value_or_null(wire::journal_to_value(journal))),
@@ -67,6 +75,14 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/prices", get(prices))
         .route("/commodities", get(commodities))
         .route("/accounts", get(accounts))
+        .route("/api/reports/balancesheet", get(reports_api::balancesheet))
+        .route(
+            "/api/reports/incomestatement",
+            get(reports_api::incomestatement),
+        )
+        .route("/api/reports/cashflow", get(reports_api::cashflow))
+        .route("/api/reports/networth", get(reports_api::networth))
+        .route("/api/budget", get(reports_api::budget))
         .layer(cors)
         .with_state(state)
 }
