@@ -673,8 +673,13 @@ pub(crate) async fn holdings(
         mode: parse_mode(query.mode.as_deref())?,
         as_of: query.as_of.unwrap_or_else(today_utc),
     };
-    let report = compute_holdings(&state.journal.transactions, &state.journal.prices, &scope)
-        .map_err(|err| report_error(&err))?;
+    let report = compute_holdings(
+        &state.journal.transactions,
+        &state.journal.prices,
+        &state.journal.accounts,
+        &scope,
+    )
+    .map_err(|err| report_error(&err))?;
     Ok(Json(wire_holdings(&report)))
 }
 
@@ -694,6 +699,7 @@ pub(crate) async fn holdings_series_report(
     let series = holdings_series(
         &state.journal.transactions,
         &state.journal.prices,
+        &state.journal.accounts,
         &scope,
         interval,
         count,

@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 
 use crate::decimal::Dec;
 use crate::model::{
-    AccountName, Amount, AmountStyle, Commodity, CommoditySide, Cost, CostKind, Posting,
-    PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
+    AccountDeclaration, AccountName, Amount, AmountStyle, Commodity, CommoditySide, Cost, CostKind,
+    Posting, PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
 };
 
 use super::types::{HoldingsScope, ScopeMode};
@@ -114,6 +114,19 @@ pub fn sell(account: &str, symbol: &str, qty: i128) -> Posting {
 /// A single-leg cost-less buy posting.
 pub fn buy_no_cost(account: &str, symbol: &str, qty: i128) -> Posting {
     posting(account, vec![amt(symbol, qty, 0)], &[])
+}
+
+/// An `account NAME  ; tags...` declaration from `(name, tags)`.
+pub fn account_decl(name: &str, tags: &[(&str, &str)]) -> AccountDeclaration {
+    AccountDeclaration {
+        name: AccountName(name.to_string()),
+        tags: tags
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+        comment: String::new(),
+        position: SourcePos { line: 1, column: 1 },
+    }
 }
 
 /// Scope shorthand.

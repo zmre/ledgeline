@@ -13,12 +13,12 @@
 mod common;
 
 use common::fixture_journal;
-use ledgeline_core::Dec;
 use ledgeline_core::holdings::{
     HoldingsReport, HoldingsScope, PriceSource, ScopeMode, WarningKind, compute_holdings,
     holdings_series,
 };
 use ledgeline_core::reports::Interval;
+use ledgeline_core::{Dec, parse_journal};
 use std::collections::BTreeSet;
 
 /// All stock activity is dated ≤ 2026-06-22 and all `P` directives ≤ 2026-06-30,
@@ -38,6 +38,7 @@ fn report() -> HoldingsReport {
     compute_holdings(
         &journal.transactions,
         &journal.prices,
+        &journal.accounts,
         &all_accounts_scope(),
     )
     .expect("holdings compute succeeds")
@@ -207,7 +208,13 @@ fn scoping_to_a_single_stock_account_isolates_it() {
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
     };
-    let report = compute_holdings(&journal.transactions, &journal.prices, &scope).expect("compute");
+    let report = compute_holdings(
+        &journal.transactions,
+        &journal.prices,
+        &journal.accounts,
+        &scope,
+    )
+    .expect("compute");
     let symbols: Vec<&str> = report.holdings.iter().map(|h| h.symbol.as_str()).collect();
     assert_eq!(symbols, ["VTI"]);
     assert_eq!(
@@ -225,6 +232,7 @@ fn series_tracks_the_portfolio_over_time() {
     let series = holdings_series(
         &journal.transactions,
         &journal.prices,
+        &journal.accounts,
         &all_accounts_scope(),
         Interval::Monthly,
         6,
@@ -247,4 +255,73 @@ fn series_tracks_the_portfolio_over_time() {
     assert!(series.points.iter().all(|p| p.basis.is_none()));
     // Market value is monotonically present and positive by the final month.
     assert!(!series.points.last().unwrap().market_value.is_zero());
+}
+
+// ---- account-directive name inheritance (regression) ----
+
+/// Parse `text` and resolve the `name` of the single expected holding `symbol`,
+/// exercising the full parse → holdings path (so `account`-directive `name:`
+/// tags must be inherited exactly as the wire `ptags` do).
+fn holding_name(text: &str, symbol: &str) -> String {
+    let journal = parse_journal(text, "regression.journal").expect("journal parses");
+    let scope = HoldingsScope {
+        accounts: BTreeSet::new(),
+        mode: ScopeMode::Include,
+        as_of: "2024-12-31".to_string(),
+    };
+    let report = compute_holdings(
+        &journal.transactions,
+        &journal.prices,
+        &journal.accounts,
+        &scope,
+    )
+    .expect("holdings compute succeeds");
+    report
+        .holdings
+        .iter()
+        .find(|h| h.symbol == symbol)
+        .unwrap_or_else(|| panic!("holding {symbol} should exist"))
+        .name
+        .clone()
+}
+
+#[test]
+fn account_directive_name_flows_into_holdings() {
+    // The reported repro: the display name lives ONLY on the `account`
+    // directive; the posting carries no `name:` comment tag.
+    let journal = "\
+account assets:broker:aapl    ; name: Apple Inc.
+account assets:cash
+commodity 1.0000 AAPL
+2024-01-01 buy AAPL
+    assets:broker:aapl   10 AAPL @ $220.00
+    assets:cash
+";
+    assert_eq!(holding_name(journal, "AAPL"), "Apple Inc.");
+}
+
+#[test]
+fn posting_comment_name_still_wins_over_account_directive() {
+    let journal = "\
+account assets:broker:aapl    ; name: Apple Inc.
+account assets:cash
+2024-01-01 buy AAPL
+    assets:broker:aapl   10 AAPL @ $220.00  ; name: Posting Wins
+    assets:cash
+";
+    assert_eq!(holding_name(journal, "AAPL"), "Posting Wins");
+}
+
+#[test]
+fn ancestor_account_directive_name_is_inherited() {
+    // Only the ANCESTOR `assets:broker` declares the name; the posted leaf
+    // `assets:broker:aapl` has no declaration of its own.
+    let journal = "\
+account assets:broker    ; name: Broker Holdings
+account assets:cash
+2024-01-01 buy AAPL
+    assets:broker:aapl   10 AAPL @ $220.00
+    assets:cash
+";
+    assert_eq!(holding_name(journal, "AAPL"), "Broker Holdings");
 }

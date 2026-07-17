@@ -9,7 +9,7 @@
 use std::cmp::Ordering;
 
 use crate::decimal::Dec;
-use crate::model::{PriceDirective, Transaction};
+use crate::model::{AccountDeclaration, PriceDirective, Transaction};
 use crate::reports::{
     Interval, ReportError, bucket_end, bucket_label, compare_iso, last_n_buckets,
 };
@@ -55,6 +55,7 @@ pub struct HoldingsSeries {
 pub fn holdings_series(
     txns: &[Transaction],
     prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
     scope: &HoldingsScope,
     interval: Interval,
     count: usize,
@@ -75,7 +76,7 @@ pub fn holdings_series(
             mode: scope.mode,
             as_of: date.clone(),
         };
-        let report = compute_holdings(txns, prices, &point_scope)?;
+        let report = compute_holdings(txns, prices, accounts, &point_scope)?;
         base = report.base;
         if report.totals.basis.is_some() {
             has_basis = true;
@@ -148,6 +149,7 @@ mod tests {
         let series = holdings_series(
             &txns(),
             &prices(),
+            &[],
             &scope("2025-05-15", ScopeMode::Include, &[]),
             Interval::Monthly,
             5,
@@ -171,6 +173,7 @@ mod tests {
         let series = holdings_series(
             &txns(),
             &prices(),
+            &[],
             &scope("2025-05-15", ScopeMode::Include, &[]),
             Interval::Monthly,
             5,
@@ -199,6 +202,7 @@ mod tests {
         let series = holdings_series(
             &txns(),
             &prices(),
+            &[],
             &scope("2025-05-15", ScopeMode::Exclude, &["assets:broker:vti"]),
             Interval::Monthly,
             3,
@@ -219,6 +223,7 @@ mod tests {
         let series = holdings_series(
             &txns(),
             &prices(),
+            &[],
             &scope("2025-03-31", ScopeMode::Include, &[]),
             Interval::Monthly,
             2,
