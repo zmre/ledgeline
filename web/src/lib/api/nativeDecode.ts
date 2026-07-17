@@ -1,12 +1,14 @@
 // Native (ledgeline-engine) wire → domain decoder. THE ONLY FILE outside the
 // engine that knows the native /api/* JSON field names. It mirrors normalize.ts:
 // permissive raw mirrors + pure builders that emit frozen domain objects, with
-// Dec built from {mantissa, places} under a Number.isSafeInteger guard (never a
-// silent float fallback). Nothing here touches Svelte/DOM, so the whole module
-// is unit-testable under node.
+// Dec built from {mantissa: string, places} decoded via BigInt — the engine
+// string-encodes the mantissa because COMPUTED values (e.g. marketValue =
+// shares × price, non-normalized) can exceed the JS safe-integer range, which a
+// JSON number would silently lose. Nothing here touches Svelte/DOM, so the whole
+// module is unit-testable under node.
 //
 // Wire contract (see crates/ledgeline-server/src/reports_api.rs):
-//   - Dec          → {mantissa, places}  (value = mantissa / 10^places)
+//   - Dec          → {mantissa: <string>, places}  (value = mantissa / 10^places; BigInt-decoded)
 //   - MixedAmount  → {"<commodity>": Dec, …}  (zero commodities already dropped)
 //   - nulls kept (basis/price/gain/…); camelCase keys map 1:1 onto the domain types.
 
@@ -22,7 +24,9 @@ import {ApiShapeError} from "./client";
 // ---------------------------------------------------------------------------
 
 interface RawDec {
-    mantissa?: number;
+    // String-encoded significand (decoded via BigInt): computed values can
+    // exceed the JS safe-integer range, so the engine sends it as a string.
+    mantissa?: string;
     places?: number;
 }
 
@@ -133,11 +137,12 @@ function frozen<T>(items: T[]): T[] {
 
 /** {mantissa, places} → frozen Dec, guarding the JS safe-integer range like normalize.ts. */
 function decodeDec(raw: RawDec | undefined, context: string): Dec {
-    if (raw === undefined || raw === null || typeof raw.mantissa !== "number" || typeof raw.places !== "number") {
+    if (raw === undefined || raw === null || typeof raw.mantissa !== "string" || typeof raw.places !== "number") {
         throw new ApiShapeError(`${context}: missing mantissa/places`);
     }
-    if (!Number.isSafeInteger(raw.mantissa)) {
-        throw new ApiShapeError(`${context}: mantissa ${raw.mantissa} is outside the safe integer range`);
+    // BigInt handles any magnitude; just validate it's an integer literal.
+    if (!/^-?\d+$/.test(raw.mantissa)) {
+        throw new ApiShapeError(`${context}: mantissa ${JSON.stringify(raw.mantissa)} is not an integer`);
     }
     if (!Number.isSafeInteger(raw.places) || raw.places < 0) {
         throw new ApiShapeError(`${context}: invalid places ${raw.places}`);

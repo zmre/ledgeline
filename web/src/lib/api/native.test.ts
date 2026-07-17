@@ -27,7 +27,7 @@ describe("UNIT LedgelineApi — query building", () => {
     });
 
     it("builds the holdings query, dropping an empty accounts set but keeping mode", async () => {
-        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({asOf: "x", base: "$", holdings: [], totals: {marketValue: {mantissa: 0, places: 0}}}));
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({asOf: "x", base: "$", holdings: [], totals: {marketValue: {mantissa: "0", places: 0}}}));
         vi.stubGlobal("fetch", fetchMock);
         await new LedgelineApi("http://127.0.0.1:5000").holdings({asOf: "2026-07-08", accounts: "", mode: "exclude"});
         expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/holdings?asOf=2026-07-08&mode=exclude");

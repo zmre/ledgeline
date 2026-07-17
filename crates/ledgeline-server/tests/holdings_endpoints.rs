@@ -59,8 +59,12 @@ async fn body_ok(journal: &Journal, uri: &str) -> Value {
 
 /// Canonical `(mantissa, places)` (strip trailing zeros), so `{5282750,3}` and
 /// `{528275,2}` compare equal.
-fn canon(value: &Value) -> (i64, u64) {
-    let mut mantissa = value["mantissa"].as_i64().expect("mantissa");
+fn canon(value: &Value) -> (i128, u64) {
+    let mut mantissa: i128 = value["mantissa"]
+        .as_str()
+        .expect("mantissa string")
+        .parse()
+        .expect("mantissa");
     let mut places = value["places"].as_u64().expect("places");
     while places > 0 && mantissa % 10 == 0 {
         mantissa /= 10;

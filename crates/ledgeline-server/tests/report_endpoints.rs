@@ -104,7 +104,11 @@ fn wire_ma(value: &Value) -> Canon {
         .expect("mixed amount is an object")
         .iter()
         .map(|(commodity, dec)| {
-            let mantissa = i128::from(dec["mantissa"].as_i64().expect("mantissa"));
+            let mantissa: i128 = dec["mantissa"]
+                .as_str()
+                .expect("mantissa string")
+                .parse()
+                .expect("mantissa");
             let places = u32::try_from(dec["places"].as_u64().expect("places")).unwrap();
             (commodity.clone(), canon(mantissa, places))
         })

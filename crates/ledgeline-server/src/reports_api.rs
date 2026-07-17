@@ -7,9 +7,11 @@
 //!
 //! The JSON contract is the engine's own native shape (NOT hledger's), designed
 //! to map 1:1 onto `web/src/lib/reports/types.ts`:
-//! - `Dec` → `{"mantissa": <number>, "places": <number>}` (matching the existing
-//!   wire `decimalMantissa`; realistic money mantissas stay within JS
-//!   safe-integer range, which the frontend already guards).
+//! - `Dec` → `{"mantissa": <string>, "places": <number>}`. The mantissa is
+//!   STRING-encoded (decoded via `BigInt` on the SPA): unlike parsed amounts,
+//!   COMPUTED values (e.g. holdings `marketValue = shares × price`, non-
+//!   normalized) can exceed the JS safe-integer range, so a JSON number would
+//!   silently lose precision.
 //! - `MixedAmount` → `{"<commodity>": <Dec>, …}` (TS `Map<string, Dec>`), with
 //!   zero commodities dropped (the additive-identity contract).
 //! - `SectionedReport`/`PeriodReport`/`BudgetReport` use camelCase keys matching
@@ -48,7 +50,9 @@ const DEFAULT_COUNT: usize = 12;
 /// An exact decimal on the wire: `mantissa / 10^places`.
 #[derive(Serialize)]
 struct WireDec {
-    mantissa: i128,
+    /// STRING-encoded significand (see the module doc): computed values can
+    /// exceed the JS safe-integer range, so a JSON number would lose precision.
+    mantissa: String,
     places: u32,
 }
 
@@ -63,7 +67,7 @@ fn wire_mixed(ma: &MixedAmount) -> WireMixed {
             (
                 commodity.0.clone(),
                 WireDec {
-                    mantissa: dec.mantissa,
+                    mantissa: dec.mantissa.to_string(),
                     places: dec.places,
                 },
             )
@@ -226,7 +230,7 @@ fn wire_budget(report: &BudgetReport) -> WireBudgetReport {
 
 fn wire_dec(dec: Dec) -> WireDec {
     WireDec {
-        mantissa: dec.mantissa,
+        mantissa: dec.mantissa.to_string(),
         places: dec.places,
     }
 }

@@ -5,7 +5,7 @@ import {decodeHoldingsReport, decodeHoldingsSeries, decodePeriodReport, decodeSe
 // Native-shape samples mirror crates/ledgeline-server/src/reports_api.rs and
 // were captured live from ledgeline-server against fixtures/sample.journal.
 
-const dec = (mantissa: number, places: number) => ({mantissa, places});
+const dec = (mantissa: number, places: number) => ({mantissa: String(mantissa), places});
 
 describe("UNIT nativeDecode — SectionedReport", () => {
     const raw = {
@@ -55,17 +55,24 @@ describe("UNIT nativeDecode — SectionedReport", () => {
         expect(() => decodeSectionedReport({grandTotal: {}})).toThrow(ApiShapeError);
     });
 
-    it("guards the mantissa safe-integer range", () => {
-        const bad = {
-            // 2^53: exactly representable as a JS number, but NOT a safe integer (bigger than MAX_SAFE_INTEGER).
-            sections: [{title: "X", rows: [{account: "a", depth: 1, own: {}, inclusive: {$: {mantissa: 9007199254740992, places: 2}}}], total: {}}],
+    it("decodes a mantissa far beyond the JS safe-integer range (the marketValue overflow fix)", () => {
+        // 9625405560255625000 > Number.MAX_SAFE_INTEGER; string-encoded on the wire
+        // so it round-trips exactly via BigInt (a JSON number would have lost it).
+        const big = {
+            sections: [{title: "X", rows: [{account: "a", depth: 1, own: {}, inclusive: {$: {mantissa: "9625405560255625000", places: 15}}}], total: {}}],
             grandTotal: {},
         };
-        expect(() => decodeSectionedReport(bad)).toThrow(/safe integer range/);
+        const report = decodeSectionedReport(big);
+        expect(report.sections[0].rows[0].inclusive.get("$")).toEqual({m: 9625405560255625000n, p: 15});
+    });
+
+    it("rejects a non-integer mantissa string", () => {
+        const bad = {sections: [], grandTotal: {$: {mantissa: "1.5", places: 2}}};
+        expect(() => decodeSectionedReport(bad)).toThrow(/not an integer/);
     });
 
     it("rejects a negative places value", () => {
-        const bad = {sections: [], grandTotal: {$: {mantissa: 100, places: -1}}};
+        const bad = {sections: [], grandTotal: {$: {mantissa: "100", places: -1}}};
         expect(() => decodeSectionedReport(bad)).toThrow(/invalid places/);
     });
 });
