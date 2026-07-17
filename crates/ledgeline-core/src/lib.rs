@@ -12,9 +12,11 @@
 //! - `parse`   — journal-file parser (Phase 1)
 //! - `wire`    — hledger 1.52 JSON serialization (Phase 1)
 //! - `reports` / `budget` — native reports (Phase 3)
+//! - `holdings` — average-cost stock-holdings engine (Phase 3d)
 //! - `edit`    — ropey-based write path (Phase 5)
 
 pub mod decimal;
+pub mod holdings;
 pub mod model;
 pub mod parse;
 pub mod reports;

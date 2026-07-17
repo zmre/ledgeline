@@ -120,7 +120,11 @@ pub struct ValuationMeta {
 /// NO trailing-zero stripping). The engine's canonical `Dec::mul` normalizes to
 /// match hledger's parser; valuation must keep the TS representation so ported
 /// expectations line up bit-for-bit.
-fn mul_raw(a: Dec, b: Dec) -> Result<Dec, DecError> {
+///
+/// `pub(crate)` so the holdings engine (`crate::holdings`) reuses the exact same
+/// non-normalizing multiply for its basis/market-value math instead of
+/// duplicating it.
+pub(crate) fn mul_raw(a: Dec, b: Dec) -> Result<Dec, DecError> {
     let mantissa = a
         .mantissa
         .checked_mul(b.mantissa)

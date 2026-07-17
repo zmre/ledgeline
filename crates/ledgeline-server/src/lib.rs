@@ -83,6 +83,11 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/api/reports/cashflow", get(reports_api::cashflow))
         .route("/api/reports/networth", get(reports_api::networth))
         .route("/api/budget", get(reports_api::budget))
+        .route("/api/holdings", get(reports_api::holdings))
+        .route(
+            "/api/holdings/series",
+            get(reports_api::holdings_series_report),
+        )
         .layer(cors)
         .with_state(state)
 }

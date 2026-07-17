@@ -15,12 +15,17 @@
 //! - `SectionedReport`/`PeriodReport`/`BudgetReport` use camelCase keys matching
 //!   the TS interfaces (`grandTotal`, `asOf`, …).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use ledgeline_core::Dec;
+use ledgeline_core::holdings::{
+    Holding, HoldingsReport, HoldingsScope, HoldingsSeries, PriceSource, ScopeMode, WarningKind,
+    compute_holdings, holdings_series,
+};
 use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
     BudgetCell, BudgetOpts, BudgetReport, Interval, MixedAmount, PeriodReport, PriceDb,
@@ -216,6 +221,169 @@ fn wire_budget(report: &BudgetReport) -> WireBudgetReport {
 }
 
 // ===========================================================================
+// Wire representation of the holdings result types
+// ===========================================================================
+
+fn wire_dec(dec: Dec) -> WireDec {
+    WireDec {
+        mantissa: dec.mantissa,
+        places: dec.places,
+    }
+}
+
+fn wire_opt_dec(dec: Option<Dec>) -> Option<WireDec> {
+    dec.map(wire_dec)
+}
+
+/// A holding's resolved price → `{qty, date, source}` (`source` kebab-free:
+/// `"directive"` | `"cost"`).
+#[derive(Serialize)]
+struct WireHoldingPrice {
+    qty: WireDec,
+    date: String,
+    source: &'static str,
+}
+
+/// One holding row. Null-valued keys (basis/price/gain/…) are kept (not omitted),
+/// matching the TS `Holding` shape.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireHolding {
+    symbol: String,
+    name: String,
+    accounts: Vec<String>,
+    shares: WireDec,
+    basis: Option<WireDec>,
+    first_basis_date: Option<String>,
+    price: Option<WireHoldingPrice>,
+    market_value: Option<WireDec>,
+    gain: Option<WireDec>,
+    gain_pct: Option<f64>,
+}
+
+fn wire_holding(holding: &Holding) -> WireHolding {
+    WireHolding {
+        symbol: holding.symbol.clone(),
+        name: holding.name.clone(),
+        accounts: holding.accounts.clone(),
+        shares: wire_dec(holding.shares),
+        basis: wire_opt_dec(holding.basis),
+        first_basis_date: holding.first_basis_date.clone(),
+        price: holding.price.as_ref().map(|price| WireHoldingPrice {
+            qty: wire_dec(price.qty),
+            date: price.date.clone(),
+            source: match price.source {
+                PriceSource::Directive => "directive",
+                PriceSource::Cost => "cost",
+            },
+        }),
+        market_value: wire_opt_dec(holding.market_value),
+        gain: wire_opt_dec(holding.gain),
+        gain_pct: holding.gain_pct,
+    }
+}
+
+/// A scope-local warning → `{symbol, kind, message}` (`kind` kebab-case, matching
+/// the TS union: `"missing-basis"` | `"negative-shares"` | `"unpriced"`).
+#[derive(Serialize)]
+struct WireWarning {
+    symbol: String,
+    kind: &'static str,
+    message: String,
+}
+
+/// Portfolio totals: `marketValue` always present; `basis`/`gain`/`gainPct`
+/// null when refused.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireHoldingsTotals {
+    market_value: WireDec,
+    basis: Option<WireDec>,
+    gain: Option<WireDec>,
+    gain_pct: Option<f64>,
+}
+
+/// The full holdings report.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireHoldingsReport {
+    as_of: String,
+    base: String,
+    holdings: Vec<WireHolding>,
+    totals: WireHoldingsTotals,
+    top_gainers: Vec<WireHolding>,
+    top_losers: Vec<WireHolding>,
+    warnings: Vec<WireWarning>,
+}
+
+fn wire_holdings(report: &HoldingsReport) -> WireHoldingsReport {
+    WireHoldingsReport {
+        as_of: report.as_of.clone(),
+        base: report.base.clone(),
+        holdings: report.holdings.iter().map(wire_holding).collect(),
+        totals: WireHoldingsTotals {
+            market_value: wire_dec(report.totals.market_value),
+            basis: wire_opt_dec(report.totals.basis),
+            gain: wire_opt_dec(report.totals.gain),
+            gain_pct: report.totals.gain_pct,
+        },
+        top_gainers: report.top_gainers.iter().map(wire_holding).collect(),
+        top_losers: report.top_losers.iter().map(wire_holding).collect(),
+        warnings: report
+            .warnings
+            .iter()
+            .map(|warning| WireWarning {
+                symbol: warning.symbol.clone(),
+                kind: match warning.kind {
+                    WarningKind::MissingBasis => "missing-basis",
+                    WarningKind::NegativeShares => "negative-shares",
+                    WarningKind::Unpriced => "unpriced",
+                },
+                message: warning.message.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// One point of the holdings trend.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireHoldingsPoint {
+    date: String,
+    bucket: String,
+    label: String,
+    market_value: WireDec,
+    basis: Option<WireDec>,
+}
+
+/// The holdings-over-time series.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireHoldingsSeries {
+    base: String,
+    points: Vec<WireHoldingsPoint>,
+    has_basis: bool,
+}
+
+fn wire_holdings_series(series: &HoldingsSeries) -> WireHoldingsSeries {
+    WireHoldingsSeries {
+        base: series.base.clone(),
+        points: series
+            .points
+            .iter()
+            .map(|point| WireHoldingsPoint {
+                date: point.date.clone(),
+                bucket: point.bucket.clone(),
+                label: point.label.clone(),
+                market_value: wire_dec(point.market_value),
+                basis: wire_opt_dec(point.basis),
+            })
+            .collect(),
+        has_basis: series.has_basis,
+    }
+}
+
+// ===========================================================================
 // Query params, defaults, and helpers
 // ===========================================================================
 
@@ -264,6 +432,33 @@ fn parse_interval(raw: Option<&str>) -> Result<Interval, ApiError> {
             format!("unknown interval '{other}' (expected daily|weekly|monthly|quarterly|yearly)"),
         )),
     }
+}
+
+/// Parse a holdings scope mode, defaulting to `include` when absent. Returns a
+/// `400` tuple for an unrecognized value.
+fn parse_mode(raw: Option<&str>) -> Result<ScopeMode, ApiError> {
+    match raw {
+        None | Some("include") => Ok(ScopeMode::Include),
+        Some("exclude") => Ok(ScopeMode::Exclude),
+        Some(other) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("unknown mode '{other}' (expected include|exclude)"),
+        )),
+    }
+}
+
+/// Split a comma-separated `accounts` param into a set of subtree roots, trimming
+/// whitespace and dropping empties. `None`/empty ⇒ the empty set = all accounts.
+fn parse_accounts(raw: Option<&str>) -> BTreeSet<String> {
+    raw.map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|account| !account.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// An HTTP error: a status plus a human-readable message.
@@ -325,6 +520,26 @@ pub(crate) struct BudgetQuery {
     count: Option<usize>,
     depth: Option<usize>,
     budget_desc: Option<String>,
+}
+
+/// `?asOf=&accounts=&mode=` — holdings snapshot.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HoldingsQuery {
+    as_of: Option<String>,
+    accounts: Option<String>,
+    mode: Option<String>,
+}
+
+/// `?asOf=&accounts=&mode=&interval=&count=` — holdings trend.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HoldingsSeriesQuery {
+    as_of: Option<String>,
+    accounts: Option<String>,
+    mode: Option<String>,
+    interval: Option<String>,
+    count: Option<usize>,
 }
 
 // ===========================================================================
@@ -440,4 +655,45 @@ pub(crate) async fn budget(
     )
     .map_err(|err| report_error(&err))?;
     Ok(Json(wire_budget(&report)))
+}
+
+/// `GET /api/holdings` — average-cost stock positions as of a date. `accounts`
+/// is a comma-separated set of subtree roots; `mode` selects include vs. exclude.
+/// Prices come from the journal's `P` directives (and cost-annotation fallbacks).
+pub(crate) async fn holdings(
+    State(state): State<AppState>,
+    Query(query): Query<HoldingsQuery>,
+) -> Result<Json<WireHoldingsReport>, ApiError> {
+    let scope = HoldingsScope {
+        accounts: parse_accounts(query.accounts.as_deref()),
+        mode: parse_mode(query.mode.as_deref())?,
+        as_of: query.as_of.unwrap_or_else(today_utc),
+    };
+    let report = compute_holdings(&state.journal.transactions, &state.journal.prices, &scope)
+        .map_err(|err| report_error(&err))?;
+    Ok(Json(wire_holdings(&report)))
+}
+
+/// `GET /api/holdings/series` — portfolio market value (and basis) at each of the
+/// last `count` period boundaries ending at `asOf`. Same scope as `/api/holdings`.
+pub(crate) async fn holdings_series_report(
+    State(state): State<AppState>,
+    Query(query): Query<HoldingsSeriesQuery>,
+) -> Result<Json<WireHoldingsSeries>, ApiError> {
+    let scope = HoldingsScope {
+        accounts: parse_accounts(query.accounts.as_deref()),
+        mode: parse_mode(query.mode.as_deref())?,
+        as_of: query.as_of.unwrap_or_else(today_utc),
+    };
+    let interval = parse_interval(query.interval.as_deref())?;
+    let count = query.count.unwrap_or(DEFAULT_COUNT);
+    let series = holdings_series(
+        &state.journal.transactions,
+        &state.journal.prices,
+        &scope,
+        interval,
+        count,
+    )
+    .map_err(|err| report_error(&err))?;
+    Ok(Json(wire_holdings_series(&series)))
 }
