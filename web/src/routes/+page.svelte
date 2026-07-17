@@ -8,14 +8,12 @@
     import InsightsPanel from "$lib/insights/InsightsPanel.svelte";
     import TotalsFooter from "$lib/journal/TotalsFooter.svelte";
     import TransactionTable from "$lib/journal/TransactionTable.svelte";
-    import {commodityStyles, periodLabel} from "$lib/journal/rowModel";
+    import {periodLabel} from "$lib/journal/rowModel";
     import {filters} from "$lib/stores/filters.svelte";
-    import {getFilteredTotals, getFilteredTxns, journal, startPolling} from "$lib/stores/journal.svelte";
+    import {getFilteredTxns, journal, startPolling} from "$lib/stores/journal.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
     const txns = $derived(getFilteredTxns());
-    const totals = $derived(getFilteredTotals());
-    const styles = $derived(commodityStyles(journal.txns));
     const period = $derived(periodLabel(filters.value.from, filters.value.to));
 
     // Restore filters from ?from=&to=&acct=&q= once, then mirror changes to the
@@ -55,7 +53,7 @@
         <TransactionTable {txns} />
     {/if}
 
-    <TotalsFooter {totals} {styles} count={txns.length} {period} />
+    <TotalsFooter count={txns.length} {period} />
 </div>
 
 {#if journal.status === "error" && journal.error !== null}

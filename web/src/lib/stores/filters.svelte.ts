@@ -75,10 +75,10 @@ export function presetRange(p: DatePreset, today: ISODate): {from: ISODate | nul
     }
 }
 
-/** The first-load default: current month, no accounts, empty query. */
+/** The first-load default: the last 90 days, no accounts, empty query. */
 export function defaultFilter(): JournalFilter {
-    const {from, to} = presetRange("thisMonth", localToday());
-    return {from, to, accounts: new Set<string>(), query: "", preset: "thisMonth"};
+    const {from, to} = presetRange("last90", localToday());
+    return {from, to, accounts: new Set<string>(), query: "", preset: "last90"};
 }
 
 let value = $state<JournalFilter>(defaultFilter());
