@@ -1,0 +1,32 @@
+# Ledgeline Rust workspace — the journal engine (crates/) that parses hledger
+# journals directly and serves a wire-compatible + native local API.
+# See plans/00-overview.md and the approved engine plan.
+[workspace]
+members = ["crates/ledgeline-core", "crates/ledgeline-server"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Patrick Walsh"]
+license = "MIT"
+repository = "https://github.com/zmre/ledgeline"
+
+[workspace.dependencies]
+# Declared here so both crates share one version. Only what's used today is
+# listed; server/runtime deps (axum, tokio, ropey, notify) are added as their
+# phases land.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+itertools = "0.14"
+ledgeline-core = { path = "crates/ledgeline-core" }
+
+# Aggressive release optimization (per IronCore Rust standards). `panic` is left
+# at the default "unwind" so the future axum server can catch per-request panics
+# instead of aborting the whole local app.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "debuginfo"
