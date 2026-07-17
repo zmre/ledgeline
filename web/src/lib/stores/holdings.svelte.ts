@@ -1,18 +1,23 @@
-// Holdings scope store (WP-10): Svelte 5 runes state for the /holdings route.
-// The scope's asOf defaults to localToday() and is NEVER persisted to
-// localStorage — every fresh visit opens at today (plans/10). The report is a
-// pure $derived over journal.txns/journal.prices via computeHoldings, so scope
-// changes recompute without refetching.
+// Holdings scope + data store (WP-10, now native). The scope (accounts/mode/
+// asOf) is Svelte 5 runes state driving the scope bar + URL sync; the report
+// and trend are fetched from the native /api/holdings[/series] endpoints for
+// the current scope and decoded into the existing domain types, so the holdings
+// UI renders unchanged. The scope's asOf defaults to localToday() and is NEVER
+// persisted (every fresh visit opens at today). A monotonic request token drops
+// stale responses when the scope changes faster than the network answers.
 /* eslint-disable svelte/prefer-svelte-reactivity -- the account Sets are
    immutable snapshots: every change replaces `value` wholesale, so plain Set
    is correct (and the contract exposes ReadonlySet). */
-import type {HoldingsReport, HoldingsScope} from "$lib/holdings/types";
-import {computeHoldings} from "$lib/holdings/engine";
-import {holdingsSeries, type HoldingsSeries} from "$lib/holdings/series";
-import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
+import {LedgelineApi} from "$lib/api/native";
+import {decodeHoldingsReport, decodeHoldingsSeries} from "$lib/api/nativeDecode";
 import type {ISODate} from "$lib/domain/types";
+import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
+import type {HoldingsReport, HoldingsScope, HoldingsSeries} from "$lib/holdings/types";
 import {localToday} from "./filters.svelte";
-import {journal} from "./journal.svelte";
+
+/** Trailing series window shown under the details table (matches the former client-side default). */
+const TREND_INTERVAL = "monthly";
+const TREND_COUNT = 12;
 
 /** Fresh-visit default: everything included, as of today (recomputed per call, never remembered). */
 export function defaultScope(): HoldingsScope {
@@ -60,16 +65,49 @@ export const holdingsScope = {
     },
 };
 
-const report = $derived.by(() => computeHoldings(journal.txns, journal.prices, value));
+export type HoldingsStatus = "idle" | "loading" | "ready" | "error";
 
-/** The holdings report for the current journal + scope (pure derivation, no refetch). */
-export function getHoldingsReport(): HoldingsReport {
-    return report;
-}
+let report = $state<HoldingsReport | null>(null);
+let trend = $state<HoldingsSeries | null>(null);
+let status = $state<HoldingsStatus>("idle");
+let error = $state<Error | null>(null);
+let seq = 0;
 
-/** Trailing-12-month monthly market-value/basis series for the current scope, ending at scope.asOf. */
-const trend = $derived.by(() => holdingsSeries(journal.txns, journal.prices, value, {interval: "monthly", count: 12}));
-
-export function getHoldingsTrend(): HoldingsSeries {
-    return trend;
-}
+export const holdingsData = {
+    /** The decoded holdings report for the last loaded scope, or null before the first load. */
+    get report(): HoldingsReport | null {
+        return report;
+    },
+    /** The value-over-time series for the last loaded scope, or null before the first load. */
+    get trend(): HoldingsSeries | null {
+        return trend;
+    },
+    get status(): HoldingsStatus {
+        return status;
+    },
+    get error(): Error | null {
+        return error;
+    },
+    /** Fetch + decode the report and trend for `scope`; stale responses (superseded by a newer load) are discarded. */
+    async load(serverUrl: string, scope: HoldingsScope): Promise<void> {
+        const token = ++seq;
+        status = "loading";
+        try {
+            const api = new LedgelineApi(serverUrl);
+            const accounts = [...scope.accounts].join(",");
+            const [rawReport, rawSeries] = await Promise.all([
+                api.holdings({asOf: scope.asOf, accounts, mode: scope.mode}),
+                api.holdingsSeries({asOf: scope.asOf, accounts, mode: scope.mode, interval: TREND_INTERVAL, count: TREND_COUNT}),
+            ]);
+            if (token !== seq) return;
+            report = decodeHoldingsReport(rawReport);
+            trend = decodeHoldingsSeries(rawSeries);
+            status = "ready";
+            error = null;
+        } catch (cause) {
+            if (token !== seq) return;
+            status = "error";
+            error = cause instanceof Error ? cause : new Error(String(cause));
+        }
+    },
+};

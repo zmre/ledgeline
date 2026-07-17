@@ -3,8 +3,12 @@ import {defineConfig} from "@playwright/test";
 export default defineConfig({
     webServer: [
         {
-            // Fixture API for the e2e smoke suite (WP-09). --serve-api never idle-exits.
-            command: "hledger-web -f ../fixtures/sample.journal --serve-api --cors='*' --allow=view --port 5099",
+            // Fixture API for the e2e suite. ledgeline-server serves BOTH the wire
+            // endpoints (journal view + checks) and the native /api/* report/holdings
+            // endpoints the reports/holdings pages now consume, with permissive CORS
+            // built in. Build it first: `cargo build -p ledgeline-server` (see the
+            // repo README/plans); the compiled binary lives at ../target/debug/.
+            command: "../target/debug/ledgeline-server ../fixtures/sample.journal --port 5099",
             url: "http://127.0.0.1:5099/version",
             reuseExistingServer: false,
         },

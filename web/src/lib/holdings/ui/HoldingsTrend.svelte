@@ -1,6 +1,6 @@
 <!-- Holdings value-over-time (post-MVP): portfolio market value at each of the
-     last 12 month-ends for the current scope, from holdingsSeries (computeHoldings
-     time-travelled per bucket). One series → no legend box; the heading names it
+     last 12 month-ends for the current scope, from the native /api/holdings/series
+     endpoint (decoded into HoldingsSeries). One series → no legend box; the heading names it
      (dataviz single-series rule). Color is the dataviz dark palette slot 1
      (#3987e5), already validated against the daisyUI dark surface for the pie/line
      charts. x is the bucket index for even spacing (string month labels via the
@@ -11,7 +11,7 @@
 <script lang="ts">
     import {LineChart} from "layerchart";
     import {toNumber} from "$lib/domain/money";
-    import type {HoldingsSeries} from "$lib/holdings/series";
+    import type {HoldingsSeries} from "$lib/holdings/types";
 
     let {trend, formatValue}: {trend: HoldingsSeries; formatValue: (n: number) => string} = $props();
 
