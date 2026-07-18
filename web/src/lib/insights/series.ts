@@ -120,7 +120,8 @@ function absDec(d: Dec): Dec {
  */
 export type AccountSelection = ReadonlySet<string> | undefined;
 
-function postingIncluded(account: string, accounts: AccountSelection): boolean {
+function postingIncluded(account: string, accounts: AccountSelection, category?: RootCategory): boolean {
+    if (category !== undefined && categorize(account) !== category) return false;
     if (accounts === undefined || accounts.size === 0) return true;
     for (const sel of accounts) {
         if (accountMatches(sel, account)) return true;
@@ -179,11 +180,11 @@ function displayQty(qty: Dec, category: RootCategory, signs: SignConventions): D
  * total absolute posting volume (descending; ties alphabetical). Both pie and
  * line rank from this list so an account keeps the same color in either mode.
  */
-export function rankedAccounts(txns: Transaction[], depth: number, commodity: string, accounts?: AccountSelection): string[] {
+export function rankedAccounts(txns: Transaction[], depth: number, commodity: string, accounts?: AccountSelection, category?: RootCategory): string[] {
     const magnitude = new Map<string, Dec>();
     for (const txn of txns) {
         for (const posting of txn.postings) {
-            if (!postingIncluded(posting.account, accounts)) continue;
+            if (!postingIncluded(posting.account, accounts, category)) continue;
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
                 const account = clampAccount(posting.account, depth);
@@ -239,16 +240,16 @@ export function maxAccountDepth(txns: Transaction[], accounts?: AccountSelection
  */
 export function pieData(
     txns: Transaction[],
-    opts: {depth: number; commodity: string; maxSlices?: number; accounts?: AccountSelection; conventionTxns?: Transaction[]}
+    opts: {depth: number; commodity: string; maxSlices?: number; accounts?: AccountSelection; conventionTxns?: Transaction[]; category?: RootCategory}
 ): PieDatum[] {
-    const {depth, commodity, maxSlices = 6, accounts, conventionTxns} = opts;
-    const ranked = rankedAccounts(txns, depth, commodity, accounts);
+    const {depth, commodity, maxSlices = 6, accounts, conventionTxns, category: categoryScope} = opts;
+    const ranked = rankedAccounts(txns, depth, commodity, accounts, categoryScope);
     const groupOf = foldTail(ranked, Math.max(1, maxSlices));
     const signs = signConventions(conventionTxns ?? txns, commodity);
     const totals = new Map<string, Dec>();
     for (const txn of txns) {
         for (const posting of txn.postings) {
-            if (!postingIncluded(posting.account, accounts)) continue;
+            if (!postingIncluded(posting.account, accounts, categoryScope)) continue;
             const category = categorize(posting.account);
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
@@ -277,10 +278,10 @@ export function pieData(
  */
 export function lineData(
     txns: Transaction[],
-    opts: {depth: number; commodity: string; interval: Interval; maxSeries?: number; accounts?: AccountSelection; conventionTxns?: Transaction[]}
+    opts: {depth: number; commodity: string; interval: Interval; maxSeries?: number; accounts?: AccountSelection; conventionTxns?: Transaction[]; category?: RootCategory}
 ): LineSeries[] {
-    const {depth, commodity, interval, maxSeries = 6, accounts, conventionTxns} = opts;
-    const ranked = rankedAccounts(txns, depth, commodity, accounts);
+    const {depth, commodity, interval, maxSeries = 6, accounts, conventionTxns, category: categoryScope} = opts;
+    const ranked = rankedAccounts(txns, depth, commodity, accounts, categoryScope);
     const groupOf = foldTail(ranked, Math.max(1, maxSeries));
     const signs = signConventions(conventionTxns ?? txns, commodity);
     const sums = new Map<string, Map<string, Dec>>();
@@ -288,7 +289,7 @@ export function lineData(
     let maxBucket: string | null = null;
     for (const txn of txns) {
         for (const posting of txn.postings) {
-            if (!postingIncluded(posting.account, accounts)) continue;
+            if (!postingIncluded(posting.account, accounts, categoryScope)) continue;
             const category = categorize(posting.account);
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
@@ -361,6 +362,47 @@ export function formatChartValue(value: number, commodity: string, style: Amount
     return formatAmount({commodity, qty: dec(scaled, style.precision), style});
 }
 
+/** Magnitude → abbreviation, largest unit first (K = 10^3 … T = 10^12). */
+const COMPACT_UNITS: [divisor: number, suffix: string][] = [
+    [1e3, "K"],
+    [1e6, "M"],
+    [1e9, "B"],
+    [1e12, "T"],
+];
+
+/** Abbreviate a non-negative magnitude: >=1000 → mantissa (~1 decimal) + K/M/B/T, else a rounded integer with no suffix. */
+function compactParts(abs: number): {mantissa: string; suffix: string} {
+    if (abs < 1e3) return {mantissa: String(Math.round(abs)), suffix: ""};
+    let i = 0;
+    while (i + 1 < COMPACT_UNITS.length && abs >= COMPACT_UNITS[i + 1][0]) i += 1;
+    let rounded = Number((abs / COMPACT_UNITS[i][0]).toFixed(1));
+    // Boundary carry: 999_999 rounds to "1000.0K" → promote to the next unit ("1.0M").
+    if (rounded >= 1000 && i + 1 < COMPACT_UNITS.length) {
+        i += 1;
+        rounded = Number((abs / COMPACT_UNITS[i][0]).toFixed(1));
+    }
+    return {mantissa: rounded.toFixed(1), suffix: COMPACT_UNITS[i][1]};
+}
+
+/**
+ * Compact axis-tick variant of formatChartValue: abbreviates magnitude with a
+ * K/M/B/T suffix at ~1 decimal so left-axis ticks stay short and never clip
+ * (1234 → "$1.2K", 5_269_875 → "$5.3M", 1e9 → "$1.0B"). Zero → "$0";
+ * sub-thousand values render as a plain rounded amount ("$500"). Sign and
+ * commodity placement follow the style exactly like formatAmount ("$-1.2K").
+ * DISPLAY-ONLY and lossy by design — tooltips/hover keep full precision via
+ * formatChartValue; only axis ticks use this.
+ */
+export function formatCompactChartValue(value: number, commodity: string, style: AmountStyle): string {
+    const negative = value < 0;
+    const {mantissa, suffix} = compactParts(Math.abs(value));
+    const point = style.decimalPoint === "." ? mantissa : mantissa.replace(".", style.decimalPoint);
+    const num = (negative ? "-" : "") + point + suffix;
+    if (commodity === "") return num;
+    const space = style.spaced ? " " : "";
+    return style.side === "L" ? commodity + space + num : num + space + commodity;
+}
+
 /** Commodities appearing in posting amounts matching `accounts`, most-used first (ties alphabetical). */
 export function commoditiesInUse(txns: Transaction[], accounts?: AccountSelection): string[] {
     const counts = new Map<string, number>();
@@ -373,4 +415,27 @@ export function commoditiesInUse(txns: Transaction[], accounts?: AccountSelectio
         }
     }
     return [...counts.entries()].sort(([aName, aCount], [bName, bCount]) => bCount - aCount || (aName < bName ? -1 : 1)).map(([name]) => name);
+}
+
+/** Preferred display order for the chart's category scope selector; expenses lead (the most useful journal view). */
+const CATEGORY_ORDER: RootCategory[] = ["expense", "revenue", "asset", "liability", "equity", "other"];
+
+/**
+ * Root categories with at least one `commodity` posting matching `accounts`, in
+ * a stable display order (expenses first). Drives the ChartWidget's category
+ * scope selector; the default scope prefers "expense" when present.
+ */
+export function categoriesInUse(txns: Transaction[], commodity: string, accounts?: AccountSelection): RootCategory[] {
+    const present = new Set<RootCategory>();
+    for (const txn of txns) {
+        for (const posting of txn.postings) {
+            if (!postingIncluded(posting.account, accounts)) continue;
+            for (const amount of posting.amounts) {
+                if (amount.commodity !== commodity) continue;
+                present.add(categorize(posting.account));
+                break;
+            }
+        }
+    }
+    return CATEGORY_ORDER.filter((c) => present.has(c));
 }

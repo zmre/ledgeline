@@ -4,7 +4,19 @@ import {describe, expect, it} from "vitest";
 import {normalizeTransactions} from "$lib/api/normalize";
 import {dec, formatDec, toNumber, type Dec} from "$lib/domain/money";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "$lib/domain/types";
-import {OTHER, bigNumbers, bucketKey, commoditiesInUse, lineData, maxAccountDepth, pieData, rankedAccounts, styleFor} from "./series";
+import {
+    OTHER,
+    bigNumbers,
+    bucketKey,
+    categoriesInUse,
+    commoditiesInUse,
+    formatCompactChartValue,
+    lineData,
+    maxAccountDepth,
+    pieData,
+    rankedAccounts,
+    styleFor,
+} from "./series";
 
 // ---------- helpers ----------
 
@@ -328,6 +340,78 @@ describe("UNIT inverted expense convention (bank-sign journals)", () => {
         expect(fmt(bigNumbers(july, "$", undefined, journal).expenses)).toBe("-20.00");
         // without conventionTxns, July alone would look inverted and flip
         expect(fmt(bigNumbers(july, "$").expenses)).toBe("20.00");
+    });
+});
+
+// ---------- compact axis-tick currency ----------
+
+describe("UNIT formatCompactChartValue", () => {
+    it("abbreviates by magnitude with ~1 decimal (K/M/B/T)", () => {
+        expect(formatCompactChartValue(1234, "$", USD_STYLE)).toBe("$1.2K");
+        expect(formatCompactChartValue(5_269_875, "$", USD_STYLE)).toBe("$5.3M");
+        expect(formatCompactChartValue(3_400_000, "$", USD_STYLE)).toBe("$3.4M");
+        expect(formatCompactChartValue(1_000_000_000, "$", USD_STYLE)).toBe("$1.0B");
+        expect(formatCompactChartValue(2_500_000_000_000, "$", USD_STYLE)).toBe("$2.5T");
+    });
+
+    it("zero and sub-thousand amounts render plainly, no suffix", () => {
+        expect(formatCompactChartValue(0, "$", USD_STYLE)).toBe("$0");
+        expect(formatCompactChartValue(500, "$", USD_STYLE)).toBe("$500");
+        expect(formatCompactChartValue(999, "$", USD_STYLE)).toBe("$999");
+        expect(formatCompactChartValue(1000, "$", USD_STYLE)).toBe("$1.0K");
+    });
+
+    it("promotes at unit boundaries instead of printing 1000.0K", () => {
+        expect(formatCompactChartValue(999_999, "$", USD_STYLE)).toBe("$1.0M");
+        expect(formatCompactChartValue(999_999_999, "$", USD_STYLE)).toBe("$1.0B");
+    });
+
+    it("keeps sign and commodity placement consistent with formatAmount", () => {
+        expect(formatCompactChartValue(-1234, "$", USD_STYLE)).toBe("$-1.2K");
+        const eurStyle = eur(0).style; // side R, spaced, comma decimal
+        expect(formatCompactChartValue(1234, "EUR", eurStyle)).toBe("1,2K EUR");
+        expect(formatCompactChartValue(-2_500_000, "EUR", eurStyle)).toBe("-2,5M EUR");
+        expect(formatCompactChartValue(0, "EUR", eurStyle)).toBe("0 EUR");
+    });
+});
+
+// ---------- category (root-group) scope ----------
+
+describe("UNIT category scope", () => {
+    const txns = [
+        txn("2025-01-05", posting("income:salary", usd(-5000_00)), posting("assets:bank:checking", usd(5000_00))),
+        txn("2025-01-06", posting("expenses:food", usd(40_00)), posting("assets:bank:checking", usd(-40_00))),
+        txn("2025-01-07", posting("expenses:rent", usd(1000_00)), posting("assets:bank:checking", usd(-1000_00))),
+    ];
+
+    it("categoriesInUse lists present roots, expenses first, honoring commodity + selection", () => {
+        expect(categoriesInUse(txns, "$")).toEqual(["expense", "revenue", "asset"]);
+        expect(categoriesInUse(txns, "$", new Set(["expenses"]))).toEqual(["expense"]);
+        const mixed = [...txns, txn("2025-01-08", posting("assets:wise", eur(1_00)), posting("equity:opening", eur(-1_00)))];
+        expect(categoriesInUse(mixed, "EUR")).toEqual(["asset", "equity"]);
+    });
+
+    it("pieData scoped to expenses returns only expense accounts", () => {
+        const slices = pieData(txns, {depth: 2, commodity: "$", category: "expense"});
+        expect(slices.map((s) => s.account).sort()).toEqual(["expenses:food", "expenses:rent"]);
+        expect(slices.find((s) => s.account === "expenses:rent")?.value).toBeCloseTo(1000, 10);
+    });
+
+    it("pieData scoped to revenue returns only income, money-in positive", () => {
+        const slices = pieData(txns, {depth: 1, commodity: "$", category: "revenue"});
+        expect(slices.map((s) => s.account)).toEqual(["income"]);
+        expect(slices[0].value).toBeCloseTo(5000, 10);
+    });
+
+    it("lineData and rankedAccounts honor the category scope", () => {
+        const series = lineData(txns, {depth: 1, commodity: "$", interval: "monthly", category: "expense"});
+        expect(series.map((s) => s.account)).toEqual(["expenses"]);
+        expect(rankedAccounts(txns, 1, "$", undefined, "expense")).toEqual(["expenses"]);
+    });
+
+    it("no category means all categories (unchanged behavior)", () => {
+        const slices = pieData(txns, {depth: 1, commodity: "$"});
+        expect(slices.map((s) => s.account).sort()).toEqual(["assets", "expenses", "income"]);
     });
 });
 

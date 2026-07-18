@@ -18,7 +18,7 @@
     import ScopeBar from "$lib/holdings/ui/ScopeBar.svelte";
     import {startHoldingsUrlSync} from "$lib/holdings/ui/urlSync";
     import {stockAccounts} from "$lib/holdings/ui/view";
-    import {formatChartValue, styleFor} from "$lib/insights/series";
+    import {formatChartValue, formatCompactChartValue, styleFor} from "$lib/insights/series";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import {holdingsData, holdingsScope} from "$lib/stores/holdings.svelte";
     import {journal} from "$lib/stores/journal.svelte";
@@ -55,6 +55,7 @@
     const style = $derived(styleFor(journal.txns, base));
     const format = (qty: Dec): string => formatAmount({commodity: base, qty, style});
     const formatTrendValue = (v: number): string => formatChartValue(v, base, style);
+    const formatTrendAxis = (v: number): string => formatCompactChartValue(v, base, style);
     const accountNames = $derived(stockAccounts(journal.txns));
 
     let insightsOpen = $state(true);
@@ -85,7 +86,7 @@
                         <GainersLosers {report} {format} />
                     </div>
                     {#if trend !== null}
-                        <HoldingsTrend {trend} formatValue={formatTrendValue} />
+                        <HoldingsTrend {trend} formatValue={formatTrendValue} formatAxis={formatTrendAxis} />
                     {/if}
                 </div>
             </section>
