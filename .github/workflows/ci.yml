@@ -1,0 +1,153 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs for the same PR/branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast, cheap gate — runs first and fails early on formatting.
+  format-check:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: ledgeline
+          # Absent on forks / before the user sets the secret: pushes are then
+          # skipped, but pulls still work. Never fails the job when empty.
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+
+      - name: cargo fmt --check
+        run: nix build -L .#fmt
+
+  # Clippy with -D warnings, on both platforms (reuses the cached dep layer).
+  clippy:
+    name: Clippy (${{ matrix.os }})
+    needs: format-check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: ledgeline
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+
+      - name: Clippy
+        run: nix build -L .#clippy
+
+  # Full workspace test suite (cargo test) on both platforms.
+  tests:
+    name: Tests (${{ matrix.os }})
+    needs: format-check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: ledgeline
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+
+      - name: Tests
+        run: nix build -L .#tests
+
+  # Build the single binary — proves the GUI deps resolve (webkitgtk on Linux,
+  # system WebKit on macOS). Embeds a placeholder SPA (see docs/development.md).
+  build:
+    name: Build (${{ matrix.os }})
+    needs: format-check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: ledgeline
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+
+      - name: Build ledgeline
+        run: nix build -L .#ledgeline
+
+      # Push the freshly built store paths to our Cachix cache. Only on pushes
+      # (not PRs); the in-script guard skips cleanly when the token is absent
+      # (forks / before the user sets the secret), so the job never fails.
+      - name: Push to Cachix
+        if: github.event_name == 'push'
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
+            exit 0
+          fi
+          nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix push ledgeline
+
+  # TypeScript / SvelteKit side: build the SPA and run its unit + type checks.
+  # (Playwright e2e is intentionally out of scope for CI here.)
+  spa:
+    name: SPA (build + unit + check)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build SPA
+        run: bun run build
+
+      - name: Unit tests (vitest)
+        run: bun run test:unit
+
+      - name: Type check (svelte-check + tsc)
+        run: bun run check
