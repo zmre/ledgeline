@@ -7,10 +7,11 @@ describe("UNIT holdings scope store (module state, reset between tests)", () => 
         holdingsScope.replace(defaultScope());
     });
 
-    it("defaults to include-everything as of today (never a remembered date)", () => {
+    it("defaults to include-everything as of today, all-time gain (never a remembered date)", () => {
         expect(holdingsScope.value.asOf).toBe(localToday());
         expect(holdingsScope.value.mode).toBe("include");
         expect(holdingsScope.value.accounts.size).toBe(0);
+        expect(holdingsScope.value.gainPeriod).toBe("all");
     });
 
     it("toggleAccount keeps the subtree-root invariant (same rules as the journal filters)", () => {
@@ -36,22 +37,34 @@ describe("UNIT holdings scope store (module state, reset between tests)", () => 
         expect([...holdingsScope.value.accounts]).toEqual(["assets:broker"]);
     });
 
-    it("clear drops the selection but keeps mode and asOf", () => {
+    it("setGainPeriod changes only the gain window", () => {
+        holdingsScope.toggleAccount("assets:broker");
+        holdingsScope.setAsOf("2025-01-01");
+        holdingsScope.setGainPeriod("ytd");
+        expect(holdingsScope.value.gainPeriod).toBe("ytd");
+        expect(holdingsScope.value.asOf).toBe("2025-01-01");
+        expect([...holdingsScope.value.accounts]).toEqual(["assets:broker"]);
+    });
+
+    it("clear drops the selection but keeps mode, asOf and gain window", () => {
         holdingsScope.toggleAccount("assets:broker");
         holdingsScope.setMode("exclude");
         holdingsScope.setAsOf("2025-01-01");
+        holdingsScope.setGainPeriod("12mo");
         holdingsScope.clear();
         expect(holdingsScope.value.accounts.size).toBe(0);
         expect(holdingsScope.value.mode).toBe("exclude");
         expect(holdingsScope.value.asOf).toBe("2025-01-01");
+        expect(holdingsScope.value.gainPeriod).toBe("12mo");
     });
 
     it("replace swaps the whole scope and copies the account set", () => {
         const accounts = new Set(["assets:broker"]);
-        holdingsScope.replace({accounts, mode: "exclude", asOf: "2024-12-31"});
+        holdingsScope.replace({accounts, mode: "exclude", asOf: "2024-12-31", gainPeriod: "ytd"});
         accounts.add("expenses"); // caller mutation must not leak in
         expect([...holdingsScope.value.accounts]).toEqual(["assets:broker"]);
         expect(holdingsScope.value.mode).toBe("exclude");
         expect(holdingsScope.value.asOf).toBe("2024-12-31");
+        expect(holdingsScope.value.gainPeriod).toBe("ytd");
     });
 });

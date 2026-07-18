@@ -52,6 +52,7 @@
     const nativeUnavailable = $derived(holdingsData.error instanceof NativeApiUnavailableError);
 
     const base = $derived(report?.base ?? "$");
+    const gainPeriod = $derived(holdingsScope.value.gainPeriod);
     const style = $derived(styleFor(journal.txns, base));
     const format = (qty: Dec): string => formatAmount({commodity: base, qty, style});
     const formatTrendValue = (v: number): string => formatChartValue(v, base, style);
@@ -78,7 +79,7 @@
                     </span>
                 </div>
                 <div class="collapse-content flex flex-col gap-4">
-                    <HoldingsStats totals={report.totals} {format} />
+                    <HoldingsStats totals={report.totals} {format} {gainPeriod} />
                     <div class="grid grid-cols-1 items-center gap-4 lg:grid-cols-2">
                         <div>
                             <HoldingsPie holdings={report.holdings} {format} />
@@ -115,7 +116,7 @@
             <div class="flex justify-end">
                 <ExportButton run={() => exportHoldingsXlsx(report, {title: "Holdings", params: `As of ${report.asOf}`}, `holdings-${report.asOf}.xlsx`)} />
             </div>
-            <HoldingsTable holdings={report.holdings} totals={report.totals} {format} />
+            <HoldingsTable holdings={report.holdings} totals={report.totals} {format} {gainPeriod} />
         {/if}
     {:else if report === null && holdingsData.status === "error"}
         <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="holdings-error">

@@ -4,12 +4,17 @@
      rule) — rendered as an em-dash; the inline warning explains why. -->
 <script lang="ts">
     import {toNumber, type Dec} from "$lib/domain/money";
-    import type {HoldingsReport} from "$lib/holdings/types";
+    import type {GainPeriod, HoldingsReport} from "$lib/holdings/types";
+    import {gainWindowSuffix} from "./gainPeriod";
     import {EM_DASH, formatGainPct} from "./view";
 
-    let {totals, format}: {totals: HoldingsReport["totals"]; format: (v: Dec) => string} = $props();
+    let {totals, format, gainPeriod = "all"}: {totals: HoldingsReport["totals"]; format: (v: Dec) => string; gainPeriod?: GainPeriod} = $props();
 
     const signClass = (negative: boolean): string => (negative ? "text-error" : "text-success");
+    // "Unrealized" only reads true for the all-time window; a windowed gain gets the window tag instead.
+    const gainSuffix = $derived(gainWindowSuffix(gainPeriod));
+    const gainLabel = $derived(gainPeriod === "all" ? "Unrealized gain" : `Gain${gainSuffix}`);
+    const gainPctLabel = $derived(gainPeriod === "all" ? "Unrealized gain %" : `Gain %${gainSuffix}`);
 
     interface Stat {
         label: string;
@@ -20,12 +25,12 @@
         {label: "Market value", value: format(totals.marketValue), valueClass: ""},
         {label: "Cost basis", value: totals.basis === null ? EM_DASH : format(totals.basis), valueClass: ""},
         {
-            label: "Unrealized gain",
+            label: gainLabel,
             value: totals.gain === null ? EM_DASH : format(totals.gain),
             valueClass: totals.gain === null ? "" : signClass(toNumber(totals.gain) < 0),
         },
         {
-            label: "Unrealized gain %",
+            label: gainPctLabel,
             value: formatGainPct(totals.gainPct),
             valueClass: totals.gainPct === null ? "" : signClass(totals.gainPct < 0),
         },

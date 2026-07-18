@@ -33,6 +33,27 @@ describe("UNIT LedgelineApi — query building", () => {
         expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/holdings?asOf=2026-07-08&mode=exclude");
     });
 
+    it("omits gainSince for the all-time window (no param when undefined)", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({asOf: "x", base: "$", holdings: [], totals: {marketValue: {mantissa: "0", places: 0}}}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").holdings({asOf: "2026-07-08", accounts: "", mode: "include", gainSince: undefined});
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/holdings?asOf=2026-07-08&mode=include");
+    });
+
+    it("appends gainSince when a window start is set", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({asOf: "x", base: "$", holdings: [], totals: {marketValue: {mantissa: "0", places: 0}}}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").holdings({asOf: "2026-07-08", accounts: "", mode: "include", gainSince: "2026-01-01"});
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/holdings?asOf=2026-07-08&mode=include&gainSince=2026-01-01");
+    });
+
+    it("does NOT window the series endpoint even when a gainSince is passed", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({base: "$", points: [], hasBasis: false}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").holdingsSeries({asOf: "2026-07-08", mode: "include", interval: "monthly", count: 12, gainSince: "2026-01-01"});
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/holdings/series?asOf=2026-07-08&mode=include&interval=monthly&count=12");
+    });
+
     it("comma-joins subtree roots and adds the series window", async () => {
         const fetchMock = vi.fn().mockResolvedValue(jsonResponse({base: "$", points: [], hasBasis: false}));
         vi.stubGlobal("fetch", fetchMock);

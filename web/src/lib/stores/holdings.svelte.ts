@@ -12,16 +12,17 @@ import {LedgelineApi} from "$lib/api/native";
 import {decodeHoldingsReport, decodeHoldingsSeries} from "$lib/api/nativeDecode";
 import type {ISODate} from "$lib/domain/types";
 import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
-import type {HoldingsReport, HoldingsScope, HoldingsSeries} from "$lib/holdings/types";
+import type {GainPeriod, HoldingsReport, HoldingsScope, HoldingsSeries} from "$lib/holdings/types";
+import {gainSinceFor} from "$lib/holdings/ui/gainPeriod";
 import {localToday} from "./filters.svelte";
 
 /** Trailing series window shown under the details table (matches the former client-side default). */
 const TREND_INTERVAL = "monthly";
 const TREND_COUNT = 12;
 
-/** Fresh-visit default: everything included, as of today (recomputed per call, never remembered). */
+/** Fresh-visit default: everything included, as of today, all-time gain (recomputed per call, never remembered). */
 export function defaultScope(): HoldingsScope {
-    return {accounts: new Set<string>(), mode: "include", asOf: localToday()};
+    return {accounts: new Set<string>(), mode: "include", asOf: localToday(), gainPeriod: "all"};
 }
 
 let value = $state<HoldingsScope>(defaultScope());
@@ -55,13 +56,17 @@ export const holdingsScope = {
     setAsOf(asOf: ISODate): void {
         value = {...value, asOf};
     },
-    /** Clear the account selection (back to "everything"); mode and asOf are kept. */
+    /** Switch the gain window (all-time vs YTD vs trailing 12mo); everything else is kept. */
+    setGainPeriod(gainPeriod: GainPeriod): void {
+        value = {...value, gainPeriod};
+    },
+    /** Clear the account selection (back to "everything"); mode, asOf and gain window are kept. */
     clear(): void {
         value = {...value, accounts: new Set<string>()};
     },
     /** Replace the whole scope at once (URL-sync startup restore). */
     replace(s: HoldingsScope): void {
-        value = {accounts: new Set(s.accounts), mode: s.mode, asOf: s.asOf};
+        value = {accounts: new Set(s.accounts), mode: s.mode, asOf: s.asOf, gainPeriod: s.gainPeriod};
     },
 };
 
@@ -95,8 +100,10 @@ export const holdingsData = {
         try {
             const api = new LedgelineApi(serverUrl);
             const accounts = [...scope.accounts].join(",");
+            // gainSince narrows only the report's gain; the value-over-time series is always all-time.
+            const gainSince = gainSinceFor(scope.gainPeriod, scope.asOf);
             const [rawReport, rawSeries] = await Promise.all([
-                api.holdings({asOf: scope.asOf, accounts, mode: scope.mode}),
+                api.holdings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince}),
                 api.holdingsSeries({asOf: scope.asOf, accounts, mode: scope.mode, interval: TREND_INTERVAL, count: TREND_COUNT}),
             ]);
             if (token !== seq) return;

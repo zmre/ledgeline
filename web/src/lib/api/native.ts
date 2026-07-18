@@ -57,6 +57,12 @@ export interface HoldingsQuery {
     /** Comma-separated subtree roots; empty = all accounts. */
     accounts?: string;
     mode?: "include" | "exclude";
+    /**
+     * Optional gain-window start (YYYY-MM-DD). Absent/empty ⇒ all-time gain
+     * (marketValue − basis). When set, the engine returns a WINDOWED gain
+     * (marketValue − value-at-gainSince); the response JSON keys are unchanged.
+     */
+    gainSince?: string;
 }
 export interface HoldingsSeriesQuery extends HoldingsQuery {
     interval?: string;
@@ -114,7 +120,7 @@ export class LedgelineApi {
     }
 
     holdings(query: HoldingsQuery = {}): Promise<unknown> {
-        return this.getJson(`/api/holdings${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode})}`);
+        return this.getJson(`/api/holdings${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, gainSince: query.gainSince})}`);
     }
 
     holdingsSeries(query: HoldingsSeriesQuery = {}): Promise<unknown> {

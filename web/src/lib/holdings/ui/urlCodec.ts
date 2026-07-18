@@ -7,7 +7,7 @@
 // for tests). Account names are individually percent-encoded before the comma
 // join so names containing commas survive (same as filters/urlCodec).
 import type {ISODate} from "$lib/domain/types";
-import type {HoldingsScope} from "$lib/holdings/types";
+import type {GainPeriod, HoldingsScope} from "$lib/holdings/types";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -17,6 +17,7 @@ export function scopeToSearch(scope: HoldingsScope, today: ISODate): string {
     if (scope.asOf !== today) params.set("asof", scope.asOf);
     if (scope.accounts.size > 0) params.set("acct", [...scope.accounts].sort().map(encodeURIComponent).join(","));
     if (scope.mode !== "include") params.set("mode", scope.mode);
+    if (scope.gainPeriod !== "all") params.set("gain", scope.gainPeriod);
     return params.toString();
 }
 
@@ -34,9 +35,12 @@ export function searchToScope(search: string, today: ISODate): HoldingsScope {
                       .filter((s) => s !== "")
                       .map(decodeURIComponent)
               );
+    const gain = params.get("gain");
+    const gainPeriod: GainPeriod = gain === "ytd" || gain === "12mo" ? gain : "all";
     return {
         asOf: asof !== null && ISO_DATE.test(asof) ? asof : today,
         accounts,
         mode: params.get("mode") === "exclude" ? "exclude" : "include",
+        gainPeriod,
     };
 }
