@@ -51,6 +51,7 @@ faster. Push that layer to Cachix (below) and CI + teammates skip it entirely.
 | `nix build .#clippy` | `cargo clippy --all-targets -- -D warnings` |
 | `nix build .#tests` | `cargo test` over the whole workspace |
 | `nix build .#fmt` | `cargo fmt --check` |
+| `nix build .#macApp` | **macOS only** — `Ledgeline.app` with the **real** SPA embedded (see below). |
 | `nix flake check` | Runs all of the checks above |
 | `nix run .` | Build and run `ledgeline` |
 
@@ -100,41 +101,62 @@ cd .. && cargo build --release # embeds web/build/ into target/release/ledgeline
 (Or run both from the dev shell.) A plain `cargo build` without a prior
 `bun run build` still works — it just embeds the placeholder shell.
 
+## The macOS app bundle (`Ledgeline.app`)
+
+`nix build .#macApp` (macOS only) produces `result/` = a `Ledgeline.app`
+bundle: `Contents/MacOS/ledgeline` (the binary), `Contents/Info.plist`
+(version taken from the workspace `Cargo.toml`), and
+`Contents/Resources/ledgeline.icns` (generated from `assets/ledgeline.png`).
+`just package-mac` wraps this and copies a writable copy to `dist/Ledgeline.app`.
+
+Unlike `.#ledgeline` (which embeds the CI placeholder SPA), **`.#macApp` embeds
+the real SvelteKit UI**: the flake builds the SPA inside Nix — a fixed-output
+`bun install` derivation (`spaNodeModules`, its hash pinned from `web/bun.lock`)
+feeds an offline `vite build` (`spaBuild`), whose output is baked into a
+dedicated crane build of the binary. No prior `bun run build` is required. If
+`web/bun.lock` changes, re-pin `spaNodeModules.outputHash` (build once with a
+fake hash; Nix prints the real one). The pinned hash captures the host
+platform's native deps (esbuild/rollup/@tailwindcss/oxide), so it is
+`aarch64-darwin`-specific.
+
+The icon is assembled with `imagemagick` + `png2icns` (libicns) — no macOS
+`iconutil`, so it builds in the pure Nix sandbox. The bundled binary still links
+Nix-store dylibs; producing a signed, relocatable release (`install_name_tool` +
+`codesign`) is a follow-up.
+
 ## Cachix binary cache
 
 The flake declares three substituters in `nixConfig`: `cache.nixos.org`,
 `nix-community.cachix.org` (both public — immediate pull benefit), and
-`ledgeline.cachix.org` (ours). `.envrc` already passes `--accept-flake-config`
-so the dev shell trusts them.
+`zmre.cachix.org` — the shared cache we reuse from
+[zmre/mbr-markdown-browser](https://github.com/zmre/mbr-markdown-browser). Its
+real public key is already committed in `flake.nix`, and `.envrc` passes
+`--accept-flake-config` so the dev shell trusts all three. **Pulls need no
+setup** — everyone (and every fork) benefits immediately.
 
 ### One-time setup the maintainer must do by hand
 
-1. Create the cache: sign in at <https://app.cachix.org>, **Create binary
-   cache** named `ledgeline`.
-2. Get its public key and paste it into `flake.nix` in place of the
-   `ledgeline.cachix.org-1:AAAA…=` **placeholder**:
-   ```sh
-   cachix use ledgeline   # prints: ledgeline.cachix.org-1:<REAL_KEY>=
-   ```
-3. Create a push auth token: Cachix → the `ledgeline` cache → **Auth Tokens**
-   (write access).
-4. Add it to GitHub: repo **Settings → Secrets and variables → Actions → New
-   repository secret**, name `CACHIX_AUTH_TOKEN`.
+Only one thing is required, and only to enable CI *pushes*:
 
-Until step 4 is done (and on forks), CI still runs fine: the cache **pushes are
-skipped** when the secret is absent; **pulls** from all three caches still work.
+- Add the `zmre` cache's push auth token to GitHub as a repository secret named
+  `CACHIX_AUTH_TOKEN` (repo **Settings → Secrets and variables → Actions → New
+  repository secret**). This is the same token used by mbr.
+
+Until that secret is set (and on forks), CI still runs fine: the cache **pushes
+are skipped** when the secret is absent; **pulls** from all three caches still
+work.
 
 Push a build manually:
 
 ```sh
-nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix push ledgeline
+nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 ```
 
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push to `main` and on every PR.
 Each job installs Nix with `DeterminateSystems/determinate-nix-action@v3` and
-wires `cachix/cachix-action@v17` (cache `ledgeline`, pulling `nix-community`
+wires `cachix/cachix-action@v17` (cache `zmre`, pulling `nix-community`
 too). Jobs:
 
 | Job | Runner(s) | Command |

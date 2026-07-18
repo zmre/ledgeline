@@ -2,21 +2,20 @@
   description = "Ledgeline — a modern web GUI for hledger";
 
   # Binary caches. `cache.nixos.org` and `nix-community` are public and give an
-  # immediate pull benefit. `ledgeline.cachix.org` is OURS: it does not exist
-  # until you create it (see docs/development.md → "Cachix setup"). The key below
-  # is a PLACEHOLDER — after `cachix use ledgeline` prints the real public key,
-  # paste it here, and add the `CACHIX_AUTH_TOKEN` repo secret so CI can push.
+  # immediate pull benefit. `zmre.cachix.org` is the shared cache we reuse from
+  # zmre/mbr-markdown-browser (its real public key is below). CI pushes to it
+  # when the `CACHIX_AUTH_TOKEN` repo secret is present (see docs/development.md →
+  # "Cachix binary cache"); pulls work for everyone with no setup.
   nixConfig = {
     extra-substituters = [
       "https://cache.nixos.org"
       "https://nix-community.cachix.org"
-      "https://ledgeline.cachix.org"
+      "https://zmre.cachix.org"
     ];
     extra-trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-      # PLACEHOLDER — replace with the real key from `cachix use ledgeline`.
-      "ledgeline.cachix.org-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      "zmre.cachix.org-1:WIE1U2a16UyaUVr+Wind0JM6pEXBe43PQezdPKoDWLE="
     ];
   };
 
@@ -134,6 +133,105 @@
           inherit src version;
           pname = "ledgeline";
         };
+
+        # --- macOS app bundle (`.#macApp` → Ledgeline.app) ---------------------
+        # `.#ledgeline` embeds the CI PLACEHOLDER SPA (web/build is absent in the
+        # sandbox). A real distributable must embed the ACTUAL SvelteKit UI, so we
+        # build the SPA in Nix (bun) and feed it into a dedicated crane build.
+        # This whole block is only ever forced on macOS (see `packages` below).
+
+        # 1. node_modules for the SPA. `bun install` needs the network, so this is
+        #    a fixed-output derivation: the recursive `outputHash` pins the exact
+        #    dependency tree from `web/bun.lock`. `--ignore-scripts` keeps it
+        #    deterministic — the SvelteKit `prepare` (`svelte-kit sync`) runs in
+        #    the build below, not here; the native binaries (esbuild, rollup,
+        #    @tailwindcss/oxide) are ordinary per-platform packages that land with
+        #    no install script. The hash is platform-specific (it captures the
+        #    aarch64-darwin native deps); re-pin it if `bun.lock` changes.
+        spaNodeModules = pkgs.stdenv.mkDerivation {
+          pname = "ledgeline-spa-node-modules";
+          inherit version;
+          src = ./web;
+          nativeBuildInputs = [ pkgs.bun ];
+          dontConfigure = true;
+          buildPhase = ''
+            export HOME="$TMPDIR"
+            export BUN_INSTALL_CACHE_DIR="$TMPDIR/bun-cache"
+            bun install --frozen-lockfile --no-progress --ignore-scripts
+          '';
+          installPhase = ''
+            mkdir -p "$out"
+            cp -R node_modules "$out/"
+          '';
+          dontFixup = true;
+          outputHashMode = "recursive";
+          outputHashAlgo = "sha256";
+          outputHash = "sha256-pcvCnuTrfQVvT2v9i7Jnj6NgB8fUvfiMX4kcb6dmEWQ=";
+        };
+
+        # 2. The static SPA (`web/build`). Pure/offline: reuses the pinned
+        #    node_modules, runs `svelte-kit sync`, then `vite build`
+        #    (adapter-static → a client-only bundle with an index.html fallback).
+        spaBuild = pkgs.stdenv.mkDerivation {
+          pname = "ledgeline-spa";
+          inherit version;
+          src = ./web;
+          nativeBuildInputs = [ pkgs.bun ];
+          dontConfigure = true;
+          buildPhase = ''
+            export HOME="$TMPDIR"
+            cp -R ${spaNodeModules}/node_modules ./node_modules
+            chmod -R u+w node_modules
+            bun run prepare
+            bun run build
+          '';
+          installPhase = ''
+            mkdir -p "$out"
+            cp -R build/. "$out/"
+          '';
+        };
+
+        # 3. The `ledgeline` binary with the REAL SPA baked in (rust-embed reads
+        #    web/build at compile time). Reuses the cached dependency layer, so
+        #    only the workspace crates recompile — now against the real UI.
+        ledgelineWithSpa = craneLib.buildPackage (commonArgs // {
+          inherit cargoArtifacts;
+          doCheck = false;
+          preBuild = ''
+            mkdir -p web/build
+            cp -R ${spaBuild}/. web/build/
+          '';
+          meta = ledgeline.meta;
+        });
+
+        # 4. Icon: assets/ledgeline.png (2048²) → a multi-resolution
+        #    ledgeline.icns. imagemagick downsizes to each icns slot; png2icns
+        #    (libicns) assembles them — no macOS `iconutil` required, so it builds
+        #    in the pure Nix sandbox.
+        ledgelineIcns = pkgs.runCommand "ledgeline.icns" {
+          nativeBuildInputs = [ pkgs.imagemagick pkgs.libicns ];
+        } ''
+          for s in 16 32 48 128 256 512 1024; do
+            magick ${./assets/ledgeline.png} -resize "''${s}x''${s}" "icon_''${s}.png"
+          done
+          png2icns "$out" icon_16.png icon_32.png icon_48.png icon_128.png \
+            icon_256.png icon_512.png icon_1024.png
+        '';
+
+        # 5. Assemble Ledgeline.app. `$out` IS the bundle root, so `result/` opens
+        #    as the app. Info.plist gets the workspace version substituted in and
+        #    is lint-clean (`plutil -lint`). NOTE: the binary still links Nix-store
+        #    dylibs; a signed, relocatable release (install_name_tool + codesign,
+        #    as in mbr's `release`) is a follow-up — this produces the bundle
+        #    structure with the real UI embedded.
+        macApp = pkgs.runCommand "Ledgeline.app" { } ''
+          mkdir -p "$out/Contents/MacOS" "$out/Contents/Resources"
+          cp ${ledgelineWithSpa}/bin/ledgeline "$out/Contents/MacOS/ledgeline"
+          chmod u+w "$out/Contents/MacOS/ledgeline"
+          substitute ${./assets/Info.plist.in} "$out/Contents/Info.plist" \
+            --subst-var-by version "${version}"
+          cp ${ledgelineIcns} "$out/Contents/Resources/ledgeline.icns"
+        '';
       in
       {
         # Buildable outputs. `nix build .#ledgeline` proves the GUI deps resolve
@@ -142,6 +240,12 @@
         packages = {
           inherit ledgeline clippy fmt tests;
           default = ledgeline;
+        }
+        # macOS-only: the distributable app bundle and the SPA-in-Nix pieces it
+        # is assembled from. Guarded so `nix flake check` / builds on Linux never
+        # force the platform-specific (aarch64-darwin) SPA node_modules FOD.
+        // lib.optionalAttrs pkgs.stdenv.isDarwin {
+          inherit macApp spaNodeModules spaBuild ledgelineWithSpa ledgelineIcns;
         };
 
         # `nix flake check` runs all of these; CI invokes them individually

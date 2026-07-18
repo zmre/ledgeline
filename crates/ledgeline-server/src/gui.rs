@@ -26,6 +26,7 @@ use muda::{
 };
 use notify::RecommendedWatcher;
 use tao::{
+    dpi::LogicalSize,
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
     window::WindowBuilder,
@@ -301,8 +302,13 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]
     menu.menu_bar.init_for_nsapp();
 
+    // Open at a comfortable desktop size (mbr leaves this to the platform
+    // default, which is too small for a data-dense GUI); clamp the floor so the
+    // report layout never collapses.
     let window = WindowBuilder::new()
         .with_title("Ledgeline")
+        .with_inner_size(LogicalSize::new(1280.0, 832.0))
+        .with_min_inner_size(LogicalSize::new(800.0, 600.0))
         .build(&event_loop)
         .map_err(|error| AppError::Gui(format!("creating window: {error}")))?;
 

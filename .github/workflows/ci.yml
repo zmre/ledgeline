@@ -27,7 +27,7 @@ jobs:
       - name: Setup Cachix
         uses: cachix/cachix-action@v17
         with:
-          name: ledgeline
+          name: zmre
           # Absent on forks / before the user sets the secret: pushes are then
           # skipped, but pulls still work. Never fails the job when empty.
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -54,7 +54,7 @@ jobs:
       - name: Setup Cachix
         uses: cachix/cachix-action@v17
         with:
-          name: ledgeline
+          name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
 
@@ -79,7 +79,7 @@ jobs:
       - name: Setup Cachix
         uses: cachix/cachix-action@v17
         with:
-          name: ledgeline
+          name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
 
@@ -105,7 +105,7 @@ jobs:
       - name: Setup Cachix
         uses: cachix/cachix-action@v17
         with:
-          name: ledgeline
+          name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
 
@@ -124,7 +124,7 @@ jobs:
             echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
             exit 0
           fi
-          nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix push ledgeline
+          nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 
   # TypeScript / SvelteKit side: build the SPA and run its unit + type checks.
   # (Playwright e2e is intentionally out of scope for CI here.)
