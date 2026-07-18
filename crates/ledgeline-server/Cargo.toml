@@ -7,13 +7,38 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "ledgeline"
+path = "src/main.rs"
+
+[features]
+# The desktop GUI (wry/tao/muda/rfd) is on by default. `--no-default-features`
+# builds a headless, server-only binary with no windowing/native-UI stack — the
+# shape CI and Linux servers build.
+default = ["gui"]
+gui = ["dep:wry", "dep:tao", "dep:muda", "dep:rfd"]
+
 [dependencies]
 ledgeline-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 tower-http = { version = "0.6", features = ["cors"] }
+# CLI, embedded SPA, live-reload, and hot-swappable journal state — needed in
+# both the GUI and headless builds, so none of these are feature-gated.
+clap = { version = "4", features = ["derive"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
+notify = "8"
+arc-swap = "1"
+# Desktop GUI stack (gated by the `gui` feature). On macOS wry links the system
+# WKWebView; Linux needs webkitgtk (see flake.nix).
+wry = { version = "0.55", optional = true }
+tao = { version = "0.35", optional = true }
+muda = { version = "0.19", optional = true }
+rfd = { version = "0.17", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

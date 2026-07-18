@@ -19,6 +19,7 @@
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
             rustToolchain # Rust engine: crates/ledgeline-{core,server}
+            pkg-config # locates the Linux GUI libs below (no-op on macOS)
             nodejs_22 # runtime for vite/svelte tooling
             bun # package manager + script runner
             hledger # CLI: golden fixture generation, journal validation, differential oracle
@@ -26,6 +27,14 @@
             just # task runner (see justfile)
             playwright-driver.browsers # browsers for playwright e2e (version must match web/package.json @playwright/test)
           ];
+
+          # Desktop GUI (wry/tao) native deps. Linux links webkitgtk/gtk/libsoup;
+          # macOS uses the system WKWebView, so nothing extra is needed there.
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux (with pkgs; [
+            webkitgtk_4_1
+            gtk3
+            libsoup_3
+          ]);
 
           shellHook = ''
             export LEDGELINE_FIXTURE="$PWD/fixtures/sample.journal"

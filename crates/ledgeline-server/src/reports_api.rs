@@ -556,9 +556,10 @@ pub(crate) async fn balancesheet(
     State(state): State<AppState>,
     Query(query): Query<BalanceSheetQuery>,
 ) -> Result<Json<WireSectionedReport>, ApiError> {
+    let snapshot = state.snapshot();
     let as_of = query.as_of.unwrap_or_else(today_utc);
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
-    let report = balance_sheet(&state.journal.transactions, &as_of, depth)
+    let report = balance_sheet(&snapshot.journal.transactions, &as_of, depth)
         .map_err(|err| report_error(&err))?;
     Ok(Json(wire_sectioned(&report)))
 }
@@ -568,13 +569,14 @@ pub(crate) async fn incomestatement(
     State(state): State<AppState>,
     Query(query): Query<IncomeStatementQuery>,
 ) -> Result<Json<WireSectionedReport>, ApiError> {
+    let snapshot = state.snapshot();
     let today = today_utc();
     let from = query
         .from
         .unwrap_or_else(|| format!("{}-01-01", &today[..4]));
     let to = query.to.unwrap_or(today);
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
-    let report = income_statement(&state.journal.transactions, &from, &to, depth)
+    let report = income_statement(&snapshot.journal.transactions, &from, &to, depth)
         .map_err(|err| report_error(&err))?;
     Ok(Json(wire_sectioned(&report)))
 }
@@ -585,16 +587,17 @@ pub(crate) async fn cashflow(
     State(state): State<AppState>,
     Query(query): Query<CashFlowQuery>,
 ) -> Result<Json<WirePeriodReport>, ApiError> {
+    let snapshot = state.snapshot();
     let end = query.end.unwrap_or_else(today_utc);
     let interval = parse_interval(query.interval.as_deref())?;
     let count = query.count.unwrap_or(DEFAULT_COUNT);
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
 
-    let decls = account_decls(&state.journal);
+    let decls = account_decls(&snapshot.journal);
     let predicate = cash_predicate(&decls);
     let is_cash: &dyn Fn(&str) -> bool = &predicate;
     let report = cash_flow(
-        &state.journal.transactions,
+        &snapshot.journal.transactions,
         &end,
         interval,
         count,
@@ -613,6 +616,7 @@ pub(crate) async fn networth(
     State(state): State<AppState>,
     Query(query): Query<NetWorthQuery>,
 ) -> Result<Json<WirePeriodReport>, ApiError> {
+    let snapshot = state.snapshot();
     let end = query.end.unwrap_or_else(today_utc);
     let interval = parse_interval(query.interval.as_deref())?;
     let count = query.count.unwrap_or(DEFAULT_COUNT);
@@ -623,8 +627,8 @@ pub(crate) async fn networth(
         .map(Commodity);
 
     let report = net_worth(
-        &state.journal.transactions,
-        &state.journal.prices,
+        &snapshot.journal.transactions,
+        &snapshot.journal.prices,
         &end,
         interval,
         count,
@@ -640,6 +644,7 @@ pub(crate) async fn budget(
     State(state): State<AppState>,
     Query(query): Query<BudgetQuery>,
 ) -> Result<Json<WireBudgetReport>, ApiError> {
+    let snapshot = state.snapshot();
     let end = query.end.unwrap_or_else(today_utc);
     let interval = parse_interval(query.interval.as_deref())?;
     let count = query.count.unwrap_or(DEFAULT_COUNT);
@@ -657,8 +662,8 @@ pub(crate) async fn budget(
         budget_desc,
     };
     let report = budget_report(
-        &state.journal.transactions,
-        &state.journal.periodic_transactions,
+        &snapshot.journal.transactions,
+        &snapshot.journal.periodic_transactions,
         &opts,
     )
     .map_err(|err| report_error(&err))?;
@@ -672,15 +677,16 @@ pub(crate) async fn holdings(
     State(state): State<AppState>,
     Query(query): Query<HoldingsQuery>,
 ) -> Result<Json<WireHoldingsReport>, ApiError> {
+    let snapshot = state.snapshot();
     let scope = HoldingsScope {
         accounts: parse_accounts(query.accounts.as_deref()),
         mode: parse_mode(query.mode.as_deref())?,
         as_of: query.as_of.unwrap_or_else(today_utc),
     };
     let report = compute_holdings(
-        &state.journal.transactions,
-        &state.journal.prices,
-        &state.journal.accounts,
+        &snapshot.journal.transactions,
+        &snapshot.journal.prices,
+        &snapshot.journal.accounts,
         &scope,
     )
     .map_err(|err| report_error(&err))?;
@@ -693,6 +699,7 @@ pub(crate) async fn holdings_series_report(
     State(state): State<AppState>,
     Query(query): Query<HoldingsSeriesQuery>,
 ) -> Result<Json<WireHoldingsSeries>, ApiError> {
+    let snapshot = state.snapshot();
     let scope = HoldingsScope {
         accounts: parse_accounts(query.accounts.as_deref()),
         mode: parse_mode(query.mode.as_deref())?,
@@ -701,9 +708,9 @@ pub(crate) async fn holdings_series_report(
     let interval = parse_interval(query.interval.as_deref())?;
     let count = query.count.unwrap_or(DEFAULT_COUNT);
     let series = holdings_series(
-        &state.journal.transactions,
-        &state.journal.prices,
-        &state.journal.accounts,
+        &snapshot.journal.transactions,
+        &snapshot.journal.prices,
+        &snapshot.journal.accounts,
         &scope,
         interval,
         count,
