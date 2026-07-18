@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::decimal::{Dec, DecError};
 use crate::model::{AccountDeclaration, Commodity, Cost, CostKind, PriceDirective, Transaction};
 use crate::reports::prices::{div_round_half_even, mul_raw, per_unit_from_total, pow10};
-use crate::reports::{PriceDb, ReportError, account_matches};
+use crate::reports::{PriceDb, ReportError, RootCategory, account_matches, categorize};
 use crate::wire::{account_tag_map, inherited_account_tags};
 
 use super::commodities::is_currency;
@@ -51,6 +51,37 @@ fn reduce_basis(basis: Dec, shares_after: Dec, shares_before: Dec) -> Result<Dec
         div_round_half_even(numerator, before_m)?,
         basis.places,
     ))
+}
+
+/// True when securities can actually be HELD in `account` — i.e. its root is not
+/// equity/income/expense. Those three are the funding/disposal counter-side of a
+/// share movement (the "source" of the shares, exactly like `equity:opening` for
+/// cash), so a share leg posted to them must NOT count toward a symbol's net
+/// shares. If it did, a share transfer-in booked against `equity`/`income` would
+/// net the acquiring transaction to zero (the shares never enter the pool) and a
+/// later sale would drive the per-symbol net negative — even though the balance
+/// sheet, which sums only asset + liability accounts, shows it non-negative. This
+/// keeps holdings' net shares equal to the balance-sheet net for the symbol.
+fn is_holding_account(account: &str) -> bool {
+    !matches!(
+        categorize(account),
+        RootCategory::Equity | RootCategory::Revenue | RootCategory::Expense
+    )
+}
+
+/// The magnitude of a share count rendered to exactly two decimal places,
+/// computed on the exact mantissa (never via `f64`) for the negative-shares
+/// warning text. Fractional places beyond two are truncated toward zero — a
+/// share deficit below a hundredth of a share needs no finer detail in a
+/// human-readable warning. Overflow-saturating, so it is panic-free.
+fn abs_shares_2dp(shares: Dec) -> String {
+    let magnitude = shares.mantissa.unsigned_abs();
+    let hundredths = match shares.places.cmp(&2) {
+        Ordering::Less => magnitude.saturating_mul(10u128.saturating_pow(2 - shares.places)),
+        Ordering::Equal => magnitude,
+        Ordering::Greater => magnitude / 10u128.saturating_pow(shares.places - 2),
+    };
+    format!("{}.{:02}", hundredths / 100, hundredths % 100)
 }
 
 /// A dated per-unit price in the base commodity (port of the TS `DatedPrice`).
@@ -164,7 +195,10 @@ fn build_pools(
         // preserved within each symbol's Vec; symbols are independent pools).
         let mut by_symbol: BTreeMap<String, Vec<LotEntry>> = BTreeMap::new();
         for posting in &txn.postings {
-            if !in_scope(&posting.account.0) {
+            // Skip out-of-scope accounts and non-holding (equity/income/expense)
+            // legs: the latter are a share movement's funding/disposal counter-
+            // side, not a place shares are held (see `is_holding_account`).
+            if !in_scope(&posting.account.0) || !is_holding_account(&posting.account.0) {
                 continue;
             }
             for amount in &posting.amounts {
@@ -384,6 +418,39 @@ pub fn compute_holdings(
     )?;
     let cost_prices = latest_cost_prices(txns, &db, &base_commodity, &scope.as_of)?;
 
+    // Gain window: when `scope.gain_since` is set, the gain is measured against
+    // each position's market value at that start date (a plain all-time snapshot
+    // re-run at `start`), not against its all-time cost basis. `symbol → value at
+    // start` (`Some(0)` = not held at `start`; `None` = held-but-unpriced there).
+    let start_values: BTreeMap<String, Option<Dec>> = match scope.gain_since.as_deref() {
+        None => BTreeMap::new(),
+        Some(start) => {
+            let start_scope = HoldingsScope {
+                accounts: scope.accounts.clone(),
+                mode: scope.mode,
+                as_of: start.to_string(),
+                gain_since: None,
+            };
+            compute_holdings(txns, prices, accounts, &start_scope)?
+                .holdings
+                .into_iter()
+                .map(|holding| (holding.symbol, holding.market_value))
+                .collect()
+        }
+    };
+    // The baseline a holding's gain is measured from: its all-time `basis`
+    // (default), or its value at the window start (`gain_since`).
+    let reference_of = |symbol: &str, basis: Option<Dec>| -> Option<Dec> {
+        if scope.gain_since.is_none() {
+            basis
+        } else {
+            start_values
+                .get(symbol)
+                .copied()
+                .unwrap_or_else(|| Some(Dec::zero()))
+        }
+    };
+
     let mut holdings: Vec<Holding> = Vec::new();
     let mut warnings: Vec<HoldingsWarning> = Vec::new();
     // A BTreeMap iterates in symbol order — matches the TS explicit symbol sort.
@@ -396,7 +463,8 @@ pub fn compute_holdings(
                 symbol: symbol.clone(),
                 kind: WarningKind::NegativeShares,
                 message: format!(
-                    "{symbol}: net shares are negative — the opening position was likely never entered; row hidden"
+                    "{symbol}: net shares are negative (-{deficit} shares) — the opening position was likely never entered; row hidden",
+                    deficit = abs_shares_2dp(pool.shares)
                 ),
             });
             continue;
@@ -436,12 +504,16 @@ pub fn compute_holdings(
             Some(p) => Some(mul_raw(pool.shares, p.qty)?),
             None => None,
         };
-        let gain = match (market_value, basis) {
-            (Some(mv), Some(b)) => Some(mv.sub(b)?),
+        // `gain = market_value − reference`, where `reference` is the all-time
+        // basis (default) or the value at the window start (`gain_since`); `basis`
+        // itself stays all-time on the row regardless.
+        let reference = reference_of(symbol, basis);
+        let gain = match (market_value, reference) {
+            (Some(mv), Some(r)) => Some(mv.sub(r)?),
             _ => None,
         };
-        let pct = match (gain, basis) {
-            (Some(g), Some(b)) => gain_pct(g, b),
+        let pct = match (gain, reference) {
+            (Some(g), Some(r)) => gain_pct(g, r),
             _ => None,
         };
         holdings.push(Holding {
@@ -466,9 +538,14 @@ pub fn compute_holdings(
         (Some(av), Some(bv)) => bv.cmp(&av).then_with(|| a.symbol.cmp(&b.symbol)),
     });
 
-    // Totals refuse (None) when any included holding is tainted or unpriced.
+    // Totals refuse (None) when any included holding is tainted or unpriced. The
+    // reported `basis` total is always all-time; the gain total is measured from
+    // the same `reference` as the rows (all-time basis, or window-start value),
+    // so with no window `reference_total == basis_total` and the totals are
+    // byte-identical to before.
     let mut market_value = Dec::zero();
     let mut basis_total: Option<Dec> = Some(Dec::zero());
+    let mut reference_total: Option<Dec> = Some(Dec::zero());
     for holding in &holdings {
         if let Some(mv) = holding.market_value {
             market_value = market_value.add(mv)?;
@@ -477,13 +554,18 @@ pub fn compute_holdings(
             (Some(bt), Some(b), Some(_)) => Some(bt.add(b)?),
             _ => None,
         };
+        let reference = reference_of(&holding.symbol, holding.basis);
+        reference_total = match (reference_total, reference, holding.market_value) {
+            (Some(rt), Some(r), Some(_)) => Some(rt.add(r)?),
+            _ => None,
+        };
     }
-    let gain_total = match basis_total {
-        Some(bt) => Some(market_value.sub(bt)?),
+    let gain_total = match reference_total {
+        Some(rt) => Some(market_value.sub(rt)?),
         None => None,
     };
-    let gain_pct_total = match (gain_total, basis_total) {
-        (Some(g), Some(bt)) => gain_pct(g, bt),
+    let gain_pct_total = match (gain_total, reference_total) {
+        (Some(g), Some(rt)) => gain_pct(g, rt),
         _ => None,
     };
 
@@ -534,7 +616,8 @@ pub fn compute_holdings(
 mod tests {
     use super::*;
     use crate::holdings::test_helpers::{
-        account_decl, amt, buy, buy_no_cost, pd, posting, scope, sell, txn, usd, with_cost,
+        account_decl, amt, buy, buy_no_cost, pd, posting, scope, scope_since, sell, txn, usd,
+        with_cost,
     };
     use crate::holdings::types::HoldingsReport;
 
@@ -1276,5 +1359,245 @@ mod tests {
             .collect();
         assert_eq!(gainers, ["AAA", "BBB"]);
         assert!(report.top_losers.is_empty());
+    }
+
+    // ---- holdings net == balance-sheet net (equity/income share legs) ----
+
+    #[test]
+    fn share_transfer_in_via_equity_is_not_read_as_negative() {
+        // Shares transferred in from another institution with the source booked
+        // in SHARES to equity (ACATS-style): `assets:brokerA +5 TSLA` /
+        // `equity:transfers -5 TSLA`. The balance sheet sums only asset+liability
+        // accounts, so its TSLA net is +5. Counting the equity leg would net the
+        // acquiring txn to zero (shares never pooled); a later sale would then
+        // read −5 — a spurious "negative shares". The pool must track the asset
+        // leg alone and stay equal to the balance-sheet net.
+        let txns = [txn(
+            1,
+            "2024-06-01",
+            vec![
+                buy_no_cost("assets:brokerA", "TSLA", 5),
+                sell("equity:transfers", "TSLA", 5),
+            ],
+            &[],
+        )];
+        let report = run(
+            &txns,
+            &[pd("2024-07-01", "TSLA", 30000, "$")],
+            &scope("2026-06-30", ScopeMode::Include, &[]),
+        );
+        let tsla = only(&report, "TSLA");
+        assert_eq!(tsla.shares, Dec::new(5, 0)); // matches the assets-only net
+        assert_eq!(tsla.accounts, vec!["assets:brokerA".to_string()]);
+        // A cost-less transfer-in has an unknown basis (tainted) — NOT a bogus
+        // negative-shares warning.
+        assert_eq!(tsla.basis, None);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|w| w.kind != WarningKind::NegativeShares),
+            "an equity-sourced transfer-in must not read as negative shares"
+        );
+    }
+
+    #[test]
+    fn share_transfer_in_via_equity_then_full_sell_nets_flat() {
+        // Same equity-sourced transfer-in, then the whole position is sold. The
+        // asset TSLA nets to 0 — dropped silently, exactly like the balance sheet
+        // (which never sees the equity leg), with no negative-shares warning.
+        let txns = [
+            txn(
+                1,
+                "2024-06-01",
+                vec![
+                    buy_no_cost("assets:brokerA", "TSLA", 5),
+                    sell("equity:transfers", "TSLA", 5),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-06-01",
+                vec![sell("assets:brokerA", "TSLA", 5)],
+                &[],
+            ),
+        ];
+        let report = run(&txns, &[], &scope("2026-06-30", ScopeMode::Include, &[]));
+        assert!(report.holdings.iter().all(|h| h.symbol != "TSLA"));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn income_denominated_share_leg_does_not_count_toward_net() {
+        // An RSU vest booked with the income offset in SHARES: the +10 lands in
+        // assets, the −10 in income. Only the asset leg is a holding.
+        let txns = [txn(
+            1,
+            "2025-01-10",
+            vec![
+                buy_no_cost("assets:broker:tsla", "TSLA", 10),
+                sell("income:rsu", "TSLA", 10),
+            ],
+            &[],
+        )];
+        let report = run(
+            &txns,
+            &[pd("2025-02-01", "TSLA", 30000, "$")],
+            &scope("2026-06-30", ScopeMode::Include, &[]),
+        );
+        assert_eq!(only(&report, "TSLA").shares, Dec::new(10, 0));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|w| w.kind != WarningKind::NegativeShares)
+        );
+    }
+
+    #[test]
+    fn negative_shares_warning_states_the_deficit() {
+        // A genuine short (sold, never bought) still warns — now spelling out how
+        // far below zero the position is.
+        let txns = [txn(
+            1,
+            "2025-01-10",
+            vec![sell("assets:brokerA", "SHT", 5)],
+            &[],
+        )];
+        let report = run(&txns, &[], &scope("2025-06-30", ScopeMode::Include, &[]));
+        assert_eq!(report.warnings.len(), 1);
+        let message = &report.warnings[0].message;
+        assert!(message.contains("-5.00 shares"), "message was: {message}");
+        assert!(message.contains("never entered"));
+
+        // A fractional deficit renders to two decimals too.
+        let frac = [txn(
+            1,
+            "2025-01-10",
+            vec![posting("assets:brokerA", vec![amt("FRC", -45, 1)], &[])],
+            &[],
+        )];
+        let report = run(&frac, &[], &scope("2025-06-30", ScopeMode::Include, &[]));
+        assert!(
+            report.warnings[0].message.contains("-4.50 shares"),
+            "message was: {}",
+            report.warnings[0].message
+        );
+    }
+
+    // ---- gain window (`gain_since`) ----
+
+    #[test]
+    fn gain_since_windows_gain_against_value_at_start() {
+        // 10 VTI @ $200 in Jan; priced $250 from Jun 2025, $300 from Jan 2026.
+        let txns = [txn(
+            1,
+            "2025-01-10",
+            vec![buy("assets:broker:vti", "VTI", 10, 20000, true)],
+            &[],
+        )];
+        let prices = [
+            pd("2025-06-01", "VTI", 25000, "$"),
+            pd("2026-01-01", "VTI", 30000, "$"),
+        ];
+
+        // All-time (no window): gain = mv($3000) − basis($2000) = $1000.
+        let all_time = run(
+            &txns,
+            &prices,
+            &scope("2026-06-30", ScopeMode::Include, &[]),
+        );
+        let vti = only(&all_time, "VTI");
+        assert_eq!(vti.basis, Some(Dec::new(2000, 0)));
+        assert_eq!(vti.market_value, Some(Dec::new(3000, 0)));
+        assert_eq!(vti.gain, Some(Dec::new(1000, 0)));
+
+        // Windowed since 2025-07-01: value_at_start = 10 × $250 (latest ≤ start) =
+        // $2500 → gain = $3000 − $2500 = $500; basis is unchanged (all-time).
+        let windowed = run(
+            &txns,
+            &prices,
+            &scope_since("2026-06-30", ScopeMode::Include, &[], "2025-07-01"),
+        );
+        let vti = only(&windowed, "VTI");
+        assert_eq!(vti.basis, Some(Dec::new(2000, 0)), "basis stays all-time");
+        assert_eq!(vti.market_value, Some(Dec::new(3000, 0)));
+        assert_eq!(vti.gain, Some(Dec::new(500, 0)), "windowed gain");
+        assert!(close(vti.gain_pct.unwrap(), (500.0 / 2500.0) * 100.0));
+        // Totals mirror the window (basis stays all-time).
+        assert_eq!(windowed.totals.market_value, Dec::new(3000, 0));
+        assert_eq!(windowed.totals.basis, Some(Dec::new(2000, 0)));
+        assert_eq!(windowed.totals.gain, Some(Dec::new(500, 0)));
+    }
+
+    #[test]
+    fn gain_since_before_position_opened_counts_full_value_pct_undefined() {
+        // Window starts BEFORE the buy → not held at start → value_at_start = 0.
+        let txns = [txn(
+            1,
+            "2025-03-10",
+            vec![buy("assets:broker:vti", "VTI", 10, 20000, true)],
+            &[],
+        )];
+        let report = run(
+            &txns,
+            &[pd("2025-01-01", "VTI", 25000, "$")],
+            &scope_since("2026-06-30", ScopeMode::Include, &[], "2025-01-15"),
+        );
+        let vti = only(&report, "VTI");
+        assert_eq!(vti.market_value, Some(Dec::new(2500, 0)));
+        assert_eq!(
+            vti.gain,
+            Some(Dec::new(2500, 0)),
+            "all of it is gain since a start that predates the purchase"
+        );
+        assert_eq!(
+            vti.gain_pct, None,
+            "percent is undefined against a zero start"
+        );
+        assert_eq!(vti.basis, Some(Dec::new(2000, 0)));
+    }
+
+    #[test]
+    fn gain_since_reprioritizes_gainers_and_totals() {
+        // AAA is flat within the window; BBB is up within it. The windowed
+        // gainers/totals must reflect the window, not all-time.
+        let txns = [
+            txn(1, "2024-01-10", vec![buy("a", "AAA", 10, 5000, true)], &[]),
+            txn(2, "2025-06-10", vec![buy("a", "BBB", 10, 10000, true)], &[]),
+        ];
+        let prices = [
+            pd("2025-07-01", "AAA", 10000, "$"),
+            pd("2025-07-01", "BBB", 10000, "$"),
+            pd("2026-06-30", "AAA", 10000, "$"),
+            pd("2026-06-30", "BBB", 12000, "$"),
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope_since("2026-06-30", ScopeMode::Include, &[], "2025-07-01"),
+        );
+        // AAA: start 10×$100, mv 10×$100 → windowed gain 0.
+        assert_eq!(only(&report, "AAA").gain, Some(Dec::zero()));
+        // BBB: start 10×$100, mv 10×$120 → windowed gain $200.
+        assert_eq!(only(&report, "BBB").gain, Some(Dec::new(200, 0)));
+        let gainers: Vec<&str> = report
+            .top_gainers
+            .iter()
+            .map(|h| h.symbol.as_str())
+            .collect();
+        assert_eq!(gainers, ["BBB"], "only BBB gained within the window");
+        assert_eq!(report.totals.market_value, Dec::new(2200, 0));
+        assert_eq!(
+            report.totals.basis,
+            Some(Dec::new(1500, 0)),
+            "all-time basis"
+        );
+        assert_eq!(
+            report.totals.gain,
+            Some(Dec::new(200, 0)),
+            "windowed gain total"
+        );
     }
 }

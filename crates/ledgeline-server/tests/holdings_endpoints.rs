@@ -168,6 +168,25 @@ async fn holdings_report_shape_and_positions() {
 }
 
 #[tokio::test]
+async fn holdings_gain_since_windows_the_gain() {
+    let journal = sample_journal();
+    // Default (all-time): AAPL gain $923.775 (mv − all-time basis).
+    let base = body_ok(&journal, &format!("/api/holdings?asOf={AS_OF}")).await;
+    assert_eq!(canon(&holding(&base, "AAPL")["gain"]), (923_775, 3));
+
+    // Windowed since 2026-01-01: value_at_start = 15 sh × $255 = $3825, so
+    // gain = $5269.875 − $3825 = $1444.875; basis stays the all-time $4346.10.
+    let windowed = body_ok(
+        &journal,
+        &format!("/api/holdings?asOf={AS_OF}&gainSince=2026-01-01"),
+    )
+    .await;
+    let aapl = holding(&windowed, "AAPL");
+    assert_eq!(canon(&aapl["gain"]), (1_444_875, 3), "windowed gain");
+    assert_eq!(canon(&aapl["basis"]), (43461, 1), "basis stays all-time");
+}
+
+#[tokio::test]
 async fn holdings_exclude_mode_scopes_out_a_subtree() {
     let journal = sample_journal();
     let body = body_ok(

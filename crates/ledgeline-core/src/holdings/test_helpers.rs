@@ -129,7 +129,7 @@ pub fn account_decl(name: &str, tags: &[(&str, &str)]) -> AccountDeclaration {
     }
 }
 
-/// Scope shorthand.
+/// Scope shorthand (all-time gain window).
 pub fn scope(as_of: &str, mode: ScopeMode, accounts: &[&str]) -> HoldingsScope {
     HoldingsScope {
         accounts: accounts
@@ -138,5 +138,19 @@ pub fn scope(as_of: &str, mode: ScopeMode, accounts: &[&str]) -> HoldingsScope {
             .collect::<BTreeSet<String>>(),
         mode,
         as_of: as_of.to_string(),
+        gain_since: None,
+    }
+}
+
+/// Scope shorthand with a gain-measurement window start.
+pub fn scope_since(
+    as_of: &str,
+    mode: ScopeMode,
+    accounts: &[&str],
+    gain_since: &str,
+) -> HoldingsScope {
+    HoldingsScope {
+        gain_since: Some(gain_since.to_string()),
+        ..scope(as_of, mode, accounts)
     }
 }

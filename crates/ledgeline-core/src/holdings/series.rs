@@ -75,6 +75,9 @@ pub fn holdings_series(
             accounts: scope.accounts.clone(),
             mode: scope.mode,
             as_of: date.clone(),
+            // The trend tracks market value/basis only; gain windowing is a
+            // per-snapshot concern and never applies to a series point.
+            gain_since: None,
         };
         let report = compute_holdings(txns, prices, accounts, &point_scope)?;
         base = report.base;

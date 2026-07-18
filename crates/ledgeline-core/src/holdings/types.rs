@@ -26,6 +26,17 @@ pub struct HoldingsScope {
     pub mode: ScopeMode,
     /// Snapshot date (`YYYY-MM-DD`), inclusive.
     pub as_of: String,
+    /// Optional gain-measurement window start (`YYYY-MM-DD`).
+    ///
+    /// `None` (the default) = all-time average-cost gain: per-holding
+    /// `gain` = `market_value − basis`, exactly as before. `Some(start)`
+    /// switches `gain`/`gain_pct` (and the portfolio totals + gainers/losers) to
+    /// a windowed gain `market_value(as_of) − value_at_start`, where
+    /// `value_at_start` is the position's market value at `start` (the shares
+    /// held at `start`, priced as of `start`; `0` when not held then, and
+    /// null-propagating when held-but-unpriced at `start`). `basis` is
+    /// unaffected — it always stays the all-time average-cost basis.
+    pub gain_since: Option<String>,
 }
 
 /// Where a holding's price came from.

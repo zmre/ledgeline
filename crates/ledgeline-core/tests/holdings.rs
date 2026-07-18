@@ -30,6 +30,7 @@ fn all_accounts_scope() -> HoldingsScope {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
+        gain_since: None,
     }
 }
 
@@ -146,13 +147,18 @@ fn tsla_sold_never_bought_warns_and_is_excluded() {
         report.holdings.iter().all(|h| h.symbol != "TSLA"),
         "TSLA is net-negative → excluded from holdings"
     );
-    let tsla_warnings: Vec<WarningKind> = report
+    let tsla = report
         .warnings
         .iter()
-        .filter(|w| w.symbol == "TSLA")
-        .map(|w| w.kind)
-        .collect();
-    assert_eq!(tsla_warnings, vec![WarningKind::NegativeShares]);
+        .find(|w| w.symbol == "TSLA")
+        .expect("TSLA warning");
+    assert_eq!(tsla.kind, WarningKind::NegativeShares);
+    // The message now states the size of the deficit (fixture: 2 sold, 0 bought).
+    assert!(
+        tsla.message.contains("-2.00 shares"),
+        "message was: {}",
+        tsla.message
+    );
 }
 
 #[test]
@@ -207,6 +213,7 @@ fn scoping_to_a_single_stock_account_isolates_it() {
         accounts: BTreeSet::from(["assets:broker:taxable:vti".to_string()]),
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
+        gain_since: None,
     };
     let report = compute_holdings(
         &journal.transactions,
@@ -224,6 +231,36 @@ fn scoping_to_a_single_stock_account_isolates_it() {
     );
     assert_eq!(report.totals.market_value, Dec::new(528_275, 2));
     assert_eq!(report.totals.basis, Some(Dec::new(469_336, 2)));
+}
+
+#[test]
+fn gain_since_windows_the_gain_without_touching_basis() {
+    // At 2026-01-01 the AAPL position was 15 sh (the 4.5-sh buy is 2026-03-10),
+    // priced $255.00 (P 2025-12-31) → value_at_start = $3825.00. So the windowed
+    // gain is $5269.875 − $3825 = $1444.875, distinct from the all-time $923.775,
+    // while `basis` stays the all-time average cost $4346.10.
+    let journal = fixture_journal();
+    let scope = HoldingsScope {
+        accounts: BTreeSet::new(),
+        mode: ScopeMode::Include,
+        as_of: AS_OF.to_string(),
+        gain_since: Some("2026-01-01".to_string()),
+    };
+    let report = compute_holdings(
+        &journal.transactions,
+        &journal.prices,
+        &journal.accounts,
+        &scope,
+    )
+    .expect("compute");
+    let aapl = holding(&report, "AAPL");
+    assert_eq!(
+        aapl.basis,
+        Some(Dec::new(434_610, 2)),
+        "basis stays all-time"
+    );
+    assert_eq!(aapl.market_value, Some(Dec::new(5_269_875, 3)));
+    assert_eq!(aapl.gain, Some(Dec::new(1_444_875, 3)), "windowed gain");
 }
 
 #[test]
@@ -268,6 +305,7 @@ fn holding_name(text: &str, symbol: &str) -> String {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
         as_of: "2024-12-31".to_string(),
+        gain_since: None,
     };
     let report = compute_holdings(
         &journal.transactions,

@@ -527,13 +527,18 @@ pub(crate) struct BudgetQuery {
     budget_desc: Option<String>,
 }
 
-/// `?asOf=&accounts=&mode=` — holdings snapshot.
+/// `?asOf=&accounts=&mode=&gainSince=` — holdings snapshot.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HoldingsQuery {
     as_of: Option<String>,
     accounts: Option<String>,
     mode: Option<String>,
+    /// Gain-measurement window start (`YYYY-MM-DD`). Absent/empty = all-time
+    /// average-cost gain (unchanged). When set, `gain`/`gainPct` (and totals +
+    /// gainers/losers) become `marketValue(asOf) − valueAtStart`; `basis` stays
+    /// all-time. See [`holdings`] for the full contract.
+    gain_since: Option<String>,
 }
 
 /// `?asOf=&accounts=&mode=&interval=&count=` — holdings trend.
@@ -673,6 +678,16 @@ pub(crate) async fn budget(
 /// `GET /api/holdings` — average-cost stock positions as of a date. `accounts`
 /// is a comma-separated set of subtree roots; `mode` selects include vs. exclude.
 /// Prices come from the journal's `P` directives (and cost-annotation fallbacks).
+///
+/// `gainSince=YYYY-MM-DD` (optional) changes the gain start. Absent or empty →
+/// all-time average-cost gain, byte-identical to before. When set, each row's
+/// `gain` = `marketValue − valueAtStart` and `gainPct` = `gain / valueAtStart ×
+/// 100`, where `valueAtStart` is the position's market value at `gainSince`
+/// (shares held then, priced as of then; `0` when not held, `null`-propagating
+/// when held-but-unpriced then). `basis` stays the all-time average-cost basis;
+/// `totals.gain`/`totals.gainPct` are windowed while `totals.basis` stays all-
+/// time; `topGainers`/`topLosers` rank by the windowed `gainPct`. The JSON keys
+/// are unchanged — only the meaning of `gain`/`gainPct` shifts.
 pub(crate) async fn holdings(
     State(state): State<AppState>,
     Query(query): Query<HoldingsQuery>,
@@ -682,6 +697,7 @@ pub(crate) async fn holdings(
         accounts: parse_accounts(query.accounts.as_deref()),
         mode: parse_mode(query.mode.as_deref())?,
         as_of: query.as_of.unwrap_or_else(today_utc),
+        gain_since: query.gain_since.filter(|start| !start.is_empty()),
     };
     let report = compute_holdings(
         &snapshot.journal.transactions,
@@ -704,6 +720,8 @@ pub(crate) async fn holdings_series_report(
         accounts: parse_accounts(query.accounts.as_deref()),
         mode: parse_mode(query.mode.as_deref())?,
         as_of: query.as_of.unwrap_or_else(today_utc),
+        // The trend tracks market value/basis only — no per-point gain window.
+        gain_since: None,
     };
     let interval = parse_interval(query.interval.as_deref())?;
     let count = query.count.unwrap_or(DEFAULT_COUNT);
