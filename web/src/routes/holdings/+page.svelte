@@ -1,11 +1,13 @@
 <script lang="ts">
-    // Holdings route (WP-10): scope bar on top, collapsible insight section
-    // (pie + stat tiles + gainers/losers — mirrors the journal page's insights
-    // panel), details table below. Everything derives from the journal store
-    // through the holdings scope store; scope/as-of changes recompute with no
-    // refetch. Scope lives in the URL (?asof=&acct=&mode=) via the WP-04
-    // replaceState pattern — absent params always mean today/empty/include.
+    // Holdings route (WP-10, now native): scope bar on top, collapsible insight
+    // section (pie + stat tiles + gainers/losers), details table below. The
+    // report + trend are fetched from the ledgeline-engine /api/holdings[/series]
+    // endpoints for the current scope and decoded into the existing domain types,
+    // so the UI renders unchanged; scope/as-of changes refetch. Scope lives in
+    // the URL (?asof=&acct=&mode=) via the WP-04 replaceState pattern. Display
+    // styles for the base commodity come from the journal wire feed (styleFor).
     import {onMount} from "svelte";
+    import {NativeApiUnavailableError} from "$lib/api/native";
     import {formatAmount, type Dec} from "$lib/domain/money";
     import {exportHoldingsXlsx} from "$lib/export/xlsx";
     import GainersLosers from "$lib/holdings/ui/GainersLosers.svelte";
@@ -18,7 +20,7 @@
     import {stockAccounts} from "$lib/holdings/ui/view";
     import {formatChartValue, styleFor} from "$lib/insights/series";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
-    import {getHoldingsReport, getHoldingsTrend} from "$lib/stores/holdings.svelte";
+    import {holdingsData, holdingsScope} from "$lib/stores/holdings.svelte";
     import {journal} from "$lib/stores/journal.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
@@ -27,7 +29,7 @@
     // its cleanup.
     onMount(() => startHoldingsUrlSync());
 
-    // Load the journal once a server URL is configured (same pattern as the reports route).
+    // Load the journal once a server URL is configured (base-commodity styles + the scope-bar account list only).
     let attemptedUrl: string | null = null;
     $effect(() => {
         const url = settings.serverUrl;
@@ -37,11 +39,22 @@
         }
     });
 
-    const report = $derived(getHoldingsReport());
-    const trend = $derived(getHoldingsTrend());
-    const style = $derived(styleFor(journal.txns, report.base));
-    const format = (qty: Dec): string => formatAmount({commodity: report.base, qty, style});
-    const formatTrendValue = (v: number): string => formatChartValue(v, report.base, style);
+    // Fetch the native holdings report + trend whenever the scope changes (or the server is first configured).
+    $effect(() => {
+        const url = settings.serverUrl;
+        const scope = holdingsScope.value;
+        if (url !== null) void holdingsData.load(url, scope);
+    });
+
+    const report = $derived(holdingsData.report);
+    const trend = $derived(holdingsData.trend);
+    const ready = $derived(report !== null && journal.txns.length > 0);
+    const nativeUnavailable = $derived(holdingsData.error instanceof NativeApiUnavailableError);
+
+    const base = $derived(report?.base ?? "$");
+    const style = $derived(styleFor(journal.txns, base));
+    const format = (qty: Dec): string => formatAmount({commodity: base, qty, style});
+    const formatTrendValue = (v: number): string => formatChartValue(v, base, style);
     const accountNames = $derived(stockAccounts(journal.txns));
 
     let insightsOpen = $state(true);
@@ -52,11 +65,7 @@
 <div class="flex flex-col gap-3">
     <ScopeBar {accountNames} />
 
-    {#if journal.status === "loading" && journal.txns.length === 0}
-        <div class="flex items-center justify-center py-24" aria-label="Loading holdings">
-            <span class="loading loading-spinner loading-lg"></span>
-        </div>
-    {:else}
+    {#if ready && report !== null}
         {#if report.holdings.length > 0}
             <section class="collapse-arrow bg-base-200 collapse" data-testid="holdings-insights">
                 <input type="checkbox" bind:checked={insightsOpen} aria-label="Toggle holdings insights" />
@@ -75,7 +84,9 @@
                         </div>
                         <GainersLosers {report} {format} />
                     </div>
-                    <HoldingsTrend {trend} formatValue={formatTrendValue} />
+                    {#if trend !== null}
+                        <HoldingsTrend {trend} formatValue={formatTrendValue} />
+                    {/if}
                 </div>
             </section>
         {/if}
@@ -105,6 +116,17 @@
             </div>
             <HoldingsTable holdings={report.holdings} totals={report.totals} {format} />
         {/if}
+    {:else if report === null && holdingsData.status === "error"}
+        <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="holdings-error">
+            <span>{nativeUnavailable ? holdingsData.error?.message : `Couldn't load holdings: ${holdingsData.error?.message ?? "unknown error"}`}</span>
+            {#if !nativeUnavailable}
+                <button type="button" class="btn btn-sm" onclick={() => void holdingsData.load(settings.serverUrl ?? "", holdingsScope.value)}>Retry</button>
+            {/if}
+        </div>
+    {:else}
+        <div class="flex items-center justify-center py-24" aria-label="Loading holdings">
+            <span class="loading loading-spinner loading-lg"></span>
+        </div>
     {/if}
 </div>
 

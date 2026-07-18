@@ -52,3 +52,26 @@ export interface HoldingsReport {
     /** Scope-local, rendered inline on the page. */
     warnings: HoldingsWarning[];
 }
+
+// Holdings-over-time series (served by GET /api/holdings/series). Kept here — the
+// former client-side series.ts engine was dropped when /holdings went native.
+export interface HoldingsPoint {
+    /** Snapshot date: the bucket's last day, clamped so the final point never overshoots scope.asOf. */
+    date: ISODate;
+    /** Bucket key (e.g. "2026-07"), for axis labels. */
+    bucket: string;
+    /** Human bucket label (e.g. "Jul 2026"). */
+    label: string;
+    /** Total priced market value at `date`, in the base commodity (unpriced holdings excluded, per the honest-totals rule). */
+    marketValue: Dec;
+    /** Total cost basis at `date`, null when any held lot is tainted or unpriced (same refusal as HoldingsReport.totals.basis). */
+    basis: Dec | null;
+}
+
+export interface HoldingsSeries {
+    base: string;
+    /** Oldest → newest, length = requested count. */
+    points: HoldingsPoint[];
+    /** True when at least one point has a non-null basis (so the UI knows whether to draw the basis line). */
+    hasBasis: boolean;
+}

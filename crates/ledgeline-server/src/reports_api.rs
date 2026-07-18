@@ -7,9 +7,11 @@
 //!
 //! The JSON contract is the engine's own native shape (NOT hledger's), designed
 //! to map 1:1 onto `web/src/lib/reports/types.ts`:
-//! - `Dec` → `{"mantissa": <number>, "places": <number>}` (matching the existing
-//!   wire `decimalMantissa`; realistic money mantissas stay within JS
-//!   safe-integer range, which the frontend already guards).
+//! - `Dec` → `{"mantissa": <string>, "places": <number>}`. The mantissa is
+//!   STRING-encoded (decoded via `BigInt` on the SPA): unlike parsed amounts,
+//!   COMPUTED values (e.g. holdings `marketValue = shares × price`, non-
+//!   normalized) can exceed the JS safe-integer range, so a JSON number would
+//!   silently lose precision.
 //! - `MixedAmount` → `{"<commodity>": <Dec>, …}` (TS `Map<string, Dec>`), with
 //!   zero commodities dropped (the additive-identity contract).
 //! - `SectionedReport`/`PeriodReport`/`BudgetReport` use camelCase keys matching
@@ -28,9 +30,9 @@ use ledgeline_core::holdings::{
 };
 use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
-    BudgetCell, BudgetOpts, BudgetReport, Interval, MixedAmount, PeriodReport, PriceDb,
-    ReportError, SectionedReport, account_decls, balance_sheet, budget_report, cash_flow,
-    cash_predicate, income_statement, net_worth,
+    BudgetCell, BudgetOpts, BudgetReport, Interval, MixedAmount, PeriodReport, ReportError,
+    SectionedReport, account_decls, balance_sheet, budget_report, cash_flow, cash_predicate,
+    income_statement, net_worth,
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,7 +50,9 @@ const DEFAULT_COUNT: usize = 12;
 /// An exact decimal on the wire: `mantissa / 10^places`.
 #[derive(Serialize)]
 struct WireDec {
-    mantissa: i128,
+    /// STRING-encoded significand (see the module doc): computed values can
+    /// exceed the JS safe-integer range, so a JSON number would lose precision.
+    mantissa: String,
     places: u32,
 }
 
@@ -63,7 +67,7 @@ fn wire_mixed(ma: &MixedAmount) -> WireMixed {
             (
                 commodity.0.clone(),
                 WireDec {
-                    mantissa: dec.mantissa,
+                    mantissa: dec.mantissa.to_string(),
                     places: dec.places,
                 },
             )
@@ -226,7 +230,7 @@ fn wire_budget(report: &BudgetReport) -> WireBudgetReport {
 
 fn wire_dec(dec: Dec) -> WireDec {
     WireDec {
-        mantissa: dec.mantissa,
+        mantissa: dec.mantissa.to_string(),
         places: dec.places,
     }
 }
@@ -501,13 +505,14 @@ pub(crate) struct CashFlowQuery {
     depth: Option<usize>,
 }
 
-/// `?end=&interval=&count=&valueIn=` — net worth.
+/// `?end=&interval=&count=&depth=&valueIn=` — net worth.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NetWorthQuery {
     end: Option<String>,
     interval: Option<String>,
     count: Option<usize>,
+    depth: Option<usize>,
     value_in: Option<String>,
 }
 
@@ -601,7 +606,9 @@ pub(crate) async fn cashflow(
 }
 
 /// `GET /api/reports/networth` — market-valued net worth per bucket. Prices come
-/// from the journal's `P` directives; `valueIn` overrides the target commodity.
+/// from the journal's explicit `P` directives PLUS prices inferred from `@`/`@@`
+/// cost annotations (hledger `--infer-market-prices`); `depth` clamps the account
+/// rows; `valueIn` overrides the target commodity.
 pub(crate) async fn networth(
     State(state): State<AppState>,
     Query(query): Query<NetWorthQuery>,
@@ -609,18 +616,19 @@ pub(crate) async fn networth(
     let end = query.end.unwrap_or_else(today_utc);
     let interval = parse_interval(query.interval.as_deref())?;
     let count = query.count.unwrap_or(DEFAULT_COUNT);
+    let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
     let value_in = query
         .value_in
         .filter(|symbol| !symbol.is_empty())
         .map(Commodity);
 
-    let prices = PriceDb::build(&state.journal.prices);
     let report = net_worth(
         &state.journal.transactions,
-        &prices,
+        &state.journal.prices,
         &end,
         interval,
         count,
+        depth,
         value_in,
     )
     .map_err(|err| report_error(&err))?;
@@ -669,8 +677,13 @@ pub(crate) async fn holdings(
         mode: parse_mode(query.mode.as_deref())?,
         as_of: query.as_of.unwrap_or_else(today_utc),
     };
-    let report = compute_holdings(&state.journal.transactions, &state.journal.prices, &scope)
-        .map_err(|err| report_error(&err))?;
+    let report = compute_holdings(
+        &state.journal.transactions,
+        &state.journal.prices,
+        &state.journal.accounts,
+        &scope,
+    )
+    .map_err(|err| report_error(&err))?;
     Ok(Json(wire_holdings(&report)))
 }
 
@@ -690,6 +703,7 @@ pub(crate) async fn holdings_series_report(
     let series = holdings_series(
         &state.journal.transactions,
         &state.journal.prices,
+        &state.journal.accounts,
         &scope,
         interval,
         count,

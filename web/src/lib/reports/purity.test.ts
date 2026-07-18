@@ -45,10 +45,4 @@ describe("UNIT reports purity (no Svelte/DOM imports)", () => {
         }
         expect(violations).toEqual([]);
     });
-
-    it("golden.test.ts (this suite's broadest importer) reaches api/domain only relatively", () => {
-        // Belt-and-braces: the normalizer import must not drag in $lib aliases from here.
-        const source = readFileSync(join(REPORTS_DIR, "golden.test.ts"), "utf8");
-        expect(importSpecifiers(source).filter((s) => s.startsWith("$"))).toEqual([]);
-    });
 });

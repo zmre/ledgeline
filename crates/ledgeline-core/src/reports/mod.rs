@@ -53,7 +53,7 @@ pub use periods::{
     Interval, bucket_end, bucket_key, bucket_label, bucket_start, compare_iso, last_n_buckets,
     next_bucket,
 };
-pub use prices::{PriceDb, ValuationMeta, value_at};
+pub use prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
 pub use types::{PeriodReport, PeriodRow, ReportMeta, ReportRow, Section, SectionedReport};
 
 /// Errors surfaced by the report engine.

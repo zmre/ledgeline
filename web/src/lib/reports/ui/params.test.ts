@@ -24,7 +24,7 @@ describe("UNIT reports/ui/params", () => {
             expect(paramsToSearch(DFLT)).toBe("tab=bs&asof=2026-07-08&depth=2");
             expect(paramsToSearch({...DFLT, tab: "is"})).toBe("tab=is&from=2026-01-01&to=2026-12-31&depth=2");
             expect(paramsToSearch({...DFLT, tab: "cf"})).toBe("tab=cf&end=2026-07-08&interval=monthly&count=12&depth=2");
-            expect(paramsToSearch({...DFLT, tab: "nw"})).toBe("tab=nw&end=2026-07-08&interval=monthly&count=12");
+            expect(paramsToSearch({...DFLT, tab: "nw"})).toBe("tab=nw&end=2026-07-08&interval=monthly&count=12&depth=2");
         });
     });
 

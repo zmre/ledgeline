@@ -13,47 +13,19 @@
 //! TS `divRoundHalfEven`.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::decimal::{Dec, DecError};
-use crate::model::{Commodity, Cost, CostKind, PriceDirective, Transaction};
-use crate::reports::prices::mul_raw;
+use crate::model::{AccountDeclaration, Commodity, Cost, CostKind, PriceDirective, Transaction};
+use crate::reports::prices::{div_round_half_even, mul_raw, per_unit_from_total, pow10};
 use crate::reports::{PriceDb, ReportError, account_matches};
+use crate::wire::{account_tag_map, inherited_account_tags};
 
 use super::commodities::is_currency;
 use super::types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
     PriceSource, ScopeMode, WarningKind,
 };
-
-/// `10^exp` as an `i128`, checked for overflow (mirrors `decimal::pow10`, which
-/// is private to that module).
-fn pow10(exp: u32) -> Result<i128, DecError> {
-    10i128.checked_pow(exp).ok_or(DecError::Overflow)
-}
-
-/// Rounded division, half-even (banker's rounding) — port of the TS
-/// `divRoundHalfEven`. `domain/money` has no `Dec` division on purpose; this is
-/// the one place holdings math needs it.
-///
-/// The denominator is always positive at every call site (a share count or a
-/// `|qty|`); a zero denominator is unreachable and is surfaced as the same
-/// never-unwrapped overflow arm rather than panicking.
-fn div_round_half_even(numerator: i128, denominator: i128) -> Result<i128, ReportError> {
-    if denominator == 0 {
-        return Err(ReportError::Decimal(DecError::Overflow));
-    }
-    let negative = (numerator < 0) != (denominator < 0);
-    let n = numerator.checked_abs().ok_or(DecError::Overflow)?;
-    let d = denominator.checked_abs().ok_or(DecError::Overflow)?;
-    let mut q = n / d;
-    let r = n % d;
-    let twice = r.checked_mul(2).ok_or(DecError::Overflow)?;
-    if twice > d || (twice == d && q % 2 == 1) {
-        q = q.checked_add(1).ok_or(DecError::Overflow)?;
-    }
-    Ok(if negative { -q } else { q })
-}
 
 /// Rescale both operands to a common precision and return the mantissa pair
 /// (port of the TS `commonMantissas`).
@@ -81,25 +53,6 @@ fn reduce_basis(basis: Dec, shares_after: Dec, shares_before: Dec) -> Result<Dec
     ))
 }
 
-/// Per-unit price from a `@@` total: `total / |qty|`, rounded half-even to
-/// `total.p + qty.p` decimal places (port of the TS `perUnitFromTotal`).
-fn per_unit_from_total(total: Dec, qty: Dec) -> Result<Dec, ReportError> {
-    let places = total
-        .places
-        .checked_add(qty.places)
-        .ok_or(DecError::Overflow)?;
-    let factor = pow10(qty.places.checked_mul(2).ok_or(DecError::Overflow)?)?;
-    let scaled_total = total
-        .mantissa
-        .checked_mul(factor)
-        .ok_or(DecError::Overflow)?;
-    let abs_qty = qty.mantissa.checked_abs().ok_or(DecError::Overflow)?;
-    Ok(Dec::new(
-        div_round_half_even(scaled_total, abs_qty)?,
-        places,
-    ))
-}
-
 /// A dated per-unit price in the base commodity (port of the TS `DatedPrice`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DatedPrice {
@@ -123,7 +76,8 @@ struct SymbolPool {
     first_basis_date: Option<String>,
     /// Accounts whose own net shares are `> 0`, sorted.
     accounts: Vec<String>,
-    /// Latest `name:` tag seen (posting tags first, then txn tags), else symbol.
+    /// Latest `name:` tag seen — posting-comment tag first, then the account's
+    /// own + ancestors' declared tag, then the txn tag — else the symbol.
     name: String,
 }
 
@@ -195,6 +149,7 @@ fn build_pools(
     base: &Commodity,
     as_of: &str,
     in_scope: &dyn Fn(&str) -> bool,
+    account_tags: &HashMap<&str, &[(String, String)]>,
 ) -> Result<BTreeMap<String, SymbolPool>, ReportError> {
     let mut pools: BTreeMap<String, SymbolPool> = BTreeMap::new();
     // symbol -> account -> net shares.
@@ -226,10 +181,20 @@ fn build_pools(
                 let pool = pools
                     .entry(symbol.clone())
                     .or_insert_with(|| SymbolPool::new(&symbol));
-                if let Some(name) =
-                    tag_value(&posting.tags, "name").or_else(|| tag_value(&txn.tags, "name"))
-                {
-                    pool.name = name.to_string();
+                // Precedence mirrors the wire `ptags`: the posting's own
+                // `name:` comment tag, then the account's own + ancestors'
+                // declared `name:` (most-specific first), then the txn `name:`.
+                let name = tag_value(&posting.tags, "name")
+                    .map(str::to_string)
+                    .or_else(|| {
+                        inherited_account_tags(&posting.account, account_tags)
+                            .into_iter()
+                            .find(|(key, _)| key == "name")
+                            .map(|(_, value)| value)
+                    })
+                    .or_else(|| tag_value(&txn.tags, "name").map(str::to_string));
+                if let Some(name) = name {
+                    pool.name = name;
                 }
                 let accounts = per_account.entry(symbol).or_default();
                 let updated = match accounts.get(&posting.account.0) {
@@ -398,6 +363,7 @@ fn gain_pct(gain: Dec, basis: Dec) -> Option<f64> {
 pub fn compute_holdings(
     txns: &[Transaction],
     prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
     scope: &HoldingsScope,
 ) -> Result<HoldingsReport, ReportError> {
     let db = PriceDb::build(prices);
@@ -407,7 +373,15 @@ pub fn compute_holdings(
         .unwrap_or_else(|| Commodity("$".to_string()));
     let base = base_commodity.0.clone();
     let predicate = scope_predicate(scope);
-    let pools = build_pools(txns, &db, &base_commodity, &scope.as_of, &predicate)?;
+    let account_tags = account_tag_map(accounts);
+    let pools = build_pools(
+        txns,
+        &db,
+        &base_commodity,
+        &scope.as_of,
+        &predicate,
+        &account_tags,
+    )?;
     let cost_prices = latest_cost_prices(txns, &db, &base_commodity, &scope.as_of)?;
 
     let mut holdings: Vec<Holding> = Vec::new();
@@ -560,7 +534,7 @@ pub fn compute_holdings(
 mod tests {
     use super::*;
     use crate::holdings::test_helpers::{
-        amt, buy, buy_no_cost, pd, posting, scope, sell, txn, usd, with_cost,
+        account_decl, amt, buy, buy_no_cost, pd, posting, scope, sell, txn, usd, with_cost,
     };
     use crate::holdings::types::HoldingsReport;
 
@@ -573,7 +547,7 @@ mod tests {
     }
 
     fn run(txns: &[Transaction], prices: &[PriceDirective], sc: &HoldingsScope) -> HoldingsReport {
-        compute_holdings(txns, prices, sc).expect("compute_holdings succeeds")
+        compute_holdings(txns, prices, &[], sc).expect("compute_holdings succeeds")
     }
 
     fn close(a: f64, b: f64) -> bool {
@@ -1114,6 +1088,105 @@ mod tests {
         assert_eq!(aapl.price.as_ref().unwrap().date, "2025-07-01");
         assert_eq!(aapl.price.as_ref().unwrap().qty, Dec::new(15000, 2));
         assert_eq!(aapl.name, "Apple Computer");
+    }
+
+    // ---- name resolution: inherited account-directive tags ----
+
+    fn aapl_buy() -> Vec<Transaction> {
+        vec![txn(
+            1,
+            "2024-01-01",
+            vec![buy("assets:broker:aapl", "AAPL", 10, 22000, true)],
+            &[],
+        )]
+    }
+
+    fn aapl_prices() -> Vec<PriceDirective> {
+        vec![pd("2024-02-01", "AAPL", 22500, "$")]
+    }
+
+    #[test]
+    fn account_directive_name_used_when_no_posting_or_txn_name() {
+        // The repro: the leaf account declares the name; nothing else does.
+        let decls = [account_decl(
+            "assets:broker:aapl",
+            &[("name", "Apple Inc.")],
+        )];
+        let report = compute_holdings(
+            &aapl_buy(),
+            &aapl_prices(),
+            &decls,
+            &scope("2024-12-31", ScopeMode::Include, &[]),
+        )
+        .expect("compute_holdings succeeds");
+        assert_eq!(only(&report, "AAPL").name, "Apple Inc.");
+    }
+
+    #[test]
+    fn posting_comment_name_wins_over_account_directive_name() {
+        let txns = [txn(
+            1,
+            "2024-01-01",
+            vec![posting(
+                "assets:broker:aapl",
+                vec![with_cost(amt("AAPL", 10, 0), 22000, true, "$")],
+                &[("name", "Posting Wins")],
+            )],
+            &[],
+        )];
+        let decls = [account_decl(
+            "assets:broker:aapl",
+            &[("name", "Apple Inc.")],
+        )];
+        let report = compute_holdings(
+            &txns,
+            &aapl_prices(),
+            &decls,
+            &scope("2024-12-31", ScopeMode::Include, &[]),
+        )
+        .expect("compute_holdings succeeds");
+        assert_eq!(only(&report, "AAPL").name, "Posting Wins");
+    }
+
+    #[test]
+    fn account_directive_name_wins_over_txn_name() {
+        // Precedence check for the middle rung: account beats a txn-level name.
+        let txns = [txn(
+            1,
+            "2024-01-01",
+            vec![buy("assets:broker:aapl", "AAPL", 10, 22000, true)],
+            &[("name", "Txn Name")],
+        )];
+        let decls = [account_decl(
+            "assets:broker:aapl",
+            &[("name", "Apple Inc.")],
+        )];
+        let report = compute_holdings(
+            &txns,
+            &aapl_prices(),
+            &decls,
+            &scope("2024-12-31", ScopeMode::Include, &[]),
+        )
+        .expect("compute_holdings succeeds");
+        assert_eq!(only(&report, "AAPL").name, "Apple Inc.");
+    }
+
+    #[test]
+    fn ancestor_account_name_is_inherited_by_child_with_none() {
+        // Only the ANCESTOR `assets:broker` declares a name; the posted leaf
+        // `assets:broker:aapl` has no declaration of its own.
+        let decls = [account_decl(
+            "assets:broker",
+            &[("name", "Broker Holdings")],
+        )];
+        let report = compute_holdings(
+            &aapl_buy(),
+            &aapl_prices(),
+            &decls,
+            &scope("2024-12-31", ScopeMode::Include, &[]),
+        )
+        .expect("compute_holdings succeeds");
+        assert_eq!(only(&report, "AAPL").name, "Broker Holdings");
     }
 
     // ---- gainers and losers ----

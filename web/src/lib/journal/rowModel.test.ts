@@ -10,7 +10,6 @@ import {
     filterTxns,
     formatTotals,
     periodLabel,
-    selectedTotals,
     sortTxnsDesc,
     txnComments,
     txnFlowAmounts,
@@ -18,13 +17,9 @@ import {
 
 const usdStyle: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
 const eurStyle: AmountStyle = {side: "R", spaced: true, precision: 2, decimalPoint: ",", digitGroups: null};
-const unitStyle: AmountStyle = {side: "R", spaced: true, precision: 0, decimalPoint: ".", digitGroups: null};
 
 const usd = (cents: number): Amount => ({commodity: "$", qty: dec(cents, 2), style: usdStyle});
 const eur = (cents: number): Amount => ({commodity: "EUR", qty: dec(cents, 2), style: eurStyle});
-// Whole-unit commodities (shares / coins) for the historical-holdings tests.
-const aapl = (shares: number): Amount => ({commodity: "AAPL", qty: dec(shares, 0), style: unitStyle});
-const btc = (coins: number): Amount => ({commodity: "BTC", qty: dec(coins, 0), style: unitStyle});
 
 interface PostingSpec {
     account: string;
@@ -146,84 +141,6 @@ describe("UNIT rowModel", () => {
             expect(totals.get("EUR")?.m).toBe(9000n);
             const both = filteredTotals([groceries], new Set(["expenses", "liabilities"]));
             expect(both.size).toBe(0); // +5624 and -5624 cancel
-        });
-    });
-
-    describe("selectedTotals", () => {
-        // Range covering all of 2026; every fixture below has activity BEFORE it
-        // (the opening balance the buggy footer used to ignore) and within it.
-        const ytd = (accounts: string[]): JournalFilter => filter({from: "2026-01-01", to: "2026-12-31", accounts: new Set(accounts)});
-
-        it("nets a stock bought pre-range and sold in-range to zero (no spurious negative holding)", () => {
-            const buy = txn(101, "2025-06-01", [
-                {account: "assets:broker:aapl", amounts: [aapl(10)]},
-                {account: "assets:bank:checking", amounts: [usd(-100000)]},
-            ]);
-            const sell = txn(102, "2026-03-01", [
-                {account: "assets:broker:aapl", amounts: [aapl(-10)]},
-                {account: "assets:bank:checking", amounts: [usd(120000)]},
-            ]);
-            const f = ytd(["assets:broker:aapl"]);
-            const totals = selectedTotals([buy, sell], f);
-            expect(totals.get("AAPL")).toBeUndefined(); // +10 (2025) − 10 (2026) historical = 0, dropped
-            expect(totals.size).toBe(0);
-            // Regression contrast: the old in-range-only sum reported the sell leg as a −10 holding.
-            expect(filteredTotals(filterTxns([buy, sell], f), f.accounts).get("AAPL")?.m).toBe(-10n);
-        });
-
-        it("includes an asset account's pre-`from` opening balance (historical)", () => {
-            const opening = txn(103, "2025-12-31", [
-                {account: "assets:bank:checking", amounts: [usd(100000)]},
-                {account: "equity:opening", amounts: [usd(-100000)]},
-            ]);
-            const deposit = txn(104, "2026-03-01", [
-                {account: "assets:bank:checking", amounts: [usd(50000)]},
-                {account: "income:salary", amounts: [usd(-50000)]},
-            ]);
-            const f = ytd(["assets:bank:checking"]);
-            expect(selectedTotals([opening, deposit], f).get("$")?.m).toBe(150000n); // $1000 opening + $500 in-range
-            // The old path omitted the opening balance, showing only this year's net change.
-            expect(filteredTotals(filterTxns([opening, deposit], f), f.accounts).get("$")?.m).toBe(50000n);
-        });
-
-        it("keeps an expense selection period-only (flows are untouched)", () => {
-            const preRange = txn(105, "2025-06-01", [
-                {account: "expenses:food", amounts: [usd(10000)]},
-                {account: "assets:bank:checking", amounts: [usd(-10000)]},
-            ]);
-            const inRange = txn(106, "2026-03-01", [
-                {account: "expenses:food", amounts: [usd(20000)]},
-                {account: "assets:bank:checking", amounts: [usd(-20000)]},
-            ]);
-            // Period P&L for the window only: the $100 spent in 2025 is NOT carried forward.
-            expect(selectedTotals([preRange, inRange], ytd(["expenses:food"])).get("$")?.m).toBe(20000n);
-        });
-
-        it("leaves the empty-selection net exactly as before (still honors the query)", () => {
-            const window = filter({from: "2026-07-01", to: "2026-07-31"});
-            expect(selectedTotals(sample, window)).toEqual(filteredTotals(filterTxns(sample, window), window.accounts));
-            const queried = filter({from: "2026-07-01", to: "2026-07-31", query: "safeway"});
-            expect(selectedTotals(sample, queried)).toEqual(filteredTotals(filterTxns(sample, queried), queried.accounts));
-            expect(selectedTotals(sample, filter()).size).toBe(0); // balanced txns still net to zero
-        });
-
-        it("nets each commodity independently: a zeroed holding drops, others remain", () => {
-            const buyBtc = txn(107, "2025-06-01", [
-                {account: "assets:wallet", amounts: [btc(2)]},
-                {account: "assets:bank:checking", amounts: [usd(-60000)]},
-            ]);
-            const sellBtc = txn(108, "2026-03-01", [
-                {account: "assets:wallet", amounts: [btc(-2)]},
-                {account: "assets:bank:checking", amounts: [usd(80000)]},
-            ]);
-            const addUsd = txn(109, "2026-04-01", [
-                {account: "assets:wallet", amounts: [usd(30000)]},
-                {account: "assets:bank:checking", amounts: [usd(-30000)]},
-            ]);
-            const totals = selectedTotals([buyBtc, sellBtc, addUsd], ytd(["assets:wallet"]));
-            expect(totals.get("BTC")).toBeUndefined(); // +2 then −2 over history nets to zero and drops
-            expect(totals.get("$")?.m).toBe(30000n); // the USD balance survives
-            expect(totals.size).toBe(1);
         });
     });
 

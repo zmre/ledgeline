@@ -53,7 +53,16 @@ export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     bs: {asOf: true, range: false, end: false, interval: false, count: false, depth: true},
     is: {asOf: false, range: true, end: false, interval: false, count: false, depth: true},
     cf: {asOf: false, range: false, end: true, interval: true, count: true, depth: true},
-    nw: {asOf: false, range: false, end: true, interval: true, count: true, depth: false},
+    nw: {asOf: false, range: false, end: true, interval: true, count: true, depth: true},
+};
+
+/** Per-tab default interval/count, applied on tab activation (cash flow and net
+ *  worth want different lookbacks: monthly/12 vs yearly/5). Depth is shared. */
+export const TAB_DEFAULTS: Record<ReportTab, {interval: ReportInterval; count: number}> = {
+    bs: {interval: "monthly", count: 12},
+    is: {interval: "monthly", count: 12},
+    cf: {interval: "monthly", count: 12},
+    nw: {interval: "yearly", count: 5},
 };
 
 export const MAX_COUNT = 120;

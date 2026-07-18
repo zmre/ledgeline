@@ -6,8 +6,8 @@
 //! exactly (camelCase ones via `#[serde(rename = ...)]`).
 
 use crate::model::{
-    AccountDeclaration, Amount, CommoditySide, CostKind, Journal, Posting, PostingType,
-    PriceDirective, SourcePos, Status, Transaction,
+    AccountDeclaration, AccountName, Amount, CommoditySide, CostKind, Journal, Posting,
+    PostingType, PriceDirective, SourcePos, Status, Transaction,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -115,11 +115,7 @@ pub struct WirePos {
 /// Serialize a journal's transactions to the hledger wire representation.
 #[must_use]
 pub fn journal_to_transactions(journal: &Journal) -> Vec<WireTransaction> {
-    let account_tags: HashMap<&str, &[(String, String)]> = journal
-        .accounts
-        .iter()
-        .map(|decl| (decl.name.0.as_str(), decl.tags.as_slice()))
-        .collect();
+    let account_tags = account_tag_map(&journal.accounts);
     let commodity_tags: HashMap<&str, &[(String, String)]> = journal
         .commodity_tags
         .iter()
@@ -251,6 +247,34 @@ fn amount_to_wire(amount: &Amount) -> WireAmount {
     }
 }
 
+/// Map each declared account name to its declaration's tag slice, for the
+/// account-directive tag inheritance shared by the wire `ptags` computation and
+/// the holdings name resolution.
+pub(crate) fn account_tag_map(
+    accounts: &[AccountDeclaration],
+) -> HashMap<&str, &[(String, String)]> {
+    accounts
+        .iter()
+        .map(|decl| (decl.name.0.as_str(), decl.tags.as_slice()))
+        .collect()
+}
+
+/// The declared tags a posting on `account` inherits: the account's own declared
+/// tags, then each ancestor's, most-specific first (hledger's account-directive
+/// tag inheritance). This is the single implementation of the ancestor walk,
+/// shared by [`posting_tags`] and the holdings engine's name resolution.
+pub(crate) fn inherited_account_tags(
+    account: &AccountName,
+    account_tags: &HashMap<&str, &[(String, String)]>,
+) -> Vec<(String, String)> {
+    account
+        .self_and_ancestors()
+        .iter()
+        .filter_map(|name| account_tags.get(name.as_str()).copied())
+        .flat_map(|declared| declared.iter().cloned())
+        .collect()
+}
+
 /// Compute a posting's `ptags`: its own comment tags first, then account tags
 /// inherited from the account and its ancestors (most-specific first),
 /// de-duplicated on exact `(key, value)` keeping the first occurrence. Finally,
@@ -263,11 +287,7 @@ fn posting_tags(
     commodity_tags: &HashMap<&str, &[(String, String)]>,
 ) -> Vec<(String, String)> {
     let mut tags: Vec<(String, String)> = posting.tags.clone();
-    for ancestor in posting.account.self_and_ancestors() {
-        if let Some(declared) = account_tags.get(ancestor.as_str()) {
-            tags.extend(declared.iter().cloned());
-        }
-    }
+    tags.extend(inherited_account_tags(&posting.account, account_tags));
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut result: Vec<(String, String)> = tags

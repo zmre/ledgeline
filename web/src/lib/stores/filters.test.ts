@@ -48,12 +48,26 @@ describe("UNIT filters", () => {
             filters.reset();
         });
 
-        it("defaults to the current month with no accounts and empty query", () => {
-            const expected = presetRange("thisMonth", localToday());
+        it("defaults to the last 90 days with no accounts and empty query", () => {
+            const expected = presetRange("last90", localToday());
+            expect(filters.value.preset).toBe("last90");
             expect(filters.value.from).toBe(expected.from);
             expect(filters.value.to).toBe(expected.to);
             expect(filters.value.accounts.size).toBe(0);
             expect(filters.value.query).toBe("");
+        });
+
+        it("the default filter spans a 90-day window ending today (inclusive)", () => {
+            const dflt = defaultFilter();
+            const today = localToday();
+            expect(dflt.preset).toBe("last90");
+            expect(dflt.to).toBe(today);
+            const {from, to} = dflt;
+            expect(from).not.toBeNull();
+            expect(to).not.toBeNull();
+            if (from === null || to === null) return;
+            const toUtc = (d: string): number => Date.UTC(Number(d.slice(0, 4)), Number(d.slice(5, 7)) - 1, Number(d.slice(8, 10)));
+            expect((toUtc(to) - toUtc(from)) / 86_400_000).toBe(89); // 90 calendar days, both ends inclusive
         });
 
         it("setRange and applyPreset update the range", () => {
