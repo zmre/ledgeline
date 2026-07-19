@@ -249,6 +249,8 @@ fn build_webview(window: &tao::window::Window, url: &str) -> Result<wry::WebView
     #[cfg(target_os = "linux")]
     let webview = {
         use tao::platform::unix::WindowExtUnix;
+        // `build_gtk` lives on this extension trait; it must be in scope (Linux).
+        use wry::WebViewBuilderExtUnix;
         builder
             .build_gtk(window.gtk_window())
             .map_err(|error| AppError::Gui(format!("creating webview: {error}")))?
