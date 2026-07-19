@@ -12,8 +12,8 @@
 //!   transaction (the edit popup); body is the [`AddRequest`] shape (with
 //!   optional transaction/posting `comment`s so the replace round-trips them).
 //! - `PATCH  /api/transactions/{index}` — surgical partial edit (inline edits):
-//!   `{ "description"?, "postings"?: [{ "index", "account" }] }`, each touching
-//!   only its own field on disk.
+//!   `{ "description"?, "status"?, "postings"?: [{ "index", "account" }] }`, each
+//!   touching only its own field on disk.
 //!
 //! # JSON contract (native, camelCase, mirroring the SPA)
 //! An amount's exact quantity uses the same `Dec` shape as the report endpoints:
@@ -24,12 +24,15 @@
 //! ```json
 //! {
 //!   "date": "2026-07-20",
+//!   "date2": "2026-07-22",               // optional: secondary date (DATE=DATE2)
 //!   "status": "cleared",                 // optional: cleared|pending|unmarked
 //!   "code": "INV-9",                     // optional
 //!   "description": "Safeway | groceries",// optional
+//!   "comment": "category:food",          // optional: rides the header (carries tags)
 //!   "position": "append",                // optional: append|dateOrdered (default append)
 //!   "postings": [
 //!     { "account": "expenses:food:groceries",
+//!       "status": "pending",             // optional per-posting: cleared|pending|unmarked
 //!       "amount": { "commodity": "$", "quantity": { "mantissa": "5624", "places": 2 } } },
 //!     { "account": "liabilities:cc:visa" } // no amount ⇒ the elided/inferred leg
 //!   ]
@@ -119,6 +122,8 @@ struct AmountIn {
 struct PostingIn {
     account: String,
     #[serde(default)]
+    status: Option<StatusIn>,
+    #[serde(default)]
     amount: Option<AmountIn>,
     #[serde(default)]
     comment: Option<String>,
@@ -132,6 +137,8 @@ struct PostingIn {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AddRequest {
     date: String,
+    #[serde(default)]
+    date2: Option<String>,
     #[serde(default)]
     status: Option<StatusIn>,
     #[serde(default)]
@@ -153,6 +160,8 @@ pub(crate) struct AddRequest {
 pub(crate) struct PatchRequest {
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    status: Option<StatusIn>,
     #[serde(default)]
     postings: Vec<PostingPatch>,
 }
@@ -467,7 +476,8 @@ fn patch_transaction_locked(
     let mut guard = lock_editor(state);
     let editor = guard.as_mut().ok_or_else(editing_disabled)?;
 
-    let changed = request.description.is_some() || !request.postings.is_empty();
+    let changed =
+        request.description.is_some() || request.status.is_some() || !request.postings.is_empty();
     if changed {
         // The surgical ops mutate the editor one at a time; if a later one fails
         // after an earlier one committed to memory, re-sync from disk so the
@@ -501,6 +511,9 @@ fn apply_patch(
 ) -> Result<(), EditError> {
     if let Some(description) = &request.description {
         editor.set_description(Tindex(index), description)?;
+    }
+    if let Some(status) = request.status {
+        editor.set_status(Tindex(index), status.into())?;
     }
     for posting in &request.postings {
         editor.set_posting_account(Tindex(index), posting.index, &posting.account)?;
@@ -619,7 +632,14 @@ fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transact
         // Placeholder; the editor reassigns file-order indices on reparse.
         index: Tindex(0),
         date: request.date.clone(),
-        date2: None,
+        // A blank/whitespace `date2` means "no secondary date"; otherwise store the
+        // trimmed value so `format_header` emits `DATE=DATE2` cleanly.
+        date2: request
+            .date2
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
         status: request.status.map_or(Status::Unmarked, Status::from),
         code: request.code.clone().unwrap_or_default(),
         description: request.description.clone().unwrap_or_default(),
@@ -647,7 +667,7 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, ApiErr
         None => Vec::new(),
     };
     Ok(Posting {
-        status: Status::Unmarked,
+        status: input.status.map_or(Status::Unmarked, Status::from),
         ptype: PostingType::Regular,
         account: AccountName(input.account.clone()),
         amounts,

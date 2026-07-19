@@ -449,6 +449,60 @@ impl JournalEditor {
         Ok(())
     }
 
+    /// Change **only** the clearing status of the transaction with `index`.
+    ///
+    /// Rewrites just the transaction's header line (`source_span.0.line`) with a
+    /// header rebuilt from the transaction carrying `status` — same date,
+    /// secondary date, code, description, and trailing `; comment`. Every posting
+    /// line below (accounts, amounts, comments, and whitespace) is left
+    /// byte-identical, and the header line's own terminator is preserved.
+    /// [`Status::Unmarked`] removes any `*`/`!` marker; [`Status::Cleared`] /
+    /// [`Status::Pending`] add or change it. The mutated text is re-parsed to
+    /// validate; the edit is refused (with `self` untouched) unless the re-parsed
+    /// transaction's status is exactly `status`.
+    ///
+    /// # Errors
+    /// [`EditError::TransactionNotFound`], [`EditError::ParseInvalidAfterEdit`],
+    /// [`EditError::RoundTripMismatch`], or [`EditError::Internal`].
+    pub fn set_status(&mut self, index: Tindex, status: Status) -> Result<(), EditError> {
+        let (header_line0, mut rebuilt) = {
+            let txn = self
+                .find_transaction(index)
+                .ok_or(EditError::TransactionNotFound(index.0))?;
+            (
+                txn.source_span.0.line.saturating_sub(1) as usize,
+                txn.clone(),
+            )
+        };
+        rebuilt.status = status;
+        let new_header = format_header(&rebuilt);
+
+        let (start, content_end) = self.line_content_range(header_line0)?;
+        let expected = self.journal.transactions.len();
+        let mut candidate = self.rope.clone();
+        candidate.remove(start..content_end);
+        candidate.insert(start, &new_header);
+        let reparsed = self.validate(&candidate, expected)?;
+
+        // A header-only rewrite adds or removes no lines and moves no transaction,
+        // so the target keeps its `tindex`. Guard that its status round-tripped
+        // exactly (a marker smuggled into the description can't silently apply).
+        let updated = reparsed
+            .transactions
+            .iter()
+            .find(|t| t.index == index)
+            .ok_or_else(|| {
+                EditError::Internal("edited transaction not found after reparse".into())
+            })?;
+        if updated.status != status {
+            return Err(EditError::RoundTripMismatch);
+        }
+
+        self.rope = candidate;
+        self.journal = reparsed;
+        Ok(())
+    }
+
     /// Change **only** the account of the `posting_index`-th posting of the
     /// transaction with `index`.
     ///

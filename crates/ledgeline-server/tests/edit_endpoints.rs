@@ -498,6 +498,86 @@ async fn put_and_patch_are_501_when_no_editor_is_bound() {
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
 }
 
+#[tokio::test]
+async fn put_round_trips_date2_tag_comment_and_pending_posting() {
+    let (state, path) = state_for(WITH_COMMENTS);
+
+    // One PUT carrying all the newly-wired fields: a secondary date, a tag-bearing
+    // transaction comment, and a per-posting `pending` status.
+    let body = json!({
+        "date": "2024-01-01",
+        "date2": "2024-01-03",
+        "status": "cleared",
+        "description": "A",
+        "comment": "category:food",
+        "postings": [
+            { "account": "expenses:a",
+              "status": "pending",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "100", "places": 2 } } },
+            { "account": "assets:bank" }
+        ]
+    });
+    let (status, response) = request(&state, "PUT", "/api/transactions/1", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "put should be 200: {response}");
+    // The response echoes the secondary date and posting status.
+    assert_eq!(response["transaction"]["date2"], "2024-01-03");
+    assert_eq!(response["transaction"]["postings"][0]["status"], "pending");
+
+    // On disk: `DATE=DATE2`, the `; …tag…` comment, and the posting `!` marker;
+    // neighbor B stays byte-identical.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        on_disk,
+        "\
+2024-01-01=2024-01-03 * A  ; category:food
+    ! expenses:a  $1.00
+    assets:bank
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+
+    // GET /transactions shows the secondary date (`tdate2`) and the parsed tag.
+    let (_, txns) = request(&state, "GET", "/transactions", None).await;
+    let txn = txns
+        .as_array()
+        .expect("transactions array")
+        .iter()
+        .find(|t| t["tdate2"] == "2024-01-03")
+        .expect("the edited transaction with a secondary date");
+    assert_eq!(txn["ttags"], json!([["category", "food"]]));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn patch_status_changes_only_the_header_marker_on_disk() {
+    let (state, path) = state_for(WITH_COMMENTS);
+
+    // Flip transaction 1 from cleared (`*`) to pending (`!`); everything else —
+    // the header comment and both posting lines — must stay byte-identical.
+    let body = json!({ "status": "pending" });
+    let (status, response) = request(&state, "PATCH", "/api/transactions/1", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "patch should be 200: {response}");
+    assert_eq!(response["transaction"]["status"], "pending");
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        on_disk,
+        "\
+2024-01-01 ! A  ; first txn
+    expenses:a  $1.00  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 /// The sample fixture's text, copied into each temp journal under test.
 fn sample_text() -> String {
     std::fs::read_to_string(common::fixture_journal_path()).expect("sample.journal readable")

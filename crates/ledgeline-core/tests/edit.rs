@@ -522,6 +522,63 @@ fn set_description_rejects_semicolon_and_leaves_state() {
 }
 
 #[test]
+fn set_status_rewrites_only_the_header_marker_and_preserves_the_rest() {
+    let mut editor = JournalEditor::from_text("mem.journal", WITH_COMMENTS).unwrap();
+    let b_src = editor.transaction_source(Tindex(2)).unwrap();
+
+    // Cleared (`*`) -> Pending (`!`): only the marker char changes; the date, the
+    // description, the header comment, and BOTH posting lines (accounts, amounts,
+    // comments, whitespace) stay byte-identical.
+    editor.set_status(Tindex(1), Status::Pending).unwrap();
+    assert_eq!(
+        editor.text(),
+        "\
+2024-01-01 ! A  ; first txn
+    expenses:a  $1.00  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+    assert_eq!(editor.journal().transactions[0].status, Status::Pending);
+
+    // Pending -> Unmarked drops the marker entirely (no dangling space before `A`).
+    editor.set_status(Tindex(1), Status::Unmarked).unwrap();
+    assert_eq!(
+        editor.text(),
+        "\
+2024-01-01 A  ; first txn
+    expenses:a  $1.00  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+    assert_eq!(editor.journal().transactions[0].status, Status::Unmarked);
+
+    // Unmarked -> Cleared restores the original bytes exactly.
+    editor.set_status(Tindex(1), Status::Cleared).unwrap();
+    assert_eq!(editor.text(), WITH_COMMENTS);
+    assert_eq!(editor.journal().transactions[0].status, Status::Cleared);
+
+    // Neighbor B was byte-identical through every rewrite.
+    assert_eq!(editor.transaction_source(Tindex(2)).unwrap(), b_src);
+}
+
+#[test]
+fn set_status_unknown_transaction_is_transaction_not_found() {
+    let mut editor = JournalEditor::from_text("mem.journal", WITH_COMMENTS).unwrap();
+    let before = editor.text();
+    let err = editor.set_status(Tindex(99), Status::Pending).unwrap_err();
+    assert!(matches!(err, EditError::TransactionNotFound(99)));
+    assert_eq!(editor.text(), before);
+}
+
+#[test]
 fn set_posting_account_replaces_only_the_account_token() {
     let mut editor = JournalEditor::from_text("mem.journal", WITH_COMMENTS).unwrap();
     let b_src = editor.transaction_source(Tindex(2)).unwrap();
