@@ -79,6 +79,17 @@ export function formatGainPct(pct: number | null): string {
     return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
 
+/**
+ * How many DISPLAYED holdings are left out of the PARTIAL cost-basis / gain
+ * totals because they have no recorded basis (tainted rows still shown on the
+ * page). The engine sums basis/gain over only the rows that have one, so this
+ * count drives the muted "totals exclude N holding(s)" note under the stat
+ * tiles; `0` hides it.
+ */
+export function untotaledBasisCount(holdings: readonly Holding[]): number {
+    return holdings.reduce((n, h) => (h.basis === null ? n + 1 : n), 0);
+}
+
 /** Sortable holdings-table columns; `price`/`priceDate` read the nested price field. */
 export type SortKey = "name" | "symbol" | "shares" | "basis" | "firstBasisDate" | "price" | "priceDate" | "marketValue" | "gain" | "gainPct";
 

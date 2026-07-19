@@ -562,34 +562,46 @@ pub fn compute_holdings(
         (Some(av), Some(bv)) => bv.cmp(&av).then_with(|| a.symbol.cmp(&b.symbol)),
     });
 
-    // Totals refuse (None) when any included holding is tainted or unpriced. The
-    // reported `basis` total is always all-time; the gain total is measured from
-    // the same `reference` as the rows (all-time basis, or window-start value),
-    // so with no window `reference_total == basis_total` and the totals are
-    // byte-identical to before.
+    // PARTIAL totals: rather than refusing the whole portfolio when a single row
+    // is tainted or unpriced, `basis`/`gain`/`gainPct` sum over only the rows that
+    // carry the needed inputs. `basis` sums the "fully-known" rows — a known
+    // `basis` AND a market value; `gain` sums `market_value − reference` over the
+    // rows that have a `reference` (all-time `basis` by default, or the
+    // window-start value under `gain_since`) AND a market value; `gainPct` divides
+    // that gain by the reference sum over the same rows. Each is `None` only when
+    // its set is empty — i.e. every shown holding is excluded (all tainted/unpriced
+    // → an honest dash). An EMPTY portfolio keeps a real zero (you own nothing, so
+    // your basis is $0, not "unknown"), matching the series' empty-scope behavior.
+    // `market_value` is unrestricted: the whole priced portfolio.
+    let empty = holdings.is_empty();
     let mut market_value = Dec::zero();
-    let mut basis_total: Option<Dec> = Some(Dec::zero());
-    let mut reference_total: Option<Dec> = Some(Dec::zero());
+    let mut basis_total: Option<Dec> = empty.then_some(Dec::zero());
+    let mut gain_total: Option<Dec> = empty.then_some(Dec::zero());
+    let mut reference_sum: Option<Dec> = empty.then_some(Dec::zero());
     for holding in &holdings {
-        if let Some(mv) = holding.market_value {
-            market_value = market_value.add(mv)?;
+        let Some(mv) = holding.market_value else {
+            continue; // unpriced rows contribute to no total
+        };
+        market_value = market_value.add(mv)?;
+        if let Some(basis) = holding.basis {
+            basis_total = Some(match basis_total {
+                Some(bt) => bt.add(basis)?,
+                None => basis,
+            });
         }
-        basis_total = match (basis_total, holding.basis, holding.market_value) {
-            (Some(bt), Some(b), Some(_)) => Some(bt.add(b)?),
-            _ => None,
-        };
-        let reference = reference_of(&holding.symbol, holding.basis);
-        reference_total = match (reference_total, reference, holding.market_value) {
-            (Some(rt), Some(r), Some(_)) => Some(rt.add(r)?),
-            _ => None,
-        };
+        if let Some(reference) = reference_of(&holding.symbol, holding.basis) {
+            gain_total = Some(match gain_total {
+                Some(gt) => gt.add(mv.sub(reference)?)?,
+                None => mv.sub(reference)?,
+            });
+            reference_sum = Some(match reference_sum {
+                Some(rs) => rs.add(reference)?,
+                None => reference,
+            });
+        }
     }
-    let gain_total = match reference_total {
-        Some(rt) => Some(market_value.sub(rt)?),
-        None => None,
-    };
-    let gain_pct_total = match (gain_total, reference_total) {
-        (Some(g), Some(rt)) => gain_pct(g, rt),
+    let gain_pct_total = match (gain_total, reference_sum) {
+        (Some(g), Some(rs)) => gain_pct(g, rs),
         _ => None,
     };
 
@@ -912,9 +924,10 @@ mod tests {
         );
         assert!(report.warnings[0].message.contains("GLD"));
         assert_eq!(report.totals.market_value, Dec::new(4000, 0));
-        assert_eq!(report.totals.basis, None);
-        assert_eq!(report.totals.gain, None);
-        assert_eq!(report.totals.gain_pct, None);
+        // Partial totals: GLD (tainted) is excluded, but VTI's basis/gain count.
+        assert_eq!(report.totals.basis, Some(Dec::new(2000, 0))); // VTI $2000 only
+        assert_eq!(report.totals.gain, Some(Dec::new(200, 0))); // VTI mv $2200 − $2000
+        assert!(close(report.totals.gain_pct.unwrap(), 10.0)); // 200 / 2000
     }
 
     #[test]
@@ -1014,7 +1027,9 @@ mod tests {
         assert_eq!(nop.price, None);
         assert_eq!(nop.market_value, None);
         assert_eq!(report.totals.market_value, Dec::new(2200, 0));
-        assert_eq!(report.totals.basis, None);
+        // NOP is unpriced (excluded from every total); the basis/gain are VTI's.
+        assert_eq!(report.totals.basis, Some(Dec::new(2000, 0)));
+        assert_eq!(report.totals.gain, Some(Dec::new(200, 0)));
         let kinds: Vec<(&str, WarningKind)> = report
             .warnings
             .iter()
@@ -1027,6 +1042,70 @@ mod tests {
                 ("NOP", WarningKind::MissingBasis)
             ]
         );
+    }
+
+    #[test]
+    fn totals_are_partial_and_none_only_when_every_row_is_excluded() {
+        // One tainted (cost-less) holding + one fully-known holding: the basis
+        // total is the KNOWN holding's basis alone (partial), NOT refused.
+        let mixed = [
+            txn(
+                1,
+                "2025-01-10",
+                vec![buy("assets:broker", "VTI", 10, 20000, true)],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-01-20",
+                vec![buy_no_cost("assets:broker", "GLD", 5)],
+                &[],
+            ),
+        ];
+        let prices = [
+            pd("2025-02-01", "VTI", 22000, "$"),
+            pd("2025-02-01", "GLD", 18000, "$"),
+        ];
+        let report = run(
+            &mixed,
+            &prices,
+            &scope("2025-06-30", ScopeMode::Include, &[]),
+        );
+        assert_eq!(
+            report.totals.basis,
+            Some(Dec::new(2000, 0)),
+            "partial = VTI's basis only"
+        );
+        assert_eq!(report.totals.gain, Some(Dec::new(200, 0)));
+
+        // An ALL-tainted portfolio (both priced, both cost-less) still yields a
+        // null basis/gain total — the fully-known set is empty (honest dash).
+        let all_tainted = [
+            txn(
+                1,
+                "2025-01-10",
+                vec![buy_no_cost("assets:broker", "GLD", 5)],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-01-20",
+                vec![buy_no_cost("assets:broker", "SLV", 5)],
+                &[],
+            ),
+        ];
+        let report = run(
+            &all_tainted,
+            &[
+                pd("2025-02-01", "GLD", 18000, "$"),
+                pd("2025-02-01", "SLV", 2000, "$"),
+            ],
+            &scope("2025-06-30", ScopeMode::Include, &[]),
+        );
+        assert!(!report.totals.market_value.is_zero(), "both are priced");
+        assert_eq!(report.totals.basis, None, "no fully-known row → dash");
+        assert_eq!(report.totals.gain, None);
+        assert_eq!(report.totals.gain_pct, None);
     }
 
     // ---- firstBasisDate ----

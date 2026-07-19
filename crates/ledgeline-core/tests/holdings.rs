@@ -182,16 +182,21 @@ fn warnings_are_exactly_gld_and_tsla() {
 }
 
 #[test]
-fn totals_refuse_basis_and_gain_when_gld_is_tainted() {
+fn totals_sum_partial_basis_and_gain_when_gld_is_tainted() {
     let report = report();
     // Priced market value = VTI $5282.75 + AAPL $5269.875 = $10552.625.
     assert_eq!(report.totals.market_value, Dec::new(10_552_625, 3));
+    // PARTIAL totals: GLD (tainted + unpriced) is excluded, but AAPL + VTI still
+    // count. basis = AAPL $4346.10 + VTI $4693.36 = $9039.46.
     assert_eq!(
-        report.totals.basis, None,
-        "GLD taint/unpriced refuses the basis total"
+        report.totals.basis,
+        Some(Dec::new(903_946, 2)),
+        "partial basis = AAPL + VTI, GLD excluded"
     );
-    assert_eq!(report.totals.gain, None);
-    assert_eq!(report.totals.gain_pct, None);
+    // gain = AAPL $923.775 + VTI $589.39 = $1513.165.
+    assert_eq!(report.totals.gain, Some(Dec::new(1_513_165, 3)));
+    let pct = report.totals.gain_pct.expect("partial gain %");
+    assert!((pct - 16.7396).abs() < 1e-2, "gain% was {pct}");
 }
 
 #[test]
@@ -291,9 +296,14 @@ fn series_tracks_the_portfolio_over_time() {
     );
     // The final bucket clamps to as_of.
     assert_eq!(series.points.last().unwrap().date, AS_OF);
-    // GLD taints the basis at every point where it is held, so the basis total
-    // refuses (None) while market value is still tracked.
-    assert!(series.points.iter().all(|p| p.basis.is_none()));
+    // GLD is tainted/unpriced throughout, but AAPL + VTI carry a known basis, so
+    // the PARTIAL basis total is present (Some) at every point.
+    assert!(series.points.iter().all(|p| p.basis.is_some()));
+    // Final point: partial basis = AAPL $4346.10 + VTI $4693.36 = $9039.46.
+    assert_eq!(
+        series.points.last().unwrap().basis,
+        Some(Dec::new(903_946, 2))
+    );
     // Market value is monotonically present and positive by the final month.
     assert!(!series.points.last().unwrap().market_value.is_zero());
 }

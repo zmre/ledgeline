@@ -29,8 +29,9 @@ pub struct HoldingsPoint {
     pub label: String,
     /// Total priced market value at `date`, in the base commodity.
     pub market_value: Dec,
-    /// Total cost basis at `date`; `None` when any held lot is tainted/unpriced
-    /// (same refusal as `HoldingsReport.totals.basis`).
+    /// Total cost basis at `date` — the PARTIAL sum over priced holdings with a
+    /// known basis (same rule as `HoldingsReport.totals.basis`); `None` only when
+    /// none qualify.
     pub basis: Option<Dec>,
 }
 

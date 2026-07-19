@@ -2,7 +2,7 @@ import {describe, expect, it} from "vitest";
 import {dec, formatDec, type Dec} from "$lib/domain/money";
 import type {Holding} from "$lib/holdings/types";
 import {amt, txn, usd} from "$lib/holdings/test-helpers";
-import {EM_DASH, formatGainPct, formatShares, PIE_OTHER, pieSlices, sortHoldings, stockAccounts, type SortKey} from "./view";
+import {EM_DASH, formatGainPct, formatShares, PIE_OTHER, pieSlices, sortHoldings, stockAccounts, untotaledBasisCount, type SortKey} from "./view";
 
 /** Priced holding with marketValue in whole dollars; `overrides` fills whichever other fields a test sorts on. */
 function holding(symbol: string, marketValueDollars: number | null, overrides: Partial<Holding> = {}): Holding {
@@ -97,6 +97,18 @@ describe("UNIT holdings view helpers", () => {
             expect(formatGainPct(-3.44)).toBe("-3.4%");
             expect(formatGainPct(0)).toBe("+0.0%");
             expect(formatGainPct(null)).toBe(EM_DASH);
+        });
+    });
+
+    describe("untotaledBasisCount", () => {
+        it("counts displayed holdings with a null (no recorded) basis, 0 when all known", () => {
+            const known = holding("VTI", 100, {basis: dec(2000n, 0)});
+            const tainted = holding("GLD", 180); // factory default basis is null
+            const unpricedTainted = holding("SLV", null); // unpriced AND null basis
+            expect(untotaledBasisCount([known, tainted])).toBe(1);
+            expect(untotaledBasisCount([known, holding("AAPL", 50, {basis: dec(500n, 0)})])).toBe(0);
+            expect(untotaledBasisCount([tainted, unpricedTainted])).toBe(2);
+            expect(untotaledBasisCount([])).toBe(0);
         });
     });
 

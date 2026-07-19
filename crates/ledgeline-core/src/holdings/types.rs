@@ -110,18 +110,21 @@ pub struct HoldingsWarning {
     pub message: String,
 }
 
-/// Portfolio-level totals. `basis`/`gain`/`gain_pct` refuse (become `None`) when
-/// any included holding is tainted or unpriced — a partial total silently
-/// understates.
+/// Portfolio-level totals. `basis`/`gain`/`gain_pct` are PARTIAL: they sum over
+/// only the holdings that carry the needed inputs (a known basis / a reference,
+/// plus a market value), so a single cost-less or unpriced row no longer blanks
+/// the whole portfolio. Each is `None` only when its set is empty — every shown
+/// holding excluded (an empty portfolio still reports a real zero).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HoldingsTotals {
     /// Sum of priced market values (unpriced holdings excluded).
     pub market_value: Dec,
-    /// Sum of basis, or `None` when any included holding is tainted/unpriced.
+    /// Sum of basis over priced holdings with a known basis; `None` only when
+    /// none qualify (all shown holdings tainted/unpriced).
     pub basis: Option<Dec>,
-    /// `market_value − basis`, or `None`.
+    /// Sum of `market_value − reference` over the qualifying rows, or `None`.
     pub gain: Option<Dec>,
-    /// `gain / basis × 100`, or `None`.
+    /// `gain / reference-sum × 100` over the qualifying rows, or `None`.
     pub gain_pct: Option<f64>,
 }
 

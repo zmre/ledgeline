@@ -63,7 +63,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(report.rows.length).toBeGreaterThan(0);
     });
 
-    it("holdings render AAPL/VTI values, GLD tainted, NVDA/TSLA absent, honest null totals", async () => {
+    it("holdings render AAPL/VTI values, GLD tainted, NVDA/TSLA absent, partial totals", async () => {
         const txns = normalizeTransactions(await new HledgerApi(url).transactions());
         const report = decodeHoldingsReport(await new LedgelineApi(url).holdings({asOf: AS_OF, accounts: "", mode: "include"}));
         expect(report.base).toBe("$");
@@ -91,10 +91,10 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(bySymbol.has("NVDA")).toBe(false);
         expect(bySymbol.has("TSLA")).toBe(false);
 
-        // Honest totals: GLD in scope ⇒ market value real, basis/gain null.
+        // Partial totals: GLD (tainted+unpriced) excluded; basis/gain sum the known holdings (AAPL+VTI).
         expect(formatAmount({commodity: "$", qty: report.totals.marketValue, style})).toBe("$10,552.63");
-        expect(report.totals.basis).toBeNull();
-        expect(report.totals.gain).toBeNull();
+        expect(report.totals.basis === null ? "—" : formatAmount({commodity: "$", qty: report.totals.basis, style})).toBe("$9,039.46");
+        expect(report.totals.gain === null ? "—" : formatAmount({commodity: "$", qty: report.totals.gain, style})).toBe("$1,513.17");
 
         // Warnings explain GLD (twice) + TSLA; both priced holdings are gainers.
         expect(report.warnings.map((w) => `${w.symbol}:${w.kind}`)).toEqual(["GLD:unpriced", "GLD:missing-basis", "TSLA:negative-shares"]);
@@ -102,11 +102,11 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(report.topLosers).toEqual([]);
     });
 
-    it("holdings series returns a trailing window with no basis line (GLD taints every point)", async () => {
+    it("holdings series returns a trailing window with a partial basis line (GLD excluded)", async () => {
         const series = decodeHoldingsSeries(await new LedgelineApi(url).holdingsSeries({asOf: AS_OF, mode: "include", interval: "monthly", count: 12}));
         expect(series.base).toBe("$");
         expect(series.points).toHaveLength(12);
-        expect(series.hasBasis).toBe(false);
+        expect(series.hasBasis).toBe(true);
         expect(series.points[series.points.length - 1].label).toBe("Jul 2026");
     });
 });

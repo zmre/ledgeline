@@ -79,7 +79,7 @@
                     </span>
                 </div>
                 <div class="collapse-content flex flex-col gap-4">
-                    <HoldingsStats totals={report.totals} {format} {gainPeriod} />
+                    <HoldingsStats totals={report.totals} holdings={report.holdings} {format} {gainPeriod} />
                     <div class="grid grid-cols-1 items-center gap-4 lg:grid-cols-2">
                         <div>
                             <HoldingsPie holdings={report.holdings} {format} />
