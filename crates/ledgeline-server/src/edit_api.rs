@@ -1,13 +1,19 @@
 //! Native (non-hledger) WRITE endpoints — the Phase 5.2 wiring of the journal
 //! write path ([`ledgeline_core::edit::JournalEditor`]) into axum.
 //!
-//! Two routes mutate the on-disk journal file, each serializing on the shared
+//! These routes mutate the on-disk journal file, each serializing on the shared
 //! editor mutex ([`AppState::editor`]) and, on success, rebuilding + republishing
 //! the read snapshot so `GET /transactions` and the `/api/*` reports reflect the
 //! change immediately:
 //! - `POST   /api/transactions`         — add a transaction from a native body.
 //! - `DELETE /api/transactions/{index}` — delete the transaction with that
 //!   `tindex`.
+//! - `PUT    /api/transactions/{index}` — full, in-place replace of that
+//!   transaction (the edit popup); body is the [`AddRequest`] shape (with
+//!   optional transaction/posting `comment`s so the replace round-trips them).
+//! - `PATCH  /api/transactions/{index}` — surgical partial edit (inline edits):
+//!   `{ "description"?, "postings"?: [{ "index", "account" }] }`, each touching
+//!   only its own field on disk.
 //!
 //! # JSON contract (native, camelCase, mirroring the SPA)
 //! An amount's exact quantity uses the same `Dec` shape as the report endpoints:
@@ -106,16 +112,22 @@ struct AmountIn {
 }
 
 /// One posting: an account and an optional amount. No `amount` marks the elided
-/// leg whose value the parser infers from the balance.
+/// leg whose value the parser infers from the balance. An optional `comment`
+/// carries a same-line posting comment (so a full replace round-trips it).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PostingIn {
     account: String,
     #[serde(default)]
     amount: Option<AmountIn>,
+    #[serde(default)]
+    comment: Option<String>,
 }
 
-/// The `POST /api/transactions` request body.
+/// The `POST /api/transactions` (add) and `PUT /api/transactions/{index}`
+/// (full replace) request body. The optional `comment` (transaction-level) and
+/// per-posting `comment` let a replace round-trip comments; `POST` clients that
+/// omit them add a comment-free transaction (unchanged behavior).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AddRequest {
@@ -126,9 +138,31 @@ pub(crate) struct AddRequest {
     code: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    comment: Option<String>,
     postings: Vec<PostingIn>,
     #[serde(default)]
     position: Option<PositionIn>,
+}
+
+/// The `PATCH /api/transactions/{index}` request body: a surgical partial edit
+/// applying an optional new `description` and/or any number of per-posting
+/// account changes. Fields left out are unchanged.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PatchRequest {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    postings: Vec<PostingPatch>,
+}
+
+/// One entry of a [`PatchRequest`]: set posting `index`'s account to `account`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PostingPatch {
+    index: usize,
+    account: String,
 }
 
 impl AddRequest {
@@ -299,6 +333,48 @@ pub(crate) async fn delete_transaction(
     Ok(Json(response))
 }
 
+/// `PUT /api/transactions/{index}` — full, in-place replace of the transaction
+/// with that `tindex` (the edit popup's save).
+///
+/// Builds a [`Transaction`] from the (comment-carrying) [`AddRequest`] body,
+/// replaces the addressed transaction in place through the editor, saves, and
+/// republishes; returns `200` with the updated transaction.
+pub(crate) async fn replace_transaction(
+    State(state): State<AppState>,
+    Path(index): Path<u32>,
+    payload: Result<Json<AddRequest>, JsonRejection>,
+) -> Result<Json<AddResponse>, ApiError> {
+    let Json(request) = payload.map_err(|rejection| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("invalid request body: {rejection}"),
+        )
+    })?;
+    let response = replace_transaction_locked(&state, index, &request)?;
+    Ok(Json(response))
+}
+
+/// `PATCH /api/transactions/{index}` — surgical partial edit (inline edits):
+/// apply an optional new description and/or per-posting account changes, each
+/// touching only its own field on disk.
+///
+/// Saves + republishes only when at least one change was requested, then returns
+/// `200` with the (possibly unchanged) transaction.
+pub(crate) async fn patch_transaction(
+    State(state): State<AppState>,
+    Path(index): Path<u32>,
+    payload: Result<Json<PatchRequest>, JsonRejection>,
+) -> Result<Json<AddResponse>, ApiError> {
+    let Json(request) = payload.map_err(|rejection| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("invalid request body: {rejection}"),
+        )
+    })?;
+    let response = patch_transaction_locked(&state, index, &request)?;
+    Ok(Json(response))
+}
+
 // ===========================================================================
 // Locked, synchronous edit logic (no `.await` while the mutex is held)
 // ===========================================================================
@@ -350,23 +426,118 @@ fn delete_transaction_locked(state: &AppState, index: u32) -> Result<DeleteRespo
     })
 }
 
+fn replace_transaction_locked(
+    state: &AppState,
+    index: u32,
+    request: &AddRequest,
+) -> Result<AddResponse, ApiError> {
+    let mut guard = lock_editor(state);
+    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
+
+    let transaction = build_transaction(editor.journal(), request)?;
+    editor
+        .replace_transaction(Tindex(index), &transaction)
+        .map_err(edit_error)?;
+    save_and_publish(state, editor).map_err(edit_error)?;
+
+    // An in-place replace adds/removes no transactions and reorders none, so the
+    // target keeps its `tindex`.
+    let updated = editor
+        .journal()
+        .transactions
+        .iter()
+        .find(|t| t.index == Tindex(index))
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not locate the replaced transaction after saving".to_string(),
+            )
+        })?;
+    Ok(AddResponse {
+        index: updated.index.0,
+        transaction: native_transaction(updated),
+    })
+}
+
+fn patch_transaction_locked(
+    state: &AppState,
+    index: u32,
+    request: &PatchRequest,
+) -> Result<AddResponse, ApiError> {
+    let mut guard = lock_editor(state);
+    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
+
+    let changed = request.description.is_some() || !request.postings.is_empty();
+    if changed {
+        // The surgical ops mutate the editor one at a time; if a later one fails
+        // after an earlier one committed to memory, re-sync from disk so the
+        // in-memory editor and the served snapshot never diverge from the file.
+        if let Err(error) = apply_patch(editor, index, request) {
+            resync_from_disk(state, editor);
+            return Err(edit_error(error));
+        }
+        save_and_publish(state, editor).map_err(edit_error)?;
+    }
+
+    let updated = editor
+        .journal()
+        .transactions
+        .iter()
+        .find(|t| t.index == Tindex(index))
+        .ok_or(EditError::TransactionNotFound(index))
+        .map_err(edit_error)?;
+    Ok(AddResponse {
+        index: updated.index.0,
+        transaction: native_transaction(updated),
+    })
+}
+
+/// Apply a [`PatchRequest`]'s surgical edits to `editor` in order (description
+/// first, then each posting-account change), stopping at the first error.
+fn apply_patch(
+    editor: &mut JournalEditor,
+    index: u32,
+    request: &PatchRequest,
+) -> Result<(), EditError> {
+    if let Some(description) = &request.description {
+        editor.set_description(Tindex(index), description)?;
+    }
+    for posting in &request.postings {
+        editor.set_posting_account(Tindex(index), posting.index, &posting.account)?;
+    }
+    Ok(())
+}
+
 /// Save the editor's pending edit and republish the read snapshot.
 ///
 /// On success the snapshot is rebuilt from the edited journal. On ANY save
 /// failure (notably [`EditError::ExternalChange`]) the in-memory edit is
-/// unpersisted, so we re-open the editor from disk — discarding that edit and
-/// re-syncing the rope/fingerprint — and publish the on-disk state, so the editor
-/// and the served snapshot stay consistent with the file. The original save error
-/// is returned for the caller to map (a `409` tells the client to re-fetch/retry).
+/// unpersisted, so we [`resync_from_disk`] — discarding that edit, re-syncing the
+/// rope/fingerprint, and publishing the on-disk state — so the editor and the
+/// served snapshot stay consistent with the file. The original save error is
+/// returned for the caller to map (a `409` tells the client to re-fetch/retry).
 fn save_and_publish(state: &AppState, editor: &mut JournalEditor) -> Result<(), EditError> {
-    let result = editor.save();
-    if result.is_err()
-        && let Ok(reopened) = JournalEditor::open(editor.path().to_path_buf())
-    {
+    match editor.save() {
+        Ok(()) => {
+            state.replace_journal(editor.journal());
+            Ok(())
+        }
+        Err(error) => {
+            resync_from_disk(state, editor);
+            Err(error)
+        }
+    }
+}
+
+/// Discard any un-saved in-memory edit by re-opening the editor from disk (best
+/// effort), then republish the snapshot from whatever is now bound — so the
+/// editor and the served snapshot both track the on-disk file. Used after a save
+/// failure and after a partial (multi-op) edit fails midway.
+fn resync_from_disk(state: &AppState, editor: &mut JournalEditor) {
+    if let Ok(reopened) = JournalEditor::open(editor.path().to_path_buf()) {
         *editor = reopened;
     }
     state.replace_journal(editor.journal());
-    result
 }
 
 /// Lock the editor mutex, recovering from poisoning (a prior panic mid-edit) by
@@ -397,7 +568,9 @@ fn edit_error(error: EditError) -> ApiError {
         | EditError::Unsupported(_)
         | EditError::ParseInvalidAfterEdit(_)
         | EditError::RoundTripMismatch => StatusCode::BAD_REQUEST,
-        EditError::TransactionNotFound(_) => StatusCode::NOT_FOUND,
+        EditError::TransactionNotFound(_) | EditError::PostingNotFound { .. } => {
+            StatusCode::NOT_FOUND
+        }
         EditError::Io(_) | EditError::Parse(_) | EditError::Decimal(_) | EditError::Internal(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
@@ -450,7 +623,7 @@ fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transact
         status: request.status.map_or(Status::Unmarked, Status::from),
         code: request.code.clone().unwrap_or_default(),
         description: request.description.clone().unwrap_or_default(),
-        comment: String::new(),
+        comment: comment_string(request.comment.as_deref()),
         preceding_comment: String::new(),
         tags: Vec::new(),
         postings,
@@ -481,9 +654,19 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, ApiErr
         balance_assertion: None,
         date: None,
         date2: None,
-        comment: String::new(),
+        comment: comment_string(input.comment.as_deref()),
         tags: Vec::new(),
     })
+}
+
+/// Normalize an optional wire comment into the model's stored form: the trimmed
+/// text with a single trailing newline (matching the parser's `build_comment`),
+/// or empty when absent or blank. The formatter re-adds the `  ; ` prefix.
+fn comment_string(raw: Option<&str>) -> String {
+    match raw {
+        Some(text) if !text.trim().is_empty() => format!("{}\n", text.trim()),
+        _ => String::new(),
+    }
 }
 
 fn build_amount(journal: &Journal, input: &AmountIn) -> Result<Amount, ApiError> {

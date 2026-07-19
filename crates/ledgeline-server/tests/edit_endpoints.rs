@@ -313,6 +313,191 @@ async fn edit_endpoints_are_501_when_no_editor_is_bound() {
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
 }
 
+// ---------------------------------------------------------------------------
+// PATCH (surgical partial edit) + PUT (full, in-place replace)
+// ---------------------------------------------------------------------------
+
+/// A ledger with header + posting comments, so surgical edits can be checked for
+/// leaving the surrounding lines/comments byte-identical on disk.
+const WITH_COMMENTS: &str = "\
+2024-01-01 * A  ; first txn
+    expenses:a  $1.00  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+";
+
+#[tokio::test]
+async fn patch_description_changes_only_that_field_on_disk() {
+    let (state, path) = state_for(WITH_COMMENTS);
+
+    let body = json!({ "description": "A renamed" });
+    let (status, response) = request(&state, "PATCH", "/api/transactions/1", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "patch should be 200: {response}");
+    assert_eq!(response["transaction"]["description"], "A renamed");
+
+    // Only the header's description changed: the header comment and BOTH posting
+    // lines (accounts, amounts, comments, whitespace) are byte-identical.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        on_disk,
+        "\
+2024-01-01 * A renamed  ; first txn
+    expenses:a  $1.00  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+    // GET /transactions reflects the change.
+    let (_, txns) = request(&state, "GET", "/transactions", None).await;
+    assert!(
+        txns.to_string().contains("A renamed"),
+        "snapshot reflects the rename: {txns}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn patch_posting_account_changes_only_the_account_on_disk() {
+    let (state, path) = state_for(WITH_COMMENTS);
+
+    let body = json!({ "postings": [ { "index": 0, "account": "expenses:groceries" } ] });
+    let (status, response) = request(&state, "PATCH", "/api/transactions/1", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "patch should be 200: {response}");
+
+    // Only "expenses:a" -> "expenses:groceries"; the amount, its gap, and the
+    // trailing comment are preserved, and every other line is unchanged.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        on_disk,
+        "\
+2024-01-01 * A  ; first txn
+    expenses:groceries  $1.00  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+    let (_, txns) = request(&state, "GET", "/transactions", None).await;
+    assert!(
+        txns.to_string().contains("expenses:groceries"),
+        "snapshot reflects the category change: {txns}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn put_replaces_transaction_in_place_and_round_trips_comments() {
+    let (state, path) = state_for(WITH_COMMENTS);
+
+    let body = json!({
+        "date": "2024-01-01",
+        "status": "cleared",
+        "description": "A replaced",
+        "comment": "first txn",
+        "postings": [
+            { "account": "expenses:a",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "150", "places": 2 } },
+              "comment": "the expense" },
+            { "account": "assets:bank", "comment": "from checking" }
+        ]
+    });
+    let (status, response) = request(&state, "PUT", "/api/transactions/1", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "put should be 200: {response}");
+    assert_eq!(response["transaction"]["description"], "A replaced");
+
+    // The whole transaction is rewritten in place (comments round-tripped) and
+    // neighbor B is byte-identical.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        on_disk,
+        "\
+2024-01-01 * A replaced  ; first txn
+    expenses:a  $1.50  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn patch_invalid_description_is_400_and_file_unchanged() {
+    let (state, path) = state_for(WITH_COMMENTS);
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    // A ';' would parse as a comment, so the description cannot round-trip.
+    let body = json!({ "description": "A ; sneaky" });
+    let (status, _) = request(&state, "PATCH", "/api/transactions/1", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn patch_out_of_range_posting_is_404_and_file_unchanged() {
+    let (state, path) = state_for(WITH_COMMENTS);
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let body = json!({ "postings": [ { "index": 9, "account": "assets:x" } ] });
+    let (status, _) = request(&state, "PATCH", "/api/transactions/1", Some(body)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn put_unbalanced_is_400_and_file_unchanged() {
+    let (state, path) = state_for(WITH_COMMENTS);
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let body = json!({
+        "date": "2024-01-01",
+        "description": "bad",
+        "postings": [
+            { "account": "expenses:a",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "500", "places": 2 } } },
+            { "account": "assets:bank",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "-400", "places": 2 } } }
+        ]
+    });
+    let (status, _) = request(&state, "PUT", "/api/transactions/1", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn put_and_patch_are_501_when_no_editor_is_bound() {
+    let state = AppState::from_journal(&common::fixture_journal());
+
+    let put_body = json!({
+        "date": "2026-07-20",
+        "description": "x",
+        "postings": [
+            { "account": "expenses:a",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "100", "places": 2 } } },
+            { "account": "assets:bank" }
+        ]
+    });
+    let (status, _) = request(&state, "PUT", "/api/transactions/1", Some(put_body)).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+
+    let patch_body = json!({ "description": "y" });
+    let (status, _) = request(&state, "PATCH", "/api/transactions/1", Some(patch_body)).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+}
+
 /// The sample fixture's text, copied into each temp journal under test.
 fn sample_text() -> String {
     std::fs::read_to_string(common::fixture_journal_path()).expect("sample.journal readable")

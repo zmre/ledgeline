@@ -147,6 +147,26 @@ impl AppState {
         }
     }
 
+    /// Rebind the editor to the journal file at `path`: open a fresh
+    /// [`JournalEditor`] over it, republish the snapshot from its parsed journal,
+    /// and swap it into the editor mutex. The desktop File→Open action uses this
+    /// so subsequent edits target the newly-opened file (not the one the editor
+    /// was previously bound to).
+    ///
+    /// # Errors
+    /// [`EditError::Io`] if the file cannot be read, or [`EditError::Parse`] if it
+    /// does not parse. On error the previously-bound editor and published snapshot
+    /// are left unchanged.
+    pub fn rebind_editor(&self, path: impl AsRef<Path>) -> Result<(), EditError> {
+        // Open first so a failure leaves the current editor + snapshot untouched.
+        let editor = JournalEditor::open(path.as_ref())?;
+        self.inner
+            .store(Arc::new(Snapshot::from_journal(editor.journal())));
+        let mut guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
+        *guard = Some(editor);
+        Ok(())
+    }
+
     /// The current snapshot (a cheap atomic load; the returned `Arc` is a stable
     /// view for the duration of one request even if a swap happens meanwhile).
     pub(crate) fn snapshot(&self) -> Arc<Snapshot> {
@@ -194,11 +214,14 @@ pub fn router_with_state(state: AppState) -> Router {
             "/api/holdings/series",
             get(reports_api::holdings_series_report),
         )
-        // Write path (Phase 5.2): add / delete a transaction through the editor.
+        // Write path (Phase 5.2+): add / delete / replace (PUT) / partial-edit
+        // (PATCH) a transaction through the editor.
         .route("/api/transactions", post(edit_api::add_transaction))
         .route(
             "/api/transactions/{index}",
-            delete(edit_api::delete_transaction),
+            delete(edit_api::delete_transaction)
+                .put(edit_api::replace_transaction)
+                .patch(edit_api::patch_transaction),
         )
         // Everything else (the SPA shell, its embedded assets, and client-side
         // deep links) is served same-origin; the explicit routes above win.

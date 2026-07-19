@@ -115,6 +115,18 @@ const TRAILING_COMMENT: &str = "\
     assets:bank
 ";
 
+/// A ledger whose header and postings all carry same-line comments, so the
+/// surgical edits can be checked for comment/whitespace preservation.
+const WITH_COMMENTS: &str = "\
+2024-01-01 * A  ; first txn
+    expenses:a  $1.00  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+";
+
 fn sample_journal_text() -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sample.journal");
     std::fs::read_to_string(path).expect("sample.journal readable")
@@ -467,6 +479,209 @@ fn add_then_reparse_round_trips_a_cost_transaction() {
     assert_eq!(added.postings[0].amounts[0].quantity, Dec::new(2, 0));
     // The inferred cash leg is -$540.00.
     assert_eq!(added.postings[1].amounts[0].quantity, Dec::new(-54000, 2));
+}
+
+// ---------------------------------------------------------------------------
+// Surgical edits: set_description / set_posting_account
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_description_rewrites_only_header_and_preserves_postings_and_comments() {
+    let mut editor = JournalEditor::from_text("mem.journal", WITH_COMMENTS).unwrap();
+    let b_src = editor.transaction_source(Tindex(2)).unwrap();
+
+    editor.set_description(Tindex(1), "A renamed").unwrap();
+
+    // Only the header's description changed; its comment and every posting line
+    // (accounts, amounts, comments, whitespace) are byte-identical.
+    assert_eq!(
+        editor.text(),
+        "\
+2024-01-01 * A renamed  ; first txn
+    expenses:a  $1.00  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+    // Neighbor B is untouched.
+    assert_eq!(editor.transaction_source(Tindex(2)).unwrap(), b_src);
+    assert_eq!(editor.journal().transactions[0].description, "A renamed");
+}
+
+#[test]
+fn set_description_rejects_semicolon_and_leaves_state() {
+    let mut editor = JournalEditor::from_text("mem.journal", WITH_COMMENTS).unwrap();
+    let before = editor.text();
+    // A ';' would parse as a comment, so the description would not round-trip.
+    let err = editor.set_description(Tindex(1), "A ; sneaky").unwrap_err();
+    assert!(matches!(err, EditError::RoundTripMismatch));
+    assert_eq!(editor.text(), before);
+}
+
+#[test]
+fn set_posting_account_replaces_only_the_account_token() {
+    let mut editor = JournalEditor::from_text("mem.journal", WITH_COMMENTS).unwrap();
+    let b_src = editor.transaction_source(Tindex(2)).unwrap();
+
+    editor
+        .set_posting_account(Tindex(1), 0, "expenses:groceries")
+        .unwrap();
+
+    // Only "expenses:a" -> "expenses:groceries"; the amount, its 2-space gap, and
+    // the trailing comment are all preserved byte-for-byte.
+    assert_eq!(
+        editor.text(),
+        "\
+2024-01-01 * A  ; first txn
+    expenses:groceries  $1.00  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+    assert_eq!(editor.transaction_source(Tindex(2)).unwrap(), b_src);
+    assert_eq!(
+        editor.journal().transactions[0].postings[0].account.0,
+        "expenses:groceries"
+    );
+}
+
+#[test]
+fn set_posting_account_edits_the_elided_leg_only() {
+    let mut editor = JournalEditor::from_text("mem.journal", WITH_COMMENTS).unwrap();
+    // Posting 1 is the elided (amount-less) leg "assets:bank" with a comment.
+    editor
+        .set_posting_account(Tindex(1), 1, "assets:savings")
+        .unwrap();
+    assert_eq!(
+        editor.text(),
+        "\
+2024-01-01 * A  ; first txn
+    expenses:a  $1.00  ; the expense
+    assets:savings  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+}
+
+#[test]
+fn set_posting_account_out_of_range_is_posting_not_found() {
+    let mut editor = JournalEditor::from_text("mem.journal", WITH_COMMENTS).unwrap();
+    let before = editor.text();
+    let err = editor
+        .set_posting_account(Tindex(1), 9, "assets:x")
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        EditError::PostingNotFound { txn: 1, posting: 9 }
+    ));
+    assert_eq!(editor.text(), before);
+}
+
+#[test]
+fn set_posting_account_skips_interleaved_comment_line() {
+    // A standalone comment line sits between the two postings; the second posting
+    // must still be located positionally (comment lines are not postings).
+    let journal = "\
+2024-01-01 * A
+    expenses:a  $1.00
+    ; a note between postings
+    assets:bank
+";
+    let mut editor = JournalEditor::from_text("mem.journal", journal).unwrap();
+    editor
+        .set_posting_account(Tindex(1), 1, "assets:savings")
+        .unwrap();
+    assert_eq!(
+        editor.text(),
+        "\
+2024-01-01 * A
+    expenses:a  $1.00
+    ; a note between postings
+    assets:savings
+"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Full replace: replace_transaction (in place, comment-preserving)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn replace_transaction_keeps_neighbors_byte_identical_and_preserves_comments() {
+    let mut editor = JournalEditor::from_text("mem.journal", WITH_COMMENTS).unwrap();
+    let b_src = editor.transaction_source(Tindex(2)).unwrap();
+
+    // Rebuild A with a new description/amount but keep the header + posting
+    // comments, so the full replace must round-trip them.
+    let mut expense = leg("expenses:a", Some(dollars(150, 2)));
+    expense.comment = "the expense\n".into();
+    let mut cash = leg("assets:bank", None);
+    cash.comment = "from checking\n".into();
+    let mut replacement = cash_txn("2024-01-01", "A replaced", vec![expense, cash]);
+    replacement.comment = "first txn\n".into();
+
+    editor.replace_transaction(Tindex(1), &replacement).unwrap();
+
+    assert_eq!(
+        editor.text(),
+        "\
+2024-01-01 * A replaced  ; first txn
+    expenses:a  $1.50  ; the expense
+    assets:bank  ; from checking
+
+2024-01-02 * B
+    expenses:b  $2.00
+    assets:bank
+"
+    );
+    // Neighbor B is byte-identical.
+    assert_eq!(editor.transaction_source(Tindex(2)).unwrap(), b_src);
+    // The elided leg was filled in on reparse: -$1.50.
+    assert_eq!(
+        editor.journal().transactions[0].postings[1].amounts[0].quantity,
+        Dec::new(-150, 2)
+    );
+}
+
+#[test]
+fn replace_transaction_unbalanced_is_rejected_and_leaves_state() {
+    let mut editor = JournalEditor::from_text("mem.journal", THREE_TXNS).unwrap();
+    let before = editor.text();
+    let bad = cash_txn(
+        "2024-01-02",
+        "bad",
+        vec![
+            leg("expenses:x", Some(dollars(500, 2))),
+            leg("assets:bank", Some(dollars(-400, 2))),
+        ],
+    );
+    let err = editor.replace_transaction(Tindex(2), &bad).unwrap_err();
+    assert!(matches!(err, EditError::Unbalanced));
+    assert_eq!(editor.text(), before);
+}
+
+#[test]
+fn replace_transaction_missing_index_is_not_found() {
+    let mut editor = JournalEditor::from_text("mem.journal", THREE_TXNS).unwrap();
+    let ok = cash_txn(
+        "2024-01-02",
+        "x",
+        vec![
+            leg("expenses:x", Some(dollars(100, 2))),
+            leg("assets:bank", None),
+        ],
+    );
+    let err = editor.replace_transaction(Tindex(99), &ok).unwrap_err();
+    assert!(matches!(err, EditError::TransactionNotFound(99)));
 }
 
 // ---------------------------------------------------------------------------

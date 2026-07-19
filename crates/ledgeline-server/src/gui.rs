@@ -45,8 +45,17 @@ enum UserEvent {
 /// GUI entry point: stand up the in-process server, then run the window.
 pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
     let journal_path = crate::resolve_journal(cli);
-    let journal = crate::parse_at(&journal_path)?;
-    let state = AppState::from_journal(&journal);
+    // Bind an editor to the file so the GUI's edit endpoints are live (this is the
+    // primary mode). Canonicalize first — like `run_server_blocking` — so the
+    // editor's save target and source name match the watcher's canonical path.
+    let editor_path = journal_path
+        .canonicalize()
+        .unwrap_or_else(|_| journal_path.clone());
+    let state =
+        AppState::from_journal_path(&editor_path).map_err(|source| AppError::OpenEditor {
+            path: journal_path.display().to_string(),
+            source,
+        })?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -367,20 +376,29 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
                 }
                 // PredefinedMenuItem events (quit, copy, …) are handled natively.
             }
-            Event::UserEvent(UserEvent::JournalPicked(path)) => match crate::parse_at(&path) {
-                Ok(journal) => {
-                    // Hot-swap in place: no server restart (same ephemeral port).
-                    state.replace_journal(&journal);
-                    // Re-point live-reload at the new file (drops the old watcher).
-                    watcher.replace(crate::spawn_watcher(&path, state.clone()).ok());
-                    let _ = webview.load_url(&url);
-                    eprintln!("ledgeline: opened {}", path.display());
+            Event::UserEvent(UserEvent::JournalPicked(path)) => {
+                // Rebind the editor to the newly-picked file (opening a fresh
+                // editor, republishing its snapshot, and swapping it into the
+                // editor mutex) so edits target the new file — not the old one.
+                // Canonicalize to match the watcher's path, as at startup.
+                let editor_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+                match state.rebind_editor(&editor_path) {
+                    Ok(()) => {
+                        // Re-point live-reload at the new file (drops the old watcher).
+                        watcher.replace(crate::spawn_watcher(&path, state.clone()).ok());
+                        let _ = webview.load_url(&url);
+                        eprintln!("ledgeline: opened {}", path.display());
+                    }
+                    Err(source) => {
+                        let error = AppError::OpenEditor {
+                            path: path.display().to_string(),
+                            source,
+                        };
+                        eprintln!("ledgeline: could not open {}: {error}", path.display());
+                        show_open_error(&path, &error);
+                    }
                 }
-                Err(error) => {
-                    eprintln!("ledgeline: could not open {}: {error}", path.display());
-                    show_open_error(&path, &error);
-                }
-            },
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..

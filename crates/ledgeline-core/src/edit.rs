@@ -51,6 +51,14 @@ pub enum EditError {
     /// No transaction with the requested [`Tindex`] exists.
     #[error("transaction #{0} not found in the journal")]
     TransactionNotFound(u32),
+    /// A posting index was out of range for the addressed transaction.
+    #[error("transaction #{txn} has no posting at index {posting}")]
+    PostingNotFound {
+        /// The addressed transaction's `tindex`.
+        txn: u32,
+        /// The out-of-range posting index.
+        posting: usize,
+    },
     /// The journal failed to parse while loading it.
     #[error("failed to parse the journal: {0}")]
     Parse(#[from] ParseError),
@@ -383,6 +391,306 @@ impl JournalEditor {
         Ok(())
     }
 
+    /// Change **only** the description of the transaction with `index`.
+    ///
+    /// Rewrites just the transaction's header line (`source_span.0.line`) with a
+    /// header rebuilt from the transaction carrying `new_description` — same
+    /// date, status, code, and trailing `; comment`. Every posting line below
+    /// (accounts, amounts, comments, and whitespace) is left byte-identical, and
+    /// the header line's own terminator is preserved. The mutated text is
+    /// re-parsed to validate; the edit is refused (with `self` untouched) unless
+    /// the re-parsed transaction's description is exactly `new_description`, so a
+    /// `;` (or other separator) smuggled into the text cannot silently change the
+    /// transaction's meaning.
+    ///
+    /// # Errors
+    /// [`EditError::TransactionNotFound`], [`EditError::ParseInvalidAfterEdit`],
+    /// [`EditError::RoundTripMismatch`], or [`EditError::Internal`].
+    pub fn set_description(
+        &mut self,
+        index: Tindex,
+        new_description: &str,
+    ) -> Result<(), EditError> {
+        let (header_line0, mut rebuilt) = {
+            let txn = self
+                .find_transaction(index)
+                .ok_or(EditError::TransactionNotFound(index.0))?;
+            (
+                txn.source_span.0.line.saturating_sub(1) as usize,
+                txn.clone(),
+            )
+        };
+        rebuilt.description = new_description.to_string();
+        let new_header = format_header(&rebuilt);
+
+        let (start, content_end) = self.line_content_range(header_line0)?;
+        let expected = self.journal.transactions.len();
+        let mut candidate = self.rope.clone();
+        candidate.remove(start..content_end);
+        candidate.insert(start, &new_header);
+        let reparsed = self.validate(&candidate, expected)?;
+
+        // The reparse reassigns file-order indices, but a header-only rewrite adds
+        // or removes no lines and moves no transaction, so the target keeps its
+        // `tindex`. Guard that its description round-tripped exactly.
+        let updated = reparsed
+            .transactions
+            .iter()
+            .find(|t| t.index == index)
+            .ok_or_else(|| {
+                EditError::Internal("edited transaction not found after reparse".into())
+            })?;
+        if updated.description != new_description {
+            return Err(EditError::RoundTripMismatch);
+        }
+
+        self.rope = candidate;
+        self.journal = reparsed;
+        Ok(())
+    }
+
+    /// Change **only** the account of the `posting_index`-th posting of the
+    /// transaction with `index`.
+    ///
+    /// Replaces just the account token on that posting's source line, preserving
+    /// the line's indentation, any `*`/`!` posting status marker, the amount,
+    /// balance assertion, trailing comment, and the exact whitespace between them
+    /// (only the account name's characters change, so the amount column may shift
+    /// but no other byte moves).
+    ///
+    /// # Locating the posting line
+    /// Postings carry no stored source line, so the line is found by scanning the
+    /// transaction's span and taking the `posting_index`-th **posting line** —
+    /// an indented, non-blank line whose first non-whitespace character is not
+    /// `;` (mirroring the parser, which treats every such line in a transaction
+    /// body as a posting and skips `;` comment lines). On that line the current
+    /// account name is then located as the first substring after the indentation
+    /// and status marker (skipping a leading `(`/`[` virtual bracket), and only
+    /// those characters are replaced.
+    ///
+    /// ## Limitation with duplicate accounts
+    /// The account is mapped to its line by **ordinal position** (the Nth posting
+    /// line is the Nth posting), which is correct as long as each posting occupies
+    /// exactly one line (always true for parsed postings). The current-account
+    /// text match is only a corroborating guard: if a transaction has two postings
+    /// with the *same* account name, that guard cannot distinguish them, but the
+    /// positional mapping still selects the right line.
+    ///
+    /// # Errors
+    /// [`EditError::TransactionNotFound`], [`EditError::PostingNotFound`],
+    /// [`EditError::ParseInvalidAfterEdit`], [`EditError::RoundTripMismatch`], or
+    /// [`EditError::Internal`]. On any error `self` is unchanged.
+    pub fn set_posting_account(
+        &mut self,
+        index: Tindex,
+        posting_index: usize,
+        new_account: &str,
+    ) -> Result<(), EditError> {
+        let (header_line0, scan_end0, current_account) = {
+            let txn = self
+                .find_transaction(index)
+                .ok_or(EditError::TransactionNotFound(index.0))?;
+            let posting = txn
+                .postings
+                .get(posting_index)
+                .ok_or(EditError::PostingNotFound {
+                    txn: index.0,
+                    posting: posting_index,
+                })?;
+            (
+                txn.source_span.0.line.saturating_sub(1) as usize,
+                txn.source_span.1.line.saturating_sub(1) as usize,
+                posting.account.0.clone(),
+            )
+        };
+        let line0 = self
+            .nth_posting_line(header_line0, scan_end0, posting_index)
+            .ok_or_else(|| {
+                EditError::Internal(format!(
+                    "could not locate posting #{posting_index} of transaction #{}",
+                    index.0
+                ))
+            })?;
+        let (start, end) = self.locate_account_token(line0, &current_account)?;
+
+        let expected = self.journal.transactions.len();
+        let mut candidate = self.rope.clone();
+        candidate.remove(start..end);
+        candidate.insert(start, new_account);
+        let reparsed = self.validate(&candidate, expected)?;
+
+        // Same-count, same-order reparse ⇒ the target keeps its `tindex` and
+        // posting order; guard that the account round-tripped exactly.
+        let updated = reparsed
+            .transactions
+            .iter()
+            .find(|t| t.index == index)
+            .and_then(|t| t.postings.get(posting_index))
+            .ok_or_else(|| EditError::Internal("edited posting not found after reparse".into()))?;
+        if updated.account.0 != new_account {
+            return Err(EditError::RoundTripMismatch);
+        }
+
+        self.rope = candidate;
+        self.journal = reparsed;
+        Ok(())
+    }
+
+    /// Replace the whole transaction with `index` **in place** with `txn`.
+    ///
+    /// The transaction's `source_span` (header through last posting, inclusive of
+    /// their trailing newlines) is replaced with [`format_transaction`]`(txn)` at
+    /// the same file position, so every neighbor's source text stays
+    /// byte-identical. Because `format_transaction` emits each posting's `comment`
+    /// (and the header comment), a full replace built from a comment-carrying
+    /// [`Transaction`] does not drop comments.
+    ///
+    /// Like [`add_transaction`](Self::add_transaction) this rejects a posting with
+    /// multiple commodity amounts, requires the transaction to balance, re-parses
+    /// to validate, and guards that the re-parsed transaction round-trips to the
+    /// intended value. On any error `self` is unchanged.
+    ///
+    /// # Errors
+    /// [`EditError::TransactionNotFound`], [`EditError::Unbalanced`],
+    /// [`EditError::Unsupported`], [`EditError::ParseInvalidAfterEdit`],
+    /// [`EditError::RoundTripMismatch`], or [`EditError::Internal`].
+    pub fn replace_transaction(
+        &mut self,
+        index: Tindex,
+        txn: &Transaction,
+    ) -> Result<(), EditError> {
+        if txn.postings.iter().any(|p| p.amounts.len() > 1) {
+            return Err(EditError::Unsupported(
+                "a posting carries multiple commodity amounts".to_string(),
+            ));
+        }
+        if !is_balanced(&txn.postings)? {
+            return Err(EditError::Unbalanced);
+        }
+        let (start, end) = {
+            let existing = self
+                .find_transaction(index)
+                .ok_or(EditError::TransactionNotFound(index.0))?;
+            self.txn_char_range(existing)?
+        };
+        let body = format_transaction(txn);
+
+        let expected = self.journal.transactions.len();
+        let mut candidate = self.rope.clone();
+        candidate.remove(start..end);
+        candidate.insert(start, &body);
+        let reparsed = self.validate(&candidate, expected)?;
+
+        // The replacement header starts at `start`; locate the transaction now on
+        // that line and apply the same balance + round-trip guards as an add.
+        let replaced = locate_added(&candidate, &reparsed, start)?;
+        if !is_balanced(&replaced.postings)? {
+            return Err(EditError::Unbalanced);
+        }
+        if !transactions_equivalent(txn, replaced) {
+            return Err(EditError::RoundTripMismatch);
+        }
+
+        self.rope = candidate;
+        self.journal = reparsed;
+        Ok(())
+    }
+
+    /// The char range `[start, content_end)` of rope line `line0`'s content,
+    /// excluding its trailing line terminator (`\r\n`/`\n`, or none at EOF). Used
+    /// to rewrite a line's text while preserving its exact terminator.
+    fn line_content_range(&self, line0: usize) -> Result<(usize, usize), EditError> {
+        let start = self.line_start_char(line0)?;
+        let line = self
+            .rope
+            .get_line(line0)
+            .ok_or_else(|| EditError::Internal(format!("line {line0} is out of range")))?;
+        let text = line.to_string();
+        let content = text.trim_end_matches('\n').trim_end_matches('\r');
+        Ok((start, start + content.chars().count()))
+    }
+
+    /// Whether rope line `line0` is a posting line: indented, non-blank, and not a
+    /// `;` comment line (mirrors the parser, which treats every indented non-`;`
+    /// line in a transaction body as a posting).
+    fn line_is_posting(&self, line0: usize) -> bool {
+        match self.rope.get_line(line0) {
+            Some(line) if line.len_chars() > 0 => {
+                let text = line.to_string();
+                let trimmed = text.trim_start();
+                text.starts_with([' ', '\t']) && !trimmed.is_empty() && !trimmed.starts_with(';')
+            }
+            _ => false,
+        }
+    }
+
+    /// The 0-based rope line of the `posting_index`-th posting of the transaction
+    /// whose header is on line `header_line0`, scanning posting lines in the
+    /// half-open line range `(header_line0, scan_end0)`. Blank and `;` comment
+    /// lines are skipped, so postings map to source lines by ordinal position.
+    fn nth_posting_line(
+        &self,
+        header_line0: usize,
+        scan_end0: usize,
+        posting_index: usize,
+    ) -> Option<usize> {
+        let end = scan_end0.min(self.rope.len_lines());
+        let mut seen = 0;
+        for line0 in (header_line0 + 1)..end {
+            if self.line_is_posting(line0) {
+                if seen == posting_index {
+                    return Some(line0);
+                }
+                seen += 1;
+            }
+        }
+        None
+    }
+
+    /// The rope char range `[start, end)` of the account token on posting line
+    /// `line0`, matched as the first occurrence of `current_account` after the
+    /// line's indentation and any `*`/`!` status marker (skipping a leading
+    /// `(`/`[` virtual bracket). Only the account name is spanned, so replacing it
+    /// leaves the marker, amount, assertion, comment, and whitespace untouched.
+    fn locate_account_token(
+        &self,
+        line0: usize,
+        current_account: &str,
+    ) -> Result<(usize, usize), EditError> {
+        let line = self
+            .rope
+            .get_line(line0)
+            .ok_or_else(|| EditError::Internal(format!("posting line {line0} is out of range")))?;
+        let text = line.to_string();
+        let content = text.trim_end_matches('\n').trim_end_matches('\r');
+
+        let indent_end = content
+            .find(|c: char| c != ' ' && c != '\t')
+            .unwrap_or(content.len());
+        let after_indent = &content[indent_end..];
+        let field_start = if after_indent.starts_with(['*', '!']) {
+            let marker_end = indent_end + 1;
+            let rest = &content[marker_end..];
+            marker_end + (rest.len() - rest.trim_start_matches([' ', '\t']).len())
+        } else {
+            indent_end
+        };
+
+        let region = content.get(field_start..).unwrap_or("");
+        let rel = region.find(current_account).ok_or_else(|| {
+            EditError::Internal(format!(
+                "account '{current_account}' not found on posting line {}",
+                line0 + 1
+            ))
+        })?;
+        let byte_start = field_start + rel;
+        let byte_end = byte_start + current_account.len();
+        let start_chars = content[..byte_start].chars().count();
+        let end_chars = content[..byte_end].chars().count();
+        let line_start = self.line_start_char(line0)?;
+        Ok((line_start + start_chars, line_start + end_chars))
+    }
+
     /// Re-parse a candidate rope and require exactly `expected` transactions.
     fn validate(&self, candidate: &Rope, expected: usize) -> Result<Journal, EditError> {
         let text = candidate.to_string();
@@ -524,7 +832,9 @@ fn locate_added<'a>(
 /// the style's decimal mark (so a comma-decimal commodity round-trips), and
 /// append `@`/`@@` costs. Digit-group separators are omitted (the plain form
 /// always re-parses to the same value). A posting with an empty `amounts` vec is
-/// rendered account-only (an elided/inferred posting).
+/// rendered account-only (an elided/inferred posting). Each posting's `comment`
+/// is emitted as a trailing `  ; comment` (like the header comment), so a
+/// full-replace edit ([`JournalEditor::replace_transaction`]) preserves comments.
 ///
 /// # Example
 /// ```
@@ -643,8 +953,11 @@ fn account_field(posting: &Posting) -> String {
 
 fn format_posting_lines(posting: &Posting, amount_col: usize) -> Vec<String> {
     let field = account_field(posting);
+    let comment = posting.comment.trim();
     if posting.amounts.is_empty() {
-        return vec![format!("    {field}")];
+        let mut line = format!("    {field}");
+        push_comment(&mut line, comment);
+        return vec![line];
     }
     posting
         .amounts
@@ -658,9 +971,23 @@ fn format_posting_lines(posting: &Posting, amount_col: usize) -> Vec<String> {
             {
                 line.push_str(&render_assertion(assertion));
             }
+            // A posting is a single source line in hledger, so its comment rides
+            // the first amount line (after any balance assertion).
+            if idx == 0 {
+                push_comment(&mut line, comment);
+            }
             line
         })
         .collect()
+}
+
+/// Append `  ; comment` to `line` when `comment` is non-empty, matching the
+/// header comment's two-space separator. A no-op for an empty comment.
+fn push_comment(line: &mut String, comment: &str) {
+    if !comment.is_empty() {
+        line.push_str("  ; ");
+        line.push_str(comment);
+    }
 }
 
 fn render_amount(amount: &Amount) -> String {
