@@ -7,7 +7,15 @@
 //! latest direct `P` directive ≤ the bucket end — where the price set is the
 //! journal's explicit `P` directives PLUS the prices inferred from `@`/`@@` cost
 //! annotations (matching hledger `--infer-market-prices`). Commodities still
-//! without a direct price are SKIPPED and reported in `meta.unpriced`.
+//! without a direct price at a bucket end are SKIPPED for that period (hledger
+//! never looks ahead to a later price).
+//!
+//! `meta.unpriced` reports only what is genuinely unvalued at the AS-OF (latest)
+//! period — a commodity held there with no price ≤ that date. It is deliberately
+//! NOT the union across every period: a stock first held/priced late has no price
+//! at earlier period ends, but that is not something to warn about once it is
+//! fully valued at the period the user is looking at (and a stock not held at a
+//! period cannot be "unpriced" there at all).
 
 use super::ReportError;
 use super::accounts::{RootCategory, categorize};
@@ -29,18 +37,21 @@ struct BucketData {
 }
 
 /// Value `ma` in `target` (identity when `None`), collapsing to a single-target
-/// `MixedAmount` (empty when the result is zero); skips are recorded in `meta`.
+/// `MixedAmount` (empty when the result is zero). Unvalued commodities are
+/// recorded in `meta` when a sink is supplied — callers pass one only for the
+/// as-of (latest) bucket so the banner reflects what is genuinely unvalued
+/// there, not the union of every period's misses (see [`net_worth`]).
 fn valued(
     ma: &MixedAmount,
     target: Option<&Commodity>,
     prices: &PriceDb,
     as_of: &str,
-    meta: &mut ValuationMeta,
+    meta: Option<&mut ValuationMeta>,
 ) -> Result<MixedAmount, ReportError> {
     match target {
         None => Ok(ma.clone()),
         Some(t) => {
-            let v = value_at(ma, t, prices, as_of, Some(meta))?;
+            let v = value_at(ma, t, prices, as_of, meta)?;
             Ok(if v.is_zero() {
                 MixedAmount::new()
             } else {
@@ -114,18 +125,21 @@ pub fn net_worth(
         .flat_map(|bucket| bucket.rows.keys().cloned())
         .collect();
 
+    // Only the latest bucket feeds `meta.unpriced` (see the module doc): a sink
+    // is passed for the last period and withheld (`None`) for every earlier one,
+    // even though all periods are valued identically.
+    let last_bucket = per_bucket.len().saturating_sub(1);
     let mut rows: Vec<PeriodRow> = Vec::with_capacity(accounts.len());
     for account in &accounts {
         let mut values: Vec<MixedAmount> = Vec::with_capacity(per_bucket.len());
-        for bucket in &per_bucket {
+        for (i, bucket) in per_bucket.iter().enumerate() {
             let ma = bucket.rows.get(account).cloned().unwrap_or_default();
-            values.push(valued(
-                &ma,
-                target.as_ref(),
-                &prices,
-                &bucket.as_of,
-                &mut meta,
-            )?);
+            let sink = if i == last_bucket {
+                Some(&mut meta)
+            } else {
+                None
+            };
+            values.push(valued(&ma, target.as_ref(), &prices, &bucket.as_of, sink)?);
         }
         rows.push(PeriodRow {
             account: account.clone(),
@@ -135,18 +149,17 @@ pub fn net_worth(
     }
 
     let mut totals: Vec<MixedAmount> = Vec::with_capacity(per_bucket.len());
-    for bucket in &per_bucket {
+    for (i, bucket) in per_bucket.iter().enumerate() {
         let mut sum = MixedAmount::new();
         for ma in bucket.roots.values() {
             sum = sum.ma_add(ma)?;
         }
-        totals.push(valued(
-            &sum,
-            target.as_ref(),
-            &prices,
-            &bucket.as_of,
-            &mut meta,
-        )?);
+        let sink = if i == last_bucket {
+            Some(&mut meta)
+        } else {
+            None
+        };
+        totals.push(valued(&sum, target.as_ref(), &prices, &bucket.as_of, sink)?);
     }
 
     let meta_out = if meta.unpriced.is_empty() {
@@ -356,5 +369,69 @@ mod tests {
         assert_eq!(by("liabilities:visa"), dollars(-2000, 2));
         // Net worth: $160 − $20 = $140.
         assert_eq!(report.totals, [dollars(1_400_000, 4)]);
+    }
+
+    // ---- meta.unpriced is as-of-latest, not the union across periods ----
+
+    /// 10 STK held from mid-2024 onward, funded from equity (excluded from the
+    /// net-worth rows). No cost annotation, so nothing is inferred.
+    fn stock_held_from_2024() -> Vec<Transaction> {
+        vec![txn(
+            1,
+            "2024-06-01",
+            vec![
+                ("assets:broker:stk", vec![amount("STK", 10, 0)]),
+                ("equity:opening", vec![usd(-50_000)]),
+            ],
+        )]
+    }
+
+    #[test]
+    fn meta_unpriced_reflects_only_the_latest_period_not_the_union() {
+        // STK is unvalued at the 2024 & 2025 period ends (its only price is dated
+        // 2026-01-01 and hledger never looks ahead) but fully valued at 2026. The
+        // OLD union-across-periods banner flagged STK; the as-of banner does not.
+        let prices = vec![price("2026-01-01", "STK", amount("$", 5000, 2))];
+        let report = net_worth(
+            &stock_held_from_2024(),
+            &prices,
+            "2026-06-30",
+            Interval::Yearly,
+            3,
+            1,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.buckets, ["2024", "2025", "2026"]);
+        assert!(report.meta.is_none(), "STK is valued at the latest period");
+        // Per-period: unvalued (empty) early, $500 (= 10 × $50) at the latest.
+        assert_eq!(
+            report.rows[0].values,
+            [MixedAmount::new(), MixedAmount::new(), dollars(50_000, 2)]
+        );
+    }
+
+    #[test]
+    fn meta_unpriced_still_flags_what_is_unvalued_at_the_latest_period() {
+        // EUR is priced (setting the $ target and being valued); STK is never
+        // priced → genuinely unvalued at the latest period → still flagged.
+        let txns = vec![txn(
+            1,
+            "2024-06-01",
+            vec![
+                ("assets:broker:stk", vec![amount("STK", 10, 0)]),
+                ("assets:wise", vec![amount("EUR", 5000, 2)]),
+                ("equity:opening", vec![usd(-60_000)]),
+            ],
+        )];
+        let prices = vec![price("2026-01-01", "EUR", amount("$", 110, 2))];
+        let report = net_worth(&txns, &prices, "2026-06-30", Interval::Yearly, 3, 1, None).unwrap();
+        assert_eq!(
+            report.meta,
+            Some(ReportMeta {
+                unpriced: vec![c("STK")]
+            }),
+            "STK is genuinely unvalued at the latest period"
+        );
     }
 }

@@ -26,6 +26,17 @@ pub struct HoldingsScope {
     pub mode: ScopeMode,
     /// Snapshot date (`YYYY-MM-DD`), inclusive.
     pub as_of: String,
+    /// Optional gain-measurement window start (`YYYY-MM-DD`).
+    ///
+    /// `None` (the default) = all-time average-cost gain: per-holding
+    /// `gain` = `market_value − basis`, exactly as before. `Some(start)`
+    /// switches `gain`/`gain_pct` (and the portfolio totals + gainers/losers) to
+    /// a windowed gain `market_value(as_of) − value_at_start`, where
+    /// `value_at_start` is the position's market value at `start` (the shares
+    /// held at `start`, priced as of `start`; `0` when not held then, and
+    /// null-propagating when held-but-unpriced at `start`). `basis` is
+    /// unaffected — it always stays the all-time average-cost basis.
+    pub gain_since: Option<String>,
 }
 
 /// Where a holding's price came from.
@@ -99,18 +110,21 @@ pub struct HoldingsWarning {
     pub message: String,
 }
 
-/// Portfolio-level totals. `basis`/`gain`/`gain_pct` refuse (become `None`) when
-/// any included holding is tainted or unpriced — a partial total silently
-/// understates.
+/// Portfolio-level totals. `basis`/`gain`/`gain_pct` are PARTIAL: they sum over
+/// only the holdings that carry the needed inputs (a known basis / a reference,
+/// plus a market value), so a single cost-less or unpriced row no longer blanks
+/// the whole portfolio. Each is `None` only when its set is empty — every shown
+/// holding excluded (an empty portfolio still reports a real zero).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HoldingsTotals {
     /// Sum of priced market values (unpriced holdings excluded).
     pub market_value: Dec,
-    /// Sum of basis, or `None` when any included holding is tainted/unpriced.
+    /// Sum of basis over priced holdings with a known basis; `None` only when
+    /// none qualify (all shown holdings tainted/unpriced).
     pub basis: Option<Dec>,
-    /// `market_value − basis`, or `None`.
+    /// Sum of `market_value − reference` over the qualifying rows, or `None`.
     pub gain: Option<Dec>,
-    /// `gain / basis × 100`, or `None`.
+    /// `gain / reference-sum × 100` over the qualifying rows, or `None`.
     pub gain_pct: Option<f64>,
 }
 

@@ -65,10 +65,11 @@ test("holdings: table shows fixture holdings with honest (null) totals", async (
     await expect(gainers).toContainText("VTI");
     await expect(page.getByTestId("top-losers")).toHaveCount(0);
 
-    // Honest totals: GLD in scope ⇒ market value real, basis/gain em-dash, warnings explain.
+    // Partial totals: GLD (tainted+unpriced) is excluded; cost basis + gain sum the
+    // known holdings (AAPL + VTI) and a note names the excluded row. Warnings explain.
     await expect(stat(page, "Market value")).toContainText("$10,552.63");
-    await expect(stat(page, "Cost basis")).toContainText(EM_DASH);
-    await expect(stat(page, "Unrealized gain %")).toContainText(EM_DASH);
+    await expect(stat(page, "Cost basis")).toContainText("$9,039.46");
+    await expect(stat(page, "Unrealized gain %")).toContainText("+16.7%");
     const warnings = page.getByTestId("holdings-warnings");
     await expect(warnings).toContainText("GLD");
     await expect(warnings).toContainText("TSLA");

@@ -20,10 +20,15 @@
      tiles. Only Basis and Market value get totals. -->
 <script lang="ts">
     import {toNumber, type Dec} from "$lib/domain/money";
-    import type {Holding, HoldingsReport} from "$lib/holdings/types";
+    import type {GainPeriod, Holding, HoldingsReport} from "$lib/holdings/types";
+    import {gainWindowSuffix} from "./gainPeriod";
     import {EM_DASH, formatGainPct, formatShares, sortHoldings, type SortKey} from "./view";
 
-    let {holdings, totals, format}: {holdings: Holding[]; totals: HoldingsReport["totals"]; format: (v: Dec) => string} = $props();
+    let {holdings, totals, format, gainPeriod = "all"}: {holdings: Holding[]; totals: HoldingsReport["totals"]; format: (v: Dec) => string; gainPeriod?: GainPeriod} =
+        $props();
+
+    // Window tag on the Gain header so a YTD/12mo gain number isn't read as all-time.
+    const gainHeader = $derived(`Gain${gainWindowSuffix(gainPeriod)}`);
 
     /** Columns whose first click sorts desc (big numbers first); the rest start asc. */
     const DESC_FIRST: ReadonlySet<SortKey> = new Set(["shares", "basis", "price", "marketValue", "gain", "gainPct"]);
@@ -73,7 +78,7 @@
                 <td class="text-right" aria-sort={ariaSort("price")}>{@render sortButton("price", "Price")}</td>
                 <td aria-sort={ariaSort("priceDate")}>{@render sortButton("priceDate", "Price date")}</td>
                 <td class="text-right" aria-sort={ariaSort("marketValue")}>{@render sortButton("marketValue", "Market value")}</td>
-                <td class="text-right" aria-sort={ariaSort("gain")}>{@render sortButton("gain", "Gain")}</td>
+                <td class="text-right" aria-sort={ariaSort("gain")}>{@render sortButton("gain", gainHeader)}</td>
                 <td class="text-right" aria-sort={ariaSort("gainPct")}>{@render sortButton("gainPct", "Gain %")}</td>
             </tr>
         </thead>

@@ -30,6 +30,7 @@ fn all_accounts_scope() -> HoldingsScope {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
+        gain_since: None,
     }
 }
 
@@ -39,6 +40,7 @@ fn report() -> HoldingsReport {
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
+        &journal.commodity_tags,
         &all_accounts_scope(),
     )
     .expect("holdings compute succeeds")
@@ -146,13 +148,18 @@ fn tsla_sold_never_bought_warns_and_is_excluded() {
         report.holdings.iter().all(|h| h.symbol != "TSLA"),
         "TSLA is net-negative → excluded from holdings"
     );
-    let tsla_warnings: Vec<WarningKind> = report
+    let tsla = report
         .warnings
         .iter()
-        .filter(|w| w.symbol == "TSLA")
-        .map(|w| w.kind)
-        .collect();
-    assert_eq!(tsla_warnings, vec![WarningKind::NegativeShares]);
+        .find(|w| w.symbol == "TSLA")
+        .expect("TSLA warning");
+    assert_eq!(tsla.kind, WarningKind::NegativeShares);
+    // The message now states the size of the deficit (fixture: 2 sold, 0 bought).
+    assert!(
+        tsla.message.contains("-2.00 shares"),
+        "message was: {}",
+        tsla.message
+    );
 }
 
 #[test]
@@ -175,16 +182,21 @@ fn warnings_are_exactly_gld_and_tsla() {
 }
 
 #[test]
-fn totals_refuse_basis_and_gain_when_gld_is_tainted() {
+fn totals_sum_partial_basis_and_gain_when_gld_is_tainted() {
     let report = report();
     // Priced market value = VTI $5282.75 + AAPL $5269.875 = $10552.625.
     assert_eq!(report.totals.market_value, Dec::new(10_552_625, 3));
+    // PARTIAL totals: GLD (tainted + unpriced) is excluded, but AAPL + VTI still
+    // count. basis = AAPL $4346.10 + VTI $4693.36 = $9039.46.
     assert_eq!(
-        report.totals.basis, None,
-        "GLD taint/unpriced refuses the basis total"
+        report.totals.basis,
+        Some(Dec::new(903_946, 2)),
+        "partial basis = AAPL + VTI, GLD excluded"
     );
-    assert_eq!(report.totals.gain, None);
-    assert_eq!(report.totals.gain_pct, None);
+    // gain = AAPL $923.775 + VTI $589.39 = $1513.165.
+    assert_eq!(report.totals.gain, Some(Dec::new(1_513_165, 3)));
+    let pct = report.totals.gain_pct.expect("partial gain %");
+    assert!((pct - 16.7396).abs() < 1e-2, "gain% was {pct}");
 }
 
 #[test]
@@ -207,11 +219,13 @@ fn scoping_to_a_single_stock_account_isolates_it() {
         accounts: BTreeSet::from(["assets:broker:taxable:vti".to_string()]),
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
+        gain_since: None,
     };
     let report = compute_holdings(
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
+        &journal.commodity_tags,
         &scope,
     )
     .expect("compute");
@@ -227,12 +241,44 @@ fn scoping_to_a_single_stock_account_isolates_it() {
 }
 
 #[test]
+fn gain_since_windows_the_gain_without_touching_basis() {
+    // At 2026-01-01 the AAPL position was 15 sh (the 4.5-sh buy is 2026-03-10),
+    // priced $255.00 (P 2025-12-31) → value_at_start = $3825.00. So the windowed
+    // gain is $5269.875 − $3825 = $1444.875, distinct from the all-time $923.775,
+    // while `basis` stays the all-time average cost $4346.10.
+    let journal = fixture_journal();
+    let scope = HoldingsScope {
+        accounts: BTreeSet::new(),
+        mode: ScopeMode::Include,
+        as_of: AS_OF.to_string(),
+        gain_since: Some("2026-01-01".to_string()),
+    };
+    let report = compute_holdings(
+        &journal.transactions,
+        &journal.prices,
+        &journal.accounts,
+        &journal.commodity_tags,
+        &scope,
+    )
+    .expect("compute");
+    let aapl = holding(&report, "AAPL");
+    assert_eq!(
+        aapl.basis,
+        Some(Dec::new(434_610, 2)),
+        "basis stays all-time"
+    );
+    assert_eq!(aapl.market_value, Some(Dec::new(5_269_875, 3)));
+    assert_eq!(aapl.gain, Some(Dec::new(1_444_875, 3)), "windowed gain");
+}
+
+#[test]
 fn series_tracks_the_portfolio_over_time() {
     let journal = fixture_journal();
     let series = holdings_series(
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
+        &journal.commodity_tags,
         &all_accounts_scope(),
         Interval::Monthly,
         6,
@@ -250,9 +296,14 @@ fn series_tracks_the_portfolio_over_time() {
     );
     // The final bucket clamps to as_of.
     assert_eq!(series.points.last().unwrap().date, AS_OF);
-    // GLD taints the basis at every point where it is held, so the basis total
-    // refuses (None) while market value is still tracked.
-    assert!(series.points.iter().all(|p| p.basis.is_none()));
+    // GLD is tainted/unpriced throughout, but AAPL + VTI carry a known basis, so
+    // the PARTIAL basis total is present (Some) at every point.
+    assert!(series.points.iter().all(|p| p.basis.is_some()));
+    // Final point: partial basis = AAPL $4346.10 + VTI $4693.36 = $9039.46.
+    assert_eq!(
+        series.points.last().unwrap().basis,
+        Some(Dec::new(903_946, 2))
+    );
     // Market value is monotonically present and positive by the final month.
     assert!(!series.points.last().unwrap().market_value.is_zero());
 }
@@ -268,11 +319,13 @@ fn holding_name(text: &str, symbol: &str) -> String {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
         as_of: "2024-12-31".to_string(),
+        gain_since: None,
     };
     let report = compute_holdings(
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
+        &journal.commodity_tags,
         &scope,
     )
     .expect("holdings compute succeeds");
@@ -324,4 +377,72 @@ account assets:cash
     assets:cash
 ";
     assert_eq!(holding_name(journal, "AAPL"), "Broker Holdings");
+}
+
+// ---- commodity-directive name resolution (regression) ----
+
+#[test]
+fn commodity_directive_names_resolve_through_the_parser() {
+    // The reported repro: security names declared on `commodity` directives in
+    // the user's EXACT multi-tag, comma-separated, spaced-value format. Nothing
+    // on the postings names the securities, so the directive is the only source.
+    let journal = "\
+commodity 1,000.0000 NAWGX  ; CUSIP:92913X811, basis:64045.66, name:VOYA GLOBAL HI DIV LOW VOL A, type:mutualfund
+commodity 1,000.0000 WMT    ; CUSIP:931142103, basis:15358.22, name:WALMART INC
+commodity 1,000.0000 TEMFX  ; name:Templeton Foreign, type:mutualfund
+account assets:cash
+2024-01-01 buy funds
+    assets:broker:nawgx   10 NAWGX @ $64.05
+    assets:broker:wmt     10 WMT @ $153.58
+    assets:broker:temfx   10 TEMFX @ $12.00
+    assets:cash
+";
+    assert_eq!(
+        holding_name(journal, "NAWGX"),
+        "VOYA GLOBAL HI DIV LOW VOL A"
+    );
+    assert_eq!(holding_name(journal, "WMT"), "WALMART INC");
+    assert_eq!(holding_name(journal, "TEMFX"), "Templeton Foreign");
+}
+
+#[test]
+fn posting_comment_name_wins_over_commodity_directive_name() {
+    // A per-posting `name:` still overrides the commodity-directive name.
+    let journal = "\
+commodity 1,000.0000 WMT  ; name:WALMART INC
+account assets:cash
+2024-01-01 buy WMT
+    assets:broker:wmt   10 WMT @ $153.58  ; name: Posting Wins
+    assets:cash
+";
+    assert_eq!(holding_name(journal, "WMT"), "Posting Wins");
+}
+
+#[test]
+fn commodity_directive_name_beats_account_directive_name() {
+    // The commodity directive is the canonical security name, so it beats an
+    // incidental account-directive `name:`.
+    let journal = "\
+commodity 1,000.0000 WMT  ; name:WALMART INC
+account assets:broker:wmt   ; name: Brokerage
+account assets:cash
+2024-01-01 buy WMT
+    assets:broker:wmt   10 WMT @ $153.58
+    assets:cash
+";
+    assert_eq!(holding_name(journal, "WMT"), "WALMART INC");
+}
+
+#[test]
+fn commodity_directive_without_name_falls_through_to_symbol() {
+    // Other tags (CUSIP/type) but NO `name` must NOT be mistaken for the display
+    // name — with nothing else naming it, the row shows the symbol.
+    let journal = "\
+commodity 1,000.0000 WMT  ; CUSIP:931142103, type:stock
+account assets:cash
+2024-01-01 buy WMT
+    assets:broker:wmt   10 WMT @ $153.58
+    assets:cash
+";
+    assert_eq!(holding_name(journal, "WMT"), "WMT");
 }

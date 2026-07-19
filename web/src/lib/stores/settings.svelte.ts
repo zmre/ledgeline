@@ -24,19 +24,33 @@ interface PersistedSettings {
 
 const defaults = (): PersistedSettings => ({serverUrl: null, columns: defaultColumns(), insightsOpen: true});
 
+/**
+ * When the SPA is served in-process by the `ledgeline` binary, that binary
+ * injects `window.__LEDGELINE_EMBEDDED__ = true` into the served index.html. In
+ * that case the API lives at the SAME ORIGIN as the page, so we force the server
+ * URL to the current origin — no setup modal, and immune to a stale/ephemeral
+ * port left in localStorage from a previous run. Standalone dev (vite) has no
+ * such marker and keeps the null-→-modal flow.
+ */
+function embeddedServerUrl(): string | null {
+    if (typeof window === "undefined") return null;
+    return (window as {__LEDGELINE_EMBEDDED__?: boolean}).__LEDGELINE_EMBEDDED__ === true ? window.location.origin : null;
+}
+
 function load(): PersistedSettings {
-    if (typeof localStorage === "undefined") return defaults();
+    const embedded = embeddedServerUrl();
+    if (typeof localStorage === "undefined") return {...defaults(), serverUrl: embedded ?? null};
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw === null) return defaults();
-        const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
+        const parsed = raw === null ? ({} as Partial<PersistedSettings>) : (JSON.parse(raw) as Partial<PersistedSettings>);
         return {
-            serverUrl: typeof parsed.serverUrl === "string" ? parsed.serverUrl : null,
+            // Embedded mode always wins over any persisted URL.
+            serverUrl: embedded ?? (typeof parsed.serverUrl === "string" ? parsed.serverUrl : null),
             columns: {...defaultColumns(), ...(typeof parsed.columns === "object" && parsed.columns !== null ? parsed.columns : {})},
             insightsOpen: typeof parsed.insightsOpen === "boolean" ? parsed.insightsOpen : true,
         };
     } catch {
-        return defaults();
+        return {...defaults(), serverUrl: embedded ?? null};
     }
 }
 

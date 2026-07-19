@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleName</key>
+  <string>Ledgeline</string>
+  <key>CFBundleDisplayName</key>
+  <string>Ledgeline</string>
+  <key>CFBundleExecutable</key>
+  <string>ledgeline</string>
+  <key>CFBundleIconFile</key>
+  <string>ledgeline</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.ironcorelabs.ledgeline</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@version@</string>
+  <key>CFBundleVersion</key>
+  <string>@version@</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array>
+    <string>MacOSX</string>
+  </array>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.finance</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>10.15</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright © 2026 IronCore Labs. All rights reserved.</string>
+</dict>
+</plist>

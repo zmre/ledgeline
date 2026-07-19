@@ -10,8 +10,21 @@
        keeps its hue across modes; slices/series are capped at 6 groups incl. "(other)". -->
 <script lang="ts">
     import {LineChart, PieChart, Tooltip} from "layerchart";
+    import type {RootCategory} from "$lib/domain/accounts";
     import type {Transaction} from "$lib/domain/types";
-    import {commoditiesInUse, formatChartValue, lineData, pieData, styleFor, OTHER, type AccountSelection, type Interval, type PieDatum} from "./series";
+    import {
+        categoriesInUse,
+        commoditiesInUse,
+        formatChartValue,
+        formatCompactChartValue,
+        lineData,
+        pieData,
+        styleFor,
+        OTHER,
+        type AccountSelection,
+        type Interval,
+        type PieDatum,
+    } from "./series";
 
     let {txns, depth, accounts, allTxns}: {txns: Transaction[]; depth: number; accounts?: AccountSelection; allTxns?: Transaction[]} = $props();
 
@@ -20,16 +33,38 @@
     const OTHER_COLOR = "#898781"; // muted — the folded tail is context, not a series identity
     const MAX_GROUPS = 6;
 
+    // Human labels for the category scope selector (root account groups).
+    const GROUP_LABELS: Record<RootCategory, string> = {
+        expense: "Expenses",
+        revenue: "Income",
+        asset: "Assets",
+        liability: "Liabilities",
+        equity: "Equity",
+        other: "Other",
+    };
+
     let mode = $state<"pie" | "line">("pie");
     let interval = $state<Interval>("monthly");
     let chosenCommodity = $state<string | null>(null);
+    // Category scope: null = follow the default, which prefers "expenses" (the
+    // most useful journal view) when present. "all" shows every category.
+    let chosenGroup = $state<RootCategory | "all" | null>(null);
 
     const commodities = $derived(commoditiesInUse(txns, accounts));
     const commodity = $derived(chosenCommodity !== null && commodities.includes(chosenCommodity) ? chosenCommodity : (commodities[0] ?? "$"));
     const style = $derived(styleFor(txns, commodity));
 
-    const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts, conventionTxns: allTxns}));
-    const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts, conventionTxns: allTxns}));
+    const groups = $derived(categoriesInUse(txns, commodity, accounts));
+    // Resolve the active scope: honor an explicit pick that's still available,
+    // otherwise default to expenses when present (else all categories).
+    const group = $derived.by<RootCategory | "all">(() => {
+        if (chosenGroup !== null && (chosenGroup === "all" || groups.includes(chosenGroup))) return chosenGroup;
+        return groups.includes("expense") ? "expense" : "all";
+    });
+    const category = $derived<RootCategory | undefined>(group === "all" ? undefined : group);
+
+    const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts, conventionTxns: allTxns, category}));
+    const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts, conventionTxns: allTxns, category}));
 
     // Color follows the account, not the mode: both datasets come from the same
     // magnitude ranking, so slot assignment by first appearance stays consistent.
@@ -110,6 +145,14 @@
                 {/each}
             </select>
         {/if}
+        {#if groups.length > 1}
+            <select class="select select-xs w-32" value={group} onchange={(e) => (chosenGroup = e.currentTarget.value as RootCategory | "all")} aria-label="Category">
+                <option value="all">All categories</option>
+                {#each groups as g (g)}
+                    <option value={g}>{GROUP_LABELS[g]}</option>
+                {/each}
+            </select>
+        {/if}
     </div>
 
     {#if mode === "pie"}
@@ -161,9 +204,10 @@
                 legend
                 brush={false}
                 points={rows.length <= 31}
+                padding={{top: 8, right: 8, bottom: 56, left: 56}}
                 props={{
                     xAxis: {format: bucketLabel, ticks: xTicks},
-                    yAxis: {format: (v: number) => formatChartValue(v, commodity, style)},
+                    yAxis: {format: (v: number) => formatCompactChartValue(v, commodity, style)},
                     spline: {class: "stroke-2"},
                     tooltip: {
                         header: {format: bucketLabel},

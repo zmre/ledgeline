@@ -13,7 +13,11 @@
     import {toNumber} from "$lib/domain/money";
     import type {HoldingsSeries} from "$lib/holdings/types";
 
-    let {trend, formatValue}: {trend: HoldingsSeries; formatValue: (n: number) => string} = $props();
+    // formatValue = full-precision (tooltip/hover); formatAxis = compact ticks
+    // (e.g. "$1.2K"/"$5.3M") so the left y-axis labels stay short and don't clip.
+    // formatAxis defaults to formatValue when the caller doesn't supply a compact one.
+    let {trend, formatValue, formatAxis}: {trend: HoldingsSeries; formatValue: (n: number) => string; formatAxis?: (n: number) => string} = $props();
+    const axisFormat = $derived(formatAxis ?? formatValue);
 
     const VALUE_COLOR = "#3987e5"; // dataviz dark palette slot 1 (validated against the daisyUI dark surface — see HoldingsPie)
 
@@ -47,9 +51,10 @@
                 series={[{key: "value", label: "Market value", color: VALUE_COLOR, value: (d: Row) => d.value}]}
                 points={rows.length <= 31}
                 brush={false}
+                padding={{top: 8, right: 8, bottom: 24, left: 56}}
                 props={{
                     xAxis: {format: labelOf, ticks: xTicks},
-                    yAxis: {format: formatValue},
+                    yAxis: {format: axisFormat},
                     spline: {class: "stroke-2"},
                     tooltip: {header: {format: labelOf}, item: {format: formatValue}},
                 }}

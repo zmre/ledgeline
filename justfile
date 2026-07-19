@@ -36,6 +36,15 @@ snapshot-api:
 build:
     cd web && bun run build
 
+# Build the macOS app bundle (Ledgeline.app) with the real SPA embedded, via Nix.
+# The SPA is built inside Nix, so no prior `just build` is needed.
+package-mac:
+    nix build .#macApp --accept-flake-config -o result-macapp
+    mkdir -p dist
+    cp -RL result-macapp/Applications/Ledgeline.app dist/Ledgeline.app
+    chmod -R u+w dist/Ledgeline.app
+    @echo "Built dist/Ledgeline.app — run it with: open dist/Ledgeline.app"
+
 # --- Rust engine (crates/) ---
 
 # Build the Rust journal engine

@@ -4,6 +4,8 @@
      store; every change recomputes the derived report, no refetch. -->
 <script lang="ts">
     import AccountTreeSelect from "$lib/filters/AccountTreeSelect.svelte";
+    import type {GainPeriod} from "$lib/holdings/types";
+    import {GAIN_PERIODS} from "$lib/holdings/ui/gainPeriod";
     import {holdingsScope} from "$lib/stores/holdings.svelte";
 
     let {accountNames}: {accountNames: string[]} = $props();
@@ -15,6 +17,7 @@
     }
 
     const mode = $derived(holdingsScope.value.mode);
+    const gainPeriod = $derived(holdingsScope.value.gainPeriod);
     const selectedAccounts = $derived([...holdingsScope.value.accounts].sort());
 </script>
 
@@ -47,6 +50,20 @@
             </button>
         </div>
         <label class="ml-auto flex items-center gap-2">
+            <span class="text-base-content/70 text-xs">Gain</span>
+            <select
+                class="select select-sm w-44"
+                value={gainPeriod}
+                onchange={(e) => holdingsScope.setGainPeriod(e.currentTarget.value as GainPeriod)}
+                aria-label="Gain period"
+                title="Window the gain/loss column: all-time, year to date, or trailing 12 months"
+            >
+                {#each GAIN_PERIODS as opt (opt.value)}
+                    <option value={opt.value}>{opt.label}</option>
+                {/each}
+            </select>
+        </label>
+        <label class="flex items-center gap-2">
             <span class="text-base-content/70 text-xs">As of</span>
             <input
                 type="date"

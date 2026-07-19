@@ -135,10 +135,12 @@ async fn holdings_report_shape_and_positions() {
             .all(|h| h["symbol"] != "NVDA")
     );
 
-    // Totals refuse basis/gain because GLD is tainted+unpriced.
+    // Partial totals: GLD is tainted+unpriced (excluded), but AAPL + VTI still
+    // count. basis = $4346.10 + $4693.36 = $9039.46; gain = $923.775 + $589.39 =
+    // $1513.165. Market value stays the whole priced portfolio.
     assert_eq!(canon(&body["totals"]["marketValue"]), (10_552_625, 3)); // $10552.625
-    assert!(body["totals"]["basis"].is_null());
-    assert!(body["totals"]["gain"].is_null());
+    assert_eq!(canon(&body["totals"]["basis"]), (903_946, 2)); // $9039.46
+    assert_eq!(canon(&body["totals"]["gain"]), (1_513_165, 3)); // $1513.165
 
     // Gainers AAPL then VTI; no losers.
     let gainers: Vec<&str> = body["topGainers"]
@@ -165,6 +167,25 @@ async fn holdings_report_shape_and_positions() {
             ("TSLA", "negative-shares"),
         ]
     );
+}
+
+#[tokio::test]
+async fn holdings_gain_since_windows_the_gain() {
+    let journal = sample_journal();
+    // Default (all-time): AAPL gain $923.775 (mv − all-time basis).
+    let base = body_ok(&journal, &format!("/api/holdings?asOf={AS_OF}")).await;
+    assert_eq!(canon(&holding(&base, "AAPL")["gain"]), (923_775, 3));
+
+    // Windowed since 2026-01-01: value_at_start = 15 sh × $255 = $3825, so
+    // gain = $5269.875 − $3825 = $1444.875; basis stays the all-time $4346.10.
+    let windowed = body_ok(
+        &journal,
+        &format!("/api/holdings?asOf={AS_OF}&gainSince=2026-01-01"),
+    )
+    .await;
+    let aapl = holding(&windowed, "AAPL");
+    assert_eq!(canon(&aapl["gain"]), (1_444_875, 3), "windowed gain");
+    assert_eq!(canon(&aapl["basis"]), (43461, 1), "basis stays all-time");
 }
 
 #[tokio::test]
@@ -210,9 +231,11 @@ async fn holdings_series_shape() {
     assert_eq!(buckets, ["2026-05", "2026-06", "2026-07"]);
     // Final point clamps to asOf.
     assert_eq!(points.last().unwrap()["date"], AS_OF);
-    // GLD taints the basis at every point it is held → basis null throughout.
-    assert!(points.iter().all(|p| p["basis"].is_null()));
-    assert_eq!(body["hasBasis"], false);
+    // GLD is tainted/unpriced, but AAPL + VTI carry a known basis → the PARTIAL
+    // basis is present at every point; no stock buy/sell moves it across these
+    // three months, so it is $9039.46 throughout.
+    assert!(points.iter().all(|p| canon(&p["basis"]) == (903_946, 2)));
+    assert_eq!(body["hasBasis"], true);
 }
 
 #[tokio::test]

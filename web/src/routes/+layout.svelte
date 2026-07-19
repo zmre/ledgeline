@@ -43,7 +43,10 @@
         <div class="bg-base-100 text-base-content flex min-h-screen flex-col">
             <header class="navbar bg-base-200 min-h-12 shadow-sm">
                 <div class="navbar-start">
-                    <a href={resolve("/")} class="btn btn-ghost px-2 text-lg font-semibold tracking-tight">Ledgeline</a>
+                    <a href={resolve("/")} class="btn btn-ghost gap-2 px-2 text-lg font-semibold tracking-tight">
+                        <img src="/ledgeline-icon.png" alt="Ledgeline" class="h-7 w-7 rounded" />
+                        Ledgeline
+                    </a>
                 </div>
                 <nav class="navbar-center">
                     <ul class="menu menu-horizontal gap-1 px-1">
