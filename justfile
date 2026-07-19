@@ -41,7 +41,7 @@ build:
 package-mac:
     nix build .#macApp --accept-flake-config -o result-macapp
     mkdir -p dist
-    cp -RL result-macapp dist/Ledgeline.app
+    cp -RL result-macapp/Applications/Ledgeline.app dist/Ledgeline.app
     chmod -R u+w dist/Ledgeline.app
     @echo "Built dist/Ledgeline.app — run it with: open dist/Ledgeline.app"
 

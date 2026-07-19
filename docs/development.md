@@ -47,11 +47,11 @@ faster. Push that layer to Cachix (below) and CI + teammates skip it entirely.
 
 | Command | What it does |
 | --- | --- |
-| `nix build .#ledgeline` | The `ledgeline` binary (proves the GUI deps link: webkitgtk on Linux, system WebKit on macOS). Also `.#default`. |
+| `nix build .#ledgeline` | The `ledgeline` binary (proves the GUI deps link: webkitgtk on Linux, system WebKit on macOS). It is `.#default` on Linux. |
 | `nix build .#clippy` | `cargo clippy --all-targets -- -D warnings` |
 | `nix build .#tests` | `cargo test` over the whole workspace |
 | `nix build .#fmt` | `cargo fmt --check` |
-| `nix build .#macApp` | **macOS only** — `Ledgeline.app` with the **real** SPA embedded (see below). |
+| `nix build .#macApp` | **macOS only** — builds `result/Applications/Ledgeline.app` with the **real** SPA embedded (see below). This is also `.#default` on macOS, so a bare `nix build` produces it. |
 | `nix flake check` | Runs all of the checks above |
 | `nix run .` | Build and run `ledgeline` |
 
@@ -103,10 +103,13 @@ cd .. && cargo build --release # embeds web/build/ into target/release/ledgeline
 
 ## The macOS app bundle (`Ledgeline.app`)
 
-`nix build .#macApp` (macOS only) produces `result/` = a `Ledgeline.app`
-bundle: `Contents/MacOS/ledgeline` (the binary), `Contents/Info.plist`
-(version taken from the workspace `Cargo.toml`), and
-`Contents/Resources/ledgeline.icns` (generated from `assets/ledgeline.png`).
+`nix build .#macApp` (macOS only) produces `result/Applications/Ledgeline.app`
+— the standard nix-darwin app layout, so it can be dragged to `/Applications`
+or picked up by home-manager / nix-darwin. On macOS `.#macApp` is also the
+default package, so a bare `nix build` builds it too. The bundle holds
+`Contents/MacOS/ledgeline` (the binary), `Contents/Info.plist` (version taken
+from the workspace `Cargo.toml`), and `Contents/Resources/ledgeline.icns`
+(generated from `assets/ledgeline.png`).
 `just package-mac` wraps this and copies a writable copy to `dist/Ledgeline.app`.
 
 Unlike `.#ledgeline` (which embeds the CI placeholder SPA), **`.#macApp` embeds

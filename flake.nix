@@ -218,19 +218,25 @@
             icon_256.png icon_512.png icon_1024.png
         '';
 
-        # 5. Assemble Ledgeline.app. `$out` IS the bundle root, so `result/` opens
-        #    as the app. Info.plist gets the workspace version substituted in and
-        #    is lint-clean (`plutil -lint`). NOTE: the binary still links Nix-store
-        #    dylibs; a signed, relocatable release (install_name_tool + codesign,
-        #    as in mbr's `release`) is a follow-up — this produces the bundle
-        #    structure with the real UI embedded.
-        macApp = pkgs.runCommand "Ledgeline.app" { } ''
-          mkdir -p "$out/Contents/MacOS" "$out/Contents/Resources"
-          cp ${ledgelineWithSpa}/bin/ledgeline "$out/Contents/MacOS/ledgeline"
-          chmod u+w "$out/Contents/MacOS/ledgeline"
-          substitute ${./assets/Info.plist.in} "$out/Contents/Info.plist" \
+        # 5. Assemble Ledgeline.app in the STANDARD nix-darwin app layout:
+        #    `$out/Applications/Ledgeline.app` (mirrors zmre/mbr-markdown-browser,
+        #    which installs `$out/Applications/MBR.app`). `nix build .#macApp`
+        #    therefore yields `result/Applications/Ledgeline.app` — the location
+        #    home-manager / nix-darwin's `copyApplications` expects, and a plain
+        #    drag-to-/Applications install. Info.plist gets the workspace version
+        #    substituted in and is lint-clean (`plutil -lint`). NOTE: the binary
+        #    still links Nix-store dylibs; a signed, relocatable release
+        #    (makeBinaryWrapper + `codesign --sign -`, as in mbr's darwin bundle)
+        #    is a documented follow-up — this produces the bundle structure with
+        #    the real UI embedded.
+        macApp = pkgs.runCommand "ledgeline-app" { } ''
+          app="$out/Applications/Ledgeline.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp ${ledgelineWithSpa}/bin/ledgeline "$app/Contents/MacOS/ledgeline"
+          chmod u+w "$app/Contents/MacOS/ledgeline"
+          substitute ${./assets/Info.plist.in} "$app/Contents/Info.plist" \
             --subst-var-by version "${version}"
-          cp ${ledgelineIcns} "$out/Contents/Resources/ledgeline.icns"
+          cp ${ledgelineIcns} "$app/Contents/Resources/ledgeline.icns"
         '';
       in
       {
@@ -244,8 +250,16 @@
         # macOS-only: the distributable app bundle and the SPA-in-Nix pieces it
         # is assembled from. Guarded so `nix flake check` / builds on Linux never
         # force the platform-specific (aarch64-darwin) SPA node_modules FOD.
+        # On darwin `default` is OVERRIDDEN to the app bundle (matching mbr's
+        # darwin `packages.default = packages.mbr`), so a bare `nix build` /
+        # `nix build .#default` yields `result/Applications/Ledgeline.app`. On
+        # Linux `default` stays the headless `ledgeline` binary (there is no
+        # macApp there). `.#ledgeline` remains the binary on every system (CI),
+        # and `apps.default` / `nix run .` still run the binary (see below) since
+        # an .app bundle has no runnable `bin/`.
         // lib.optionalAttrs pkgs.stdenv.isDarwin {
           inherit macApp spaNodeModules spaBuild ledgelineWithSpa ledgelineIcns;
+          default = macApp;
         };
 
         # `nix flake check` runs all of these; CI invokes them individually
