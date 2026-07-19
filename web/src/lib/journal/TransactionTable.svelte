@@ -5,10 +5,12 @@
     // which keeps 50k+ rows smooth. Desktop renders a daisyUI table with a
     // sticky header + spacer rows; narrow widths (<640px) render card-per-txn.
     import type {Transaction} from "$lib/domain/types";
+    import {editing} from "$lib/stores/editing.svelte";
     import {problems} from "$lib/stores/problems.svelte";
     import {settings} from "$lib/stores/settings.svelte";
     import ColumnMenu from "./ColumnMenu.svelte";
     import TransactionRow from "./TransactionRow.svelte";
+    import {txnModal} from "./edit/modalState.svelte";
     import {computeWindow} from "./rowModel";
 
     let {txns}: {txns: Transaction[]} = $props();
@@ -64,7 +66,14 @@
 </script>
 
 <section class="flex min-h-0 grow flex-col">
-    <div class="flex items-center justify-end pb-1">
+    <div class="flex items-center justify-between gap-2 pb-1">
+        {#if editing.canEdit}
+            <button type="button" class="btn btn-primary btn-sm gap-1" onclick={() => txnModal.openAdd()}>
+                <span class="text-base leading-none">+</span> Add transaction
+            </button>
+        {:else}
+            <span></span>
+        {/if}
         <ColumnMenu />
     </div>
     <div
