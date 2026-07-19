@@ -107,8 +107,9 @@ struct SymbolPool {
     first_basis_date: Option<String>,
     /// Accounts whose own net shares are `> 0`, sorted.
     accounts: Vec<String>,
-    /// Latest `name:` tag seen — posting-comment tag first, then the account's
-    /// own + ancestors' declared tag, then the txn tag — else the symbol.
+    /// Latest `name:` tag seen — posting-comment tag first, then the
+    /// `commodity`-directive tag (keyed by symbol), then the account's own +
+    /// ancestors' declared tag, then the txn tag — else the symbol.
     name: String,
 }
 
@@ -136,6 +137,23 @@ fn tag_value<'a>(tags: &'a [(String, String)], name: &str) -> Option<&'a str> {
     tags.iter()
         .find(|(key, _)| key == name)
         .map(|(_, value)| value.as_str())
+}
+
+/// Map each `commodity` directive's symbol to its declared `name:` tag, if it
+/// has one. A directive with other tags (`CUSIP`/`basis`/`type`) but no `name`
+/// is omitted entirely, so the name resolver falls through to the next
+/// precedence rung rather than picking a wrong tag. This is the canonical,
+/// intentional place a security is named. Mirrors [`crate::wire::account_tag_map`]
+/// (built once in [`compute_holdings`], threaded into [`build_pools`]).
+fn commodity_name_map(
+    commodity_tags: &[(Commodity, Vec<(String, String)>)],
+) -> HashMap<&str, &str> {
+    commodity_tags
+        .iter()
+        .filter_map(|(commodity, tags)| {
+            tag_value(tags, "name").map(|name| (commodity.0.as_str(), name))
+        })
+        .collect()
 }
 
 /// Journal order: date asc, then txn index asc (input order is never assumed).
@@ -181,6 +199,7 @@ fn build_pools(
     as_of: &str,
     in_scope: &dyn Fn(&str) -> bool,
     account_tags: &HashMap<&str, &[(String, String)]>,
+    commodity_names: &HashMap<&str, &str>,
 ) -> Result<BTreeMap<String, SymbolPool>, ReportError> {
     let mut pools: BTreeMap<String, SymbolPool> = BTreeMap::new();
     // symbol -> account -> net shares.
@@ -215,11 +234,13 @@ fn build_pools(
                 let pool = pools
                     .entry(symbol.clone())
                     .or_insert_with(|| SymbolPool::new(&symbol));
-                // Precedence mirrors the wire `ptags`: the posting's own
-                // `name:` comment tag, then the account's own + ancestors'
+                // Precedence: the posting's own `name:` comment tag, then the
+                // `commodity`-directive `name:` (keyed by symbol — the canonical
+                // place a security is named), then the account's own + ancestors'
                 // declared `name:` (most-specific first), then the txn `name:`.
                 let name = tag_value(&posting.tags, "name")
                     .map(str::to_string)
+                    .or_else(|| commodity_names.get(symbol.as_str()).map(|&n| n.to_string()))
                     .or_else(|| {
                         inherited_account_tags(&posting.account, account_tags)
                             .into_iter()
@@ -398,6 +419,7 @@ pub fn compute_holdings(
     txns: &[Transaction],
     prices: &[PriceDirective],
     accounts: &[AccountDeclaration],
+    commodity_tags: &[(Commodity, Vec<(String, String)>)],
     scope: &HoldingsScope,
 ) -> Result<HoldingsReport, ReportError> {
     let db = PriceDb::build(prices);
@@ -408,6 +430,7 @@ pub fn compute_holdings(
     let base = base_commodity.0.clone();
     let predicate = scope_predicate(scope);
     let account_tags = account_tag_map(accounts);
+    let commodity_names = commodity_name_map(commodity_tags);
     let pools = build_pools(
         txns,
         &db,
@@ -415,6 +438,7 @@ pub fn compute_holdings(
         &scope.as_of,
         &predicate,
         &account_tags,
+        &commodity_names,
     )?;
     let cost_prices = latest_cost_prices(txns, &db, &base_commodity, &scope.as_of)?;
 
@@ -431,7 +455,7 @@ pub fn compute_holdings(
                 as_of: start.to_string(),
                 gain_since: None,
             };
-            compute_holdings(txns, prices, accounts, &start_scope)?
+            compute_holdings(txns, prices, accounts, commodity_tags, &start_scope)?
                 .holdings
                 .into_iter()
                 .map(|holding| (holding.symbol, holding.market_value))
@@ -616,8 +640,8 @@ pub fn compute_holdings(
 mod tests {
     use super::*;
     use crate::holdings::test_helpers::{
-        account_decl, amt, buy, buy_no_cost, pd, posting, scope, scope_since, sell, txn, usd,
-        with_cost,
+        account_decl, amt, buy, buy_no_cost, commodity_tags, pd, posting, scope, scope_since, sell,
+        txn, usd, with_cost,
     };
     use crate::holdings::types::HoldingsReport;
 
@@ -630,7 +654,7 @@ mod tests {
     }
 
     fn run(txns: &[Transaction], prices: &[PriceDirective], sc: &HoldingsScope) -> HoldingsReport {
-        compute_holdings(txns, prices, &[], sc).expect("compute_holdings succeeds")
+        compute_holdings(txns, prices, &[], &[], sc).expect("compute_holdings succeeds")
     }
 
     fn close(a: f64, b: f64) -> bool {
@@ -1199,6 +1223,7 @@ mod tests {
             &aapl_buy(),
             &aapl_prices(),
             &decls,
+            &[],
             &scope("2024-12-31", ScopeMode::Include, &[]),
         )
         .expect("compute_holdings succeeds");
@@ -1225,6 +1250,7 @@ mod tests {
             &txns,
             &aapl_prices(),
             &decls,
+            &[],
             &scope("2024-12-31", ScopeMode::Include, &[]),
         )
         .expect("compute_holdings succeeds");
@@ -1248,6 +1274,7 @@ mod tests {
             &txns,
             &aapl_prices(),
             &decls,
+            &[],
             &scope("2024-12-31", ScopeMode::Include, &[]),
         )
         .expect("compute_holdings succeeds");
@@ -1266,10 +1293,136 @@ mod tests {
             &aapl_buy(),
             &aapl_prices(),
             &decls,
+            &[],
             &scope("2024-12-31", ScopeMode::Include, &[]),
         )
         .expect("compute_holdings succeeds");
         assert_eq!(only(&report, "AAPL").name, "Broker Holdings");
+    }
+
+    // ---- name resolution: commodity-directive tags ----
+
+    #[test]
+    fn commodity_directive_name_used_for_symbol() {
+        // The user's exact multi-tag `commodity` directives: the display name
+        // lives on the directive; nothing else names the security.
+        let commodities = [
+            commodity_tags(
+                "NAWGX",
+                &[
+                    ("CUSIP", "92913X811"),
+                    ("basis", "64045.66"),
+                    ("name", "VOYA GLOBAL HI DIV LOW VOL A"),
+                    ("type", "mutualfund"),
+                ],
+            ),
+            commodity_tags(
+                "WMT",
+                &[
+                    ("CUSIP", "931142103"),
+                    ("basis", "15358.22"),
+                    ("name", "WALMART INC"),
+                ],
+            ),
+            commodity_tags(
+                "TEMFX",
+                &[("name", "Templeton Foreign"), ("type", "mutualfund")],
+            ),
+        ];
+        let txns = [txn(
+            1,
+            "2024-01-01",
+            vec![
+                buy("assets:broker:nawgx", "NAWGX", 10, 1000, true),
+                buy("assets:broker:wmt", "WMT", 10, 1000, true),
+                buy("assets:broker:temfx", "TEMFX", 10, 1000, true),
+            ],
+            &[],
+        )];
+        let report = compute_holdings(
+            &txns,
+            &[],
+            &[],
+            &commodities,
+            &scope("2024-12-31", ScopeMode::Include, &[]),
+        )
+        .expect("compute_holdings succeeds");
+        assert_eq!(only(&report, "NAWGX").name, "VOYA GLOBAL HI DIV LOW VOL A");
+        assert_eq!(only(&report, "WMT").name, "WALMART INC");
+        assert_eq!(only(&report, "TEMFX").name, "Templeton Foreign");
+    }
+
+    #[test]
+    fn posting_name_overrides_commodity_directive_name() {
+        // A per-posting `name:` still wins over the commodity directive.
+        let commodities = [commodity_tags("WMT", &[("name", "WALMART INC")])];
+        let txns = [txn(
+            1,
+            "2024-01-01",
+            vec![posting(
+                "assets:broker:wmt",
+                vec![with_cost(amt("WMT", 10, 0), 1000, true, "$")],
+                &[("name", "Posting Wins")],
+            )],
+            &[],
+        )];
+        let report = compute_holdings(
+            &txns,
+            &[],
+            &[],
+            &commodities,
+            &scope("2024-12-31", ScopeMode::Include, &[]),
+        )
+        .expect("compute_holdings succeeds");
+        assert_eq!(only(&report, "WMT").name, "Posting Wins");
+    }
+
+    #[test]
+    fn commodity_directive_name_beats_account_directive_name() {
+        // The commodity directive is the canonical security name, so it beats an
+        // incidental account-directive `name:`.
+        let commodities = [commodity_tags("WMT", &[("name", "WALMART INC")])];
+        let decls = [account_decl("assets:broker:wmt", &[("name", "Brokerage")])];
+        let txns = [txn(
+            1,
+            "2024-01-01",
+            vec![buy("assets:broker:wmt", "WMT", 10, 1000, true)],
+            &[],
+        )];
+        let report = compute_holdings(
+            &txns,
+            &[],
+            &decls,
+            &commodities,
+            &scope("2024-12-31", ScopeMode::Include, &[]),
+        )
+        .expect("compute_holdings succeeds");
+        assert_eq!(only(&report, "WMT").name, "WALMART INC");
+    }
+
+    #[test]
+    fn commodity_directive_without_name_falls_through_to_symbol() {
+        // Other tags (CUSIP/type) but NO `name` must NOT be mistaken for the
+        // display name — with nothing else naming it, the row shows the symbol.
+        let commodities = [commodity_tags(
+            "WMT",
+            &[("CUSIP", "931142103"), ("type", "stock")],
+        )];
+        let txns = [txn(
+            1,
+            "2024-01-01",
+            vec![buy("assets:broker:wmt", "WMT", 10, 1000, true)],
+            &[],
+        )];
+        let report = compute_holdings(
+            &txns,
+            &[],
+            &[],
+            &commodities,
+            &scope("2024-12-31", ScopeMode::Include, &[]),
+        )
+        .expect("compute_holdings succeeds");
+        assert_eq!(only(&report, "WMT").name, "WMT");
     }
 
     // ---- gainers and losers ----

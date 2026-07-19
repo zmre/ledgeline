@@ -129,6 +129,17 @@ pub fn account_decl(name: &str, tags: &[(&str, &str)]) -> AccountDeclaration {
     }
 }
 
+/// A `commodity ... SYMBOL  ; tags...` directive's tag entry from
+/// `(symbol, tags)`, mirroring `Journal.commodity_tags`.
+pub fn commodity_tags(symbol: &str, tags: &[(&str, &str)]) -> (Commodity, Vec<(String, String)>) {
+    (
+        Commodity(symbol.to_string()),
+        tags.iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+    )
+}
+
 /// Scope shorthand (all-time gain window).
 pub fn scope(as_of: &str, mode: ScopeMode, accounts: &[&str]) -> HoldingsScope {
     HoldingsScope {

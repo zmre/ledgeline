@@ -703,6 +703,7 @@ pub(crate) async fn holdings(
         &snapshot.journal.transactions,
         &snapshot.journal.prices,
         &snapshot.journal.accounts,
+        &snapshot.journal.commodity_tags,
         &scope,
     )
     .map_err(|err| report_error(&err))?;
@@ -729,6 +730,7 @@ pub(crate) async fn holdings_series_report(
         &snapshot.journal.transactions,
         &snapshot.journal.prices,
         &snapshot.journal.accounts,
+        &snapshot.journal.commodity_tags,
         &scope,
         interval,
         count,

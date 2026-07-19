@@ -9,7 +9,7 @@
 use std::cmp::Ordering;
 
 use crate::decimal::Dec;
-use crate::model::{AccountDeclaration, PriceDirective, Transaction};
+use crate::model::{AccountDeclaration, Commodity, PriceDirective, Transaction};
 use crate::reports::{
     Interval, ReportError, bucket_end, bucket_label, compare_iso, last_n_buckets,
 };
@@ -56,6 +56,7 @@ pub fn holdings_series(
     txns: &[Transaction],
     prices: &[PriceDirective],
     accounts: &[AccountDeclaration],
+    commodity_tags: &[(Commodity, Vec<(String, String)>)],
     scope: &HoldingsScope,
     interval: Interval,
     count: usize,
@@ -79,7 +80,7 @@ pub fn holdings_series(
             // per-snapshot concern and never applies to a series point.
             gain_since: None,
         };
-        let report = compute_holdings(txns, prices, accounts, &point_scope)?;
+        let report = compute_holdings(txns, prices, accounts, commodity_tags, &point_scope)?;
         base = report.base;
         if report.totals.basis.is_some() {
             has_basis = true;
@@ -153,6 +154,7 @@ mod tests {
             &txns(),
             &prices(),
             &[],
+            &[],
             &scope("2025-05-15", ScopeMode::Include, &[]),
             Interval::Monthly,
             5,
@@ -176,6 +178,7 @@ mod tests {
         let series = holdings_series(
             &txns(),
             &prices(),
+            &[],
             &[],
             &scope("2025-05-15", ScopeMode::Include, &[]),
             Interval::Monthly,
@@ -206,6 +209,7 @@ mod tests {
             &txns(),
             &prices(),
             &[],
+            &[],
             &scope("2025-05-15", ScopeMode::Exclude, &["assets:broker:vti"]),
             Interval::Monthly,
             3,
@@ -226,6 +230,7 @@ mod tests {
         let series = holdings_series(
             &txns(),
             &prices(),
+            &[],
             &[],
             &scope("2025-03-31", ScopeMode::Include, &[]),
             Interval::Monthly,

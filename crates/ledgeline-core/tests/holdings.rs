@@ -40,6 +40,7 @@ fn report() -> HoldingsReport {
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
+        &journal.commodity_tags,
         &all_accounts_scope(),
     )
     .expect("holdings compute succeeds")
@@ -219,6 +220,7 @@ fn scoping_to_a_single_stock_account_isolates_it() {
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
+        &journal.commodity_tags,
         &scope,
     )
     .expect("compute");
@@ -250,6 +252,7 @@ fn gain_since_windows_the_gain_without_touching_basis() {
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
+        &journal.commodity_tags,
         &scope,
     )
     .expect("compute");
@@ -270,6 +273,7 @@ fn series_tracks_the_portfolio_over_time() {
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
+        &journal.commodity_tags,
         &all_accounts_scope(),
         Interval::Monthly,
         6,
@@ -311,6 +315,7 @@ fn holding_name(text: &str, symbol: &str) -> String {
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
+        &journal.commodity_tags,
         &scope,
     )
     .expect("holdings compute succeeds");
@@ -362,4 +367,72 @@ account assets:cash
     assets:cash
 ";
     assert_eq!(holding_name(journal, "AAPL"), "Broker Holdings");
+}
+
+// ---- commodity-directive name resolution (regression) ----
+
+#[test]
+fn commodity_directive_names_resolve_through_the_parser() {
+    // The reported repro: security names declared on `commodity` directives in
+    // the user's EXACT multi-tag, comma-separated, spaced-value format. Nothing
+    // on the postings names the securities, so the directive is the only source.
+    let journal = "\
+commodity 1,000.0000 NAWGX  ; CUSIP:92913X811, basis:64045.66, name:VOYA GLOBAL HI DIV LOW VOL A, type:mutualfund
+commodity 1,000.0000 WMT    ; CUSIP:931142103, basis:15358.22, name:WALMART INC
+commodity 1,000.0000 TEMFX  ; name:Templeton Foreign, type:mutualfund
+account assets:cash
+2024-01-01 buy funds
+    assets:broker:nawgx   10 NAWGX @ $64.05
+    assets:broker:wmt     10 WMT @ $153.58
+    assets:broker:temfx   10 TEMFX @ $12.00
+    assets:cash
+";
+    assert_eq!(
+        holding_name(journal, "NAWGX"),
+        "VOYA GLOBAL HI DIV LOW VOL A"
+    );
+    assert_eq!(holding_name(journal, "WMT"), "WALMART INC");
+    assert_eq!(holding_name(journal, "TEMFX"), "Templeton Foreign");
+}
+
+#[test]
+fn posting_comment_name_wins_over_commodity_directive_name() {
+    // A per-posting `name:` still overrides the commodity-directive name.
+    let journal = "\
+commodity 1,000.0000 WMT  ; name:WALMART INC
+account assets:cash
+2024-01-01 buy WMT
+    assets:broker:wmt   10 WMT @ $153.58  ; name: Posting Wins
+    assets:cash
+";
+    assert_eq!(holding_name(journal, "WMT"), "Posting Wins");
+}
+
+#[test]
+fn commodity_directive_name_beats_account_directive_name() {
+    // The commodity directive is the canonical security name, so it beats an
+    // incidental account-directive `name:`.
+    let journal = "\
+commodity 1,000.0000 WMT  ; name:WALMART INC
+account assets:broker:wmt   ; name: Brokerage
+account assets:cash
+2024-01-01 buy WMT
+    assets:broker:wmt   10 WMT @ $153.58
+    assets:cash
+";
+    assert_eq!(holding_name(journal, "WMT"), "WALMART INC");
+}
+
+#[test]
+fn commodity_directive_without_name_falls_through_to_symbol() {
+    // Other tags (CUSIP/type) but NO `name` must NOT be mistaken for the display
+    // name — with nothing else naming it, the row shows the symbol.
+    let journal = "\
+commodity 1,000.0000 WMT  ; CUSIP:931142103, type:stock
+account assets:cash
+2024-01-01 buy WMT
+    assets:broker:wmt   10 WMT @ $153.58
+    assets:cash
+";
+    assert_eq!(holding_name(journal, "WMT"), "WMT");
 }
