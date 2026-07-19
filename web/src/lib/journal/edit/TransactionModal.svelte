@@ -93,6 +93,10 @@
                 <input type="date" class="input input-sm w-full" bind:value={form.date} disabled={submitting} aria-label="Date" />
             </label>
             <label class="form-control sm:col-span-1">
+                <span class="label-text text-xs">Secondary date</span>
+                <input type="date" class="input input-sm w-full" bind:value={form.date2} disabled={submitting} aria-label="Secondary date" />
+            </label>
+            <label class="form-control sm:col-span-1">
                 <span class="label-text text-xs">Status</span>
                 <select class="select select-sm w-full" bind:value={form.status} disabled={submitting} aria-label="Status">
                     <option value="unmarked">Unmarked</option>
@@ -104,7 +108,10 @@
                 <span class="label-text text-xs">Code</span>
                 <input type="text" class="input input-sm w-full" bind:value={form.code} disabled={submitting} placeholder="opt." aria-label="Code" />
             </label>
-            <label class="form-control sm:col-span-1">
+        </div>
+
+        <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label class="form-control">
                 <span class="label-text text-xs">Description</span>
                 <input
                     type="text"
@@ -115,6 +122,18 @@
                     aria-label="Description"
                 />
             </label>
+            <label class="form-control">
+                <span class="label-text text-xs">Comment / tags</span>
+                <input
+                    type="text"
+                    class="input input-sm w-full"
+                    bind:value={form.comment}
+                    disabled={submitting}
+                    placeholder="note; key:value adds a tag"
+                    aria-label="Comment or tags"
+                />
+                <span class="label-text-alt text-base-content/50 mt-1 text-xs">A <code>key:value</code> pair (e.g. <code>category:food</code>) becomes a tag.</span>
+            </label>
         </div>
 
         <div class="mt-4">
@@ -122,46 +141,56 @@
                 <span class="label-text text-xs font-medium">Postings</span>
                 <span class="text-base-content/50 text-xs">Leave an amount blank for the inferred leg</span>
             </div>
-            <div class="flex flex-col gap-2">
+            <div class="flex flex-col gap-3">
                 {#each form.postings as posting, index (index)}
-                    <div class="flex items-start gap-2">
-                        <div class="min-w-0 grow-[3] basis-0">
-                            <AccountInput bind:value={posting.account} accountNames={journal.accountNames} placeholder="account:sub" disabled={submitting} />
+                    <div class="flex flex-col gap-1">
+                        <div class="flex items-start gap-2">
+                            <div class="min-w-0 grow-[3] basis-0">
+                                <AccountInput bind:value={posting.account} accountNames={journal.accountNames} placeholder="account:sub" disabled={submitting} />
+                            </div>
+                            <input
+                                type="text"
+                                inputmode="decimal"
+                                class="input input-sm min-w-0 grow-[2] basis-0 text-right font-mono"
+                                bind:value={posting.amount}
+                                disabled={submitting}
+                                placeholder="auto"
+                                aria-label="Amount for posting {index + 1}"
+                            />
+                            <input
+                                type="text"
+                                class="input input-sm w-16 shrink-0"
+                                bind:value={posting.commodity}
+                                disabled={submitting}
+                                placeholder="$"
+                                aria-label="Commodity for posting {index + 1}"
+                            />
+                            <button
+                                type="button"
+                                class="btn btn-ghost btn-sm btn-square shrink-0"
+                                onclick={() => removeRow(index)}
+                                disabled={submitting || form.postings.length <= 1}
+                                aria-label="Remove posting {index + 1}"
+                                title="Remove posting"
+                            >
+                                ✕
+                            </button>
                         </div>
                         <input
                             type="text"
-                            inputmode="decimal"
-                            class="input input-sm min-w-0 grow-[2] basis-0 text-right font-mono"
-                            bind:value={posting.amount}
+                            class="input input-xs ml-1 w-full"
+                            bind:value={posting.comment}
                             disabled={submitting}
-                            placeholder="auto"
-                            aria-label="Amount for posting {index + 1}"
+                            placeholder="posting comment (optional)"
+                            aria-label="Comment for posting {index + 1}"
                         />
-                        <input
-                            type="text"
-                            class="input input-sm w-16 shrink-0"
-                            bind:value={posting.commodity}
-                            disabled={submitting}
-                            placeholder="$"
-                            aria-label="Commodity for posting {index + 1}"
-                        />
-                        <button
-                            type="button"
-                            class="btn btn-ghost btn-sm btn-square shrink-0"
-                            onclick={() => removeRow(index)}
-                            disabled={submitting || form.postings.length <= 1}
-                            aria-label="Remove posting {index + 1}"
-                            title="Remove posting"
-                        >
-                            ✕
-                        </button>
+                        {#if posting.cost !== null}
+                            <div class="text-base-content/50 pl-1 text-xs">
+                                {posting.cost.kind === "unit" ? "@" : "@@"}
+                                {posting.cost.amount.commodity} cost preserved on save
+                            </div>
+                        {/if}
                     </div>
-                    {#if posting.cost !== null}
-                        <div class="text-base-content/50 -mt-1 pl-1 text-xs">
-                            {posting.cost.kind === "unit" ? "@" : "@@"}
-                            {posting.cost.amount.commodity} cost preserved on save
-                        </div>
-                    {/if}
                 {/each}
             </div>
             <button type="button" class="btn btn-ghost btn-xs mt-2 gap-1" onclick={addRow} disabled={submitting}>

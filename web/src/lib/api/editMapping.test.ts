@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import type {Amount, AmountStyle, Posting, Transaction} from "$lib/domain/types";
+import type {Amount, AmountStyle, Posting, Transaction, TxnStatus} from "$lib/domain/types";
 import {
     accountPatch,
     blankForm,
@@ -10,6 +10,7 @@ import {
     formToBody,
     parseAmountInput,
     postingIndicesForAccount,
+    statusPatch,
     txnToForm,
     validateForm,
 } from "./editMapping";
@@ -20,12 +21,23 @@ function amount(commodity: string, m: bigint, p: number, cost?: Amount["cost"]):
     return {commodity, qty: {m, p}, style: STYLE, ...(cost !== undefined ? {cost} : {})};
 }
 
-function posting(account: string, amounts: Amount[]): Posting {
-    return {account, amounts, status: "unmarked", comment: "", tags: []};
+function posting(account: string, amounts: Amount[], extra: {status?: TxnStatus; comment?: string} = {}): Posting {
+    return {account, amounts, status: extra.status ?? "unmarked", comment: extra.comment ?? "", tags: []};
 }
 
-function txn(index: number, description: string, postings: Posting[]): Transaction {
-    return {index, date: "2026-07-20", status: "cleared", description, code: "", comment: "", tags: [], postings, haystack: ""};
+function txn(index: number, description: string, postings: Posting[], extra: {date2?: string; comment?: string} = {}): Transaction {
+    return {
+        index,
+        date: "2026-07-20",
+        status: "cleared",
+        description,
+        code: "",
+        comment: extra.comment ?? "",
+        tags: [],
+        postings,
+        haystack: "",
+        ...(extra.date2 !== undefined ? {date2: extra.date2} : {}),
+    };
 }
 
 describe("UNIT editMapping — Dec ⇆ string/wire", () => {
@@ -97,8 +109,8 @@ describe("UNIT editMapping — form ⇆ body", () => {
         const form = blankForm("2026-07-20", "$");
         form.description = "Safeway";
         form.status = "cleared";
-        form.postings[0] = {account: "expenses:food:groceries", amount: "56.24", commodity: "$", comment: "", cost: null};
-        form.postings[1] = {account: "liabilities:cc:visa", amount: "", commodity: "$", comment: "", cost: null};
+        form.postings[0] = {account: "expenses:food:groceries", amount: "56.24", commodity: "$", status: "unmarked", comment: "", cost: null};
+        form.postings[1] = {account: "liabilities:cc:visa", amount: "", commodity: "$", status: "unmarked", comment: "", cost: null};
         const body = formToBody(form);
         expect(body).toEqual({
             date: "2026-07-20",
@@ -120,7 +132,61 @@ describe("UNIT editMapping — form ⇆ body", () => {
         expect(body.status).toBeUndefined();
         expect(body.code).toBeUndefined();
         expect(body.description).toBeUndefined();
+        expect(body.date2).toBeUndefined();
         expect(body.position).toBe("dateOrdered");
+    });
+
+    it("prefills date2, the full comment (tags included), and per-posting status + comment", () => {
+        const t = txn(
+            4,
+            "Groceries",
+            [
+                posting("expenses:food", [amount("$", 500n, 2)], {status: "cleared", comment: "on sale"}),
+                posting("assets:cash", [amount("$", -500n, 2)]),
+            ],
+            {date2: "2026-07-22", comment: "weekly shop, category:food"}
+        );
+        const form = txnToForm(t);
+        expect(form.date2).toBe("2026-07-22");
+        expect(form.comment).toBe("weekly shop, category:food");
+        expect(form.postings[0]).toMatchObject({status: "cleared", comment: "on sale"});
+        expect(form.postings[1]).toMatchObject({status: "unmarked", comment: ""});
+    });
+
+    it("defaults date2 to empty when the transaction has no secondary date", () => {
+        const t = txn(1, "x", [posting("a:b", [])]);
+        expect(txnToForm(t).date2).toBe("");
+    });
+
+    it("emits date2, the txn comment (tags), and per-posting status + comment", () => {
+        const form = blankForm("2026-07-20", "$");
+        form.date2 = "2026-07-22";
+        form.comment = "note, category:food";
+        form.postings[0] = {account: "expenses:food", amount: "5.00", commodity: "$", status: "cleared", comment: "on sale", cost: null};
+        form.postings[1] = {account: "assets:cash", amount: "", commodity: "$", status: "unmarked", comment: "", cost: null};
+        const body = formToBody(form);
+        expect(body.date2).toBe("2026-07-22");
+        expect(body.comment).toBe("note, category:food");
+        expect(body.postings[0]).toEqual({
+            account: "expenses:food",
+            status: "cleared",
+            comment: "on sale",
+            amount: {commodity: "$", quantity: {mantissa: "500", places: 2}},
+        });
+        expect(body.postings[1]).toEqual({account: "assets:cash"});
+    });
+
+    it("omits an empty date2/comment and an unmarked/blank posting status + comment", () => {
+        const form = blankForm("2026-07-20", "$");
+        form.date2 = "   ";
+        form.comment = "";
+        form.postings[0].account = "a:b";
+        form.postings[0].comment = "  ";
+        const body = formToBody(form);
+        expect(body.date2).toBeUndefined();
+        expect(body.comment).toBeUndefined();
+        expect(body.postings[0].status).toBeUndefined();
+        expect(body.postings[0].comment).toBeUndefined();
     });
 });
 
@@ -152,6 +218,12 @@ describe("UNIT editMapping — validateForm", () => {
 describe("UNIT editMapping — PATCH builders", () => {
     it("builds a description patch", () => {
         expect(descriptionPatch("New payee")).toEqual({description: "New payee"});
+    });
+
+    it("builds a status patch (the inline cleared/pending toggle)", () => {
+        expect(statusPatch("cleared")).toEqual({status: "cleared"});
+        expect(statusPatch("pending")).toEqual({status: "pending"});
+        expect(statusPatch("unmarked")).toEqual({status: "unmarked"});
     });
 
     it("finds every posting position on an account", () => {

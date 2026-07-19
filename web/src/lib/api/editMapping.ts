@@ -69,6 +69,8 @@ export interface PostingForm {
     account: string;
     amount: string;
     commodity: string;
+    /** Per-posting status (`*`/`!`), independent of the transaction status. */
+    status: TxnStatus;
     comment: string;
     /** A cost annotation carried through from an edited transaction (the popup preserves but doesn't edit it). */
     cost: WireCost | null;
@@ -77,22 +79,30 @@ export interface PostingForm {
 /** The whole-transaction popup form (add-blank or edit-prefilled). */
 export interface TxnForm {
     date: string;
+    /** Optional secondary/auxiliary date (hledger `date2`); "" when unset. */
+    date2: string;
     status: TxnStatus;
     code: string;
     description: string;
+    /**
+     * The transaction's full comment text. hledger tags ARE comment text
+     * (`key:value`), so this single field doubles as the tags editor — it
+     * carries and round-trips any inline tags verbatim.
+     */
     comment: string;
     postings: PostingForm[];
 }
 
 /** A blank posting row seeded with the journal's dominant commodity. */
 export function emptyPosting(defaultCommodity: string): PostingForm {
-    return {account: "", amount: "", commodity: defaultCommodity, comment: "", cost: null};
+    return {account: "", amount: "", commodity: defaultCommodity, status: "unmarked", comment: "", cost: null};
 }
 
 /** A blank two-row form for ADD (today's date, unmarked, dominant commodity). */
 export function blankForm(today: string, defaultCommodity: string): TxnForm {
     return {
         date: today,
+        date2: "",
         status: "unmarked",
         code: "",
         description: "",
@@ -111,15 +121,21 @@ function postingToForm(posting: Posting): PostingForm {
         account: posting.account,
         amount: first === undefined ? "" : decToInput(first.qty),
         commodity: first === undefined ? "" : first.commodity,
+        status: posting.status,
         comment: posting.comment,
         cost: first?.cost !== undefined ? costToWire(first.cost) : null,
     };
 }
 
-/** Prefill the popup form from an existing transaction (EDIT-ALL → PUT). */
+/**
+ * Prefill the popup form from an existing transaction (EDIT-ALL → PUT). `date2`
+ * defaults to "" when the txn has no secondary date; `comment` carries the
+ * transaction's FULL comment text (tags included) so nothing is lost on save.
+ */
 export function txnToForm(txn: Transaction): TxnForm {
     return {
         date: txn.date,
+        date2: txn.date2 ?? "",
         status: txn.status,
         code: txn.code,
         description: txn.description,
@@ -140,6 +156,7 @@ export function formToBody(form: TxnForm, position?: InsertPosition): AddTransac
         const account = row.account.trim();
         if (account === "") continue;
         const posting: WirePostingInput = {account};
+        if (row.status !== "unmarked") posting.status = row.status;
         if (row.comment.trim() !== "") posting.comment = row.comment.trim();
         const qty = parseAmountInput(row.amount);
         if (qty !== null) {
@@ -150,6 +167,7 @@ export function formToBody(form: TxnForm, position?: InsertPosition): AddTransac
         postings.push(posting);
     }
     const body: AddTransactionBody = {date: form.date.trim(), postings};
+    if (form.date2.trim() !== "") body.date2 = form.date2.trim();
     if (form.status !== "unmarked") body.status = form.status;
     if (form.code.trim() !== "") body.code = form.code.trim();
     if (form.description.trim() !== "") body.description = form.description.trim();
@@ -187,6 +205,11 @@ export function validateForm(form: TxnForm): string[] {
 /** PATCH body for a description-only change. */
 export function descriptionPatch(description: string): PatchTransactionBody {
     return {description};
+}
+
+/** PATCH body for a status-only change (the inline cleared/pending toggle). */
+export function statusPatch(status: TxnStatus): PatchTransactionBody {
+    return {status};
 }
 
 /** 0-based positions of the postings whose account equals `account`. */

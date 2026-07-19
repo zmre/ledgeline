@@ -78,6 +78,7 @@ export interface WirePostingAmount {
 /** One posting: an account and an OPTIONAL amount — no `amount` marks the elided/inferred leg. */
 export interface WirePostingInput {
     account: string;
+    status?: WireStatus;
     comment?: string;
     amount?: WirePostingAmount;
 }
@@ -85,6 +86,7 @@ export interface WirePostingInput {
 /** `POST /api/transactions` (ADD) / `PUT /api/transactions/{index}` (REPLACE) request body. */
 export interface AddTransactionBody {
     date: string;
+    date2?: string;
     status?: WireStatus;
     code?: string;
     description?: string;
@@ -105,6 +107,7 @@ export interface PatchPostingEdit {
 /** `PATCH /api/transactions/{index}` (SURGICAL) body — send only the field(s) that changed. */
 export interface PatchTransactionBody {
     description?: string;
+    status?: WireStatus;
     postings?: PatchPostingEdit[];
 }
 

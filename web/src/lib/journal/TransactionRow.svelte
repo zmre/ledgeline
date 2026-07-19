@@ -16,7 +16,7 @@
     import AccountsCell from "./AccountsCell.svelte";
     import AmountCell from "./AmountCell.svelte";
     import CommentIndicator from "./CommentIndicator.svelte";
-    import StatusBadge from "./StatusBadge.svelte";
+    import StatusCell from "./StatusCell.svelte";
     import {txnModal} from "./edit/modalState.svelte";
     import {txnFlowAmounts} from "./rowModel";
 
@@ -113,7 +113,7 @@
             <td class="text-base-content/80 py-1 font-mono text-xs whitespace-nowrap">{txn.date}</td>
         {/if}
         {#if columns.status}
-            <td class="py-1"><StatusBadge status={txn.status} /></td>
+            <td class="py-1"><StatusCell {txn} /></td>
         {/if}
         {#if columns.description}
             <td class="max-w-0 py-1">{@render descriptionContent()}</td>
@@ -130,7 +130,7 @@
         <div class="card-body gap-1 p-3">
             <div class="flex items-center justify-between gap-2">
                 <div class="flex min-w-0 items-center gap-1.5">
-                    {#if columns.status}<StatusBadge status={txn.status} />{/if}
+                    {#if columns.status}<StatusCell {txn} />{/if}
                     {@render descriptionContent()}
                 </div>
                 {#if columns.amount}<AmountCell {amounts} />{/if}

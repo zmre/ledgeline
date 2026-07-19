@@ -166,6 +166,31 @@ describe("UNIT LedgelineApi — write requests", () => {
         expect(JSON.parse(init.body as string)).toEqual({postings: [{index: 0, account: "expenses:dining"}]});
     });
 
+    it("PATCHes a status-only body to /api/transactions/{index}", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(mutationResponse(3));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").patchTransaction(3, {status: "cleared"});
+        const init = lastInit(fetchMock);
+        expect(init.method).toBe("PATCH");
+        expect(JSON.parse(init.body as string)).toEqual({status: "cleared"});
+    });
+
+    it("PUTs a replace body carrying date2, comment/tags, and per-posting status + comment", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(mutationResponse(3));
+        vi.stubGlobal("fetch", fetchMock);
+        const body: AddTransactionBody = {
+            date: "2026-07-20",
+            date2: "2026-07-22",
+            comment: "note, category:food",
+            postings: [
+                {account: "expenses:food", status: "cleared", comment: "on sale", amount: {commodity: "$", quantity: {mantissa: "500", places: 2}}},
+                {account: "assets:cash"},
+            ],
+        };
+        await new LedgelineApi("http://127.0.0.1:5000").replaceTransaction(3, body);
+        expect(JSON.parse(lastInit(fetchMock).body as string)).toEqual(body);
+    });
+
     it("DELETEs /api/transactions/{index} (no body) and returns the parsed result", async () => {
         const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({deletedIndex: 2, remaining: 5}), {status: 200}));
         vi.stubGlobal("fetch", fetchMock);
