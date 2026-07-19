@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use ledgeline_server::{AppState, router_with_state};
 use muda::{
-    AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
+    Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
     accelerator::{Accelerator, Code, Modifiers},
 };
 use notify::RecommendedWatcher;
@@ -115,8 +115,11 @@ struct AppMenu {
     forward: MenuItem,
 }
 
-fn about_metadata() -> AboutMetadata {
-    AboutMetadata {
+// Referenced only by the macOS app menu's About item, so it does not exist on
+// other platforms (where it would be dead code under `-D warnings`).
+#[cfg(target_os = "macos")]
+fn about_metadata() -> muda::AboutMetadata {
+    muda::AboutMetadata {
         name: Some("Ledgeline".to_string()),
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
         ..Default::default()
