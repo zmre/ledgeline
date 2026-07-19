@@ -238,6 +238,18 @@
             --subst-var-by version "${version}"
           cp ${ledgelineIcns} "$app/Contents/Resources/ledgeline.icns"
         '';
+
+        # 6. Combined darwin install: the CLI binary (`bin/ledgeline`, real SPA)
+        #    PLUS the `Applications/Ledgeline.app` bundle, joined into one output.
+        #    A bare `nix build` (or a profile / home-manager install) then puts
+        #    BOTH on the system — the CLI on PATH via `bin/`, and the app where
+        #    nix-darwin / home-manager's app linking picks it up via
+        #    `Applications/`. Both reference the same real-SPA binary.
+        macDist = pkgs.symlinkJoin {
+          name = "ledgeline-${version}";
+          paths = [ ledgelineWithSpa macApp ];
+          meta = ledgeline.meta;
+        };
       in
       {
         # Buildable outputs. `nix build .#ledgeline` proves the GUI deps resolve
@@ -247,19 +259,19 @@
           inherit ledgeline clippy fmt tests;
           default = ledgeline;
         }
-        # macOS-only: the distributable app bundle and the SPA-in-Nix pieces it
-        # is assembled from. Guarded so `nix flake check` / builds on Linux never
-        # force the platform-specific (aarch64-darwin) SPA node_modules FOD.
-        # On darwin `default` is OVERRIDDEN to the app bundle (matching mbr's
-        # darwin `packages.default = packages.mbr`), so a bare `nix build` /
-        # `nix build .#default` yields `result/Applications/Ledgeline.app`. On
-        # Linux `default` stays the headless `ledgeline` binary (there is no
-        # macApp there). `.#ledgeline` remains the binary on every system (CI),
-        # and `apps.default` / `nix run .` still run the binary (see below) since
-        # an .app bundle has no runnable `bin/`.
+        # macOS-only: the app bundle, the combined `macDist` install, and the
+        # SPA-in-Nix pieces they are assembled from. Guarded so `nix flake check`
+        # / builds on Linux never force the platform-specific (aarch64-darwin) SPA
+        # node_modules FOD. On darwin `default` is OVERRIDDEN to `macDist` —
+        # `result/bin/ledgeline` (CLI, real SPA) + `result/Applications/
+        # Ledgeline.app` — so a bare `nix build` (or a profile install) puts BOTH
+        # the binary on PATH and the app where nix-darwin / home-manager pick it
+        # up. `.#macApp` is the app bundle alone. On Linux `default` stays the
+        # headless `ledgeline` binary. `.#ledgeline` remains the binary on every
+        # system (CI); `apps.default` / `nix run .` run it.
         // lib.optionalAttrs pkgs.stdenv.isDarwin {
-          inherit macApp spaNodeModules spaBuild ledgelineWithSpa ledgelineIcns;
-          default = macApp;
+          inherit macApp macDist spaNodeModules spaBuild ledgelineWithSpa ledgelineIcns;
+          default = macDist;
         };
 
         # `nix flake check` runs all of these; CI invokes them individually

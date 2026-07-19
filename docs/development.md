@@ -51,7 +51,8 @@ faster. Push that layer to Cachix (below) and CI + teammates skip it entirely.
 | `nix build .#clippy` | `cargo clippy --all-targets -- -D warnings` |
 | `nix build .#tests` | `cargo test` over the whole workspace |
 | `nix build .#fmt` | `cargo fmt --check` |
-| `nix build .#macApp` | **macOS only** — builds `result/Applications/Ledgeline.app` with the **real** SPA embedded (see below). This is also `.#default` on macOS, so a bare `nix build` produces it. |
+| `nix build .#macApp` | **macOS only** — just the `result/Applications/Ledgeline.app` bundle, **real** SPA embedded (see below). |
+| `nix build` (bare, macOS) | **macOS only** `.#default` — the combined `result/{bin/ledgeline, Applications/Ledgeline.app}` (CLI on PATH + the app). |
 | `nix flake check` | Runs all of the checks above |
 | `nix run .` | Build and run `ledgeline` |
 
@@ -105,12 +106,18 @@ cd .. && cargo build --release # embeds web/build/ into target/release/ledgeline
 
 `nix build .#macApp` (macOS only) produces `result/Applications/Ledgeline.app`
 — the standard nix-darwin app layout, so it can be dragged to `/Applications`
-or picked up by home-manager / nix-darwin. On macOS `.#macApp` is also the
-default package, so a bare `nix build` builds it too. The bundle holds
+or picked up by home-manager / nix-darwin. The bundle holds
 `Contents/MacOS/ledgeline` (the binary), `Contents/Info.plist` (version taken
 from the workspace `Cargo.toml`), and `Contents/Resources/ledgeline.icns`
 (generated from `assets/ledgeline.png`).
-`just package-mac` wraps this and copies a writable copy to `dist/Ledgeline.app`.
+
+On macOS the **default** package — a bare `nix build` (or `nix profile install`)
+— is the combined `result/{bin/ledgeline, Applications/Ledgeline.app}`, so an
+install puts the CLI on `PATH` (via `bin/`) AND the app where nix-darwin /
+home-manager link it (via `Applications/`); both use the same real-SPA binary.
+On Linux the default is the headless `ledgeline` binary.
+
+`just package-mac` wraps `.#macApp` and copies a writable copy to `dist/Ledgeline.app`.
 
 Unlike `.#ledgeline` (which embeds the CI placeholder SPA), **`.#macApp` embeds
 the real SvelteKit UI**: the flake builds the SPA inside Nix — a fixed-output
