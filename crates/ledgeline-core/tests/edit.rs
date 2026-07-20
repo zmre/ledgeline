@@ -1070,6 +1070,234 @@ fn nested_include_edit_writes_only_the_deepest_file() {
 }
 
 // ---------------------------------------------------------------------------
+// Date-ordered add across a per-year `include` split: the new transaction lands
+// in the FILE that holds its date-neighbors, date-ordered within that file, and
+// every other file stays byte-identical.
+// ---------------------------------------------------------------------------
+
+/// The four files of a per-year journal: `main` includes `2024`/`2025`/`2026`.
+/// File order (tindex) is 2024a(1), 2024b(2), 2025a(3), 2025b(4), 2026a(5).
+struct PerYear {
+    dir: PathBuf,
+    files: [PathBuf; 4],
+}
+
+const PY_MAIN: usize = 0;
+const PY_2024: usize = 1;
+const PY_2025: usize = 2;
+const PY_2026: usize = 3;
+
+fn read_file(path: &PathBuf) -> String {
+    std::fs::read_to_string(path).expect("read journal file")
+}
+
+fn write_per_year() -> PerYear {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("ledgeline-py-{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let main = dir.join("main.journal");
+    let y2024 = dir.join("2024.journal");
+    let y2025 = dir.join("2025.journal");
+    let y2026 = dir.join("2026.journal");
+    std::fs::write(
+        &main,
+        "\
+account assets:bank
+
+include 2024.journal
+include 2025.journal
+include 2026.journal
+",
+    )
+    .expect("write main");
+    std::fs::write(
+        &y2024,
+        "\
+2024-03-01 * Jan 2024
+    expenses:a  $10.00
+    assets:bank
+
+2024-09-01 * Fall 2024
+    expenses:b  $20.00
+    assets:bank
+",
+    )
+    .expect("write 2024");
+    std::fs::write(
+        &y2025,
+        "\
+2025-02-01 * Early 2025
+    expenses:c  $30.00
+    assets:bank
+
+2025-11-01 * Late 2025
+    expenses:d  $40.00
+    assets:bank
+",
+    )
+    .expect("write 2025");
+    std::fs::write(
+        &y2026,
+        "\
+2026-01-01 * Early 2026
+    expenses:e  $50.00
+    assets:bank
+",
+    )
+    .expect("write 2026");
+    PerYear {
+        dir,
+        files: [main, y2024, y2025, y2026],
+    }
+}
+
+/// A fresh `$5.00 / assets:bank` cash transaction dated `date` (description
+/// `"New"`), used to probe date-ordered placement.
+fn new_cash(date: &str) -> Transaction {
+    cash_txn(
+        date,
+        "New",
+        vec![
+            leg("expenses:new", Some(dollars(500, 2))),
+            leg("assets:bank", None),
+        ],
+    )
+}
+
+/// Add `new_txn` DateOrdered to a fresh per-year journal and assert that exactly
+/// the file at `changed_idx` becomes `expected` while the other three stay
+/// byte-identical; then reopen and assert the added row is found IN the changed
+/// file. Cleans up the temp dir.
+fn assert_date_ordered_lands_in(new_txn: &Transaction, changed_idx: usize, expected: &str) {
+    let py = write_per_year();
+    let befores: Vec<String> = py.files.iter().map(read_file).collect();
+
+    let mut editor = JournalEditor::open(&py.files[PY_MAIN]).unwrap();
+    assert_eq!(editor.transaction_count(), 5);
+    editor
+        .add_transaction(new_txn, InsertPosition::DateOrdered)
+        .unwrap();
+    editor.save().unwrap();
+
+    for (idx, path) in py.files.iter().enumerate() {
+        let after = read_file(path);
+        if idx == changed_idx {
+            assert_eq!(after, expected, "unexpected content in {}", path.display());
+        } else {
+            assert_eq!(
+                after,
+                befores[idx],
+                "{} must be byte-identical",
+                path.display()
+            );
+        }
+    }
+
+    // The whole journal reparses, and the new row lives in the file it was written
+    // to (its `source_file`), proving the added-txn location logic follows the file.
+    let reopened = JournalEditor::open(&py.files[PY_MAIN]).unwrap();
+    assert_eq!(reopened.transaction_count(), 6);
+    let added = reopened
+        .journal()
+        .transactions
+        .iter()
+        .find(|t| t.description == new_txn.description && t.date == new_txn.date)
+        .expect("added transaction present after reopen");
+    assert_eq!(
+        added.source_file, py.files[changed_idx],
+        "added row must live in the changed file"
+    );
+
+    let _ = std::fs::remove_dir_all(&py.dir);
+}
+
+#[test]
+fn date_ordered_add_lands_in_matching_year_file() {
+    // 2025-06-15 falls between Early 2025 and Late 2025 → into 2025.journal.
+    assert_date_ordered_lands_in(
+        &new_cash("2025-06-15"),
+        PY_2025,
+        "\
+2025-02-01 * Early 2025
+    expenses:c  $30.00
+    assets:bank
+
+2025-06-15 * New
+    expenses:new  $5.00
+    assets:bank
+
+2025-11-01 * Late 2025
+    expenses:d  $40.00
+    assets:bank
+",
+    );
+}
+
+#[test]
+fn date_ordered_add_after_last_txn_of_a_middle_file_appends_to_that_file() {
+    // 2025-12-15's predecessor is Late 2025 — the LAST txn in 2025.journal — so the
+    // row appends at that file's EOF; 2026.journal is untouched.
+    assert_date_ordered_lands_in(
+        &new_cash("2025-12-15"),
+        PY_2025,
+        "\
+2025-02-01 * Early 2025
+    expenses:c  $30.00
+    assets:bank
+
+2025-11-01 * Late 2025
+    expenses:d  $40.00
+    assets:bank
+
+2025-12-15 * New
+    expenses:new  $5.00
+    assets:bank
+",
+    );
+}
+
+#[test]
+fn date_ordered_add_earlier_than_all_lands_before_earliest() {
+    // 2023-06-01 precedes every transaction → before Jan 2024 in 2024.journal.
+    assert_date_ordered_lands_in(
+        &new_cash("2023-06-01"),
+        PY_2024,
+        "\
+2023-06-01 * New
+    expenses:new  $5.00
+    assets:bank
+
+2024-03-01 * Jan 2024
+    expenses:a  $10.00
+    assets:bank
+
+2024-09-01 * Fall 2024
+    expenses:b  $20.00
+    assets:bank
+",
+    );
+}
+
+#[test]
+fn date_ordered_add_later_than_all_lands_after_latest_in_latest_file() {
+    // 2027-01-01 is later than everything → after Early 2026 in 2026.journal (the
+    // latest file); no matching per-year file exists, which is acceptable.
+    assert_date_ordered_lands_in(
+        &new_cash("2027-01-01"),
+        PY_2026,
+        "\
+2026-01-01 * Early 2026
+    expenses:e  $50.00
+    assets:bank
+
+2027-01-01 * New
+    expenses:new  $5.00
+    assets:bank
+",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Golden format_transaction
 // ---------------------------------------------------------------------------
 

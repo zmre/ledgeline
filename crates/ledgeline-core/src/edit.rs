@@ -104,10 +104,13 @@ pub enum EditError {
 /// Where [`JournalEditor::add_transaction`] places the new transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsertPosition {
-    /// Append after the last transaction (end of file).
+    /// Append after the last transaction (end of the **main** file).
     Append,
-    /// Insert before the first existing transaction whose date is strictly later
-    /// than the new transaction's date; append if none is later.
+    /// Place the new transaction next to its chronological neighbors ACROSS all
+    /// source files: immediately after the latest existing transaction dated `<=`
+    /// the new one (in that predecessor's file, so a per-year/per-month `include`
+    /// receives the row), or before the earliest transaction when the new one
+    /// precedes them all, or — for an empty journal — appended to the main file.
     DateOrdered,
 }
 
@@ -442,9 +445,13 @@ impl JournalEditor {
     /// value.
     ///
     /// # Placement
-    /// The new transaction is always appended/inserted into the **main** file's
-    /// rope (date-ordered positioning considers only main-file transactions);
-    /// placing an added transaction into an `include`d file is a follow-up.
+    /// [`InsertPosition::Append`] appends to the **main** file. With
+    /// [`InsertPosition::DateOrdered`] the new transaction is written into the file
+    /// that holds its chronological neighbors — after the latest transaction dated
+    /// `<=` the new one (in that file), or before the earliest when the new one
+    /// precedes them all — so a per-year/per-month `include`d file receives the row.
+    /// An empty journal falls back to appending to the main file. Only that one
+    /// file's rope is edited (and, on [`save`](Self::save), written).
     ///
     /// # Errors
     /// [`EditError::Unbalanced`], [`EditError::Unsupported`] (a posting with
@@ -466,21 +473,20 @@ impl JournalEditor {
         }
 
         let body = format_transaction(txn);
-        let main_key = self.main_key.clone();
-        let main = self.rope_for(&main_key)?;
-        let insertion = self.insertion_point(main, &body, txn, position)?;
-        let header_char = insertion.offset + insertion.prefix.chars().count();
+        let Placement {
+            file_key,
+            insertion,
+        } = self.placement_for(&body, txn, position)?;
+        let prefix_len = insertion.prefix.chars().count();
+        let header_char = insertion.offset + prefix_len;
 
         let expected = self.journal.transactions.len() + 1;
-        let mut candidate = main.clone();
+        let mut candidate = self.rope_for(&file_key)?.clone();
         candidate.insert(insertion.offset, &insertion.prefix);
-        candidate.insert(
-            insertion.offset + insertion.prefix.chars().count(),
-            &insertion.body,
-        );
-        let reparsed = self.validate_with(&main_key, &candidate, expected)?;
+        candidate.insert(insertion.offset + prefix_len, &insertion.body);
+        let reparsed = self.validate_with(&file_key, &candidate, expected)?;
 
-        let added = locate_in_file(&candidate, &reparsed, &main_key, header_char)?;
+        let added = locate_in_file(&candidate, &reparsed, &file_key, header_char)?;
         if !is_balanced(&added.postings)? {
             return Err(EditError::Unbalanced);
         }
@@ -488,7 +494,7 @@ impl JournalEditor {
             return Err(EditError::RoundTripMismatch);
         }
 
-        self.commit(&main_key, candidate, reparsed)
+        self.commit(&file_key, candidate, reparsed)
     }
 
     /// Change **only** the description of the transaction with `index`.
@@ -752,50 +758,91 @@ impl JournalEditor {
         self.commit(&source_file, candidate, reparsed)
     }
 
-    /// Compute where to insert a formatted transaction into the MAIN file's rope
-    /// (`main`) and the separating prefix. Date-ordered placement considers only
-    /// transactions that live in the main file.
-    fn insertion_point(
+    /// Decide which file the new transaction lands in and where within that file's
+    /// rope, plus the separating text. [`InsertPosition::Append`] (and an empty
+    /// journal) append to the main file; [`InsertPosition::DateOrdered`] places the
+    /// row next to its chronological neighbors ACROSS all files (see the enum docs).
+    fn placement_for(
         &self,
-        main: &Rope,
         body: &str,
         txn: &Transaction,
         position: InsertPosition,
-    ) -> Result<Insertion, EditError> {
-        if position == InsertPosition::DateOrdered
-            && let Some(target) = self
-                .journal
-                .transactions
-                .iter()
-                .filter(|t| t.source_file == self.main_key)
-                .find(|t| t.date.as_str() > txn.date.as_str())
-        {
-            let line0 = target.source_span.0.line.saturating_sub(1) as usize;
-            let offset = line_start_char(main, line0.min(main.len_lines()))?;
-            // The existing blank line before `target` now separates it from the
-            // new transaction above; append one blank to separate new from target.
-            return Ok(Insertion {
-                offset,
-                prefix: String::new(),
-                body: format!("{body}\n"),
-            });
+    ) -> Result<Placement, EditError> {
+        if position == InsertPosition::Append || self.journal.transactions.is_empty() {
+            return self.append_to_main(body);
         }
+        // PREDECESSOR: the latest existing transaction dated `<=` the new one. On a
+        // date tie `max_by` yields the LAST such in file order, so the new row joins
+        // the end of its same-date/period group.
+        match self
+            .journal
+            .transactions
+            .iter()
+            .filter(|existing| existing.date.as_str() <= txn.date.as_str())
+            .max_by(|a, b| a.date.cmp(&b.date))
+        {
+            Some(predecessor) => self.insert_after(predecessor, body),
+            // No predecessor ⇒ the new row precedes every existing one: place it
+            // before the earliest (first such in file order on a date tie).
+            None => {
+                let earliest = self
+                    .journal
+                    .transactions
+                    .iter()
+                    .min_by(|a, b| a.date.cmp(&b.date))
+                    .ok_or_else(|| {
+                        EditError::Internal("no earliest transaction to insert before".into())
+                    })?;
+                self.insert_before(earliest, body)
+            }
+        }
+    }
 
-        // Append at end of file, ensuring exactly one blank separator line.
-        let len = main.len_chars();
-        let prefix = if len == 0 {
-            String::new()
+    /// Append `body` to the MAIN file with exactly one blank separator line.
+    fn append_to_main(&self, body: &str) -> Result<Placement, EditError> {
+        let main = self.rope_for(&self.main_key)?;
+        Ok(Placement {
+            file_key: self.main_key.clone(),
+            insertion: append_insertion(main, body),
+        })
+    }
+
+    /// Insert `body` immediately after `predecessor`'s span, IN THE PREDECESSOR'S
+    /// OWN file. When the predecessor is the last content in that file this uses the
+    /// same end-of-file/trailing-newline handling as an append; otherwise it opens a
+    /// fresh blank separator line and lets the existing blank below separate the new
+    /// row from the next transaction.
+    fn insert_after(&self, predecessor: &Transaction, body: &str) -> Result<Placement, EditError> {
+        let rope = self.rope_for(&predecessor.source_file)?;
+        let (_, end) = txn_char_range(rope, predecessor)?;
+        let insertion = if end >= rope.len_chars() {
+            append_insertion(rope, body)
         } else {
-            match count_trailing_newlines(main) {
-                0 => "\n\n".to_string(),
-                1 => "\n".to_string(),
-                _ => String::new(),
+            Insertion {
+                offset: end,
+                prefix: "\n".to_string(),
+                body: body.to_string(),
             }
         };
-        Ok(Insertion {
-            offset: len,
-            prefix,
-            body: body.to_string(),
+        Ok(Placement {
+            file_key: predecessor.source_file.clone(),
+            insertion,
+        })
+    }
+
+    /// Insert `body` immediately before `earliest`'s header, IN THE EARLIEST
+    /// transaction's OWN file, with a trailing blank separator; whatever precedes
+    /// the header (directives or a blank) stays above the new row.
+    fn insert_before(&self, earliest: &Transaction, body: &str) -> Result<Placement, EditError> {
+        let rope = self.rope_for(&earliest.source_file)?;
+        let (start, _) = txn_char_range(rope, earliest)?;
+        Ok(Placement {
+            file_key: earliest.source_file.clone(),
+            insertion: Insertion {
+                offset: start,
+                prefix: String::new(),
+                body: format!("{body}\n"),
+            },
         })
     }
 
@@ -1024,6 +1071,36 @@ struct Insertion {
     offset: usize,
     prefix: String,
     body: String,
+}
+
+/// A resolved add placement: which file's rope to edit, and the [`Insertion`]
+/// within it. Lets [`JournalEditor::add_transaction`] write a date-ordered row
+/// into the `include`d file that holds its neighbors, not just the main file.
+struct Placement {
+    file_key: PathBuf,
+    insertion: Insertion,
+}
+
+/// The [`Insertion`] that appends `body` at the end of `rope` with exactly one
+/// blank separator line, matching whatever trailing-newline shape is already
+/// present (no newline ⇒ close the last line and add a blank; one ⇒ add a blank;
+/// already blank-terminated ⇒ none).
+fn append_insertion(rope: &Rope, body: &str) -> Insertion {
+    let len = rope.len_chars();
+    let prefix = if len == 0 {
+        String::new()
+    } else {
+        match count_trailing_newlines(rope) {
+            0 => "\n\n".to_string(),
+            1 => "\n".to_string(),
+            _ => String::new(),
+        }
+    };
+    Insertion {
+        offset: len,
+        prefix,
+        body: body.to_string(),
+    }
 }
 
 /// Find the transaction that was just inserted/replaced in the file keyed by

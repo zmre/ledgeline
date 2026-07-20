@@ -29,7 +29,7 @@
 //!   "code": "INV-9",                     // optional
 //!   "description": "Safeway | groceries",// optional
 //!   "comment": "category:food",          // optional: rides the header (carries tags)
-//!   "position": "append",                // optional: append|dateOrdered (default append)
+//!   "position": "append",                // optional: append|dateOrdered (default dateOrdered)
 //!   "postings": [
 //!     { "account": "expenses:food:groceries",
 //!       "status": "pending",             // optional per-posting: cleared|pending|unmarked
@@ -175,12 +175,13 @@ struct PostingPatch {
 }
 
 impl AddRequest {
-    /// The insert position, defaulting to `Append` (predictable end-of-file
-    /// placement that leaves every existing transaction byte-identical).
+    /// The insert position, defaulting to `DateOrdered` (place the row next to its
+    /// chronological neighbors, across `include`d files) when the request omits a
+    /// position. `Append` remains available for callers that ask for it explicitly.
     fn insert_position(&self) -> InsertPosition {
         match self.position {
-            Some(PositionIn::DateOrdered) => InsertPosition::DateOrdered,
-            Some(PositionIn::Append) | None => InsertPosition::Append,
+            Some(PositionIn::Append) => InsertPosition::Append,
+            Some(PositionIn::DateOrdered) | None => InsertPosition::DateOrdered,
         }
     }
 }
@@ -591,18 +592,32 @@ fn edit_error(error: EditError) -> ApiError {
     (status, error.to_string())
 }
 
-/// The 0-based file-order position the new transaction will occupy — mirrors
-/// [`JournalEditor`]'s `insertion_point`: append at end, or (date-ordered) before
-/// the first existing transaction whose date is strictly later.
+/// The 0-based file-order position the new transaction will occupy after the
+/// reparse — mirrors [`JournalEditor`]'s placement so we can fetch the added row
+/// back out. `Append` lands at the end. `DateOrdered` lands right after its
+/// predecessor (the latest transaction dated `<=` the new one, last such in file
+/// order ⇒ `predecessor + 1`); with no predecessor it lands AT the earliest
+/// transaction's position (inserted just before it); an empty journal lands at 0.
 fn insertion_index(journal: &Journal, txn: &Transaction, position: InsertPosition) -> usize {
-    let len = journal.transactions.len();
+    let transactions = &journal.transactions;
+    let len = transactions.len();
     match position {
         InsertPosition::Append => len,
-        InsertPosition::DateOrdered => journal
-            .transactions
+        InsertPosition::DateOrdered => transactions
             .iter()
-            .position(|existing| existing.date.as_str() > txn.date.as_str())
-            .unwrap_or(len),
+            .enumerate()
+            .filter(|(_, existing)| existing.date.as_str() <= txn.date.as_str())
+            .max_by(|(_, a), (_, b)| a.date.cmp(&b.date))
+            .map_or_else(
+                || {
+                    transactions
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| a.date.cmp(&b.date))
+                        .map_or(len, |(earliest, _)| earliest)
+                },
+                |(predecessor, _)| predecessor + 1,
+            ),
     }
 }
 
