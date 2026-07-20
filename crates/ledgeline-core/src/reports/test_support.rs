@@ -74,6 +74,7 @@ pub fn txn(index: u32, date: &str, postings: Vec<(&str, Vec<Amount>)>) -> Transa
             .map(|(account, amounts)| posting(account, amounts))
             .collect(),
         source_span: (pos, pos),
+        source_file: std::path::PathBuf::new(),
     }
 }
 

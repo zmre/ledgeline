@@ -73,6 +73,9 @@ fn cash_txn(date: &str, description: &str, postings: Vec<Posting>) -> Transactio
             SourcePos { line: 1, column: 1 },
             SourcePos { line: 1, column: 1 },
         ),
+        // The editor keys the added transaction by the file it lands in, not by
+        // this placeholder; a fresh input carries no source file.
+        source_file: PathBuf::new(),
     }
 }
 
@@ -790,6 +793,280 @@ fn save_allowed_after_content_preserving_touch() {
     let reopened = JournalEditor::open(&path).unwrap();
     assert_eq!(reopened.transaction_count(), 2);
     let _ = std::fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-file journals: editing a transaction that lives in an `include`d file
+// touches ONLY that file, leaving the main journal + other includes identical.
+// ---------------------------------------------------------------------------
+
+/// A fresh temp dir holding a main journal that `include`s two others; returns
+/// `(dir, main, sub, other)`. The three transactions get tindex 1 (main), 2
+/// (sub), 3 (other) in file order. Each included transaction's `source_span` is
+/// relative to its own file.
+fn write_multifile() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("ledgeline-mf-{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let main = dir.join("main.journal");
+    let sub = dir.join("sub.journal");
+    let other = dir.join("other.journal");
+    std::fs::write(
+        &main,
+        "\
+account assets:bank
+
+2024-01-01 * Main
+    expenses:main  $10.00
+    assets:bank
+
+include sub.journal
+include other.journal
+",
+    )
+    .expect("write main");
+    std::fs::write(
+        &sub,
+        "\
+2024-02-01 * Sub
+    expenses:sub  $20.00
+    assets:bank
+",
+    )
+    .expect("write sub");
+    std::fs::write(
+        &other,
+        "\
+2024-03-01 * Other
+    expenses:other  $30.00
+    assets:bank
+",
+    )
+    .expect("write other");
+    (dir, main, sub, other)
+}
+
+/// Run `edit` against a multi-file journal opened at `main`, save, and assert the
+/// main file and the `other` include are byte-identical to before while `sub`
+/// (the edited include) now satisfies `sub_check`. Returns nothing; panics on a
+/// broken invariant. Keeps every op's before/after boilerplate DRY.
+fn edit_only_touches_sub(edit: impl FnOnce(&mut JournalEditor), sub_check: impl FnOnce(&str)) {
+    let (dir, main, sub, other) = write_multifile();
+    let main_before = std::fs::read_to_string(&main).unwrap();
+    let other_before = std::fs::read_to_string(&other).unwrap();
+
+    let mut editor = JournalEditor::open(&main).unwrap();
+    assert_eq!(editor.transaction_count(), 3);
+    edit(&mut editor);
+    editor.save().unwrap();
+
+    // Only sub.journal was written; main + other are byte-identical on disk.
+    assert_eq!(
+        std::fs::read_to_string(&main).unwrap(),
+        main_before,
+        "main.journal must be byte-identical"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&other).unwrap(),
+        other_before,
+        "other.journal must be byte-identical"
+    );
+    sub_check(&std::fs::read_to_string(&sub).unwrap());
+
+    // The whole journal still reparses from disk.
+    assert!(JournalEditor::open(&main).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn delete_included_txn_writes_only_that_include() {
+    edit_only_touches_sub(
+        |editor| {
+            editor.delete_transaction(Tindex(2)).unwrap();
+            assert_eq!(editor.transaction_count(), 2);
+        },
+        |sub_after| {
+            assert!(
+                !sub_after.contains("Sub"),
+                "sub still has txn:\n{sub_after}"
+            )
+        },
+    );
+}
+
+#[test]
+fn set_description_on_included_txn_writes_only_that_include() {
+    edit_only_touches_sub(
+        |editor| editor.set_description(Tindex(2), "Sub renamed").unwrap(),
+        |sub_after| {
+            assert_eq!(
+                sub_after,
+                "\
+2024-02-01 * Sub renamed
+    expenses:sub  $20.00
+    assets:bank
+"
+            );
+        },
+    );
+}
+
+#[test]
+fn set_posting_account_on_included_txn_writes_only_that_include() {
+    edit_only_touches_sub(
+        |editor| {
+            editor
+                .set_posting_account(Tindex(2), 0, "expenses:groceries")
+                .unwrap();
+        },
+        |sub_after| {
+            assert_eq!(
+                sub_after,
+                "\
+2024-02-01 * Sub
+    expenses:groceries  $20.00
+    assets:bank
+"
+            );
+        },
+    );
+}
+
+#[test]
+fn set_status_on_included_txn_writes_only_that_include() {
+    edit_only_touches_sub(
+        |editor| editor.set_status(Tindex(2), Status::Pending).unwrap(),
+        |sub_after| {
+            assert_eq!(
+                sub_after,
+                "\
+2024-02-01 ! Sub
+    expenses:sub  $20.00
+    assets:bank
+"
+            );
+        },
+    );
+}
+
+#[test]
+fn replace_included_txn_writes_only_that_include() {
+    let mut expense = leg("expenses:sub", Some(dollars(2500, 2)));
+    expense.comment = "bumped\n".into();
+    let cash = leg("assets:bank", None);
+    let replacement = {
+        let mut t = cash_txn("2024-02-01", "Sub replaced", vec![expense, cash]);
+        t.comment = "note\n".into();
+        t
+    };
+    edit_only_touches_sub(
+        move |editor| editor.replace_transaction(Tindex(2), &replacement).unwrap(),
+        |sub_after| {
+            assert_eq!(
+                sub_after,
+                "\
+2024-02-01 * Sub replaced  ; note
+    expenses:sub  $25.00  ; bumped
+    assets:bank
+"
+            );
+        },
+    );
+}
+
+#[test]
+fn included_external_change_is_refused_and_writes_nothing() {
+    let (dir, main, sub, other) = write_multifile();
+    let main_before = std::fs::read_to_string(&main).unwrap();
+    let other_before = std::fs::read_to_string(&other).unwrap();
+
+    let mut editor = JournalEditor::open(&main).unwrap();
+    editor
+        .set_posting_account(Tindex(2), 0, "expenses:renamed")
+        .unwrap();
+
+    // A concurrent external edit to the INCLUDED file with different content.
+    let hijacked = "2099-09-09 * Hijack\n    a  $1\n    b\n";
+    std::fs::write(&sub, hijacked).unwrap();
+
+    let err = editor.save().unwrap_err();
+    assert!(matches!(err, EditError::ExternalChange));
+
+    // Nothing was written: sub keeps the external content, main + other untouched.
+    assert_eq!(std::fs::read_to_string(&sub).unwrap(), hijacked);
+    assert_eq!(std::fs::read_to_string(&main).unwrap(), main_before);
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), other_before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unbalanced_replace_on_included_txn_leaves_all_files_unchanged() {
+    let (dir, main, sub, other) = write_multifile();
+    let main_before = std::fs::read_to_string(&main).unwrap();
+    let sub_before = std::fs::read_to_string(&sub).unwrap();
+    let other_before = std::fs::read_to_string(&other).unwrap();
+
+    let mut editor = JournalEditor::open(&main).unwrap();
+    let bad = cash_txn(
+        "2024-02-01",
+        "bad",
+        vec![
+            leg("expenses:x", Some(dollars(500, 2))),
+            leg("assets:bank", Some(dollars(-400, 2))),
+        ],
+    );
+    let err = editor.replace_transaction(Tindex(2), &bad).unwrap_err();
+    assert!(matches!(err, EditError::Unbalanced));
+    // Rejected in memory; save writes nothing new (no dirty files).
+    editor.save().unwrap();
+
+    assert_eq!(std::fs::read_to_string(&main).unwrap(), main_before);
+    assert_eq!(std::fs::read_to_string(&sub).unwrap(), sub_before);
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), other_before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn nested_include_edit_writes_only_the_deepest_file() {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("ledgeline-nest-{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let main = dir.join("main.journal");
+    let mid = dir.join("mid.journal");
+    let deep = dir.join("deep.journal");
+    std::fs::write(
+        &main,
+        "2024-01-01 * Main\n    expenses:m  $1.00\n    assets:bank\n\ninclude mid.journal\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &mid,
+        "2024-02-01 * Mid\n    expenses:mid  $2.00\n    assets:bank\n\ninclude deep.journal\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &deep,
+        "2024-03-01 * Deep\n    expenses:deep  $3.00\n    assets:bank\n",
+    )
+    .unwrap();
+    let main_before = std::fs::read_to_string(&main).unwrap();
+    let mid_before = std::fs::read_to_string(&mid).unwrap();
+
+    let mut editor = JournalEditor::open(&main).unwrap();
+    assert_eq!(editor.transaction_count(), 3);
+    // The deep txn is tindex 3, two includes down.
+    editor.set_description(Tindex(3), "Deep renamed").unwrap();
+    editor.save().unwrap();
+
+    assert_eq!(std::fs::read_to_string(&main).unwrap(), main_before);
+    assert_eq!(std::fs::read_to_string(&mid).unwrap(), mid_before);
+    assert_eq!(
+        std::fs::read_to_string(&deep).unwrap(),
+        "2024-03-01 * Deep renamed\n    expenses:deep  $3.00\n    assets:bank\n"
+    );
+    let reopened = JournalEditor::open(&main).unwrap();
+    assert_eq!(reopened.transaction_count(), 3);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------

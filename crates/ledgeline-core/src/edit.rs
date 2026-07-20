@@ -1,12 +1,18 @@
 //! The journal **write path** — safe, format-preserving edits of the plain-text
 //! hledger journal (Phase 5.1).
 //!
-//! [`JournalEditor`] holds the journal text as a [`ropey::Rope`], the parsed
-//! [`Journal`], the file path, and a load-time fingerprint (mtime + content
-//! hash). Edits are addressed through each [`Transaction`]'s `source_span`: a
-//! transaction occupies the rope character range
-//! `[line_to_char(span.0.line - 1), line_to_char(span.1.line - 1))` — the header
-//! line through the last posting line, inclusive of their trailing newlines.
+//! [`JournalEditor`] holds one text buffer ([`ropey::Rope`] + load-time
+//! fingerprint) **per source file** — the main journal plus every `include`d
+//! file a transaction was parsed from — keyed by the file's resolved absolute
+//! path, together with the parsed [`Journal`]. Edits are addressed through each
+//! [`Transaction`]'s own file ([`Transaction::source_file`]) and its
+//! `source_span` within that file: a transaction occupies its rope's character
+//! range `[line_to_char(span.0.line - 1), line_to_char(span.1.line - 1))` — the
+//! header line through the last posting line, inclusive of their trailing
+//! newlines. Because `source_span` lines are relative to the transaction's own
+//! file, editing a transaction that lives in an `include`d file touches only
+//! that file's rope and leaves the main journal (and every other include)
+//! byte-identical.
 //!
 //! Two operations are implemented, proving the two edit patterns:
 //! - [`JournalEditor::delete_transaction`] removes a transaction's span (plus a
@@ -17,16 +23,17 @@
 //!   end-of-file or in date order.
 //!
 //! # Safety model (data integrity is paramount — this writes real books)
-//! - **Reparse-to-validate.** After any mutation the candidate rope text is
-//!   re-parsed with [`parse_journal`]; the edit is only committed if it parses
-//!   cleanly (and, for an add, the new transaction balances and round-trips).
-//!   On failure `self` is left untouched.
-//! - **External-change guard.** [`JournalEditor::save`] re-reads the file and
-//!   compares its content hash to the load-time fingerprint, refusing (with
-//!   [`EditError::ExternalChange`]) rather than clobbering a file that changed
-//!   underneath it.
-//! - **Atomic write.** `save` writes to a temp file in the same directory,
-//!   `fsync`s it, and `rename`s it over the target.
+//! - **Reparse-to-validate.** After any mutation the WHOLE journal is re-parsed
+//!   with [`parse_journal_with_overrides`], resolving `include`s from the EDITED
+//!   in-memory ropes (not the stale on-disk copies); the edit is only committed
+//!   if it parses cleanly (and, for an add, the new transaction balances and
+//!   round-trips). On failure `self` is left untouched.
+//! - **External-change guard.** [`JournalEditor::save`] re-reads each file it is
+//!   about to write and compares its content hash to that file's load-time
+//!   fingerprint, refusing (with [`EditError::ExternalChange`]) — and writing
+//!   nothing — rather than clobbering a file that changed underneath it.
+//! - **Atomic write.** `save` writes each changed file to a temp file in the
+//!   same directory, `fsync`s it, and `rename`s it over the target.
 //! - **Single writer.** Mutations take `&mut self`; the server will wrap the
 //!   editor in a `Mutex` in the next increment (no OS-level lock yet).
 
@@ -35,8 +42,9 @@ use crate::model::{
     Amount, AmountStyle, BalanceAssertion, Commodity, CommoditySide, CostKind, Journal, Posting,
     PostingType, Status, Tindex, Transaction,
 };
-use crate::parse::{ParseError, parse_journal};
+use crate::parse::{ParseError, parse_journal, parse_journal_with_overrides, resolve_source_file};
 use ropey::Rope;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -149,64 +157,116 @@ fn file_mtime(path: &Path) -> Option<SystemTime> {
         .ok()
 }
 
-/// A format-preserving editor over a single journal file.
-pub struct JournalEditor {
+/// One source file's editable buffer: its rope, the load-time fingerprint used
+/// to detect external changes, and whether the rope has been edited since load
+/// (so [`JournalEditor::save`] writes only the files that actually changed).
+struct FileBuf {
+    /// Absolute path to read/write — identical to this buffer's key in
+    /// [`JournalEditor::files`].
     path: PathBuf,
     rope: Rope,
-    journal: Journal,
     fingerprint: Fingerprint,
+    dirty: bool,
+}
+
+impl FileBuf {
+    fn new(path: PathBuf, text: &str, mtime: Option<SystemTime>) -> Self {
+        Self {
+            fingerprint: Fingerprint::of_bytes(text.as_bytes(), mtime),
+            rope: Rope::from_str(text),
+            path,
+            dirty: false,
+        }
+    }
+}
+
+/// A format-preserving editor over a journal that may span several files (a main
+/// journal plus any `include`d files). Each distinct source file has its own
+/// [`FileBuf`], keyed by its resolved absolute path; every edit is applied to the
+/// rope of the file the addressed transaction actually lives in.
+pub struct JournalEditor {
+    /// The main journal's `source_name` (the string passed to the parser),
+    /// re-used to reparse the whole journal on validate.
+    source_name: String,
+    /// The resolved key of the main file within [`Self::files`].
+    main_key: PathBuf,
+    /// One buffer per distinct source file (main + includes-with-transactions),
+    /// keyed by resolved absolute path.
+    files: HashMap<PathBuf, FileBuf>,
+    journal: Journal,
 }
 
 impl JournalEditor {
-    /// Open `path`, reading it into a rope, parsing it, and capturing a
-    /// load-time fingerprint.
+    /// Open `path`, reading the main file and every `include`d file a
+    /// transaction came from into its own rope, parsing the whole journal, and
+    /// capturing a per-file load-time fingerprint.
     ///
     /// # Errors
-    /// [`EditError::Io`] if the file cannot be read, or [`EditError::Parse`] if
-    /// it does not parse.
+    /// [`EditError::Io`] if a file cannot be read, or [`EditError::Parse`] if
+    /// the journal does not parse.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, EditError> {
         let path = path.into();
         let text = std::fs::read_to_string(&path)?;
-        let fingerprint = Fingerprint::of_bytes(text.as_bytes(), file_mtime(&path));
-        let source_name = path.to_string_lossy();
+        let source_name = path.to_string_lossy().into_owned();
         let journal = parse_journal(&text, &source_name)?;
-        let rope = Rope::from_str(&text);
-        Ok(Self {
-            path,
-            rope,
-            journal,
-            fingerprint,
-        })
+        Self::load(source_name, journal, &text, true)
     }
 
     /// Build an editor over in-memory `text` associated with `path`, without
-    /// touching the filesystem.
+    /// touching the filesystem. This path is single-file: it does not resolve
+    /// `include`s (the initial parse would read them from disk).
     ///
-    /// The fingerprint is taken from `text` with no mtime, so a later
-    /// [`save`](Self::save) falls back to the authoritative content-hash guard
-    /// (and requires `path` to exist on disk). Useful for in-memory editing (the
-    /// server can hold the text already) and for tests.
+    /// The main file's fingerprint is taken from `text` with no mtime, so a
+    /// later [`save`](Self::save) falls back to the authoritative content-hash
+    /// guard (and requires `path` to exist on disk). Useful for in-memory
+    /// editing (the server can hold the text already) and for tests.
     ///
     /// # Errors
     /// [`EditError::Parse`] if `text` does not parse.
     pub fn from_text(path: impl Into<PathBuf>, text: &str) -> Result<Self, EditError> {
         let path = path.into();
-        let fingerprint = Fingerprint::of_bytes(text.as_bytes(), None);
-        let source_name = path.to_string_lossy();
+        let source_name = path.to_string_lossy().into_owned();
         let journal = parse_journal(text, &source_name)?;
-        let rope = Rope::from_str(text);
+        Self::load(source_name, journal, text, false)
+    }
+
+    /// Build an editor from a freshly-parsed `journal`. The main file's text is
+    /// `main_text` (already in hand); every other file a transaction came from
+    /// is read from disk. `on_disk` captures the main file's mtime for the
+    /// fast-path external-change check (false for [`from_text`](Self::from_text)).
+    fn load(
+        source_name: String,
+        journal: Journal,
+        main_text: &str,
+        on_disk: bool,
+    ) -> Result<Self, EditError> {
+        let main_key = resolve_source_file(&source_name);
+        let main_mtime = if on_disk { file_mtime(&main_key) } else { None };
+        let mut files: HashMap<PathBuf, FileBuf> = HashMap::new();
+        files.insert(
+            main_key.clone(),
+            FileBuf::new(main_key.clone(), main_text, main_mtime),
+        );
+        for txn in &journal.transactions {
+            if !files.contains_key(&txn.source_file) {
+                let key = txn.source_file.clone();
+                let file_text = std::fs::read_to_string(&key)?;
+                let mtime = file_mtime(&key);
+                files.insert(key.clone(), FileBuf::new(key, &file_text, mtime));
+            }
+        }
         Ok(Self {
-            path,
-            rope,
+            source_name,
+            main_key,
+            files,
             journal,
-            fingerprint,
         })
     }
 
-    /// The journal file path.
+    /// The main journal file path.
     #[must_use]
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.main_key
     }
 
     /// The parsed journal, as of the last committed edit.
@@ -215,10 +275,14 @@ impl JournalEditor {
         &self.journal
     }
 
-    /// The current journal text (materialized from the rope).
+    /// The current text of the MAIN journal file (materialized from its rope).
+    /// Edits to `include`d files are reflected in those files' ropes (and on
+    /// disk after [`save`](Self::save)), not here.
     #[must_use]
     pub fn text(&self) -> String {
-        self.rope.to_string()
+        self.files
+            .get(&self.main_key)
+            .map_or_else(String::new, |file| file.rope.to_string())
     }
 
     /// The number of transactions currently in the journal.
@@ -228,113 +292,144 @@ impl JournalEditor {
     }
 
     /// The exact source text of the transaction with `index` (its
-    /// `source_span`, excluding any trailing blank line), or `None` if there is
-    /// no such transaction. Handy for byte-identity assertions.
+    /// `source_span`, excluding any trailing blank line) from its OWN file, or
+    /// `None` if there is no such transaction. Handy for byte-identity
+    /// assertions.
     #[must_use]
     pub fn transaction_source(&self, index: Tindex) -> Option<String> {
         let txn = self.find_transaction(index)?;
-        let (start, end) = self.txn_char_range(txn).ok()?;
-        Some(self.rope.slice(start..end).to_string())
-    }
-
-    fn source_name(&self) -> String {
-        self.path.to_string_lossy().into_owned()
+        let rope = self.rope_for(&txn.source_file).ok()?;
+        let (start, end) = txn_char_range(rope, txn).ok()?;
+        Some(rope.slice(start..end).to_string())
     }
 
     fn find_transaction(&self, index: Tindex) -> Option<&Transaction> {
         self.journal.transactions.iter().find(|t| t.index == index)
     }
 
-    /// The half-open rope char range `[start, end)` covering a transaction's
-    /// `source_span` — the header line through the line after its last posting.
-    /// `line_to_char` accepts a one-past-the-end line index, so a final
-    /// transaction that ends at EOF is handled without special-casing.
-    fn txn_char_range(&self, txn: &Transaction) -> Result<(usize, usize), EditError> {
-        let len_lines = self.rope.len_lines();
-        let start_line0 = txn.source_span.0.line.saturating_sub(1) as usize;
-        let end_line0 = txn.source_span.1.line.saturating_sub(1) as usize;
-        let start = self.line_start_char(start_line0.min(len_lines))?;
-        let end = self.line_start_char(end_line0.min(len_lines))?;
-        Ok((start, end))
+    /// The rope of the file keyed by `key`, or an internal error if no buffer is
+    /// loaded for it (should not happen for a transaction's own `source_file`).
+    fn rope_for(&self, key: &Path) -> Result<&Rope, EditError> {
+        self.files.get(key).map(|file| &file.rope).ok_or_else(|| {
+            EditError::Internal(format!(
+                "no loaded buffer for source file {}",
+                key.display()
+            ))
+        })
     }
 
-    fn line_start_char(&self, line0: usize) -> Result<usize, EditError> {
-        self.rope
-            .try_line_to_char(line0)
-            .map_err(|e| EditError::Internal(format!("line_to_char({line0}): {e}")))
+    /// Reparse the whole journal against the current ropes with `edited_key`'s
+    /// rope replaced by `candidate`, then commit `candidate` to that file's rope
+    /// (marking it dirty) and adopt the reparsed journal. `self` is left
+    /// untouched on any validation failure.
+    fn apply(
+        &mut self,
+        edited_key: &Path,
+        candidate: Rope,
+        expected: usize,
+    ) -> Result<(), EditError> {
+        let reparsed = self.validate_with(edited_key, &candidate, expected)?;
+        self.commit(edited_key, candidate, reparsed)
     }
 
-    /// Whether rope line `line0` exists and is a real blank line (has content —
-    /// a newline and/or whitespace — but trims to empty). The phantom empty line
-    /// after a trailing newline (zero chars) is not counted.
-    fn line_is_blank(&self, line0: usize) -> bool {
-        match self.rope.get_line(line0) {
-            Some(line) => line.len_chars() > 0 && line.to_string().trim().is_empty(),
-            None => false,
+    /// Reparse the whole journal, overriding `edited_key`'s on-disk content with
+    /// `candidate` and every other loaded file with its current (possibly
+    /// already-edited) rope. Requires exactly `expected` transactions.
+    fn validate_with(
+        &self,
+        edited_key: &Path,
+        candidate: &Rope,
+        expected: usize,
+    ) -> Result<Journal, EditError> {
+        let mut overrides: HashMap<PathBuf, String> = self
+            .files
+            .iter()
+            .map(|(key, file)| (key.clone(), file.rope.to_string()))
+            .collect();
+        overrides.insert(edited_key.to_path_buf(), candidate.to_string());
+        let reparsed = parse_journal_with_overrides(&self.source_name, &overrides)
+            .map_err(EditError::ParseInvalidAfterEdit)?;
+        if reparsed.transactions.len() != expected {
+            return Err(EditError::Internal(format!(
+                "expected {expected} transactions after the edit, found {}",
+                reparsed.transactions.len()
+            )));
         }
+        Ok(reparsed)
     }
 
-    /// Whether rope line `line0` exists, is indented (starts with a space/tab),
-    /// and is non-blank — i.e. a trailing in-transaction line (a posting-block
-    /// comment) that belongs to the preceding transaction.
-    fn line_is_indented_content(&self, line0: usize) -> bool {
-        match self.rope.get_line(line0) {
-            Some(line) if line.len_chars() > 0 => {
-                let text = line.to_string();
-                text.starts_with([' ', '\t']) && !text.trim().is_empty()
-            }
-            _ => false,
-        }
+    /// Replace `edited_key`'s rope with `candidate` (marking it dirty) and adopt
+    /// `reparsed` as the new journal.
+    fn commit(
+        &mut self,
+        edited_key: &Path,
+        candidate: Rope,
+        reparsed: Journal,
+    ) -> Result<(), EditError> {
+        let file = self.files.get_mut(edited_key).ok_or_else(|| {
+            EditError::Internal(format!(
+                "no loaded buffer for source file {}",
+                edited_key.display()
+            ))
+        })?;
+        file.rope = candidate;
+        file.dirty = true;
+        self.journal = reparsed;
+        Ok(())
     }
 
     /// Delete the transaction with `index`.
     ///
-    /// Removes the transaction's `source_span`, plus any trailing indented
-    /// comment lines that belong to it, plus **one** following blank line. That
-    /// blank-line rule keeps a transaction sitting between two others from
-    /// leaving a double blank, without eating a neighbor's separating blank. When
-    /// the deletion instead runs to end-of-file (the transaction was the last
-    /// content), one *preceding* blank line is dropped so the file does not end
-    /// on a dangling separator. Either way only blank lines — owned by no
+    /// Removes the transaction's `source_span` from ITS OWN file's rope, plus any
+    /// trailing indented comment lines that belong to it, plus **one** following
+    /// blank line. That blank-line rule keeps a transaction sitting between two
+    /// others from leaving a double blank, without eating a neighbor's separating
+    /// blank. When the deletion instead runs to end-of-file (the transaction was
+    /// the last content), one *preceding* blank line is dropped so the file does
+    /// not end on a dangling separator. Either way only blank lines — owned by no
     /// transaction — are touched beyond the span, so every *other* transaction's
-    /// source text is left byte-identical.
+    /// source text (in this and every other file) is left byte-identical.
     ///
     /// # Errors
     /// [`EditError::TransactionNotFound`] if no such transaction exists, or
     /// [`EditError::ParseInvalidAfterEdit`] if (unexpectedly) the result does not
     /// re-parse. On any error `self` is unchanged.
     pub fn delete_transaction(&mut self, index: Tindex) -> Result<(), EditError> {
-        let txn = self
-            .find_transaction(index)
-            .ok_or(EditError::TransactionNotFound(index.0))?;
+        let (source_file, start_span, end_span) = {
+            let txn = self
+                .find_transaction(index)
+                .ok_or(EditError::TransactionNotFound(index.0))?;
+            (
+                txn.source_file.clone(),
+                txn.source_span.0.line.saturating_sub(1) as usize,
+                txn.source_span.1.line.saturating_sub(1) as usize,
+            )
+        };
+        let rope = self.rope_for(&source_file)?;
 
-        let len_lines = self.rope.len_lines();
-        let start_line0 = (txn.source_span.0.line.saturating_sub(1) as usize).min(len_lines);
-        let mut end_line0 = (txn.source_span.1.line.saturating_sub(1) as usize).min(len_lines);
+        let len_lines = rope.len_lines();
+        let start_line0 = start_span.min(len_lines);
+        let mut end_line0 = end_span.min(len_lines);
         // (a) trailing indented comment lines are part of this transaction.
-        while end_line0 < len_lines && self.line_is_indented_content(end_line0) {
+        while end_line0 < len_lines && line_is_indented_content(rope, end_line0) {
             end_line0 += 1;
         }
         // (b) consume one following blank separator line, if present.
-        if end_line0 < len_lines && self.line_is_blank(end_line0) {
+        if end_line0 < len_lines && line_is_blank(rope, end_line0) {
             end_line0 += 1;
         }
-        let mut start = self.line_start_char(start_line0)?;
-        let end = self.line_start_char(end_line0.min(len_lines))?;
+        let mut start = line_start_char(rope, start_line0)?;
+        let end = line_start_char(rope, end_line0.min(len_lines))?;
         // (c) if the deletion runs to end-of-file, drop one preceding blank so the
         // file does not end on a dangling separator blank.
-        if end == self.rope.len_chars() && start_line0 > 0 && self.line_is_blank(start_line0 - 1) {
-            start = self.line_start_char(start_line0 - 1)?;
+        if end == rope.len_chars() && start_line0 > 0 && line_is_blank(rope, start_line0 - 1) {
+            start = line_start_char(rope, start_line0 - 1)?;
         }
 
         let expected = self.journal.transactions.len() - 1;
-        let mut candidate = self.rope.clone();
+        let mut candidate = rope.clone();
         candidate.remove(start..end);
-        let reparsed = self.validate(&candidate, expected)?;
-
-        self.rope = candidate;
-        self.journal = reparsed;
-        Ok(())
+        self.apply(&source_file, candidate, expected)
     }
 
     /// Add `txn` to the journal at `position`.
@@ -345,6 +440,11 @@ impl JournalEditor {
     /// re-parse). After insertion the whole journal is re-parsed and the new
     /// transaction is checked to balance and to round-trip to the intended
     /// value.
+    ///
+    /// # Placement
+    /// The new transaction is always appended/inserted into the **main** file's
+    /// rope (date-ordered positioning considers only main-file transactions);
+    /// placing an added transaction into an `include`d file is a follow-up.
     ///
     /// # Errors
     /// [`EditError::Unbalanced`], [`EditError::Unsupported`] (a posting with
@@ -366,19 +466,21 @@ impl JournalEditor {
         }
 
         let body = format_transaction(txn);
-        let insertion = self.insertion_point(&body, txn, position)?;
+        let main_key = self.main_key.clone();
+        let main = self.rope_for(&main_key)?;
+        let insertion = self.insertion_point(main, &body, txn, position)?;
         let header_char = insertion.offset + insertion.prefix.chars().count();
 
         let expected = self.journal.transactions.len() + 1;
-        let mut candidate = self.rope.clone();
+        let mut candidate = main.clone();
         candidate.insert(insertion.offset, &insertion.prefix);
         candidate.insert(
             insertion.offset + insertion.prefix.chars().count(),
             &insertion.body,
         );
-        let reparsed = self.validate(&candidate, expected)?;
+        let reparsed = self.validate_with(&main_key, &candidate, expected)?;
 
-        let added = locate_added(&candidate, &reparsed, header_char)?;
+        let added = locate_in_file(&candidate, &reparsed, &main_key, header_char)?;
         if !is_balanced(&added.postings)? {
             return Err(EditError::Unbalanced);
         }
@@ -386,9 +488,7 @@ impl JournalEditor {
             return Err(EditError::RoundTripMismatch);
         }
 
-        self.rope = candidate;
-        self.journal = reparsed;
-        Ok(())
+        self.commit(&main_key, candidate, reparsed)
     }
 
     /// Change **only** the description of the transaction with `index`.
@@ -411,11 +511,12 @@ impl JournalEditor {
         index: Tindex,
         new_description: &str,
     ) -> Result<(), EditError> {
-        let (header_line0, mut rebuilt) = {
+        let (source_file, header_line0, mut rebuilt) = {
             let txn = self
                 .find_transaction(index)
                 .ok_or(EditError::TransactionNotFound(index.0))?;
             (
+                txn.source_file.clone(),
                 txn.source_span.0.line.saturating_sub(1) as usize,
                 txn.clone(),
             )
@@ -423,12 +524,13 @@ impl JournalEditor {
         rebuilt.description = new_description.to_string();
         let new_header = format_header(&rebuilt);
 
-        let (start, content_end) = self.line_content_range(header_line0)?;
+        let rope = self.rope_for(&source_file)?;
+        let (start, content_end) = line_content_range(rope, header_line0)?;
         let expected = self.journal.transactions.len();
-        let mut candidate = self.rope.clone();
+        let mut candidate = rope.clone();
         candidate.remove(start..content_end);
         candidate.insert(start, &new_header);
-        let reparsed = self.validate(&candidate, expected)?;
+        let reparsed = self.validate_with(&source_file, &candidate, expected)?;
 
         // The reparse reassigns file-order indices, but a header-only rewrite adds
         // or removes no lines and moves no transaction, so the target keeps its
@@ -444,9 +546,7 @@ impl JournalEditor {
             return Err(EditError::RoundTripMismatch);
         }
 
-        self.rope = candidate;
-        self.journal = reparsed;
-        Ok(())
+        self.commit(&source_file, candidate, reparsed)
     }
 
     /// Change **only** the clearing status of the transaction with `index`.
@@ -465,11 +565,12 @@ impl JournalEditor {
     /// [`EditError::TransactionNotFound`], [`EditError::ParseInvalidAfterEdit`],
     /// [`EditError::RoundTripMismatch`], or [`EditError::Internal`].
     pub fn set_status(&mut self, index: Tindex, status: Status) -> Result<(), EditError> {
-        let (header_line0, mut rebuilt) = {
+        let (source_file, header_line0, mut rebuilt) = {
             let txn = self
                 .find_transaction(index)
                 .ok_or(EditError::TransactionNotFound(index.0))?;
             (
+                txn.source_file.clone(),
                 txn.source_span.0.line.saturating_sub(1) as usize,
                 txn.clone(),
             )
@@ -477,12 +578,13 @@ impl JournalEditor {
         rebuilt.status = status;
         let new_header = format_header(&rebuilt);
 
-        let (start, content_end) = self.line_content_range(header_line0)?;
+        let rope = self.rope_for(&source_file)?;
+        let (start, content_end) = line_content_range(rope, header_line0)?;
         let expected = self.journal.transactions.len();
-        let mut candidate = self.rope.clone();
+        let mut candidate = rope.clone();
         candidate.remove(start..content_end);
         candidate.insert(start, &new_header);
-        let reparsed = self.validate(&candidate, expected)?;
+        let reparsed = self.validate_with(&source_file, &candidate, expected)?;
 
         // A header-only rewrite adds or removes no lines and moves no transaction,
         // so the target keeps its `tindex`. Guard that its status round-tripped
@@ -498,9 +600,7 @@ impl JournalEditor {
             return Err(EditError::RoundTripMismatch);
         }
 
-        self.rope = candidate;
-        self.journal = reparsed;
-        Ok(())
+        self.commit(&source_file, candidate, reparsed)
     }
 
     /// Change **only** the account of the `posting_index`-th posting of the
@@ -540,7 +640,7 @@ impl JournalEditor {
         posting_index: usize,
         new_account: &str,
     ) -> Result<(), EditError> {
-        let (header_line0, scan_end0, current_account) = {
+        let (source_file, header_line0, scan_end0, current_account) = {
             let txn = self
                 .find_transaction(index)
                 .ok_or(EditError::TransactionNotFound(index.0))?;
@@ -552,26 +652,28 @@ impl JournalEditor {
                     posting: posting_index,
                 })?;
             (
+                txn.source_file.clone(),
                 txn.source_span.0.line.saturating_sub(1) as usize,
                 txn.source_span.1.line.saturating_sub(1) as usize,
                 posting.account.0.clone(),
             )
         };
-        let line0 = self
-            .nth_posting_line(header_line0, scan_end0, posting_index)
-            .ok_or_else(|| {
+        let rope = self.rope_for(&source_file)?;
+        let line0 =
+            nth_posting_line(rope, header_line0, scan_end0, posting_index).ok_or_else(|| {
                 EditError::Internal(format!(
-                    "could not locate posting #{posting_index} of transaction #{}",
-                    index.0
+                    "could not locate posting #{posting_index} of transaction #{} in {}",
+                    index.0,
+                    source_file.display()
                 ))
             })?;
-        let (start, end) = self.locate_account_token(line0, &current_account)?;
+        let (start, end) = locate_account_token(rope, line0, &current_account)?;
 
         let expected = self.journal.transactions.len();
-        let mut candidate = self.rope.clone();
+        let mut candidate = rope.clone();
         candidate.remove(start..end);
         candidate.insert(start, new_account);
-        let reparsed = self.validate(&candidate, expected)?;
+        let reparsed = self.validate_with(&source_file, &candidate, expected)?;
 
         // Same-count, same-order reparse ⇒ the target keeps its `tindex` and
         // posting order; guard that the account round-tripped exactly.
@@ -585,9 +687,7 @@ impl JournalEditor {
             return Err(EditError::RoundTripMismatch);
         }
 
-        self.rope = candidate;
-        self.journal = reparsed;
-        Ok(())
+        self.commit(&source_file, candidate, reparsed)
     }
 
     /// Replace the whole transaction with `index` **in place** with `txn`.
@@ -621,23 +721,27 @@ impl JournalEditor {
         if !is_balanced(&txn.postings)? {
             return Err(EditError::Unbalanced);
         }
-        let (start, end) = {
+        let (source_file, start, end) = {
             let existing = self
                 .find_transaction(index)
                 .ok_or(EditError::TransactionNotFound(index.0))?;
-            self.txn_char_range(existing)?
+            let rope = self.rope_for(&existing.source_file)?;
+            let (start, end) = txn_char_range(rope, existing)?;
+            (existing.source_file.clone(), start, end)
         };
         let body = format_transaction(txn);
 
+        let rope = self.rope_for(&source_file)?;
         let expected = self.journal.transactions.len();
-        let mut candidate = self.rope.clone();
+        let mut candidate = rope.clone();
         candidate.remove(start..end);
         candidate.insert(start, &body);
-        let reparsed = self.validate(&candidate, expected)?;
+        let reparsed = self.validate_with(&source_file, &candidate, expected)?;
 
         // The replacement header starts at `start`; locate the transaction now on
-        // that line and apply the same balance + round-trip guards as an add.
-        let replaced = locate_added(&candidate, &reparsed, start)?;
+        // that line IN ITS FILE and apply the same balance + round-trip guards as
+        // an add.
+        let replaced = locate_in_file(&candidate, &reparsed, &source_file, start)?;
         if !is_balanced(&replaced.postings)? {
             return Err(EditError::Unbalanced);
         }
@@ -645,123 +749,15 @@ impl JournalEditor {
             return Err(EditError::RoundTripMismatch);
         }
 
-        self.rope = candidate;
-        self.journal = reparsed;
-        Ok(())
+        self.commit(&source_file, candidate, reparsed)
     }
 
-    /// The char range `[start, content_end)` of rope line `line0`'s content,
-    /// excluding its trailing line terminator (`\r\n`/`\n`, or none at EOF). Used
-    /// to rewrite a line's text while preserving its exact terminator.
-    fn line_content_range(&self, line0: usize) -> Result<(usize, usize), EditError> {
-        let start = self.line_start_char(line0)?;
-        let line = self
-            .rope
-            .get_line(line0)
-            .ok_or_else(|| EditError::Internal(format!("line {line0} is out of range")))?;
-        let text = line.to_string();
-        let content = text.trim_end_matches('\n').trim_end_matches('\r');
-        Ok((start, start + content.chars().count()))
-    }
-
-    /// Whether rope line `line0` is a posting line: indented, non-blank, and not a
-    /// `;` comment line (mirrors the parser, which treats every indented non-`;`
-    /// line in a transaction body as a posting).
-    fn line_is_posting(&self, line0: usize) -> bool {
-        match self.rope.get_line(line0) {
-            Some(line) if line.len_chars() > 0 => {
-                let text = line.to_string();
-                let trimmed = text.trim_start();
-                text.starts_with([' ', '\t']) && !trimmed.is_empty() && !trimmed.starts_with(';')
-            }
-            _ => false,
-        }
-    }
-
-    /// The 0-based rope line of the `posting_index`-th posting of the transaction
-    /// whose header is on line `header_line0`, scanning posting lines in the
-    /// half-open line range `(header_line0, scan_end0)`. Blank and `;` comment
-    /// lines are skipped, so postings map to source lines by ordinal position.
-    fn nth_posting_line(
-        &self,
-        header_line0: usize,
-        scan_end0: usize,
-        posting_index: usize,
-    ) -> Option<usize> {
-        let end = scan_end0.min(self.rope.len_lines());
-        let mut seen = 0;
-        for line0 in (header_line0 + 1)..end {
-            if self.line_is_posting(line0) {
-                if seen == posting_index {
-                    return Some(line0);
-                }
-                seen += 1;
-            }
-        }
-        None
-    }
-
-    /// The rope char range `[start, end)` of the account token on posting line
-    /// `line0`, matched as the first occurrence of `current_account` after the
-    /// line's indentation and any `*`/`!` status marker (skipping a leading
-    /// `(`/`[` virtual bracket). Only the account name is spanned, so replacing it
-    /// leaves the marker, amount, assertion, comment, and whitespace untouched.
-    fn locate_account_token(
-        &self,
-        line0: usize,
-        current_account: &str,
-    ) -> Result<(usize, usize), EditError> {
-        let line = self
-            .rope
-            .get_line(line0)
-            .ok_or_else(|| EditError::Internal(format!("posting line {line0} is out of range")))?;
-        let text = line.to_string();
-        let content = text.trim_end_matches('\n').trim_end_matches('\r');
-
-        let indent_end = content
-            .find(|c: char| c != ' ' && c != '\t')
-            .unwrap_or(content.len());
-        let after_indent = &content[indent_end..];
-        let field_start = if after_indent.starts_with(['*', '!']) {
-            let marker_end = indent_end + 1;
-            let rest = &content[marker_end..];
-            marker_end + (rest.len() - rest.trim_start_matches([' ', '\t']).len())
-        } else {
-            indent_end
-        };
-
-        let region = content.get(field_start..).unwrap_or("");
-        let rel = region.find(current_account).ok_or_else(|| {
-            EditError::Internal(format!(
-                "account '{current_account}' not found on posting line {}",
-                line0 + 1
-            ))
-        })?;
-        let byte_start = field_start + rel;
-        let byte_end = byte_start + current_account.len();
-        let start_chars = content[..byte_start].chars().count();
-        let end_chars = content[..byte_end].chars().count();
-        let line_start = self.line_start_char(line0)?;
-        Ok((line_start + start_chars, line_start + end_chars))
-    }
-
-    /// Re-parse a candidate rope and require exactly `expected` transactions.
-    fn validate(&self, candidate: &Rope, expected: usize) -> Result<Journal, EditError> {
-        let text = candidate.to_string();
-        let reparsed =
-            parse_journal(&text, &self.source_name()).map_err(EditError::ParseInvalidAfterEdit)?;
-        if reparsed.transactions.len() != expected {
-            return Err(EditError::Internal(format!(
-                "expected {expected} transactions after the edit, found {}",
-                reparsed.transactions.len()
-            )));
-        }
-        Ok(reparsed)
-    }
-
-    /// Compute where to insert a formatted transaction and the separating prefix.
+    /// Compute where to insert a formatted transaction into the MAIN file's rope
+    /// (`main`) and the separating prefix. Date-ordered placement considers only
+    /// transactions that live in the main file.
     fn insertion_point(
         &self,
+        main: &Rope,
         body: &str,
         txn: &Transaction,
         position: InsertPosition,
@@ -771,10 +767,11 @@ impl JournalEditor {
                 .journal
                 .transactions
                 .iter()
+                .filter(|t| t.source_file == self.main_key)
                 .find(|t| t.date.as_str() > txn.date.as_str())
         {
             let line0 = target.source_span.0.line.saturating_sub(1) as usize;
-            let offset = self.line_start_char(line0.min(self.rope.len_lines()))?;
+            let offset = line_start_char(main, line0.min(main.len_lines()))?;
             // The existing blank line before `target` now separates it from the
             // new transaction above; append one blank to separate new from target.
             return Ok(Insertion {
@@ -785,11 +782,11 @@ impl JournalEditor {
         }
 
         // Append at end of file, ensuring exactly one blank separator line.
-        let len = self.rope.len_chars();
+        let len = main.len_chars();
         let prefix = if len == 0 {
             String::new()
         } else {
-            match self.count_trailing_newlines() {
+            match count_trailing_newlines(main) {
                 0 => "\n\n".to_string(),
                 1 => "\n".to_string(),
                 _ => String::new(),
@@ -802,48 +799,224 @@ impl JournalEditor {
         })
     }
 
-    fn count_trailing_newlines(&self) -> usize {
-        let len = self.rope.len_chars();
-        let mut count = 0;
-        while count < len && self.rope.get_char(len - 1 - count) == Some('\n') {
-            count += 1;
-        }
-        count
-    }
-
-    /// Save the current text back to disk, atomically, refusing if the file
-    /// changed externally since load.
+    /// Save every file whose rope changed since load back to disk, atomically,
+    /// refusing (and writing NOTHING) if any changed file was modified externally.
     ///
-    /// Re-checks the file against the load-time fingerprint. `mtime` is a fast
-    /// path: if it is unchanged the content is taken to be unchanged; otherwise
-    /// (mtime missing or differing) the file is re-read and its content hash is
-    /// compared, which is authoritative. On a content change this returns
-    /// [`EditError::ExternalChange`] without writing. Otherwise it writes to a
-    /// temp file in the same directory, `fsync`s, and `rename`s it over the
-    /// target, then refreshes the fingerprint.
+    /// First every dirty file is checked against its load-time fingerprint: an
+    /// unchanged `mtime` is a fast path taken as unchanged content; otherwise the
+    /// file is re-read and its content hash compared (authoritative). If ANY dirty
+    /// file changed on disk this returns [`EditError::ExternalChange`] before
+    /// writing anything. Otherwise each dirty file is written to a temp file in
+    /// its own directory, `fsync`ed, and `rename`d over the target, and its
+    /// fingerprint is refreshed and its dirty flag cleared. Unchanged files
+    /// (including untouched includes) are never rewritten.
     ///
     /// # Errors
     /// [`EditError::ExternalChange`] or [`EditError::Io`].
     pub fn save(&mut self) -> Result<(), EditError> {
-        let current_mtime = file_mtime(&self.path);
-        let unchanged = match (self.fingerprint.mtime, current_mtime) {
-            // Fast path: an unchanged mtime means unchanged content.
-            (Some(loaded), Some(now)) if loaded == now => true,
-            // No/changed mtime: confirm via the authoritative content hash.
-            _ => {
-                let current = std::fs::read(&self.path)?;
-                Fingerprint::of_bytes(&current, current_mtime).content_matches(&self.fingerprint)
+        let dirty: Vec<PathBuf> = self
+            .files
+            .iter()
+            .filter(|(_, file)| file.dirty)
+            .map(|(key, _)| key.clone())
+            .collect();
+
+        // Pass 1: external-change guard for every dirty file — write nothing if
+        // any changed.
+        for key in &dirty {
+            let file = self.files.get(key).ok_or_else(|| {
+                EditError::Internal(format!(
+                    "no loaded buffer for source file {}",
+                    key.display()
+                ))
+            })?;
+            if file_changed_externally(&file.path, &file.fingerprint)? {
+                return Err(EditError::ExternalChange);
             }
-        };
-        if !unchanged {
-            return Err(EditError::ExternalChange);
         }
 
-        let new_text = self.rope.to_string();
-        atomic_write(&self.path, new_text.as_bytes())?;
-        self.fingerprint = Fingerprint::of_bytes(new_text.as_bytes(), file_mtime(&self.path));
+        // Pass 2: atomically write each dirty file and refresh its fingerprint.
+        for key in &dirty {
+            let (path, new_text) = {
+                let file = self.files.get(key).ok_or_else(|| {
+                    EditError::Internal(format!(
+                        "no loaded buffer for source file {}",
+                        key.display()
+                    ))
+                })?;
+                (file.path.clone(), file.rope.to_string())
+            };
+            atomic_write(&path, new_text.as_bytes())?;
+            let fingerprint = Fingerprint::of_bytes(new_text.as_bytes(), file_mtime(&path));
+            let file = self.files.get_mut(key).ok_or_else(|| {
+                EditError::Internal(format!(
+                    "no loaded buffer for source file {}",
+                    key.display()
+                ))
+            })?;
+            file.fingerprint = fingerprint;
+            file.dirty = false;
+        }
         Ok(())
     }
+}
+
+/// Whether the file at `path` differs on disk from its load-time `fingerprint`.
+/// An unchanged `mtime` is a fast path (content taken as unchanged); otherwise
+/// the file is re-read and its content hash compared, which is authoritative.
+fn file_changed_externally(path: &Path, fingerprint: &Fingerprint) -> Result<bool, EditError> {
+    let current_mtime = file_mtime(path);
+    let unchanged = match (fingerprint.mtime, current_mtime) {
+        (Some(loaded), Some(now)) if loaded == now => true,
+        _ => {
+            let current = std::fs::read(path)?;
+            Fingerprint::of_bytes(&current, current_mtime).content_matches(fingerprint)
+        }
+    };
+    Ok(!unchanged)
+}
+
+/// The half-open rope char range `[start, end)` covering a transaction's
+/// `source_span` within `rope` — the header line through the line after its last
+/// posting. `line_to_char` accepts a one-past-the-end line index, so a final
+/// transaction that ends at EOF is handled without special-casing.
+fn txn_char_range(rope: &Rope, txn: &Transaction) -> Result<(usize, usize), EditError> {
+    let len_lines = rope.len_lines();
+    let start_line0 = txn.source_span.0.line.saturating_sub(1) as usize;
+    let end_line0 = txn.source_span.1.line.saturating_sub(1) as usize;
+    let start = line_start_char(rope, start_line0.min(len_lines))?;
+    let end = line_start_char(rope, end_line0.min(len_lines))?;
+    Ok((start, end))
+}
+
+fn line_start_char(rope: &Rope, line0: usize) -> Result<usize, EditError> {
+    rope.try_line_to_char(line0)
+        .map_err(|e| EditError::Internal(format!("line_to_char({line0}): {e}")))
+}
+
+/// Whether `rope` line `line0` exists and is a real blank line (has content — a
+/// newline and/or whitespace — but trims to empty). The phantom empty line after
+/// a trailing newline (zero chars) is not counted.
+fn line_is_blank(rope: &Rope, line0: usize) -> bool {
+    match rope.get_line(line0) {
+        Some(line) => line.len_chars() > 0 && line.to_string().trim().is_empty(),
+        None => false,
+    }
+}
+
+/// Whether `rope` line `line0` exists, is indented (starts with a space/tab), and
+/// is non-blank — i.e. a trailing in-transaction line (a posting-block comment)
+/// that belongs to the preceding transaction.
+fn line_is_indented_content(rope: &Rope, line0: usize) -> bool {
+    match rope.get_line(line0) {
+        Some(line) if line.len_chars() > 0 => {
+            let text = line.to_string();
+            text.starts_with([' ', '\t']) && !text.trim().is_empty()
+        }
+        _ => false,
+    }
+}
+
+/// The char range `[start, content_end)` of `rope` line `line0`'s content,
+/// excluding its trailing line terminator (`\r\n`/`\n`, or none at EOF). Used to
+/// rewrite a line's text while preserving its exact terminator.
+fn line_content_range(rope: &Rope, line0: usize) -> Result<(usize, usize), EditError> {
+    let start = line_start_char(rope, line0)?;
+    let line = rope
+        .get_line(line0)
+        .ok_or_else(|| EditError::Internal(format!("line {line0} is out of range")))?;
+    let text = line.to_string();
+    let content = text.trim_end_matches('\n').trim_end_matches('\r');
+    Ok((start, start + content.chars().count()))
+}
+
+/// Whether `rope` line `line0` is a posting line: indented, non-blank, and not a
+/// `;` comment line (mirrors the parser, which treats every indented non-`;` line
+/// in a transaction body as a posting).
+fn line_is_posting(rope: &Rope, line0: usize) -> bool {
+    match rope.get_line(line0) {
+        Some(line) if line.len_chars() > 0 => {
+            let text = line.to_string();
+            let trimmed = text.trim_start();
+            text.starts_with([' ', '\t']) && !trimmed.is_empty() && !trimmed.starts_with(';')
+        }
+        _ => false,
+    }
+}
+
+/// The 0-based line of the `posting_index`-th posting of the transaction whose
+/// header is on line `header_line0`, scanning posting lines in the half-open line
+/// range `(header_line0, scan_end0)` of `rope`. Blank and `;` comment lines are
+/// skipped, so postings map to source lines by ordinal position.
+fn nth_posting_line(
+    rope: &Rope,
+    header_line0: usize,
+    scan_end0: usize,
+    posting_index: usize,
+) -> Option<usize> {
+    let end = scan_end0.min(rope.len_lines());
+    let mut seen = 0;
+    for line0 in (header_line0 + 1)..end {
+        if line_is_posting(rope, line0) {
+            if seen == posting_index {
+                return Some(line0);
+            }
+            seen += 1;
+        }
+    }
+    None
+}
+
+/// The `rope` char range `[start, end)` of the account token on posting line
+/// `line0`, matched as the first occurrence of `current_account` after the line's
+/// indentation and any `*`/`!` status marker (skipping a leading `(`/`[` virtual
+/// bracket). Only the account name is spanned, so replacing it leaves the marker,
+/// amount, assertion, comment, and whitespace untouched.
+fn locate_account_token(
+    rope: &Rope,
+    line0: usize,
+    current_account: &str,
+) -> Result<(usize, usize), EditError> {
+    let line = rope
+        .get_line(line0)
+        .ok_or_else(|| EditError::Internal(format!("posting line {line0} is out of range")))?;
+    let text = line.to_string();
+    let content = text.trim_end_matches('\n').trim_end_matches('\r');
+
+    let indent_end = content
+        .find(|c: char| c != ' ' && c != '\t')
+        .unwrap_or(content.len());
+    let after_indent = &content[indent_end..];
+    let field_start = if after_indent.starts_with(['*', '!']) {
+        let marker_end = indent_end + 1;
+        let rest = &content[marker_end..];
+        marker_end + (rest.len() - rest.trim_start_matches([' ', '\t']).len())
+    } else {
+        indent_end
+    };
+
+    let region = content.get(field_start..).unwrap_or("");
+    let rel = region.find(current_account).ok_or_else(|| {
+        EditError::Internal(format!(
+            "account '{current_account}' not found on posting line {}",
+            line0 + 1
+        ))
+    })?;
+    let byte_start = field_start + rel;
+    let byte_end = byte_start + current_account.len();
+    let start_chars = content[..byte_start].chars().count();
+    let end_chars = content[..byte_end].chars().count();
+    let line_start = line_start_char(rope, line0)?;
+    Ok((line_start + start_chars, line_start + end_chars))
+}
+
+fn count_trailing_newlines(rope: &Rope) -> usize {
+    let len = rope.len_chars();
+    let mut count = 0;
+    while count < len && rope.get_char(len - 1 - count) == Some('\n') {
+        count += 1;
+    }
+    count
 }
 
 /// The pieces of a rope insertion: insert `prefix` then `body` at `offset`.
@@ -853,11 +1026,14 @@ struct Insertion {
     body: String,
 }
 
-/// Find the transaction that was just inserted, by the char offset of its header
-/// in the candidate rope.
-fn locate_added<'a>(
+/// Find the transaction that was just inserted/replaced in the file keyed by
+/// `file_key`, by the char offset of its header within that file's candidate
+/// rope. Filtering on `file_key` disambiguates transactions that share a
+/// `source_span` line number across different files.
+fn locate_in_file<'a>(
     candidate: &Rope,
     reparsed: &'a Journal,
+    file_key: &Path,
     header_char: usize,
 ) -> Result<&'a Transaction, EditError> {
     let line0 = candidate
@@ -868,7 +1044,7 @@ fn locate_added<'a>(
     reparsed
         .transactions
         .iter()
-        .find(|t| t.source_span.0.line == line1)
+        .find(|t| t.source_file == file_key && t.source_span.0.line == line1)
         .ok_or_else(|| EditError::Internal("could not locate the added transaction".into()))
 }
 
@@ -935,6 +1111,7 @@ fn locate_added<'a>(
 ///         posting("assets:bank:checking", None),
 ///     ],
 ///     source_span: (SourcePos { line: 1, column: 1 }, SourcePos { line: 3, column: 1 }),
+///     source_file: std::path::PathBuf::new(),
 /// };
 /// assert_eq!(
 ///     format_transaction(&txn),
@@ -1345,6 +1522,7 @@ mod tests {
                 SourcePos { line: 1, column: 1 },
                 SourcePos { line: 3, column: 1 },
             ),
+            source_file: PathBuf::new(),
         }
     }
 

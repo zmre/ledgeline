@@ -652,6 +652,8 @@ fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transact
             SourcePos { line: 1, column: 1 },
             SourcePos { line: 1, column: 1 },
         ),
+        // Placeholder; the editor assigns the file the transaction lands in.
+        source_file: std::path::PathBuf::new(),
     })
 }
 
