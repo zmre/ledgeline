@@ -30,19 +30,47 @@ ledgeline (single Rust binary)
   runs headless (API + embedded SPA on a fixed port). A file-watch hot-reloads the journal in place.
 - hledger is a **test oracle only** — never a runtime dependency.
 
-## Run
+## Install / Use
 
-Requires [Nix](https://nixos.org) with flakes.
+Requires [Nix](https://nixos.org) with flakes. On **macOS** every path below runs
+the real app with the actual SvelteKit UI embedded.
+
+**Run it directly** — no install; builds the app and opens it on your journal:
 
 ```sh
-nix build
-# macOS → result/{bin/ledgeline, Applications/Ledgeline.app} (real UI embedded)
-# Linux → result/bin/ledgeline
-open result/Applications/Ledgeline.app          # macOS
-./result/bin/ledgeline ~/path/to/your.journal   # or run the binary directly
-
-just package-mac                                # macOS: a writable dist/Ledgeline.app to open / drag to /Applications
+nix run github:zmre/ledgeline -- ~/finance/2026.journal   # macOS: opens the desktop window on that journal
 ```
+
+**Install the binary + app** into your Nix profile:
+
+```sh
+nix profile install github:zmre/ledgeline
+# macOS → installs bin/ledgeline (on PATH) AND Applications/Ledgeline.app
+# then:  ledgeline ~/finance/2026.journal        # or launch Ledgeline.app
+```
+
+**Build the macOS app bundle** to open or drag into `/Applications`:
+
+```sh
+nix build github:zmre/ledgeline        # or, in a local checkout: nix build
+open result/Applications/Ledgeline.app # macOS — real UI embedded
+
+just package-mac                       # macOS: a writable dist/Ledgeline.app to open / drag to /Applications
+```
+
+> **Linux caveat.** On Linux, `nix run` / `nix profile install` currently give the
+> **placeholder-SPA** binary: the real-SPA build pulls a fixed-output `bun install`
+> derivation whose hash is pinned per-platform (aarch64-darwin today), and the Linux
+> hash can only be produced by building on Linux. For a working **headless** binary
+> on Linux today:
+>
+> ```sh
+> nix build github:zmre/ledgeline#ledgeline   # → result/bin/ledgeline
+> ./result/bin/ledgeline --server ~/finance/2026.journal
+> ```
+>
+> Embedding the real SPA in `nix run` on Linux is a documented follow-up (pin the
+> Linux FOD hash from a Linux/CI build) — see [docs/development.md](docs/development.md).
 
 ## Development
 
