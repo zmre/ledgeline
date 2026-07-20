@@ -6,6 +6,7 @@
 //! engine's internal representation.
 
 use crate::decimal::Dec;
+use std::path::PathBuf;
 
 /// A commodity symbol, e.g. `$`, `EUR`, `AAPL`.
 ///
@@ -201,8 +202,15 @@ pub struct Transaction {
     pub tags: Vec<(String, String)>,
     /// The postings, in file order.
     pub postings: Vec<Posting>,
-    /// `[first line, line after last posting]`, both at column 1.
+    /// `[first line, line after last posting]`, both at column 1. The lines are
+    /// relative to [`source_file`](Self::source_file), NOT to the main journal.
     pub source_span: (SourcePos, SourcePos),
+    /// The resolved (absolute, canonicalized when it exists on disk) path of the
+    /// file this transaction was parsed from — the same file its `source_span`
+    /// lines are relative to. For a transaction in an `include`d file this is the
+    /// included file, not the main journal. Purely an internal editing concern:
+    /// the wire/report layers key off [`Journal::source_name`] and are unaffected.
+    pub source_file: PathBuf,
 }
 
 /// An `account NAME  ; tags...` declaration.

@@ -54,11 +54,38 @@ faster. Push that layer to Cachix (below) and CI + teammates skip it entirely.
 | `nix build .#macApp` | **macOS only** — just the `result/Applications/Ledgeline.app` bundle, **real** SPA embedded (see below). |
 | `nix build` (bare, macOS) | **macOS only** `.#default` — the combined `result/{bin/ledgeline, Applications/Ledgeline.app}` (CLI on PATH + the app). |
 | `nix flake check` | Runs all of the checks above |
-| `nix run .` | Build and run `ledgeline` |
+| `nix run .` | **Build and run the real app.** On macOS runs `ledgelineWithSpa` (the **real** SPA embedded); on Linux runs the placeholder-SPA `ledgeline` (see below). |
 
 The bare attribute (`.#clippy`, `.#tests`, …) resolves to the current system
 automatically (`x86_64-linux`, `aarch64-darwin`, …), which is how CI invokes
 them on each runner.
+
+### `nix run` runs the real app (darwin)
+
+`apps.default` — what `nix run .` and `nix run github:zmre/ledgeline` execute —
+resolves per platform:
+
+- **macOS** → `ledgelineWithSpa`, the binary with the actual SvelteKit UI baked
+  in. So `nix run github:zmre/ledgeline -- ~/finance/2026.journal` builds the SPA
+  (the `bun install` FOD → `vite build`) and opens the real desktop window on
+  that journal. (`.#ledgeline` still embeds the CI placeholder SPA; `apps.default`
+  deliberately does **not** use it on darwin.)
+- **Linux** → `ledgeline`, the placeholder-SPA binary. The real-SPA path pulls the
+  `spaNodeModules` fixed-output derivation, whose `outputHash` is pinned
+  per-platform (aarch64-darwin today); the Linux hash can only be produced by
+  building on Linux. Nix laziness keeps `ledgelineWithSpa` from ever being forced
+  on Linux, so the darwin-only FOD hash never trips a Linux eval/build.
+
+Only `apps.default` is platform-conditional here — `packages.default`,
+`.#ledgeline`, the `checks`, and `.#macApp` are unchanged.
+
+**Follow-up — real-SPA `nix run` on Linux.** Promote `spaNodeModules` /
+`spaBuild` / `ledgelineWithSpa` (and the currently darwin-guarded `packages`) to
+all systems with a **per-system** `outputHash` — the Linux hash pinned from a
+Linux/CI build (build once with a fake hash; Nix prints the real one), the way
+`spaNodeModules.outputHash` is pinned for aarch64-darwin today. Until then,
+`nix build .#ledgeline` gives the working **headless** binary on Linux
+(`./result/bin/ledgeline --server`).
 
 ## The embedded SPA and the Nix sandbox
 

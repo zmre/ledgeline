@@ -105,37 +105,99 @@ struct Ctx {
     tindex: u32,
 }
 
+impl Ctx {
+    fn new() -> Self {
+        Ctx {
+            styles: HashMap::new(),
+            default_decimal_mark: None,
+            default_commodity: None,
+            default_year: None,
+            commodity_styles: Vec::new(),
+            commodity_tags: Vec::new(),
+            accounts: Vec::new(),
+            prices: Vec::new(),
+            transactions: Vec::new(),
+            periodic_transactions: Vec::new(),
+            tindex: 0,
+        }
+    }
+
+    fn into_journal(self, source_name: &str) -> Journal {
+        Journal {
+            source_name: source_name.to_string(),
+            transactions: self.transactions,
+            periodic_transactions: self.periodic_transactions,
+            accounts: self.accounts,
+            commodity_styles: self.commodity_styles,
+            commodity_tags: self.commodity_tags,
+            prices: self.prices,
+        }
+    }
+}
+
+/// The absolute key a journal file is addressed by: canonicalized when it exists
+/// on disk, else the path as given (so an in-memory source with a placeholder
+/// name still resolves to a stable key). Used to record each transaction's
+/// [`Transaction::source_file`] and to key the editor's per-file ropes and the
+/// in-memory override map consistently.
+pub(crate) fn resolve_source_file(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Read a source file's text: from `overrides` (keyed by its resolved absolute
+/// path, see [`resolve_source_file`]) when an entry is present there, else from
+/// disk. This lets the editor reparse the WHOLE journal against edited but
+/// not-yet-saved in-memory file contents.
+fn read_source_text(
+    resolved: &Path,
+    overrides: Option<&HashMap<PathBuf, String>>,
+) -> std::io::Result<String> {
+    if let Some(map) = overrides
+        && let Some(text) = map.get(&resolve_source_file(resolved))
+    {
+        return Ok(text.clone());
+    }
+    std::fs::read_to_string(resolved)
+}
+
 /// Parse `text` (the contents of the journal at `source_name`) into a balanced
 /// [`Journal`]. `include`d files are resolved relative to `source_name`.
 pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseError> {
-    let mut ctx = Ctx {
-        styles: HashMap::new(),
-        default_decimal_mark: None,
-        default_commodity: None,
-        default_year: None,
-        commodity_styles: Vec::new(),
-        commodity_tags: Vec::new(),
-        accounts: Vec::new(),
-        prices: Vec::new(),
-        transactions: Vec::new(),
-        periodic_transactions: Vec::new(),
-        tindex: 0,
-    };
-    parse_source(text, source_name, &mut ctx)?;
-
-    Ok(Journal {
-        source_name: source_name.to_string(),
-        transactions: ctx.transactions,
-        periodic_transactions: ctx.periodic_transactions,
-        accounts: ctx.accounts,
-        commodity_styles: ctx.commodity_styles,
-        commodity_tags: ctx.commodity_tags,
-        prices: ctx.prices,
-    })
+    let mut ctx = Ctx::new();
+    parse_source(text, source_name, &mut ctx, None)?;
+    Ok(ctx.into_journal(source_name))
 }
 
-/// Parse one journal source (the top file or an included one) into `ctx`.
-fn parse_source(text: &str, source_name: &str, ctx: &mut Ctx) -> Result<(), ParseError> {
+/// Parse the journal rooted at `main_source_name`, resolving `include`s from an
+/// in-memory `overrides` map before falling back to disk.
+///
+/// Any file whose resolved absolute path (see [`resolve_source_file`]) is a key
+/// in `overrides` is read from that map; every other file (the main file
+/// included) is read from disk exactly as [`parse_journal`] would. This is the
+/// editor's reparse-to-validate entry point: it lets an edit that spans an
+/// `include`d file be validated against the EDITED in-memory content of every
+/// touched file, not the stale on-disk copies.
+pub fn parse_journal_with_overrides(
+    main_source_name: &str,
+    overrides: &HashMap<PathBuf, String>,
+) -> Result<Journal, ParseError> {
+    let main_text = read_source_text(Path::new(main_source_name), Some(overrides))
+        .map_err(|e| ParseError::Include(format!("could not read {main_source_name}: {e}")))?;
+    let mut ctx = Ctx::new();
+    parse_source(&main_text, main_source_name, &mut ctx, Some(overrides))?;
+    Ok(ctx.into_journal(main_source_name))
+}
+
+/// Parse one journal source (the top file or an included one) into `ctx`. When
+/// `overrides` is `Some`, `include`d files are read from it before disk.
+fn parse_source(
+    text: &str,
+    source_name: &str,
+    ctx: &mut Ctx,
+    overrides: Option<&HashMap<PathBuf, String>>,
+) -> Result<(), ParseError> {
+    let source_file = resolve_source_file(source_name);
     let lines: Vec<&str> = text.lines().collect();
 
     let mut i = 0;
@@ -176,8 +238,15 @@ fn parse_source(text: &str, source_name: &str, ctx: &mut Ctx) -> Result<(), Pars
                 default_mark: ctx.default_decimal_mark,
                 default_commodity: ctx.default_commodity.as_ref(),
             };
-            let (txn, next) =
-                parse_transaction(&lines, i, ctx.tindex, amt, source_name, ctx.default_year)?;
+            let (txn, next) = parse_transaction(
+                &lines,
+                i,
+                ctx.tindex,
+                amt,
+                source_name,
+                &source_file,
+                ctx.default_year,
+            )?;
             ctx.transactions.push(txn);
             i = next;
             continue;
@@ -233,7 +302,7 @@ fn parse_source(text: &str, source_name: &str, ctx: &mut Ctx) -> Result<(), Pars
             "include" => {
                 let path = resolve_include(trimmed, source_name)
                     .map_err(|e| locate(source_name, line_no, line, e))?;
-                let included = std::fs::read_to_string(&path).map_err(|e| {
+                let included = read_source_text(&path, overrides).map_err(|e| {
                     locate(
                         source_name,
                         line_no,
@@ -241,7 +310,7 @@ fn parse_source(text: &str, source_name: &str, ctx: &mut Ctx) -> Result<(), Pars
                         ParseError::Include(format!("{}: {e}", path.display())),
                     )
                 })?;
-                parse_source(&included, &path.to_string_lossy(), ctx)?;
+                parse_source(&included, &path.to_string_lossy(), ctx, overrides)?;
             }
             // Declarations with no effect on transaction parsing.
             "payee" | "tag" => {}
@@ -654,6 +723,7 @@ fn parse_transaction(
     tindex: u32,
     amt: AmountCtx,
     source_name: &str,
+    source_file: &Path,
     default_year: Option<i32>,
 ) -> Result<(Transaction, usize), ParseError> {
     let header_no = to_u32(start + 1);
@@ -718,6 +788,7 @@ fn parse_transaction(
         tags: header.tags,
         postings,
         source_span,
+        source_file: source_file.to_path_buf(),
     };
     Ok((transaction, j))
 }
@@ -1657,6 +1728,58 @@ mod tests {
         assert_eq!(journal.transactions[1].description, "sub txn");
         assert_eq!(journal.transactions[0].index, Tindex(1));
         assert_eq!(journal.transactions[1].index, Tindex(2));
+
+        // Each transaction records the resolved file it was parsed from: the main
+        // txn from the main file, the included txn from the sub file. The sub
+        // txn's span is relative to sub.journal (line 1), NOT the main file.
+        assert_eq!(
+            journal.transactions[0].source_file,
+            resolve_source_file(&main)
+        );
+        assert_eq!(
+            journal.transactions[1].source_file,
+            resolve_source_file(&sub)
+        );
+        assert_ne!(
+            journal.transactions[0].source_file,
+            journal.transactions[1].source_file
+        );
+        assert_eq!(journal.transactions[1].source_span.0.line, 1);
+    }
+
+    #[test]
+    fn overrides_reparse_included_file_from_memory() {
+        // `parse_journal_with_overrides` reads any file present in the map from
+        // memory (here an EDITED sub file) and everything else from disk.
+        let dir = std::env::temp_dir().join("ledgeline_parse_overrides_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sub = dir.join("sub.journal");
+        let main = dir.join("main.journal");
+        std::fs::write(
+            &sub,
+            "2024-02-01 sub txn\n    expenses:foo   $5.00\n    assets:bank\n",
+        )
+        .unwrap();
+        std::fs::write(&main, "include sub.journal\n").unwrap();
+
+        // Override the sub file with an edited account name; the main file is read
+        // from disk (absent from the map).
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            resolve_source_file(&sub),
+            "2024-02-01 sub txn\n    expenses:renamed   $5.00\n    assets:bank\n".to_string(),
+        );
+        let journal = parse_journal_with_overrides(&main.to_string_lossy(), &overrides).unwrap();
+        assert_eq!(journal.transactions.len(), 1);
+        assert_eq!(
+            journal.transactions[0].postings[0].account,
+            AccountName("expenses:renamed".into())
+        );
+        // The reparsed txn is still attributed to the sub file.
+        assert_eq!(
+            journal.transactions[0].source_file,
+            resolve_source_file(&sub)
+        );
     }
 
     #[test]

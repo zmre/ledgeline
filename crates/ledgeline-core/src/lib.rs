@@ -16,6 +16,7 @@
 //! - `edit`    — ropey-based write path (Phase 5)
 
 pub mod decimal;
+pub mod edit;
 pub mod holdings;
 pub mod model;
 pub mod parse;
@@ -23,6 +24,7 @@ pub mod reports;
 pub mod wire;
 
 pub use decimal::{Dec, DecError};
+pub use edit::{EditError, InsertPosition, JournalEditor, format_transaction};
 pub use model::Journal;
 pub use parse::{ParseError, parse_journal};
 pub use reports::ReportError;

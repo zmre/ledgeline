@@ -13,6 +13,7 @@
 
 #[cfg(feature = "gui")]
 mod gui;
+mod recents;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -67,6 +68,11 @@ pub(crate) enum AppError {
         path: String,
         source: ledgeline_core::ParseError,
     },
+    #[error("opening {path} for editing: {source}")]
+    OpenEditor {
+        path: String,
+        source: ledgeline_core::EditError,
+    },
     #[error("building the async runtime: {0}")]
     Runtime(std::io::Error),
     #[error("binding {addr}: {source}")]
@@ -111,12 +117,14 @@ fn run(cli: Cli) -> Result<(), AppError> {
     run_server_blocking(&cli)
 }
 
-/// Resolve the journal path: positional arg → `$LEDGELINE_FIXTURE` → the default
-/// dev fixture.
+/// Resolve the journal path: positional arg → `$LEDGELINE_FIXTURE` → the
+/// most-recently-opened journal that still exists → the default dev fixture. So
+/// `ledgeline` with no args re-opens the last journal you used.
 pub(crate) fn resolve_journal(cli: &Cli) -> PathBuf {
     cli.journal
         .clone()
         .or_else(|| std::env::var("LEDGELINE_FIXTURE").ok().map(PathBuf::from))
+        .or_else(recents::most_recent)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_FIXTURE))
 }
 
@@ -138,15 +146,26 @@ pub(crate) fn parse_at(path: &Path) -> Result<Journal, AppError> {
     })
 }
 
-/// Reparse `path` and hot-swap it into `state` (best-effort: a read/parse error
-/// is logged and the previous data is kept, so a mid-edit save never crashes).
+/// React to an on-disk change of `path` (best-effort: an error is logged and the
+/// previous data is kept, so a mid-edit save never crashes).
+///
+/// When the state has an editor bound (the write path is enabled), re-open it so
+/// its rope, parsed journal, and external-change fingerprint track the new file
+/// contents — this also republishes the snapshot. Our OWN saves also fire the
+/// watcher; re-opening then just re-reads the identical bytes we wrote, which is
+/// idempotent (a small, harmless redundancy). When no editor is bound (read-only
+/// state), fall back to a plain reparse + hot-swap.
 pub(crate) fn reload_journal(path: &Path, state: &AppState) {
-    match parse_at(path) {
-        Ok(journal) => {
-            state.replace_journal(&journal);
-            eprintln!("ledgeline: reloaded {}", path.display());
-        }
-        Err(error) => eprintln!("ledgeline: reload skipped: {error}"),
+    match state.reopen_editor() {
+        Some(Ok(())) => eprintln!("ledgeline: reloaded {} (editor re-synced)", path.display()),
+        Some(Err(error)) => eprintln!("ledgeline: reload skipped: {error}"),
+        None => match parse_at(path) {
+            Ok(journal) => {
+                state.replace_journal(&journal);
+                eprintln!("ledgeline: reloaded {}", path.display());
+            }
+            Err(error) => eprintln!("ledgeline: reload skipped: {error}"),
+        },
     }
 }
 
@@ -190,8 +209,20 @@ fn same_file_name(candidate: &Path, target: &Path) -> bool {
 /// shutdown, hot-reloading the journal on file change.
 fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
     let journal_path = resolve_journal(cli);
-    let journal = parse_at(&journal_path)?;
-    let state = AppState::from_journal(&journal);
+    // Bind an editor to the file so the write endpoints (`POST`/`DELETE
+    // /api/transactions`) are live. Canonicalize first so the editor's save target
+    // and recorded source name match the watcher's canonical path and the
+    // historical snapshot source name.
+    let editor_path = journal_path
+        .canonicalize()
+        .unwrap_or_else(|_| journal_path.clone());
+    let state =
+        AppState::from_journal_path(&editor_path).map_err(|source| AppError::OpenEditor {
+            path: journal_path.display().to_string(),
+            source,
+        })?;
+    // Remember this journal as the most-recently-opened (canonical path).
+    recents::record(&editor_path);
     let host = cli.host.clone();
     let port = cli.port.unwrap_or(DEFAULT_SERVER_PORT);
 

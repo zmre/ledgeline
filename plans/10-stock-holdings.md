@@ -1,3 +1,5 @@
+> **Superseded:** describes the original read-only SPA build; the app is now a Rust single-binary engine + GUI — see `docs/development.md` and the repo README.
+
 # WP-10: Stock Holdings Tab
 
 Read `plans/00-overview.md` first. Contracts referenced: WP-06 `PriceDb`/`valueAt` (`lib/reports/prices.ts`), WP-08 check engine (`lib/checks/engine.ts`), WP-04 `AccountTreeSelect`/urlSync.

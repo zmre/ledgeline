@@ -14,13 +14,23 @@ repository = "https://github.com/zmre/ledgeline"
 
 [workspace.dependencies]
 # Declared here so both crates share one version. Only what's used today is
-# listed; server/runtime deps (axum, tokio, ropey, notify) are added as their
-# phases land.
+# listed; server/runtime deps (axum, tokio, notify) are added as their phases
+# land.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 itertools = "0.14"
 ledgeline-core = { path = "crates/ledgeline-core" }
+
+# Phase 5 write path: `ropey` is the text-rope over the journal file. Pinned to
+# the stable 1.6 line — 1.6.1 (2023-10-18) is the latest stable release and the
+# project's recommended LTS; 2.0 is still alpha/beta (2.0.0-beta.1, 2025-08-02)
+# so we deliberately stay on 1.6.x.
+ropey = "1.6"
+
+# Property-testing (dev-only), per the IronCore Rust skill.
+proptest = "1"
+proptest-derive = "0.8"
 
 # Aggressive release optimization (per IronCore Rust standards). `panic` is left
 # at the default "unwind" so the future axum server can catch per-request panics

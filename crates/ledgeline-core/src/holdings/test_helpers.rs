@@ -94,6 +94,7 @@ pub fn txn(index: u32, date: &str, postings: Vec<Posting>, tags: &[(&str, &str)]
             .collect(),
         postings,
         source_span: (pos, pos),
+        source_file: std::path::PathBuf::new(),
     }
 }
 

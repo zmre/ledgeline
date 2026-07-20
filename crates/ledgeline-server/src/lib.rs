@@ -15,15 +15,29 @@
 //! HOT-SWAPPED at runtime (live-reload on file change; the desktop File→Open
 //! action) without restarting the server or touching the router: handlers always
 //! read the current snapshot, and a swap atomically publishes a fresh one.
+//!
+//! The WRITE path ([`edit_api`], Phase 5.2) is layered on top: a state built from
+//! a journal *file* also holds an [`Arc`]-shared [`std::sync::Mutex`] over a
+//! [`JournalEditor`]. Reads stay lock-free (they only touch the `ArcSwap`); an
+//! edit serializes on the mutex, validates + saves through the editor, and then
+//! rebuilds and republishes the snapshot so the read endpoints reflect the change
+//! immediately. A state built without a path (the oneshot test helper [`app`])
+//! has no editor, so the edit endpoints report that editing is disabled.
 
+mod edit_api;
 mod reports_api;
 mod spa;
 
 use arc_swap::ArcSwap;
-use axum::{Json, Router, extract::State, routing::get};
-use ledgeline_core::{Journal, wire};
+use axum::{
+    Json, Router,
+    extract::State,
+    routing::{delete, get, post},
+};
+use ledgeline_core::{EditError, Journal, JournalEditor, wire};
 use serde_json::Value;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 use tower_http::cors::CorsLayer;
 
 /// An immutable, atomically-publishable view of one parsed journal: the parsed
@@ -59,22 +73,50 @@ impl Snapshot {
     }
 }
 
-/// Cheaply-cloneable application state: an atomically-swappable [`Snapshot`].
-/// Cloning shares the same swap cell, so a clone handed to a file watcher or the
-/// GUI can [`replace_journal`](AppState::replace_journal) the data the router's
-/// handlers serve.
+/// Cheaply-cloneable application state: an atomically-swappable [`Snapshot`] for
+/// the lock-free read path, plus an optional [`JournalEditor`] behind a mutex for
+/// the write path.
+///
+/// Cloning shares both the swap cell and the editor mutex, so a clone handed to a
+/// file watcher, the GUI, or an edit handler operates on the same journal: reads
+/// stay lock-free, and the single editor mutex serializes all writers.
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<ArcSwap<Snapshot>>,
+    /// The write path's editor, or `None` when the state was built from an
+    /// already-parsed [`Journal`] with no backing file (the edit endpoints then
+    /// report editing disabled). Held behind an `Arc<Mutex<…>>` so every clone
+    /// shares one editor and writers serialize on it.
+    editor: Arc<Mutex<Option<JournalEditor>>>,
 }
 
 impl AppState {
-    /// Build state serving `journal`.
+    /// Build read-only state serving an already-parsed `journal`, with no backing
+    /// file — the edit endpoints are disabled. Used by the oneshot test harness
+    /// ([`app`]) and by callers that hot-swap journals in place without editing.
     #[must_use]
     pub fn from_journal(journal: &Journal) -> Self {
         Self {
             inner: Arc::new(ArcSwap::from_pointee(Snapshot::from_journal(journal))),
+            editor: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Build editing-enabled state bound to the journal file at `path`: open a
+    /// [`JournalEditor`] over it and serve the snapshot built from its parsed
+    /// journal. The edit endpoints (`POST`/`DELETE /api/transactions`) are then
+    /// live and mutate this file through the editor's validation + atomic write.
+    ///
+    /// # Errors
+    /// [`EditError::Io`] if the file cannot be read, or [`EditError::Parse`] if it
+    /// does not parse.
+    pub fn from_journal_path(path: impl AsRef<Path>) -> Result<Self, EditError> {
+        let editor = JournalEditor::open(path.as_ref())?;
+        let snapshot = Snapshot::from_journal(editor.journal());
+        Ok(Self {
+            inner: Arc::new(ArcSwap::from_pointee(snapshot)),
+            editor: Arc::new(Mutex::new(Some(editor))),
+        })
     }
 
     /// Atomically replace the served journal (and its precomputed payloads).
@@ -83,10 +125,58 @@ impl AppState {
         self.inner.store(Arc::new(Snapshot::from_journal(journal)));
     }
 
+    /// Re-open the bound editor from disk after an *external* change, republishing
+    /// the snapshot from the freshly-read file so its rope, parsed journal, and
+    /// external-change fingerprint all track what is now on disk.
+    ///
+    /// Returns `None` when no editor is bound (read-only state), so the file
+    /// watcher can fall back to a plain reparse + hot-swap; `Some(Ok(()))` on a
+    /// successful re-open, or `Some(Err(_))` if the file could not be re-read or
+    /// re-parsed (the previous state is then kept).
+    pub fn reopen_editor(&self) -> Option<Result<(), EditError>> {
+        let mut guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
+        let editor = guard.as_mut()?;
+        match JournalEditor::open(editor.path().to_path_buf()) {
+            Ok(reopened) => {
+                self.inner
+                    .store(Arc::new(Snapshot::from_journal(reopened.journal())));
+                *editor = reopened;
+                Some(Ok(()))
+            }
+            Err(error) => Some(Err(error)),
+        }
+    }
+
+    /// Rebind the editor to the journal file at `path`: open a fresh
+    /// [`JournalEditor`] over it, republish the snapshot from its parsed journal,
+    /// and swap it into the editor mutex. The desktop File→Open action uses this
+    /// so subsequent edits target the newly-opened file (not the one the editor
+    /// was previously bound to).
+    ///
+    /// # Errors
+    /// [`EditError::Io`] if the file cannot be read, or [`EditError::Parse`] if it
+    /// does not parse. On error the previously-bound editor and published snapshot
+    /// are left unchanged.
+    pub fn rebind_editor(&self, path: impl AsRef<Path>) -> Result<(), EditError> {
+        // Open first so a failure leaves the current editor + snapshot untouched.
+        let editor = JournalEditor::open(path.as_ref())?;
+        self.inner
+            .store(Arc::new(Snapshot::from_journal(editor.journal())));
+        let mut guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
+        *guard = Some(editor);
+        Ok(())
+    }
+
     /// The current snapshot (a cheap atomic load; the returned `Arc` is a stable
     /// view for the duration of one request even if a swap happens meanwhile).
     pub(crate) fn snapshot(&self) -> Arc<Snapshot> {
         self.inner.load_full()
+    }
+
+    /// The write-path editor mutex, shared by all clones. Used by [`edit_api`] to
+    /// serialize edits; `None` inside means editing is disabled for this state.
+    pub(crate) fn editor(&self) -> &Mutex<Option<JournalEditor>> {
+        &self.editor
     }
 }
 
@@ -123,6 +213,15 @@ pub fn router_with_state(state: AppState) -> Router {
         .route(
             "/api/holdings/series",
             get(reports_api::holdings_series_report),
+        )
+        // Write path (Phase 5.2+): add / delete / replace (PUT) / partial-edit
+        // (PATCH) a transaction through the editor.
+        .route("/api/transactions", post(edit_api::add_transaction))
+        .route(
+            "/api/transactions/{index}",
+            delete(edit_api::delete_transaction)
+                .put(edit_api::replace_transaction)
+                .patch(edit_api::patch_transaction),
         )
         // Everything else (the SPA shell, its embedded assets, and client-side
         // deep links) is served same-origin; the explicit routes above win.

@@ -1,3 +1,5 @@
+> **Superseded:** describes the original read-only SPA build; the app is now a Rust single-binary engine + GUI — see `docs/development.md` and the repo README.
+
 # WP-07: Reports UI + Excel Export
 
 Read `plans/00-overview.md` first, then WP-06 contracts (report types + functions).

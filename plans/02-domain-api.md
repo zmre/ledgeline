@@ -1,3 +1,5 @@
+> **Superseded:** describes the original read-only SPA build; the app is now a Rust single-binary engine + GUI — see `docs/development.md` and the repo README.
+
 # WP-02: Domain Types, Money, API Client, Settings
 
 Read `plans/00-overview.md` first (especially the API tables and money/date conventions).

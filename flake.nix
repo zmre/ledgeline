@@ -281,7 +281,23 @@
           inherit ledgeline clippy fmt tests;
         };
 
-        apps.default = flake-utils.lib.mkApp { drv = ledgeline; };
+        # `nix run .` → the REAL app. On darwin `apps.default` runs
+        # `ledgelineWithSpa` — the binary with the ACTUAL SvelteKit UI baked in —
+        # so `nix run github:zmre/ledgeline -- ~/finance/2026.journal` opens the
+        # real GUI on that journal. On non-darwin it runs `ledgeline` (the
+        # PLACEHOLDER-SPA binary): the real-SPA path pulls in the `spaNodeModules`
+        # fixed-output derivation whose `outputHash` is PER-PLATFORM and is
+        # currently pinned for aarch64-darwin only — the Linux hash can only be
+        # produced by building on Linux, so a real-SPA `nix run` on Linux is a
+        # documented follow-up (promote spaNodeModules/spaBuild/ledgelineWithSpa
+        # to all systems with a per-system outputHash; see docs/development.md).
+        # Nix laziness means the `else` branch keeps `ledgelineWithSpa` from ever
+        # being forced on Linux, so the darwin-only FOD hash never trips a Linux
+        # eval/build. Only `apps.default` changes here — packages.default /
+        # .#ledgeline / checks / macApp are untouched.
+        apps.default = flake-utils.lib.mkApp {
+          drv = if pkgs.stdenv.isDarwin then ledgelineWithSpa else ledgeline;
+        };
 
         # Dev shell — preserved from the pre-crane flake. Every tool the team and
         # the SPA tests depend on stays available; only crane's inputs are new.

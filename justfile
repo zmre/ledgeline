@@ -1,16 +1,9 @@
 # Ledgeline task runner. Run `just --list` for an overview.
 
-# Start the SvelteKit dev server
+# Start the SvelteKit dev server. The SPA talks to the in-process Ledgeline
+# engine, so run the engine alongside it (e.g. `just serve-engine`) in another shell.
 dev:
     cd web && bun run dev
-
-# Serve the fixture journal over the hledger-web JSON API (read-only, CORS open)
-serve-api:
-    hledger-web -f fixtures/sample.journal --serve-api --cors='*' --allow=view
-
-# Serve a real journal over the JSON API: `just serve-journal ~/finance/2026.journal`
-serve-journal file:
-    hledger-web -f {{file}} --serve-api --cors='*' --allow=view
 
 # Run unit tests (vitest)
 test:

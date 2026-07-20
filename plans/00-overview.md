@@ -1,3 +1,5 @@
+> **Superseded:** these numbered plans describe the original read-only SPA build; the app is now a Rust single-binary engine + GUI — see `docs/development.md` and the repo README.
+
 # WP-00: Ledgeline Architecture Overview
 
 Reference doc for all work packages. Every implementing agent reads this FIRST, then its own WP doc.

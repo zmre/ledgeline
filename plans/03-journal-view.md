@@ -1,3 +1,5 @@
+> **Superseded:** describes the original read-only SPA build; the app is now a Rust single-binary engine + GUI — see `docs/development.md` and the repo README.
+
 # WP-03: Journal View
 
 Read `plans/00-overview.md` first, then WP-02 contracts (domain types, aggregate, settings).

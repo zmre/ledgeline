@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use ledgeline_server::{AppState, router_with_state};
 use muda::{
-    Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
+    Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
     accelerator::{Accelerator, Code, Modifiers},
 };
 use notify::RecommendedWatcher;
@@ -35,6 +35,10 @@ use wry::WebViewBuilder;
 
 use crate::{AppError, Cli};
 
+/// How many recent journals the File → "Open Recent" submenu shows (the on-disk
+/// store keeps more; this is just the visible slice).
+const RECENT_MENU_LIMIT: usize = 5;
+
 /// Custom events routed through the tao event loop from other threads (the
 /// global muda menu handler and the rfd file-picker thread).
 enum UserEvent {
@@ -45,8 +49,19 @@ enum UserEvent {
 /// GUI entry point: stand up the in-process server, then run the window.
 pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
     let journal_path = crate::resolve_journal(cli);
-    let journal = crate::parse_at(&journal_path)?;
-    let state = AppState::from_journal(&journal);
+    // Bind an editor to the file so the GUI's edit endpoints are live (this is the
+    // primary mode). Canonicalize first — like `run_server_blocking` — so the
+    // editor's save target and source name match the watcher's canonical path.
+    let editor_path = journal_path
+        .canonicalize()
+        .unwrap_or_else(|_| journal_path.clone());
+    let state =
+        AppState::from_journal_path(&editor_path).map_err(|source| AppError::OpenEditor {
+            path: journal_path.display().to_string(),
+            source,
+        })?;
+    // Remember this journal as the most-recently-opened (canonical path).
+    crate::recents::record(&editor_path);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -95,6 +110,7 @@ pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
         url,
         state,
         watcher,
+        current: editor_path,
     })
     // `runtime` and `_server` stay live on this frame while the event loop runs.
 }
@@ -104,12 +120,17 @@ struct GuiContext {
     url: String,
     state: AppState,
     watcher: Option<RecommendedWatcher>,
+    /// Canonical path of the journal currently open (excluded from the recents
+    /// submenu, and updated on each File→Open / Open Recent).
+    current: PathBuf,
 }
 
 /// Menu bar plus the handles for the custom items we match events against.
 struct AppMenu {
     menu_bar: Menu,
     open: MenuItem,
+    /// File → "Open Recent" submenu; repopulated as journals are opened.
+    recent: Submenu,
     reload: MenuItem,
     back: MenuItem,
     forward: MenuItem,
@@ -165,10 +186,13 @@ fn build_menu() -> AppMenu {
         true,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)),
     );
+    // Populated on demand by `rebuild_recent` (empty until then).
+    let recent = Submenu::new("Open &Recent", true);
     log_menu(
         "file menu",
         file_menu.append_items(&[
             &open,
+            &recent,
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::close_window(Some("Close Window")),
         ]),
@@ -235,10 +259,53 @@ fn build_menu() -> AppMenu {
     AppMenu {
         menu_bar,
         open,
+        recent,
         reload,
         back,
         forward,
     }
+}
+
+/// Repopulate the File → "Open Recent" submenu from the recents store, excluding
+/// the currently-open journal (`current`), and refresh the id→path map used to
+/// dispatch a click. Called at startup and after every successful open so the
+/// list always reflects the latest history.
+fn rebuild_recent(
+    submenu: &Submenu,
+    map: &RefCell<Vec<(MenuId, PathBuf)>>,
+    current: Option<&Path>,
+) {
+    // Clear existing entries (remove index 0 until the submenu is empty) first.
+    while submenu.remove_at(0).is_some() {}
+
+    let recents: Vec<PathBuf> = crate::recents::list()
+        .into_iter()
+        .filter(|path| Some(path.as_path()) != current)
+        .take(RECENT_MENU_LIMIT)
+        .collect();
+
+    if recents.is_empty() {
+        // A disabled placeholder so an empty submenu still reads clearly.
+        log_menu(
+            "open-recent submenu",
+            submenu.append(&MenuItem::new("No recent journals", false, None)),
+        );
+        map.borrow_mut().clear();
+        return;
+    }
+
+    let mut new_map = Vec::with_capacity(recents.len());
+    for (index, path) in recents.iter().enumerate() {
+        let item = MenuItem::with_id(
+            format!("recent-{index}"),
+            crate::recents::display_label(path),
+            true,
+            None,
+        );
+        new_map.push((item.id().clone(), path.clone()));
+        log_menu("open-recent submenu", submenu.append(&item));
+    }
+    *map.borrow_mut() = new_map;
 }
 
 /// Build the wry webview for `window`, pointed at `url`.
@@ -339,6 +406,7 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
     let reload_id = menu.reload.id().clone();
     let back_id = menu.back.id().clone();
     let forward_id = menu.forward.id().clone();
+    let recent_submenu = menu.recent.clone();
 
     let picker_proxy = event_loop.create_proxy();
 
@@ -350,9 +418,44 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
     let url = ctx.url;
     let state = ctx.state;
     let watcher: RefCell<Option<RecommendedWatcher>> = RefCell::new(ctx.watcher);
+    // Canonical path of the open journal (excluded from the recents submenu) and
+    // the id→path map for its items, both refreshed on every open.
+    let current: RefCell<PathBuf> = RefCell::new(ctx.current);
+    let recent_map: RefCell<Vec<(MenuId, PathBuf)>> = RefCell::new(Vec::new());
+    {
+        let current_ref = current.borrow();
+        rebuild_recent(&recent_submenu, &recent_map, Some(current_ref.as_path()));
+    }
 
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Wait;
+
+        // Unified open path shared by File→Open and Open Recent: rebind the editor
+        // to `raw` (opening a fresh editor, republishing its snapshot, swapping it
+        // into the editor mutex) so edits target the new file, then re-point the
+        // watcher, record it as most-recent, refresh the submenu, and reload the
+        // page. Canonicalize to match the watcher's path, as at startup.
+        let open_journal = |raw: &Path| {
+            let editor_path = raw.canonicalize().unwrap_or_else(|_| raw.to_path_buf());
+            match state.rebind_editor(&editor_path) {
+                Ok(()) => {
+                    watcher.replace(crate::spawn_watcher(&editor_path, state.clone()).ok());
+                    crate::recents::record(&editor_path);
+                    current.replace(editor_path.clone());
+                    rebuild_recent(&recent_submenu, &recent_map, Some(editor_path.as_path()));
+                    let _ = webview.load_url(&url);
+                    eprintln!("ledgeline: opened {}", editor_path.display());
+                }
+                Err(source) => {
+                    let error = AppError::OpenEditor {
+                        path: raw.display().to_string(),
+                        source,
+                    };
+                    eprintln!("ledgeline: could not open {}: {error}", raw.display());
+                    show_open_error(raw, &error);
+                }
+            }
+        };
 
         match event {
             Event::UserEvent(UserEvent::Menu(menu_event)) => {
@@ -364,23 +467,22 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
                     let _ = webview.evaluate_script("history.back()");
                 } else if menu_event.id == forward_id {
                     let _ = webview.evaluate_script("history.forward()");
+                } else {
+                    // Maybe an Open Recent item; the borrow is released before we
+                    // open (which re-borrows the map to rebuild the submenu).
+                    let picked = recent_map
+                        .borrow()
+                        .iter()
+                        .find_map(|(id, path)| (*id == menu_event.id).then(|| path.clone()));
+                    if let Some(path) = picked {
+                        open_journal(&path);
+                    }
                 }
                 // PredefinedMenuItem events (quit, copy, …) are handled natively.
             }
-            Event::UserEvent(UserEvent::JournalPicked(path)) => match crate::parse_at(&path) {
-                Ok(journal) => {
-                    // Hot-swap in place: no server restart (same ephemeral port).
-                    state.replace_journal(&journal);
-                    // Re-point live-reload at the new file (drops the old watcher).
-                    watcher.replace(crate::spawn_watcher(&path, state.clone()).ok());
-                    let _ = webview.load_url(&url);
-                    eprintln!("ledgeline: opened {}", path.display());
-                }
-                Err(error) => {
-                    eprintln!("ledgeline: could not open {}: {error}", path.display());
-                    show_open_error(&path, &error);
-                }
-            },
+            Event::UserEvent(UserEvent::JournalPicked(path)) => {
+                open_journal(&path);
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..

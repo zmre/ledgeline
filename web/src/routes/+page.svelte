@@ -8,7 +8,9 @@
     import InsightsPanel from "$lib/insights/InsightsPanel.svelte";
     import TotalsFooter from "$lib/journal/TotalsFooter.svelte";
     import TransactionTable from "$lib/journal/TransactionTable.svelte";
+    import TransactionModal from "$lib/journal/edit/TransactionModal.svelte";
     import {periodLabel} from "$lib/journal/rowModel";
+    import {editing} from "$lib/stores/editing.svelte";
     import {filters} from "$lib/stores/filters.svelte";
     import {getFilteredTxns, journal, startPolling} from "$lib/stores/journal.svelte";
     import {settings} from "$lib/stores/settings.svelte";
@@ -26,6 +28,9 @@
         if (url !== null && url !== attemptedUrl) {
             attemptedUrl = url;
             void journal.refresh();
+            // Detect the native write endpoints so edit affordances only show
+            // against the Ledgeline engine (not a plain, read-only hledger-web).
+            void editing.probe();
         }
     });
 
@@ -55,6 +60,27 @@
 
     <TotalsFooter count={txns.length} {period} />
 </div>
+
+<!-- The add/edit-all transaction popup (mounted once; driven by the txnModal store). -->
+<TransactionModal />
+
+{#if editing.conflict}
+    <div class="toast toast-center toast-top z-40">
+        <div class="alert alert-warning">
+            <span>The journal changed on disk — the view was refreshed. Re-apply your edit if needed.</span>
+            <button type="button" class="btn btn-sm" onclick={() => editing.clearConflict()}>Dismiss</button>
+        </div>
+    </div>
+{/if}
+
+{#if editing.notice !== null}
+    <div class="toast toast-end z-40">
+        <div class="alert alert-error max-w-md">
+            <span class="grow break-words whitespace-pre-wrap">{editing.notice.message}</span>
+            <button type="button" class="btn btn-sm shrink-0" onclick={() => editing.clearNotice()}>Dismiss</button>
+        </div>
+    </div>
+{/if}
 
 {#if journal.status === "error" && journal.error !== null}
     <div class="toast toast-end z-30">

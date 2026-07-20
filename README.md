@@ -1,39 +1,111 @@
 # Ledgeline
 
-A modern, fast, responsive web GUI for [hledger](https://hledger.org) plain-text accounting. The MVP is a read-only static SPA (SvelteKit + TailwindCSS + daisyUI dark theme) that talks directly to the hledger-web JSON API from the browser: a journal view with live filtering, an insights panel with pie/line charts and account-depth control, and client-side computed reports (balance sheet, P&L, cash flow, net worth) exportable to Excel. Later phases add transaction editing, a Rust journal engine, and encrypted multi-device sync.
+A fast, local desktop app for [hledger](https://hledger.org) plain-text accounting. Ledgeline is a
+**single binary** that opens a native window showing a modern web UI, with a Rust journal engine and
+API server running in-process — no separate servers, no `hledger-web`. It parses your journal file
+directly and reproduces hledger's numbers exactly (differential-tested against hledger 1.52).
+
+## What it does
+
+- **Journal view** with live filtering and an insights panel (pie / line charts, account-depth control).
+- **Reports** — balance sheet, income statement, cash flow, net worth — and **budget** (`~` periodic
+  goals vs. actuals), computed in Rust with exact decimal math and hledger parity.
+- **Holdings** — average-cost basis, unrealized gain (all-time / year-to-date / trailing-12-months),
+  value-over-time, per-symbol names from `commodity` directives, partial portfolio totals; XLSX export.
+- **In-process, same-origin API** exposing both the hledger-web-compatible wire endpoints
+  (`/version`, `/transactions`, `/prices`, …) and native report / holdings / budget JSON (`/api/*`).
+
+A safe, format-preserving **write path (editing)** is the next phase.
+
+## Architecture
+
+```
+ledgeline (single Rust binary)
+├─ crates/ledgeline-core    # journal parser → data model → reports / budget / holdings (exact decimal)
+├─ crates/ledgeline-server  # axum: wire-compat + native /api/* endpoints; serves the embedded SPA
+└─ web/                     # SvelteKit + TypeScript SPA (embedded into the binary at build time)
+```
+
+- `ledgeline [JOURNAL]` opens the desktop window (wry webview + tao event loop); `ledgeline --server`
+  runs headless (API + embedded SPA on a fixed port). A file-watch hot-reloads the journal in place.
+- hledger is a **test oracle only** — never a runtime dependency.
+
+## Install / Use
+
+Requires [Nix](https://nixos.org) with flakes. On **macOS** every path below runs
+the real app with the actual SvelteKit UI embedded.
+
+**Run it directly** — no install; builds the app and opens it on your journal:
+
+```sh
+nix run github:zmre/ledgeline -- ~/finance/2026.journal   # macOS: opens the desktop window on that journal
+```
+
+**Install the binary + app** into your Nix profile:
+
+```sh
+nix profile install github:zmre/ledgeline
+# macOS → installs bin/ledgeline (on PATH) AND Applications/Ledgeline.app
+# then:  ledgeline ~/finance/2026.journal        # or launch Ledgeline.app
+```
+
+**Build the macOS app bundle** to open or drag into `/Applications`:
+
+```sh
+nix build github:zmre/ledgeline        # or, in a local checkout: nix build
+open result/Applications/Ledgeline.app # macOS — real UI embedded
+
+just package-mac                       # macOS: a writable dist/Ledgeline.app to open / drag to /Applications
+```
+
+> **Linux caveat.** On Linux, `nix run` / `nix profile install` currently give the
+> **placeholder-SPA** binary: the real-SPA build pulls a fixed-output `bun install`
+> derivation whose hash is pinned per-platform (aarch64-darwin today), and the Linux
+> hash can only be produced by building on Linux. For a working **headless** binary
+> on Linux today:
+>
+> ```sh
+> nix build github:zmre/ledgeline#ledgeline   # → result/bin/ledgeline
+> ./result/bin/ledgeline --server ~/finance/2026.journal
+> ```
+>
+> Embedding the real SPA in `nix run` on Linux is a documented follow-up (pin the
+> Linux FOD hash from a Linux/CI build) — see [docs/development.md](docs/development.md).
 
 ## Development
 
-Requires [Nix](https://nixos.org) with flakes (direnv recommended).
-
 ```sh
-direnv allow            # or: nix develop path:.
-just --list             # available tasks
-just serve-api          # hledger-web JSON API on the fixture journal (port 5000)
-just dev                # SvelteKit dev server
+direnv allow          # or: nix develop path:.
+just --list           # available tasks
+just engine-test      # cargo test over the workspace
+just check            # SPA type-check + unit tests
+cd web && bun run build && cd .. && cargo build --release && ./target/release/ledgeline ~/.../Ledger/main.journal   # skip just and build
 ```
 
-To point the UI at your real books:
-
-```sh
-just serve-journal ~/path/to/your.journal
-```
+See **[docs/development.md](docs/development.md)** for the Nix + Crane build cache, the
+`nix build .#{ledgeline,clippy,tests,fmt,macApp}` outputs, CI, and how the SPA is built and embedded.
 
 ## Project structure
 
-- `web/` — SvelteKit app (static SPA)
-- `plans/` — numbered work-package plan docs; start with `plans/00-overview.md`
-- `fixtures/` — sample journal + golden report JSON (generated by real hledger CLI)
-- `scripts/` — fixture/golden generation helpers
+- `crates/` — `ledgeline-core` (engine) + `ledgeline-server` (axum server + GUI binary)
+- `web/` — SvelteKit SPA (embedded into the binary)
+- `fixtures/` — sample journal + golden report JSON (generated by real hledger)
+- `docs/` — the development guide
+- `plans/` — numbered work-package plan docs (`plans/00-overview.md`)
 
 ## Status
 
-Bootstrapping. See `plans/00-overview.md` for architecture and the execution schedule.
+The read-only engine and single-binary GUI are complete: a drop-in `hledger-web` replacement plus
+native reports, budget, and holdings, all matched against real hledger goldens and verified
+end-to-end (Rust tests, SPA unit tests, CI on Linux + macOS). **Next:** the `ropey`-based write path
+(add / edit / recategorize / delete transactions).
 
-## Future
+## TODO
 
-I want an all-in-one GUI that launches a local app in a browser with a private API server, much like I do in ~/src/sideprojects/mbr-markdown-browser/main.
-
-I also want to create a quicklook plugin for journal files that can nicely display the transactions (or whatever) in any particular file for fast browsing from Finder.  (See mbr for how to do this).
-
-
+- A QuickLook plugin for journal files — render a file's transactions nicely for fast Finder browsing
+  (see `mbr-markdown-browser` for the approach).
+- bug: the slider for filter level doesn't start at the right place
+- bug: the monitor for updates thing only watches the main file, not includes
+- feat: budgeting
+- feat: hledger check in the background including the various extras i use 
+- feat: preferences?
