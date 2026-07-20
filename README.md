@@ -79,6 +79,7 @@ direnv allow          # or: nix develop path:.
 just --list           # available tasks
 just engine-test      # cargo test over the workspace
 just check            # SPA type-check + unit tests
+cd web && bun run build && cd .. && cargo build --release && ./target/release/ledgeline ~/.../Ledger/main.journal   # skip just and build
 ```
 
 See **[docs/development.md](docs/development.md)** for the Nix + Crane build cache, the
@@ -99,8 +100,12 @@ native reports, budget, and holdings, all matched against real hledger goldens a
 end-to-end (Rust tests, SPA unit tests, CI on Linux + macOS). **Next:** the `ropey`-based write path
 (add / edit / recategorize / delete transactions).
 
-## Future
+## TODO
 
-- Transaction editing and imports, then encrypted multi-device sync.
 - A QuickLook plugin for journal files — render a file's transactions nicely for fast Finder browsing
   (see `mbr-markdown-browser` for the approach).
+- bug: the slider for filter level doesn't start at the right place
+- bug: the monitor for updates thing only watches the main file, not includes
+- feat: budgeting
+- feat: hledger check in the background including the various extras i use 
+- feat: preferences?
