@@ -75,9 +75,9 @@
 
 {#if editing.notice !== null}
     <div class="toast toast-end z-40">
-        <div class="alert alert-error">
-            <span class="max-w-xs truncate" title={editing.notice.message}>{editing.notice.message}</span>
-            <button type="button" class="btn btn-sm" onclick={() => editing.clearNotice()}>Dismiss</button>
+        <div class="alert alert-error max-w-md">
+            <span class="grow break-words whitespace-pre-wrap">{editing.notice.message}</span>
+            <button type="button" class="btn btn-sm shrink-0" onclick={() => editing.clearNotice()}>Dismiss</button>
         </div>
     </div>
 {/if}

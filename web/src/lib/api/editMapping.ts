@@ -149,8 +149,16 @@ export function txnToForm(txn: Transaction): TxnForm {
  * a blank account are dropped; a row with a blank/invalid amount becomes the
  * elided leg (no `amount` field). Optional string fields are omitted when empty
  * so the body stays minimal.
+ *
+ * A posting amount NEVER carries a blank commodity: a bare number re-parses
+ * under a journal `D` default-commodity directive (or is inferred) to a
+ * different commodity/precision, which the engine's round-trip guard would
+ * reject. Any row with an amount but a cleared commodity falls back to
+ * `defaultCommodity` (the journal's dominant commodity, itself defaulting to
+ * `$`).
  */
-export function formToBody(form: TxnForm, position?: InsertPosition): AddTransactionBody {
+export function formToBody(form: TxnForm, defaultCommodity: string, position?: InsertPosition): AddTransactionBody {
+    const fallbackCommodity = defaultCommodity.trim() || "$";
     const postings: WirePostingInput[] = [];
     for (const row of form.postings) {
         const account = row.account.trim();
@@ -160,7 +168,8 @@ export function formToBody(form: TxnForm, position?: InsertPosition): AddTransac
         if (row.comment.trim() !== "") posting.comment = row.comment.trim();
         const qty = parseAmountInput(row.amount);
         if (qty !== null) {
-            const amount: WirePostingAmount = {commodity: row.commodity.trim(), quantity: encodeDec(qty)};
+            const commodity = row.commodity.trim() || fallbackCommodity;
+            const amount: WirePostingAmount = {commodity, quantity: encodeDec(qty)};
             if (row.cost !== null) amount.cost = row.cost;
             posting.amount = amount;
         }

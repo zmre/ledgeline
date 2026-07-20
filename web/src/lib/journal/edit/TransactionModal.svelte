@@ -49,7 +49,7 @@
         if (clientErrors.length > 0) return;
         serverError = null;
         submitting = true;
-        const body = formToBody(form);
+        const body = formToBody(form, dominantCommodity(journal.txns));
         const target = txnModal.target;
         const result = txnModal.mode === "edit" && target !== null ? await editing.replace(target.index, body) : await editing.add(body);
         submitting = false;

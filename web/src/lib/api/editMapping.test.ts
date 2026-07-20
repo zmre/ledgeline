@@ -111,7 +111,7 @@ describe("UNIT editMapping — form ⇆ body", () => {
         form.status = "cleared";
         form.postings[0] = {account: "expenses:food:groceries", amount: "56.24", commodity: "$", status: "unmarked", comment: "", cost: null};
         form.postings[1] = {account: "liabilities:cc:visa", amount: "", commodity: "$", status: "unmarked", comment: "", cost: null};
-        const body = formToBody(form);
+        const body = formToBody(form, "$");
         expect(body).toEqual({
             date: "2026-07-20",
             status: "cleared",
@@ -123,12 +123,34 @@ describe("UNIT editMapping — form ⇆ body", () => {
         });
     });
 
+    it("never emits a blank commodity — a cleared commodity falls back to the default", () => {
+        const form = blankForm("2026-07-20", "EUR");
+        // A row whose commodity the user cleared, plus a row that keeps a value.
+        form.postings[0] = {account: "expenses:food", amount: "50", commodity: "  ", status: "unmarked", comment: "", cost: null};
+        form.postings[1] = {account: "assets:bank", amount: "-50", commodity: "EUR", status: "unmarked", comment: "", cost: null};
+        const body = formToBody(form, "EUR");
+        expect(body.postings[0].amount).toEqual({commodity: "EUR", quantity: {mantissa: "50", places: 0}});
+        expect(body.postings[1].amount).toEqual({commodity: "EUR", quantity: {mantissa: "-50", places: 0}});
+        // No amount on the body ever carries an empty commodity.
+        for (const posting of body.postings) {
+            if (posting.amount !== undefined) expect(posting.amount.commodity).not.toBe("");
+        }
+    });
+
+    it("falls back to $ when both the row commodity and the supplied default are blank", () => {
+        const form = blankForm("2026-07-20", "$");
+        form.postings[0] = {account: "expenses:x", amount: "1", commodity: "", status: "unmarked", comment: "", cost: null};
+        form.postings[1].account = "assets:y";
+        const body = formToBody(form, "   ");
+        expect(body.postings[0].amount).toEqual({commodity: "$", quantity: {mantissa: "1", places: 0}});
+    });
+
     it("omits an unmarked status and empty optional fields, and forwards a position", () => {
         const form = blankForm("2026-07-20", "$");
         form.postings[0].account = "a:b";
         form.postings[0].amount = "1.00";
         form.postings[1].account = "c:d";
-        const body = formToBody(form, "dateOrdered");
+        const body = formToBody(form, "$", "dateOrdered");
         expect(body.status).toBeUndefined();
         expect(body.code).toBeUndefined();
         expect(body.description).toBeUndefined();
@@ -164,7 +186,7 @@ describe("UNIT editMapping — form ⇆ body", () => {
         form.comment = "note, category:food";
         form.postings[0] = {account: "expenses:food", amount: "5.00", commodity: "$", status: "cleared", comment: "on sale", cost: null};
         form.postings[1] = {account: "assets:cash", amount: "", commodity: "$", status: "unmarked", comment: "", cost: null};
-        const body = formToBody(form);
+        const body = formToBody(form, "$");
         expect(body.date2).toBe("2026-07-22");
         expect(body.comment).toBe("note, category:food");
         expect(body.postings[0]).toEqual({
@@ -182,7 +204,7 @@ describe("UNIT editMapping — form ⇆ body", () => {
         form.comment = "";
         form.postings[0].account = "a:b";
         form.postings[0].comment = "  ";
-        const body = formToBody(form);
+        const body = formToBody(form, "$");
         expect(body.date2).toBeUndefined();
         expect(body.comment).toBeUndefined();
         expect(body.postings[0].status).toBeUndefined();

@@ -1200,19 +1200,35 @@ fn transactions_equivalent(input: &Transaction, parsed: &Transaction) -> bool {
 
 fn amounts_equivalent(input: &[Amount], parsed: &[Amount]) -> bool {
     input.len() == parsed.len()
-        && input.iter().zip(parsed).all(|(x, y)| {
-            x.commodity == y.commodity && x.quantity == y.quantity && costs_equivalent(x, y)
-        })
+        && input
+            .iter()
+            .zip(parsed)
+            .all(|(x, y)| amount_value_equivalent(x, y) && costs_equivalent(x, y))
+}
+
+/// Whether a re-parsed amount preserves the intended commodity **and value** —
+/// the round-trip guard's core comparison, deliberately tolerant of resolutions
+/// the parser performs legitimately while still catching real corruption.
+///
+/// - **Quantity** is compared by numeric VALUE. [`Dec`] equality already ignores
+///   scale (`-50` equals `-50.00`), so a value formatted as a bare number and
+///   re-parsed at a `D`-directive's precision does not trip the guard — whereas a
+///   decimal-mark corruption (e.g. `1234.50` becoming `123450`) is a genuinely
+///   different value and is still rejected.
+/// - **Commodity** must match exactly, UNLESS the input commodity is EMPTY. A
+///   blank commodity formats as a bare number that the parser legitimately
+///   resolves from a `D` directive (or literal inference), so the resolved
+///   commodity is accepted. A non-empty input commodity is still matched
+///   strictly, so a corrupted symbol is caught.
+fn amount_value_equivalent(input: &Amount, parsed: &Amount) -> bool {
+    let commodity_ok = input.commodity.0.is_empty() || input.commodity == parsed.commodity;
+    commodity_ok && input.quantity == parsed.quantity
 }
 
 fn costs_equivalent(input: &Amount, parsed: &Amount) -> bool {
     match (&input.cost, &parsed.cost) {
         (None, None) => true,
-        (Some(a), Some(b)) => {
-            a.kind == b.kind
-                && a.amount.commodity == b.amount.commodity
-                && a.amount.quantity == b.amount.quantity
-        }
+        (Some(a), Some(b)) => a.kind == b.kind && amount_value_equivalent(&a.amount, &b.amount),
         _ => false,
     }
 }
@@ -1473,6 +1489,115 @@ mod tests {
             posting("assets:broker:cash", vec![dollars(-220_000, 2)]),
         ];
         assert!(is_balanced(&postings).unwrap());
+    }
+
+    #[test]
+    fn add_with_empty_commodity_resolves_via_d_directive() {
+        // A `D` default-commodity directive is in effect; the new transaction's
+        // explicit leg carries an EMPTY commodity, which `format_transaction`
+        // renders as a bare number and the parser resolves to `$`. The round-trip
+        // guard must accept the resolved commodity and the value (scale-tolerant),
+        // rather than tripping `RoundTripMismatch`.
+        let text =
+            "D $1,000.00\n\n2026-07-01 * X\n    expenses:a  $50.00\n    assets:bank:checking\n";
+        let mut editor = JournalEditor::from_text("/tmp/d.journal", text).unwrap();
+
+        let new_txn = txn(
+            "2026-07-03",
+            "t",
+            vec![
+                posting(
+                    "assets:bank:checking",
+                    vec![Amount {
+                        commodity: Commodity(String::new()),
+                        quantity: Dec::new(-50, 0),
+                        style: dollar_style(),
+                        cost: None,
+                    }],
+                ),
+                posting("expenses:food", vec![]),
+            ],
+        );
+
+        editor
+            .add_transaction(&new_txn, InsertPosition::Append)
+            .expect("empty-commodity add should resolve via the D directive");
+
+        // The value lands on disk as a bare number under the `D` directive...
+        assert!(
+            editor.text().contains("assets:bank:checking  -50"),
+            "got:\n{}",
+            editor.text()
+        );
+        // ...and reads back with the RESOLVED commodity (`$`) and intended value.
+        let added = editor
+            .journal()
+            .transactions
+            .iter()
+            .find(|t| t.description == "t")
+            .expect("added transaction present after reparse");
+        let checking = added
+            .postings
+            .iter()
+            .find(|p| p.account.0 == "assets:bank:checking")
+            .expect("checking posting present");
+        assert_eq!(checking.amounts[0].commodity, Commodity("$".into()));
+        assert_eq!(checking.amounts[0].quantity, Dec::new(-50, 0));
+    }
+
+    #[test]
+    fn round_trip_guard_tolerates_scale_but_catches_corruption() {
+        // Same value at a different scale (a `D`-directive precision): -50 vs
+        // -50.00, same commodity — accepted (value equality ignores scale).
+        let intended = txn(
+            "2026-07-03",
+            "t",
+            vec![
+                posting("a", vec![dollars(-50, 0)]),
+                posting("b", vec![dollars(50, 0)]),
+            ],
+        );
+        let rescaled = txn(
+            "2026-07-03",
+            "t",
+            vec![
+                posting("a", vec![dollars(-5000, 2)]),
+                posting("b", vec![dollars(5000, 2)]),
+            ],
+        );
+        assert!(transactions_equivalent(&intended, &rescaled));
+
+        // A decimal-mark corruption turning 1234.50 into 123450 is a DIFFERENT
+        // value and is still rejected.
+        let good = txn(
+            "2026-07-03",
+            "t",
+            vec![posting("a", vec![dollars(123_450, 2)])],
+        );
+        let corrupted = txn(
+            "2026-07-03",
+            "t",
+            vec![posting("a", vec![dollars(123_450, 0)])],
+        );
+        assert!(!transactions_equivalent(&good, &corrupted));
+
+        // A non-empty commodity that reparses to a DIFFERENT symbol is still
+        // rejected — strict commodity match is preserved for explicit commodities.
+        let usd = txn("2026-07-03", "t", vec![posting("a", vec![dollars(50, 0)])]);
+        let eur = txn(
+            "2026-07-03",
+            "t",
+            vec![posting(
+                "a",
+                vec![Amount {
+                    commodity: Commodity("EUR".into()),
+                    quantity: Dec::new(50, 0),
+                    style: eur_style(),
+                    cost: None,
+                }],
+            )],
+        );
+        assert!(!transactions_equivalent(&usd, &eur));
     }
 
     #[test]
