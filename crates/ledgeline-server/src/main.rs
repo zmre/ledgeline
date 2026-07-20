@@ -13,6 +13,7 @@
 
 #[cfg(feature = "gui")]
 mod gui;
+mod recents;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -116,12 +117,14 @@ fn run(cli: Cli) -> Result<(), AppError> {
     run_server_blocking(&cli)
 }
 
-/// Resolve the journal path: positional arg → `$LEDGELINE_FIXTURE` → the default
-/// dev fixture.
+/// Resolve the journal path: positional arg → `$LEDGELINE_FIXTURE` → the
+/// most-recently-opened journal that still exists → the default dev fixture. So
+/// `ledgeline` with no args re-opens the last journal you used.
 pub(crate) fn resolve_journal(cli: &Cli) -> PathBuf {
     cli.journal
         .clone()
         .or_else(|| std::env::var("LEDGELINE_FIXTURE").ok().map(PathBuf::from))
+        .or_else(recents::most_recent)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_FIXTURE))
 }
 
@@ -218,6 +221,8 @@ fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
             path: journal_path.display().to_string(),
             source,
         })?;
+    // Remember this journal as the most-recently-opened (canonical path).
+    recents::record(&editor_path);
     let host = cli.host.clone();
     let port = cli.port.unwrap_or(DEFAULT_SERVER_PORT);
 
