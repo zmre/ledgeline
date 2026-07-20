@@ -1,3 +1,5 @@
+> **Superseded:** describes the original read-only SPA build; the app is now a Rust single-binary engine + GUI — see `docs/development.md` and the repo README.
+
 # WP-05: Insights Panel & Charts
 
 Read `plans/00-overview.md` first, then WP-02 contracts. **Load the `dataviz` skill before writing any chart code.**
