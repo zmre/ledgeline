@@ -6,6 +6,7 @@
     import FilterBar from "$lib/filters/FilterBar.svelte";
     import {startUrlSync} from "$lib/filters/urlSync";
     import InsightsPanel from "$lib/insights/InsightsPanel.svelte";
+    import {visibleNet} from "$lib/insights/series";
     import TotalsFooter from "$lib/journal/TotalsFooter.svelte";
     import TransactionTable from "$lib/journal/TransactionTable.svelte";
     import TransactionModal from "$lib/journal/edit/TransactionModal.svelte";
@@ -17,6 +18,7 @@
 
     const txns = $derived(getFilteredTxns());
     const period = $derived(periodLabel(filters.value.from, filters.value.to));
+    const total = $derived(visibleNet(txns, filters.value.accounts, journal.txns));
 
     // Restore filters from ?from=&to=&acct=&q= once, then mirror changes to the
     // URL (debounced replaceState). onMount's return value is its cleanup.
@@ -58,7 +60,7 @@
         <TransactionTable {txns} />
     {/if}
 
-    <TotalsFooter count={txns.length} {period} />
+    <TotalsFooter count={txns.length} {period} {total} />
 </div>
 
 <!-- The add/edit-all transaction popup (mounted once; driven by the txnModal store). -->

@@ -22,9 +22,11 @@
     const net = $derived(bigNumbers(txns, primary, accounts, allTxns).net);
     const netFormatted = $derived(formatAmount({commodity: primary, qty: net, style: styleFor(txns, primary)}));
 
+    // Default depth matches the reports page (defaultReportParams().depth). The
+    // slider is bound to this same `depth` the chart consumes, so the bar and the
+    // chart never drift.
     let depth = $state(2);
     const max = $derived(maxAccountDepth(txns, accounts));
-    const clampedDepth = $derived(Math.min(depth, max));
 </script>
 
 <section class="collapse-arrow bg-base-200 collapse" data-testid="insights-panel">
@@ -43,7 +45,13 @@
     </div>
     <div class="collapse-content flex flex-col gap-4">
         <BigNumbers {txns} {accounts} {allTxns} />
-        <ChartWidget {txns} {accounts} {allTxns} depth={clampedDepth} />
-        <DepthSlider bind:depth {max} />
+        <ChartWidget {txns} {accounts} {allTxns} {depth} />
+        <!-- Keyed on max: the slider can mount while txns are still loading (max=1),
+             and the browser clamps the input's value to that max without updating the
+             bound state; remounting once the real max arrives re-applies `depth`
+             (same guard as reports/ui/ReportControls.svelte). -->
+        {#key max}
+            <DepthSlider bind:depth {max} />
+        {/key}
     </div>
 </section>

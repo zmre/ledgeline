@@ -239,15 +239,26 @@
           cp ${ledgelineIcns} "$app/Contents/Resources/ledgeline.icns"
         '';
 
-        # 6. Combined darwin install: the CLI binary (`bin/ledgeline`, real SPA)
-        #    PLUS the `Applications/Ledgeline.app` bundle, joined into one output.
-        #    A bare `nix build` (or a profile / home-manager install) then puts
-        #    BOTH on the system — the CLI on PATH via `bin/`, and the app where
-        #    nix-darwin / home-manager's app linking picks it up via
-        #    `Applications/`. Both reference the same real-SPA binary.
+        # 6. Combined darwin install: the `Applications/Ledgeline.app` bundle PLUS
+        #    a `bin/ledgeline` that is a SYMLINK INTO the bundle
+        #    (`Contents/MacOS/ledgeline`) rather than a second, standalone copy of
+        #    the binary. Launching the CLI symlink resolves (via `realpath`) to a
+        #    path inside `Ledgeline.app/Contents/MacOS/`, so macOS locates the
+        #    bundle's Info.plist + icon and shows the real app icon in the Dock
+        #    even when the binary is started from a terminal. Both entry points are
+        #    thus the one real-SPA binary embedded in the bundle. A bare `nix build`
+        #    (or a profile / home-manager install) still puts BOTH on the system —
+        #    the CLI on PATH via `bin/`, and the app where nix-darwin /
+        #    home-manager's app linking picks it up via `Applications/`. The
+        #    `bin/ledgeline` link is relative so it keeps resolving into the bundle
+        #    within whatever prefix the output is installed under.
         macDist = pkgs.symlinkJoin {
           name = "ledgeline-${version}";
-          paths = [ ledgelineWithSpa macApp ];
+          paths = [ macApp ];
+          postBuild = ''
+            mkdir -p "$out/bin"
+            ln -s ../Applications/Ledgeline.app/Contents/MacOS/ledgeline "$out/bin/ledgeline"
+          '';
           meta = ledgeline.meta;
         };
       in
