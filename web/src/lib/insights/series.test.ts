@@ -16,6 +16,7 @@ import {
     pieData,
     rankedAccounts,
     styleFor,
+    visibleNet,
 } from "./series";
 
 // ---------- helpers ----------
@@ -217,6 +218,62 @@ describe("UNIT bigNumbers sign conventions", () => {
         const {income, expenses} = bigNumbers(txns, "EUR");
         expect(toNumber(income)).toBe(0);
         expect(toNumber(expenses)).toBe(0);
+    });
+});
+
+// ---------- footer "Visible Journal Total" ----------
+
+describe("UNIT visibleNet (footer total)", () => {
+    it("nets income against expenses per commodity: revenue positive, spending negative", () => {
+        const txns = [
+            txn("2025-01-01", posting("income:salary", usd(-5000_00)), posting("assets:bank", usd(5000_00))),
+            txn("2025-01-02", posting("expenses:rent", usd(1800_00)), posting("assets:bank", usd(-1800_00))),
+        ];
+        const net = visibleNet(txns);
+        expect(net).toHaveLength(1);
+        expect(net[0].commodity).toBe("$");
+        expect(fmt(net[0].qty)).toBe("3,200.00"); // 5000 income − 1800 spent
+    });
+
+    it("a reimbursement posted back to the same account zeroes out (line dropped)", () => {
+        const txns = [
+            txn("2025-01-01", posting("expenses:shopping", usd(500_00)), posting("assets:bank", usd(-500_00))),
+            txn("2025-01-02", posting("expenses:shopping", usd(-500_00)), posting("assets:bank", usd(500_00))), // paid back
+        ];
+        expect(visibleNet(txns)).toEqual([]); // net shopping is 0 → no total line
+    });
+
+    it("scopes to the account selection: selecting expenses shows the spend as negative", () => {
+        const txns = [
+            txn("2025-01-01", posting("income:salary", usd(-5000_00)), posting("assets:bank", usd(5000_00))),
+            txn("2025-01-02", posting("expenses:rent", usd(1800_00)), posting("assets:bank", usd(-1800_00))),
+        ];
+        const net = visibleNet(txns, new Set(["expenses"])); // income posting excluded by the selection
+        expect(net).toHaveLength(1);
+        expect(fmt(net[0].qty)).toBe("-1,800.00");
+    });
+
+    it("reports only the primary (most-used) commodity", () => {
+        const txns = [
+            // three $ postings vs one EUR pair → $ is primary; EUR is left out of the footer total
+            txn("2025-01-02", posting("expenses:rent", usd(1800_00)), posting("assets:bank", usd(-1800_00))),
+            txn("2025-01-02", posting("expenses:food", usd(50_00)), posting("assets:bank", usd(-50_00))),
+            txn("2025-01-03", posting("expenses:travel", eur(200_00)), posting("assets:wise", eur(-200_00))),
+        ];
+        const net = visibleNet(txns);
+        expect(net).toHaveLength(1);
+        expect(net[0].commodity).toBe("$");
+        expect(fmt(net[0].qty)).toBe("-1,850.00"); // only the $ spend; EUR excluded
+    });
+
+    it("uses conventionTxns so a refund-only filtered period keeps the journal's sign", () => {
+        const journal = [
+            txn("2025-06-01", posting("expenses:food", usd(900_00)), posting("assets:bank", usd(-900_00))),
+            txn("2025-07-01", posting("expenses:food", usd(-20_00)), posting("assets:bank", usd(20_00))), // July: refund only
+        ];
+        const july = [journal[1]];
+        // Journal-wide convention is standard, so the lone refund reads as money back: +20 net, not −20.
+        expect(fmt(visibleNet(july, undefined, journal)[0].qty)).toBe("20.00");
     });
 });
 

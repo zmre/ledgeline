@@ -8,7 +8,7 @@
 
 import {accountMatches, categorize, clampAccount, type RootCategory} from "$lib/domain/accounts";
 import {add, cmp, dec, formatAmount, neg, sub, toNumber, type Dec} from "$lib/domain/money";
-import type {AmountStyle, ISODate, Transaction} from "$lib/domain/types";
+import type {Amount, AmountStyle, ISODate, Transaction} from "$lib/domain/types";
 
 export interface PieDatum {
     account: string;
@@ -348,6 +348,25 @@ export function bigNumbers(
         }
     }
     return {income, expenses, net: sub(income, expenses)};
+}
+
+/**
+ * The journal footer's "Visible Journal Total": the net (income − expenses) of
+ * the filtered transactions for the PRIMARY commodity — the most-used one in the
+ * filtered view, the same commodity the insights "Net" shows. Reuses bigNumbers,
+ * so expenses pull the total negative, revenue pulls it positive, and equal
+ * refunds/reimbursements offset to nothing (see signConventions). Only postings
+ * matching `accounts` count. Returned as an array (0 or 1 element) so the footer
+ * renders it uniformly: empty when the view has no postings or the net is exactly
+ * zero. Scoping to one commodity keeps the cost a fixed number of journal scans
+ * instead of one per commodity. Pass the whole journal as `conventionTxns` for a
+ * sign convention that stays stable across filter changes.
+ */
+export function visibleNet(txns: Transaction[], accounts?: AccountSelection, conventionTxns?: Transaction[]): Amount[] {
+    const commodity = commoditiesInUse(txns, accounts)[0];
+    if (commodity === undefined) return [];
+    const qty = bigNumbers(txns, commodity, accounts, conventionTxns).net;
+    return qty.m === 0n ? [] : [{commodity, qty, style: styleFor(txns, commodity)}];
 }
 
 /**
