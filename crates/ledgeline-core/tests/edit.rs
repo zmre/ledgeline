@@ -1095,6 +1095,9 @@ fn write_per_year() -> PerYear {
     let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("ledgeline-py-{}-{seq}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
+    // On macOS $TMPDIR is /var/... (a symlink to /private/var/...); the parser stores
+    // canonicalized `source_file` paths, so canonicalize the root here to match.
+    let dir = dir.canonicalize().expect("canonicalize temp dir");
     let main = dir.join("main.journal");
     let y2024 = dir.join("2024.journal");
     let y2025 = dir.join("2025.journal");
