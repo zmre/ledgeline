@@ -76,6 +76,13 @@ describe("UNIT LedgelineApi — query building", () => {
         expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/holdings/series?asOf=2026-07-08&mode=include&interval=monthly&count=12");
     });
 
+    it("builds the budget query at the top-level /api/budget route (not under /api/reports/)", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({buckets: [], rows: [], totals: []}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").budget({end: "2026-07-31", interval: "monthly", count: 7, depth: 2});
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/budget?end=2026-07-31&interval=monthly&count=7&depth=2");
+    });
+
     it("comma-joins subtree roots and adds the series window", async () => {
         const fetchMock = vi.fn().mockResolvedValue(jsonResponse({base: "$", points: [], hasBasis: false}));
         vi.stubGlobal("fetch", fetchMock);
