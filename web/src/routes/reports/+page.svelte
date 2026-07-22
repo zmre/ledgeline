@@ -10,14 +10,25 @@
     import {onMount} from "svelte";
     import {replaceState} from "$app/navigation";
     import {NativeApiUnavailableError} from "$lib/api/native";
-    import {exportXlsx} from "$lib/export/xlsx";
+    import {declaredTypes} from "$lib/domain/accountTypes";
+    import {exportBudgetXlsx, exportXlsx} from "$lib/export/xlsx";
+    import BudgetSummary from "$lib/reports/ui/BudgetSummary.svelte";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import ReportControls from "$lib/reports/ui/ReportControls.svelte";
     import ReportTable from "$lib/reports/ui/ReportTable.svelte";
     import ReportTabs from "$lib/reports/ui/ReportTabs.svelte";
-    import {defaultReportParams, paramsToSearch, searchToParams, TAB_DEFAULTS, type ReportParams, type ReportTab} from "$lib/reports/ui/params";
+    import {
+        budgetPresetRange,
+        defaultReportParams,
+        DEFAULT_BUDGET_PRESET,
+        paramsToSearch,
+        searchToParams,
+        TAB_DEFAULTS,
+        type ReportParams,
+        type ReportTab,
+    } from "$lib/reports/ui/params";
     import {reportStyles} from "$lib/reports/ui/styles";
-    import {buildReportQuery, reports} from "$lib/stores/reports.svelte";
+    import {buildReportQuery, reports, type AnyReport} from "$lib/stores/reports.svelte";
     import {journal} from "$lib/stores/journal.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
@@ -35,8 +46,8 @@
         };
     });
 
-    // Each tab seeds its own interval/count on activation (cash flow wants
-    // monthly/12, net worth yearly/5; bs/is ignore these). Depth stays shared.
+    // Each tab seeds its own defaults on activation (cash flow wants monthly/12,
+    // net worth yearly/5, budget year-to-date; bs/is ignore interval/count).
     $effect(() => {
         const tab = params.tab;
         if (!restored || tab === activeTab) return;
@@ -44,6 +55,11 @@
         const d = TAB_DEFAULTS[tab];
         params.interval = d.interval;
         params.count = d.count;
+        if (tab === "budget") {
+            const range = budgetPresetRange(DEFAULT_BUDGET_PRESET);
+            params.from = range.from;
+            params.to = range.to;
+        }
     });
 
     // Mirror params → URL, debounced, replaceState (no history entries, no loops).
@@ -85,13 +101,20 @@
 
     const styles = $derived(reportStyles(journal.txns));
     const stylesReady = $derived(journal.txns.length > 0);
+    const declared = $derived(declaredTypes(journal.accountDecls));
     const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
 
     const report = $derived(reports.report);
     const nativeUnavailable = $derived(reports.error instanceof NativeApiUnavailableError);
 
+    // Discriminate the report shape: budget (kind:"budget") → BudgetSummary; bs/is/cf/nw → ReportTable.
+    // Guarding on structure (not params.tab) survives the window where the last good report is still
+    // the previous tab's while the new one loads.
+    const budgetReport = $derived(report !== null && "kind" in report ? report : null);
+    const tableReport = $derived(report !== null && !("kind" in report) ? report : null);
+
     /** Commodities the valuation had to skip (net worth) — surfaced as a warning badge. */
-    const unpriced = $derived.by(() => (report !== null && !("sections" in report) ? (report.meta?.unpriced ?? []) : []));
+    const unpriced = $derived.by(() => (tableReport !== null && !("sections" in tableReport) ? (tableReport.meta?.unpriced ?? []) : []));
 
     const exportInfo = $derived.by(() => {
         const span = `last ${params.count} ${params.interval} periods ending ${params.end}`;
@@ -108,8 +131,16 @@
                 return {title: "Cash Flow", params: `${span}, depth ${params.depth}`, filename: `cash-flow-${params.end}.xlsx`};
             case "nw":
                 return {title: "Net Worth", params: `${span}, depth ${params.depth}`, filename: `net-worth-${params.end}.xlsx`};
+            case "budget":
+                return {title: "Budget", params: `${params.from} to ${params.to}, depth ${params.depth}`, filename: `budget-${params.from}-to-${params.to}.xlsx`};
         }
     });
+
+    /** Export the current report — budget uses its own workbook builder; the rest share exportXlsx. */
+    function runExport(current: AnyReport): Promise<void> {
+        const meta = {title: exportInfo.title, params: exportInfo.params};
+        return "kind" in current ? exportBudgetXlsx(current, meta, exportInfo.filename, declared) : exportXlsx(current, meta, exportInfo.filename);
+    }
 </script>
 
 <svelte:head><title>Ledgeline — Reports</title></svelte:head>
@@ -119,7 +150,7 @@
         <ReportTabs bind:tab={params.tab} />
         {#if report !== null}
             {@const current = report}
-            <ExportButton run={() => exportXlsx(current, {title: exportInfo.title, params: exportInfo.params}, exportInfo.filename)} />
+            <ExportButton run={() => runExport(current)} />
         {/if}
     </div>
 
@@ -131,8 +162,10 @@
         </div>
     {/if}
 
-    {#if report !== null && stylesReady}
-        <ReportTable {report} {styles} />
+    {#if budgetReport !== null && stylesReady}
+        <BudgetSummary report={budgetReport} {styles} {declared} from={params.from} to={params.to} />
+    {:else if tableReport !== null && stylesReady}
+        <ReportTable report={tableReport} {styles} />
     {:else if report === null && reports.status === "error"}
         <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="reports-error">
             <span>{nativeUnavailable ? reports.error?.message : `Couldn't load the report: ${reports.error?.message ?? "unknown error"}`}</span>

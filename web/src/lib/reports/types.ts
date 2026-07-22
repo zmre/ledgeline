@@ -52,4 +52,31 @@ export interface PeriodReport {
     meta?: ReportMeta;
 }
 
-// TODO(post-MVP): budget report types (periodic budget vs. actuals per account).
+// Budget report (actuals vs. `~` periodic-rule goals). Structurally a period
+// report whose cells are two-valued: `actual` and, when the account is part of
+// the selected goal tree, `goal` (null for `<unbudgeted>` and non-budgeted
+// accounts — kept distinct from an all-zero `{}` goal). The `kind` tag
+// discriminates it from PeriodReport (both carry buckets/rows/totals).
+
+/** One account × bucket cell: the actual balance and, when budgeted, its goal. */
+export interface BudgetCell {
+    actual: MixedAmount;
+    /** Subaccount-inclusive goal, or null when the account has no goal (e.g. `<unbudgeted>`). */
+    goal: MixedAmount | null;
+}
+
+/** One budget row: an account and its per-bucket cells (parallel to `buckets`). */
+export interface BudgetRow {
+    account: string;
+    /** Number of `:`-separated segments in `account`. */
+    depth: number;
+    cells: BudgetCell[];
+}
+
+/** Budget report: bucket keys (oldest → newest), rows, and a grand-total cell per bucket. */
+export interface BudgetReport {
+    kind: "budget";
+    buckets: string[];
+    rows: BudgetRow[];
+    totals: BudgetCell[];
+}

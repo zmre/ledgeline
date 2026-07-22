@@ -4,10 +4,12 @@
 // export boundary is acceptable per plans/07; the Excel number format keeps
 // the Dec's decimal places.
 
-import {MAX_DISPLAY_DECIMALS, toNumber, type Dec, type MixedAmount} from "$lib/domain/money";
+import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
+import {maAdd, maNeg, MAX_DISPLAY_DECIMALS, toNumber, type Dec, type MixedAmount} from "$lib/domain/money";
 import type {HoldingsReport} from "$lib/holdings/types";
+import {budgetLeaves, magnitudeAmount, primaryValue, summarizeBudget} from "$lib/reports/budgetSummary";
 import {bucketLabel} from "$lib/reports/periods";
-import type {PeriodReport, SectionedReport} from "$lib/reports/types";
+import type {BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
 import {compressPeriodRows, compressSectionRows} from "$lib/reports/ui/displayRows";
 import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build time
 
@@ -112,6 +114,48 @@ function addPeriod(ws: Worksheet, report: PeriodReport): void {
     });
 }
 
+/** Set a "% of budget" cell (spent/budget as a fraction; Excel's % format multiplies by 100). */
+function setPct(cell: Cell, spent: number | null, budget: number | null, bold = false): void {
+    if (spent === null || budget === null || budget === 0) return;
+    cell.value = spent / budget;
+    cell.numFmt = "0%";
+    cell.alignment = {...cell.alignment, horizontal: "right"};
+    if (bold) cell.font = {bold: true};
+}
+
+/**
+ * Budget summary: Spent / Budget / Remaining / % of budget per leaf category,
+ * then a bold total. Matches the on-screen view — only revenue & expense
+ * accounts, amounts in magnitude (income budgets are negative on the wire).
+ */
+function addBudget(ws: Worksheet, report: BudgetReport, declared: ReadonlyMap<string, AccountType>): void {
+    const shown = budgetLeaves(summarizeBudget(report)).filter((l) => {
+        const t = resolveAccountType(l.account, declared);
+        return t === "revenue" || t === "expense";
+    });
+    let rowIx = 5;
+    let totActual: MixedAmount = new Map();
+    let totGoal: MixedAmount = new Map();
+    for (const line of shown) {
+        const goal = magnitudeAmount(line.goal ?? new Map());
+        const actual = magnitudeAmount(line.actual);
+        labelCell(ws, rowIx, line.account, 0);
+        setAmount(ws.getCell(rowIx, 2), actual);
+        setAmount(ws.getCell(rowIx, 3), goal);
+        setAmount(ws.getCell(rowIx, 4), maAdd(goal, maNeg(actual)));
+        setPct(ws.getCell(rowIx, 5), primaryValue(actual), primaryValue(goal));
+        totActual = maAdd(totActual, actual);
+        totGoal = maAdd(totGoal, goal);
+        rowIx += 1;
+    }
+    labelCell(ws, rowIx, "Total", 0, true);
+    setAmount(ws.getCell(rowIx, 2), totActual);
+    setAmount(ws.getCell(rowIx, 3), totGoal);
+    setAmount(ws.getCell(rowIx, 4), maAdd(totGoal, maNeg(totActual)));
+    for (const col of [2, 3, 4]) ws.getCell(rowIx, col).font = {bold: true};
+    setPct(ws.getCell(rowIx, 5), primaryValue(totActual), primaryValue(totGoal), true);
+}
+
 /** Build the workbook (exported separately so tests can read it back without a DOM). */
 export async function buildWorkbook(report: SectionedReport | PeriodReport, meta: {title: string; params: string}): Promise<Workbook> {
     const {Workbook: ExcelWorkbook} = await import("exceljs");
@@ -169,6 +213,20 @@ export async function buildHoldingsWorkbook(report: HoldingsReport, meta: {title
     return workbook;
 }
 
+/** Budget workbook: one row per revenue/expense leaf (Spent/Budget/Remaining/% of budget) and a bold total. */
+export async function buildBudgetWorkbook(
+    report: BudgetReport,
+    meta: {title: string; params: string},
+    declared: ReadonlyMap<string, AccountType>
+): Promise<Workbook> {
+    const {Workbook: ExcelWorkbook} = await import("exceljs");
+    const workbook = new ExcelWorkbook();
+    const ws = workbook.addWorksheet(meta.title);
+    addTitleRows(ws, meta, ["Account", "Spent", "Budget", "Remaining", "% of budget"]);
+    addBudget(ws, report, declared);
+    return workbook;
+}
+
 /** Serialize the workbook and trigger a browser download (Blob + anchor). */
 async function downloadWorkbook(workbook: Workbook, filename: string): Promise<void> {
     const buffer = await workbook.xlsx.writeBuffer();
@@ -194,4 +252,14 @@ export async function exportXlsx(report: SectionedReport | PeriodReport, meta: {
 /** Build the holdings .xlsx and trigger a browser download. */
 export async function exportHoldingsXlsx(report: HoldingsReport, meta: {title: string; params: string}, filename: string): Promise<void> {
     await downloadWorkbook(await buildHoldingsWorkbook(report, meta), filename);
+}
+
+/** Build the budget .xlsx and trigger a browser download. */
+export async function exportBudgetXlsx(
+    report: BudgetReport,
+    meta: {title: string; params: string},
+    filename: string,
+    declared: ReadonlyMap<string, AccountType>
+): Promise<void> {
+    await downloadWorkbook(await buildBudgetWorkbook(report, meta, declared), filename);
 }

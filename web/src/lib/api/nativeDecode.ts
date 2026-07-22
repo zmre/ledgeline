@@ -15,7 +15,7 @@
 import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
 import type {Holding, HoldingsPoint, HoldingsReport, HoldingsSeries, HoldingsWarning} from "$lib/holdings/types";
-import type {PeriodReport, ReportRow, Section, SectionedReport} from "$lib/reports/types";
+import type {BudgetCell, BudgetReport, BudgetRow, PeriodReport, ReportRow, Section, SectionedReport} from "$lib/reports/types";
 import {ApiShapeError} from "./client";
 
 // ---------------------------------------------------------------------------
@@ -68,6 +68,24 @@ interface RawPeriodReport {
     rows?: RawPeriodRow[];
     totals?: RawMixed[];
     meta?: RawReportMeta | null;
+}
+
+interface RawBudgetCell {
+    actual?: RawMixed;
+    // `null` = no goal (e.g. <unbudgeted>); an object (possibly {}) = budgeted.
+    goal?: RawMixed | null;
+}
+
+interface RawBudgetRow {
+    account?: string;
+    depth?: number;
+    cells?: RawBudgetCell[];
+}
+
+interface RawBudgetReport {
+    buckets?: unknown[];
+    rows?: RawBudgetRow[];
+    totals?: RawBudgetCell[];
 }
 
 interface RawHoldingPrice {
@@ -246,6 +264,43 @@ export function decodePeriodReport(raw: unknown): PeriodReport {
         out.meta = Object.freeze({unpriced: frozen(decodeStrings(report.meta.unpriced, "report meta.unpriced"))});
     }
     return Object.freeze(out);
+}
+
+// ---------------------------------------------------------------------------
+// BudgetReport (actuals vs. periodic-rule goals)
+// ---------------------------------------------------------------------------
+
+function decodeBudgetCell(raw: RawBudgetCell | undefined, context: string): BudgetCell {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing cell`);
+    return Object.freeze({
+        actual: decodeMixed(raw.actual, `${context} actual`),
+        // null (no goal) stays null; an object (incl. {} = budgeted-but-zero) decodes to a Map.
+        goal: raw.goal === null || raw.goal === undefined ? null : decodeMixed(raw.goal, `${context} goal`),
+    });
+}
+
+function decodeBudgetRow(raw: RawBudgetRow | undefined, context: string): BudgetRow {
+    if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number" || !Array.isArray(raw.cells)) {
+        throw new ApiShapeError(`${context}: missing account/depth/cells`);
+    }
+    return Object.freeze({
+        account: raw.account,
+        depth: raw.depth,
+        cells: frozen(raw.cells.map((cell, i) => decodeBudgetCell(cell, `${context} cells[${i}]`))),
+    });
+}
+
+export function decodeBudgetReport(raw: unknown): BudgetReport {
+    const report = raw as RawBudgetReport;
+    if (typeof report !== "object" || report === null || !Array.isArray(report.buckets) || !Array.isArray(report.rows) || !Array.isArray(report.totals)) {
+        throw new ApiShapeError("budget report: expected buckets/rows/totals arrays");
+    }
+    return Object.freeze({
+        kind: "budget" as const,
+        buckets: frozen(decodeStrings(report.buckets, "budget buckets")),
+        rows: frozen(report.rows.map((row, i) => decodeBudgetRow(row, `budget row #${i}`))),
+        totals: frozen(report.totals.map((total, i) => decodeBudgetCell(total, `budget totals[${i}]`))),
+    });
 }
 
 // ---------------------------------------------------------------------------

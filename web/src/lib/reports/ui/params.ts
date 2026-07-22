@@ -8,18 +8,19 @@
 // have moved on. Params for inactive tabs are never written.
 
 import type {ISODate} from "$lib/domain/types";
-import {today} from "$lib/reports/periods";
+import {bucketEnd, bucketStart, lastNBuckets, today} from "$lib/reports/periods";
 
-export type ReportTab = "bs" | "is" | "cf" | "nw";
+export type ReportTab = "bs" | "is" | "cf" | "nw" | "budget";
 export type ReportInterval = "monthly" | "quarterly" | "yearly";
 
-export const TAB_ORDER: ReportTab[] = ["bs", "is", "cf", "nw"];
+export const TAB_ORDER: ReportTab[] = ["bs", "is", "cf", "nw", "budget"];
 
 export const TAB_LABELS: Record<ReportTab, string> = {
     bs: "Balance Sheet",
     is: "P&L",
     cf: "Cash Flow",
     nw: "Net Worth",
+    budget: "Budget",
 };
 
 /** One flat parameter set shared by all tabs, so switching tabs keeps settings. */
@@ -47,25 +48,76 @@ export interface ControlsConfig {
     interval: boolean;
     count: boolean;
     depth: boolean;
+    /** Budget-only: show the period-preset buttons above the from/to range inputs. */
+    budgetPreset: boolean;
 }
 
 export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
-    bs: {asOf: true, range: false, end: false, interval: false, count: false, depth: true},
-    is: {asOf: false, range: true, end: false, interval: false, count: false, depth: true},
-    cf: {asOf: false, range: false, end: true, interval: true, count: true, depth: true},
-    nw: {asOf: false, range: false, end: true, interval: true, count: true, depth: true},
+    bs: {asOf: true, range: false, end: false, interval: false, count: false, depth: true, budgetPreset: false},
+    is: {asOf: false, range: true, end: false, interval: false, count: false, depth: true, budgetPreset: false},
+    cf: {asOf: false, range: false, end: true, interval: true, count: true, depth: true, budgetPreset: false},
+    nw: {asOf: false, range: false, end: true, interval: true, count: true, depth: true, budgetPreset: false},
+    // Budget: a from/to range (with preset buttons) + depth; interval is always monthly (derived in the store).
+    budget: {asOf: false, range: true, end: false, interval: false, count: false, depth: true, budgetPreset: true},
 };
 
 /** Per-tab default interval/count, applied on tab activation (cash flow and net
- *  worth want different lookbacks: monthly/12 vs yearly/5). Depth is shared. */
+ *  worth want different lookbacks: monthly/12 vs yearly/5). Depth is shared.
+ *  Budget derives its own count from the range, so its entry is inert. */
 export const TAB_DEFAULTS: Record<ReportTab, {interval: ReportInterval; count: number}> = {
     bs: {interval: "monthly", count: 12},
     is: {interval: "monthly", count: 12},
     cf: {interval: "monthly", count: 12},
     nw: {interval: "yearly", count: 5},
+    budget: {interval: "monthly", count: 12},
 };
 
 export const MAX_COUNT = 120;
+
+// --- Budget period presets ---------------------------------------------------
+// The budget summary is period-based; these presets set the from/to range that
+// the store turns into monthly buckets. "Custom" = any range not matching one.
+
+export type BudgetPreset = "this-month" | "last-month" | "ytd" | "this-year" | "trailing-12";
+
+export const BUDGET_PRESETS: {id: BudgetPreset; label: string}[] = [
+    {id: "this-month", label: "This month"},
+    {id: "last-month", label: "Last month"},
+    {id: "ytd", label: "Year to date"},
+    {id: "this-year", label: "This year"},
+    {id: "trailing-12", label: "Trailing 12 mo"},
+];
+
+/** The default budget range: year-to-date (Jan 1 → today). */
+export const DEFAULT_BUDGET_PRESET: BudgetPreset = "ytd";
+
+/** Resolve a preset to an inclusive from/to range, relative to `now`. */
+export function budgetPresetRange(preset: BudgetPreset, now: ISODate = today()): {from: ISODate; to: ISODate} {
+    const year = now.slice(0, 4);
+    switch (preset) {
+        case "this-month":
+            return {from: bucketStart(now.slice(0, 7)), to: now};
+        case "last-month": {
+            const prev = lastNBuckets(now, "monthly", 2)[0];
+            return {from: bucketStart(prev), to: bucketEnd(prev)};
+        }
+        case "ytd":
+            return {from: `${year}-01-01`, to: now};
+        case "this-year":
+            return {from: `${year}-01-01`, to: `${year}-12-31`};
+        case "trailing-12":
+            return {from: bucketStart(lastNBuckets(now, "monthly", 12)[0]), to: now};
+    }
+}
+
+/** Which preset (if any) the current from/to range matches; "custom" otherwise. */
+export function activeBudgetPreset(from: ISODate, to: ISODate, now: ISODate = today()): BudgetPreset | "custom" {
+    for (const {id} of BUDGET_PRESETS) {
+        const range = budgetPresetRange(id, now);
+        if (range.from === from && range.to === to) return id;
+    }
+    return "custom";
+}
 
 /** Defaults per plans/07: bs as-of today, P&L this calendar year, cf/nw last 12 months. */
 export function defaultReportParams(now: ISODate = today()): ReportParams {

@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {ApiShapeError} from "./client";
-import {decodeHoldingsReport, decodeHoldingsSeries, decodePeriodReport, decodeSectionedReport} from "./nativeDecode";
+import {decodeBudgetReport, decodeHoldingsReport, decodeHoldingsSeries, decodePeriodReport, decodeSectionedReport} from "./nativeDecode";
 
 // Native-shape samples mirror crates/ledgeline-server/src/reports_api.rs and
 // were captured live from ledgeline-server against fixtures/sample.journal.
@@ -108,6 +108,55 @@ describe("UNIT nativeDecode — PeriodReport", () => {
 
     it("throws ApiShapeError when totals is missing", () => {
         expect(() => decodePeriodReport({buckets: [], rows: []})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — BudgetReport", () => {
+    // Mirrors crates/ledgeline-server/tests/report_endpoints.rs:
+    // GET /api/budget?end=2026-02-28&interval=monthly&count=2
+    const raw = {
+        buckets: ["2026-01", "2026-02"],
+        rows: [
+            // <unbudgeted> catch-all: goal is always null.
+            {account: "<unbudgeted>", depth: 1, cells: [{actual: {$: dec(-375, 0)}, goal: null}, {actual: {}, goal: null}]},
+            // budgeted account with a goal each bucket.
+            {account: "expenses:food", depth: 2, cells: [{actual: {$: dec(352, 0)}, goal: {$: dec(400, 0)}}, {actual: {$: dec(390, 0)}, goal: {$: dec(400, 0)}}]},
+            // budgeted-but-zero-this-bucket: goal is {} (empty object), NOT null.
+            {account: "expenses:gifts", depth: 2, cells: [{actual: {}, goal: {}}, {actual: {$: dec(50, 0)}, goal: {$: dec(25, 0)}}]},
+        ],
+        totals: [{actual: {$: dec(-23, 0)}, goal: {$: dec(400, 0)}}, {actual: {$: dec(65, 0)}, goal: {$: dec(425, 0)}}],
+    };
+
+    it("decodes buckets, cells, and the actual/goal pair", () => {
+        const report = decodeBudgetReport(raw);
+        expect(report.kind).toBe("budget");
+        expect(report.buckets).toEqual(["2026-01", "2026-02"]);
+        expect(report.rows).toHaveLength(3);
+
+        const food = report.rows[1];
+        expect(food).toMatchObject({account: "expenses:food", depth: 2});
+        expect(food.cells[0].actual.get("$")).toEqual({m: 352n, p: 0});
+        expect(food.cells[0].goal?.get("$")).toEqual({m: 400n, p: 0});
+        expect(report.totals[0].goal?.get("$")).toEqual({m: 400n, p: 0});
+    });
+
+    it("keeps null goal (unbudgeted) distinct from an empty-object goal (budgeted-but-zero)", () => {
+        const report = decodeBudgetReport(raw);
+        // <unbudgeted>: null goal, and its second cell's actual is an all-zero {} → empty Map
+        expect(report.rows[0].cells[0].goal).toBeNull();
+        expect(report.rows[0].cells[1].actual.size).toBe(0);
+        // expenses:gifts bucket 0: goal is {} → an EMPTY Map, not null
+        const gifts = report.rows[2];
+        expect(gifts.cells[0].goal).not.toBeNull();
+        expect(gifts.cells[0].goal?.size).toBe(0);
+    });
+
+    it("throws ApiShapeError when totals is missing", () => {
+        expect(() => decodeBudgetReport({buckets: [], rows: []})).toThrow(ApiShapeError);
+    });
+
+    it("throws ApiShapeError when a row lacks cells", () => {
+        expect(() => decodeBudgetReport({buckets: ["2026-01"], rows: [{account: "a", depth: 1}], totals: []})).toThrow(ApiShapeError);
     });
 });
 

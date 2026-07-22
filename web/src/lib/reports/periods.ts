@@ -155,6 +155,13 @@ export function lastNBuckets(end: ISODate, interval: Interval, n: number): strin
     return out.reverse();
 }
 
+/** Number of monthly buckets spanning `from`…`to` inclusive (min 1). "2026-01"→"2026-07" = 7. */
+export function monthsBetween(from: ISODate, to: ISODate): number {
+    const [fy, fm] = [Number(from.slice(0, 4)), Number(from.slice(5, 7))];
+    const [ty, tm] = [Number(to.slice(0, 4)), Number(to.slice(5, 7))];
+    return Math.max(1, (ty - fy) * 12 + (tm - fm) + 1);
+}
+
 /** Today's LOCAL date — the only allowed `Date` usage in date math. */
 export function today(): ISODate {
     const now = new Date();

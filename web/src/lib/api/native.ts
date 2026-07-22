@@ -170,6 +170,14 @@ export interface NetWorthQuery {
     depth?: number;
     valueIn?: string;
 }
+export interface BudgetQuery {
+    end?: string;
+    interval?: string;
+    count?: number;
+    depth?: number;
+    /** Case-insensitive periodic-rule description filter; absent/empty = all rules. */
+    budgetDesc?: string;
+}
 export interface HoldingsQuery {
     asOf?: string;
     /** Comma-separated subtree roots; empty = all accounts. */
@@ -234,6 +242,13 @@ export class LedgelineApi {
     netWorth(query: NetWorthQuery = {}): Promise<unknown> {
         return this.getJson(
             `/api/reports/networth${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, valueIn: query.valueIn})}`
+        );
+    }
+
+    /** Budget report (actuals vs. periodic-rule goals). Note: top-level /api/budget, NOT under /api/reports/. */
+    budget(query: BudgetQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/budget${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, budgetDesc: query.budgetDesc})}`
         );
     }
 

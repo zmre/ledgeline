@@ -6,9 +6,13 @@
 // the very first load shows a spinner).
 
 import {LedgelineApi} from "$lib/api/native";
-import {decodePeriodReport, decodeSectionedReport} from "$lib/api/nativeDecode";
-import type {PeriodReport, SectionedReport} from "$lib/reports/types";
+import {decodeBudgetReport, decodePeriodReport, decodeSectionedReport} from "$lib/api/nativeDecode";
+import {monthsBetween} from "$lib/reports/periods";
+import type {BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
 import type {ReportInterval, ReportParams} from "$lib/reports/ui/params";
+
+/** The union of every report shape the store can hold. */
+export type AnyReport = SectionedReport | PeriodReport | BudgetReport;
 
 export type ReportStatus = "idle" | "loading" | "ready" | "error";
 
@@ -17,7 +21,8 @@ export type ReportQuery =
     | {tab: "bs"; asOf: string; depth: number}
     | {tab: "is"; from: string; to: string; depth: number}
     | {tab: "cf"; end: string; interval: ReportInterval; count: number; depth: number}
-    | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number};
+    | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number}
+    | {tab: "budget"; end: string; count: number; depth: number};
 
 /** Map ReportParams → the active tab's endpoint query (drives both the fetch and the refetch key). */
 export function buildReportQuery(params: ReportParams): ReportQuery {
@@ -30,10 +35,13 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
             return {tab: "cf", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
         case "nw":
             return {tab: "nw", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
+        case "budget":
+            // The budget summary spans the from/to range as monthly buckets, aggregated client-side.
+            return {tab: "budget", end: params.to, count: monthsBetween(params.from, params.to), depth: params.depth};
     }
 }
 
-async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<SectionedReport | PeriodReport> {
+async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyReport> {
     switch (query.tab) {
         case "bs":
             return decodeSectionedReport(await api.balanceSheet({asOf: query.asOf, depth: query.depth}));
@@ -43,17 +51,19 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<Secti
             return decodePeriodReport(await api.cashFlow({end: query.end, interval: query.interval, count: query.count, depth: query.depth}));
         case "nw":
             return decodePeriodReport(await api.netWorth({end: query.end, interval: query.interval, count: query.count, depth: query.depth}));
+        case "budget":
+            return decodeBudgetReport(await api.budget({end: query.end, interval: "monthly", count: query.count, depth: query.depth}));
     }
 }
 
-let report = $state<SectionedReport | PeriodReport | null>(null);
+let report = $state<AnyReport | null>(null);
 let status = $state<ReportStatus>("idle");
 let error = $state<Error | null>(null);
 let seq = 0;
 
 export const reports = {
     /** The last successfully decoded report, or null before the first load. */
-    get report(): SectionedReport | PeriodReport | null {
+    get report(): AnyReport | null {
         return report;
     },
     get status(): ReportStatus {
