@@ -169,40 +169,101 @@ pub(crate) fn reload_journal(path: &Path, state: &AppState) {
     }
 }
 
-/// Watch the journal file for changes and hot-swap on each edit.
+/// Watch every file the journal depends on — the main file plus each `include`d
+/// file — and hot-swap on any edit to one of them.
 ///
-/// We watch the containing directory (non-recursively) and filter to the target
-/// file name, which survives the atomic rename-into-place that most editors use
-/// on save (a direct single-file watch would lose the inode). The returned
-/// watcher must be kept alive for as long as watching is desired.
+/// We watch each containing directory (non-recursively) rather than the files
+/// directly, which survives the atomic rename-into-place most editors use on save
+/// (a direct single-file watch would lose the inode). Events are filtered against
+/// the journal's *current* source-file set, re-read on each event so that adding
+/// or removing an `include` is honored without recreating the watcher. The
+/// returned watcher must be kept alive for as long as watching is desired.
 pub(crate) fn spawn_watcher(path: &Path, state: AppState) -> Result<RecommendedWatcher, AppError> {
     let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let dir = target
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let watched = target.clone();
+    let callback_state = state.clone();
+    let callback_target = target.clone();
 
     let mut watcher =
         notify::recommended_watcher(move |result: notify::Result<notify::Event>| match result {
-            Ok(event) if event.paths.iter().any(|p| same_file_name(p, &watched)) => {
-                reload_journal(&watched, &state);
+            Ok(event) => {
+                // Re-read the source set every event so a newly-`include`d file is
+                // honored (and a removed one dropped) without recreating the
+                // watcher; the edit that changes the set lives in an already-watched
+                // file, so its own save is what refreshes this.
+                let sources = current_sources(&callback_state, &callback_target);
+                if event
+                    .paths
+                    .iter()
+                    .any(|p| event_matches_source(p, &sources))
+                {
+                    reload_journal(&callback_target, &callback_state);
+                }
             }
-            Ok(_) => {}
             Err(error) => eprintln!("ledgeline: watch error: {error}"),
         })
         .map_err(AppError::Watch)?;
+
+    // Watch the main file's directory with `?` — its failure disables live reload,
+    // preserving the prior single-file behavior. Each additional include directory
+    // is best-effort so one unwatchable path doesn't sink reload for the rest.
+    let main_dir = watch_dir(&target);
     watcher
-        .watch(&dir, RecursiveMode::NonRecursive)
+        .watch(&main_dir, RecursiveMode::NonRecursive)
         .map_err(AppError::Watch)?;
+    let mut watched_dirs: Vec<PathBuf> = vec![main_dir];
+    for dir in current_sources(&state, &target)
+        .iter()
+        .map(|s| watch_dir(s))
+    {
+        if watched_dirs.contains(&dir) {
+            continue;
+        }
+        match watcher.watch(&dir, RecursiveMode::NonRecursive) {
+            Ok(()) => watched_dirs.push(dir),
+            Err(error) => eprintln!("ledgeline: not watching {}: {error}", dir.display()),
+        }
+    }
     Ok(watcher)
 }
 
-/// Match a watch-event path against our target by file name. Events only come
-/// from the single directory we watch, so the file name uniquely identifies it
-/// even when the event path is not canonicalized.
-fn same_file_name(candidate: &Path, target: &Path) -> bool {
-    candidate.file_name() == target.file_name()
+/// The directory to watch for a source file: its parent, or `.` when it has none.
+fn watch_dir(source: &Path) -> PathBuf {
+    source
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// The journal's current source files (main + `include`s) as resolved paths,
+/// always including `main` even if the published journal has not recorded it yet
+/// (e.g. read-only state with an empty snapshot).
+fn current_sources(state: &AppState, main: &Path) -> Vec<PathBuf> {
+    let mut sources = state.source_files();
+    if !sources.iter().any(|s| s == main) {
+        sources.push(main.to_path_buf());
+    }
+    sources
+}
+
+/// Match a watch-event path against one of the journal's source files by file
+/// name and parent directory. Matching the directory too (not just the name, as a
+/// single-directory watch could) keeps a same-named file in another watched
+/// include directory from triggering a spurious reload. The parent still exists
+/// across an editor's atomic rename-into-place even when the file itself
+/// momentarily does not, so this stays robust on save. Source paths are already
+/// resolved, so only the candidate's directory needs canonicalizing.
+fn event_matches_source(candidate: &Path, sources: &[PathBuf]) -> bool {
+    let name = candidate.file_name();
+    let candidate_dir = candidate.parent().and_then(|d| d.canonicalize().ok());
+    sources.iter().any(|source| {
+        source.file_name() == name
+            && match (candidate_dir.as_deref(), source.parent()) {
+                (Some(cand_dir), Some(src_dir)) => cand_dir == src_dir,
+                // If the candidate's directory can't be resolved right now, fall
+                // back to the file-name match rather than dropping a real event.
+                _ => true,
+            }
+    })
 }
 
 /// Headless mode: serve the API + embedded SPA on a fixed port with graceful
@@ -289,4 +350,84 @@ async fn shutdown_signal() {
         () = terminate => {},
     }
     println!("ledgeline: received shutdown signal, draining");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A unique temp directory for one test, created fresh.
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ledgeline_watch_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn event_matches_source_by_dir_and_name() {
+        let dir = temp_dir("match");
+        let main = dir.join("main.journal");
+        std::fs::write(&main, "").unwrap();
+        let sources = vec![main.canonicalize().unwrap()];
+
+        // The watched file matches whether the event path is canonical or not.
+        assert!(event_matches_source(&main, &sources));
+        assert!(event_matches_source(
+            &main.canonicalize().unwrap(),
+            &sources
+        ));
+
+        // A different name in the same directory does NOT match.
+        let sibling = dir.join("other.journal");
+        std::fs::write(&sibling, "").unwrap();
+        assert!(!event_matches_source(&sibling, &sources));
+
+        // A same-named file in a DIFFERENT directory does NOT match (the reason we
+        // compare the directory, not just the file name).
+        let other_dir = temp_dir("match_other");
+        let twin = other_dir.join("main.journal");
+        std::fs::write(&twin, "").unwrap();
+        assert!(!event_matches_source(&twin, &sources));
+    }
+
+    #[test]
+    fn event_matches_source_falls_back_to_name_when_dir_unresolvable() {
+        // If the candidate's directory can't be resolved (e.g. a transient path
+        // under a nonexistent parent), we keep the event by name rather than drop a
+        // real change.
+        let dir = temp_dir("fallback");
+        let main = dir.join("main.journal");
+        std::fs::write(&main, "").unwrap();
+        let sources = vec![main.canonicalize().unwrap()];
+
+        let ghost = dir.join("does-not-exist").join("main.journal");
+        assert!(event_matches_source(&ghost, &sources));
+    }
+
+    #[test]
+    fn current_sources_lists_includes_and_appends_missing_main() {
+        let dir = temp_dir("sources");
+        let inc = dir.join("inc.journal");
+        let main = dir.join("main.journal");
+        std::fs::write(&inc, "account assets:bank\n").unwrap();
+        std::fs::write(
+            &main,
+            "include inc.journal\n2024-01-01 x\n    expenses:a  $1\n    assets:bank\n",
+        )
+        .unwrap();
+        let journal = parse_at(&main).unwrap();
+        let state = AppState::from_journal(&journal);
+        let canonical_main = main.canonicalize().unwrap();
+
+        // Both the main file and the directive-only include are watched.
+        let sources = current_sources(&state, &canonical_main);
+        assert!(sources.contains(&canonical_main));
+        assert!(sources.contains(&inc.canonicalize().unwrap()));
+
+        // Defensive fallback: a main path the published journal doesn't list is
+        // still appended so its directory is always watched.
+        let ghost = dir.join("ghost.journal");
+        assert!(current_sources(&state, &ghost).contains(&ghost));
+    }
 }
