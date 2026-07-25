@@ -70,18 +70,13 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 - A QuickLook plugin for journal files — render a file's transactions nicely for fast Finder browsing
   (see `mbr-markdown-browser` for the approach).
-- bug: the monitor for updates thing only watches the main file, not includes
 - feat: budgeting — month-by-month detail drill-down (per-period `actual [goal]` grid) and a `budgetDesc`
   periodic-rule filter (the year-to-date envelope-bar summary is done)
-- feat: hledger check in the background including the various extras i use (and recheck issues after new updates)
 - feat: preferences?
 - feat: private AI integration?
 - feat: intelligent category suggestions?
 - feat: import rules editing (or at least "remember categorization" functionality)
 - feat: saved report filters
-- feat: dashboard showing cash balances, investment performance over time, investment performance, net worth over time, average monthly cost of living, cash balance over time. See [monarch](https://www.monarch.com) for inspiration.
-- feat: spending insights: comparisons to previous time periods (vs. previous month or previous quarter or year or whatever showing spending and revenues up or down with red/green down/up triangles), notable changes to different expense categories (up or down)
 - feat: planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
   - investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
-- feat: subscriptions identification (recurring monthly / annual expenses) to help understand where money might be leaking
