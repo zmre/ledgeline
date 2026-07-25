@@ -7,6 +7,7 @@
     import {startUrlSync} from "$lib/filters/urlSync";
     import InsightsPanel from "$lib/insights/InsightsPanel.svelte";
     import {visibleNet} from "$lib/insights/series";
+    import {declaredTypes} from "$lib/domain/accountTypes";
     import TotalsFooter from "$lib/journal/TotalsFooter.svelte";
     import TransactionTable from "$lib/journal/TransactionTable.svelte";
     import TransactionModal from "$lib/journal/edit/TransactionModal.svelte";
@@ -18,7 +19,8 @@
 
     const txns = $derived(getFilteredTxns());
     const period = $derived(periodLabel(filters.value.from, filters.value.to));
-    const total = $derived(visibleNet(txns, filters.value.accounts, journal.txns));
+    const declared = $derived(declaredTypes(journal.accountDecls));
+    const total = $derived(visibleNet(txns, filters.value.accounts, journal.txns, declared));
 
     // Restore filters from ?from=&to=&acct=&q= once, then mirror changes to the
     // URL (debounced replaceState). onMount's return value is its cleanup.
@@ -50,7 +52,7 @@
 <div class="flex min-h-0 flex-col gap-3" style="height: calc(100dvh - 7rem)">
     <FilterBar accountNames={journal.accountNames} />
 
-    <InsightsPanel {txns} accounts={filters.value.accounts} allTxns={journal.txns} />
+    <InsightsPanel {txns} accounts={filters.value.accounts} allTxns={journal.txns} {declared} />
 
     {#if journal.status === "loading" && journal.txns.length === 0}
         <div class="flex grow items-center justify-center" aria-label="Loading transactions">

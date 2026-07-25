@@ -2,6 +2,7 @@
 // normalized journal. Pure TS — no Svelte/DOM imports; rules live in
 // ./rules.ts and adding one is a single entry in ALL_RULES.
 
+import type {AccountDecl} from "../domain/accountTypes";
 import type {PriceDirective, Transaction} from "../domain/types";
 import {ALL_RULES} from "./rules";
 
@@ -17,6 +18,8 @@ export interface Problem {
 /** Journal-wide inputs beyond the transactions themselves (WP-10 contract change: stock rules need P directives). */
 export interface CheckContext {
     prices: PriceDirective[];
+    /** Declared account types, so rules classify by type rather than by name. */
+    decls?: AccountDecl[];
 }
 
 export interface CheckRule {

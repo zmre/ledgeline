@@ -178,6 +178,23 @@ export interface BudgetQuery {
     /** Case-insensitive periodic-rule description filter; absent/empty = all rules. */
     budgetDesc?: string;
 }
+export interface InsightsQuery {
+    /** Inclusive comparison-span start (YYYY-MM-DD). */
+    start?: string;
+    /** Inclusive comparison-span end (YYYY-MM-DD). */
+    end?: string;
+    /** Comma-separated account prefixes excluded from cost of living; absent = server default. */
+    exclude?: string;
+}
+export interface SubscriptionsQuery {
+    asOf?: string;
+    /** Months of history to scan (default 24). */
+    lookback?: number;
+    /** Charges needed before a monthly cadence is believed (default 5). */
+    minMonthly?: number;
+    /** Charges needed before an annual cadence is believed (default 2). */
+    minAnnual?: number;
+}
 export interface HoldingsQuery {
     asOf?: string;
     /** Comma-separated subtree roots; empty = all accounts. */
@@ -249,6 +266,18 @@ export class LedgelineApi {
     budget(query: BudgetQuery = {}): Promise<unknown> {
         return this.getJson(
             `/api/budget${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, budgetDesc: query.budgetDesc})}`
+        );
+    }
+
+    /** Insights dashboard (period-over-period core metrics). */
+    insights(query: InsightsQuery = {}): Promise<unknown> {
+        return this.getJson(`/api/insights${queryString({start: query.start, end: query.end, exclude: query.exclude})}`);
+    }
+
+    /** Recurring monthly/annual charges inferred from expense history. */
+    subscriptions(query: SubscriptionsQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/subscriptions${queryString({asOf: query.asOf, lookback: query.lookback, minMonthly: query.minMonthly, minAnnual: query.minAnnual})}`
         );
     }
 

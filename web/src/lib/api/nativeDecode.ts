@@ -15,6 +15,21 @@
 import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
 import type {Holding, HoldingsPoint, HoldingsReport, HoldingsSeries, HoldingsWarning} from "$lib/holdings/types";
+import type {
+    Cadence,
+    ChangeKind,
+    ChangeRow,
+    CostOfLiving,
+    InsightsPeriod,
+    InsightsReport,
+    InvestmentPerf,
+    MetricDelta,
+    MoverRow,
+    PerfPoint,
+    Subscription,
+    SubscriptionsReport,
+    TopTxn,
+} from "$lib/reports/insightsTypes";
 import type {BudgetCell, BudgetReport, BudgetRow, PeriodReport, ReportRow, Section, SectionedReport} from "$lib/reports/types";
 import {ApiShapeError} from "./client";
 
@@ -142,6 +157,100 @@ interface RawHoldingsSeries {
     base?: string;
     points?: RawHoldingsPoint[];
     hasBasis?: boolean;
+}
+
+interface RawMetricDelta {
+    current?: RawMixed;
+    previous?: RawMixed;
+    delta?: RawMixed;
+    pct?: number | null;
+}
+
+interface RawCostOfLiving {
+    currentTotal?: RawMixed;
+    previousTotal?: RawMixed;
+    monthsCurrent?: number;
+    monthsPrevious?: number;
+}
+
+interface RawPerfPoint {
+    gain?: RawDec | null;
+    gainPct?: number | null;
+}
+
+interface RawInvestmentPerf {
+    current?: RawPerfPoint;
+    previous?: RawPerfPoint;
+}
+
+interface RawInsightsPeriod {
+    start?: string;
+    mid?: string;
+    end?: string;
+    prevStart?: string;
+    prevEnd?: string;
+    currStart?: string;
+    currEnd?: string;
+}
+
+interface RawChangeRow {
+    account?: string;
+    current?: RawDec;
+    previous?: RawDec;
+    delta?: RawDec;
+    pct?: number | null;
+    kind?: string;
+}
+
+interface RawMoverRow {
+    symbol?: string;
+    name?: string;
+    gain?: RawDec | null;
+    gainPct?: number | null;
+    startEstimated?: boolean;
+}
+
+interface RawSubscription {
+    payee?: string;
+    cadence?: string;
+    typicalAmount?: RawDec;
+    annualizedCost?: RawDec;
+    occurrences?: number;
+    firstSeen?: string;
+    lastSeen?: string;
+    nextExpected?: string;
+    accounts?: unknown[];
+    manual?: boolean;
+}
+
+interface RawSubscriptionsReport {
+    asOf?: string;
+    lookbackStart?: string;
+    monthly?: RawSubscription[];
+    annual?: RawSubscription[];
+}
+
+interface RawTopTxn {
+    index?: number;
+    date?: string;
+    description?: string;
+    amount?: RawDec;
+}
+
+interface RawInsightsReport {
+    period?: RawInsightsPeriod;
+    base?: string;
+    journalStart?: string | null;
+    revenue?: RawMetricDelta;
+    expenses?: RawMetricDelta;
+    netWorth?: RawMetricDelta;
+    costOfLiving?: RawCostOfLiving;
+    investment?: RawInvestmentPerf;
+    cashBalance?: RawMetricDelta;
+    expenseChanges?: RawChangeRow[];
+    revenueChanges?: RawChangeRow[];
+    movers?: RawMoverRow[];
+    topTxns?: RawTopTxn[];
 }
 
 // ---------------------------------------------------------------------------
@@ -397,5 +506,175 @@ export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
         base: series.base,
         points: frozen(series.points.map((point, i) => decodeHoldingsPoint(point, `series point #${i}`))),
         hasBasis: series.hasBasis === true,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// InsightsReport (period-over-period dashboard)
+// ---------------------------------------------------------------------------
+
+function decodeMetricDelta(raw: RawMetricDelta | undefined, context: string): MetricDelta {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing metric`);
+    return Object.freeze({
+        current: decodeMixed(raw.current, `${context} current`),
+        previous: decodeMixed(raw.previous, `${context} previous`),
+        delta: decodeMixed(raw.delta, `${context} delta`),
+        pct: typeof raw.pct === "number" ? raw.pct : null,
+    });
+}
+
+function decodePerfPoint(raw: RawPerfPoint | undefined, context: string): PerfPoint {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing perf point`);
+    return Object.freeze({
+        gain: decodeOptDec(raw.gain, `${context} gain`),
+        gainPct: typeof raw.gainPct === "number" ? raw.gainPct : null,
+    });
+}
+
+function decodeCostOfLiving(raw: RawCostOfLiving | undefined, context: string): CostOfLiving {
+    if (raw === undefined || raw === null || typeof raw.monthsCurrent !== "number" || typeof raw.monthsPrevious !== "number") {
+        throw new ApiShapeError(`${context}: missing month counts`);
+    }
+    return Object.freeze({
+        currentTotal: decodeMixed(raw.currentTotal, `${context} currentTotal`),
+        previousTotal: decodeMixed(raw.previousTotal, `${context} previousTotal`),
+        monthsCurrent: raw.monthsCurrent,
+        monthsPrevious: raw.monthsPrevious,
+    });
+}
+
+function decodeInvestmentPerf(raw: RawInvestmentPerf | undefined, context: string): InvestmentPerf {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing investment`);
+    return Object.freeze({
+        current: decodePerfPoint(raw.current, `${context} current`),
+        previous: decodePerfPoint(raw.previous, `${context} previous`),
+    });
+}
+
+function decodeInsightsPeriod(raw: RawInsightsPeriod | undefined, context: string): InsightsPeriod {
+    const iso = (value: string | undefined, name: string): ISODate => {
+        if (typeof value !== "string") throw new ApiShapeError(`${context}: missing ${name}`);
+        return value as ISODate;
+    };
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing period`);
+    return Object.freeze({
+        start: iso(raw.start, "start"),
+        mid: iso(raw.mid, "mid"),
+        end: iso(raw.end, "end"),
+        prevStart: iso(raw.prevStart, "prevStart"),
+        prevEnd: iso(raw.prevEnd, "prevEnd"),
+        currStart: iso(raw.currStart, "currStart"),
+        currEnd: iso(raw.currEnd, "currEnd"),
+    });
+}
+
+function decodeChangeKind(raw: string | undefined, context: string): ChangeKind {
+    if (raw === "changed" || raw === "ended") return raw;
+    throw new ApiShapeError(`${context}: unknown change kind ${JSON.stringify(raw)}`);
+}
+
+function decodeChangeRow(raw: RawChangeRow | undefined, context: string): ChangeRow {
+    if (raw === undefined || typeof raw.account !== "string") throw new ApiShapeError(`${context}: missing account`);
+    return Object.freeze({
+        account: raw.account,
+        current: decodeDec(raw.current, `${context} current`),
+        previous: decodeDec(raw.previous, `${context} previous`),
+        delta: decodeDec(raw.delta, `${context} delta`),
+        pct: typeof raw.pct === "number" ? raw.pct : null,
+        kind: decodeChangeKind(raw.kind, context),
+    });
+}
+
+function decodeMoverRow(raw: RawMoverRow | undefined, context: string): MoverRow {
+    if (raw === undefined || typeof raw.symbol !== "string" || typeof raw.name !== "string") {
+        throw new ApiShapeError(`${context}: missing symbol/name`);
+    }
+    return Object.freeze({
+        symbol: raw.symbol,
+        name: raw.name,
+        gain: decodeOptDec(raw.gain, `${context} gain`),
+        gainPct: typeof raw.gainPct === "number" ? raw.gainPct : null,
+        startEstimated: raw.startEstimated === true,
+    });
+}
+
+function decodeTopTxn(raw: RawTopTxn | undefined, context: string): TopTxn {
+    if (raw === undefined || typeof raw.index !== "number" || typeof raw.date !== "string" || typeof raw.description !== "string") {
+        throw new ApiShapeError(`${context}: missing index/date/description`);
+    }
+    return Object.freeze({
+        index: raw.index,
+        date: raw.date as ISODate,
+        description: raw.description,
+        amount: decodeDec(raw.amount, `${context} amount`),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// SubscriptionsReport (recurring monthly / annual charges)
+// ---------------------------------------------------------------------------
+
+function decodeCadence(raw: string | undefined, context: string): Cadence {
+    if (raw === "monthly" || raw === "annual") return raw;
+    throw new ApiShapeError(`${context}: unknown cadence ${JSON.stringify(raw)}`);
+}
+
+function decodeSubscription(raw: RawSubscription | undefined, context: string): Subscription {
+    if (
+        raw === undefined ||
+        typeof raw.payee !== "string" ||
+        typeof raw.occurrences !== "number" ||
+        typeof raw.firstSeen !== "string" ||
+        typeof raw.lastSeen !== "string" ||
+        typeof raw.nextExpected !== "string"
+    ) {
+        throw new ApiShapeError(`${context}: missing payee/occurrences/dates`);
+    }
+    return Object.freeze({
+        payee: raw.payee,
+        cadence: decodeCadence(raw.cadence, context),
+        typicalAmount: decodeDec(raw.typicalAmount, `${context} typicalAmount`),
+        annualizedCost: decodeDec(raw.annualizedCost, `${context} annualizedCost`),
+        occurrences: raw.occurrences,
+        firstSeen: raw.firstSeen as ISODate,
+        lastSeen: raw.lastSeen as ISODate,
+        nextExpected: raw.nextExpected as ISODate,
+        accounts: frozen(decodeStrings(raw.accounts, `${context} accounts`)),
+        manual: raw.manual === true,
+    });
+}
+
+export function decodeSubscriptionsReport(raw: unknown): SubscriptionsReport {
+    const report = raw as RawSubscriptionsReport;
+    if (typeof report !== "object" || report === null || typeof report.asOf !== "string" || typeof report.lookbackStart !== "string") {
+        throw new ApiShapeError("subscriptions report: expected asOf/lookbackStart");
+    }
+    return Object.freeze({
+        asOf: report.asOf as ISODate,
+        lookbackStart: report.lookbackStart as ISODate,
+        monthly: frozen((report.monthly ?? []).map((row, i) => decodeSubscription(row, `subscriptions monthly[${i}]`))),
+        annual: frozen((report.annual ?? []).map((row, i) => decodeSubscription(row, `subscriptions annual[${i}]`))),
+    });
+}
+
+export function decodeInsightsReport(raw: unknown): InsightsReport {
+    const report = raw as RawInsightsReport;
+    if (typeof report !== "object" || report === null || typeof report.base !== "string") {
+        throw new ApiShapeError("insights report: expected a base commodity");
+    }
+    return Object.freeze({
+        period: decodeInsightsPeriod(report.period, "insights period"),
+        base: report.base,
+        journalStart: typeof report.journalStart === "string" ? (report.journalStart as ISODate) : null,
+        revenue: decodeMetricDelta(report.revenue, "insights revenue"),
+        expenses: decodeMetricDelta(report.expenses, "insights expenses"),
+        netWorth: decodeMetricDelta(report.netWorth, "insights netWorth"),
+        costOfLiving: decodeCostOfLiving(report.costOfLiving, "insights costOfLiving"),
+        investment: decodeInvestmentPerf(report.investment, "insights investment"),
+        cashBalance: decodeMetricDelta(report.cashBalance, "insights cashBalance"),
+        expenseChanges: frozen((report.expenseChanges ?? []).map((row, i) => decodeChangeRow(row, `insights expenseChanges[${i}]`))),
+        revenueChanges: frozen((report.revenueChanges ?? []).map((row, i) => decodeChangeRow(row, `insights revenueChanges[${i}]`))),
+        movers: frozen((report.movers ?? []).map((row, i) => decodeMoverRow(row, `insights movers[${i}]`))),
+        topTxns: frozen((report.topTxns ?? []).map((row, i) => decodeTopTxn(row, `insights topTxns[${i}]`))),
     });
 }

@@ -6,6 +6,7 @@
 
 import {HledgerApi} from "$lib/api/client";
 import {normalizeAccounts, normalizePrices, normalizeTransactions} from "$lib/api/normalize";
+import type {Dec} from "$lib/domain/money";
 import type {AccountDecl} from "$lib/domain/accountTypes";
 import type {PriceDirective, Transaction} from "$lib/domain/types";
 import {filterTxns, sortTxnsDesc} from "$lib/journal/rowModel";
@@ -29,10 +30,19 @@ let lastFingerprint = 0;
  * Content-aware change fingerprint so polling refreshes don't churn every
  * $derived when nothing changed, while never discarding a REAL change — an
  * in-place edit to any transaction (recategorize, amount fix) must swap state,
- * not just appends. djb2 over each txn's index/date/status/haystack (the
- * haystack covers description, comments, accounts, amounts, commodities) plus
- * account names and price directives, plus declared account types (a `type:`
- * edit must recompute the cash-flow report). Exported for unit tests.
+ * not just appends. djb2 over each txn's index/date/status/haystack plus its
+ * postings' EXACT amounts, then account names, price directives, and declared
+ * account types (a `type:` edit must recompute the cash-flow report). Exported
+ * for unit tests.
+ *
+ * The haystack alone is NOT enough, even though it mentions amounts: it is
+ * built for searching, so its amounts run through `formatAmount`, which rounds
+ * to `MAX_DISPLAY_DECIMALS` (2). Anything that changes only below that — a
+ * sub-cent broker fee, a share count's third decimal — renders identically and
+ * would hash the same, so the refresh after an edit would fetch the new data
+ * and then discard it, leaving stale transactions on screen and stale problems
+ * in the badge. Hashing `qty` exactly (mantissa AND scale, plus any cost
+ * annotation) is what makes those edits visible.
  */
 export function contentFingerprint(
     list: readonly Transaction[],
@@ -44,11 +54,28 @@ export function contentFingerprint(
     const mixStr = (s: string): void => {
         for (let i = 0; i < s.length; i += 1) h = (Math.imul(h, 33) + s.charCodeAt(i)) >>> 0;
     };
+    /** Exact, unrounded: the full mantissa as text plus its scale. */
+    const mixDec = (d: Dec): void => {
+        mixStr(d.m.toString());
+        mixStr(String(d.p));
+    };
     for (const t of list) {
         h = (Math.imul(h, 33) + t.index) >>> 0;
         mixStr(t.date);
         mixStr(t.status);
         mixStr(t.haystack);
+        for (const posting of t.postings) {
+            mixStr(posting.account);
+            for (const amount of posting.amounts) {
+                mixStr(amount.commodity);
+                mixDec(amount.qty);
+                if (amount.cost !== undefined) {
+                    mixStr(amount.cost.commodity);
+                    mixStr(amount.cost.per ? "@" : "@@");
+                    mixDec(amount.cost.qty);
+                }
+            }
+        }
     }
     for (const name of names) mixStr(name);
     for (const p of priceList) {

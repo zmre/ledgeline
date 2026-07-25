@@ -77,6 +77,8 @@ test("journal: insights depth slider starts at the default, not browser-clamped 
 test("reports: balance sheet shows known fixture numbers", async ({page}) => {
     await page.goto("/");
     await page.getByRole("link", {name: "Reports"}).click();
+    // Reports opens on the Insights dashboard, so select the balance sheet first.
+    await page.getByRole("tab", {name: "Balance Sheet"}).click();
 
     // Default balance-sheet params with the pinned clock: asOf 2026-07-08, depth 2.
     await expect(page.locator("tr", {has: page.locator('th:text-is("Total Assets")')})).toContainText("$48,402.56");

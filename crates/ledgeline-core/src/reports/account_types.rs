@@ -6,7 +6,7 @@
 //! `hledger cashflow` selects on.
 
 use super::accounts::{RootCategory, categorize};
-use crate::model::Journal;
+use crate::model::{AccountDeclaration, Journal};
 use std::collections::BTreeMap;
 
 /// A resolved account type. `Cash`/`Conversion` are the two subtypes hledger
@@ -115,7 +115,16 @@ pub fn declared_types(decls: &[AccountDecl]) -> BTreeMap<String, AccountType> {
 }
 
 /// Effective type of `account`: own declared → nearest declared ancestor → name
-/// inference (`None` when untyped).
+/// inference → a declared DESCENDANT's type (`None` when untyped).
+///
+/// The descendant step is last for a reason. It exists for the parent rows a
+/// depth-clamped report invents: clamping `activo:banco` to depth 1 yields
+/// `activo`, which is declared nowhere and means nothing to the English name
+/// heuristic, so without it that row — and therefore the whole section total
+/// rolled up from depth-1 roots — would be dropped. Running it AFTER name
+/// inference keeps every conventional chart of accounts behaving exactly as
+/// before: `assets` still infers `Asset` from its name rather than picking up
+/// `Cash` from some `assets:bank:checking ; type: C` child.
 #[must_use]
 pub fn resolve_account_type(
     account: &str,
@@ -131,7 +140,36 @@ pub fn resolve_account_type(
             None => break,
         }
     }
-    infer_account_type(account)
+    infer_account_type(account).or_else(|| {
+        let prefix = format!("{account}:");
+        declared
+            .iter()
+            .find(|(declared_name, _)| declared_name.starts_with(&prefix))
+            .map(|(_, ty)| *ty)
+    })
+}
+
+/// True when `account`'s effective type belongs to `category`.
+///
+/// Use this rather than [`crate::reports::accounts::categorize`] for any report
+/// that groups accounts: names are a fallback, not the source of truth, so a
+/// chart of accounts that books costs under `cogs:` — or in a language other
+/// than English — still lands in the right section.
+///
+/// `Cash` counts as an `Asset`, which is what it is: hledger treats it as an
+/// Asset subtype that `cashflow` selects on, and a balance sheet that dropped
+/// every declared `type: C` account would be missing most of its assets.
+#[must_use]
+pub fn is_account_type(
+    account: &str,
+    declared: &BTreeMap<String, AccountType>,
+    category: AccountType,
+) -> bool {
+    match resolve_account_type(account, declared) {
+        Some(AccountType::Cash) => matches!(category, AccountType::Asset | AccountType::Cash),
+        Some(found) => found == category,
+        None => false,
+    }
 }
 
 /// Cash predicate for the cash-flow report: an account's effective type is Cash.
@@ -147,8 +185,14 @@ pub fn cash_predicate(decls: &[AccountDecl]) -> impl Fn(&str) -> bool {
 /// [`cash_predicate`] consults.)
 #[must_use]
 pub fn account_decls(journal: &Journal) -> Vec<AccountDecl> {
-    journal
-        .accounts
+    account_decls_from(&journal.accounts)
+}
+
+/// [`account_decls`] over a bare slice, for callers holding the declarations
+/// without the whole [`Journal`] (the holdings engine).
+#[must_use]
+pub fn account_decls_from(accounts: &[AccountDeclaration]) -> Vec<AccountDecl> {
+    accounts
         .iter()
         .map(|decl| {
             let account_type = decl

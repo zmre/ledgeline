@@ -22,11 +22,18 @@
         styleFor,
         OTHER,
         type AccountSelection,
+        type DeclaredTypes,
         type Interval,
         type PieDatum,
     } from "./series";
 
-    let {txns, depth, accounts, allTxns}: {txns: Transaction[]; depth: number; accounts?: AccountSelection; allTxns?: Transaction[]} = $props();
+    let {
+        txns,
+        depth,
+        accounts,
+        allTxns,
+        declared,
+    }: {txns: Transaction[]; depth: number; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();
 
     // Dark-mode categorical slots 1..6 from the dataviz reference palette (app theme is dark-only).
     const PALETTE = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767"];
@@ -54,7 +61,7 @@
     const commodity = $derived(chosenCommodity !== null && commodities.includes(chosenCommodity) ? chosenCommodity : (commodities[0] ?? "$"));
     const style = $derived(styleFor(txns, commodity));
 
-    const groups = $derived(categoriesInUse(txns, commodity, accounts));
+    const groups = $derived(categoriesInUse(txns, commodity, accounts, declared));
     // Resolve the active scope: honor an explicit pick that's still available,
     // otherwise default to expenses when present (else all categories).
     const group = $derived.by<RootCategory | "all">(() => {
@@ -63,8 +70,8 @@
     });
     const category = $derived<RootCategory | undefined>(group === "all" ? undefined : group);
 
-    const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts, conventionTxns: allTxns, category}));
-    const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts, conventionTxns: allTxns, category}));
+    const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared}));
+    const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared}));
 
     // Color follows the account, not the mode: both datasets come from the same
     // magnitude ranking, so slot assignment by first appearance stays consistent.
@@ -146,7 +153,12 @@
             </select>
         {/if}
         {#if groups.length > 1}
-            <select class="select select-xs w-32" value={group} onchange={(e) => (chosenGroup = e.currentTarget.value as RootCategory | "all")} aria-label="Category">
+            <select
+                class="select select-xs w-32"
+                value={group}
+                onchange={(e) => (chosenGroup = e.currentTarget.value as RootCategory | "all")}
+                aria-label="Category"
+            >
                 <option value="all">All categories</option>
                 {#each groups as g (g)}
                     <option value={g}>{GROUP_LABELS[g]}</option>

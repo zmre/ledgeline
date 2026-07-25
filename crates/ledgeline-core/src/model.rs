@@ -283,6 +283,13 @@ pub struct PriceDirective {
 pub struct Journal {
     /// Absolute path recorded in source positions (environment-specific).
     pub source_name: String,
+    /// Every file that fed this journal: the main file first, then each
+    /// `include`d file in first-read order, each as a resolved (canonicalized
+    /// when it exists on disk) absolute path, deduplicated. Unlike
+    /// [`Transaction::source_file`], this also covers `include`d files that
+    /// contribute only directives (no transactions), so a live-reload watcher
+    /// can monitor the complete set of files the journal depends on.
+    pub source_files: Vec<PathBuf>,
     /// Transactions in file order.
     pub transactions: Vec<Transaction>,
     /// Periodic (`~`) transaction rules in file order. Kept out of

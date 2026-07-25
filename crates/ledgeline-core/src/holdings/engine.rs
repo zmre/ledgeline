@@ -17,8 +17,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{AccountDeclaration, Commodity, Cost, CostKind, PriceDirective, Transaction};
+use crate::reports::account_types::{account_decls_from, declared_types, resolve_account_type};
 use crate::reports::prices::{div_round_half_even, mul_raw, per_unit_from_total, pow10};
-use crate::reports::{PriceDb, ReportError, RootCategory, account_matches, categorize};
+use crate::reports::{AccountType, PriceDb, ReportError, account_matches};
 use crate::wire::{account_tag_map, inherited_account_tags};
 
 use super::commodities::is_currency;
@@ -62,10 +63,10 @@ fn reduce_basis(basis: Dec, shares_after: Dec, shares_before: Dec) -> Result<Dec
 /// later sale would drive the per-symbol net negative — even though the balance
 /// sheet, which sums only asset + liability accounts, shows it non-negative. This
 /// keeps holdings' net shares equal to the balance-sheet net for the symbol.
-fn is_holding_account(account: &str) -> bool {
+fn is_holding_account(account: &str, declared: &BTreeMap<String, AccountType>) -> bool {
     !matches!(
-        categorize(account),
-        RootCategory::Equity | RootCategory::Revenue | RootCategory::Expense
+        resolve_account_type(account, declared),
+        Some(AccountType::Equity | AccountType::Revenue | AccountType::Expense)
     )
 }
 
@@ -189,6 +190,16 @@ fn cost_in_base(
     }
 }
 
+/// Per-journal lookups [`build_pools`] needs: security names from account and
+/// `commodity` directives, plus declared account types so a share movement's
+/// funding leg is recognized by TYPE rather than by what its root is called.
+#[derive(Clone, Copy)]
+struct PoolLookups<'a> {
+    account_tags: &'a HashMap<&'a str, &'a [(String, String)]>,
+    commodity_names: &'a HashMap<&'a str, &'a str>,
+    declared: &'a BTreeMap<String, AccountType>,
+}
+
 /// Build one average-cost pool per stock symbol from postings dated ≤ `as_of`
 /// whose account passes `in_scope`. Port of the TS `buildPools`; see that
 /// function's doc for the netting/taint/reduction rules.
@@ -198,9 +209,13 @@ fn build_pools(
     base: &Commodity,
     as_of: &str,
     in_scope: &dyn Fn(&str) -> bool,
-    account_tags: &HashMap<&str, &[(String, String)]>,
-    commodity_names: &HashMap<&str, &str>,
+    lookups: &PoolLookups,
 ) -> Result<BTreeMap<String, SymbolPool>, ReportError> {
+    let &PoolLookups {
+        account_tags,
+        commodity_names,
+        declared,
+    } = lookups;
     let mut pools: BTreeMap<String, SymbolPool> = BTreeMap::new();
     // symbol -> account -> net shares.
     let mut per_account: BTreeMap<String, BTreeMap<String, Dec>> = BTreeMap::new();
@@ -217,7 +232,7 @@ fn build_pools(
             // Skip out-of-scope accounts and non-holding (equity/income/expense)
             // legs: the latter are a share movement's funding/disposal counter-
             // side, not a place shares are held (see `is_holding_account`).
-            if !in_scope(&posting.account.0) || !is_holding_account(&posting.account.0) {
+            if !in_scope(&posting.account.0) || !is_holding_account(&posting.account.0, declared) {
                 continue;
             }
             for amount in &posting.amounts {
@@ -431,14 +446,18 @@ pub fn compute_holdings(
     let predicate = scope_predicate(scope);
     let account_tags = account_tag_map(accounts);
     let commodity_names = commodity_name_map(commodity_tags);
+    let declared = declared_types(&account_decls_from(accounts));
     let pools = build_pools(
         txns,
         &db,
         &base_commodity,
         &scope.as_of,
         &predicate,
-        &account_tags,
-        &commodity_names,
+        &PoolLookups {
+            account_tags: &account_tags,
+            commodity_names: &commodity_names,
+            declared: &declared,
+        },
     )?;
     let cost_prices = latest_cost_prices(txns, &db, &base_commodity, &scope.as_of)?;
 

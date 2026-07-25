@@ -18,7 +18,7 @@
 //! period cannot be "unpriced" there at all).
 
 use super::ReportError;
-use super::accounts::{RootCategory, categorize};
+use super::account_types::{AccountType, is_account_type};
 use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
 use super::periods::{Interval, bucket_end, compare_iso, last_n_buckets};
@@ -61,6 +61,24 @@ fn valued(
     }
 }
 
+/// Inputs to [`net_worth`].
+#[derive(Debug, Clone)]
+pub struct NetWorthOpts<'a> {
+    /// Date whose bucket is the last column (INCLUSIVE).
+    pub end: &'a str,
+    /// Bucketing interval.
+    pub interval: Interval,
+    /// How many buckets to report, ending at `end`.
+    pub count: usize,
+    /// Account-depth clamp for the rows (the total is always depth-1 roots).
+    pub depth: usize,
+    /// Override the valuation target commodity.
+    pub value_in: Option<Commodity>,
+    /// Declared account types, so asset/liability membership is decided by
+    /// effective type rather than by root name.
+    pub declared: &'a BTreeMap<String, AccountType>,
+}
+
 /// Net worth per bucket, valued at market prices, with asset/liability rows
 /// clamped to `depth`. `value_in` overrides the default target
 /// (`base_commodity()` of the combined explicit + inferred prices); when there
@@ -71,12 +89,17 @@ fn valued(
 pub fn net_worth(
     txns: &[Transaction],
     explicit_prices: &[PriceDirective],
-    end: &str,
-    interval: Interval,
-    count: usize,
-    depth: usize,
-    value_in: Option<Commodity>,
+    opts: &NetWorthOpts,
 ) -> Result<PeriodReport, ReportError> {
+    let &NetWorthOpts {
+        end,
+        interval,
+        count,
+        depth,
+        ref value_in,
+        declared,
+    } = opts;
+    let value_in = value_in.clone();
     // Explicit `P` directives PLUS prices inferred from `@`/`@@` costs. Inferred
     // go first so an explicit price wins a same-date tie (hledger's precedence).
     let mut all_prices = infer_market_prices(txns)?;
@@ -107,10 +130,11 @@ pub fn net_worth(
         let asset_liability: BTreeMap<String, MixedAmount> = rolled
             .into_iter()
             .filter(|(account, _)| {
-                matches!(
-                    categorize(account),
-                    RootCategory::Asset | RootCategory::Liability
-                )
+                // By effective TYPE: a liability declared `type: L` under a
+                // non-English root still belongs in net worth, and a `type: C`
+                // cash account still counts as an asset.
+                is_account_type(account, declared, AccountType::Asset)
+                    || is_account_type(account, declared, AccountType::Liability)
             })
             .collect();
         per_bucket.push(BucketData {
@@ -187,6 +211,31 @@ mod tests {
 
     fn c(s: &str) -> Commodity {
         Commodity(s.into())
+    }
+
+    /// `net_worth` with no declared types, so classification falls back to name
+    /// inference — which is exactly what these fixtures (standard roots) expect.
+    fn net_worth(
+        txns: &[Transaction],
+        explicit_prices: &[PriceDirective],
+        end: &str,
+        interval: Interval,
+        count: usize,
+        depth: usize,
+        value_in: Option<Commodity>,
+    ) -> Result<PeriodReport, ReportError> {
+        super::net_worth(
+            txns,
+            explicit_prices,
+            &NetWorthOpts {
+                end,
+                interval,
+                count,
+                depth,
+                value_in,
+                declared: &BTreeMap::new(),
+            },
+        )
     }
 
     fn dollars(mantissa: i128, places: u32) -> MixedAmount {

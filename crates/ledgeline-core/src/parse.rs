@@ -102,6 +102,9 @@ struct Ctx {
     prices: Vec<PriceDirective>,
     transactions: Vec<Transaction>,
     periodic_transactions: Vec<PeriodicTransaction>,
+    /// Every source file read so far (main + `include`s), in first-read order and
+    /// deduplicated, as resolved absolute paths. Feeds [`Journal::source_files`].
+    source_files: Vec<PathBuf>,
     tindex: u32,
 }
 
@@ -118,6 +121,7 @@ impl Ctx {
             prices: Vec::new(),
             transactions: Vec::new(),
             periodic_transactions: Vec::new(),
+            source_files: Vec::new(),
             tindex: 0,
         }
     }
@@ -125,6 +129,7 @@ impl Ctx {
     fn into_journal(self, source_name: &str) -> Journal {
         Journal {
             source_name: source_name.to_string(),
+            source_files: self.source_files,
             transactions: self.transactions,
             periodic_transactions: self.periodic_transactions,
             accounts: self.accounts,
@@ -198,6 +203,12 @@ fn parse_source(
     overrides: Option<&HashMap<PathBuf, String>>,
 ) -> Result<(), ParseError> {
     let source_file = resolve_source_file(source_name);
+    // Record this file (main or `include`d) so the whole dependency set is known
+    // for live-reload watching, even for directive-only includes. Deduplicated to
+    // stay stable if the same file is included more than once.
+    if !ctx.source_files.contains(&source_file) {
+        ctx.source_files.push(source_file.clone());
+    }
     let lines: Vec<&str> = text.lines().collect();
 
     let mut i = 0;
@@ -1745,6 +1756,73 @@ mod tests {
             journal.transactions[1].source_file
         );
         assert_eq!(journal.transactions[1].source_span.0.line, 1);
+    }
+
+    #[test]
+    fn source_files_records_main_and_directive_only_includes() {
+        // `source_files` must cover EVERY file the journal reads — including an
+        // `include`d file that contributes only directives (no transactions), which
+        // per-transaction `source_file` tracking would miss. The live-reload
+        // watcher relies on this to monitor the full dependency set.
+        let dir = std::env::temp_dir().join("ledgeline_parse_source_files_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let accounts = dir.join("accounts.journal");
+        let txns = dir.join("txns.journal");
+        let main = dir.join("main.journal");
+        // A directive-only include: declares an account, holds no transactions.
+        std::fs::write(&accounts, "account assets:bank\n").unwrap();
+        std::fs::write(
+            &txns,
+            "2024-02-01 sub txn\n    expenses:foo   $5.00\n    assets:bank\n",
+        )
+        .unwrap();
+        std::fs::write(&main, "include accounts.journal\ninclude txns.journal\n").unwrap();
+
+        let text = std::fs::read_to_string(&main).unwrap();
+        let journal = parse_journal(&text, &main.to_string_lossy()).unwrap();
+
+        // Main file first, then each include in read order, all resolved.
+        assert_eq!(
+            journal.source_files,
+            vec![
+                resolve_source_file(&main),
+                resolve_source_file(&accounts),
+                resolve_source_file(&txns),
+            ]
+        );
+        // The directive-only include is present even though no transaction points
+        // at it (only `txns.journal` shows up in transaction `source_file`s).
+        assert!(
+            journal
+                .source_files
+                .contains(&resolve_source_file(&accounts)),
+            "directive-only include must be tracked for watching"
+        );
+        assert!(
+            !journal
+                .transactions
+                .iter()
+                .any(|t| t.source_file == resolve_source_file(&accounts)),
+            "the directive-only include has no transactions"
+        );
+    }
+
+    #[test]
+    fn source_files_dedups_a_repeated_include() {
+        // The same file included twice is recorded once (a stable set for watching).
+        let dir = std::env::temp_dir().join("ledgeline_parse_source_files_dedup_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sub = dir.join("sub.journal");
+        let main = dir.join("main.journal");
+        std::fs::write(&sub, "account assets:bank\n").unwrap();
+        std::fs::write(&main, "include sub.journal\ninclude sub.journal\n").unwrap();
+
+        let text = std::fs::read_to_string(&main).unwrap();
+        let journal = parse_journal(&text, &main.to_string_lossy()).unwrap();
+        assert_eq!(
+            journal.source_files,
+            vec![resolve_source_file(&main), resolve_source_file(&sub)]
+        );
     }
 
     #[test]

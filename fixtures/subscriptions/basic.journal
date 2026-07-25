@@ -1,0 +1,570 @@
+; Fixture for recurring-subscription detection (reports::subscriptions).
+;
+; Scanned with as_of = 2026-06-30 and a 24-month lookback (window opens
+; 2024-06-30). Every payee below exists to pin one behaviour of the detector:
+;
+;   Netflix       18 × $15.99 on the 15th          -> MONTHLY (the easy case)
+;   Spotify       12 × $10.99 rising to $11.99     -> MONTHLY (price rise inside tolerance)
+;   Apple         15 × $9.99 on the 20th, PLUS     -> MONTHLY, $9.99 only
+;                 4 one-off app purchases             (the mixed-payee case)
+;   Amazon        11 × wildly varying amounts      -> NOT a subscription
+;   Hover         2  × $35.00 every September      -> ANNUAL
+;   State Farm    2  × $1,200 every November       -> ANNUAL (2-day drift)
+;   Gold's Gym    4  × $45.00 on the 5th           -> NOT a subscription (below min_monthly)
+;   City Water    6  × $60.00 every 3 months       -> NOT monthly (quarterly must not qualify)
+;   Acme Corp     6  × payroll tax withholding     -> NOT a subscription (income guard)
+;   Safeway       7  × varying, 2 a year apart     -> NOT annual (coincidental pair)
+;   Wells Fargo   8  × $2,400 on the 1st           -> NOT a subscription (excluded by description)
+;   Hulu          6  × $12.99, stopped Jun 2025    -> CANCELLED (card is current, so silence is real)
+;   Backblaze     6  × $9.00, stopped Sep 2025     -> KEPT (its bank account's import stops there too)
+;   Twilio        5  × wildly varying, 2 tagged    -> MONTHLY via subscription:true (one entry, deduped)
+;   Dropbox       6  × $11.99, one tagged false    -> SUPPRESSED via subscription:false
+;
+; Deliberately NOT balanced against real bank history — every charge is funded
+; from a single credit-card account, which is all the detector looks at.
+
+account expenses:subscriptions
+account expenses:shopping
+account expenses:utilities
+account expenses:housing
+account liabilities:creditcard
+account assets:oldbank:checking
+
+; ---------------------------------------------------------------- Netflix ----
+2025-01-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-02-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-03-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-04-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-05-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-06-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-07-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-08-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-09-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-10-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-11-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2025-12-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2026-01-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2026-02-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2026-03-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2026-04-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2026-05-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+2026-06-15 Netflix | streaming
+    expenses:subscriptions      $15.99
+    liabilities:creditcard
+
+; ---------------------------------------------------------------- Spotify ----
+; Price rises from $10.99 to $11.99 partway through (+9.1%, inside tolerance).
+2025-07-03 Spotify | music
+    expenses:subscriptions      $10.99
+    liabilities:creditcard
+
+2025-08-03 Spotify | music
+    expenses:subscriptions      $10.99
+    liabilities:creditcard
+
+2025-09-03 Spotify | music
+    expenses:subscriptions      $10.99
+    liabilities:creditcard
+
+2025-10-03 Spotify | music
+    expenses:subscriptions      $10.99
+    liabilities:creditcard
+
+2025-11-03 Spotify | music
+    expenses:subscriptions      $10.99
+    liabilities:creditcard
+
+2025-12-03 Spotify | music
+    expenses:subscriptions      $10.99
+    liabilities:creditcard
+
+2026-01-03 Spotify | music
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-02-03 Spotify | music
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-03-03 Spotify | music
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-04-03 Spotify | music
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-05-03 Spotify | music
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-06-03 Spotify | music
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+; ------------------------------------------------------------------ Apple ----
+; The hard case: a steady iCloud subscription mixed with one-off app purchases
+; under the SAME payee. Only the $9.99 cluster may be reported.
+2025-04-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2025-05-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2025-06-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2025-07-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2025-08-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2025-09-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2025-10-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2025-11-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2025-12-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2026-01-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2026-02-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2026-03-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2026-04-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2026-05-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2026-06-20 Apple | icloud storage
+    expenses:subscriptions      $9.99
+    liabilities:creditcard
+
+2025-05-02 Apple | pixelmator one-off
+    expenses:shopping           $49.99
+    liabilities:creditcard
+
+2025-08-17 Apple | game purchase
+    expenses:shopping           $4.99
+    liabilities:creditcard
+
+2026-01-09 Apple | utility app
+    expenses:shopping           $2.99
+    liabilities:creditcard
+
+2026-04-28 Apple | pro app upgrade
+    expenses:shopping           $19.99
+    liabilities:creditcard
+
+; ----------------------------------------------------------------- Amazon ----
+; Frequent but wildly variable: must never cluster into a subscription.
+2025-01-07 Amazon | household
+    expenses:shopping           $23.14
+    liabilities:creditcard
+
+2025-02-19 Amazon | books
+    expenses:shopping           $71.50
+    liabilities:creditcard
+
+2025-03-02 Amazon | electronics
+    expenses:shopping           $214.99
+    liabilities:creditcard
+
+2025-04-23 Amazon | household
+    expenses:shopping           $8.75
+    liabilities:creditcard
+
+2025-06-11 Amazon | kitchen
+    expenses:shopping           $132.40
+    liabilities:creditcard
+
+2025-08-29 Amazon | clothing
+    expenses:shopping           $46.20
+    liabilities:creditcard
+
+2025-10-05 Amazon | household
+    expenses:shopping           $312.05
+    liabilities:creditcard
+
+2025-11-27 Amazon | gifts
+    expenses:shopping           $89.99
+    liabilities:creditcard
+
+2026-02-14 Amazon | household
+    expenses:shopping           $17.63
+    liabilities:creditcard
+
+2026-04-08 Amazon | tools
+    expenses:shopping           $156.30
+    liabilities:creditcard
+
+2026-06-21 Amazon | household
+    expenses:shopping           $61.12
+    liabilities:creditcard
+
+; ------------------------------------------------------- Annual: domain ------
+2024-09-12 Hover | domain renewal
+    expenses:subscriptions      $35.00
+    liabilities:creditcard
+
+2025-09-12 Hover | domain renewal
+    expenses:subscriptions      $35.00
+    liabilities:creditcard
+
+; ---------------------------------------------------- Annual: insurance ------
+; Two-day billing drift between years — inside date tolerance.
+2024-11-01 State Farm | auto insurance
+    expenses:subscriptions      $1,200.00
+    liabilities:creditcard
+
+2025-11-03 State Farm | auto insurance
+    expenses:subscriptions      $1,200.00
+    liabilities:creditcard
+
+; ------------------------------------------- Below threshold: only 4 gym ------
+2026-03-05 Gold's Gym | membership
+    expenses:subscriptions      $45.00
+    liabilities:creditcard
+
+2026-04-05 Gold's Gym | membership
+    expenses:subscriptions      $45.00
+    liabilities:creditcard
+
+2026-05-05 Gold's Gym | membership
+    expenses:subscriptions      $45.00
+    liabilities:creditcard
+
+2026-06-05 Gold's Gym | membership
+    expenses:subscriptions      $45.00
+    liabilities:creditcard
+
+; ------------------------- Paycheck: withholding is not a subscription --------
+; A salary transaction carries payroll tax as EXPENSE postings. Without an
+; income guard the employer is "detected" as a big monthly subscription.
+2026-01-25 Acme Corp | January salary
+    income:salary              $-5,000.00
+    expenses:taxes:federal      $1,100.00
+    expenses:taxes:state          $360.00
+    assets:bank:checking
+
+2026-02-25 Acme Corp | February salary
+    income:salary              $-5,000.00
+    expenses:taxes:federal      $1,100.00
+    expenses:taxes:state          $360.00
+    assets:bank:checking
+
+2026-03-25 Acme Corp | March salary
+    income:salary              $-5,000.00
+    expenses:taxes:federal      $1,100.00
+    expenses:taxes:state          $360.00
+    assets:bank:checking
+
+2026-04-25 Acme Corp | April salary
+    income:salary              $-5,000.00
+    expenses:taxes:federal      $1,100.00
+    expenses:taxes:state          $360.00
+    assets:bank:checking
+
+2026-05-25 Acme Corp | May salary
+    income:salary              $-5,000.00
+    expenses:taxes:federal      $1,100.00
+    expenses:taxes:state          $360.00
+    assets:bank:checking
+
+2026-06-25 Acme Corp | June salary
+    income:salary              $-5,000.00
+    expenses:taxes:federal      $1,100.00
+    expenses:taxes:state          $360.00
+    assets:bank:checking
+
+; ------------- Frequent merchant: a coincidental yearly pair is not annual ----
+; Safeway is visited constantly at varying amounts, but the 2025-02-08 and
+; 2026-02-07 trips happen to be ~1 year apart at nearly the same total. That
+; pair must NOT be promoted to an annual subscription.
+2025-02-08 Safeway | groceries
+    expenses:shopping             $252.80
+    liabilities:creditcard
+
+2026-02-07 Safeway | groceries
+    expenses:shopping             $252.80
+    liabilities:creditcard
+
+2025-03-14 Safeway | groceries
+    expenses:shopping              $64.20
+    liabilities:creditcard
+
+2025-05-30 Safeway | groceries
+    expenses:shopping             $118.75
+    liabilities:creditcard
+
+2025-09-18 Safeway | groceries
+    expenses:shopping              $41.06
+    liabilities:creditcard
+
+2026-01-22 Safeway | groceries
+    expenses:shopping             $187.44
+    liabilities:creditcard
+
+2026-05-16 Safeway | groceries
+    expenses:shopping              $93.31
+    liabilities:creditcard
+
+; --------------------------- Cancelled: stopped billing ----------------------
+; A textbook monthly subscription that simply stops. The credit card it billed
+; to keeps posting right up to the window's end, so the silence is real data,
+; not a missing import — after the staleness grace it must drop off the list.
+2025-01-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+2025-02-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+2025-03-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+2025-04-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+2025-05-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+2025-06-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+; ------------------- Lagging import: quiet, but so is its account ------------
+; Billed to a bank account whose statements were last imported in Sep 2025.
+; Its charges look just as stale as Hulu's, but there is no evidence either way
+; past the account's own horizon — so it must be KEPT, not retired.
+2025-04-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+2025-05-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+2025-06-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+2025-07-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+2025-08-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+2025-09-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+; ------------------ Manual override: subscription:true -----------------------
+; A metered service whose bill swings far too much to cluster, so detection
+; never sees it. One tagged transaction is enough to put it on the list. Note
+; the comma before the tag on the last one: a tag value runs to the next comma,
+; so without it the tag would be swallowed by `category:`.
+2026-02-14 Twilio | sms credits
+    expenses:subscriptions      $18.40
+    liabilities:creditcard
+
+2026-03-14 Twilio | sms credits
+    expenses:subscriptions      $91.05
+    liabilities:creditcard
+
+2026-04-14 Twilio | sms credits
+    expenses:subscriptions      $37.22
+    liabilities:creditcard
+
+2026-05-14 Twilio | sms credits  ; subscription:true
+    expenses:subscriptions     $126.80
+    liabilities:creditcard
+
+2026-06-14 Twilio | sms credits  ; category:infra, subscription:true
+    expenses:subscriptions      $64.10
+    liabilities:creditcard
+
+; ------------------ Manual override: subscription:false ----------------------
+; A textbook monthly subscription the detector finds on its own — one tagged
+; transaction takes it back off the list.
+2026-01-07 Dropbox | storage
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-02-07 Dropbox | storage
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-03-07 Dropbox | storage
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-04-07 Dropbox | storage  ; subscription:false
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-05-07 Dropbox | storage
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-06-07 Dropbox | storage
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+; ------------------- Excluded by description: the mortgage --------------------
+; A textbook monthly subscription by shape — same payee, same price, same day —
+; but debt service, not something you could cancel. Note that "mortgage" appears
+; in the NOTE, not the payee, so the exclusion must read the whole description.
+2025-08-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2025-09-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2025-10-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2025-11-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2025-12-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2026-01-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2026-02-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2026-03-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+; Runs to the end of the window so this case isolates the DESCRIPTION exclusion
+; — otherwise staleness would retire it and the test would pass for the wrong
+; reason.
+2026-04-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2026-05-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2026-06-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+; ------------------------------------ Quarterly: must not read as monthly -----
+2025-01-10 City Water | quarterly bill
+    expenses:utilities          $60.00
+    liabilities:creditcard
+
+2025-04-10 City Water | quarterly bill
+    expenses:utilities          $60.00
+    liabilities:creditcard
+
+2025-07-10 City Water | quarterly bill
+    expenses:utilities          $60.00
+    liabilities:creditcard
+
+2025-10-10 City Water | quarterly bill
+    expenses:utilities          $60.00
+    liabilities:creditcard
+
+2026-01-10 City Water | quarterly bill
+    expenses:utilities          $60.00
+    liabilities:creditcard
+
+2026-04-10 City Water | quarterly bill
+    expenses:utilities          $60.00
+    liabilities:creditcard

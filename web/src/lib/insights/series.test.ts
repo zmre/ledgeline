@@ -4,6 +4,7 @@ import {describe, expect, it} from "vitest";
 import {normalizeTransactions} from "$lib/api/normalize";
 import {dec, formatDec, toNumber, type Dec} from "$lib/domain/money";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "$lib/domain/types";
+import type {AccountType} from "$lib/domain/accountTypes";
 import {
     OTHER,
     bigNumbers,
@@ -15,6 +16,7 @@ import {
     maxAccountDepth,
     pieData,
     rankedAccounts,
+    categoryOf,
     styleFor,
     visibleNet,
 } from "./series";
@@ -515,5 +517,66 @@ describe("INTEGRATION fixture big numbers vs hledger is", () => {
         expect(commoditiesInUse(all)[0]).toBe("$");
         expect(commoditiesInUse(all)).toContain("EUR");
         expect(commoditiesInUse(all)).toContain("AAPL");
+    });
+});
+
+describe("UNIT series categoryOf (declared types beat names)", () => {
+    const declared = new Map<string, AccountType>([
+        ["cogs:infraestructura", "expense"],
+        ["ingresos:consultoria", "revenue"],
+        ["cuenta:efectivo", "cash"],
+    ]);
+
+    it("classifies non-English accounts by their declared type", () => {
+        expect(categoryOf("cogs:infraestructura", declared)).toBe("expense");
+        expect(categoryOf("ingresos:consultoria", declared)).toBe("revenue");
+    });
+
+    it("folds cash into asset, since it is a subtype not a category", () => {
+        expect(categoryOf("cuenta:efectivo", declared)).toBe("asset");
+    });
+
+    it("falls back to the name when nothing is declared", () => {
+        expect(categoryOf("expenses:food", undefined)).toBe("expense");
+        expect(categoryOf("cogs:infraestructura", undefined)).toBe("other");
+    });
+
+    it("gives income/expense tiles real numbers for a cogs-rooted journal", () => {
+        // The regression this guards: with name-based categorisation every one
+        // of these postings is "other", so the home-page tiles read zero.
+        const txns: Transaction[] = [
+            {
+                index: 1,
+                date: "2026-02-05" as ISODate,
+                status: "cleared",
+                description: "Cliente",
+                code: "",
+                comment: "",
+                tags: [],
+                haystack: "",
+                postings: [
+                    {
+                        account: "ingresos:consultoria",
+                        amounts: [{commodity: "$", qty: dec(-400000n, 2), style: USD_STYLE}],
+                        status: "unmarked",
+                        comment: "",
+                        tags: [],
+                    },
+                    {
+                        account: "cogs:infraestructura",
+                        amounts: [{commodity: "$", qty: dec(60000n, 2), style: USD_STYLE}],
+                        status: "unmarked",
+                        comment: "",
+                        tags: [],
+                    },
+                ],
+            },
+        ];
+        const named = bigNumbers(txns, "$");
+        expect(named.income).toEqual(dec(0n, 0));
+
+        const typed = bigNumbers(txns, "$", undefined, undefined, declared);
+        expect(typed.income).toEqual(dec(400000n, 2));
+        expect(typed.expenses).toEqual(dec(60000n, 2));
     });
 });

@@ -36,7 +36,7 @@ use axum::{
 };
 use ledgeline_core::{EditError, Journal, JournalEditor, wire};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use tower_http::cors::CorsLayer;
 
@@ -173,6 +173,16 @@ impl AppState {
         self.inner.load_full()
     }
 
+    /// Every file the currently-published journal was parsed from: the main file
+    /// plus every `include`d file (directive-only includes included), as resolved
+    /// absolute paths. The live-reload watcher uses this to monitor the complete
+    /// set of files an edit to any of which should trigger a reparse. Reflects the
+    /// latest hot-swap, so re-reading it after a reload picks up include changes.
+    #[must_use]
+    pub fn source_files(&self) -> Vec<PathBuf> {
+        self.snapshot().journal.source_files.clone()
+    }
+
     /// The write-path editor mutex, shared by all clones. Used by [`edit_api`] to
     /// serialize edits; `None` inside means editing is disabled for this state.
     pub(crate) fn editor(&self) -> &Mutex<Option<JournalEditor>> {
@@ -208,6 +218,8 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/api/reports/cashflow", get(reports_api::cashflow))
         .route("/api/reports/networth", get(reports_api::networth))
+        .route("/api/insights", get(reports_api::insights_report))
+        .route("/api/subscriptions", get(reports_api::subscriptions))
         .route("/api/budget", get(reports_api::budget))
         .route("/api/holdings", get(reports_api::holdings))
         .route(

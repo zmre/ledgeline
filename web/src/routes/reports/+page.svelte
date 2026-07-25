@@ -12,11 +12,13 @@
     import {NativeApiUnavailableError} from "$lib/api/native";
     import {declaredTypes} from "$lib/domain/accountTypes";
     import {exportBudgetXlsx, exportXlsx} from "$lib/export/xlsx";
+    import InsightsDashboard from "$lib/reports/ui/insights/InsightsDashboard.svelte";
     import BudgetSummary from "$lib/reports/ui/BudgetSummary.svelte";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import ReportControls from "$lib/reports/ui/ReportControls.svelte";
     import ReportTable from "$lib/reports/ui/ReportTable.svelte";
     import ReportTabs from "$lib/reports/ui/ReportTabs.svelte";
+    import SubscriptionsPanel from "$lib/reports/ui/subscriptions/SubscriptionsPanel.svelte";
     import {
         budgetPresetRange,
         defaultReportParams,
@@ -24,6 +26,7 @@
         paramsToSearch,
         searchToParams,
         TAB_DEFAULTS,
+        TAB_LABELS,
         type ReportParams,
         type ReportTab,
     } from "$lib/reports/ui/params";
@@ -92,11 +95,17 @@
         }
     });
 
-    // Fetch the native report whenever the active tab's query changes (or the server is first configured).
+    // Tabs that own their data + controls: they load from their own stores, so the
+    // shared reports store, the controls bar, and the export button all sit out.
+    const SELF_HOSTED: ReportTab[] = ["insights", "subs"];
+    const selfHosted = $derived(SELF_HOSTED.includes(params.tab));
+
+    // Fetch the native report whenever the active tab's query changes (or the server
+    // is first configured).
     const reportQuery = $derived(buildReportQuery(params));
     $effect(() => {
         const url = settings.serverUrl;
-        if (url !== null) void reports.load(url, reportQuery);
+        if (url !== null && !selfHosted) void reports.load(url, reportQuery);
     });
 
     const styles = $derived(reportStyles(journal.txns));
@@ -119,6 +128,10 @@
     const exportInfo = $derived.by(() => {
         const span = `last ${params.count} ${params.interval} periods ending ${params.end}`;
         switch (params.tab) {
+            case "insights":
+            case "subs":
+                // Neither has an XLSX export yet; the button is hidden for them.
+                return {title: TAB_LABELS[params.tab], params: "", filename: "report.xlsx"};
             case "bs":
                 return {title: "Balance Sheet", params: `as of ${params.asOf}, depth ${params.depth}`, filename: `balance-sheet-${params.asOf}.xlsx`};
             case "is":
@@ -132,7 +145,11 @@
             case "nw":
                 return {title: "Net Worth", params: `${span}, depth ${params.depth}`, filename: `net-worth-${params.end}.xlsx`};
             case "budget":
-                return {title: "Budget", params: `${params.from} to ${params.to}, depth ${params.depth}`, filename: `budget-${params.from}-to-${params.to}.xlsx`};
+                return {
+                    title: "Budget",
+                    params: `${params.from} to ${params.to}, depth ${params.depth}`,
+                    filename: `budget-${params.from}-to-${params.to}.xlsx`,
+                };
         }
     });
 
@@ -148,13 +165,15 @@
 <div class="flex flex-col gap-3">
     <div class="flex flex-wrap items-center justify-between gap-2">
         <ReportTabs bind:tab={params.tab} />
-        {#if report !== null}
+        {#if report !== null && !selfHosted}
             {@const current = report}
             <ExportButton run={() => runExport(current)} />
         {/if}
     </div>
 
-    <ReportControls bind:params {maxDepth} />
+    {#if !selfHosted}
+        <ReportControls bind:params {maxDepth} />
+    {/if}
 
     {#if unpriced.length > 0}
         <div class="alert alert-warning rounded-box px-3 py-2 text-sm" role="alert" data-testid="unpriced-warning">
@@ -162,7 +181,11 @@
         </div>
     {/if}
 
-    {#if budgetReport !== null && stylesReady}
+    {#if params.tab === "insights"}
+        <InsightsDashboard bind:params serverUrl={settings.serverUrl} {styles} />
+    {:else if params.tab === "subs"}
+        <SubscriptionsPanel serverUrl={settings.serverUrl} {styles} />
+    {:else if budgetReport !== null && stylesReady}
         <BudgetSummary report={budgetReport} {styles} {declared} from={params.from} to={params.to} />
     {:else if tableReport !== null && stylesReady}
         <ReportTable report={tableReport} {styles} />

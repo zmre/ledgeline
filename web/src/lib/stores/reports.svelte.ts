@@ -18,6 +18,11 @@ export type ReportStatus = "idle" | "loading" | "ready" | "error";
 
 /** The exact query for one tab — only the fields that endpoint honors, so the fetch effect refires minimally. */
 export type ReportQuery =
+    // Insights and Subscriptions are served by their own stores
+    // (insights.svelte.ts / subscriptions.svelte.ts); these inert variants only
+    // keep the tab switches exhaustive — neither is ever fetched here.
+    | {tab: "insights"}
+    | {tab: "subs"}
     | {tab: "bs"; asOf: string; depth: number}
     | {tab: "is"; from: string; to: string; depth: number}
     | {tab: "cf"; end: string; interval: ReportInterval; count: number; depth: number}
@@ -27,6 +32,10 @@ export type ReportQuery =
 /** Map ReportParams → the active tab's endpoint query (drives both the fetch and the refetch key). */
 export function buildReportQuery(params: ReportParams): ReportQuery {
     switch (params.tab) {
+        case "insights":
+            return {tab: "insights"};
+        case "subs":
+            return {tab: "subs"};
         case "bs":
             return {tab: "bs", asOf: params.asOf, depth: params.depth};
         case "is":
@@ -43,6 +52,11 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
 
 async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyReport> {
     switch (query.tab) {
+        case "insights":
+        case "subs":
+            // Unreachable: the reports page loads these from their own stores and
+            // never calls this one for those tabs.
+            throw new Error(`${query.tab} is served by its own store`);
         case "bs":
             return decodeSectionedReport(await api.balanceSheet({asOf: query.asOf, depth: query.depth}));
         case "is":

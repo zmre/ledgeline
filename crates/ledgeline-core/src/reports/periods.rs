@@ -260,6 +260,39 @@ pub fn next_bucket(key: &str, interval: Interval) -> Result<String, ReportError>
     Ok(bucket_key(&to_iso(ny, nm, nd), interval))
 }
 
+/// The ISO date `delta` days after `date` (a negative `delta` moves earlier).
+/// Pure civil-day arithmetic — the companion to [`days_between`], used by the
+/// insights report to split a comparison span at its midpoint.
+#[must_use]
+pub fn add_days(date: &str, delta: i64) -> String {
+    let (y, m, d) = parts(date);
+    let (ny, nm, nd) = civil_from_days(days_from_civil(y, m, d) + delta);
+    to_iso(ny, nm, nd)
+}
+
+/// The ISO date `months` calendar months after `date` (negative moves earlier),
+/// clamping the day to the target month's length (`2026-01-31 + 1 month` →
+/// `2026-02-28`). Used to project a recurring charge's next expected date.
+#[must_use]
+pub fn add_months(date: &str, months: i64) -> String {
+    let (year, month, day) = parts(date);
+    let index = year * 12 + (month - 1) + months;
+    let (new_year, new_month) = (index.div_euclid(12), index.rem_euclid(12) + 1);
+    to_iso(
+        new_year,
+        new_month,
+        day.min(days_in_month(new_year, new_month)),
+    )
+}
+
+/// Number of days from `a` to `b` (`b − a`); negative when `b` precedes `a`.
+#[must_use]
+pub fn days_between(a: &str, b: &str) -> i64 {
+    let (ay, am, ad) = parts(a);
+    let (by, bm, bd) = parts(b);
+    days_from_civil(by, bm, bd) - days_from_civil(ay, am, ad)
+}
+
 /// Lexical ISO-date comparison.
 #[must_use]
 pub fn compare_iso(a: &str, b: &str) -> Ordering {

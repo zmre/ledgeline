@@ -4,9 +4,9 @@
 <script lang="ts">
     import {formatAmount, toNumber, type Dec} from "$lib/domain/money";
     import type {Transaction} from "$lib/domain/types";
-    import {bigNumbers, commoditiesInUse, styleFor, type AccountSelection} from "./series";
+    import {bigNumbers, commoditiesInUse, styleFor, type AccountSelection, type DeclaredTypes} from "./series";
 
-    let {txns, accounts, allTxns}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]} = $props();
+    let {txns, accounts, allTxns, declared}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();
 
     const commodities = $derived(commoditiesInUse(txns, accounts));
     const primary = $derived(commodities[0] ?? "$");
@@ -22,8 +22,8 @@
     }
 
     const stats: Stat[] = $derived.by(() => {
-        const primaryNums = bigNumbers(txns, primary, accounts, allTxns);
-        const otherNums = others.map((c) => ({commodity: c, nums: bigNumbers(txns, c, accounts, allTxns)}));
+        const primaryNums = bigNumbers(txns, primary, accounts, allTxns, declared);
+        const otherNums = others.map((c) => ({commodity: c, nums: bigNumbers(txns, c, accounts, allTxns, declared)}));
         const extras = (pick: (nums: {income: Dec; expenses: Dec; net: Dec}) => Dec): string[] =>
             otherNums.filter(({nums}) => pick(nums).m !== 0n).map(({commodity, nums}) => fmt(commodity, pick(nums)));
         return [
