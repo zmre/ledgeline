@@ -28,7 +28,7 @@
 //! comparisons, never in a reported amount.
 
 use super::ReportError;
-use super::accounts::{RootCategory, categorize};
+use super::account_types::{AccountType, account_decls, declared_types, resolve_account_type};
 use super::insights::base_commodity;
 use super::periods::{add_months, days_between};
 use crate::decimal::Dec;
@@ -223,16 +223,29 @@ struct Charge {
 
 /// The expense-side total of `txn` in `base`, with the accounts it hit.
 ///
+/// Accounts are classified by their EFFECTIVE type — an `account … ; type: X`
+/// declaration, else the nearest declared ancestor's, else the name — never by
+/// the name alone. A chart of accounts that books costs outside an `expenses:`
+/// root (`cogs:infrastructure`, say) is perfectly ordinary, and judging by name
+/// would make every charge in it invisible: no expense side means no amount,
+/// which means the transaction is skipped entirely and even an explicit
+/// `subscription:true` on it does nothing.
+///
 /// Returns `None` when the transaction spends nothing (a refund or transfer) or
 /// when it is really INCOME. The income guard matters more than it looks: a
 /// paycheck carries payroll-tax withholding as expense postings, so without it
 /// every employer is "detected" as a large monthly subscription. A subscription
 /// is money you pay out, not a deduction from money coming in.
-fn expense_charge(txn: &Transaction, base: &Commodity) -> Result<Option<Charge>, ReportError> {
+fn expense_charge(
+    txn: &Transaction,
+    base: &Commodity,
+    declared: &BTreeMap<String, AccountType>,
+) -> Result<Option<Charge>, ReportError> {
+    let type_of = |account: &str| resolve_account_type(account, declared);
     if txn
         .postings
         .iter()
-        .any(|posting| categorize(&posting.account.0) == RootCategory::Revenue)
+        .any(|posting| type_of(&posting.account.0) == Some(AccountType::Revenue))
     {
         return Ok(None);
     }
@@ -240,7 +253,7 @@ fn expense_charge(txn: &Transaction, base: &Commodity) -> Result<Option<Charge>,
     let mut accounts: Vec<String> = Vec::new();
     let mut funding: Vec<String> = Vec::new();
     for posting in &txn.postings {
-        if categorize(&posting.account.0) != RootCategory::Expense {
+        if type_of(&posting.account.0) != Some(AccountType::Expense) {
             funding.push(posting.account.0.clone());
             continue;
         }
@@ -409,6 +422,9 @@ pub fn detect_subscriptions(
     let base = base_commodity(journal)?;
     let lookback_start = add_months(opts.as_of, -opts.lookback_months);
     let horizons = account_horizons(&journal.transactions, opts.as_of);
+    // Effective account types, so costs booked outside an `expenses:` root still
+    // count (see [`expense_charge`]).
+    let declared = declared_types(&account_decls(journal));
 
     // Lowercased once; the descriptions are compared case-insensitively.
     let excluded: Vec<String> = opts
@@ -439,7 +455,7 @@ pub fn detect_subscriptions(
         if payee.is_empty() {
             continue;
         }
-        if let Some(charge) = expense_charge(txn, &base)? {
+        if let Some(charge) = expense_charge(txn, &base, &declared)? {
             if matches!(charge.verdict, Some(Override::Include(_))) {
                 tagged_in
                     .entry(payee.to_string())

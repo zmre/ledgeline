@@ -15,8 +15,10 @@
 //! are `PartialEq` but not `Eq`).
 
 use super::ReportError;
-use super::account_types::{account_decls, cash_predicate};
-use super::accounts::{RootCategory, account_matches, categorize};
+use super::account_types::{
+    AccountType, account_decls, cash_predicate, declared_types, resolve_account_type,
+};
+use super::accounts::account_matches;
 use super::aggregate::{PostingFilter, account_totals};
 use super::income_statement::income_statement;
 use super::mixed_amount::MixedAmount;
@@ -27,7 +29,7 @@ use crate::decimal::Dec;
 use crate::holdings::{HoldingsReport, HoldingsScope, PriceSource, ScopeMode, compute_holdings};
 use crate::model::{Commodity, Journal, Transaction};
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Number of rows shown in each "biggest / top" list box.
 const TOP_N: usize = 5;
@@ -316,6 +318,7 @@ fn cost_of_living_total(
     from: &str,
     to: &str,
     cost_exclude: &[String],
+    declared: &BTreeMap<String, AccountType>,
 ) -> Result<MixedAmount, ReportError> {
     let direct = account_totals(
         txns,
@@ -327,7 +330,7 @@ fn cost_of_living_total(
     )?;
     let mut sum = MixedAmount::new();
     for (account, ma) in &direct {
-        if categorize(account) != RootCategory::Expense {
+        if resolve_account_type(account, declared) != Some(AccountType::Expense) {
             continue;
         }
         if cost_exclude
@@ -428,15 +431,31 @@ fn base_of(total: Option<&MixedAmount>, base: &Commodity) -> Dec {
 /// positive (income is stored negative). Accounts with no previous-period
 /// activity are skipped (nothing to compare); the rest are ranked by the size of
 /// the move in real money, then top `TOP_N`.
-fn leaf_changes(
-    txns: &[Transaction],
-    current: (&str, &str),
-    previous: (&str, &str),
-    category: RootCategory,
-    base: &Commodity,
+struct ChangeOpts<'a> {
+    /// Inclusive current-period range.
+    current: (&'a str, &'a str),
+    /// Inclusive previous-period range.
+    previous: (&'a str, &'a str),
+    /// Which accounts to compare, by effective type.
+    category: AccountType,
+    base: &'a Commodity,
     change_min: Dec,
+    /// Negate values so an increase reads positive (revenue is stored negative).
     flip: bool,
-) -> Result<Vec<ChangeRow>, ReportError> {
+    /// Declared account types, so classification never rests on account names.
+    declared: &'a BTreeMap<String, AccountType>,
+}
+
+fn leaf_changes(txns: &[Transaction], opts: &ChangeOpts) -> Result<Vec<ChangeRow>, ReportError> {
+    let &ChangeOpts {
+        current,
+        previous,
+        category,
+        base,
+        change_min,
+        flip,
+        declared,
+    } = opts;
     let curr_totals = account_totals(
         txns,
         &PostingFilter {
@@ -457,7 +476,7 @@ fn leaf_changes(
     // Union of in-category account names seen in either period.
     let mut names: BTreeSet<String> = BTreeSet::new();
     for account in curr_totals.keys().chain(prev_totals.keys()) {
-        if categorize(account) == category {
+        if resolve_account_type(account, declared) == Some(category) {
             names.insert(account.clone());
         }
     }
@@ -675,8 +694,12 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
         &base,
     )?;
 
-    // Box 6 — cash balance at each period end.
+    // Box 6 — cash balance at each period end. `declared` also drives the
+    // expense/revenue filters below, so costs booked outside an `expenses:`
+    // root (or under non-English names) are classified by their declared type
+    // rather than by what they happen to be called.
     let decls = account_decls(journal);
+    let declared = declared_types(&decls);
     let is_cash = cash_predicate(&decls);
     let cash_balance_delta = metric_delta(
         cash_balance(txns, end, &is_cash)?,
@@ -687,8 +710,8 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     // Box 4 — average monthly cost of living (totals + month counts; averaged
     // at the display boundary).
     let cost_of_living = CostOfLiving {
-        current_total: cost_of_living_total(txns, &curr_start, end, opts.cost_exclude)?,
-        previous_total: cost_of_living_total(txns, start, &mid, opts.cost_exclude)?,
+        current_total: cost_of_living_total(txns, &curr_start, end, opts.cost_exclude, &declared)?,
+        previous_total: cost_of_living_total(txns, start, &mid, opts.cost_exclude, &declared)?,
         months_current: months_between(&curr_start, end),
         months_previous: months_between(start, &mid),
     };
@@ -703,23 +726,23 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     // vs previous). Revenue is sign-flipped so an increase reads positive.
     let current_range = (curr_start.as_str(), end);
     let previous_range = (start, mid.as_str());
-    let expense_changes = leaf_changes(
-        txns,
-        current_range,
-        previous_range,
-        RootCategory::Expense,
-        &base,
-        opts.change_min,
-        false,
-    )?;
+    let change_opts = ChangeOpts {
+        current: current_range,
+        previous: previous_range,
+        category: AccountType::Expense,
+        base: &base,
+        change_min: opts.change_min,
+        flip: false,
+        declared: &declared,
+    };
+    let expense_changes = leaf_changes(txns, &change_opts)?;
     let revenue_changes = leaf_changes(
         txns,
-        current_range,
-        previous_range,
-        RootCategory::Revenue,
-        &base,
-        opts.change_min,
-        true,
+        &ChangeOpts {
+            category: AccountType::Revenue,
+            flip: true,
+            ..change_opts
+        },
     )?;
 
     // Box 8 — biggest stock movers over the current period.
