@@ -15,6 +15,8 @@
 ;   Acme Corp     6  × payroll tax withholding     -> NOT a subscription (income guard)
 ;   Safeway       7  × varying, 2 a year apart     -> NOT annual (coincidental pair)
 ;   Wells Fargo   8  × $2,400 on the 1st           -> NOT a subscription (excluded by description)
+;   Hulu          6  × $12.99, stopped Jun 2025    -> CANCELLED (card is current, so silence is real)
+;   Backblaze     6  × $9.00, stopped Sep 2025     -> KEPT (its bank account's import stops there too)
 ;
 ; Deliberately NOT balanced against real bank history — every charge is funded
 ; from a single credit-card account, which is all the detector looks at.
@@ -24,6 +26,7 @@ account expenses:shopping
 account expenses:utilities
 account expenses:housing
 account liabilities:creditcard
+account assets:oldbank:checking
 
 ; ---------------------------------------------------------------- Netflix ----
 2025-01-15 Netflix | streaming
@@ -380,6 +383,62 @@ account liabilities:creditcard
     expenses:shopping              $93.31
     liabilities:creditcard
 
+; --------------------------- Cancelled: stopped billing ----------------------
+; A textbook monthly subscription that simply stops. The credit card it billed
+; to keeps posting right up to the window's end, so the silence is real data,
+; not a missing import — after the staleness grace it must drop off the list.
+2025-01-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+2025-02-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+2025-03-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+2025-04-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+2025-05-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+2025-06-11 Hulu | streaming
+    expenses:subscriptions      $12.99
+    liabilities:creditcard
+
+; ------------------- Lagging import: quiet, but so is its account ------------
+; Billed to a bank account whose statements were last imported in Sep 2025.
+; Its charges look just as stale as Hulu's, but there is no evidence either way
+; past the account's own horizon — so it must be KEPT, not retired.
+2025-04-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+2025-05-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+2025-06-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+2025-07-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+2025-08-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
+2025-09-08 Backblaze | offsite backup
+    expenses:subscriptions       $9.00
+    assets:oldbank:checking
+
 ; ------------------- Excluded by description: the mortgage --------------------
 ; A textbook monthly subscription by shape — same payee, same price, same day —
 ; but debt service, not something you could cancel. Note that "mortgage" appears
@@ -413,6 +472,21 @@ account liabilities:creditcard
     liabilities:creditcard
 
 2026-03-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+; Runs to the end of the window so this case isolates the DESCRIPTION exclusion
+; — otherwise staleness would retire it and the test would pass for the wrong
+; reason.
+2026-04-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2026-05-01 Wells Fargo | mortgage payment
+    expenses:housing            $2,400.00
+    liabilities:creditcard
+
+2026-06-01 Wells Fargo | mortgage payment
     expenses:housing            $2,400.00
     liabilities:creditcard
 

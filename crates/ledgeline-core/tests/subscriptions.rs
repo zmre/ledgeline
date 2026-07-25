@@ -62,8 +62,12 @@ fn scans_the_trailing_two_years() {
 #[test]
 fn finds_the_monthly_subscriptions_sorted_by_annual_cost() {
     let report = report();
-    // Netflix $15.99 → $191.88/yr, Spotify ~$11.99 → $143.88, Apple $9.99 → $119.88.
-    assert_eq!(payees(&report.monthly), ["Netflix", "Spotify", "Apple"]);
+    // Netflix $15.99 → $191.88/yr, Spotify ~$11.99 → $143.88, Apple $9.99 →
+    // $119.88, Backblaze $9.00 → $108.00.
+    assert_eq!(
+        payees(&report.monthly),
+        ["Netflix", "Spotify", "Apple", "Backblaze"]
+    );
 
     let netflix = find(&report.monthly, "Netflix").expect("Netflix detected");
     assert_eq!(netflix.cadence, Cadence::Monthly);
@@ -180,7 +184,7 @@ fn a_coincidental_yearly_pair_at_a_frequent_merchant_is_not_annual() {
 
 #[test]
 fn a_mortgage_is_excluded_by_description() {
-    // Eight identical $2,400 charges on the 1st — a textbook monthly subscription
+    // Eleven identical $2,400 charges on the 1st — a textbook monthly subscription
     // by shape, but debt service. "mortgage" sits in the NOTE (`Wells Fargo |
     // mortgage payment`), not the payee, so this also pins that the exclusion
     // reads the whole description.
@@ -217,6 +221,48 @@ fn the_description_exclusion_is_case_insensitive() {
     assert!(find(&report.monthly, "Wells Fargo").is_none());
     // Unrelated subscriptions are untouched by the filter.
     assert!(find(&report.monthly, "Netflix").is_some());
+}
+
+#[test]
+fn a_cancelled_subscription_drops_off_the_list() {
+    // Hulu billed monthly through Jun 2025 and then stopped. Its credit card
+    // keeps posting to the end of the window, so the silence is evidence, not a
+    // gap in the data — it is cancelled and must not sit on the list as a
+    // phantom cost.
+    let report = report();
+    assert!(find(&report.monthly, "Hulu").is_none());
+
+    // Widening the grace period brings it back, proving staleness — not some
+    // other rule — is what retired it.
+    let exclude = excludes();
+    let lenient = detect_subscriptions(
+        &fixture(),
+        &SubscriptionOpts {
+            as_of: AS_OF,
+            stale_months: 24,
+            exclude_desc: &exclude,
+            ..SubscriptionOpts::default()
+        },
+    )
+    .expect("detection succeeds");
+    let hulu = find(&lenient.monthly, "Hulu").expect("Hulu detected with a wide grace period");
+    assert_eq!(hulu.last_seen, "2025-06-11");
+}
+
+#[test]
+fn a_quiet_charge_on_a_lagging_import_is_kept() {
+    // Backblaze also stopped appearing (Sep 2025) — but it bills a bank account
+    // whose statements were last imported that same month. There is no evidence
+    // it was cancelled, only an absence of data, so it must survive. This is the
+    // whole reason staleness is measured per funding account rather than against
+    // today: judged globally, this would be retired alongside Hulu.
+    let report = report();
+    let backblaze = find(&report.monthly, "Backblaze").expect("kept despite being quiet");
+    assert_eq!(backblaze.last_seen, "2025-09-08");
+    assert!(
+        find(&report.monthly, "Hulu").is_none(),
+        "the equally-quiet card-funded charge IS retired, so this is not just a lax cutoff"
+    );
 }
 
 #[test]

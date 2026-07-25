@@ -832,6 +832,9 @@ pub(crate) struct SubscriptionsQuery {
     min_monthly: Option<usize>,
     /// Charges needed before an annual cadence is believed (default 2).
     min_annual: Option<usize>,
+    /// Months a charge may go unseen — measured against its funding account's
+    /// own latest activity — before it counts as cancelled (default 3).
+    stale_months: Option<i64>,
     /// Comma-separated case-insensitive description substrings to exclude
     /// (default [`DEFAULT_EXCLUDE_DESC`]). An explicit empty value excludes
     /// nothing.
@@ -1031,6 +1034,7 @@ pub(crate) async fn subscriptions(
         lookback_months: query.lookback.unwrap_or(defaults.lookback_months).max(1),
         min_monthly: query.min_monthly.unwrap_or(defaults.min_monthly).max(2),
         min_annual: query.min_annual.unwrap_or(defaults.min_annual).max(2),
+        stale_months: query.stale_months.unwrap_or(defaults.stale_months).max(1),
         exclude_desc: &exclude_desc,
         ..defaults
     };

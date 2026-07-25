@@ -97,6 +97,13 @@ pub struct SubscriptionOpts<'a> {
     pub min_monthly: usize,
     /// Charges needed before an annual cadence is believed.
     pub min_annual: usize,
+    /// How long a charge may go unseen before it is treated as cancelled.
+    ///
+    /// Measured NOT against `as_of` but against how far the data actually
+    /// reaches — see [`detect_subscriptions`]. Monthly charges get this much
+    /// grace; annual charges get a full year on top, so one missed renewal plus
+    /// the same grace retires them.
+    pub stale_months: i64,
     /// Case-insensitive substrings that disqualify a transaction outright.
     ///
     /// Matched against the WHOLE description, not just the payee: a mortgage is
@@ -120,6 +127,7 @@ impl Default for SubscriptionOpts<'_> {
             date_tolerance_days: 4,
             min_monthly: 5,
             min_annual: 2,
+            stale_months: 3,
             exclude_desc: &[],
         }
     }
@@ -160,7 +168,13 @@ fn payee_of(description: &str) -> &str {
 struct Charge {
     date: String,
     amount: Dec,
+    /// Expense accounts the charge hit (reported to the caller).
     accounts: Vec<String>,
+    /// The non-expense side — the card or account the money came FROM. These
+    /// decide how current the charge's data is: an import feeds an account, so
+    /// the most recent activity on the funding account is the last date we could
+    /// possibly have seen this charge.
+    funding: Vec<String>,
 }
 
 /// The expense-side total of `txn` in `base`, with the accounts it hit.
@@ -180,8 +194,10 @@ fn expense_charge(txn: &Transaction, base: &Commodity) -> Result<Option<Charge>,
     }
     let mut total = Dec::zero();
     let mut accounts: Vec<String> = Vec::new();
+    let mut funding: Vec<String> = Vec::new();
     for posting in &txn.postings {
         if categorize(&posting.account.0) != RootCategory::Expense {
+            funding.push(posting.account.0.clone());
             continue;
         }
         for amount in &posting.amounts {
@@ -197,10 +213,13 @@ fn expense_charge(txn: &Transaction, base: &Commodity) -> Result<Option<Charge>,
     }
     accounts.sort();
     accounts.dedup();
+    funding.sort();
+    funding.dedup();
     Ok(Some(Charge {
         date: txn.date.clone(),
         amount: total,
         accounts,
+        funding,
     }))
 }
 
@@ -299,7 +318,41 @@ fn detect_cadence(dates: &[String], opts: &SubscriptionOpts) -> Option<Cadence> 
     None
 }
 
+/// Latest transaction date on each account, ignoring anything after `as_of`.
+///
+/// This is the "data horizon" per account: how far imports have actually been
+/// loaded for it. Judging staleness against it — rather than against today —
+/// is what separates *cancelled* from *not imported yet*.
+fn account_horizons(txns: &[Transaction], as_of: &str) -> BTreeMap<String, String> {
+    let mut latest: BTreeMap<String, String> = BTreeMap::new();
+    for txn in txns {
+        if txn.date.as_str() > as_of {
+            continue;
+        }
+        for posting in &txn.postings {
+            latest
+                .entry(posting.account.0.clone())
+                .and_modify(|current| {
+                    if txn.date > *current {
+                        current.clone_from(&txn.date);
+                    }
+                })
+                .or_insert_with(|| txn.date.clone());
+        }
+    }
+    latest
+}
+
 /// Find recurring monthly and annual charges in the journal's expense history.
+///
+/// A detected charge is dropped when it has not been seen recently enough to
+/// still look live. "Recently" is measured against the latest activity on the
+/// accounts that FUND the charge, not against `as_of`: a card whose statements
+/// stop in March says nothing about April, so its subscriptions must not be
+/// retired merely because the calendar moved on. A card that is current
+/// through last week, on the other hand, genuinely has not been billed — and
+/// after [`SubscriptionOpts::stale_months`] that charge is treated as cancelled
+/// rather than left on the list as a phantom cost.
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow (unreachable for realistic
@@ -310,6 +363,7 @@ pub fn detect_subscriptions(
 ) -> Result<SubscriptionsReport, ReportError> {
     let base = base_commodity(journal)?;
     let lookback_start = add_months(opts.as_of, -opts.lookback_months);
+    let horizons = account_horizons(&journal.transactions, opts.as_of);
 
     // Lowercased once; the descriptions are compared case-insensitively.
     let excluded: Vec<String> = opts
@@ -384,6 +438,24 @@ pub fn detect_subscriptions(
                 Cadence::Monthly => add_months(&last_seen, 1),
                 Cadence::Annual => add_months(&last_seen, 12),
             };
+
+            // Retire charges that have gone quiet, but only when the funding
+            // accounts have data recent enough to prove the silence is real.
+            // An annual charge gets a year of grace on top, so it is retired
+            // one missed renewal later rather than mid-cycle.
+            let horizon = dated
+                .values()
+                .flat_map(|charge| charge.funding.iter())
+                .filter_map(|account| horizons.get(account))
+                .max()
+                .map_or(opts.as_of, String::as_str);
+            let allowance = match cadence {
+                Cadence::Monthly => opts.stale_months,
+                Cadence::Annual => 12 + opts.stale_months,
+            };
+            if last_seen.as_str() < add_months(horizon, -allowance).as_str() {
+                continue;
+            }
 
             let subscription = Subscription {
                 payee: payee.clone(),

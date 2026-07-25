@@ -636,8 +636,14 @@ async fn subscriptions_endpoint_reports_monthly_and_annual_charges() {
             .map(|row| row["payee"].as_str().expect("payee").to_string())
             .collect()
     };
-    assert_eq!(names("monthly"), ["Netflix", "Spotify", "Apple"]);
+    assert_eq!(
+        names("monthly"),
+        ["Netflix", "Spotify", "Apple", "Backblaze"]
+    );
     assert_eq!(names("annual"), ["State Farm", "Hover"]);
+    // Cancelled charges are retired: Hulu stopped billing a card that stayed
+    // current, so its silence is real rather than a missing import.
+    assert!(!names("monthly").contains(&"Hulu".to_string()));
 
     // Netflix: $15.99/mo → $191.88/yr, with its next charge projected forward.
     let netflix = &body["monthly"][0];

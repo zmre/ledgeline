@@ -53,7 +53,9 @@
 
         <p class="text-base-content/50 text-xs">
             A charge is counted when it repeats at a steady price on a consistent day — so variable bills (utilities, groceries), one-off purchases, and
-            anything matching <code class="text-base-content/70">mortgage</code> are left out. Click any row to see its transactions in the journal.
+            anything matching <code class="text-base-content/70">mortgage</code> are left out. A charge that stops is treated as cancelled and dropped, but only once
+            the account paying it has newer activity — so an account you haven't imported lately keeps its subscriptions. Click any row to see its transactions in
+            the journal.
         </p>
     {:else if subscriptions.status === "error"}
         <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="subscriptions-error">
