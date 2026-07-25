@@ -57,6 +57,12 @@
             the account paying it has newer activity — so an account you haven't imported lately keeps its subscriptions. Click any row to see its transactions in
             the journal.
         </p>
+        <p class="text-base-content/50 text-xs">
+            To overrule any of that, tag a transaction's comment: <code class="text-base-content/70">subscription:true</code> puts that payee on the list
+            whatever the amounts do, and <code class="text-base-content/70">subscription:false</code> takes it off. If the comment already has a tag, separate
+            them with a comma (<code class="text-base-content/70">category:infra, subscription:true</code>) — a tag's value runs to the next comma, so without
+            one the new tag is swallowed by the previous one.
+        </p>
     {:else if subscriptions.status === "error"}
         <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="subscriptions-error">
             <span>{nativeUnavailable ? subscriptions.error?.message : `Couldn't load subscriptions: ${subscriptions.error?.message ?? "unknown error"}`}</span>

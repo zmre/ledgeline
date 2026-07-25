@@ -44,6 +44,45 @@ pub enum Cadence {
     Annual,
 }
 
+/// The tag key that overrides detection: `subscription:true` forces a charge
+/// onto the list, `subscription:false` takes it off.
+pub const OVERRIDE_TAG: &str = "subscription";
+
+/// A hand-written verdict on a transaction, read from its [`OVERRIDE_TAG`].
+///
+/// Detection is a heuristic, and heuristics are wrong at the edges: a charge
+/// whose amount swings too much to cluster never surfaces, and a merchant you
+/// have stopped caring about keeps surfacing. These let the journal say so
+/// directly, and an explicit verdict always beats an inferred one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Override {
+    /// `subscription:true` (also `yes`/`monthly`, or `annual`/`yearly`).
+    Include(Cadence),
+    /// `subscription:false` (also `no`).
+    Exclude,
+}
+
+/// Read a transaction's subscription verdict from its own tags or its postings'.
+/// Unrecognized values are ignored rather than guessed at.
+fn subscription_override(txn: &Transaction) -> Option<Override> {
+    let tags = txn
+        .tags
+        .iter()
+        .chain(txn.postings.iter().flat_map(|posting| posting.tags.iter()));
+    for (key, value) in tags {
+        if !key.eq_ignore_ascii_case(OVERRIDE_TAG) {
+            continue;
+        }
+        return match value.trim().to_lowercase().as_str() {
+            "true" | "yes" | "monthly" => Some(Override::Include(Cadence::Monthly)),
+            "annual" | "yearly" => Some(Override::Include(Cadence::Annual)),
+            "false" | "no" => Some(Override::Exclude),
+            _ => None,
+        };
+    }
+    None
+}
+
 /// One detected recurring charge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subscription {
@@ -66,6 +105,9 @@ pub struct Subscription {
     /// Expense accounts the charges posted to (sorted, deduped) — the hook for
     /// per-category ignore rules later.
     pub accounts: Vec<String>,
+    /// True when this entry exists because a transaction was tagged
+    /// `subscription:true`, rather than because the detector found a pattern.
+    pub manual: bool,
 }
 
 /// Detected subscriptions, split by cadence and sorted by annual cost desc.
@@ -175,6 +217,8 @@ struct Charge {
     /// the most recent activity on the funding account is the last date we could
     /// possibly have seen this charge.
     funding: Vec<String>,
+    /// A hand-written verdict from this transaction's `subscription:` tag.
+    verdict: Option<Override>,
 }
 
 /// The expense-side total of `txn` in `base`, with the accounts it hit.
@@ -220,6 +264,7 @@ fn expense_charge(txn: &Transaction, base: &Commodity) -> Result<Option<Charge>,
         amount: total,
         accounts,
         funding,
+        verdict: subscription_override(txn),
     }))
 }
 
@@ -373,16 +418,21 @@ pub fn detect_subscriptions(
         .filter(|pattern| !pattern.is_empty())
         .collect();
 
-    // Payee → its charges inside the window.
+    // Payee → its charges inside the window, plus the subset each payee has
+    // explicitly tagged onto the list.
     let mut by_payee: BTreeMap<String, Vec<Charge>> = BTreeMap::new();
+    let mut tagged_in: BTreeMap<String, Vec<Charge>> = BTreeMap::new();
     for txn in &journal.transactions {
         if txn.date.as_str() < lookback_start.as_str() || txn.date.as_str() > opts.as_of {
             continue;
         }
         // Matched against the whole description (payee AND note) — see
-        // [`SubscriptionOpts::exclude_desc`].
+        // [`SubscriptionOpts::exclude_desc`]. A transaction tagged
+        // `subscription:true` is exempt: an explicit verdict in the journal
+        // outranks a blanket default.
         let lowered = txn.description.to_lowercase();
-        if excluded.iter().any(|pattern| lowered.contains(pattern)) {
+        let is_tagged_in = matches!(subscription_override(txn), Some(Override::Include(_)));
+        if !is_tagged_in && excluded.iter().any(|pattern| lowered.contains(pattern)) {
             continue;
         }
         let payee = payee_of(&txn.description);
@@ -390,6 +440,12 @@ pub fn detect_subscriptions(
             continue;
         }
         if let Some(charge) = expense_charge(txn, &base)? {
+            if matches!(charge.verdict, Some(Override::Include(_))) {
+                tagged_in
+                    .entry(payee.to_string())
+                    .or_default()
+                    .push(charge.clone());
+            }
             by_payee.entry(payee.to_string()).or_default().push(charge);
         }
     }
@@ -407,6 +463,16 @@ pub fn detect_subscriptions(
                 dated.entry(charge.date.clone()).or_insert(charge);
             }
             let dates: Vec<String> = dated.keys().cloned().collect();
+            // A `subscription:false` anywhere in this cluster takes it off the
+            // list. Scoped to the cluster, not the whole payee, so marking a
+            // one-off purchase does not also silence the real subscription
+            // billed by the same merchant.
+            if dated
+                .values()
+                .any(|charge| charge.verdict == Some(Override::Exclude))
+            {
+                continue;
+            }
             let Some(cadence) = detect_cadence(&dates, opts) else {
                 continue;
             };
@@ -467,11 +533,64 @@ pub fn detect_subscriptions(
                 last_seen,
                 next_expected,
                 accounts,
+                manual: false,
             };
             match cadence {
                 Cadence::Monthly => monthly.push(subscription),
                 Cadence::Annual => annual.push(subscription),
             }
+        }
+    }
+
+    // Charges the journal names outright. Detection cannot see a subscription
+    // whose amount swings too much to cluster, so `subscription:true` puts it on
+    // the list regardless — one entry per payee however many transactions carry
+    // the tag, and never a duplicate of something already found.
+    for (payee, charges) in &tagged_in {
+        if monthly.iter().chain(&annual).any(|row| row.payee == *payee) {
+            continue;
+        }
+        let cadence = charges
+            .iter()
+            .find_map(|charge| match charge.verdict {
+                Some(Override::Include(cadence)) => Some(cadence),
+                _ => None,
+            })
+            .unwrap_or(Cadence::Monthly);
+        let amounts: Vec<Dec> = charges.iter().map(|charge| charge.amount).collect();
+        let typical_amount = median_amount(&amounts);
+        let annualized_cost = match cadence {
+            Cadence::Monthly => typical_amount.mul(Dec::new(12, 0))?,
+            Cadence::Annual => typical_amount,
+        };
+        let mut dates: Vec<&str> = charges.iter().map(|charge| charge.date.as_str()).collect();
+        dates.sort_unstable();
+        let first_seen = dates.first().copied().unwrap_or_default().to_string();
+        let last_seen = dates.last().copied().unwrap_or_default().to_string();
+        let mut accounts: Vec<String> = charges
+            .iter()
+            .flat_map(|charge| charge.accounts.iter().cloned())
+            .collect();
+        accounts.sort();
+        accounts.dedup();
+        let subscription = Subscription {
+            payee: payee.clone(),
+            cadence,
+            typical_amount,
+            annualized_cost,
+            occurrences: charges.len(),
+            first_seen,
+            next_expected: match cadence {
+                Cadence::Monthly => add_months(&last_seen, 1),
+                Cadence::Annual => add_months(&last_seen, 12),
+            },
+            last_seen,
+            accounts,
+            manual: true,
+        };
+        match cadence {
+            Cadence::Monthly => monthly.push(subscription),
+            Cadence::Annual => annual.push(subscription),
         }
     }
 

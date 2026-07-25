@@ -75,7 +75,12 @@
                             title="{row.occurrences} charges since {row.firstSeen} — show them in the journal"
                         >
                             <span class="min-w-0">
-                                <span class="block truncate font-medium">{row.payee}</span>
+                                <span class="block truncate font-medium">
+                                    {row.payee}{#if row.manual}<span
+                                            class="badge badge-ghost badge-xs ml-1.5 align-middle"
+                                            title="Added by a subscription:true tag">tagged</span
+                                        >{/if}
+                                </span>
                                 <span class="text-base-content/50 text-xs">next {row.nextExpected}</span>
                             </span>
                             <span class="text-right whitespace-nowrap">

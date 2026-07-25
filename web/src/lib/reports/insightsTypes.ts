@@ -106,6 +106,8 @@ export interface Subscription {
     nextExpected: ISODate;
     /** Expense accounts the charges posted to. */
     accounts: string[];
+    /** Hand-added via a `subscription:true` tag rather than detected. */
+    manual: boolean;
 }
 
 /**

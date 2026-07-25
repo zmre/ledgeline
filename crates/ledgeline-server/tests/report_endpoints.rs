@@ -638,15 +638,27 @@ async fn subscriptions_endpoint_reports_monthly_and_annual_charges() {
     };
     assert_eq!(
         names("monthly"),
-        ["Netflix", "Spotify", "Apple", "Backblaze"]
+        ["Twilio", "Netflix", "Spotify", "Apple", "Backblaze"]
     );
     assert_eq!(names("annual"), ["State Farm", "Hover"]);
     // Cancelled charges are retired: Hulu stopped billing a card that stayed
     // current, so its silence is real rather than a missing import.
     assert!(!names("monthly").contains(&"Hulu".to_string()));
+    // Hand-tagged entries are flagged so the UI can tell them apart, and
+    // `subscription:false` keeps Dropbox off despite being detectable.
+    let twilio = &body["monthly"][0];
+    assert_eq!(twilio["payee"], "Twilio");
+    assert_eq!(twilio["manual"], true);
+    assert_eq!(body["monthly"][1]["manual"], false);
+    assert!(!names("monthly").contains(&"Dropbox".to_string()));
 
     // Netflix: $15.99/mo → $191.88/yr, with its next charge projected forward.
-    let netflix = &body["monthly"][0];
+    let netflix = body["monthly"]
+        .as_array()
+        .expect("monthly array")
+        .iter()
+        .find(|row| row["payee"] == "Netflix")
+        .expect("Netflix present");
     assert_eq!(netflix["cadence"], "monthly");
     assert_eq!(netflix["typicalAmount"]["mantissa"], "1599");
     assert_eq!(netflix["annualizedCost"]["mantissa"], "19188");

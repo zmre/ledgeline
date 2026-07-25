@@ -220,6 +220,7 @@ interface RawSubscription {
     lastSeen?: string;
     nextExpected?: string;
     accounts?: unknown[];
+    manual?: boolean;
 }
 
 interface RawSubscriptionsReport {
@@ -639,6 +640,7 @@ function decodeSubscription(raw: RawSubscription | undefined, context: string): 
         lastSeen: raw.lastSeen as ISODate,
         nextExpected: raw.nextExpected as ISODate,
         accounts: frozen(decodeStrings(raw.accounts, `${context} accounts`)),
+        manual: raw.manual === true,
     });
 }
 

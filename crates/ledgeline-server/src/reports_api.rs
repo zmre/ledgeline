@@ -435,6 +435,8 @@ struct WireSubscription {
     last_seen: String,
     next_expected: String,
     accounts: Vec<String>,
+    /// Hand-added via a `subscription:true` tag rather than detected.
+    manual: bool,
 }
 
 fn wire_subscription(subscription: &Subscription) -> WireSubscription {
@@ -451,6 +453,7 @@ fn wire_subscription(subscription: &Subscription) -> WireSubscription {
         last_seen: subscription.last_seen.clone(),
         next_expected: subscription.next_expected.clone(),
         accounts: subscription.accounts.clone(),
+        manual: subscription.manual,
     }
 }
 

@@ -17,6 +17,8 @@
 ;   Wells Fargo   8  × $2,400 on the 1st           -> NOT a subscription (excluded by description)
 ;   Hulu          6  × $12.99, stopped Jun 2025    -> CANCELLED (card is current, so silence is real)
 ;   Backblaze     6  × $9.00, stopped Sep 2025     -> KEPT (its bank account's import stops there too)
+;   Twilio        5  × wildly varying, 2 tagged    -> MONTHLY via subscription:true (one entry, deduped)
+;   Dropbox       6  × $11.99, one tagged false    -> SUPPRESSED via subscription:false
 ;
 ; Deliberately NOT balanced against real bank history — every charge is funded
 ; from a single credit-card account, which is all the detector looks at.
@@ -438,6 +440,58 @@ account assets:oldbank:checking
 2025-09-08 Backblaze | offsite backup
     expenses:subscriptions       $9.00
     assets:oldbank:checking
+
+; ------------------ Manual override: subscription:true -----------------------
+; A metered service whose bill swings far too much to cluster, so detection
+; never sees it. One tagged transaction is enough to put it on the list. Note
+; the comma before the tag on the last one: a tag value runs to the next comma,
+; so without it the tag would be swallowed by `category:`.
+2026-02-14 Twilio | sms credits
+    expenses:subscriptions      $18.40
+    liabilities:creditcard
+
+2026-03-14 Twilio | sms credits
+    expenses:subscriptions      $91.05
+    liabilities:creditcard
+
+2026-04-14 Twilio | sms credits
+    expenses:subscriptions      $37.22
+    liabilities:creditcard
+
+2026-05-14 Twilio | sms credits  ; subscription:true
+    expenses:subscriptions     $126.80
+    liabilities:creditcard
+
+2026-06-14 Twilio | sms credits  ; category:infra, subscription:true
+    expenses:subscriptions      $64.10
+    liabilities:creditcard
+
+; ------------------ Manual override: subscription:false ----------------------
+; A textbook monthly subscription the detector finds on its own — one tagged
+; transaction takes it back off the list.
+2026-01-07 Dropbox | storage
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-02-07 Dropbox | storage
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-03-07 Dropbox | storage
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-04-07 Dropbox | storage  ; subscription:false
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-05-07 Dropbox | storage
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
+
+2026-06-07 Dropbox | storage
+    expenses:subscriptions      $11.99
+    liabilities:creditcard
 
 ; ------------------- Excluded by description: the mortgage --------------------
 ; A textbook monthly subscription by shape — same payee, same price, same day —

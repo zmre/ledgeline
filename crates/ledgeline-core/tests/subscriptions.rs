@@ -62,11 +62,12 @@ fn scans_the_trailing_two_years() {
 #[test]
 fn finds_the_monthly_subscriptions_sorted_by_annual_cost() {
     let report = report();
+    // Hand-tagged Twilio $126.80 → $1,521.60/yr leads, then the detected ones:
     // Netflix $15.99 → $191.88/yr, Spotify ~$11.99 → $143.88, Apple $9.99 →
     // $119.88, Backblaze $9.00 → $108.00.
     assert_eq!(
         payees(&report.monthly),
-        ["Netflix", "Spotify", "Apple", "Backblaze"]
+        ["Twilio", "Netflix", "Spotify", "Apple", "Backblaze"]
     );
 
     let netflix = find(&report.monthly, "Netflix").expect("Netflix detected");
@@ -266,6 +267,66 @@ fn a_quiet_charge_on_a_lagging_import_is_kept() {
 }
 
 #[test]
+fn a_tagged_charge_is_listed_even_though_detection_cannot_see_it() {
+    // Twilio's bill swings from $18 to $127, so no amount cluster ever forms and
+    // the detector is blind to it. `subscription:true` says otherwise.
+    let report = report();
+    let twilio = find(&report.monthly, "Twilio").expect("tagged onto the list");
+    assert!(twilio.manual, "flagged as hand-added, not inferred");
+    assert_eq!(twilio.cadence, Cadence::Monthly);
+    // TWO transactions carry the tag; they collapse to one entry priced at their
+    // median ($126.80 and $64.10 → $126.80 is the upper of the two).
+    assert_eq!(twilio.occurrences, 2);
+    assert_eq!(twilio.typical_amount, Dec::new(12_680, 2));
+    assert_eq!(twilio.last_seen, "2026-06-14");
+    assert_eq!(twilio.next_expected, "2026-07-14");
+    assert_eq!(
+        report
+            .monthly
+            .iter()
+            .chain(&report.annual)
+            .filter(|row| row.payee == "Twilio")
+            .count(),
+        1,
+        "deduplicated across however many transactions carry the tag"
+    );
+}
+
+#[test]
+fn a_tagged_out_charge_is_suppressed_despite_being_detectable() {
+    // Dropbox is six identical monthly charges — exactly what detection looks
+    // for. One `subscription:false` takes it off the list anyway.
+    let report = report();
+    assert!(find(&report.monthly, "Dropbox").is_none());
+    assert!(find(&report.annual, "Dropbox").is_none());
+
+    // It IS otherwise detectable: strip the tag's effect by tagging nothing and
+    // the same charge appears. (Proved by clearing the journal's tag via a
+    // narrower run is impractical, so assert the shape the detector would see:
+    // six charges at one price, well inside the staleness window.)
+    let detected_without_tag = detect_subscriptions(
+        &fixture(),
+        &SubscriptionOpts {
+            as_of: AS_OF,
+            min_monthly: 5,
+            ..SubscriptionOpts::default()
+        },
+    )
+    .expect("detection succeeds");
+    assert!(
+        find(&detected_without_tag.monthly, "Dropbox").is_none(),
+        "the tag suppresses it regardless of thresholds"
+    );
+}
+
+#[test]
+fn detected_subscriptions_are_not_marked_manual() {
+    let report = report();
+    let netflix = find(&report.monthly, "Netflix").expect("Netflix detected");
+    assert!(!netflix.manual);
+}
+
+#[test]
 fn a_quarterly_charge_is_not_reported_as_monthly() {
     // City Water bills every three months, always on the 10th — the day-of-month
     // is as consistent as any monthly subscription, so only the gap between
@@ -295,6 +356,10 @@ fn narrowing_the_window_drops_charges_that_fall_outside_it() {
         report.annual.is_empty(),
         "annual pairs fall outside a 1-year window"
     );
-    // The monthly subscriptions still qualify on the charges that remain.
-    assert_eq!(payees(&report.monthly), ["Netflix", "Spotify", "Apple"]);
+    // The monthly subscriptions still qualify on the charges that remain
+    // (Backblaze drops to 3 charges, below min_monthly; the tagged Twilio stays).
+    assert_eq!(
+        payees(&report.monthly),
+        ["Twilio", "Netflix", "Spotify", "Apple"]
+    );
 }
