@@ -11,15 +11,15 @@
     import BigNumbers from "./BigNumbers.svelte";
     import ChartWidget from "./ChartWidget.svelte";
     import DepthSlider from "./DepthSlider.svelte";
-    import {bigNumbers, commoditiesInUse, maxAccountDepth, styleFor, type AccountSelection} from "./series";
+    import {bigNumbers, commoditiesInUse, maxAccountDepth, styleFor, type AccountSelection, type DeclaredTypes} from "./series";
 
     // txns: the filtered view to summarize/chart. allTxns: the whole journal —
     // used only to detect the journal's sign conventions so they stay stable
     // across filter changes (see series.signConventions).
-    let {txns, accounts, allTxns}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]} = $props();
+    let {txns, accounts, allTxns, declared}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();
 
     const primary = $derived(commoditiesInUse(txns, accounts)[0] ?? "$");
-    const net = $derived(bigNumbers(txns, primary, accounts, allTxns).net);
+    const net = $derived(bigNumbers(txns, primary, accounts, allTxns, declared).net);
     const netFormatted = $derived(formatAmount({commodity: primary, qty: net, style: styleFor(txns, primary)}));
 
     // Default depth matches the reports page (defaultReportParams().depth). The
@@ -44,8 +44,8 @@
         </span>
     </div>
     <div class="collapse-content flex flex-col gap-4">
-        <BigNumbers {txns} {accounts} {allTxns} />
-        <ChartWidget {txns} {accounts} {allTxns} {depth} />
+        <BigNumbers {txns} {accounts} {allTxns} {declared} />
+        <ChartWidget {txns} {accounts} {allTxns} {depth} {declared} />
         <!-- Keyed on max: the slider can mount while txns are still loading (max=1),
              and the browser clamps the input's value to that max without updating the
              bound state; remounting once the real max arrives re-applies `depth`

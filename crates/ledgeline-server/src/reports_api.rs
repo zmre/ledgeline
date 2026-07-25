@@ -32,9 +32,10 @@ use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
     BudgetCell, BudgetOpts, BudgetReport, Cadence, ChangeKind, ChangeRow, CostOfLiving,
     DEFAULT_EXCLUDE_DESC, InsightsOpts, InsightsReport, Interval, MetricDelta, MixedAmount,
-    MoverRow, PerfPoint, PeriodReport, ReportError, SectionedReport, Subscription,
+    MoverRow, NetWorthOpts, PerfPoint, PeriodReport, ReportError, SectionedReport, Subscription,
     SubscriptionOpts, SubscriptionsReport, TopTxn, account_decls, balance_sheet, budget_report,
-    cash_flow, cash_predicate, detect_subscriptions, income_statement, insights, net_worth,
+    cash_flow, cash_predicate, declared_types, detect_subscriptions, income_statement, insights,
+    net_worth,
 };
 use serde::{Deserialize, Serialize};
 
@@ -881,7 +882,8 @@ pub(crate) async fn balancesheet(
     let snapshot = state.snapshot();
     let as_of = query.as_of.unwrap_or_else(today_utc);
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
-    let report = balance_sheet(&snapshot.journal.transactions, &as_of, depth)
+    let declared = declared_types(&account_decls(&snapshot.journal));
+    let report = balance_sheet(&snapshot.journal.transactions, &as_of, depth, &declared)
         .map_err(|err| report_error(&err))?;
     Ok(Json(wire_sectioned(&report)))
 }
@@ -898,7 +900,8 @@ pub(crate) async fn incomestatement(
         .unwrap_or_else(|| format!("{}-01-01", &today[..4]));
     let to = query.to.unwrap_or(today);
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
-    let report = income_statement(&snapshot.journal.transactions, &from, &to, depth)
+    let declared = declared_types(&account_decls(&snapshot.journal));
+    let report = income_statement(&snapshot.journal.transactions, &from, &to, depth, &declared)
         .map_err(|err| report_error(&err))?;
     Ok(Json(wire_sectioned(&report)))
 }
@@ -948,14 +951,18 @@ pub(crate) async fn networth(
         .filter(|symbol| !symbol.is_empty())
         .map(Commodity);
 
+    let declared = declared_types(&account_decls(&snapshot.journal));
     let report = net_worth(
         &snapshot.journal.transactions,
         &snapshot.journal.prices,
-        &end,
-        interval,
-        count,
-        depth,
-        value_in,
+        &NetWorthOpts {
+            end: &end,
+            interval,
+            count,
+            depth,
+            value_in,
+            declared: &declared,
+        },
     )
     .map_err(|err| report_error(&err))?;
     Ok(Json(wire_period(&report)))

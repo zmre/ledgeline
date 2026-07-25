@@ -17,12 +17,21 @@
 mod common;
 
 use common::fixture_journal;
-use ledgeline_core::Dec;
 use ledgeline_core::reports::{
-    Interval, MixedAmount, SectionedReport, account_decls, balance_sheet, cash_flow,
-    cash_predicate, income_statement, net_worth,
+    AccountType, Interval, MixedAmount, NetWorthOpts, SectionedReport, account_decls,
+    balance_sheet, cash_flow, cash_predicate, declared_types, income_statement, net_worth,
 };
+use ledgeline_core::{Dec, Journal};
 use serde_json::Value;
+use std::collections::BTreeMap as StdBTreeMap;
+
+/// The fixture's declared account types. `sample.journal` declares four accounts
+/// as `type: C`, so these goldens are what proves Cash still counts as an Asset
+/// on the balance sheet — a type-based section filter that forgot to fold the
+/// subtype would silently drop every cash account here.
+fn types_of(journal: &Journal) -> StdBTreeMap<String, AccountType> {
+    declared_types(&account_decls(journal))
+}
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -160,14 +169,16 @@ fn check_sectioned(report: &SectionedReport, golden: &Value) {
 #[test]
 fn balance_sheet_depth_1_matches_golden() {
     let journal = fixture_journal();
-    let report = balance_sheet(&journal.transactions, "2026-06-30", 1).unwrap();
+    let report =
+        balance_sheet(&journal.transactions, "2026-06-30", 1, &types_of(&journal)).unwrap();
     check_sectioned(&report, &golden("bs-d1.json"));
 }
 
 #[test]
 fn balance_sheet_depth_3_matches_golden() {
     let journal = fixture_journal();
-    let report = balance_sheet(&journal.transactions, "2026-06-30", 3).unwrap();
+    let report =
+        balance_sheet(&journal.transactions, "2026-06-30", 3, &types_of(&journal)).unwrap();
     check_sectioned(&report, &golden("bs-d3.json"));
 }
 
@@ -176,7 +187,8 @@ fn balance_sheet_depth_3_matches_golden() {
 #[test]
 fn balance_sheet_depth_2_matches_embedded_cli_values() {
     let journal = fixture_journal();
-    let report = balance_sheet(&journal.transactions, "2026-06-30", 2).unwrap();
+    let report =
+        balance_sheet(&journal.transactions, "2026-06-30", 2, &types_of(&journal)).unwrap();
 
     let by_account: BTreeMap<String, Canon> = report
         .sections
@@ -226,7 +238,14 @@ fn balance_sheet_depth_2_matches_embedded_cli_values() {
 #[test]
 fn income_statement_depth_2_matches_golden() {
     let journal = fixture_journal();
-    let report = income_statement(&journal.transactions, "2026-01-01", "2026-06-30", 2).unwrap();
+    let report = income_statement(
+        &journal.transactions,
+        "2026-01-01",
+        "2026-06-30",
+        2,
+        &types_of(&journal),
+    )
+    .unwrap();
     check_sectioned(&report, &golden("is-d2.json"));
 }
 
@@ -303,11 +322,14 @@ fn net_worth_spot_matches_golden() {
     let report = net_worth(
         &journal.transactions,
         &journal.prices,
-        "2026-06-30",
-        Interval::Monthly,
-        1,
-        1,
-        None,
+        &NetWorthOpts {
+            end: "2026-06-30",
+            interval: Interval::Monthly,
+            count: 1,
+            depth: 1,
+            value_in: None,
+            declared: &types_of(&journal),
+        },
     )
     .unwrap();
     assert!(report.meta.is_none(), "nothing should be left unpriced");
@@ -364,11 +386,14 @@ fn net_worth_depth_5_matches_golden() {
     let report = net_worth(
         &journal.transactions,
         &journal.prices,
-        "2026-06-30",
-        Interval::Monthly,
-        1,
-        5,
-        None,
+        &NetWorthOpts {
+            end: "2026-06-30",
+            interval: Interval::Monthly,
+            count: 1,
+            depth: 5,
+            value_in: None,
+            declared: &types_of(&journal),
+        },
     )
     .unwrap();
     assert!(report.meta.is_none(), "nothing should be left unpriced");

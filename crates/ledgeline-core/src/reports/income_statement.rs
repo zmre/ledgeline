@@ -1,15 +1,19 @@
 //! Income statement / P&L — port of `web/src/lib/reports/incomeStatement.ts`.
 
 use super::ReportError;
-use super::accounts::RootCategory;
+use super::account_types::AccountType;
 use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 use super::sections::build_section;
 use super::types::SectionedReport;
 use crate::model::Transaction;
+use std::collections::BTreeMap;
 
 /// Revenues + expenses over `[from, to]` (both INCLUSIVE). Presentation matches
 /// `hledger is`: revenues are sign-flipped (positive = earned); `grand_total` =
 /// revenues(displayed) − expenses = net income.
+///
+/// `declared` carries the journal's `type:` declarations so a cost booked
+/// outside an `expenses:` root still counts as an expense.
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow.
@@ -18,6 +22,7 @@ pub fn income_statement(
     from: &str,
     to: &str,
     depth: usize,
+    declared: &BTreeMap<String, AccountType>,
 ) -> Result<SectionedReport, ReportError> {
     let direct = account_totals(
         txns,
@@ -28,8 +33,22 @@ pub fn income_statement(
         },
     )?;
     let clamped = at_depth(&roll_up(&direct)?, depth);
-    let revenues = build_section("Revenues", RootCategory::Revenue, &direct, &clamped, true)?;
-    let expenses = build_section("Expenses", RootCategory::Expense, &direct, &clamped, false)?;
+    let revenues = build_section(
+        "Revenues",
+        AccountType::Revenue,
+        &direct,
+        &clamped,
+        declared,
+        true,
+    )?;
+    let expenses = build_section(
+        "Expenses",
+        AccountType::Expense,
+        &direct,
+        &clamped,
+        declared,
+        false,
+    )?;
     let grand_total = revenues.total.ma_add(&expenses.total.ma_neg()?)?;
     Ok(SectionedReport {
         as_of: None,
@@ -100,7 +119,8 @@ mod tests {
 
     #[test]
     fn sign_flipped_revenues_and_natural_expenses_over_inclusive_range() {
-        let report = income_statement(&sample(), "2026-01-01", "2026-06-30", 2).unwrap();
+        let report =
+            income_statement(&sample(), "2026-01-01", "2026-06-30", 2, &BTreeMap::new()).unwrap();
         assert_eq!(report.from.as_deref(), Some("2026-01-01"));
         assert_eq!(report.to.as_deref(), Some("2026-06-30"));
         assert_eq!(
@@ -147,7 +167,8 @@ mod tests {
 
     #[test]
     fn range_boundaries_inclusive_on_both_ends() {
-        let report = income_statement(&sample(), "2025-12-31", "2026-07-01", 1).unwrap();
+        let report =
+            income_statement(&sample(), "2025-12-31", "2026-07-01", 1, &BTreeMap::new()).unwrap();
         assert_eq!(report.sections[0].total, usd_ma(920_000)); // 5000 + 4000 + 200
         assert_eq!(report.sections[1].total, usd_ma(24_999)); // 150.00 + 99.99
         assert_eq!(report.grand_total, usd_ma(895_001));

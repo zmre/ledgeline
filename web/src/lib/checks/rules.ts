@@ -2,6 +2,7 @@
 // imports only (same convention as lib/reports/). `today()` comes from
 // lib/reports/periods.ts, the codebase's single sanctioned local-Date read.
 
+import {declaredTypes, resolveAccountType, type AccountType} from "../domain/accountTypes";
 import {add, isZero, mul, neg, type Dec} from "../domain/money";
 import type {Amount, Transaction} from "../domain/types";
 import {buildPools, latestCostPrices, latestDirectivePrice, type SymbolPool} from "../holdings/engine";
@@ -75,22 +76,32 @@ const pending: CheckRule = {
 };
 
 const UNCATEGORIZED_SEGMENTS = new Set(["unknown", "uncategorized"]);
-const BARE_TOP_LEVEL = new Set(["expenses", "income"]);
-
-/** `*:unknown`, `*:uncategorized` (any depth, incl. bare), or a bare top-level `expenses`/`income` with no subaccount. */
-function isUncategorized(account: string): boolean {
+/**
+ * `*:unknown`, `*:uncategorized` (any depth, incl. bare), or a bare top-level
+ * income/expense root with no subaccount.
+ *
+ * The bare-root case is decided by TYPE, not by the literal names
+ * "expenses"/"income": the whole point of the rule is to catch a posting that
+ * never got a category, and a chart of accounts rooted at `cogs:` or `gastos:`
+ * has exactly the same mistake to catch.
+ */
+function isUncategorized(account: string, declared: ReadonlyMap<string, AccountType>): boolean {
     const segments = account.toLowerCase().split(":");
-    return UNCATEGORIZED_SEGMENTS.has(segments[segments.length - 1]) || (segments.length === 1 && BARE_TOP_LEVEL.has(segments[0]));
+    if (UNCATEGORIZED_SEGMENTS.has(segments[segments.length - 1])) return true;
+    if (segments.length !== 1) return false;
+    const type = resolveAccountType(account, declared);
+    return type === "expense" || type === "revenue";
 }
 
 const uncategorized: CheckRule = {
     id: "uncategorized",
-    run(txns: Transaction[]): Problem[] {
+    run(txns: Transaction[], ctx: CheckContext): Problem[] {
         const problems: Problem[] = [];
+        const declared = declaredTypes(ctx.decls ?? []);
         for (const txn of txns) {
             const seen = new Set<string>();
             for (const posting of txn.postings) {
-                if (!isUncategorized(posting.account) || seen.has(posting.account)) continue;
+                if (!isUncategorized(posting.account, declared) || seen.has(posting.account)) continue;
                 seen.add(posting.account);
                 problems.push({
                     txnIndex: txn.index,

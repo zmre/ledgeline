@@ -1,15 +1,19 @@
 //! Balance sheet — port of `web/src/lib/reports/balanceSheet.ts`.
 
 use super::ReportError;
-use super::accounts::RootCategory;
+use super::account_types::AccountType;
 use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 use super::sections::build_section;
 use super::types::SectionedReport;
 use crate::model::Transaction;
+use std::collections::BTreeMap;
 
 /// Asset + liability balances as of `as_of` (INCLUSIVE: postings dated ≤
 /// `as_of`). Presentation matches `hledger bs`: liabilities are sign-flipped
 /// (positive = owed); `grand_total` = assets − liabilities(displayed).
+///
+/// `declared` carries the journal's `type:` declarations so sections are keyed
+/// on effective account type rather than on root names.
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow.
@@ -17,6 +21,7 @@ pub fn balance_sheet(
     txns: &[Transaction],
     as_of: &str,
     depth: usize,
+    declared: &BTreeMap<String, AccountType>,
 ) -> Result<SectionedReport, ReportError> {
     let direct = account_totals(
         txns,
@@ -26,12 +31,20 @@ pub fn balance_sheet(
         },
     )?;
     let clamped = at_depth(&roll_up(&direct)?, depth);
-    let assets = build_section("Assets", RootCategory::Asset, &direct, &clamped, false)?;
-    let liabilities = build_section(
-        "Liabilities",
-        RootCategory::Liability,
+    let assets = build_section(
+        "Assets",
+        AccountType::Asset,
         &direct,
         &clamped,
+        declared,
+        false,
+    )?;
+    let liabilities = build_section(
+        "Liabilities",
+        AccountType::Liability,
+        &direct,
+        &clamped,
+        declared,
         true,
     )?;
     let grand_total = assets.total.ma_add(&liabilities.total.ma_neg()?)?;
@@ -101,7 +114,7 @@ mod tests {
 
     #[test]
     fn assets_and_sign_flipped_liabilities_as_of_inclusive_date() {
-        let report = balance_sheet(&sample(), "2026-06-30", 3).unwrap();
+        let report = balance_sheet(&sample(), "2026-06-30", 3, &BTreeMap::new()).unwrap();
         assert_eq!(report.as_of.as_deref(), Some("2026-06-30"));
         assert_eq!(
             report
@@ -146,7 +159,7 @@ mod tests {
 
     #[test]
     fn distinguishes_own_from_inclusive() {
-        let report = balance_sheet(&sample(), "2026-06-30", 2).unwrap();
+        let report = balance_sheet(&sample(), "2026-06-30", 2, &BTreeMap::new()).unwrap();
         let bank = report.sections[0]
             .rows
             .iter()
@@ -165,7 +178,7 @@ mod tests {
 
     #[test]
     fn clamps_to_depth_one() {
-        let report = balance_sheet(&sample(), "2026-06-30", 1).unwrap();
+        let report = balance_sheet(&sample(), "2026-06-30", 1, &BTreeMap::new()).unwrap();
         assert_eq!(report.sections[0].rows.len(), 1);
         assert_eq!(report.sections[0].rows[0].account, "assets");
         assert_eq!(report.sections[0].rows[0].own, MixedAmount::new());
@@ -178,7 +191,7 @@ mod tests {
 
     #[test]
     fn empty_sections_before_all_activity() {
-        let report = balance_sheet(&sample(), "2025-12-31", 3).unwrap();
+        let report = balance_sheet(&sample(), "2025-12-31", 3, &BTreeMap::new()).unwrap();
         assert!(report.sections[0].rows.is_empty());
         assert_eq!(report.grand_total, MixedAmount::new());
     }

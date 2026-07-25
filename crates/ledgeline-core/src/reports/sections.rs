@@ -1,7 +1,7 @@
 //! Internal helper shared by the sectioned reports — port of
 //! `web/src/lib/reports/sections.ts`. Not part of the public contract.
 
-use super::accounts::{RootCategory, categorize};
+use super::account_types::{AccountType, is_account_type};
 use super::mixed_amount::MixedAmount;
 use super::types::{ReportRow, Section};
 use crate::decimal::DecError;
@@ -9,25 +9,30 @@ use std::collections::BTreeMap;
 
 /// Build one report section from aggregated totals.
 ///
-/// - `direct`  — full-account-name direct totals (`account_totals` output).
-/// - `clamped` — rolled-up totals already clamped to the report depth.
-/// - `flip`    — present sign-flipped (liabilities on bs, revenues on is:
+/// - `direct`   — full-account-name direct totals (`account_totals` output).
+/// - `clamped`  — rolled-up totals already clamped to the report depth.
+/// - `declared` — declared account types; membership is decided by EFFECTIVE
+///   type (declaration → nearest declared ancestor → name), so a chart of
+///   accounts rooted at `cogs:` or in another language still lands in the right
+///   section. `Cash` counts as `Asset` (see [`is_account_type`]).
+/// - `flip`     — present sign-flipped (liabilities on bs, revenues on is:
 ///   internally negative, displayed positive, hledger-style).
 ///
 /// # Errors
 /// Returns [`DecError`] on decimal overflow.
 pub fn build_section(
     title: &str,
-    category: RootCategory,
+    category: AccountType,
     direct: &BTreeMap<String, MixedAmount>,
     clamped: &BTreeMap<String, MixedAmount>,
+    declared: &BTreeMap<String, AccountType>,
     flip: bool,
 ) -> Result<Section, DecError> {
     let mut rows: Vec<ReportRow> = Vec::new();
     let mut total = MixedAmount::new();
     // `clamped` is a BTreeMap → keys already sorted lexically (matches TS .sort()).
     for (account, inclusive) in clamped {
-        if categorize(account) != category {
+        if !is_account_type(account, declared, category) {
             continue;
         }
         let depth = account.split(':').count();

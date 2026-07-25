@@ -7,6 +7,7 @@
 // weekly = ISO date of the week's Monday, monthly "YYYY-MM").
 
 import {accountMatches, categorize, clampAccount, type RootCategory} from "$lib/domain/accounts";
+import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
 import {add, cmp, dec, formatAmount, neg, sub, toNumber, type Dec} from "$lib/domain/money";
 import type {Amount, AmountStyle, ISODate, Transaction} from "$lib/domain/types";
 
@@ -120,8 +121,37 @@ function absDec(d: Dec): Dec {
  */
 export type AccountSelection = ReadonlySet<string> | undefined;
 
-function postingIncluded(account: string, accounts: AccountSelection, category?: RootCategory): boolean {
-    if (category !== undefined && categorize(account) !== category) return false;
+/** Declared account types; absent/empty means "classify by name" (the old behaviour). */
+export type DeclaredTypes = ReadonlyMap<string, AccountType> | undefined;
+
+/** `AccountType` → the coarser `RootCategory` these charts group by. */
+const TYPE_TO_CATEGORY: Record<AccountType, RootCategory> = {
+    asset: "asset",
+    cash: "asset", // a subtype of asset, not a category of its own
+    liability: "liability",
+    equity: "equity",
+    conversion: "equity",
+    revenue: "revenue",
+    expense: "expense",
+};
+
+/**
+ * An account's category, preferring its DECLARED type over its name.
+ *
+ * Names are only a fallback: a chart of accounts that books costs under `cogs:`
+ * — or in a language other than English — is `other` to the name heuristic, so
+ * the income/expense tiles and every category-scoped chart would read zero.
+ */
+export function categoryOf(account: string, declared: DeclaredTypes): RootCategory {
+    if (declared !== undefined && declared.size > 0) {
+        const type = resolveAccountType(account, declared);
+        if (type !== null) return TYPE_TO_CATEGORY[type];
+    }
+    return categorize(account);
+}
+
+function postingIncluded(account: string, accounts: AccountSelection, category?: RootCategory, declared?: DeclaredTypes): boolean {
+    if (category !== undefined && categoryOf(account, declared) !== category) return false;
     if (accounts === undefined || accounts.size === 0) return true;
     for (const sel of accounts) {
         if (accountMatches(sel, account)) return true;
@@ -147,14 +177,14 @@ export interface SignConventions {
  * count-based majority. Pass the WHOLE journal, not the filtered period, so
  * the detected convention is stable across filter changes.
  */
-export function signConventions(txns: Transaction[], commodity: string): SignConventions {
+export function signConventions(txns: Transaction[], commodity: string, declared?: DeclaredTypes): SignConventions {
     const flows = {
         revenue: {pos: ZERO, neg: ZERO},
         expense: {pos: ZERO, neg: ZERO},
     };
     for (const txn of txns) {
         for (const posting of txn.postings) {
-            const category = categorize(posting.account);
+            const category = categoryOf(posting.account, declared);
             if (category !== "revenue" && category !== "expense") continue;
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
@@ -180,11 +210,18 @@ function displayQty(qty: Dec, category: RootCategory, signs: SignConventions): D
  * total absolute posting volume (descending; ties alphabetical). Both pie and
  * line rank from this list so an account keeps the same color in either mode.
  */
-export function rankedAccounts(txns: Transaction[], depth: number, commodity: string, accounts?: AccountSelection, category?: RootCategory): string[] {
+export function rankedAccounts(
+    txns: Transaction[],
+    depth: number,
+    commodity: string,
+    accounts?: AccountSelection,
+    category?: RootCategory,
+    declared?: DeclaredTypes
+): string[] {
     const magnitude = new Map<string, Dec>();
     for (const txn of txns) {
         for (const posting of txn.postings) {
-            if (!postingIncluded(posting.account, accounts, category)) continue;
+            if (!postingIncluded(posting.account, accounts, category, declared)) continue;
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
                 const account = clampAccount(posting.account, depth);
@@ -240,17 +277,25 @@ export function maxAccountDepth(txns: Transaction[], accounts?: AccountSelection
  */
 export function pieData(
     txns: Transaction[],
-    opts: {depth: number; commodity: string; maxSlices?: number; accounts?: AccountSelection; conventionTxns?: Transaction[]; category?: RootCategory}
+    opts: {
+        depth: number;
+        commodity: string;
+        maxSlices?: number;
+        accounts?: AccountSelection;
+        conventionTxns?: Transaction[];
+        category?: RootCategory;
+        declared?: DeclaredTypes;
+    }
 ): PieDatum[] {
-    const {depth, commodity, maxSlices = 6, accounts, conventionTxns, category: categoryScope} = opts;
-    const ranked = rankedAccounts(txns, depth, commodity, accounts, categoryScope);
+    const {depth, commodity, maxSlices = 6, accounts, conventionTxns, category: categoryScope, declared} = opts;
+    const ranked = rankedAccounts(txns, depth, commodity, accounts, categoryScope, declared);
     const groupOf = foldTail(ranked, Math.max(1, maxSlices));
-    const signs = signConventions(conventionTxns ?? txns, commodity);
+    const signs = signConventions(conventionTxns ?? txns, commodity, declared);
     const totals = new Map<string, Dec>();
     for (const txn of txns) {
         for (const posting of txn.postings) {
-            if (!postingIncluded(posting.account, accounts, categoryScope)) continue;
-            const category = categorize(posting.account);
+            if (!postingIncluded(posting.account, accounts, categoryScope, declared)) continue;
+            const category = categoryOf(posting.account, declared);
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
                 const group = groupOf.get(clampAccount(posting.account, depth)) ?? OTHER;
@@ -278,19 +323,28 @@ export function pieData(
  */
 export function lineData(
     txns: Transaction[],
-    opts: {depth: number; commodity: string; interval: Interval; maxSeries?: number; accounts?: AccountSelection; conventionTxns?: Transaction[]; category?: RootCategory}
+    opts: {
+        depth: number;
+        commodity: string;
+        interval: Interval;
+        maxSeries?: number;
+        accounts?: AccountSelection;
+        conventionTxns?: Transaction[];
+        category?: RootCategory;
+        declared?: DeclaredTypes;
+    }
 ): LineSeries[] {
-    const {depth, commodity, interval, maxSeries = 6, accounts, conventionTxns, category: categoryScope} = opts;
-    const ranked = rankedAccounts(txns, depth, commodity, accounts, categoryScope);
+    const {depth, commodity, interval, maxSeries = 6, accounts, conventionTxns, category: categoryScope, declared} = opts;
+    const ranked = rankedAccounts(txns, depth, commodity, accounts, categoryScope, declared);
     const groupOf = foldTail(ranked, Math.max(1, maxSeries));
-    const signs = signConventions(conventionTxns ?? txns, commodity);
+    const signs = signConventions(conventionTxns ?? txns, commodity, declared);
     const sums = new Map<string, Map<string, Dec>>();
     let minBucket: string | null = null;
     let maxBucket: string | null = null;
     for (const txn of txns) {
         for (const posting of txn.postings) {
-            if (!postingIncluded(posting.account, accounts, categoryScope)) continue;
-            const category = categorize(posting.account);
+            if (!postingIncluded(posting.account, accounts, categoryScope, declared)) continue;
+            const category = categoryOf(posting.account, declared);
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
                 const group = groupOf.get(clampAccount(posting.account, depth)) ?? OTHER;
@@ -330,14 +384,15 @@ export function bigNumbers(
     txns: Transaction[],
     commodity: string,
     accounts?: AccountSelection,
-    conventionTxns?: Transaction[]
+    conventionTxns?: Transaction[],
+    declared?: DeclaredTypes
 ): {income: Dec; expenses: Dec; net: Dec} {
-    const signs = signConventions(conventionTxns ?? txns, commodity);
+    const signs = signConventions(conventionTxns ?? txns, commodity, declared);
     let income = ZERO;
     let expenses = ZERO;
     for (const txn of txns) {
         for (const posting of txn.postings) {
-            const category = categorize(posting.account);
+            const category = categoryOf(posting.account, declared);
             if (category !== "revenue" && category !== "expense") continue;
             if (!postingIncluded(posting.account, accounts)) continue;
             for (const amount of posting.amounts) {
@@ -362,10 +417,10 @@ export function bigNumbers(
  * instead of one per commodity. Pass the whole journal as `conventionTxns` for a
  * sign convention that stays stable across filter changes.
  */
-export function visibleNet(txns: Transaction[], accounts?: AccountSelection, conventionTxns?: Transaction[]): Amount[] {
+export function visibleNet(txns: Transaction[], accounts?: AccountSelection, conventionTxns?: Transaction[], declared?: DeclaredTypes): Amount[] {
     const commodity = commoditiesInUse(txns, accounts)[0];
     if (commodity === undefined) return [];
-    const qty = bigNumbers(txns, commodity, accounts, conventionTxns).net;
+    const qty = bigNumbers(txns, commodity, accounts, conventionTxns, declared).net;
     return qty.m === 0n ? [] : [{commodity, qty, style: styleFor(txns, commodity)}];
 }
 
@@ -444,14 +499,14 @@ const CATEGORY_ORDER: RootCategory[] = ["expense", "revenue", "asset", "liabilit
  * a stable display order (expenses first). Drives the ChartWidget's category
  * scope selector; the default scope prefers "expense" when present.
  */
-export function categoriesInUse(txns: Transaction[], commodity: string, accounts?: AccountSelection): RootCategory[] {
+export function categoriesInUse(txns: Transaction[], commodity: string, accounts?: AccountSelection, declared?: DeclaredTypes): RootCategory[] {
     const present = new Set<RootCategory>();
     for (const txn of txns) {
         for (const posting of txn.postings) {
             if (!postingIncluded(posting.account, accounts)) continue;
             for (const amount of posting.amounts) {
                 if (amount.commodity !== commodity) continue;
-                present.add(categorize(posting.account));
+                present.add(categoryOf(posting.account, declared));
                 break;
             }
         }

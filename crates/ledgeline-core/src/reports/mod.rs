@@ -42,7 +42,10 @@ mod test_support;
 use crate::decimal::DecError;
 use thiserror::Error;
 
-pub use account_types::{AccountDecl, AccountType, account_decls, cash_predicate};
+pub use account_types::{
+    AccountDecl, AccountType, account_decls, account_decls_from, cash_predicate, declared_types,
+    is_account_type, resolve_account_type,
+};
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 pub use balance_sheet::balance_sheet;
@@ -54,7 +57,7 @@ pub use insights::{
     InvestmentPerf, MetricDelta, MoverRow, PerfPoint, TopTxn, insights,
 };
 pub use mixed_amount::MixedAmount;
-pub use net_worth::net_worth;
+pub use net_worth::{NetWorthOpts, net_worth};
 pub use periods::{
     Interval, add_days, bucket_end, bucket_key, bucket_label, bucket_start, compare_iso,
     days_between, last_n_buckets, next_bucket,

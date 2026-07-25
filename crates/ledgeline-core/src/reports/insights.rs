@@ -22,7 +22,7 @@ use super::accounts::account_matches;
 use super::aggregate::{PostingFilter, account_totals};
 use super::income_statement::income_statement;
 use super::mixed_amount::MixedAmount;
-use super::net_worth::net_worth;
+use super::net_worth::{NetWorthOpts, net_worth};
 use super::periods::{Interval, add_days, bucket_end, bucket_key, days_between};
 use super::prices::{PriceDb, infer_market_prices};
 use crate::decimal::Dec;
@@ -274,15 +274,19 @@ fn net_worth_at(
     journal: &Journal,
     as_of: &str,
     base: &Commodity,
+    declared: &BTreeMap<String, AccountType>,
 ) -> Result<MixedAmount, ReportError> {
     let report = net_worth(
         &journal.transactions,
         &journal.prices,
-        as_of,
-        Interval::Daily,
-        1,
-        1,
-        Some(base.clone()),
+        &NetWorthOpts {
+            end: as_of,
+            interval: Interval::Daily,
+            count: 1,
+            depth: 1,
+            value_in: Some(base.clone()),
+            declared,
+        },
     )?;
     Ok(report.totals.into_iter().next().unwrap_or_default())
 }
@@ -672,10 +676,15 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     let curr_start = add_days(&mid, 1);
 
     let base = base_commodity(journal)?;
+    // Declared account types drive EVERY box's classification, so a cost booked
+    // outside an `expenses:` root (or in another language) is still a cost.
+    let decls = account_decls(journal);
+    let declared = declared_types(&decls);
+    let is_cash = cash_predicate(&decls);
 
     // Boxes 1 & 2 — revenue and expenses per period (one income statement each).
-    let is_curr = income_statement(txns, &curr_start, end, 1)?;
-    let is_prev = income_statement(txns, start, &mid, 1)?;
+    let is_curr = income_statement(txns, &curr_start, end, 1, &declared)?;
+    let is_prev = income_statement(txns, start, &mid, 1, &declared)?;
     let revenue = metric_delta(
         is_curr.sections[0].total.clone(),
         is_prev.sections[0].total.clone(),
@@ -689,18 +698,12 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
 
     // Box 3 — net worth at each period end (current end vs previous end = mid).
     let net_worth_delta = metric_delta(
-        net_worth_at(journal, end, &base)?,
-        net_worth_at(journal, &mid, &base)?,
+        net_worth_at(journal, end, &base, &declared)?,
+        net_worth_at(journal, &mid, &base, &declared)?,
         &base,
     )?;
 
-    // Box 6 — cash balance at each period end. `declared` also drives the
-    // expense/revenue filters below, so costs booked outside an `expenses:`
-    // root (or under non-English names) are classified by their declared type
-    // rather than by what they happen to be called.
-    let decls = account_decls(journal);
-    let declared = declared_types(&decls);
-    let is_cash = cash_predicate(&decls);
+    // Box 6 — cash balance at each period end.
     let cash_balance_delta = metric_delta(
         cash_balance(txns, end, &is_cash)?,
         cash_balance(txns, &mid, &is_cash)?,
