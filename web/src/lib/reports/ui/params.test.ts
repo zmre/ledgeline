@@ -17,7 +17,9 @@ describe("UNIT reports/ui/params", () => {
     describe("defaultReportParams", () => {
         it("uses today for point-in-time dates and the calendar year for the P&L range", () => {
             expect(DFLT).toEqual({
-                tab: "bs",
+                // Insights is the landing tab, seeded with the year-over-year span
+                // (24 complete months ending with the last full month).
+                tab: "insights",
                 asOf: "2026-07-08",
                 from: "2026-01-01",
                 to: "2026-12-31",
@@ -25,17 +27,22 @@ describe("UNIT reports/ui/params", () => {
                 interval: "monthly",
                 count: 12,
                 depth: 2,
+                insStart: "2024-07-01",
+                insEnd: "2026-06-30",
             });
         });
     });
 
     describe("paramsToSearch", () => {
         it("writes only the active tab's params, in full", () => {
-            expect(paramsToSearch(DFLT)).toBe("tab=bs&asof=2026-07-08&depth=2");
+            expect(paramsToSearch(DFLT)).toBe("tab=insights&istart=2024-07-01&iend=2026-06-30");
+            expect(paramsToSearch({...DFLT, tab: "bs"})).toBe("tab=bs&asof=2026-07-08&depth=2");
             expect(paramsToSearch({...DFLT, tab: "is"})).toBe("tab=is&from=2026-01-01&to=2026-12-31&depth=2");
             expect(paramsToSearch({...DFLT, tab: "cf"})).toBe("tab=cf&end=2026-07-08&interval=monthly&count=12&depth=2");
             expect(paramsToSearch({...DFLT, tab: "nw"})).toBe("tab=nw&end=2026-07-08&interval=monthly&count=12&depth=2");
             expect(paramsToSearch({...DFLT, tab: "budget"})).toBe("tab=budget&from=2026-01-01&to=2026-12-31&depth=2");
+            // Subscriptions scan a fixed trailing window, so the tab is all there is to restore.
+            expect(paramsToSearch({...DFLT, tab: "subs"})).toBe("tab=subs");
         });
     });
 

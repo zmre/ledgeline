@@ -27,11 +27,13 @@ pub mod balance_sheet;
 pub mod budget;
 pub mod cash_flow;
 pub mod income_statement;
+pub mod insights;
 pub mod mixed_amount;
 pub mod net_worth;
 pub mod periods;
 pub mod prices;
 mod sections;
+pub mod subscriptions;
 pub mod types;
 
 #[cfg(test)]
@@ -47,13 +49,21 @@ pub use balance_sheet::balance_sheet;
 pub use budget::{BudgetCell, BudgetOpts, BudgetReport, BudgetRow, UNBUDGETED, budget_report};
 pub use cash_flow::{cash_flow, is_cash_like};
 pub use income_statement::income_statement;
+pub use insights::{
+    ChangeKind, ChangeRow, CostOfLiving, InsightsOpts, InsightsPeriod, InsightsReport,
+    InvestmentPerf, MetricDelta, MoverRow, PerfPoint, TopTxn, insights,
+};
 pub use mixed_amount::MixedAmount;
 pub use net_worth::net_worth;
 pub use periods::{
-    Interval, bucket_end, bucket_key, bucket_label, bucket_start, compare_iso, last_n_buckets,
-    next_bucket,
+    Interval, add_days, bucket_end, bucket_key, bucket_label, bucket_start, compare_iso,
+    days_between, last_n_buckets, next_bucket,
 };
 pub use prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
+pub use subscriptions::{
+    Cadence, DEFAULT_EXCLUDE_DESC, Subscription, SubscriptionOpts, SubscriptionsReport,
+    detect_subscriptions,
+};
 pub use types::{PeriodReport, PeriodRow, ReportMeta, ReportRow, Section, SectionedReport};
 
 /// Errors surfaced by the report engine.

@@ -503,6 +503,213 @@ async fn budget_matches_basic_golden() {
 }
 
 // ===========================================================================
+// Insights dashboard — reconciled against the income-statement + net-worth
+// endpoints for the same split sub-ranges (no new goldens needed).
+// ===========================================================================
+
+#[tokio::test]
+async fn insights_reconciles_with_income_statement_and_networth() {
+    let journal = sample_journal();
+    // 24-month, month-aligned span → a clean 12/12 calendar split at 2025-06-30.
+    let ins = body_ok(&journal, "/api/insights?start=2024-07-01&end=2026-06-30").await;
+
+    assert_eq!(ins["period"]["start"], "2024-07-01");
+    assert_eq!(ins["period"]["mid"], "2025-06-30");
+    assert_eq!(ins["period"]["currStart"], "2025-07-01");
+    assert_eq!(ins["period"]["end"], "2026-06-30");
+    assert_eq!(ins["base"], "$");
+
+    // Revenue / expenses for each period must equal the income statement over the
+    // corresponding half (section totals are depth-independent).
+    let is_curr = body_ok(
+        &journal,
+        "/api/reports/incomestatement?from=2025-07-01&to=2026-06-30&depth=1",
+    )
+    .await;
+    assert_eq!(
+        wire_ma(&ins["revenue"]["current"]),
+        wire_ma(&section(&is_curr, "Revenues")["total"]),
+        "revenue current == income-statement Revenues (current half)"
+    );
+    assert_eq!(
+        wire_ma(&ins["expenses"]["current"]),
+        wire_ma(&section(&is_curr, "Expenses")["total"]),
+        "expenses current == income-statement Expenses (current half)"
+    );
+
+    let is_prev = body_ok(
+        &journal,
+        "/api/reports/incomestatement?from=2024-07-01&to=2025-06-30&depth=1",
+    )
+    .await;
+    assert_eq!(
+        wire_ma(&ins["revenue"]["previous"]),
+        wire_ma(&section(&is_prev, "Revenues")["total"]),
+        "revenue previous == income-statement Revenues (previous half)"
+    );
+    assert_eq!(
+        wire_ma(&ins["expenses"]["previous"]),
+        wire_ma(&section(&is_prev, "Expenses")["total"]),
+        "expenses previous == income-statement Expenses (previous half)"
+    );
+
+    // Net worth at the current period end must equal the net-worth report's
+    // single-bucket total as of the same date.
+    let nw = body_ok(
+        &journal,
+        "/api/reports/networth?end=2026-06-30&interval=monthly&count=1&depth=1",
+    )
+    .await;
+    assert_eq!(
+        wire_ma(&ins["netWorth"]["current"]),
+        wire_ma(&nw["totals"][0]),
+        "net worth current == net-worth report total at end"
+    );
+
+    // Structural checks on the remaining boxes.
+    assert_eq!(ins["costOfLiving"]["monthsCurrent"], 12);
+    assert_eq!(ins["costOfLiving"]["monthsPrevious"], 12);
+    assert!(
+        ins["investment"]["current"].is_object(),
+        "investment box present"
+    );
+    assert!(
+        ins["cashBalance"]["current"].is_object(),
+        "cash box present"
+    );
+
+    // List boxes (7–10) are present; the 24-month sample has expense changes and
+    // large transactions to surface.
+    assert!(
+        ins["topTxns"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()),
+        "top transactions present"
+    );
+    assert!(ins["expenseChanges"].is_array(), "expense changes present");
+    assert!(ins["revenueChanges"].is_array(), "revenue changes present");
+    assert!(ins["movers"].is_array(), "movers present");
+}
+
+/// The cost-of-living exclusion list is honoured: excluding every expense root
+/// zeroes the cost-of-living totals while leaving the raw expenses box intact.
+#[tokio::test]
+async fn insights_cost_exclude_param_drops_expenses() {
+    let journal = sample_journal();
+    let ins = body_ok(
+        &journal,
+        "/api/insights?start=2024-07-01&end=2026-06-30&exclude=expenses",
+    )
+    .await;
+    assert_eq!(
+        ins["costOfLiving"]["currentTotal"],
+        serde_json::json!({}),
+        "excluding the whole `expenses` root zeroes cost of living"
+    );
+    assert!(
+        ins["expenses"]["current"]
+            .as_object()
+            .is_some_and(|m| !m.is_empty()),
+        "the Expenses box still reflects real spending"
+    );
+}
+
+// ===========================================================================
+// Subscriptions — the detector's own fixture, over HTTP
+// ===========================================================================
+
+#[tokio::test]
+async fn subscriptions_endpoint_reports_monthly_and_annual_charges() {
+    let path = fixtures_dir().join("subscriptions").join("basic.journal");
+    let text = std::fs::read_to_string(&path).expect("basic.journal readable");
+    let journal = parse_journal(&text, &path.to_string_lossy()).expect("basic.journal parses");
+
+    let body = body_ok(&journal, "/api/subscriptions?asOf=2026-06-30").await;
+    assert_eq!(body["asOf"], "2026-06-30");
+    assert_eq!(body["lookbackStart"], "2024-06-30");
+
+    let names = |key: &str| -> Vec<String> {
+        body[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key} is an array"))
+            .iter()
+            .map(|row| row["payee"].as_str().expect("payee").to_string())
+            .collect()
+    };
+    assert_eq!(names("monthly"), ["Netflix", "Spotify", "Apple"]);
+    assert_eq!(names("annual"), ["State Farm", "Hover"]);
+
+    // Netflix: $15.99/mo → $191.88/yr, with its next charge projected forward.
+    let netflix = &body["monthly"][0];
+    assert_eq!(netflix["cadence"], "monthly");
+    assert_eq!(netflix["typicalAmount"]["mantissa"], "1599");
+    assert_eq!(netflix["annualizedCost"]["mantissa"], "19188");
+    assert_eq!(netflix["occurrences"], 18);
+    assert_eq!(netflix["nextExpected"], "2026-07-15");
+}
+
+/// The endpoint applies the default description exclusions (mortgage), and the
+/// list is overridable per request.
+#[tokio::test]
+async fn subscriptions_exclude_mortgage_by_default() {
+    let path = fixtures_dir().join("subscriptions").join("basic.journal");
+    let text = std::fs::read_to_string(&path).expect("basic.journal readable");
+    let journal = parse_journal(&text, &path.to_string_lossy()).expect("basic.journal parses");
+
+    let has_mortgage = |body: &Value| {
+        body["monthly"]
+            .as_array()
+            .expect("monthly array")
+            .iter()
+            .any(|row| row["payee"] == "Wells Fargo")
+    };
+
+    let default = body_ok(&journal, "/api/subscriptions?asOf=2026-06-30").await;
+    assert!(!has_mortgage(&default), "mortgage excluded by default");
+
+    // An explicitly empty list excludes nothing, so it comes back.
+    let unfiltered = body_ok(&journal, "/api/subscriptions?asOf=2026-06-30&excludeDesc=").await;
+    assert!(has_mortgage(&unfiltered));
+
+    // A caller-supplied list replaces the default, so mortgage returns while the
+    // named payee drops out instead.
+    let custom = body_ok(
+        &journal,
+        "/api/subscriptions?asOf=2026-06-30&excludeDesc=netflix",
+    )
+    .await;
+    assert!(has_mortgage(&custom));
+    assert!(
+        !custom["monthly"]
+            .as_array()
+            .expect("monthly array")
+            .iter()
+            .any(|row| row["payee"] == "Netflix"),
+    );
+}
+
+/// The detection thresholds are query-tunable, not baked in.
+#[tokio::test]
+async fn subscriptions_thresholds_are_tunable() {
+    let path = fixtures_dir().join("subscriptions").join("basic.journal");
+    let text = std::fs::read_to_string(&path).expect("basic.journal readable");
+    let journal = parse_journal(&text, &path.to_string_lossy()).expect("basic.journal parses");
+
+    // The gym has only 4 charges — invisible by default, surfaced at minMonthly=4.
+    let strict = body_ok(&journal, "/api/subscriptions?asOf=2026-06-30").await;
+    let relaxed = body_ok(&journal, "/api/subscriptions?asOf=2026-06-30&minMonthly=4").await;
+    let has_gym = |body: &Value| {
+        body["monthly"]
+            .as_array()
+            .expect("monthly array")
+            .iter()
+            .any(|row| row["payee"] == "Gold's Gym")
+    };
+    assert!(!has_gym(&strict));
+    assert!(has_gym(&relaxed));
+}
+
+// ===========================================================================
 // Cross-cutting: defaults, bad params, CORS
 // ===========================================================================
 
@@ -515,6 +722,8 @@ async fn default_params_return_ok() {
         "/api/reports/incomestatement",
         "/api/reports/cashflow",
         "/api/reports/networth",
+        "/api/insights",
+        "/api/subscriptions",
         "/api/budget",
     ] {
         let (status, _, _) = get_on(&journal, uri).await;

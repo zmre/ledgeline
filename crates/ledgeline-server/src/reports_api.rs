@@ -30,9 +30,11 @@ use ledgeline_core::holdings::{
 };
 use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
-    BudgetCell, BudgetOpts, BudgetReport, Interval, MixedAmount, PeriodReport, ReportError,
-    SectionedReport, account_decls, balance_sheet, budget_report, cash_flow, cash_predicate,
-    income_statement, net_worth,
+    BudgetCell, BudgetOpts, BudgetReport, Cadence, ChangeKind, ChangeRow, CostOfLiving,
+    DEFAULT_EXCLUDE_DESC, InsightsOpts, InsightsReport, Interval, MetricDelta, MixedAmount,
+    MoverRow, PerfPoint, PeriodReport, ReportError, SectionedReport, Subscription,
+    SubscriptionOpts, SubscriptionsReport, TopTxn, account_decls, balance_sheet, budget_report,
+    cash_flow, cash_predicate, detect_subscriptions, income_statement, insights, net_worth,
 };
 use serde::{Deserialize, Serialize};
 
@@ -221,6 +223,253 @@ fn wire_budget(report: &BudgetReport) -> WireBudgetReport {
             })
             .collect(),
         totals: report.totals.iter().map(wire_budget_cell).collect(),
+    }
+}
+
+// ===========================================================================
+// Wire representation of the insights dashboard
+// ===========================================================================
+
+/// The resolved comparison window (all camelCase ISO dates).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireInsightsPeriod {
+    start: String,
+    mid: String,
+    end: String,
+    prev_start: String,
+    prev_end: String,
+    curr_start: String,
+    curr_end: String,
+}
+
+/// A current/previous metric with its exact change and a base-commodity percent.
+#[derive(Serialize)]
+struct WireMetricDelta {
+    current: WireMixed,
+    previous: WireMixed,
+    delta: WireMixed,
+    pct: Option<f64>,
+}
+
+fn wire_metric_delta(metric: &MetricDelta) -> WireMetricDelta {
+    WireMetricDelta {
+        current: wire_mixed(&metric.current),
+        previous: wire_mixed(&metric.previous),
+        delta: wire_mixed(&metric.delta),
+        pct: metric.pct,
+    }
+}
+
+/// Cost-of-living totals + month counts (the SPA averages for display).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCostOfLiving {
+    current_total: WireMixed,
+    previous_total: WireMixed,
+    months_current: u32,
+    months_previous: u32,
+}
+
+fn wire_cost_of_living(col: &CostOfLiving) -> WireCostOfLiving {
+    WireCostOfLiving {
+        current_total: wire_mixed(&col.current_total),
+        previous_total: wire_mixed(&col.previous_total),
+        months_current: col.months_current,
+        months_previous: col.months_previous,
+    }
+}
+
+/// One period's portfolio performance in the base commodity.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WirePerfPoint {
+    gain: Option<WireDec>,
+    gain_pct: Option<f64>,
+}
+
+fn wire_perf_point(point: &PerfPoint) -> WirePerfPoint {
+    WirePerfPoint {
+        gain: wire_opt_dec(point.gain),
+        gain_pct: point.gain_pct,
+    }
+}
+
+/// A leaf-account change row (Boxes 7 & 9). `kind` is `"changed" | "new" | "ended"`.
+#[derive(Serialize)]
+struct WireChangeRow {
+    account: String,
+    current: WireDec,
+    previous: WireDec,
+    delta: WireDec,
+    pct: Option<f64>,
+    kind: &'static str,
+}
+
+fn wire_change_row(row: &ChangeRow) -> WireChangeRow {
+    WireChangeRow {
+        account: row.account.clone(),
+        current: wire_dec(row.current),
+        previous: wire_dec(row.previous),
+        delta: wire_dec(row.delta),
+        pct: row.pct,
+        kind: match row.kind {
+            ChangeKind::Changed => "changed",
+            ChangeKind::Ended => "ended",
+        },
+    }
+}
+
+/// A stock mover row (Box 8).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireMoverRow {
+    symbol: String,
+    name: String,
+    gain: Option<WireDec>,
+    gain_pct: Option<f64>,
+    /// The window-start value fell back to purchase cost (no market price) — the
+    /// move then approximates the all-time gain. Surfaced as a caveat in the UI.
+    start_estimated: bool,
+}
+
+fn wire_mover(row: &MoverRow) -> WireMoverRow {
+    WireMoverRow {
+        symbol: row.symbol.clone(),
+        name: row.name.clone(),
+        gain: wire_opt_dec(row.gain),
+        gain_pct: row.gain_pct,
+        start_estimated: row.start_estimated,
+    }
+}
+
+/// A top-transaction row (Box 10).
+#[derive(Serialize)]
+struct WireTopTxn {
+    index: u32,
+    date: String,
+    description: String,
+    amount: WireDec,
+}
+
+fn wire_top_txn(txn: &TopTxn) -> WireTopTxn {
+    WireTopTxn {
+        index: txn.index,
+        date: txn.date.clone(),
+        description: txn.description.clone(),
+        amount: wire_dec(txn.amount),
+    }
+}
+
+/// The full insights dashboard payload.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireInsightsReport {
+    period: WireInsightsPeriod,
+    base: String,
+    /// Earliest transaction date in the journal — lets the SPA warn when the
+    /// previous period is only partly covered by the data.
+    journal_start: Option<String>,
+    revenue: WireMetricDelta,
+    expenses: WireMetricDelta,
+    net_worth: WireMetricDelta,
+    cost_of_living: WireCostOfLiving,
+    investment: WireInvestmentPerf,
+    cash_balance: WireMetricDelta,
+    expense_changes: Vec<WireChangeRow>,
+    revenue_changes: Vec<WireChangeRow>,
+    movers: Vec<WireMoverRow>,
+    top_txns: Vec<WireTopTxn>,
+}
+
+/// Investment performance for both periods.
+#[derive(Serialize)]
+struct WireInvestmentPerf {
+    current: WirePerfPoint,
+    previous: WirePerfPoint,
+}
+
+fn wire_insights(report: &InsightsReport) -> WireInsightsReport {
+    WireInsightsReport {
+        period: WireInsightsPeriod {
+            start: report.period.start.clone(),
+            mid: report.period.mid.clone(),
+            end: report.period.end.clone(),
+            prev_start: report.period.prev_start.clone(),
+            prev_end: report.period.prev_end.clone(),
+            curr_start: report.period.curr_start.clone(),
+            curr_end: report.period.curr_end.clone(),
+        },
+        base: report.base.clone(),
+        journal_start: report.journal_start.clone(),
+        revenue: wire_metric_delta(&report.revenue),
+        expenses: wire_metric_delta(&report.expenses),
+        net_worth: wire_metric_delta(&report.net_worth),
+        cost_of_living: wire_cost_of_living(&report.cost_of_living),
+        investment: WireInvestmentPerf {
+            current: wire_perf_point(&report.investment.current),
+            previous: wire_perf_point(&report.investment.previous),
+        },
+        cash_balance: wire_metric_delta(&report.cash_balance),
+        expense_changes: report.expense_changes.iter().map(wire_change_row).collect(),
+        revenue_changes: report.revenue_changes.iter().map(wire_change_row).collect(),
+        movers: report.movers.iter().map(wire_mover).collect(),
+        top_txns: report.top_txns.iter().map(wire_top_txn).collect(),
+    }
+}
+
+// ===========================================================================
+// Wire representation of the subscriptions report
+// ===========================================================================
+
+/// One detected recurring charge. `cadence` is `"monthly" | "annual"`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireSubscription {
+    payee: String,
+    cadence: &'static str,
+    typical_amount: WireDec,
+    annualized_cost: WireDec,
+    occurrences: usize,
+    first_seen: String,
+    last_seen: String,
+    next_expected: String,
+    accounts: Vec<String>,
+}
+
+fn wire_subscription(subscription: &Subscription) -> WireSubscription {
+    WireSubscription {
+        payee: subscription.payee.clone(),
+        cadence: match subscription.cadence {
+            Cadence::Monthly => "monthly",
+            Cadence::Annual => "annual",
+        },
+        typical_amount: wire_dec(subscription.typical_amount),
+        annualized_cost: wire_dec(subscription.annualized_cost),
+        occurrences: subscription.occurrences,
+        first_seen: subscription.first_seen.clone(),
+        last_seen: subscription.last_seen.clone(),
+        next_expected: subscription.next_expected.clone(),
+        accounts: subscription.accounts.clone(),
+    }
+}
+
+/// Detected subscriptions split by cadence, each sorted by annual cost desc.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireSubscriptionsReport {
+    as_of: String,
+    lookback_start: String,
+    monthly: Vec<WireSubscription>,
+    annual: Vec<WireSubscription>,
+}
+
+fn wire_subscriptions(report: &SubscriptionsReport) -> WireSubscriptionsReport {
+    WireSubscriptionsReport {
+        as_of: report.as_of.clone(),
+        lookback_start: report.lookback_start.clone(),
+        monthly: report.monthly.iter().map(wire_subscription).collect(),
+        annual: report.annual.iter().map(wire_subscription).collect(),
     }
 }
 
@@ -465,6 +714,39 @@ fn parse_accounts(raw: Option<&str>) -> BTreeSet<String> {
     .unwrap_or_default()
 }
 
+/// The default cost-of-living exclusion list when the request omits `exclude`:
+/// tax accounts. (Mortgage principal and investment/savings transfers are not
+/// expense postings, so they never enter the expense total in the first place.)
+/// Overridable per request; a config file will supersede this later.
+const DEFAULT_COST_EXCLUDE: &[&str] = &["expenses:tax", "expenses:taxes"];
+
+/// Split a comma-separated exclusion param, falling back to `defaults` when the
+/// param is absent. An explicit empty value (`exclude=`) means "exclude
+/// nothing" — distinct from omitting it, which keeps the defaults.
+fn parse_csv(raw: Option<&str>, defaults: &[&str]) -> Vec<String> {
+    match raw {
+        None => defaults.iter().map(|item| (*item).to_string()).collect(),
+        Some(value) => value
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+/// The default comparison-span start when the request omits `start`: the first
+/// day of the month 24 months before `end` (a trailing two-year "Year-over-
+/// year" window). The SPA normally sends explicit month-aligned dates.
+fn default_insights_start(end: &str) -> String {
+    let year: i64 = end.get(0..4).and_then(|s| s.parse().ok()).unwrap_or(1970);
+    let month: i64 = end.get(5..7).and_then(|s| s.parse().ok()).unwrap_or(1);
+    let index = year * 12 + (month - 1) - 24;
+    let start_year = index.div_euclid(12);
+    let start_month = index.rem_euclid(12) + 1;
+    format!("{start_year:04}-{start_month:02}-01")
+}
+
 /// An HTTP error: a status plus a human-readable message.
 type ApiError = (StatusCode, String);
 
@@ -525,6 +807,35 @@ pub(crate) struct BudgetQuery {
     count: Option<usize>,
     depth: Option<usize>,
     budget_desc: Option<String>,
+}
+
+/// `?start=&end=&exclude=` — insights dashboard.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InsightsQuery {
+    start: Option<String>,
+    end: Option<String>,
+    /// Comma-separated account-name prefixes excluded from cost of living.
+    exclude: Option<String>,
+    /// Minimum base-commodity magnitude for a "biggest change" row (e.g. `10`).
+    change_min: Option<String>,
+}
+
+/// `?asOf=&lookback=&minMonthly=&minAnnual=` — subscription detection.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubscriptionsQuery {
+    as_of: Option<String>,
+    /// Months of history to scan (default 24).
+    lookback: Option<i64>,
+    /// Charges needed before a monthly cadence is believed (default 5).
+    min_monthly: Option<usize>,
+    /// Charges needed before an annual cadence is believed (default 2).
+    min_annual: Option<usize>,
+    /// Comma-separated case-insensitive description substrings to exclude
+    /// (default [`DEFAULT_EXCLUDE_DESC`]). An explicit empty value excludes
+    /// nothing.
+    exclude_desc: Option<String>,
 }
 
 /// `?asOf=&accounts=&mode=&gainSince=` — holdings snapshot.
@@ -673,6 +984,59 @@ pub(crate) async fn budget(
     )
     .map_err(|err| report_error(&err))?;
     Ok(Json(wire_budget(&report)))
+}
+
+/// `GET /api/insights` — the period-over-period dashboard. `start`/`end` bound
+/// the whole comparison span (default: a trailing 24 months ending today); the
+/// engine splits it at its midpoint into a previous and current period.
+/// `exclude` overrides the cost-of-living exclusion list.
+pub(crate) async fn insights_report(
+    State(state): State<AppState>,
+    Query(query): Query<InsightsQuery>,
+) -> Result<Json<WireInsightsReport>, ApiError> {
+    let snapshot = state.snapshot();
+    let end = query.end.unwrap_or_else(today_utc);
+    let start = query.start.unwrap_or_else(|| default_insights_start(&end));
+    let cost_exclude = parse_csv(query.exclude.as_deref(), DEFAULT_COST_EXCLUDE);
+    // Default "biggest change" floor: $10 in the base commodity; a malformed
+    // value falls back to the default rather than erroring.
+    let change_min = query
+        .change_min
+        .as_deref()
+        .and_then(|raw| Dec::parse(raw, '.').ok())
+        .unwrap_or_else(|| Dec::new(1000, 2));
+    let opts = InsightsOpts {
+        start: &start,
+        end: &end,
+        cost_exclude: &cost_exclude,
+        change_min,
+    };
+    let report = insights(&snapshot.journal, &opts).map_err(|err| report_error(&err))?;
+    Ok(Json(wire_insights(&report)))
+}
+
+/// `GET /api/subscriptions` — recurring monthly/annual charges inferred from
+/// the journal's expense history. Independent of the insights comparison period:
+/// it always scans the trailing `lookback` months ending at `asOf`.
+pub(crate) async fn subscriptions(
+    State(state): State<AppState>,
+    Query(query): Query<SubscriptionsQuery>,
+) -> Result<Json<WireSubscriptionsReport>, ApiError> {
+    let snapshot = state.snapshot();
+    let as_of = query.as_of.unwrap_or_else(today_utc);
+    let defaults = SubscriptionOpts::default();
+    let exclude_desc = parse_csv(query.exclude_desc.as_deref(), DEFAULT_EXCLUDE_DESC);
+    let opts = SubscriptionOpts {
+        as_of: &as_of,
+        lookback_months: query.lookback.unwrap_or(defaults.lookback_months).max(1),
+        min_monthly: query.min_monthly.unwrap_or(defaults.min_monthly).max(2),
+        min_annual: query.min_annual.unwrap_or(defaults.min_annual).max(2),
+        exclude_desc: &exclude_desc,
+        ..defaults
+    };
+    let report =
+        detect_subscriptions(&snapshot.journal, &opts).map_err(|err| report_error(&err))?;
+    Ok(Json(wire_subscriptions(&report)))
 }
 
 /// `GET /api/holdings` — average-cost stock positions as of a date. `accounts`

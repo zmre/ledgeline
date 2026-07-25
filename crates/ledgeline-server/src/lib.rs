@@ -218,6 +218,8 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/api/reports/cashflow", get(reports_api::cashflow))
         .route("/api/reports/networth", get(reports_api::networth))
+        .route("/api/insights", get(reports_api::insights_report))
+        .route("/api/subscriptions", get(reports_api::subscriptions))
         .route("/api/budget", get(reports_api::budget))
         .route("/api/holdings", get(reports_api::holdings))
         .route(
