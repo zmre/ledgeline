@@ -578,6 +578,148 @@ async fn patch_status_changes_only_the_header_marker_on_disk() {
     let _ = std::fs::remove_file(&path);
 }
 
+// ---------------------------------------------------------------------------
+// SEC-2 / SEC-5 — amount validation on the edit wire
+// ---------------------------------------------------------------------------
+
+/// An add whose first posting carries `mantissa`/`places` verbatim.
+fn amount_body(date: &str, mantissa: &str, places: u64) -> Value {
+    json!({
+        "date": date,
+        "description": "places probe",
+        "postings": [
+            { "account": "expenses:food:groceries",
+              "amount": { "commodity": "$",
+                          "quantity": { "mantissa": mantissa, "places": places } } },
+            { "account": "liabilities:cc:visa" }
+        ]
+    })
+}
+
+/// SEC-5: `places` above what the PARSER stores is rejected at the wire with a
+/// clear message, and — the part the round-trip guard never caught — nothing is
+/// written to the user's journal.
+///
+/// `{"mantissa":"0","places":65534}` used to return `201 Created` and commit a
+/// multi-hundred-byte all-zeros amount line to the file. The value genuinely
+/// round-trips, so the reparse and round-trip guards both passed: they check
+/// semantics, not sanity.
+#[tokio::test]
+async fn oversized_places_is_rejected_and_writes_nothing() {
+    let (state, path) = state_for(&sample_text());
+    let before_bytes = std::fs::metadata(&path).expect("stat").len();
+    let before_count = transaction_count(&state).await;
+
+    // A zero mantissa is the case that used to slip through every guard.
+    for places in [11, 255, 256, 65534, 65535, 4_294_967_295] {
+        let (status, body) = request(
+            &state,
+            "POST",
+            "/api/transactions",
+            Some(amount_body("2026-07-25", "0", places)),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "places={places} must be a 400: {body}"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).expect("stat").len(),
+            before_bytes,
+            "places={places} must not have written to the journal"
+        );
+    }
+    assert_eq!(transaction_count(&state).await, before_count);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The documented maximum (`MAX_PARSE_PLACES` = 10) is still ACCEPTED — the
+/// validation rejects only what the parser could never have produced.
+#[tokio::test]
+async fn places_at_the_documented_max_is_accepted() {
+    let (state, path) = state_for(&sample_text());
+
+    let (status, body) = request(
+        &state,
+        "POST",
+        "/api/transactions",
+        Some(amount_body("2026-07-25", "1", 10)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "places=10 must be a 201: {body}"
+    );
+    assert_eq!(
+        body["transaction"]["postings"][0]["amounts"][0]["quantity"]["places"],
+        10
+    );
+
+    // …and one more place is the boundary that fails.
+    let (status, _) = request(
+        &state,
+        "POST",
+        "/api/transactions",
+        Some(amount_body("2026-07-26", "1", 11)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "places=11 must be a 400");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// SEC-5's second bound: an absurd mantissa is refused too, and an ordinary one
+/// is not. `10^30` is the documented limit.
+#[tokio::test]
+async fn oversized_mantissa_is_rejected() {
+    let (state, path) = state_for(&sample_text());
+
+    // 10^30 + 1, and the largest i128 — both beyond the accepted magnitude.
+    for mantissa in [
+        "1000000000000000000000000000001",
+        "170141183460469231731687303715884105727",
+    ] {
+        let (status, body) = request(
+            &state,
+            "POST",
+            "/api/transactions",
+            Some(amount_body("2026-07-25", mantissa, 2)),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "mantissa={mantissa} must be a 400: {body}"
+        );
+    }
+
+    // A mantissa past i128 entirely is still the pre-existing 400.
+    let (status, _) = request(
+        &state,
+        "POST",
+        "/api/transactions",
+        Some(amount_body("2026-07-25", &"9".repeat(60), 2)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // An ordinary amount is unaffected.
+    let (status, body) = request(
+        &state,
+        "POST",
+        "/api/transactions",
+        Some(amount_body("2026-07-25", "5624", 2)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an ordinary add still works: {body}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 /// The sample fixture's text, copied into each temp journal under test.
 fn sample_text() -> String {
     std::fs::read_to_string(common::fixture_journal_path()).expect("sample.journal readable")

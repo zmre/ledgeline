@@ -73,6 +73,24 @@ describe("UNIT urlCodec", () => {
         expect(parsed.accounts.size).toBe(0);
     });
 
+    // SEC-12: these ran inside onMount, so a URIError here blanked the page.
+    it("survives a malformed percent escape in acct instead of throwing (SEC-12)", () => {
+        expect(() => searchToFilter("acct=%", dflt)).not.toThrow();
+        expect([...searchToFilter("acct=%", dflt).accounts]).toEqual(["%"]);
+    });
+
+    it("keeps the well-formed accounts when only one segment is malformed", () => {
+        const parsed = searchToFilter("acct=assets%3Abank,%zz,expenses", dflt);
+        expect([...parsed.accounts].sort()).toEqual(["%zz", "assets:bank", "expenses"]);
+    });
+
+    it("still parses the remaining params when acct is malformed", () => {
+        const parsed = searchToFilter("acct=%&q=coffee&from=2025-01-01&to=2025-06-30", dflt);
+        expect(parsed.query).toBe("coffee");
+        expect(parsed.from).toBe("2025-01-01");
+        expect(parsed.to).toBe("2025-06-30");
+    });
+
     it("stores preset names instead of frozen dates and recomputes on parse (live YTD)", () => {
         const dfltP = filter({preset: "thisMonth"});
         const f = filter({from: "2026-01-01", to: "2026-07-08", preset: "ytd"});

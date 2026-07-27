@@ -3,7 +3,7 @@
 // HledgerApi (the wire client) but distinguishes a server that simply lacks the
 // native routes (a plain hledger-web) from one that is unreachable.
 
-import {ApiUnreachableError} from "./client";
+import {ApiUnreachableError, authHeaders} from "./client";
 
 /** The configured server answered, but has no /api/* routes (e.g. plain hledger-web). */
 export class NativeApiUnavailableError extends Error {
@@ -225,7 +225,7 @@ export class LedgelineApi {
         let response: Response;
         try {
             // no-store: report data must always come from the live engine, never the HTTP cache
-            response = await fetch(url, {headers: {Accept: "application/json"}, cache: "no-store"});
+            response = await fetch(url, {headers: authHeaders({Accept: "application/json"}), cache: "no-store"});
         } catch (cause) {
             throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
         }
@@ -242,6 +242,19 @@ export class LedgelineApi {
             // 200 but not JSON (an HTML page from a non-engine server) — same "not the engine" signal.
             throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE, {cause});
         }
+    }
+
+    /**
+     * Engine-computed journal diagnostics: `{"diagnostics": [...]}`, every
+     * unbalanced transaction and failed balance assertion.
+     *
+     * Its own route rather than a field on `/transactions` because that endpoint
+     * is a byte-for-byte hledger-web emulation whose parity comparator rejects
+     * any unexpected key. A plain hledger-web 404s here, which the caller reads
+     * as "no diagnostics".
+     */
+    diagnostics(): Promise<unknown> {
+        return this.getJson("/api/diagnostics");
     }
 
     balanceSheet(query: BalanceSheetQuery = {}): Promise<unknown> {
@@ -329,7 +342,7 @@ export class LedgelineApi {
         const url = `${this.baseUrl}/api/transactions`;
         let response: Response;
         try {
-            response = await fetch(url, {method: "GET", headers: {Accept: "application/json"}, cache: "no-store"});
+            response = await fetch(url, {method: "GET", headers: authHeaders({Accept: "application/json"}), cache: "no-store"});
         } catch (cause) {
             throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
         }
@@ -343,8 +356,7 @@ export class LedgelineApi {
      */
     private async mutate<T>(method: string, route: string, okStatus: number, body?: unknown): Promise<T> {
         const url = `${this.baseUrl}${route}`;
-        const headers: Record<string, string> = {Accept: "application/json"};
-        if (body !== undefined) headers["Content-Type"] = "application/json";
+        const headers = authHeaders(body === undefined ? {Accept: "application/json"} : {Accept: "application/json", "Content-Type": "application/json"});
         let response: Response;
         try {
             response = await fetch(url, {method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store"});

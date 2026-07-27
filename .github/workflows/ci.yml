@@ -127,10 +127,17 @@ jobs:
           nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 
   # TypeScript / SvelteKit side: build the SPA and run its unit + type checks.
-  # (Playwright e2e is intentionally out of scope for CI here.)
+  # This job deliberately runs vitest with NO live engine, which is what proves
+  # the unit suite is self-contained. The `e2e` job below re-runs it against a
+  # real server to un-skip the round-trip contract suites.
   spa:
     name: SPA (build + unit + check)
     runs-on: ubuntu-latest
+    env:
+      # Runners are UTC while the developer is America/Denver, so a date bug
+      # could only ever surface on one of the two. Pin CI to the developer's
+      # zone (vite.config.ts pins vitest's own TZ to match).
+      TZ: America/Denver
     defaults:
       run:
         working-directory: web
@@ -151,3 +158,150 @@ jobs:
 
       - name: Type check (svelte-check + tsc)
         run: bun run check
+
+  # The two suites that need a REAL engine behind the SPA, sharing one build of
+  # the binary:
+  #   * the round-trip contract tests (vitest, `describe.runIf(LEDGELINE_API_URL)`)
+  #   * the Playwright e2e specs, which assert hledger-verified fixture numbers
+  #     and are the only guard against wire drift between the engine and the SPA.
+  e2e:
+    name: E2E + API contract
+    needs: format-check
+    runs-on: ubuntu-latest
+    env:
+      TZ: America/Denver
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: zmre
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+
+      # Nix, not `cargo build`, so this reuses the same store paths (and Cachix
+      # hits) as the `build` job instead of maintaining a second toolchain and
+      # target dir. `--server` is headless — the GUI stack is linked in but never
+      # initialised — so no display is needed.
+      - name: Build ledgeline
+        run: nix build -L .#ledgeline
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      # playwright.config.ts declares no `projects`, so the suite runs on the
+      # default browser (chromium) — the only one worth downloading.
+      - name: Install Playwright chromium
+        working-directory: web
+        run: bunx playwright install --with-deps chromium
+
+      # These suites are `describe.runIf(process.env.LEDGELINE_API_URL)`: with no
+      # engine they report as SKIPPED rather than failing, so the URL must
+      # actually be set or they are silently worthless. Poll /version for
+      # readiness and kill the server on any exit path.
+      - name: Contract tests vs. a live engine (vitest)
+        working-directory: web
+        run: |
+          set -euo pipefail
+          "$GITHUB_WORKSPACE/result/bin/ledgeline" \
+            --server "$GITHUB_WORKSPACE/fixtures/sample.journal" --port 5055 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:5055/version >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          # Fails the step (and prints why) if the engine never came up.
+          curl -fsS http://127.0.0.1:5055/version
+          LEDGELINE_API_URL=http://127.0.0.1:5055 bun run test:unit
+
+      # Playwright starts its own two servers (the engine on :5099 and `bun run
+      # preview` on :4173). LEDGELINE_BIN points the first at the Nix binary,
+      # since CI has no cargo target dir for the config's default path.
+      - name: E2E (Playwright)
+        working-directory: web
+        env:
+          LEDGELINE_BIN: ${{ github.workspace }}/result/bin/ledgeline
+        run: bun run test:e2e
+
+      # playwright.config.ts sets no `reporter`, so there is no playwright-report/
+      # to collect — but a failing spec still drops its error context (page
+      # snapshot, console) under test-results/, which is what makes a red headless
+      # run debuggable after the fact.
+      - name: Upload Playwright failure context
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: web/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # RUSTSEC advisory scan of Cargo.lock (SEC-14).
+  #
+  # Runs in the minimal `.#audit` dev shell rather than as `nix build .#audit`:
+  # cargo-audit fetches the advisory DB from GitHub at run time and the Nix
+  # build sandbox has no network, so this cannot be a `checks.` derivation.
+  # No `needs:` — it reads only Cargo.lock, so it is independent of formatting
+  # and of whether the code compiles, and a real CVE should surface even on a
+  # branch that is red for other reasons.
+  #
+  # BLOCKING, deliberately. `cargo audit` only fails on `vulnerability`-class
+  # advisories; `unmaintained` and `unsound` are reported as warnings and exit
+  # 0. That is exactly the behaviour we want: the twelve gtk3-rs / glib /
+  # proc-macro-error entries stay VISIBLE in the log without wedging CI (there
+  # is no upstream fix to move to — wry/tao still bind GTK3), while a genuinely
+  # new and actionable CVE turns this job red on the next run.
+  audit:
+    name: Cargo audit (RUSTSEC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: zmre
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+
+      # --- Ignored advisories ---------------------------------------------
+      # RUSTSEC-2026-0194 / RUSTSEC-2026-0195 — quick-xml 0.39.4, two "7.5
+      # high" denial-of-service issues (quadratic duplicate-attribute scan;
+      # unbounded namespace-declaration allocation).
+      #
+      #   WHY IGNORED — unreachable at run time AND unfixable from this repo:
+      #     * The only path is
+      #         quick-xml -> wayland-scanner (PROC-MACRO) -> wayland-client
+      #         -> rfd -> ledgeline-server
+      #       wayland-scanner is a build-time proc macro, so quick-xml parses
+      #       the vendored wayland protocol .xml files during compilation. It
+      #       never sees a journal file, an HTTP request, or any other runtime
+      #       input, so neither DoS is reachable by an attacker.
+      #     * rfd gates its wayland deps on cfg(target_os = "linux" | the
+      #       BSDs), so the crate is absent from the macOS graph entirely —
+      #       `cargo tree -i quick-xml` there reports "nothing to print". It is
+      #       only in Cargo.lock because the lockfile is target-agnostic.
+      #     * The advisories' fix is quick-xml >= 0.41, but wayland-scanner
+      #       0.31.10 requires "^0.39". No `cargo update` can reach it.
+      #
+      #   WHAT WOULD MAKE THIS ACTIONABLE: a wayland-scanner release that
+      #   widens its quick-xml requirement past 0.39 (or an rfd bump that drops
+      #   wayland-scanner). Delete the two --ignore flags then and let the
+      #   lockfile take the fix. Re-check whenever this job is touched.
+      - name: cargo audit
+        run: |
+          nix develop -L .#audit -c cargo-audit audit \
+            --ignore RUSTSEC-2026-0194 \
+            --ignore RUSTSEC-2026-0195

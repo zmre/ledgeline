@@ -1,7 +1,7 @@
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
 import {ApiShapeError} from "./client";
-import {normalizeAccounts, normalizePrices, normalizeTransactions} from "./normalize";
+import {normalizeAccounts, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "./normalize";
 
 // Hand-rolled wire samples (fixtures/api snapshots are WP-09).
 // "Modern" shape verified against a live hledger 1.52: acost/asdecimalmark/UnitCost.
@@ -428,6 +428,133 @@ describe("UNIT normalizePrices", () => {
     it("throws ApiShapeError on unrecognized shapes", () => {
         expect(() => normalizePrices("nope")).toThrow(ApiShapeError);
         expect(() => normalizePrices([{bogus: true}])).toThrow(ApiShapeError);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Engine diagnostics (unbalanced / balance assertion). Advisory findings on a
+// journal the engine DID open, so nothing here may throw — a junk entry costs
+// that one finding, never the journal load.
+// ---------------------------------------------------------------------------
+
+/** Three transactions whose 1-based tindex deliberately differs from their 0-based position. */
+const diagTxns = normalizeTransactions([
+    {...modernTxn, tindex: 1},
+    {...modernTxn, tindex: 2},
+    {...modernTxn, tindex: 3},
+]);
+
+const unbalancedDiag = {
+    txnIndex: 0,
+    rule: "unbalanced",
+    severity: "error",
+    message: "This transaction is unbalanced. The real postings' sum should be 0 but is: $-1.00",
+};
+const assertionDiag = {
+    txnIndex: 2,
+    rule: "assertion",
+    severity: "error",
+    message: "balance assertion failed in assets:bank\n  expected: $10.00\n  actual:   $12.00",
+};
+
+/** Every malformed shape returns [] rather than throwing. */
+const expectNoDiagnostics = (raw: unknown): void => {
+    expect(normalizeDiagnostics(raw, diagTxns)).toEqual([]);
+};
+
+describe("UNIT normalizeDiagnostics", () => {
+    it("decodes a well-formed array, translating the 0-based wire position to the txn's own index", () => {
+        const decoded = normalizeDiagnostics({diagnostics: [unbalancedDiag, assertionDiag]}, diagTxns);
+        expect(decoded).toEqual([
+            {txnIndex: 1, rule: "unbalanced", severity: "error", message: unbalancedDiag.message},
+            {txnIndex: 3, rule: "assertion", severity: "error", message: assertionDiag.message},
+        ]);
+    });
+
+    it("preserves a multi-line message verbatim", () => {
+        const [decoded] = normalizeDiagnostics({diagnostics: [assertionDiag]}, diagTxns);
+        expect(decoded.message).toBe(assertionDiag.message);
+        expect(decoded.message.split("\n")).toHaveLength(3);
+    });
+
+    it("treats an empty array as clean", () => {
+        expectNoDiagnostics({diagnostics: []});
+    });
+
+    it("treats a missing field, null, or a non-array as no diagnostics", () => {
+        expectNoDiagnostics({transactions: []}); // field absent — an older engine build
+        expectNoDiagnostics({diagnostics: null});
+        expectNoDiagnostics({diagnostics: undefined});
+        expectNoDiagnostics({diagnostics: 42});
+        expectNoDiagnostics({diagnostics: "unbalanced"});
+        expectNoDiagnostics({diagnostics: {txnIndex: 0}});
+        expectNoDiagnostics(null); // whole payload null
+        expectNoDiagnostics(undefined);
+        expectNoDiagnostics("nope");
+        expectNoDiagnostics([]); // a bare (pre-diagnostics) transactions array
+    });
+
+    it("skips an entry with a bad severity", () => {
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, severity: "critical"}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, severity: "ERROR"}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, severity: 2}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, severity: null}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, severity: undefined}]});
+    });
+
+    it("skips an entry with a non-integer or out-of-range txnIndex", () => {
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: 1.5}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: "0"}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: -1}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: NaN}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: undefined}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: null}]});
+        // Past the end of the served array: unanchorable to any row, so dropped.
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: 3}]});
+    });
+
+    it("skips an entry with a missing or empty message", () => {
+        expectNoDiagnostics({diagnostics: [{txnIndex: 0, rule: "unbalanced", severity: "error"}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, message: ""}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, message: "   "}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, message: 7}]});
+    });
+
+    it("skips an entry with an unknown or missing rule, and non-object entries", () => {
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, rule: "made-up"}]});
+        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, rule: undefined}]});
+        expectNoDiagnostics({diagnostics: [null, undefined, 3, "x", []]});
+    });
+
+    it("keeps the good entries when a bad one sits between them", () => {
+        const decoded = normalizeDiagnostics({diagnostics: [unbalancedDiag, {rule: "assertion"}, null, assertionDiag]}, diagTxns);
+        expect(decoded.map((p) => p.txnIndex)).toEqual([1, 3]);
+    });
+
+    it("collapses exact duplicates (the drawer keys its list by txnIndex + message)", () => {
+        const decoded = normalizeDiagnostics({diagnostics: [unbalancedDiag, {...unbalancedDiag}, assertionDiag]}, diagTxns);
+        expect(decoded).toHaveLength(2);
+    });
+
+    it("accepts a bare diagnostics array as well as the payload envelope", () => {
+        expect(normalizeDiagnostics([unbalancedDiag], diagTxns)).toHaveLength(1);
+    });
+
+    it("returns [] for any diagnostics when no transactions were served", () => {
+        expect(normalizeDiagnostics({diagnostics: [unbalancedDiag]}, [])).toEqual([]);
+    });
+});
+
+describe("UNIT normalizeTransactions journal payload envelope", () => {
+    it("accepts a {transactions, diagnostics} envelope as well as a bare array", () => {
+        const enveloped = normalizeTransactions({transactions: [modernTxn], diagnostics: [unbalancedDiag]});
+        expect(enveloped).toHaveLength(1);
+        expect(enveloped[0].index).toBe(2);
+    });
+
+    it("still throws ApiShapeError when the payload is neither", () => {
+        expect(() => normalizeTransactions({nope: true})).toThrow(ApiShapeError);
+        expect(() => normalizeTransactions("nope")).toThrow(ApiShapeError);
     });
 });
 

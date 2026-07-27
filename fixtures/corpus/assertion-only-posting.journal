@@ -1,0 +1,9 @@
+; PARSE-9: the reconcile-to-statement idiom — a posting with no amount, only a
+; balance assertion. The amount is inferred like any other elided posting.
+2024-01-01 open
+    a   $150.00
+    b
+
+2024-01-02 reconcile
+    a       = $160.00
+    b   $-10.00

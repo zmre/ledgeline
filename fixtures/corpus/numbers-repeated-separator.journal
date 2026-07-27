@@ -1,0 +1,9 @@
+; PARSE-3: a separator that repeats cannot be a decimal point, so the whole
+; literal is a whole number with digit groups: `1.2.3` is 123, not 12.3.
+2017-01-01
+    a    1.2.3 XX
+    b   -1.2.3 XX
+
+2017-01-02
+    a    1.234.567 YY
+    b   -1.234.567 YY

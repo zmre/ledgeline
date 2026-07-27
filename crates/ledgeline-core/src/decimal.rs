@@ -156,6 +156,17 @@ impl Dec {
     /// discarded. The resulting `places` equals the count of written fractional
     /// digits (so `"5.00"` yields scale 2, not the normalized scale 0).
     pub fn parse(input: &str, decimal_mark: char) -> Result<Self, DecError> {
+        Self::parse_with_mark(input, Some(decimal_mark))
+    }
+
+    /// Parse a numeric literal, where `decimal_mark` may be `None`.
+    ///
+    /// `None` means the literal has **no** decimal mark, so every `.`/`,` in it
+    /// is a digit-group separator and the result is a whole number: hledger
+    /// reads `1.2.3` as `123` and `1.234.567` as `1234567`, because a repeated
+    /// separator cannot be a decimal point. Passing `Some(mark)` behaves exactly
+    /// like [`Dec::parse`].
+    pub fn parse_with_mark(input: &str, decimal_mark: Option<char>) -> Result<Self, DecError> {
         let trimmed = input.trim();
         // Scientific notation: split off an `e`/`E` exponent (optionally signed).
         // hledger evaluates `1.05e2` to 105 and `31415926e-7` to 3.1415926.
@@ -179,14 +190,23 @@ impl Dec {
         if body.is_empty() {
             return Err(DecError::InvalidNumber(input.to_string()));
         }
-        let is_allowed =
-            |c: char| c.is_ascii_digit() || c == decimal_mark || matches!(c, '.' | ',' | ' ' | '_');
+        // U+00A0 NO-BREAK SPACE joins the plain space as a digit-group
+        // separator: hledger accepts `1\u{a0}000.00` exactly as it accepts
+        // `1 000.00`.
+        let is_allowed = |c: char| {
+            c.is_ascii_digit()
+                || decimal_mark == Some(c)
+                || matches!(c, '.' | ',' | ' ' | '_' | '\u{a0}')
+        };
         if !body.chars().all(is_allowed) {
             return Err(DecError::InvalidNumber(input.to_string()));
         }
 
-        let (int_src, frac_src) = match body.rfind(decimal_mark) {
-            Some(pos) => (&body[..pos], &body[pos + decimal_mark.len_utf8()..]),
+        // With no decimal mark every separator is a digit group, so the whole
+        // body is the integer part.
+        let split = decimal_mark.and_then(|mark| body.rfind(mark).map(|pos| (mark, pos)));
+        let (int_src, frac_src) = match split {
+            Some((mark, pos)) => (&body[..pos], &body[pos + mark.len_utf8()..]),
             None => (body, ""),
         };
         let int_digits: String = int_src.chars().filter(char::is_ascii_digit).collect();
@@ -198,9 +218,12 @@ impl Dec {
         if combined.is_empty() {
             return Err(DecError::InvalidNumber(input.to_string()));
         }
-        let magnitude: i128 = combined
-            .parse()
-            .map_err(|_| DecError::InvalidNumber(input.to_string()))?;
+        // `combined` is non-empty and all ASCII digits by construction (both
+        // halves were filtered with `is_ascii_digit`), so the only way this can
+        // fail is magnitude. hledger's mantissa is arbitrary-precision and ours
+        // is `i128`, so report the real reason rather than the misleading
+        // "invalid numeric literal".
+        let magnitude: i128 = combined.parse().map_err(|_| DecError::Overflow)?;
         let mantissa = if negative {
             magnitude.checked_neg().ok_or(DecError::Overflow)?
         } else {
@@ -244,7 +267,11 @@ impl Dec {
 
 /// hledger reads numbers with at most this many fractional digits (rounding the
 /// remainder half-to-even), so parsing caps to match its stored precision.
-const MAX_PARSE_PLACES: u32 = 10;
+///
+/// Public so the edit wire can reject a `places` the parser could never have
+/// produced, instead of letting it through to be rendered and then bounced by
+/// the round-trip guard with a misleading message (SEC-5).
+pub const MAX_PARSE_PLACES: u32 = 10;
 
 /// `10^exp` as an `i128`, checked for overflow.
 fn pow10(exp: u32) -> Result<i128, DecError> {
@@ -429,5 +456,61 @@ mod tests {
             Dec::new(1_123_456_789, 9)
         );
         assert_eq!(Dec::parse("5.00", '.').unwrap(), Dec::new(500, 2));
+    }
+
+    #[test]
+    fn parse_with_no_decimal_mark_treats_every_separator_as_a_group() {
+        // PARSE-3: a repeated separator cannot be a decimal point, so hledger
+        // reads the whole literal as a whole number.
+        assert_eq!(
+            Dec::parse_with_mark("1.2.3", None).unwrap(),
+            Dec::new(123, 0)
+        );
+        assert_eq!(
+            Dec::parse_with_mark("1.234.567", None).unwrap(),
+            Dec::new(1_234_567, 0)
+        );
+        assert_eq!(
+            Dec::parse_with_mark("1,234,567", None).unwrap(),
+            Dec::new(1_234_567, 0)
+        );
+        assert_eq!(
+            Dec::parse_with_mark("-1.2.3", None).unwrap(),
+            Dec::new(-123, 0)
+        );
+        // `Some(mark)` is unchanged from `parse`.
+        assert_eq!(
+            Dec::parse_with_mark("1,50", Some(',')).unwrap(),
+            Dec::new(150, 2)
+        );
+    }
+
+    #[test]
+    fn parses_space_and_nbsp_digit_groups() {
+        // PARSE-4: hledger accepts both the plain space and U+00A0 as digit
+        // group separators (`1 000.00`, `1\u{a0}000.00`).
+        assert_eq!(Dec::parse("1 000.00", '.').unwrap(), Dec::new(100_000, 2));
+        assert_eq!(
+            Dec::parse("1\u{a0}000.00", '.').unwrap(),
+            Dec::new(100_000, 2)
+        );
+        assert_eq!(
+            Dec::parse_with_mark("1 000 000", None).unwrap(),
+            Dec::new(1_000_000, 0)
+        );
+    }
+
+    #[test]
+    fn oversized_mantissa_reports_overflow_not_invalid() {
+        // PARSE-9: hledger's mantissa is arbitrary-precision; ours is i128. The
+        // 42-digit literal hledger accepts must fail as Overflow, not as the
+        // misleading "invalid numeric literal".
+        let huge = "123456789012345678901234567890123456789012";
+        assert_eq!(Dec::parse(huge, '.'), Err(DecError::Overflow));
+        // Genuinely malformed input still reports InvalidNumber.
+        assert_eq!(
+            Dec::parse("12x4", '.'),
+            Err(DecError::InvalidNumber("12x4".to_string()))
+        );
     }
 }

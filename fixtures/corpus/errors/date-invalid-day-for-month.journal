@@ -1,0 +1,4 @@
+; PARSE-6: April has 30 days. hledger: "This is not a valid date, please fix it."
+2024-04-31 t
+    a   $1.00
+    b

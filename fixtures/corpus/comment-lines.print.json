@@ -1,0 +1,114 @@
+[
+  {
+    "tcode": "",
+    "tcomment": "first: 1\nsecond: 2\n",
+    "tdate": "2024-01-01",
+    "tdate2": null,
+    "tdescription": "t",
+    "tindex": 1,
+    "tpostings": [
+      {
+        "paccount": "a",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 100,
+              "decimalPlaces": 2,
+              "floatingPoint": 1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "own: x\nmore: y\n",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [
+          [
+            "own",
+            "x"
+          ],
+          [
+            "more",
+            "y"
+          ]
+        ],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "b",
+        "pamount": [
+          {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -100,
+              "decimalPlaces": 2,
+              "floatingPoint": -1
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "\nsubscription: false\n",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [
+          [
+            "subscription",
+            "false"
+          ]
+        ],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 4,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/comment-lines.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 10,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/comment-lines.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": [
+      [
+        "first",
+        "1"
+      ],
+      [
+        "second",
+        "2"
+      ]
+    ]
+  }
+]

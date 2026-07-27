@@ -187,6 +187,20 @@ pub fn budget_report(
 ) -> Result<BudgetReport, ReportError> {
     let buckets = last_n_buckets(opts.end, opts.interval, opts.count)?;
 
+    // `last_n_buckets` documents an empty vec for `count == 0`. With no buckets
+    // there is no report span to anchor the goal walk on, and `buckets[0]`
+    // below would panic. Every per-bucket vec would be empty anyway, so the
+    // empty report IS the correct answer for a zero-bucket span — return it
+    // rather than indexing. All three fields stay present as empty arrays,
+    // which is what the SPA's `decodeBudgetReport` requires.
+    if buckets.is_empty() {
+        return Ok(BudgetReport {
+            buckets,
+            rows: Vec::new(),
+            totals: Vec::new(),
+        });
+    }
+
     // Budgeted account set: every rule-posting account + ancestors, ALL rules.
     let budgeted: BTreeSet<String> = rules
         .iter()
@@ -571,6 +585,59 @@ mod tests {
             Some(usd_ma(40_000))
         );
         assert_eq!(row(&grocer, "expenses:rent").cells[0].goal, None);
+    }
+
+    /// SEC-2: `count == 0` gives `last_n_buckets` an empty vec, and
+    /// `bucket_start(&buckets[0])` panicked with `index out of bounds`. It must
+    /// return the well-formed empty report instead — all three fields present
+    /// and empty, which is what the SPA's `decodeBudgetReport` requires.
+    #[test]
+    fn zero_count_yields_an_empty_report_not_a_panic() {
+        let rules = vec![rule(
+            PeriodExpr::Monthly,
+            "household budget",
+            vec![goal_posting("expenses:food", 400)],
+        )];
+        let txns = vec![txn(
+            1,
+            "2026-01-05",
+            vec![
+                ("expenses:food", vec![usd(35_200)]),
+                ("assets:checking", vec![usd(-35_200)]),
+            ],
+        )];
+
+        let report = budget_report(&txns, &rules, &opts("2026-01-31", 0, None)).unwrap();
+        assert!(report.buckets.is_empty());
+        assert!(report.rows.is_empty());
+        assert!(report.totals.is_empty());
+    }
+
+    /// The empty-bucket guard must not disturb the ordinary path: one bucket
+    /// still reports normally with the very same inputs.
+    #[test]
+    fn one_count_still_reports_normally() {
+        let rules = vec![rule(
+            PeriodExpr::Monthly,
+            "household budget",
+            vec![goal_posting("expenses:food", 400)],
+        )];
+        let txns = vec![txn(
+            1,
+            "2026-01-05",
+            vec![
+                ("expenses:food", vec![usd(35_200)]),
+                ("assets:checking", vec![usd(-35_200)]),
+            ],
+        )];
+
+        let report = budget_report(&txns, &rules, &opts("2026-01-31", 1, None)).unwrap();
+        assert_eq!(report.buckets, ["2026-01"]);
+        assert_eq!(report.totals.len(), 1);
+        assert_eq!(
+            row(&report, "expenses:food").cells[0].actual,
+            usd_ma(35_200)
+        );
     }
 
     /// A weekly rule contributes once per occurrence within a monthly bucket.

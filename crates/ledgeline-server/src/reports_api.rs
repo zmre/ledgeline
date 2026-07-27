@@ -29,6 +29,7 @@ use ledgeline_core::holdings::{
     compute_holdings, holdings_series,
 };
 use ledgeline_core::model::Commodity;
+use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
     BudgetCell, BudgetOpts, BudgetReport, Cadence, ChangeKind, ChangeRow, CostOfLiving,
     DEFAULT_EXCLUDE_DESC, InsightsOpts, InsightsReport, Interval, MetricDelta, MixedAmount,
@@ -691,6 +692,33 @@ fn parse_interval(raw: Option<&str>) -> Result<Interval, ApiError> {
     }
 }
 
+/// Validate a bucket count, defaulting to [`DEFAULT_COUNT`] when absent. Returns
+/// a `400` tuple for anything outside `1..=MAX_BUCKETS`.
+///
+/// This REJECTS rather than clamps, deliberately. `count` drives how many
+/// periods a chart plots, so silently turning `count=1000000` into 1200 would
+/// answer a question the caller did not ask with a plausible-looking chart —
+/// exactly the "displays a plausible number instead of an error" failure mode
+/// this review is against. `count=0` is likewise a caller bug, not a request for
+/// an empty chart. A 400 with the accepted range is the honest answer, and it
+/// matches [`parse_interval`]'s established handling of an unrecognized value.
+///
+/// Note `count` deserializes as `usize`, so a negative or non-integer value is
+/// already rejected by serde as a `400` before reaching here; this covers the
+/// in-range-for-`usize`-but-nonsensical values (`0`, `u64::MAX`) that reached
+/// `Vec::with_capacity` and aborted the request with a `capacity overflow`
+/// panic. See SEC-2.
+fn parse_count(raw: Option<usize>) -> Result<usize, ApiError> {
+    match raw {
+        None => Ok(DEFAULT_COUNT),
+        Some(count) if (1..=MAX_BUCKETS).contains(&count) => Ok(count),
+        Some(other) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("count {other} is out of range (expected 1..={MAX_BUCKETS})"),
+        )),
+    }
+}
+
 /// Parse a holdings scope mode, defaulting to `include` when absent. Returns a
 /// `400` tuple for an unrecognized value.
 fn parse_mode(raw: Option<&str>) -> Result<ScopeMode, ApiError> {
@@ -915,7 +943,7 @@ pub(crate) async fn cashflow(
     let snapshot = state.snapshot();
     let end = query.end.unwrap_or_else(today_utc);
     let interval = parse_interval(query.interval.as_deref())?;
-    let count = query.count.unwrap_or(DEFAULT_COUNT);
+    let count = parse_count(query.count)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
 
     let decls = account_decls(&snapshot.journal);
@@ -944,7 +972,7 @@ pub(crate) async fn networth(
     let snapshot = state.snapshot();
     let end = query.end.unwrap_or_else(today_utc);
     let interval = parse_interval(query.interval.as_deref())?;
-    let count = query.count.unwrap_or(DEFAULT_COUNT);
+    let count = parse_count(query.count)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
     let value_in = query
         .value_in
@@ -976,7 +1004,7 @@ pub(crate) async fn budget(
     let snapshot = state.snapshot();
     let end = query.end.unwrap_or_else(today_utc);
     let interval = parse_interval(query.interval.as_deref())?;
-    let count = query.count.unwrap_or(DEFAULT_COUNT);
+    let count = parse_count(query.count)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
     let budget_desc = query
         .budget_desc
@@ -1103,7 +1131,7 @@ pub(crate) async fn holdings_series_report(
         gain_since: None,
     };
     let interval = parse_interval(query.interval.as_deref())?;
-    let count = query.count.unwrap_or(DEFAULT_COUNT);
+    let count = parse_count(query.count)?;
     let series = holdings_series(
         &snapshot.journal.transactions,
         &snapshot.journal.prices,

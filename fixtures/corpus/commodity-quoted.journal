@@ -1,0 +1,12 @@
+; PARSE-9: a commodity symbol containing a space must be double-quoted. The
+; quotes are delimiters, not part of the name, so the `P` directive's symbol
+; and the posting's symbol are the same commodity.
+P 2017-01-01 "green apples" $1.00
+
+2017-01-01
+    a    3 "green apples"
+    b   -3 "green apples"
+
+2017-01-02
+    a    "red pears" 4
+    b    "red pears" -4

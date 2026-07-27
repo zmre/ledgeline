@@ -58,12 +58,13 @@
 //! `Decimal`/`Internal` → `500`. A `409` means the file changed under us; the
 //! client should re-fetch and retry.
 
-use std::sync::{MutexGuard, PoisonError};
+use std::sync::MutexGuard;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::edit::InsertPosition;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, Cost, CostKind, Journal, Posting,
@@ -390,7 +391,7 @@ pub(crate) async fn patch_transaction(
 // ===========================================================================
 
 fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddResponse, ApiError> {
-    let mut guard = lock_editor(state);
+    let mut guard = lock_editor(state)?;
     let editor = guard.as_mut().ok_or_else(editing_disabled)?;
 
     let transaction = build_transaction(editor.journal(), request)?;
@@ -422,7 +423,7 @@ fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddR
 }
 
 fn delete_transaction_locked(state: &AppState, index: u32) -> Result<DeleteResponse, ApiError> {
-    let mut guard = lock_editor(state);
+    let mut guard = lock_editor(state)?;
     let editor = guard.as_mut().ok_or_else(editing_disabled)?;
 
     editor
@@ -441,7 +442,7 @@ fn replace_transaction_locked(
     index: u32,
     request: &AddRequest,
 ) -> Result<AddResponse, ApiError> {
-    let mut guard = lock_editor(state);
+    let mut guard = lock_editor(state)?;
     let editor = guard.as_mut().ok_or_else(editing_disabled)?;
 
     let transaction = build_transaction(editor.journal(), request)?;
@@ -474,7 +475,7 @@ fn patch_transaction_locked(
     index: u32,
     request: &PatchRequest,
 ) -> Result<AddResponse, ApiError> {
-    let mut guard = lock_editor(state);
+    let mut guard = lock_editor(state)?;
     let editor = guard.as_mut().ok_or_else(editing_disabled)?;
 
     let changed =
@@ -554,14 +555,58 @@ fn resync_from_disk(state: &AppState, editor: &mut JournalEditor) {
     state.replace_journal(editor.journal());
 }
 
-/// Lock the editor mutex, recovering from poisoning (a prior panic mid-edit) by
-/// taking the inner value rather than propagating the panic across every future
-/// request.
-fn lock_editor(state: &AppState) -> MutexGuard<'_, Option<JournalEditor>> {
-    state
-        .editor()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+/// Lock the editor mutex, recovering from poisoning by re-reading the file.
+///
+/// SEC-11. A poisoned mutex means some earlier request panicked *while holding
+/// the editor*, so the [`JournalEditor`] behind it may be half-mutated: the
+/// surgical ops in [`apply_patch`] commit to the in-memory rope one at a time, so
+/// a panic between two of them leaves a rope matching no file that ever existed.
+/// Taking the inner value and carrying on — what this used to do — edits the
+/// user's journal from that state.
+///
+/// Recovery is therefore the same one [`resync_from_disk`] already performs after
+/// a failed save: drop the suspect editor and re-open from disk. The poison flag
+/// is cleared only once the editor behind it is trustworthy again, and only while
+/// still holding the guard, so no other thread can observe the un-recovered
+/// state. If the re-open FAILS we unbind the editor rather than hand back a
+/// half-mutated one, and the caller gets a 500 — never a silent edit against
+/// corrupt state.
+fn lock_editor(state: &AppState) -> Result<MutexGuard<'_, Option<JournalEditor>>, ApiError> {
+    let mutex = state.editor();
+    let mut guard = match mutex.lock() {
+        Ok(guard) => return Ok(guard),
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let reopened = guard
+        .as_ref()
+        .map(|editor| JournalEditor::open(editor.path().to_path_buf()));
+    match reopened {
+        // No editor was bound, so there is nothing half-mutated to discard; the
+        // caller's own `editing_disabled` 501 remains the right answer.
+        None => {}
+        Some(Ok(editor)) => {
+            state.replace_journal(editor.journal());
+            *guard = Some(editor);
+        }
+        Some(Err(_)) => {
+            *guard = None;
+            mutex.clear_poison();
+            return Err(editor_poisoned());
+        }
+    }
+    mutex.clear_poison();
+    Ok(guard)
+}
+
+/// The `500` returned when a prior panic poisoned the editor and the file could
+/// not be re-read to recover a trustworthy one (SEC-11).
+fn editor_poisoned() -> ApiError {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the editor was left in an indeterminate state by an earlier failure and the journal file \
+         could not be re-read to recover; no edit was applied"
+            .to_string(),
+    )
 }
 
 /// The `501` returned when this state has no editor (built from a parsed journal
@@ -737,6 +782,25 @@ fn build_cost(journal: &Journal, input: &CostIn) -> Result<Cost, ApiError> {
     })
 }
 
+/// The largest `|mantissa|` the edit wire accepts: 10^30, i.e. a 31-digit
+/// significand. `Dec` math is `i128` (max ~1.7×10^38), so this leaves eight
+/// decimal orders of headroom for the summing and price-scaling every report
+/// does, while still being astronomically larger than any real financial amount
+/// (a nonillion units, at ten decimal places). A value above this is a
+/// malformed or hostile client, not a transaction someone means to record.
+const MAX_WIRE_MANTISSA: i128 = 10_i128.pow(30);
+
+/// Convert a wire decimal to a [`Dec`], rejecting values the journal must never
+/// be asked to hold.
+///
+/// Both bounds are SEC-5. Neither the reparse-to-validate nor the round-trip
+/// guard downstream catches an absurd-but-self-consistent amount: they check
+/// that the value the client asked for is the value that landed, not that it was
+/// a sane thing to ask for. `places` is bounded by [`MAX_PARSE_PLACES`] — the
+/// precision the PARSER stores — so the wire cannot introduce an amount that
+/// re-reading the journal could never reproduce. Without it,
+/// `{"mantissa":"0","places":65534}` was accepted with a `201` and committed a
+/// multi-hundred-byte all-zeros amount line to the user's books.
 fn dec_from_wire(dec: &WireDecIn) -> Result<Dec, ApiError> {
     let mantissa = dec.mantissa.trim().parse::<i128>().map_err(|_| {
         (
@@ -747,6 +811,24 @@ fn dec_from_wire(dec: &WireDecIn) -> Result<Dec, ApiError> {
             ),
         )
     })?;
+    if dec.places > MAX_PARSE_PLACES {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "amount places {} is out of range (expected 0..={MAX_PARSE_PLACES})",
+                dec.places
+            ),
+        ));
+    }
+    if mantissa.unsigned_abs() > MAX_WIRE_MANTISSA.unsigned_abs() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "amount mantissa '{}' is out of range (expected |mantissa| <= {MAX_WIRE_MANTISSA})",
+                dec.mantissa
+            ),
+        ));
+    }
     Ok(Dec::new(mantissa, dec.places))
 }
 
@@ -880,5 +962,84 @@ fn costkind_str(kind: CostKind) -> &'static str {
     match kind {
         CostKind::Unit => "unit",
         CostKind::Total => "total",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::AssertUnwindSafe;
+
+    const ONE_TXN: &str = "\
+2024-01-01 * A
+    expenses:a  $1.00
+    assets:bank
+";
+
+    /// Panic while holding the editor guard, exactly as a mid-edit panic would.
+    fn poison_editor(state: &AppState) {
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = state.editor().lock().expect("not yet poisoned");
+            panic!("simulated mid-edit panic");
+        }));
+        assert!(result.is_err(), "the closure must have panicked");
+        assert!(state.editor().is_poisoned(), "the mutex must be poisoned");
+    }
+
+    /// SEC-11: after a panic left the mutex poisoned, `lock_editor` must NOT hand
+    /// back the possibly half-mutated editor. It re-opens from disk — so the
+    /// editor is once again a faithful view of the file — and clears the poison
+    /// so later requests take the normal path.
+    #[test]
+    fn poisoned_editor_is_recovered_by_reopening_from_disk() {
+        let dir = std::env::temp_dir().join("ledgeline-poison-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!("poison-{}.journal", std::process::id()));
+        std::fs::write(&path, ONE_TXN).expect("write journal");
+
+        let state = AppState::from_journal_path(&path).expect("editor opens");
+        poison_editor(&state);
+
+        // Recovery succeeds, yields a usable editor, and clears the poison.
+        let guard = lock_editor(&state).expect("poisoned lock must recover");
+        assert!(guard.is_some(), "an editor must still be bound");
+        assert_eq!(guard.as_ref().unwrap().journal().transactions.len(), 1);
+        drop(guard);
+        assert!(
+            !state.editor().is_poisoned(),
+            "the poison flag must be cleared once the editor is trustworthy again"
+        );
+
+        // The normal (unpoisoned) path still works afterwards.
+        assert!(lock_editor(&state).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// SEC-11, the failure branch: if the file cannot be re-read there is no
+    /// trustworthy editor to hand back, so the request must fail with a 500 and
+    /// the editor must be UNBOUND rather than left half-mutated.
+    #[test]
+    fn poisoned_editor_that_cannot_reopen_is_unbound_and_errors() {
+        let dir = std::env::temp_dir().join("ledgeline-poison-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!("poison-gone-{}.journal", std::process::id()));
+        std::fs::write(&path, ONE_TXN).expect("write journal");
+
+        let state = AppState::from_journal_path(&path).expect("editor opens");
+        poison_editor(&state);
+        // The file disappears before recovery can re-read it.
+        std::fs::remove_file(&path).expect("remove journal");
+
+        match lock_editor(&state) {
+            Ok(_) => panic!("recovery must fail once the journal file is gone"),
+            Err((status, _)) => assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR),
+        }
+
+        // The suspect editor was dropped rather than served.
+        let guard = lock_editor(&state).expect("no longer poisoned");
+        assert!(
+            guard.is_none(),
+            "the un-recoverable editor must have been unbound, not kept"
+        );
     }
 }

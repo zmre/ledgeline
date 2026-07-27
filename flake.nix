@@ -315,6 +315,7 @@
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
             rustToolchain # Rust engine: crates/ledgeline-{core,server}
+            cargo-audit # RUSTSEC advisory scan of Cargo.lock (SEC-14; see the `audit` CI job)
             pkg-config # locates the Linux GUI libs below (no-op on macOS)
             nodejs_22 # runtime for vite/svelte tooling
             bun # package manager + script runner
@@ -338,6 +339,22 @@
             export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
             echo "ledgeline dev shell: node $(node --version), bun $(bun --version), $(hledger --version | head -1), $(rustc --version)"
           '';
+        };
+
+        # Minimal shell for the `audit` CI job (SEC-14): cargo-audit ALONE.
+        # `devShells.default` would drag in the Rust toolchain, hledger,
+        # hledger-web and the Playwright browser bundle — hundreds of MB that a
+        # Cargo.lock scan has no use for, and which no other CI job currently
+        # builds (they all go through `nix build .#…`). Pinned to the same
+        # nixpkgs input as everything else, so CI and `nix develop` agree on the
+        # cargo-audit version.
+        #
+        # NOTE this is deliberately NOT a `checks.` derivation: cargo-audit
+        # fetches the RUSTSEC advisory DB from GitHub at run time and the Nix
+        # build sandbox has no network, so an audit can only ever run in a
+        # shell, never in a build.
+        devShells.audit = pkgs.mkShell {
+          nativeBuildInputs = [ pkgs.cargo-audit ];
         };
       });
 }

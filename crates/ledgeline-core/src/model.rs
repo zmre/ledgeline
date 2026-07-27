@@ -144,9 +144,11 @@ pub struct SourcePos {
 pub struct BalanceAssertion {
     /// The asserted amount.
     pub amount: Amount,
-    /// Subaccount-inclusive assertion (`=*`). Always `false` here.
+    /// Subaccount-inclusive assertion, written with a trailing `*` (`=*`/`==*`):
+    /// the asserted balance includes the account's subaccounts.
     pub inclusive: bool,
-    /// Total assertion (`==`). Always `false` here.
+    /// Total assertion, written `==`/`==*`: asserts the account holds *only* the
+    /// asserted commodity, i.e. every other commodity's balance is zero.
     pub total: bool,
     /// Position of the `=` sign.
     pub position: SourcePos,

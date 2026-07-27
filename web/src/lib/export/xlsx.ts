@@ -16,11 +16,42 @@ import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build 
 const HEADER_ARGB = "FF1E293B";
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
-/** Excel number format for a quantity: grouping + the Dec's decimal places (display-capped) + commodity affix. */
+/**
+ * Commodity characters safe to embed in an Excel number-format code (SEC-13).
+ *
+ * Deliberately an ALLOWLIST. Commodity strings come from the journal — i.e.
+ * user-controlled text — and are interpolated into `styles.xml`, but Excel's
+ * number-format grammar has a large, poorly-specified metacharacter set:
+ * `;` splits the code into positive/negative/zero/text sections, `\` escapes,
+ * `[...]` denotes colours and conditions, `_` and `*` take a padding/repeat
+ * argument, and `@` is the text placeholder. Enumerating those (a blocklist)
+ * is a losing game; enumerating what a real ticker or currency symbol needs is
+ * not. Empty is excluded by `+`, so it falls through to the bare format too.
+ *
+ * NOTE this is intentionally stricter than strictly necessary. The affix is
+ * always emitted inside a quoted literal, and `"` is itself outside the
+ * allowlist, so nothing can escape the quotes to reach a metacharacter in the
+ * first place. The narrow set is defence in depth against Excel's handling of
+ * odd characters *within* a literal, which we cannot test here.
+ */
+const SAFE_COMMODITY = /^[A-Za-z0-9$€£¥.]+$/u;
+
+/**
+ * Excel number format for a quantity: grouping + the Dec's decimal places
+ * (display-capped) + commodity affix.
+ *
+ * A commodity outside `SAFE_COMMODITY` (or empty) yields the bare numeric
+ * format with NO affix. That loses the label — e.g. a quoted hledger commodity
+ * like `"MY FUND"` prints unlabelled — but a wrong-but-readable cell beats a
+ * malformed `styles.xml`, which Excel reports as an unrecoverable-content
+ * repair on the whole workbook.
+ */
 export function numberFormat(commodity: string, places: number): string {
     const shown = Math.min(places, MAX_DISPLAY_DECIMALS);
     const base = shown > 0 ? `#,##0.${"0".repeat(shown)}` : "#,##0";
-    if (commodity === "") return base;
+    if (!SAFE_COMMODITY.test(commodity)) return base;
+    // Redundant given the allowlist rejects `"`, but kept so that widening the
+    // allowlist later cannot silently reintroduce a quote break-out.
     const quoted = `"${commodity.replace(/"/g, '""')}"`;
     // Single-symbol commodities ($ € £ ¥) read best as prefixes; codes (USD, AAPL) as suffixes.
     return commodity.length === 1 ? `${quoted}${base}` : `${base} ${quoted}`;

@@ -31,6 +31,71 @@ describe("UNIT export/xlsx", () => {
             expect(numberFormat("EUR", 0)).toBe('#,##0 "EUR"');
             expect(numberFormat("", 3)).toBe("#,##0.00"); // display cap: never more than 2 decimals
         });
+
+        // SEC-13: commodities are journal-derived (user-controlled) and are
+        // interpolated into styles.xml. Everything outside the allowlist must
+        // degrade to the bare numeric format rather than emit a format code.
+        describe("commodity allowlist (SEC-13)", () => {
+            it("accepts the currency symbols and ticker shapes it is meant to", () => {
+                expect(numberFormat("€", 2)).toBe('"€"#,##0.00');
+                expect(numberFormat("£", 2)).toBe('"£"#,##0.00');
+                expect(numberFormat("¥", 0)).toBe('"¥"#,##0');
+                expect(numberFormat("USD", 2)).toBe('#,##0.00 "USD"');
+                expect(numberFormat("AAPL", 2)).toBe('#,##0.00 "AAPL"');
+                expect(numberFormat("BRK.B", 2)).toBe('#,##0.00 "BRK.B"'); // `.` is allowlisted
+                expect(numberFormat("VTSAX", 4)).toBe('#,##0.00 "VTSAX"');
+                expect(numberFormat("0DTE", 2)).toBe('#,##0.00 "0DTE"'); // digits allowed
+            });
+
+            // The metacharacter set named in CLEANUP.md, one case each, plus the
+            // quote that the old code tried (and was alone in trying) to escape.
+            it.each([
+                ["backslash", "US\\D"],
+                ["open bracket", "US[D"],
+                ["close bracket", "US]D"],
+                ["semicolon", "US;D"],
+                ["underscore", "US_D"],
+                ["asterisk", "US*D"],
+                ["at sign", "US@D"],
+                ["double quote", 'US"D'],
+            ])("rejects %s and falls back to the bare format", (_name, commodity) => {
+                expect(numberFormat(commodity, 2)).toBe("#,##0.00");
+            });
+
+            it("rejects a crafted section-splitting payload outright", () => {
+                // Pre-fix this produced `#,##0.00 "a";;;"` — a format code with
+                // attacker-chosen sections and an unbalanced trailing quote.
+                expect(numberFormat('a";;;"', 2)).toBe("#,##0.00");
+                expect(numberFormat('";[Red]General;"', 2)).toBe("#,##0.00");
+            });
+
+            it("rejects other structural and control characters", () => {
+                for (const c of ["USD EUR", "US\nD", "US\tD", "US/D", "US?D", "US#D", "US%D", "US-D", "US:D", "US,D", "US(D)"]) {
+                    expect(numberFormat(c, 2)).toBe("#,##0.00");
+                }
+            });
+
+            it("still returns the bare format for an empty commodity", () => {
+                expect(numberFormat("", 2)).toBe("#,##0.00");
+                expect(numberFormat("", 0)).toBe("#,##0");
+            });
+
+            it("keeps the fallback consistent with the requested decimal places", () => {
+                expect(numberFormat("US;D", 0)).toBe("#,##0");
+                expect(numberFormat("US;D", 1)).toBe("#,##0.0");
+                expect(numberFormat("US;D", 9)).toBe("#,##0.00"); // display cap still applies
+            });
+
+            it("never emits an unbalanced quote for any single-character commodity", () => {
+                // Exhaustive over ASCII: whatever comes back must have an even
+                // number of quote characters, i.e. every literal is closed.
+                for (let i = 0; i < 128; i += 1) {
+                    const fmt = numberFormat(String.fromCharCode(i), 2);
+                    const quotes = (fmt.match(/"/g) ?? []).length;
+                    expect(quotes % 2, `unbalanced quotes for charCode ${i}: ${fmt}`).toBe(0);
+                }
+            });
+        });
     });
 
     it("sectioned report: title, params, headers, section rows, totals, numFmt", async () => {

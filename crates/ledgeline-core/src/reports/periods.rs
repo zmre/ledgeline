@@ -228,16 +228,37 @@ pub fn bucket_end(key: &str) -> Result<String, ReportError> {
     }
 }
 
+/// The largest bucket count any report will produce: 1200 buckets is 100 years
+/// of months, far past any real journal. Callers that take a bucket count from
+/// untrusted input MUST reject anything above this *before* calling in (the HTTP
+/// layer returns a 400); it is also the pre-allocation bound inside
+/// [`last_n_buckets`], so a caller that ignores that contract still cannot
+/// trigger a `capacity overflow` abort.
+pub const MAX_BUCKETS: usize = 1200;
+
 /// The `n` consecutive bucket keys ending with the bucket containing `end`,
-/// oldest → newest. Empty when `n == 0`.
+/// oldest → newest. Empty when `n == 0`; at most [`MAX_BUCKETS`] keys.
+///
+/// `n` is a *count of buckets to produce*, so an absurd `n` asks for absurd
+/// work — but it must never abort the process. It used to:
+/// `Vec::with_capacity(usize::MAX)` panics with `capacity overflow` before the
+/// loop runs at all, which is how `?count=18446744073709551615` killed a request
+/// (SEC-2). Bounding only the capacity hint would trade that fast panic for an
+/// 18-quintillion-iteration hang, so the LOOP is bounded too and this function
+/// is total for every `n`.
+///
+/// The cap is a backstop, not the user-facing control: callers taking a count
+/// from untrusted input reject anything above [`MAX_BUCKETS`] with a 400 first,
+/// so a real request never silently receives fewer buckets than it asked for.
 ///
 /// # Errors
 /// Returns [`ReportError::InvalidBucketKey`] if bucket math ever yields an
 /// unrecognized key (unreachable for the intervals here).
 pub fn last_n_buckets(end: &str, interval: Interval, n: usize) -> Result<Vec<String>, ReportError> {
-    let mut out = Vec::with_capacity(n);
+    let wanted = n.min(MAX_BUCKETS);
+    let mut out = Vec::with_capacity(wanted);
     let mut key = bucket_key(end, interval);
-    for _ in 0..n {
+    for _ in 0..wanted {
         out.push(key.clone());
         let (y, m, d) = parts(&bucket_start(&key)?);
         let (py, pm, pd) = civil_from_days(days_from_civil(y, m, d) - 1);
@@ -419,6 +440,32 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// SEC-2: `Vec::with_capacity(n)` with an unclamped user `usize` aborted the
+    /// request with `capacity overflow`. Every `n` must now return, and must
+    /// never produce more than `MAX_BUCKETS` keys — including the `usize::MAX`
+    /// that the HTTP layer used to pass straight through, which must also not
+    /// hang.
+    #[test]
+    fn absurd_counts_are_bounded_not_panicking() {
+        for n in [usize::MAX, usize::MAX / 2, MAX_BUCKETS + 1] {
+            let buckets = last_n_buckets("2026-07-08", Interval::Monthly, n)
+                .unwrap_or_else(|e| panic!("n={n} must not fail: {e}"));
+            assert_eq!(buckets.len(), MAX_BUCKETS, "n={n} must cap at MAX_BUCKETS");
+            // Still a well-formed contiguous run ending at the `end` bucket.
+            assert_eq!(buckets[MAX_BUCKETS - 1], "2026-07");
+        }
+    }
+
+    /// Counts at and inside the cap are honored exactly.
+    #[test]
+    fn counts_within_the_cap_are_exact() {
+        for n in [1, 12, MAX_BUCKETS] {
+            let buckets = last_n_buckets("2026-07-08", Interval::Monthly, n).unwrap();
+            assert_eq!(buckets.len(), n);
+            assert_eq!(buckets[n - 1], "2026-07");
+        }
     }
 
     #[test]

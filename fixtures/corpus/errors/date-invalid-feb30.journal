@@ -1,0 +1,4 @@
+; PARSE-6: February never has 30 days, leap year or not.
+2024-02-30 t
+    a   $1.00
+    b

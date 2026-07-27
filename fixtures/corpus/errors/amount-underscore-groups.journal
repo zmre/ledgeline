@@ -1,0 +1,5 @@
+; PARSE-4: hledger accepts a space and U+00A0 as digit-group separators but NOT
+; an underscore, so `1_000.00` is a parse error.
+2017-01-01
+    a   1_000.00 EUR
+    b

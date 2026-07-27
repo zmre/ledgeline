@@ -23,22 +23,37 @@
 //! rebuilds and republishes the snapshot so the read endpoints reflect the change
 //! immediately. A state built without a path (the oneshot test helper [`app`])
 //! has no editor, so the edit endpoints report that editing is disabled.
+//!
+//! ACCESS CONTROL lives in [`security`] and is applied by
+//! [`router_with_security`]: a per-process bearer token on every wire and `/api`
+//! route, a `Host` guard, an opt-in exact-origin CORS allowlist, and the response
+//! security headers. [`app`] and [`router_with_state`] deliberately build the
+//! router WITHOUT any of it, for the in-process test harnesses only — read the
+//! threat model on [`security`] before putting either on a real socket.
 
 mod edit_api;
 mod reports_api;
+mod security;
 mod spa;
 
 use arc_swap::ArcSwap;
 use axum::{
     Json, Router,
     extract::State,
+    http::{HeaderValue, Uri, header},
+    middleware,
     routing::{delete, get, post},
 };
 use ledgeline_core::{EditError, Journal, JournalEditor, wire};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use tower_http::cors::CorsLayer;
+use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::set_header::SetResponseHeaderLayer;
+
+pub use security::{
+    AccessToken, ProcessToken, Security, SecurityError, TOKEN_ENV, token_from_env_or_random,
+};
 
 /// An immutable, atomically-publishable view of one parsed journal: the parsed
 /// [`Journal`] for the per-request report handlers, plus every wire endpoint's
@@ -52,6 +67,11 @@ pub(crate) struct Snapshot {
     pub(crate) prices: Value,
     pub(crate) commodities: Value,
     pub(crate) accounts: Value,
+    /// The `{"diagnostics": [...]}` payload: every unbalanced transaction and
+    /// failed balance assertion in the journal, each shaped like the SPA's
+    /// `Problem`. Precomputed with the rest because both checks are a whole-
+    /// journal pass, and republished on every hot-swap so it never goes stale.
+    pub(crate) diagnostics: Value,
 }
 
 impl Snapshot {
@@ -69,6 +89,7 @@ impl Snapshot {
             prices: value_or_null(wire::journal_to_prices_value(journal)),
             commodities: value_or_null(wire::journal_to_commodities_value(journal)),
             accounts: value_or_null(wire::journal_to_accounts_value(journal)),
+            diagnostics: value_or_null(wire::journal_to_diagnostics_value(journal)),
         }
     }
 }
@@ -141,9 +162,20 @@ impl AppState {
                 self.inner
                     .store(Arc::new(Snapshot::from_journal(reopened.journal())));
                 *editor = reopened;
+                // The editor we just replaced may have been half-mutated by a
+                // panic mid-edit (SEC-11). Now that it is gone, the poison flag
+                // describes state that no longer exists, so clear it.
+                self.editor.clear_poison();
                 Some(Ok(()))
             }
-            Err(error) => Some(Err(error)),
+            // Re-open failed, so the possibly half-mutated editor is all we have.
+            // Unbind it rather than keeping it: a later edit against a poisoned,
+            // partially-applied editor is how a bad write reaches the journal.
+            // Callers treat `None` as read-only and fall back to a plain reparse.
+            Err(error) => {
+                *guard = None;
+                Some(Err(error))
+            }
         }
     }
 
@@ -164,6 +196,9 @@ impl AppState {
             .store(Arc::new(Snapshot::from_journal(editor.journal())));
         let mut guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
         *guard = Some(editor);
+        // The previously-bound editor is discarded wholesale, so any poison flag
+        // from a panic during its lifetime no longer describes live state.
+        self.editor.clear_poison();
         Ok(())
     }
 
@@ -194,23 +229,55 @@ fn value_or_null(result: Result<Value, serde_json::Error>) -> Value {
     result.unwrap_or(Value::Null)
 }
 
-/// Build the router for a parsed `journal`, ready to hand to `axum::serve`.
+/// Build an UNAUTHENTICATED router for a parsed `journal`.
+///
+/// Convenience constructor for the `tower::oneshot` integration tests, which
+/// drive routes in-process with no socket. It applies [`Security::open`] — no
+/// token, no `Host` guard, no CORS — so a bound server must use
+/// [`router_with_security`] instead.
 pub fn app(journal: &Journal) -> Router {
     router_with_state(AppState::from_journal(journal))
 }
 
-/// Build the router from precomputed [`AppState`] (handy for tests).
+/// Build an UNAUTHENTICATED router from precomputed [`AppState`].
+///
+/// Same caveat as [`app`]: [`Security::open`] means anything that can reach the
+/// socket can read and rewrite the journal. Only for in-process test harnesses.
 pub fn router_with_state(state: AppState) -> Router {
-    // Mirror hledger-web's `--cors='*'`: allow any origin/method/header so the
-    // browser SPA can call this local server cross-origin.
-    let cors = CorsLayer::permissive();
-    Router::new()
+    router_with_security(state, Security::open())
+}
+
+/// Build the router that a bound server should serve: every wire and `/api`
+/// route behind the bearer token, every response behind the `Host` guard, the
+/// security headers, and the panic catcher.
+///
+/// Layer order matters and is asserted by the integration tests. Each `.layer`
+/// wraps what came before it, so the LAST call is the outermost:
+/// * The security headers are outermost, so every response carries them —
+///   including the `500` the panic catcher synthesises.
+/// * `CatchPanicLayer` sits just inside them, so a panic anywhere below — the
+///   guards included — becomes a `500` rather than a dropped connection (SEC-2).
+/// * The `Host` guard wraps routing and the SPA fallback both, so a rebound host
+///   cannot fetch the shell that carries the token.
+/// * CORS (installed only when [`Security::allow_origins`] was given exact
+///   origins) sits inside the `Host` guard, so preflights are answered only for
+///   requests that were addressed to us properly in the first place.
+/// * The token guard is a `route_layer`: it covers exactly the routes below and
+///   never the SPA shell or its assets, which must stay reachable to bootstrap.
+pub fn router_with_security(state: AppState, security: Security) -> Router {
+    let spa_token = security.token();
+    let router = Router::new()
         .route("/version", get(version))
         .route("/accountnames", get(accountnames))
         .route("/transactions", get(transactions))
         .route("/prices", get(prices))
         .route("/commodities", get(commodities))
         .route("/accounts", get(accounts))
+        // Journal-wide diagnostics (unbalanced transactions, failed balance
+        // assertions). A NATIVE route, not a wire one: `/transactions` is a
+        // byte-parity emulation of hledger-web's endpoint and is a bare JSON
+        // array, so it has nowhere to carry a sibling field.
+        .route("/api/diagnostics", get(diagnostics))
         .route("/api/reports/balancesheet", get(reports_api::balancesheet))
         .route(
             "/api/reports/incomestatement",
@@ -235,10 +302,47 @@ pub fn router_with_state(state: AppState) -> Router {
                 .put(edit_api::replace_transaction)
                 .patch(edit_api::patch_transaction),
         )
+        // Token-gate exactly the routes registered above. `route_layer` skips
+        // the fallback, which is what lets the browser fetch the shell (and the
+        // token inside it) before it has any credential to present.
+        .route_layer(middleware::from_fn_with_state(
+            security.clone(),
+            security::token_guard,
+        ))
         // Everything else (the SPA shell, its embedded assets, and client-side
         // deep links) is served same-origin; the explicit routes above win.
-        .fallback(spa::fallback)
-        .layer(cors)
+        .fallback(move |uri: Uri| {
+            let token = spa_token.clone();
+            async move { spa::fallback(uri, token).await }
+        });
+
+    let router = match security.cors_layer() {
+        Some(cors) => router.layer(cors),
+        // The default posture: no CORS layer at all, so a browser refuses to
+        // hand any cross-origin page our responses (SEC-1).
+        None => router,
+    };
+
+    router
+        .layer(middleware::from_fn_with_state(
+            security,
+            security::host_guard,
+        ))
+        .layer(CatchPanicLayer::new())
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        ))
+        // `if_not_present` so the SPA shell's own policy — which additionally
+        // hashes the inline scripts it just rendered — is left alone.
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CONTENT_SECURITY_POLICY,
+            security::base_csp(),
+        ))
         .with_state(state)
 }
 
@@ -269,4 +373,8 @@ async fn commodities(State(state): State<AppState>) -> Json<Value> {
 
 async fn accounts(State(state): State<AppState>) -> Json<Value> {
     Json(state.snapshot().accounts.clone())
+}
+
+async fn diagnostics(State(state): State<AppState>) -> Json<Value> {
+    Json(state.snapshot().diagnostics.clone())
 }

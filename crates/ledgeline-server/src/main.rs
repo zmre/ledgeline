@@ -15,12 +15,16 @@
 mod gui;
 mod recents;
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
 use ledgeline_core::{Journal, parse_journal};
-use ledgeline_server::{AppState, router_with_state};
+use ledgeline_server::{
+    AppState, ProcessToken, Security, SecurityError, TOKEN_ENV, router_with_security,
+    token_from_env_or_random,
+};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -53,6 +57,13 @@ pub(crate) struct Cli {
     /// Port to bind (default: 5000 for --server; an ephemeral port for the GUI).
     #[arg(long)]
     pub(crate) port: Option<u16>,
+
+    /// DEV ONLY: let a browser SPA on this EXACT origin call the API
+    /// cross-origin, e.g. `--allow-origin http://localhost:5173`. Repeatable.
+    /// Never a wildcard. Without it the server is same-origin only, which is the
+    /// posture the packaged app uses.
+    #[arg(long = "allow-origin", value_name = "ORIGIN")]
+    pub(crate) allow_origin: Vec<String>,
 }
 
 /// Fatal startup/runtime errors surfaced to the user via `main`.
@@ -84,6 +95,14 @@ pub(crate) enum AppError {
     Serve(std::io::Error),
     #[error("watching the journal: {0}")]
     Watch(notify::Error),
+    #[error("{0}")]
+    Security(#[from] SecurityError),
+    #[error(
+        "refusing to bind {host}: that is not a loopback address, and this server publishes your \
+         whole journal for reading AND writing. Bind 127.0.0.1 instead, or — if you really mean to \
+         expose it — set ${TOKEN_ENV} to a token you have chosen and pass it on every request."
+    )]
+    NonLoopbackBind { host: String },
     #[cfg(feature = "gui")]
     #[error("the in-process server did not report a bound port")]
     ServerStart,
@@ -126,6 +145,82 @@ pub(crate) fn resolve_journal(cli: &Cli) -> PathBuf {
         .or_else(|| std::env::var("LEDGELINE_FIXTURE").ok().map(PathBuf::from))
         .or_else(recents::most_recent)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_FIXTURE))
+}
+
+/// Is `host` a loopback address (or the `localhost` name)? Anything else — a LAN
+/// address, or the `0.0.0.0` / `::` wildcards — publishes the journal beyond this
+/// machine.
+fn is_loopback_host(host: &str) -> bool {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    bare.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+/// The access-control decisions taken at startup, before the socket is bound.
+///
+/// Split from [`Security`] itself because the `Host` guard has to name the port
+/// we ACTUALLY bound, and `--port 0` (the GUI's default) only reveals that at
+/// bind time — so the plan is made early and [`SecurityPlan::build`] finishes it.
+pub(crate) struct SecurityPlan {
+    token: ledgeline_server::AccessToken,
+    /// Whether `--host` resolved to loopback; drives the `Host` guard.
+    loopback: bool,
+    /// Exact origins from `--allow-origin`, already validated.
+    origins: Vec<String>,
+}
+
+impl SecurityPlan {
+    /// Finish the plan now that `port` is known.
+    fn build(&self, port: u16) -> Result<Security, AppError> {
+        let base = if self.loopback {
+            Security::local(self.token.clone(), port)
+        } else {
+            Security::any_host(self.token.clone())
+        };
+        Ok(base.allow_origins(&self.origins)?)
+    }
+}
+
+/// SEC-9: mint this process's access token and decide the bind posture.
+///
+/// A loopback bind gets the full treatment — token plus a `Host` guard pinned to
+/// the bound port. A non-loopback bind is REFUSED unless the operator set
+/// `$LEDGELINE_TOKEN` themselves, which is the only way to say "yes, I mean to
+/// expose this, and I know the credential"; even then it earns a loud warning
+/// and the `Host` guard comes off, because the legitimate `Host` values are then
+/// unknowable.
+pub(crate) fn plan_security(cli: &Cli) -> Result<(ProcessToken, SecurityPlan), AppError> {
+    let process_token = token_from_env_or_random()?;
+    let loopback = is_loopback_host(&cli.host);
+    if !loopback && !process_token.from_env {
+        return Err(AppError::NonLoopbackBind {
+            host: cli.host.clone(),
+        });
+    }
+    if !loopback {
+        eprintln!(
+            "ledgeline: WARNING — binding {host}, which is not loopback. Anything that can reach \
+             this port can read and rewrite your journal once it learns the token, and the \
+             DNS-rebinding Host check is off because the expected Host is unknown.",
+            host = cli.host
+        );
+    }
+    let plan = SecurityPlan {
+        token: process_token.token.clone(),
+        loopback,
+        origins: cli.allow_origin.clone(),
+    };
+    // Surface a bad --allow-origin at startup rather than at the first request.
+    plan.build(cli.port.unwrap_or(0))?;
+    if !cli.allow_origin.is_empty() {
+        eprintln!(
+            "ledgeline: allowing cross-origin API access from: {}",
+            cli.allow_origin.join(", ")
+        );
+    }
+    Ok((process_token, plan))
 }
 
 /// Read + parse a journal file, recording its absolute path as the source name
@@ -269,6 +364,9 @@ fn event_matches_source(candidate: &Path, sources: &[PathBuf]) -> bool {
 /// Headless mode: serve the API + embedded SPA on a fixed port with graceful
 /// shutdown, hot-reloading the journal on file change.
 fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
+    // Decide the security posture BEFORE touching the journal, so a refused
+    // non-loopback bind (SEC-9) fails fast and never opens the file.
+    let (process_token, security_plan) = plan_security(cli)?;
     let journal_path = resolve_journal(cli);
     // Bind an editor to the file so the write endpoints (`POST`/`DELETE
     // /api/transactions`) are live. Canonicalize first so the editor's save target
@@ -305,6 +403,21 @@ fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
             "ledgeline listening on http://{host}:{bound}/ (journal: {})",
             journal_path.display()
         );
+        // Headless mode exists to be driven by something else — a browser at a
+        // different origin, the e2e harness, a script — so the token has to be
+        // discoverable. The GUI never prints it: its WebView reads it from the
+        // page. Anyone who can see this terminal can read the journal anyway.
+        println!(
+            "ledgeline: access token: {}\nledgeline: send it as `Authorization: Bearer <token>` on \
+             every /api and wire request{}",
+            process_token.token.as_str(),
+            if process_token.from_env {
+                format!(" (from ${TOKEN_ENV})")
+            } else {
+                format!(" (set ${TOKEN_ENV} to choose it yourself)")
+            }
+        );
+        let security = security_plan.build(bound)?;
 
         // Live-reload watcher; held for the serve duration (dropping it stops
         // watching). A watcher failure only disables live reload.
@@ -316,7 +429,7 @@ fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
             }
         };
 
-        axum::serve(listener, router_with_state(state))
+        axum::serve(listener, router_with_security(state, security))
             .with_graceful_shutdown(shutdown_signal())
             .await
             .map_err(AppError::Serve)

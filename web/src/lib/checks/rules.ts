@@ -34,7 +34,11 @@ function balanceValue(amount: Amount): {commodity: string; qty: Dec} {
 
 const unbalanced: CheckRule = {
     id: "unbalanced",
-    run(txns: Transaction[]): Problem[] {
+    run(txns: Transaction[], ctx: CheckContext): Problem[] {
+        // The engine already ran this check, more accurately — see
+        // CheckContext.engineChecked. Deferring avoids both a duplicate finding
+        // and this rule's false positives on journals hledger accepts.
+        if (ctx.engineChecked === true) return [];
         const problems: Problem[] = [];
         for (const txn of txns) {
             const elided = txn.postings.filter((posting) => posting.amounts.length === 0).length;

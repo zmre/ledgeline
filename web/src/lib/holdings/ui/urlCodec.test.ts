@@ -62,6 +62,19 @@ describe("UNIT holdings urlCodec", () => {
             expect([...searchToScope("?acct=a,,b", TODAY).accounts].sort()).toEqual(["a", "b"]);
         });
 
+        // SEC-12: this ran inside onMount, so a URIError here blanked the page.
+        it("survives a malformed percent escape in acct instead of throwing (SEC-12)", () => {
+            expect(() => searchToScope("?acct=%", TODAY)).not.toThrow();
+            expect([...searchToScope("?acct=%", TODAY).accounts]).toEqual(["%"]);
+        });
+
+        it("keeps the well-formed accounts and the other params when a segment is malformed", () => {
+            const parsed = searchToScope("?acct=assets%3Abroker,%zz&asof=2025-01-01&mode=exclude", TODAY);
+            expect([...parsed.accounts].sort()).toEqual(["%zz", "assets:broker"]);
+            expect(parsed.asOf).toBe("2025-01-01");
+            expect(parsed.mode).toBe("exclude");
+        });
+
         it("round-trips a non-default scope", () => {
             const s = scope({asOf: "2024-12-31", accounts: new Set(["assets:broker:taxable:vti"]), mode: "exclude", gainPeriod: "ytd"});
             expect(searchToScope(scopeToSearch(s, TODAY), TODAY)).toEqual(s);

@@ -1,0 +1,7 @@
+; PARSE-9: a commodity that nets to exactly zero stays in the inferred amount,
+; so hledger emits [$0.00, -3 AAPL] rather than [-3 AAPL].
+2024-01-01 t
+    a   $1.00
+    a   3 AAPL
+    b  $-1.00
+    c

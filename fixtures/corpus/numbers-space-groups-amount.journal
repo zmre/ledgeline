@@ -1,0 +1,10 @@
+; PARSE-4: a space between two digits is a digit-group separator inside a
+; posting amount, not the end of the number. (numbers-space-groups.journal
+; covers the same separator in a `commodity` directive.)
+2017-01-01
+    a    1 000.00 EUR
+    b   -1 000.00 EUR
+
+2017-01-02
+    a    1 000 000.00 SEK
+    b   -1 000 000.00 SEK

@@ -1,0 +1,137 @@
+[
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2024-01-01",
+    "tdate2": null,
+    "tdescription": "t",
+    "tindex": 1,
+    "tpostings": [
+      {
+        "paccount": "a",
+        "pamount": [
+          {
+            "acommodity": "AAA",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 10,
+              "decimalPlaces": 0,
+              "floatingPoint": 10
+            },
+            "astyle": {
+              "ascommodityside": "R",
+              "ascommodityspaced": true,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": {
+          "baamount": {
+            "acommodity": "AAA",
+            "acost": {
+              "contents": {
+                "acommodity": "$",
+                "acost": null,
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 500,
+                  "decimalPlaces": 2,
+                  "floatingPoint": 5
+                },
+                "astyle": {
+                  "ascommodityside": "L",
+                  "ascommodityspaced": false,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 2,
+                  "asrounding": "NoRounding"
+                }
+              },
+              "tag": "UnitCost"
+            },
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 10,
+              "decimalPlaces": 0,
+              "floatingPoint": 10
+            },
+            "astyle": {
+              "ascommodityside": "R",
+              "ascommodityspaced": true,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          },
+          "bainclusive": false,
+          "baposition": {
+            "sourceColumn": 16,
+            "sourceLine": 4,
+            "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/assertion-with-cost.journal"
+          },
+          "batotal": false
+        },
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "b",
+        "pamount": [
+          {
+            "acommodity": "AAA",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -10,
+              "decimalPlaces": 0,
+              "floatingPoint": -10
+            },
+            "astyle": {
+              "ascommodityside": "R",
+              "ascommodityspaced": true,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 0,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 3,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/assertion-with-cost.journal"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 6,
+        "sourceName": "/Users/pwalsh/src/sideprojects/ledgeline/fixtures/corpus/assertion-with-cost.journal"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  }
+]

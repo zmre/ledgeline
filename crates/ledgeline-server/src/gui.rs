@@ -19,7 +19,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use ledgeline_server::{AppState, router_with_state};
+use ledgeline_server::{AppState, router_with_security};
 use muda::{
     Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
     accelerator::{Accelerator, Code, Modifiers},
@@ -48,6 +48,10 @@ enum UserEvent {
 
 /// GUI entry point: stand up the in-process server, then run the window.
 pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
+    // Same posture the headless server takes (token + Host guard, non-loopback
+    // binds refused), decided before the journal is opened. The token is NOT
+    // printed here: the WebView picks it up from the served shell.
+    let (_process_token, security_plan) = crate::plan_security(cli)?;
     let journal_path = crate::resolve_journal(cli);
     // Bind an editor to the file so the GUI's edit endpoints are live (this is the
     // primary mode). Canonicalize first — like `run_server_blocking` — so the
@@ -84,7 +88,22 @@ pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
             Ok(listener) => {
                 let bound = listener.local_addr().map(|a| a.port()).ok();
                 let _ = port_tx.send(bound);
-                if let Err(error) = axum::serve(listener, router_with_state(server_state)).await {
+                // The Host guard has to name the port we actually got, which is
+                // only knowable here (GUI mode binds an ephemeral port).
+                let security = match bound.map(|port| security_plan.build(port)) {
+                    Some(Ok(security)) => security,
+                    Some(Err(error)) => {
+                        eprintln!("ledgeline: security setup failed: {error}");
+                        return;
+                    }
+                    // The bound port is unknown, so the Host guard cannot be
+                    // pinned; refuse to serve rather than serve unguarded. The
+                    // main thread already sees `None` and reports ServerStart.
+                    None => return,
+                };
+                if let Err(error) =
+                    axum::serve(listener, router_with_security(server_state, security)).await
+                {
                     eprintln!("ledgeline: server error: {error}");
                 }
             }
@@ -308,9 +327,30 @@ fn rebuild_recent(
     *map.borrow_mut() = new_map;
 }
 
+/// Should the WebView be allowed to navigate to `candidate`?
+///
+/// Only inside our own in-process origin. The window has no address bar, so an
+/// unconstrained WebView would happily render an attacker's page as if it were
+/// the app — and that page would then be same-origin with nothing, but would
+/// still be the user's whole visible UI. `base` is `http://host:port/`, and the
+/// required trailing slash is what stops `http://127.0.0.1:5000@evil.example/`
+/// from passing as a prefix match.
+fn navigation_allowed(base: &str, candidate: &str) -> bool {
+    candidate == base.trim_end_matches('/') || candidate.starts_with(base)
+}
+
 /// Build the wry webview for `window`, pointed at `url`.
 fn build_webview(window: &tao::window::Window, url: &str) -> Result<wry::WebView, AppError> {
-    let builder = WebViewBuilder::new().with_url(url);
+    let base = url.to_string();
+    let builder = WebViewBuilder::new()
+        .with_url(url)
+        .with_navigation_handler(move |candidate| {
+            let allowed = navigation_allowed(&base, &candidate);
+            if !allowed {
+                eprintln!("ledgeline: blocked navigation to {candidate}");
+            }
+            allowed
+        });
 
     #[cfg(not(target_os = "linux"))]
     let webview = builder
@@ -492,4 +532,37 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::navigation_allowed;
+
+    const BASE: &str = "http://127.0.0.1:5000/";
+
+    #[test]
+    fn navigation_is_confined_to_our_own_origin() {
+        assert!(navigation_allowed(BASE, "http://127.0.0.1:5000/"));
+        assert!(navigation_allowed(BASE, "http://127.0.0.1:5000"));
+        assert!(navigation_allowed(
+            BASE,
+            "http://127.0.0.1:5000/reports?tab=1"
+        ));
+
+        assert!(!navigation_allowed(BASE, "https://evil.example/"));
+        assert!(!navigation_allowed(BASE, "file:///etc/passwd"));
+        // A different local port is a different app, not ours.
+        assert!(!navigation_allowed(BASE, "http://127.0.0.1:5001/"));
+        // The trailing slash is what makes the prefix test safe: userinfo and
+        // longer-port tricks must not read as our origin.
+        assert!(!navigation_allowed(
+            BASE,
+            "http://127.0.0.1:5000@evil.example/"
+        ));
+        assert!(!navigation_allowed(BASE, "http://127.0.0.1:50000/"));
+        assert!(!navigation_allowed(
+            BASE,
+            "http://127.0.0.1:5000.evil.example/"
+        ));
+    }
 }

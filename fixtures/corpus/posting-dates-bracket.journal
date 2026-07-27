@@ -1,0 +1,9 @@
+; PARSE-9: hledger's bracket posting-date shorthand, in all three spellings.
+; The brackets stay in the comment text and produce no tag.
+2024-01-01 t
+    a   $1.00  ; [2024-01-05]
+    b  $-1.00  ; [=2024-01-06]
+
+2024-01-01 u
+    c   $1.00  ; [2024-01-05=2024-01-06]
+    d  $-1.00  ; note [2024-01-07] more

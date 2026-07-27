@@ -1,0 +1,6 @@
+; PARSE-4: a capital letter O typed for a zero. The numeric prefix stops at the
+; `O` and `O USD` is not a legal unquoted commodity, so this is rejected rather
+; than read as 100.0 of a commodity `O USD`.
+2017-01-01
+    a   100.0O USD
+    b

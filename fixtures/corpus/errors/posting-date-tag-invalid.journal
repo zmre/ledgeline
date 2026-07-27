@@ -1,0 +1,4 @@
+; PARSE-6: the calendar check covers a posting's `date:` tag too.
+2024-01-01 t
+    a   $1.00  ; date: 2024-02-30
+    b

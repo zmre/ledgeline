@@ -5,10 +5,26 @@
 //! The list is stored as a JSON array of absolute path strings under the OS config
 //! directory (`dirs::config_dir()/ledgeline/recent.json`), most-recent-first,
 //! deduplicated on the *canonicalized* path and capped at [`MAX_RECENTS`]. The
-//! store is intentionally forgiving: a missing or corrupt file reads back as an
-//! empty list and a write failure is logged but never fatal, so nothing here can
-//! break startup. Setting `$LEDGELINE_CONFIG_DIR` overrides the directory (used by
+//! store is intentionally forgiving: a missing file reads back as an empty list
+//! and a write failure is logged but never fatal, so nothing here can break
+//! startup. Setting `$LEDGELINE_CONFIG_DIR` overrides the directory (used by
 //! tests and the server smoke test).
+//!
+//! # Why this file is security-relevant
+//! [`most_recent`] chooses the journal `ledgeline` opens — and then *writes* —
+//! when invoked with no arguments, so whatever can write `recent.json` chooses
+//! that file. Three properties follow:
+//!
+//! - Entries are checked to be **regular files** ([`is_regular_file`]), not
+//!   merely to exist. `exists()` is also true for a directory, a device node or a
+//!   FIFO, and a FIFO planted here would hang the app at startup instead of
+//!   failing cleanly.
+//! - The store is written **atomically and owner-only** via
+//!   [`ledgeline_core::edit::atomic_write`], so a crash mid-write cannot leave a
+//!   truncated `recent.json`, and a fresh store is not group- or world-writable.
+//! - A store that is present but **unreadable is moved aside, never silently
+//!   replaced** ([`record_in`]), so a parse failure cannot erase the user's
+//!   history beyond recovery.
 
 use std::path::{Path, PathBuf};
 
@@ -35,10 +51,14 @@ pub(crate) fn list() -> Vec<PathBuf> {
     recent_file().map(|file| list_in(&file)).unwrap_or_default()
 }
 
-/// The most-recently-opened journal that still exists, if any (the CLI's default
-/// when no journal is given).
+/// The most-recently-opened journal that is still a usable file, if any (the
+/// CLI's default when no journal is given).
+///
+/// Filtering is lazy, so this stats only as far as the first usable entry rather
+/// than all [`MAX_RECENTS`] of them — one `stat` on the startup path instead of
+/// ten, which matters when a stale entry points at an unresponsive network mount.
 pub(crate) fn most_recent() -> Option<PathBuf> {
-    list().into_iter().next()
+    recent_file().and_then(|file| usable_entries(&file).next())
 }
 
 /// A concise, human-readable label for a recent-journal menu entry: the path with
@@ -76,35 +96,114 @@ fn canonicalize(path: &Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// What the store at a given path currently holds.
+enum Stored {
+    /// No file there — an empty list, and nothing to preserve.
+    Missing,
+    /// A well-formed list (possibly empty).
+    Entries(Vec<PathBuf>),
+    /// Present, but unreadable or not a JSON array of paths. Distinguished from
+    /// [`Missing`](Self::Missing) precisely so it is never silently overwritten.
+    Corrupt,
+}
+
 /// Move `path` to the front of the store at `file`, deduped and capped.
+///
+/// If the existing store is unreadable it is moved aside rather than overwritten:
+/// reading a corrupt file as "no history" and then writing a fresh one-entry list
+/// over it would destroy a history we had merely failed to *parse*.
 fn record_in(file: &Path, path: &Path) {
     let entry = canonicalize(path);
-    let mut entries = read_raw(file);
-    entries.retain(|existing| existing != &entry);
-    entries.insert(0, entry);
-    entries.truncate(MAX_RECENTS);
+    let existing = match read_stored(file) {
+        Stored::Entries(entries) => entries,
+        Stored::Missing => Vec::new(),
+        Stored::Corrupt => {
+            set_corrupt_aside(file);
+            Vec::new()
+        }
+    };
+    let entries: Vec<PathBuf> = std::iter::once(entry.clone())
+        .chain(existing.into_iter().filter(|old| old != &entry))
+        .take(MAX_RECENTS)
+        .collect();
     write_raw(file, &entries);
 }
 
-/// Read the store at `file`, keeping only entries that still exist on disk.
+/// Read the store at `file`, keeping only entries that are usable journals.
 fn list_in(file: &Path) -> Vec<PathBuf> {
+    usable_entries(file).collect()
+}
+
+/// The stored entries that are usable journals, filtered **lazily** so a caller
+/// that needs only the first ([`most_recent`]) does not stat the whole list.
+fn usable_entries(file: &Path) -> impl Iterator<Item = PathBuf> {
     read_raw(file)
         .into_iter()
-        .filter(|path| path.exists())
-        .collect()
+        .filter(|path| is_regular_file(path))
 }
 
-/// Read the raw stored list. A missing or corrupt file (or one that is not a JSON
-/// array of strings) reads back as an empty list — never an error.
+/// Whether `path` is something that can actually be opened as a journal.
+///
+/// `Path::exists` was not enough: it is equally true for a directory, a device
+/// node, a unix socket, or a FIFO — and since [`most_recent`] picks the file the
+/// app opens with no arguments, a FIFO here would block startup forever rather
+/// than fail. Symlinks are followed, so a symlinked journal still qualifies.
+///
+/// Known residual cost, unchanged by this fix: this is a blocking `stat`, so an
+/// entry on an unresponsive network mount can still stall startup. Bounding that
+/// needs a watchdog thread, which is more machinery than a recents list warrants;
+/// [`most_recent`]'s laziness reduces the exposure to the first entry only.
+fn is_regular_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
+/// Read the raw stored list, treating anything unreadable as empty. Callers that
+/// need to tell "missing" from "corrupt" use [`read_stored`].
 fn read_raw(file: &Path) -> Vec<PathBuf> {
-    std::fs::read_to_string(file)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Vec<PathBuf>>(&text).ok())
-        .unwrap_or_default()
+    match read_stored(file) {
+        Stored::Entries(entries) => entries,
+        Stored::Missing | Stored::Corrupt => Vec::new(),
+    }
 }
 
-/// Persist `entries` as pretty JSON, creating the config directory if needed. Any
-/// failure is logged and swallowed so a write error can never abort the app.
+/// Classify the store at `file`.
+fn read_stored(file: &Path) -> Stored {
+    let Ok(text) = std::fs::read_to_string(file) else {
+        // Absent, unreadable, or not UTF-8. Only a genuine absence is safe to
+        // treat as "no history"; anything else is content we failed to read.
+        return if file.exists() {
+            Stored::Corrupt
+        } else {
+            Stored::Missing
+        };
+    };
+    serde_json::from_str::<Vec<PathBuf>>(&text).map_or(Stored::Corrupt, Stored::Entries)
+}
+
+/// Rename an unreadable store to `recent.json.corrupt` so its bytes survive for
+/// recovery and the next write starts from a clean file.
+fn set_corrupt_aside(file: &Path) {
+    let aside = file.with_extension("json.corrupt");
+    match std::fs::rename(file, &aside) {
+        Ok(()) => eprintln!(
+            "ledgeline: recents file {} was unreadable; kept a copy at {} and started a new list",
+            file.display(),
+            aside.display()
+        ),
+        Err(error) => eprintln!(
+            "ledgeline: could not set aside unreadable recents {}: {error}",
+            file.display()
+        ),
+    }
+}
+
+/// Persist `entries` as pretty JSON, creating the config directory if needed.
+///
+/// Written through [`ledgeline_core::edit::atomic_write`] (temp file, `fsync`,
+/// `rename`) rather than `fs::write`, so a crash or a full disk mid-write leaves
+/// the previous store intact instead of a truncated file that would read back as
+/// corrupt. A store created here is owner-only. Any failure is logged and
+/// swallowed so a write error can never abort the app.
 fn write_raw(file: &Path, entries: &[PathBuf]) {
     if let Some(parent) = file.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
@@ -117,7 +216,7 @@ fn write_raw(file: &Path, entries: &[PathBuf]) {
     }
     match serde_json::to_string_pretty(entries) {
         Ok(json) => {
-            if let Err(error) = std::fs::write(file, json) {
+            if let Err(error) = ledgeline_core::edit::atomic_write(file, json.as_bytes()) {
                 eprintln!(
                     "ledgeline: could not write recents {}: {error}",
                     file.display()
@@ -223,6 +322,101 @@ mod tests {
         // Corrupt / non-array content.
         fs::write(&store, "{ not valid json ]").expect("write garbage");
         assert!(read_raw(&store).is_empty());
+    }
+
+    /// SEC-10 / DL-6: entries must be regular FILES. `exists()` is also true for
+    /// a directory, and for a FIFO — which `most_recent()` would hand to the
+    /// journal reader, hanging startup instead of failing.
+    #[test]
+    fn list_skips_entries_that_are_not_regular_files() {
+        let dir = TempDir::new().expect("temp dir");
+        let store = dir.path().join("recent.json");
+        let journal = touch(dir.path(), "real.journal");
+        let subdir = dir.path().join("a-directory");
+        fs::create_dir(&subdir).expect("create dir");
+
+        write_raw(&store, &[canonicalize(&subdir), canonicalize(&journal)]);
+
+        assert!(subdir.exists(), "the decoy really is present on disk");
+        assert_eq!(
+            list_in(&store),
+            vec![canonicalize(&journal)],
+            "a directory must not be offered as a recent journal"
+        );
+        assert_eq!(
+            usable_entries(&store).next(),
+            Some(canonicalize(&journal)),
+            "most_recent's lazy filter must skip past it too"
+        );
+    }
+
+    /// The corrupt-store path must not erase history beyond recovery: the bytes
+    /// are moved aside so they can be recovered by hand.
+    #[test]
+    fn a_corrupt_store_is_preserved_rather_than_erased() {
+        let dir = TempDir::new().expect("temp dir");
+        let store = dir.path().join("recent.json");
+        let journal = touch(dir.path(), "j.journal");
+        fs::write(&store, "{ not valid json ]").expect("write garbage");
+
+        record_in(&store, &journal);
+
+        let aside = store.with_extension("json.corrupt");
+        assert_eq!(
+            fs::read_to_string(&aside).expect("the unreadable bytes are kept"),
+            "{ not valid json ]"
+        );
+        assert_eq!(
+            read_raw(&store),
+            vec![canonicalize(&journal)],
+            "and the store recovers rather than staying broken"
+        );
+    }
+
+    /// An absent store is NOT corrupt — recording into a fresh config dir must
+    /// not leave a stray `.corrupt` file behind.
+    #[test]
+    fn a_missing_store_is_not_treated_as_corrupt() {
+        let dir = TempDir::new().expect("temp dir");
+        let store = dir.path().join("recent.json");
+        let journal = touch(dir.path(), "j.journal");
+
+        record_in(&store, &journal);
+
+        assert!(!store.with_extension("json.corrupt").exists());
+        assert_eq!(read_raw(&store), vec![canonicalize(&journal)]);
+    }
+
+    /// `write_raw` goes through the hardened atomic write, so the store lands
+    /// complete and owner-only, and no temp file is left in the config dir.
+    #[test]
+    fn the_store_is_written_atomically_and_owner_only() {
+        let dir = TempDir::new().expect("temp dir");
+        let store = dir.path().join("recent.json");
+        let journal = touch(dir.path(), "j.journal");
+
+        record_in(&store, &journal);
+
+        let leftovers: Vec<PathBuf> = fs::read_dir(dir.path())
+            .expect("read config dir")
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|p| p.to_string_lossy().contains(".ledgeline-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&store).expect("stat").permissions().mode() & 0o777;
+            assert_eq!(
+                mode & !0o600,
+                0,
+                "a freshly created recents store must not be wider than 0600, got {mode:o}"
+            );
+        }
     }
 
     #[test]

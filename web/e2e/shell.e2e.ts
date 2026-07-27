@@ -3,11 +3,20 @@
 // modal overlays everything, so the nav tests seed one (the fixture API from
 // playwright.config.ts webServer).
 import {expect, test, type Page} from "@playwright/test";
+import {API_TOKEN} from "../playwright.config";
+
+const FIXED_NOW = new Date(2026, 6, 8, 12, 0, 0); // local 2026-07-08
+
+// This was the one suite left running against the real wall clock, so its footer
+// assertions drifted with the calendar while every sibling spec was pinned.
+test.beforeEach(async ({page}) => {
+    await page.clock.setFixedTime(FIXED_NOW); // Date is fake, timers keep running (URL-sync debounce)
+});
 
 async function seedServerUrl(page: Page): Promise<void> {
-    await page.addInitScript(() => {
-        localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: "http://127.0.0.1:5099"}));
-    });
+    await page.addInitScript((token) => {
+        localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: "http://127.0.0.1:5099", serverToken: token}));
+    }, API_TOKEN);
 }
 
 test("dark theme is the default", async ({page}) => {

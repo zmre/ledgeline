@@ -47,6 +47,29 @@ const byRule = (problems: Problem[], rule: string): Problem[] => problems.filter
 const NO_PRICES = {prices: []};
 const run1 = (t: Transaction, rule: string): Problem[] => byRule(runChecks([t], NO_PRICES), rule);
 
+describe("UNIT checks/rules unbalanced defers to the engine", () => {
+    // A transaction this rule WOULD flag, to prove the deferral is what silences
+    // it rather than the transaction happening to balance.
+    const offBy = () =>
+        txn(1, [
+            {account: "a", amounts: [usd(100)]},
+            {account: "b", amounts: [usd(-200)]},
+        ]);
+
+    it("stands down when the engine ran its own balance check", () => {
+        expect(byRule(runChecks([offBy()], {prices: [], engineChecked: true}), "unbalanced")).toEqual([]);
+    });
+
+    it("still runs against a plain hledger-web, which has no diagnostics route", () => {
+        expect(byRule(runChecks([offBy()], {prices: [], engineChecked: false}), "unbalanced")).toHaveLength(1);
+        expect(run1(offBy(), "unbalanced")).toHaveLength(1); // absent flag == not checked
+    });
+
+    it("stands down even when the engine reported zero diagnostics — [] means clean, not unchecked", () => {
+        expect(byRule(runChecks([offBy()], {prices: [], diagnostics: [], engineChecked: true}), "unbalanced")).toEqual([]);
+    });
+});
+
 describe("UNIT checks/rules unbalanced", () => {
     it("accepts a fully amounted transaction that sums to zero per commodity", () => {
         const t = txn(1, [

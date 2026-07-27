@@ -8,15 +8,17 @@
 //!   - `/accounts` is compared on the `(aname -> aditags)` contract only (its
 //!     `adata` balances are Phase-3 work and are excluded), matching Part A.
 //!
-//! A final test asserts the permissive CORS header is present on a GET.
+//! The final section covers the local-access controls (SEC-1/7/9): the bearer
+//! token on every wire and `/api` route, the `Host` guard, the exact-origin CORS
+//! allowlist, and the security headers.
 
 mod common;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode, header};
+use axum::http::{HeaderName, Request, StatusCode, header};
 use common::{account_contract, compare, fixture_journal, read_snapshot};
 use http_body_util::BodyExt;
-use ledgeline_server::app;
+use ledgeline_server::{AccessToken, AppState, Security, app, router_with_security};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -86,15 +88,436 @@ async fn accounts_contract_matches_snapshot() {
     );
 }
 
-/// The permissive CORS layer must echo an allow-origin header on a plain GET so
-/// the browser SPA can read the response cross-origin.
+/// `GET /api/diagnostics` serves the frozen `{"diagnostics": [...]}` contract:
+/// one `Problem`-shaped element per unbalanced transaction (PARSE-1) and per
+/// failed balance assertion (PARSE-2). `fixtures/sample.journal` has neither, so
+/// the array must be present and EMPTY — never null, never absent.
 #[tokio::test]
-async fn get_carries_permissive_cors_header() {
+async fn diagnostics_serves_an_empty_array_for_a_clean_journal() {
+    let body = body_of("/api/diagnostics").await;
+    assert_eq!(body, serde_json::json!({"diagnostics": []}));
+}
+
+/// The same route over a journal that IS broken, proving the payload carries the
+/// contract's four fields and that a broken journal still serves everything else.
+#[tokio::test]
+async fn diagnostics_reports_a_broken_journal_without_refusing_to_serve_it() {
+    let journal = ledgeline_core::parse_journal(
+        "2024-01-01 unbalanced\n    a   $1.00\n    b   $-2.00\n",
+        "/tmp/diagnostics-endpoint.journal",
+    )
+    .expect("an unbalanced transaction is a diagnostic, never a parse error");
+    let router = app(&journal);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/diagnostics")
+        .body(Body::empty())
+        .expect("request builds");
+    let response = router.oneshot(request).await.expect("router responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collects")
+        .to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).expect("body is JSON");
+
+    let diagnostics = body["diagnostics"]
+        .as_array()
+        .expect("diagnostics is an array");
+    assert_eq!(diagnostics.len(), 1, "{body}");
+    assert_eq!(diagnostics[0]["txnIndex"], 0);
+    assert_eq!(diagnostics[0]["rule"], "unbalanced");
+    assert_eq!(diagnostics[0]["severity"], "error");
+    assert_eq!(
+        diagnostics[0]["message"],
+        "This transaction is unbalanced.\n\
+         The real postings' sum should be 0 but is: $-1.00"
+    );
+}
+
+/// SEC-1: the server is same-origin ONLY by default. A cross-origin `Origin`
+/// gets no `access-control-allow-origin`, so a browser refuses to hand the
+/// response to the page that asked for it.
+#[tokio::test]
+async fn get_carries_no_cors_header_by_default() {
     let (status, allow_origin, _) = get("/version").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        allow_origin.as_deref(),
-        Some("*"),
-        "permissive CORS should return access-control-allow-origin: *"
+        allow_origin, None,
+        "the default path must install no CORS layer at all — a wildcard \
+         access-control-allow-origin is what let any website read the journal"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Local-access controls (SEC-1, SEC-7, SEC-9)
+//
+// These drive `router_with_security`, the constructor a socket-bound server
+// uses, rather than the unauthenticated `app` the parity tests above use.
+// ---------------------------------------------------------------------------
+
+const TEST_PORT: u16 = 5099;
+const GOOD_HOST: &str = "127.0.0.1:5099";
+
+fn test_token() -> AccessToken {
+    AccessToken::parse("integration-test-token").expect("well-formed token")
+}
+
+fn secured_router(security: Security) -> axum::Router {
+    router_with_security(AppState::from_journal(&fixture_journal()), security)
+}
+
+/// One request against a freshly built secured router. `headers` are applied
+/// verbatim so a test can omit `Host` or `Authorization` entirely.
+async fn probe(
+    security: Security,
+    method: &str,
+    uri: &str,
+    headers: &[(HeaderName, &str)],
+) -> (StatusCode, Vec<(String, String)>) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(name, *value);
+    }
+    let request = builder.body(Body::empty()).expect("request builds");
+    let response = secured_router(security)
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    let status = response.status();
+    let observed = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect();
+    (status, observed)
+}
+
+fn header_of<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str())
+}
+
+fn local_security() -> Security {
+    Security::local(test_token(), TEST_PORT)
+}
+
+/// Every wire and `/api` route demands the token: absent is a 401, wrong is a
+/// 401, right is a 200. This is what makes an ephemeral port irrelevant.
+#[tokio::test]
+async fn wire_and_api_routes_require_the_token() {
+    for uri in [
+        "/version",
+        "/transactions",
+        "/accountnames",
+        "/prices",
+        "/commodities",
+        "/accounts",
+        "/api/reports/balancesheet",
+        "/api/holdings",
+        "/api/diagnostics",
+    ] {
+        let (missing, missing_headers) =
+            probe(local_security(), "GET", uri, &[(header::HOST, GOOD_HOST)]).await;
+        assert_eq!(
+            missing,
+            StatusCode::UNAUTHORIZED,
+            "GET {uri} without a token must be 401"
+        );
+        assert_eq!(
+            header_of(&missing_headers, "www-authenticate"),
+            Some("Bearer"),
+            "a 401 must say how to authenticate"
+        );
+
+        let (wrong, _) = probe(
+            local_security(),
+            "GET",
+            uri,
+            &[
+                (header::HOST, GOOD_HOST),
+                (header::AUTHORIZATION, "Bearer integration-test-tokeN"),
+            ],
+        )
+        .await;
+        assert_eq!(
+            wrong,
+            StatusCode::UNAUTHORIZED,
+            "GET {uri} with a wrong token must be 401"
+        );
+
+        let (right, _) = probe(
+            local_security(),
+            "GET",
+            uri,
+            &[
+                (header::HOST, GOOD_HOST),
+                (header::AUTHORIZATION, "Bearer integration-test-token"),
+            ],
+        )
+        .await;
+        assert_eq!(
+            right,
+            StatusCode::OK,
+            "GET {uri} with the token must be 200"
+        );
+    }
+}
+
+/// The write path is gated too — SEC-1's proof-of-concept was a cross-origin
+/// `POST`/`DELETE` on `/api/transactions`.
+#[tokio::test]
+async fn write_routes_require_the_token() {
+    for (method, uri) in [
+        ("POST", "/api/transactions"),
+        ("DELETE", "/api/transactions/1"),
+        ("PUT", "/api/transactions/1"),
+        ("PATCH", "/api/transactions/1"),
+    ] {
+        let (status, _) = probe(
+            local_security(),
+            method,
+            uri,
+            &[
+                (header::HOST, GOOD_HOST),
+                (header::ORIGIN, "https://evil.example"),
+            ],
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} without a token must be 401"
+        );
+    }
+}
+
+/// SEC-1 item 1: the anti-DNS-rebinding control. A rebound name reaches the
+/// socket but never the handler — even with a valid token, and even for the SPA
+/// shell that carries the token.
+#[tokio::test]
+async fn host_guard_rejects_anything_but_loopback_on_our_port() {
+    for host in [
+        "attacker.example.com",
+        "attacker.example.com:5099",
+        "127.0.0.1:5000",
+        "192.168.1.9:5099",
+    ] {
+        let (status, _) = probe(
+            local_security(),
+            "GET",
+            "/version",
+            &[
+                (header::HOST, host),
+                (header::AUTHORIZATION, "Bearer integration-test-token"),
+            ],
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "Host: {host} must be refused"
+        );
+    }
+
+    // The shell is served without a token, so the Host guard is the only thing
+    // standing between a rebound page and the token printed inside it.
+    let (shell, _) = probe(
+        local_security(),
+        "GET",
+        "/",
+        &[(header::HOST, "attacker.example.com")],
+    )
+    .await;
+    assert_eq!(shell, StatusCode::FORBIDDEN);
+
+    for host in ["127.0.0.1:5099", "localhost:5099", "LOCALHOST:5099"] {
+        let (status, _) = probe(
+            local_security(),
+            "GET",
+            "/version",
+            &[
+                (header::HOST, host),
+                (header::AUTHORIZATION, "Bearer integration-test-token"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "Host: {host} must be accepted");
+    }
+}
+
+/// A request with no `Host` at all cannot be attributed to us, so it is refused.
+#[tokio::test]
+async fn host_guard_rejects_a_missing_host() {
+    let (status, _) = probe(
+        local_security(),
+        "GET",
+        "/version",
+        &[(header::AUTHORIZATION, "Bearer integration-test-token")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// The SPA shell and its assets must stay reachable WITHOUT a token — the
+/// browser has nothing to present until it has loaded the page.
+#[tokio::test]
+async fn the_spa_shell_is_served_without_a_token_and_publishes_it() {
+    let request = Request::builder()
+        .method("GET")
+        .uri("/")
+        .header(header::HOST, GOOD_HOST)
+        .body(Body::empty())
+        .expect("request builds");
+    let response = secured_router(local_security())
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    let csp = response
+        .headers()
+        .get(header::CONTENT_SECURITY_POLICY)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .expect("the shell carries a CSP");
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collects")
+        .to_bytes();
+    let html = String::from_utf8_lossy(&body);
+    assert!(
+        html.contains("window.__LEDGELINE_TOKEN__=\"integration-test-token\""),
+        "the shell must hand the same-origin SPA its token"
+    );
+    // SEC-7: the shell's own policy must hash the inline scripts it just served,
+    // or the browser silently refuses to boot the SPA.
+    assert!(csp.contains("script-src 'self' 'sha256-"), "CSP: {csp}");
+    assert!(csp.contains("connect-src 'self'"), "CSP: {csp}");
+}
+
+/// SEC-1 item 2: `--allow-origin` echoes the EXACT origin, never a wildcard, and
+/// only for origins on the list.
+#[tokio::test]
+async fn allowlisted_origins_get_an_exact_allow_origin_header() {
+    let security = local_security()
+        .allow_origins(&["http://localhost:4173"])
+        .expect("valid origin");
+    let (status, headers) = probe(
+        security,
+        "GET",
+        "/version",
+        &[
+            (header::HOST, GOOD_HOST),
+            (header::ORIGIN, "http://localhost:4173"),
+            (header::AUTHORIZATION, "Bearer integration-test-token"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header_of(&headers, "access-control-allow-origin"),
+        Some("http://localhost:4173"),
+        "an allowlisted origin is echoed verbatim"
+    );
+    assert_eq!(
+        header_of(&headers, "access-control-allow-credentials"),
+        None,
+        "the token rides in Authorization, so credentials are never allowed"
+    );
+
+    let security = local_security()
+        .allow_origins(&["http://localhost:4173"])
+        .expect("valid origin");
+    let (_, headers) = probe(
+        security,
+        "GET",
+        "/version",
+        &[
+            (header::HOST, GOOD_HOST),
+            (header::ORIGIN, "https://evil.example"),
+            (header::AUTHORIZATION, "Bearer integration-test-token"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        header_of(&headers, "access-control-allow-origin"),
+        None,
+        "an origin off the list gets nothing"
+    );
+}
+
+/// SEC-7: every response carries the hardening headers, including error ones.
+#[tokio::test]
+async fn security_headers_are_on_every_response() {
+    for (uri, auth) in [
+        ("/", None),
+        ("/version", Some("Bearer integration-test-token")),
+        ("/version", None), // the 401
+    ] {
+        let mut headers = vec![(header::HOST, GOOD_HOST)];
+        if let Some(auth) = auth {
+            headers.push((header::AUTHORIZATION, auth));
+        }
+        let (_, observed) = probe(local_security(), "GET", uri, &headers).await;
+        assert_eq!(
+            header_of(&observed, "x-content-type-options"),
+            Some("nosniff"),
+            "GET {uri}"
+        );
+        assert_eq!(
+            header_of(&observed, "referrer-policy"),
+            Some("no-referrer"),
+            "GET {uri}"
+        );
+        let csp = header_of(&observed, "content-security-policy").unwrap_or_default();
+        assert!(csp.contains("connect-src 'self'"), "GET {uri} CSP: {csp}");
+        assert!(
+            csp.contains("frame-ancestors 'none'"),
+            "GET {uri} CSP: {csp}"
+        );
+        assert!(csp.contains("object-src 'none'"), "GET {uri} CSP: {csp}");
+    }
+}
+
+/// SEC-2 item 1: a panicking handler must still produce an HTTP response.
+///
+/// `?count=0` is the empty-bucket panic from CLEANUP.md; another agent is fixing
+/// the panic itself, so this asserts only what the `CatchPanicLayer` guarantees —
+/// that *some* response comes back rather than the connection being dropped (or,
+/// here, the test task unwinding).
+#[tokio::test]
+async fn a_panicking_handler_still_answers() {
+    let (status, headers) = probe(
+        local_security(),
+        "GET",
+        "/api/budget?count=0",
+        &[
+            (header::HOST, GOOD_HOST),
+            (header::AUTHORIZATION, "Bearer integration-test-token"),
+        ],
+    )
+    .await;
+    assert!(
+        status.is_server_error() || status.is_client_error(),
+        "a panic must surface as a status, not a dropped connection (got {status})"
+    );
+    // Layer order: the header layers are OUTSIDE the panic catcher, so even a
+    // synthesised 500 is hardened.
+    assert_eq!(
+        header_of(&headers, "x-content-type-options"),
+        Some("nosniff"),
+        "a caught panic's response must still carry the security headers"
     );
 }

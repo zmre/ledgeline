@@ -51,10 +51,14 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(dollarLine(revenues!.total, styles)).toBe("$34,010.00");
     });
 
-    it("net worth reports GLD and TSLA as unpriced", async () => {
+    // GLD and TSLA used to land here as unpriced. Since net worth started inferring
+    // market prices from @/@@ purchase costs, the sample journal prices everything and
+    // the server omits `meta` entirely. `reports_golden.rs` asserts the same thing on
+    // the Rust side (`report.meta.is_none()`); keep the two in step.
+    it("net worth leaves nothing unpriced", async () => {
         const report = decodePeriodReport(await new LedgelineApi(url).netWorth({end: AS_OF, interval: "monthly", count: 3}));
         expect(report.buckets[report.buckets.length - 1]).toBe("2026-07");
-        expect(report.meta?.unpriced).toEqual(["GLD", "TSLA"]);
+        expect(report.meta).toBeUndefined();
     });
 
     it("cash flow buckets end at the as-of month", async () => {

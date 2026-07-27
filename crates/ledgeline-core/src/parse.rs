@@ -12,11 +12,38 @@
 //! (`jtxns`) likewise excludes periodic and auto-generated postings, so wire
 //! parity is preserved. Auto-posting (`=`) and `comment` blocks remain skipped.
 //!
+//! `include` deliberately diverges from hledger in one respect: an included path
+//! must resolve *inside the main journal file's own directory*. hledger happily
+//! follows `include /etc/passwd`, `include ../../../etc/hosts` and symlinks out
+//! of the tree, which makes a hostile journal a local file-read oracle (the
+//! offending line is quoted back in the parse error, and anything that parses is
+//! absorbed into the journal and then served over HTTP) and points the
+//! live-reload watcher at arbitrary directories. Cycles and nesting depth are
+//! bounded too — see [`admit_include`].
+//!
 //! `Y` sets the default year for yearless dates; every transaction/`P` date is
-//! normalized to ISO `YYYY-MM-DD` (accepting `-`/`/`/`.` separators). Directives
-//! that would silently change results if ignored (`alias`, `apply account`, and
-//! `D` default-commodity) are still rejected with a clear error rather than
+//! normalized to ISO `YYYY-MM-DD` (accepting `-`/`/`/`.` separators) and
+//! validated against the calendar, leap years included. Directives that would
+//! silently change results if ignored (`alias`, `apply account`, and `D`
+//! default-commodity) are still rejected with a clear error rather than
 //! misparsed.
+//!
+//! # What is an error, and what is a diagnostic
+//!
+//! A [`ParseError`] means the journal cannot be READ. It aborts the parse, so it
+//! is reserved for input with no sensible interpretation — a date that does not
+//! exist, an amount that is not a number, an `include` cycle.
+//!
+//! An unbalanced transaction is NOT one of those. It is a diagnostic: see
+//! [`check_transaction_balances`], and [`crate::assertions`] for the same
+//! decision about a failed balance assertion. The journal always opens, and both
+//! surface through the wire's `diagnostics` array
+//! ([`crate::wire::journal_to_diagnostics`]).
+//!
+//! One hledger behaviour is reproduced despite being a trap: a `comment` block
+//! with no `end comment` silently swallows the rest of the file. Erroring would
+//! make a journal hledger loads refuse to open — see the parity test in
+//! `tests/parse_fixes.rs`.
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{
@@ -24,7 +51,7 @@ use crate::model::{
     CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr, PeriodicTransaction, Posting,
     PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -74,6 +101,19 @@ pub enum ParseError {
     },
 }
 
+/// Hard cap on `include` nesting depth. hledger 1.52 imposes no depth limit at
+/// all, but unbounded recursion here is a stack overflow (`SIGABRT`, not a
+/// catchable panic), so a cap is required. 20 is far beyond any real journal
+/// layout and, because the error aborts the whole parse immediately, it also
+/// bounds a "billion laughs" include bomb to ~20 file reads.
+const MAX_INCLUDE_DEPTH: usize = 20;
+
+/// Hard cap on the total number of `include`d files in one parse. Depth alone
+/// still permits a wide fan-out bomb (a binary tree of depth 19 is ~500k
+/// parses); this bounds the total work regardless of shape. Generous relative
+/// to real journals, which split into tens of files, not thousands.
+const MAX_INCLUDE_FILES: usize = 1000;
+
 /// Canonical display style per commodity, built from `commodity` directives (or
 /// first occurrence).
 type Styles = HashMap<Commodity, AmountStyle>;
@@ -105,11 +145,23 @@ struct Ctx {
     /// Every source file read so far (main + `include`s), in first-read order and
     /// deduplicated, as resolved absolute paths. Feeds [`Journal::source_files`].
     source_files: Vec<PathBuf>,
+    /// The directory every `include` must resolve inside: the main journal
+    /// file's own directory, canonicalized. See [`admit_include`].
+    include_root: PathBuf,
+    /// The canonical paths of the files on the current `include` stack — the
+    /// ancestors of the file being parsed, NOT including that file itself. A
+    /// stack (rather than a global visited set) so a diamond include resolves
+    /// like hledger's: including the same file from two different branches is
+    /// legal and parses it twice.
+    include_stack: Vec<PathBuf>,
+    /// How many `include`s have been admitted so far, capped by
+    /// [`MAX_INCLUDE_FILES`].
+    includes_admitted: usize,
     tindex: u32,
 }
 
 impl Ctx {
-    fn new() -> Self {
+    fn new(main_source_name: &str) -> Self {
         Ctx {
             styles: HashMap::new(),
             default_decimal_mark: None,
@@ -122,6 +174,9 @@ impl Ctx {
             transactions: Vec::new(),
             periodic_transactions: Vec::new(),
             source_files: Vec::new(),
+            include_root: include_root_for(main_source_name),
+            include_stack: Vec::new(),
+            includes_admitted: 0,
             tindex: 0,
         }
     }
@@ -169,7 +224,7 @@ fn read_source_text(
 /// Parse `text` (the contents of the journal at `source_name`) into a balanced
 /// [`Journal`]. `include`d files are resolved relative to `source_name`.
 pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseError> {
-    let mut ctx = Ctx::new();
+    let mut ctx = Ctx::new(source_name);
     parse_source(text, source_name, &mut ctx, None)?;
     Ok(ctx.into_journal(source_name))
 }
@@ -189,7 +244,7 @@ pub fn parse_journal_with_overrides(
 ) -> Result<Journal, ParseError> {
     let main_text = read_source_text(Path::new(main_source_name), Some(overrides))
         .map_err(|e| ParseError::Include(format!("could not read {main_source_name}: {e}")))?;
-    let mut ctx = Ctx::new();
+    let mut ctx = Ctx::new(main_source_name);
     parse_source(&main_text, main_source_name, &mut ctx, Some(overrides))?;
     Ok(ctx.into_journal(main_source_name))
 }
@@ -209,6 +264,13 @@ fn parse_source(
     if !ctx.source_files.contains(&source_file) {
         ctx.source_files.push(source_file.clone());
     }
+    // PARSE-9: a UTF-8 BOM is not `char::is_whitespace`, so `trim_start` left it
+    // attached to the first token and the first-char dispatch below fell through
+    // to `other =>` — failing the WHOLE file with
+    // `unsupported directive: '\u{feff}2024-01-01'`. hledger strips it per source
+    // file, and Windows/Excel-exported journals routinely carry one. Stripped
+    // here (not in `parse_journal`) so an `include`d file is covered too.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let lines: Vec<&str> = text.lines().collect();
 
     let mut i = 0;
@@ -311,7 +373,12 @@ fn parse_source(
                 ctx.default_commodity = Some((commodity, style));
             }
             "include" => {
-                let path = resolve_include(trimmed, source_name)
+                let (target, as_written) = resolve_include(trimmed, source_name)
+                    .map_err(|e| locate(source_name, line_no, line, e))?;
+                // Confinement, cycle and budget checks all run BEFORE the file is
+                // read, so a rejected include never has its contents echoed back
+                // through a parse error (SEC-6's read oracle).
+                let path = admit_include(&target, &as_written, &source_file, ctx)
                     .map_err(|e| locate(source_name, line_no, line, e))?;
                 let included = read_source_text(&path, overrides).map_err(|e| {
                     locate(
@@ -321,7 +388,13 @@ fn parse_source(
                         ParseError::Include(format!("{}: {e}", path.display())),
                     )
                 })?;
-                parse_source(&included, &path.to_string_lossy(), ctx, overrides)?;
+                // Push the INCLUDING file so the nested parse sees its own full
+                // ancestor chain; pop unconditionally to keep the stack accurate
+                // if the caller ever recovers from the error.
+                ctx.include_stack.push(source_file.clone());
+                let nested = parse_source(&included, &path.to_string_lossy(), ctx, overrides);
+                ctx.include_stack.pop();
+                nested?;
             }
             // Declarations with no effect on transaction parsing.
             "payee" | "tag" => {}
@@ -479,7 +552,10 @@ fn parse_decimal_mark_directive(line: &str) -> Result<char, ParseError> {
 }
 
 /// Resolve an `include PATH` target relative to the including file's directory.
-fn resolve_include(line: &str, source_name: &str) -> Result<PathBuf, ParseError> {
+/// Returns the joined path plus the target exactly as written in the directive
+/// — the latter is what diagnostics quote, so a rejected include never discloses
+/// a path the journal did not already name (e.g. a symlink's target).
+fn resolve_include(line: &str, source_name: &str) -> Result<(PathBuf, String), ParseError> {
     let after = line
         .strip_prefix("include")
         .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?;
@@ -489,14 +565,141 @@ fn resolve_include(line: &str, source_name: &str) -> Result<PathBuf, ParseError>
         return Err(ParseError::MalformedDirective(line.to_string()));
     }
     let path = Path::new(path_str);
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
     } else {
         let base = Path::new(source_name)
             .parent()
             .unwrap_or_else(|| Path::new("."));
-        Ok(base.join(path))
+        base.join(path)
+    };
+    Ok((joined, path_str.to_string()))
+}
+
+/// The directory `include`s are confined to: the main journal file's own
+/// directory, canonicalized. A main file named without a directory (a bare
+/// `t.journal`, or an in-memory placeholder) roots at the current directory,
+/// which is exactly where [`resolve_include`] already resolves its relative
+/// includes.
+fn include_root_for(main_source_name: &str) -> PathBuf {
+    let main = canonical_include(Path::new(main_source_name));
+    match main.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
     }
+}
+
+/// The absolute, symlink-free form of an `include` target. Uses
+/// [`std::fs::canonicalize`] when the whole path exists — the only case that can
+/// leak content — so `..` traversal and symlinks are both resolved before the
+/// confinement test.
+///
+/// A target that is not on disk (a not-yet-saved file supplied through the
+/// editor's override map, or simply a typo) cannot be canonicalized outright, so
+/// its deepest EXISTING ancestor is canonicalized and the remaining components
+/// re-appended. That matters for correctness as much as for security: on macOS
+/// the journal directory itself routinely canonicalizes through a symlink
+/// (`/tmp` -> `/private/tmp`), and a purely lexical fallback would then read as
+/// "outside the journal directory" for an ordinary misspelled sibling.
+fn canonical_include(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let normalized = lexically_normalize(&absolute);
+
+    let mut trailing: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = normalized.clone();
+    while let (Some(name), Some(parent)) = (
+        cursor.file_name().map(std::ffi::OsStr::to_os_string),
+        cursor.parent().map(Path::to_path_buf),
+    ) {
+        trailing.push(name);
+        if let Ok(canonical) = std::fs::canonicalize(&parent) {
+            return trailing
+                .iter()
+                .rev()
+                .fold(canonical, |resolved, part| resolved.join(part));
+        }
+        cursor = parent;
+    }
+    normalized
+}
+
+/// Collapse `.` and `..` components textually, without touching the filesystem.
+fn lexically_normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    path.components()
+        .fold(PathBuf::new(), |mut out, component| {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    // `pop` fails only at a root/prefix, where `..` has nowhere
+                    // to go; keep it there so the result still fails any
+                    // containment test rather than silently becoming the root.
+                    if !out.pop() {
+                        out.push(Component::ParentDir);
+                    }
+                }
+                other => out.push(other),
+            }
+            out
+        })
+}
+
+/// Decide whether an `include` target may be parsed, returning its canonical
+/// path. Rejects, in order:
+///
+/// 1. **Escapes the journal directory** (SEC-6). An `include` naming an absolute
+///    path, traversing with `..`, or crossing a symlink out of the tree turns a
+///    hostile journal into a local file-read oracle: whatever the included file
+///    fails to parse as is quoted back in the error, which reaches stderr and the
+///    GUI's error dialog — and anything that DOES parse is absorbed into the
+///    journal and served over HTTP. hledger permits all three; we deliberately
+///    do not (see the module docs).
+/// 2. **Cycles** (SEC-4) — the target is the including file itself or one of its
+///    ancestors. Unbounded recursion here overflows the stack, which aborts the
+///    process with `SIGABRT` and cannot be caught.
+/// 3. **Depth / total-file budget** — bounds an acyclic include bomb, which
+///    cycle detection alone does not.
+fn admit_include(
+    target: &Path,
+    as_written: &str,
+    includer: &Path,
+    ctx: &mut Ctx,
+) -> Result<PathBuf, ParseError> {
+    let path = canonical_include(target);
+    if !path.starts_with(&ctx.include_root) {
+        return Err(ParseError::Include(format!(
+            "'{as_written}' resolves outside the journal directory {}; \
+             includes may not escape the main journal's directory",
+            ctx.include_root.display()
+        )));
+    }
+    if path == includer || ctx.include_stack.contains(&path) {
+        return Err(ParseError::Include(format!(
+            "this included file forms a cycle: {}",
+            path.display()
+        )));
+    }
+    if ctx.include_stack.len() + 1 > MAX_INCLUDE_DEPTH {
+        return Err(ParseError::Include(format!(
+            "include nesting deeper than {MAX_INCLUDE_DEPTH} levels at '{as_written}'"
+        )));
+    }
+    ctx.includes_admitted += 1;
+    if ctx.includes_admitted > MAX_INCLUDE_FILES {
+        return Err(ParseError::Include(format!(
+            "more than {MAX_INCLUDE_FILES} included files in one journal"
+        )));
+    }
+    Ok(path)
 }
 
 fn parse_price_directive(
@@ -504,32 +707,50 @@ fn parse_price_directive(
     amt: AmountCtx,
     default_year: Option<i32>,
 ) -> Result<PriceDirective, ParseError> {
-    let mut tokens = line.split_whitespace().peekable();
-    let _p = tokens.next(); // "P"
-    let date = tokens
-        .next()
-        .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?
-        .to_string();
+    let malformed = || ParseError::MalformedDirective(line.to_string());
+    let rest = line.trim_start().strip_prefix('P').ok_or_else(malformed)?;
+    let (date, rest) = next_token(rest).ok_or_else(malformed)?;
     // hledger allows an optional clock time after the date
     // (`P DATE [HH:MM[:SS]] COMMODITY PRICE`); only the day is retained, matching
     // hledger's date-only market prices.
-    if tokens.peek().is_some_and(|t| is_time_token(t)) {
-        tokens.next();
-    }
-    let commodity = tokens
-        .next()
-        .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?
-        .to_string();
-    let price_str = tokens.collect::<Vec<_>>().join(" ");
+    let rest = match next_token(rest) {
+        Some((token, after_time)) if is_time_token(token) => after_time,
+        _ => rest,
+    };
+    // PARSE-9: the commodity used to be taken as a whitespace-delimited token,
+    // which split a quoted symbol (`"green apples"` became `"green`) and left
+    // the rest of the name in front of the price.
+    let (commodity, rest) = split_price_commodity(rest).ok_or_else(malformed)?;
+    let price_str = rest.trim();
     if price_str.is_empty() {
-        return Err(ParseError::MalformedDirective(line.to_string()));
+        return Err(malformed());
     }
-    let price = parse_amount(price_str.trim(), amt)?;
+    let price = parse_amount(price_str, amt)?;
     Ok(PriceDirective {
-        date: normalize_date(&date, default_year)?,
+        date: normalize_date(date, default_year)?,
         commodity: Commodity(commodity),
         price,
     })
+}
+
+/// The next whitespace-delimited token in `text`, plus the remainder after it.
+fn next_token(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim_start();
+    if text.is_empty() {
+        return None;
+    }
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    Some((&text[..end], &text[end..]))
+}
+
+/// The commodity symbol at the start of a `P` directive's remainder: either a
+/// double-quoted name (which may contain spaces) or a plain token.
+fn split_price_commodity(text: &str) -> Option<(String, &str)> {
+    let text = text.trim_start();
+    if text.starts_with('"') {
+        return split_quoted_commodity(text);
+    }
+    next_token(text).map(|(token, rest)| (token.to_string(), rest))
 }
 
 /// Whether a token is a clock time (`HH:MM` / `HH:MM:SS`) rather than a
@@ -583,10 +804,32 @@ fn normalize_date(token: &str, default_year: Option<i32>) -> Result<String, Pars
         }
         _ => return Err(ParseError::MalformedDate(format!("'{token}'"))),
     };
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    // PARSE-6: the day must be valid FOR ITS MONTH. A blanket `1..=31` accepted
+    // `2024-02-30`, `2023-02-29` and `2024-04-31` — all three of which hledger
+    // rejects ("This is not a valid date, please fix it.") — and the bogus ISO
+    // string then flowed into period bucketing, sorting and every date-filtered
+    // report, where `2026-02-31` silently rolls forward to March 3.
+    if !(1..=12).contains(&month) || !(1..=days_in_month(year, month)).contains(&day) {
         return Err(ParseError::MalformedDate(format!("'{token}'")));
     }
     Ok(format!("{year:04}-{month:02}-{day:02}"))
+}
+
+/// The number of days in `month` (1-12) of `year`. `0` for an out-of-range
+/// month, so a containment test against it is always false.
+fn days_in_month(year: i32, month: i32) -> i32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// The proleptic Gregorian leap-year rule hledger's `Data.Time` calendar uses.
+fn is_leap_year(year: i32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 /// Parse a single numeric date component (year/month/day).
@@ -612,6 +855,14 @@ fn skip_indented_block(lines: &[&str], start: usize) -> usize {
 
 /// Advance past a `comment` ... `end comment` block, returning the index after
 /// the terminating line (or end of input).
+///
+/// PARSE-9: an UNTERMINATED block therefore swallows the rest of the file, and
+/// every transaction after it vanishes from every report. That is deliberate
+/// parity — hledger 1.52 does exactly the same and exits 0 (verified) — because
+/// erroring instead would make a journal hledger loads refuse to open here. It
+/// cannot be a diagnostic either: the wire contract has exactly two rules,
+/// `unbalanced` and `assertion`. Pinned by a test in `tests/parse_fixes.rs` so
+/// the behaviour is at least deliberate rather than accidental.
 fn skip_comment_block(lines: &[&str], start: usize) -> usize {
     let mut j = start + 1;
     while j < lines.len() {
@@ -661,18 +912,26 @@ fn parse_periodic_transaction(
         if line.trim().is_empty() || !line.starts_with([' ', '\t']) {
             break;
         }
-        if line.trim_start().starts_with(';') {
+        // PARSE-7: as in a real transaction, a comment-only line belongs to the
+        // preceding posting. A rule has nowhere to keep one written before its
+        // first posting (`PeriodicTransaction` has no comment field), so that
+        // case is still skipped.
+        if let Some(content) = comment_line_content(line) {
+            if let Some(posting) = raw_postings.last_mut() {
+                append_comment_line(&mut posting.comment, &mut posting.tags, content);
+            }
             j += 1;
             continue;
         }
         let posting_no = to_u32(j + 1);
-        // A periodic rule's postings carry no transaction date, so a yearless
-        // `date:` posting tag has no year to inherit (`None`).
-        let posting = parse_posting(line, posting_no, amt, default_year)
+        let posting = parse_posting(line, posting_no, amt)
             .map_err(|e| locate(source_name, posting_no, line, e))?;
         raw_postings.push(posting);
         j += 1;
     }
+    // A periodic rule's postings carry no transaction date, so a yearless
+    // `date:` posting tag inherits only the `Y` default year.
+    resolve_posting_dates(&mut raw_postings, default_year, lines, source_name)?;
 
     let postings = balance_postings(raw_postings, header_no)
         .map_err(|e| locate(source_name, header_no, header_line, e))?;
@@ -726,6 +985,10 @@ struct RawPosting {
     date2: Option<String>,
     comment: String,
     tags: Vec<(String, String)>,
+    /// 1-based line the posting itself was written on. Kept because its dates
+    /// can only be resolved once every following continuation comment line has
+    /// been merged (PARSE-7), by which point the line is no longer in hand.
+    line: u32,
 }
 
 fn parse_transaction(
@@ -752,27 +1015,41 @@ fn parse_transaction(
     // the year from the transaction's primary date.
     let txn_year = iso_year(&date);
 
+    let mut header = header;
     let mut raw_postings: Vec<RawPosting> = Vec::new();
-    let mut last_posting_line = header_no;
+    let mut last_body_line = header_no;
     let mut j = start + 1;
     while j < lines.len() {
         let line = lines[j];
         if line.trim().is_empty() || !line.starts_with([' ', '\t']) {
             break;
         }
-        if line.trim_start().starts_with(';') {
-            // Transaction-level comment line inside the body; skip without
-            // treating it as a posting.
+        last_body_line = to_u32(j + 1);
+        // PARSE-7: an indented comment-only line inside the body used to be
+        // dropped outright, losing its text AND its tags. hledger attaches it to
+        // the preceding posting, or to the transaction itself while no posting
+        // has been seen — which is what makes a `subscription: false` override
+        // written on its own line work.
+        if let Some(content) = comment_line_content(line) {
+            match raw_postings.last_mut() {
+                Some(posting) => {
+                    append_comment_line(&mut posting.comment, &mut posting.tags, content);
+                }
+                None => append_comment_line(&mut header.comment, &mut header.tags, content),
+            }
             j += 1;
             continue;
         }
-        let posting_no = to_u32(j + 1);
-        let posting = parse_posting(line, posting_no, amt, txn_year)
+        let posting_no = last_body_line;
+        let posting = parse_posting(line, posting_no, amt)
             .map_err(|e| locate(source_name, posting_no, line, e))?;
         raw_postings.push(posting);
-        last_posting_line = posting_no;
         j += 1;
     }
+    // Only now is each posting's comment complete, so only now can its `date:`/
+    // `date2:` tags and `[DATE=DATE2]` brackets be read (either may be written
+    // on a continuation line).
+    resolve_posting_dates(&mut raw_postings, txn_year, lines, source_name)?;
 
     let postings = balance_postings(raw_postings, header_no)
         .map_err(|e| locate(source_name, header_no, lines[start], e))?;
@@ -781,8 +1058,10 @@ fn parse_transaction(
             line: header_no,
             column: 1,
         },
+        // hledger's end position is the line after the last line the transaction
+        // consumed — a trailing comment line included.
         SourcePos {
-            line: last_posting_line.saturating_add(1),
+            line: last_body_line.saturating_add(1),
             column: 1,
         },
     );
@@ -802,6 +1081,54 @@ fn parse_transaction(
         source_file: source_file.to_path_buf(),
     };
     Ok((transaction, j))
+}
+
+/// The text after `;` on an indented comment-ONLY line, or `None` when the line
+/// is not one. Comment text is stored trimmed, as [`build_comment`] stores an
+/// inline comment.
+fn comment_line_content(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix(';').map(str::trim)
+}
+
+/// Append a continuation comment line's `content` to an accumulating
+/// comment/tag pair (PARSE-7).
+///
+/// hledger models a comment as its lines joined by `\n` with a trailing `\n`,
+/// where the FIRST line is the same-line comment — empty when there was none.
+/// So a lone continuation line on a posting with no inline comment yields a
+/// LEADING newline (`"\nsubscription: false\n"`, exactly what hledger emits),
+/// while one following an inline comment simply extends it
+/// (`"own: x\nmore: y\n"`).
+fn append_comment_line(comment: &mut String, tags: &mut Vec<(String, String)>, content: &str) {
+    if comment.is_empty() {
+        comment.push('\n');
+    }
+    comment.push_str(content);
+    comment.push('\n');
+    tags.extend(parse_tags(content));
+}
+
+/// Resolve every posting's `date`/`date2` from its now-complete comment.
+///
+/// Errors are located at the posting's own line: a bad date may have arrived on
+/// a continuation line, but the posting is the unambiguous anchor for it.
+fn resolve_posting_dates(
+    postings: &mut [RawPosting],
+    txn_year: Option<i32>,
+    lines: &[&str],
+    source_name: &str,
+) -> Result<(), ParseError> {
+    for posting in postings.iter_mut() {
+        let line_text = lines
+            .get(posting.line.saturating_sub(1) as usize)
+            .copied()
+            .unwrap_or_default();
+        let (date, date2) = posting_dates(&posting.comment, &posting.tags, txn_year)
+            .map_err(|e| locate(source_name, posting.line, line_text, e))?;
+        posting.date = date;
+        posting.date2 = date2;
+    }
+    Ok(())
 }
 
 fn parse_header(line: &str) -> Result<Header, ParseError> {
@@ -850,16 +1177,12 @@ fn split_date(token: &str) -> (String, Option<String>) {
     }
 }
 
-fn parse_posting(
-    line: &str,
-    line_no: u32,
-    amt: AmountCtx,
-    txn_year: Option<i32>,
-) -> Result<RawPosting, ParseError> {
+/// Parse one posting line. Its `date`/`date2` are left unresolved — see
+/// [`resolve_posting_dates`], which fills them in once any continuation comment
+/// lines have been merged.
+fn parse_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<RawPosting, ParseError> {
     let (main, comment) = split_comment(line);
     let (comment_text, tags) = build_comment(comment);
-    let date = posting_date_tag(&tags, "date", txn_year)?;
-    let date2 = posting_date_tag(&tags, "date2", txn_year)?;
 
     let trimmed = main.trim_start();
     let (status, after_status) = if let Some(r) = trimmed.strip_prefix('*') {
@@ -886,10 +1209,11 @@ fn parse_posting(
         account,
         amount,
         balance_assertion,
-        date,
-        date2,
+        date: None,
+        date2: None,
         comment: comment_text,
         tags,
+        line: line_no,
     })
 }
 
@@ -906,6 +1230,20 @@ fn posting_type_and_account(account: &str) -> (PostingType, String) {
     }
 }
 
+/// A posting's `(date, date2)`, read from its complete comment: the `date:` /
+/// `date2:` tags first, then hledger's bracket shorthand as a fallback.
+fn posting_dates(
+    comment: &str,
+    tags: &[(String, String)],
+    txn_year: Option<i32>,
+) -> Result<(Option<String>, Option<String>), ParseError> {
+    let (bracket_date, bracket_date2) = bracket_posting_dates(comment, txn_year)?;
+    Ok((
+        posting_date_tag(tags, "date", txn_year)?.or(bracket_date),
+        posting_date_tag(tags, "date2", txn_year)?.or(bracket_date2),
+    ))
+}
+
 /// The ISO-normalized value of the first posting comment tag named `key`
 /// (`date`/`date2`), or `None` when absent. Yearless values take `txn_year`.
 fn posting_date_tag(
@@ -917,6 +1255,56 @@ fn posting_date_tag(
         Some((_, value)) => Ok(Some(normalize_date(value.trim(), txn_year)?)),
         None => Ok(None),
     }
+}
+
+/// hledger's bracket posting-date shorthand, written anywhere in a posting
+/// comment: `[DATE]`, `[=DATE2]` or `[DATE=DATE2]` (PARSE-9).
+///
+/// Only the `date:`/`date2:` tag spellings were recognised before, so a posting
+/// written the bracket way kept the transaction's date and was bucketed in the
+/// wrong period by every periodic report.
+///
+/// A bracketed group containing anything other than date characters is prose
+/// (`; see [note]`), not a date, and is ignored exactly as hledger ignores it —
+/// but one that IS all date characters must parse, so `[2024-02-30]` is the same
+/// hard error hledger raises. The brackets stay in the stored comment text, and
+/// produce no tag, matching hledger.
+fn bracket_posting_dates(
+    comment: &str,
+    txn_year: Option<i32>,
+) -> Result<(Option<String>, Option<String>), ParseError> {
+    let date_chars = |group: &str| {
+        group
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '-' | '/' | '.' | '='))
+    };
+    for group in bracketed_groups(comment).filter(|g| !g.is_empty() && date_chars(g)) {
+        let (primary, secondary) = match group.split_once('=') {
+            Some((primary, secondary)) => (primary, secondary),
+            None => (group, ""),
+        };
+        let date = optional_date(primary, txn_year)?;
+        let date2 = optional_date(secondary, txn_year)?;
+        if date.is_some() || date2.is_some() {
+            return Ok((date, date2));
+        }
+    }
+    Ok((None, None))
+}
+
+/// Normalize `token` unless it is empty (the `[=DATE2]` / `[DATE=]` halves).
+fn optional_date(token: &str, txn_year: Option<i32>) -> Result<Option<String>, ParseError> {
+    if token.is_empty() {
+        return Ok(None);
+    }
+    normalize_date(token, txn_year).map(Some)
+}
+
+/// Each `[...]`-bracketed group in `text`, in order, without its brackets.
+fn bracketed_groups(text: &str) -> impl Iterator<Item = &str> {
+    text.split('[')
+        .skip(1)
+        .filter_map(|rest| rest.split_once(']').map(|(inner, _)| inner))
 }
 
 /// The year component of an ISO `YYYY-MM-DD` date string.
@@ -938,12 +1326,25 @@ fn parse_amount_and_assertion(
         let inclusive = after.starts_with('*');
         let assertion_str = after.trim_start_matches('*').trim();
 
-        let assertion_amount = parse_amount(assertion_str, amt)?;
+        // PARSE-9: an asserted amount may carry a cost (`= 10 AAA @ $5.00`),
+        // which hledger accepts and records on `baamount.acost`. Routing the
+        // assertion text through `parse_amount` instead rejected the whole
+        // journal with `malformed amount: '10 AAA @ $5.00'`. (The cost plays no
+        // part in evaluating the assertion — see `crate::assertions`.)
+        let assertion_amount = parse_primary_and_cost(assertion_str, amt)?;
         let column = main
             .chars()
             .position(|c| c == '=')
             .map_or(1, |p| to_u32(p + 1));
-        let amount = parse_primary_and_cost(amount_str, amt)?;
+        // PARSE-9: `    a       = $150.00` — the reconcile-to-statement idiom —
+        // is a posting with NO amount, only an assertion. It used to fail the
+        // whole journal with `malformed amount: ''`; it is an elided posting,
+        // and the balancing pass infers its amount like any other.
+        let amount = if amount_str.is_empty() {
+            None
+        } else {
+            Some(parse_primary_and_cost(amount_str, amt)?)
+        };
         let assertion = BalanceAssertion {
             amount: assertion_amount,
             inclusive,
@@ -953,14 +1354,97 @@ fn parse_amount_and_assertion(
                 column,
             },
         };
-        Ok((Some(amount), Some(assertion)))
+        Ok((amount, Some(assertion)))
     } else {
         Ok((Some(parse_primary_and_cost(expr, amt)?), None))
     }
 }
 
-/// Parse `AMOUNT [@ PRICE | @@ PRICE]` into an amount with an optional cost.
+/// A lot cost annotation: `{UNITPRICE}` or `{{TOTALPRICE}}`.
+struct LotCost {
+    price: String,
+    total: bool,
+}
+
+/// Split a trailing lot annotation off an amount expression (PARSE-5).
+///
+/// Recognises `{UNITPRICE}` / `{{TOTALPRICE}}` written after the quantity and
+/// before any `@`/`@@` cost, plus an optional following lot date `[DATE]`
+/// (which hledger accepts and ignores for valuation, as we do). Returns the
+/// expression with the annotation removed, plus the lot price if one was given.
+///
+/// Without this the whole annotation fell into the commodity name, so
+/// `10 AAPL {$5.00}` became 10 of the commodity `AAPL {$5.00}` — a second,
+/// bogus position alongside any plain `AAPL` holding.
+fn split_lot_notation(expr: &str) -> Result<(String, Option<LotCost>), ParseError> {
+    let malformed = || ParseError::MalformedAmount(expr.trim().to_string());
+    let Some(open) = expr.find('{') else {
+        // A closing brace with nothing to close is malformed, not a commodity.
+        if expr.contains('}') {
+            return Err(malformed());
+        }
+        return Ok((expr.to_string(), None));
+    };
+    let total = expr[open + 1..].starts_with('{');
+    let (inner_start, closer) = if total {
+        (open + 2, "}}")
+    } else {
+        (open + 1, "}")
+    };
+    let close = expr
+        .get(inner_start..)
+        .and_then(|rest| rest.find(closer))
+        .ok_or_else(malformed)?
+        + inner_start;
+    let price = expr[inner_start..close].trim().to_string();
+
+    let mut rest = expr[close + closer.len()..].trim_start();
+    if let Some(after_open) = rest.strip_prefix('[') {
+        let end = after_open.find(']').ok_or_else(malformed)?;
+        rest = after_open[end + 1..].trim_start();
+    }
+    // Only one annotation is allowed, and a lot label (`"lot1"`) is a parse
+    // error in hledger 1.52 — anything else left over is malformed.
+    if rest.contains(['{', '}', '[', ']', '"']) {
+        return Err(malformed());
+    }
+
+    // `{}` is an empty lot: hledger accepts it and records no cost.
+    let lot = (!price.is_empty()).then_some(LotCost { price, total });
+    Ok((format!("{} {rest}", &expr[..open]).trim().to_string(), lot))
+}
+
+/// The cost hledger derives from a lot annotation: always a **total** cost, and
+/// deliberately *not* normalized (`10 AAPL {$5.00}` yields `$50.00` at scale 2,
+/// where `@@ $50.00` yields `$50` at scale 0).
+fn cost_from_lot(quantity: Dec, lot: &LotCost, amt: AmountCtx) -> Result<Cost, ParseError> {
+    let mut price = parse_amount(lot.price.trim(), amt)?;
+    if !lot.total {
+        // Scale the unit lot price by the quantity, keeping both scales (so the
+        // written precision survives) rather than using `Dec::mul`, which
+        // normalizes trailing zeros away.
+        let mantissa = quantity
+            .mantissa
+            .checked_mul(price.quantity.mantissa)
+            .ok_or(DecError::Overflow)?;
+        let places = quantity
+            .places
+            .checked_add(price.quantity.places)
+            .ok_or(DecError::Overflow)?;
+        price.quantity = Dec::new(mantissa, places);
+    }
+    Ok(Cost {
+        kind: CostKind::Total,
+        amount: price,
+    })
+}
+
+/// Parse `AMOUNT [{LOTPRICE}] [@ PRICE | @@ PRICE]` into an amount with an
+/// optional cost. An explicit `@`/`@@` cost overrides the lot price, matching
+/// hledger.
 fn parse_primary_and_cost(expr: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
+    let (without_lot, lot) = split_lot_notation(expr)?;
+    let expr = without_lot.as_str();
     if let Some((primary, price)) = expr.split_once("@@") {
         let mut amount = parse_amount(primary.trim(), amt)?;
         let mut cost_amount = parse_amount(price.trim(), amt)?;
@@ -981,7 +1465,11 @@ fn parse_primary_and_cost(expr: &str, amt: AmountCtx) -> Result<Amount, ParseErr
         }));
         Ok(amount)
     } else {
-        parse_amount(expr.trim(), amt)
+        let mut amount = parse_amount(expr.trim(), amt)?;
+        if let Some(lot) = &lot {
+            amount.cost = Some(Box::new(cost_from_lot(amount.quantity, lot, amt)?));
+        }
+        Ok(amount)
     }
 }
 
@@ -1007,11 +1495,16 @@ fn parse_amount(token: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
 
     let commodity = Commodity(symbol);
     let canonical = amt.styles.get(&commodity);
+    // Infer the literal's own mark/groups first: it is both the last resort for
+    // the decimal mark and (for an undeclared commodity) the display style.
+    // PARSE-3 — this inference used to be computed only for the style and then
+    // thrown away for parsing, so `1,50 CHF` read as 150 instead of 1.50.
+    let (inferred_mark, inferred_groups, _) = analyze_number(&number, amt.default_mark);
     let decimal_mark = canonical
         .and_then(|style| style.decimal_mark)
         .or(amt.default_mark)
-        .unwrap_or('.');
-    let quantity = Dec::parse(&number, decimal_mark)?;
+        .or(inferred_mark);
+    let quantity = Dec::parse_with_mark(&number, decimal_mark)?;
     let precision = quantity.places;
 
     let style = match canonical {
@@ -1025,7 +1518,6 @@ fn parse_amount(token: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
         None => {
             // Undeclared commodity: infer the format from the literal, honoring
             // a declared `decimal-mark` default when present.
-            let (mark, digit_groups, _) = analyze_number(&number, amt.default_mark);
             AmountStyle {
                 side,
                 spaced,
@@ -1034,8 +1526,10 @@ fn parse_amount(token: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
                 // Some here. The true per-commodity canonical null (a commodity
                 // seen ONLY without a decimal, e.g. `-1712 D`) needs a post-parse
                 // style pass — that's the still-open `precision` corpus gap.
-                decimal_mark: Some(mark.unwrap_or('.')),
-                digit_groups,
+                decimal_mark: Some(
+                    inferred_mark.unwrap_or_else(|| default_display_mark(inferred_groups.as_ref())),
+                ),
+                digit_groups: inferred_groups,
                 precision,
             }
         }
@@ -1126,13 +1620,17 @@ fn group_sums(
 /// cost commodity's style) if priced, otherwise the amount itself (and its own
 /// style).
 fn cost_contribution(amount: &Amount) -> Result<(Commodity, Dec, u32, AmountStyle), ParseError> {
+    let (commodity, quantity, style) = cost_value(amount)?;
+    Ok((commodity.clone(), quantity, style.precision, style.clone()))
+}
+
+/// The borrowed form of [`cost_contribution`]: the `(commodity, quantity,
+/// style)` an amount contributes to its transaction's balance. Shared with
+/// [`check_transaction_balances`], so the verification and the inference value
+/// a priced amount identically.
+fn cost_value(amount: &Amount) -> Result<(&Commodity, Dec, &AmountStyle), ParseError> {
     match &amount.cost {
-        None => Ok((
-            amount.commodity.clone(),
-            amount.quantity,
-            amount.style.precision,
-            amount.style.clone(),
-        )),
+        None => Ok((&amount.commodity, amount.quantity, &amount.style)),
         Some(cost) => {
             let price = &cost.amount;
             let quantity = match cost.kind {
@@ -1146,12 +1644,7 @@ fn cost_contribution(amount: &Amount) -> Result<(Commodity, Dec, u32, AmountStyl
                     }
                 }
             };
-            Ok((
-                price.commodity.clone(),
-                quantity,
-                price.style.precision,
-                price.style.clone(),
-            ))
+            Ok((&price.commodity, quantity, &price.style))
         }
     }
 }
@@ -1159,9 +1652,12 @@ fn cost_contribution(amount: &Amount) -> Result<(Commodity, Dec, u32, AmountStyl
 fn finalize_posting(raw: RawPosting, sums: &[CommoditySum]) -> Result<Posting, ParseError> {
     let amounts = match raw.amount {
         Some(amount) => vec![amount],
+        // PARSE-9: a commodity that nets to exactly zero is still part of the
+        // inferred amount. hledger emits `[$0.00, -3 AAPL]` where filtering the
+        // zero away emitted only `[-3 AAPL]` — and `[$0.00]` where it emitted
+        // nothing at all.
         None => sums
             .iter()
-            .filter(|entry| !entry.total.is_zero())
             .map(|entry| {
                 Ok(Amount {
                     commodity: entry.commodity.clone(),
@@ -1189,6 +1685,272 @@ fn finalize_posting(raw: RawPosting, sums: &[CommoditySum]) -> Result<Posting, P
         comment: raw.comment,
         tags: raw.tags,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Balance verification (PARSE-1)
+// ---------------------------------------------------------------------------
+
+/// A transaction whose postings do not sum to zero.
+///
+/// Carries structured facts rather than a pre-rendered string, like
+/// [`crate::assertions::AssertionFailure`], so a caller can surface it as a
+/// `Problem`-shaped diagnostic or as the hledger-style text of
+/// [`Display`](std::fmt::Display).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnbalancedTransaction {
+    /// 0-based index of the transaction in [`Journal::transactions`].
+    pub transaction_index: usize,
+    /// The transaction's primary date.
+    pub transaction_date: String,
+    /// The file the transaction was parsed from (the `include`d file, for one
+    /// that came from an include) — matching which path hledger names.
+    pub source_file: PathBuf,
+    /// The transaction's first line, relative to [`Self::source_file`].
+    pub position: SourcePos,
+    /// Which balancing group failed: [`PostingType::Regular`] (hledger's "real
+    /// postings") or [`PostingType::BalancedVirtual`].
+    pub group: PostingType,
+    /// The residual, i.e. every commodity whose sum is NOT zero, in lexical
+    /// commodity order and styled for display. Never empty.
+    pub residual: Vec<Amount>,
+    /// Whether the group's postings span more than one commodity — which is
+    /// only ever the wording of the message, never the verdict.
+    pub multi_commodity: bool,
+}
+
+impl UnbalancedTransaction {
+    /// The diagnostic body, worded as hledger 1.52 words it.
+    #[must_use]
+    pub fn message(&self) -> String {
+        let group = match self.group {
+            PostingType::BalancedVirtual => "balanced virtual",
+            // A `(virtual)` posting is never balanced, so never reported here.
+            PostingType::Regular | PostingType::Virtual => "real",
+        };
+        let residual: Vec<String> = self
+            .residual
+            .iter()
+            .map(|amount| {
+                crate::assertions::render_amount(amount.quantity, &amount.commodity, &amount.style)
+            })
+            .collect();
+        let sum = format!(
+            "The {group} postings' sum should be 0 but is: {}",
+            residual.join(", ")
+        );
+        if self.multi_commodity {
+            format!(
+                "This multi-commodity transaction is unbalanced.\n{sum}\n\
+                 Consider adjusting this entry's amounts, adding missing postings,\n\
+                 or recording conversion price(s) with @, @@ or equity postings."
+            )
+        } else {
+            format!("This transaction is unbalanced.\n{sum}")
+        }
+    }
+}
+
+impl std::fmt::Display for UnbalancedTransaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{}:{}: {}",
+            self.source_file.display(),
+            self.position.line,
+            self.position.column,
+            self.message()
+        )
+    }
+}
+
+/// The two groups that must each balance on their own. An unbalanced virtual
+/// (`(a)`) posting is excluded from balancing entirely.
+const BALANCED_GROUPS: [PostingType; 2] = [PostingType::Regular, PostingType::BalancedVirtual];
+
+/// Verify that every transaction balances, returning the ones that do not
+/// (PARSE-1).
+///
+/// # A post-parse pass, and not an error
+///
+/// Nothing verified this before: [`group_sums`] computed the per-commodity
+/// totals only to infer an elided posting, so a transaction with every amount
+/// written out was accepted however far from zero it summed — and the phantom
+/// value entered the balance sheet, net worth and every period report. The
+/// editor's write path was strict about journals it *wrote* while the reader
+/// producing every number was not.
+///
+/// This runs over the already-balanced [`Journal`] rather than inside
+/// [`balance_postings`] for two reasons: the diagnostic needs each
+/// transaction's index in `Journal::transactions`, and re-summing the FINAL
+/// postings is exactly equivalent — an inferred posting is defined as the
+/// negated residual, so a group that had an elided posting sums to zero by
+/// construction either way.
+///
+/// The result is a list, not an `Err`. See
+/// [`crate::assertions::check_balance_assertions`] for the reasoning, which
+/// applies here identically: an unbalanced transaction is a diagnostic, the
+/// journal stays readable, and promoting it to a [`ParseError`] would make a
+/// previously-openable journal refuse to open and reject every unrelated edit
+/// through the editor's reparse guard.
+///
+/// # hledger's rule, reproduced exactly
+///
+/// A group balances when the number of commodities with a NON-ZERO residual is
+/// 0 or **2**. Two is not a typo: hledger treats a two-commodity residual as an
+/// implicit conversion and infers the cost that balances it, so
+/// `a 10 AAA` / `b $-50.00` loads cleanly (verified against
+/// `hledger -f … check autobalanced`). One, or three or more, is unbalanced.
+///
+/// "Non-zero" is [`looks_zero`], hledger's own test — see there for why an
+/// exact-zero test is wrong, and for the guarantee that the tolerance can never
+/// hide a discrepancy at a precision the journal actually wrote.
+///
+/// # Errors
+/// Returns [`ParseError::Decimal`] only if summing a group overflows `i128`.
+pub fn check_transaction_balances(
+    journal: &Journal,
+) -> Result<Vec<UnbalancedTransaction>, ParseError> {
+    let styles = crate::assertions::display_styles(journal);
+    let mut failures = Vec::new();
+    for (transaction_index, transaction) in journal.transactions.iter().enumerate() {
+        for group in BALANCED_GROUPS {
+            let sums = group_residual(transaction, group)?;
+            let residual: Vec<Amount> = sums
+                .iter()
+                .filter(|(_, entry)| !looks_zero(entry.total, entry.tolerance_precision()))
+                .map(|(commodity, entry)| Amount {
+                    commodity: (*commodity).clone(),
+                    quantity: entry.total,
+                    // The journal-wide display style, as hledger renders its
+                    // own message; the first contributing amount's style covers
+                    // a commodity that only ever appears as a cost.
+                    style: styles
+                        .get(commodity)
+                        .copied()
+                        .unwrap_or(entry.style)
+                        .clone(),
+                    cost: None,
+                })
+                .collect();
+            // 0 balances; 2 is hledger's inferred conversion; 1 or 3+ is not.
+            if residual.is_empty() || residual.len() == 2 {
+                continue;
+            }
+            failures.push(UnbalancedTransaction {
+                transaction_index,
+                transaction_date: transaction.date.clone(),
+                source_file: transaction.source_file.clone(),
+                position: transaction.source_span.0,
+                group,
+                residual,
+                multi_commodity: sums.len() > 1,
+            });
+        }
+    }
+    Ok(failures)
+}
+
+/// One commodity's residual within one balancing group.
+struct Residual<'a> {
+    /// The exact signed sum.
+    total: Dec,
+    /// Style of the first contributing amount, the fallback for rendering a
+    /// commodity that has no journal-wide style of its own.
+    style: &'a AmountStyle,
+    /// The widest precision the journal actually WROTE for this commodity in
+    /// this group — cost amounts excluded, because their places are derived,
+    /// not typed. `None` when every contribution came through a cost.
+    written_precision: Option<u32>,
+    /// The widest precision among the contributing cost amounts, the fallback
+    /// when [`Self::written_precision`] is `None`.
+    cost_precision: u32,
+}
+
+impl Residual<'_> {
+    /// The precision [`looks_zero`] measures against.
+    fn tolerance_precision(&self) -> u32 {
+        self.written_precision.unwrap_or(self.cost_precision)
+    }
+}
+
+/// One balancing group's per-commodity residual, keyed lexically so both the
+/// residual list and hledger's message order fall out of the iteration.
+///
+/// Commodities that net to zero are kept: they are what tells an ordinary
+/// single-commodity transaction ("This transaction is unbalanced") apart from a
+/// multi-commodity one, which hledger words differently.
+fn group_residual<'a>(
+    transaction: &'a Transaction,
+    group: PostingType,
+) -> Result<BTreeMap<&'a Commodity, Residual<'a>>, ParseError> {
+    transaction
+        .postings
+        .iter()
+        .filter(|posting| posting.ptype == group)
+        .flat_map(|posting| &posting.amounts)
+        .try_fold(BTreeMap::new(), |mut sums, amount| {
+            // The value a priced amount contributes is its COST, exactly as the
+            // inference path values it.
+            let (commodity, quantity, style) = cost_value(amount)?;
+            let entry = sums.entry(commodity).or_insert_with(|| Residual {
+                total: Dec::zero(),
+                style,
+                written_precision: None,
+                cost_precision: 0,
+            });
+            entry.total = entry.total.add(quantity)?;
+            if amount.cost.is_none() {
+                let written = entry.written_precision.unwrap_or(0).max(style.precision);
+                entry.written_precision = Some(written);
+            } else {
+                entry.cost_precision = entry.cost_precision.max(style.precision);
+            }
+            Ok(sums)
+        })
+}
+
+/// hledger's `amountLooksZero`, reproduced exactly: a residual counts as zero
+/// when it rounds away at `precision` decimal places (`|mantissa| <= 5·10^(e-d-1)`
+/// once `e > d`), and must be exactly zero otherwise.
+///
+/// # Why not a plain exact-zero test
+///
+/// Because hledger is not exact here, and a stricter check produces FALSE
+/// diagnostics on journals hledger loads cleanly.
+/// `fixtures/corpus/precision.journal` is the proof:
+///
+/// ```text
+/// 2010-01-01 x
+///     A  55.3653 C @ 30.92189512 D
+///     A  -1712 D
+/// ```
+///
+/// `55.3653 × 30.92189512 = 1712.000000112664`, so the residual is
+/// `0.000000112664 D` — yet `hledger -f … print` and
+/// `hledger -f … check autobalanced` both accept it, because a unit price is a
+/// rounded quotient and the extra places are an artefact of multiplying it out.
+/// An exact test flags every real journal that records a price this way.
+///
+/// # The tolerance cannot hide a real discrepancy
+///
+/// `precision` is the widest precision the journal WROTE for that commodity in
+/// that group — never a cost's derived precision, never a `commodity`
+/// directive's declared one (verified: declaring `commodity 1.00000 D` does not
+/// change hledger's verdict). Summing amounts written at `d` places yields a
+/// residual at exactly `d` places ([`Dec::add`] takes the max), so `e > d` is
+/// reachable ONLY through a cost multiplication. Every discrepancy at a
+/// precision a human typed still falls through to the exact test: `$0.001`
+/// three times over against `$0.00` is reported, as hledger reports it.
+fn looks_zero(residual: Dec, precision: u32) -> bool {
+    let Some(extra) = residual.places.checked_sub(precision + 1) else {
+        return residual.mantissa == 0;
+    };
+    // Past ~38 extra places the threshold exceeds every representable i128
+    // mantissa, so nothing can be over it.
+    i128::checked_pow(10, extra)
+        .and_then(|scale| scale.checked_mul(5))
+        .is_none_or(|threshold| residual.mantissa.unsigned_abs() <= threshold.unsigned_abs())
 }
 
 // ---------------------------------------------------------------------------
@@ -1260,10 +2022,44 @@ fn split_account_amount(text: &str) -> (&str, &str) {
 
 /// Whether a character can begin/continue a commodity symbol (excludes digits,
 /// signs, separators, whitespace, and amount operators).
+///
+/// `{`/`}` are excluded because they open hledger's lot-cost notation
+/// (`10 AAPL {$5.00}`); without that, the whole annotation used to be absorbed
+/// into the commodity name (PARSE-5). `[`/`]` are deliberately **not** excluded
+/// — hledger accepts `10 AA[PL` as the commodity `AA[PL`, and only treats
+/// `[...]` as a lot date directly after a `{...}` price.
 fn is_commodity_char(c: char) -> bool {
     !c.is_ascii_digit()
         && !c.is_whitespace()
-        && !matches!(c, '-' | '+' | '.' | ',' | '@' | '=' | ';' | '(' | ')')
+        && !matches!(
+            c,
+            '-' | '+' | '.' | ',' | '@' | '=' | ';' | '(' | ')' | '{' | '}'
+        )
+}
+
+/// The decimal mark hledger displays for a literal that has none of its own
+/// (`1.234.567`, where every separator is a digit group).
+///
+/// It is `.` by default, but a literal whose group separator already IS `.`
+/// displays with `,` — one character cannot serve as both.
+fn default_display_mark(groups: Option<&DigitGroups>) -> char {
+    if groups.map(|group| group.mark) == Some('.') {
+        ','
+    } else {
+        '.'
+    }
+}
+
+/// The byte length of a digit-group separator at the start of `rest`, if any.
+///
+/// hledger accepts a plain space and U+00A0 NO-BREAK SPACE between digit
+/// groups. It rejects `_` (`1_000.00` is a parse error), so that is not
+/// included.
+fn digit_group_space_len(rest: &str) -> Option<usize> {
+    rest.chars()
+        .next()
+        .filter(|c| matches!(c, ' ' | '\u{a0}'))
+        .map(char::len_utf8)
 }
 
 /// The byte length of the leading numeric literal in `token`: an optional sign,
@@ -1276,8 +2072,22 @@ fn numeric_prefix_len(token: &str) -> usize {
     if i < bytes.len() && matches!(bytes[i], b'-' | b'+') {
         i += 1;
     }
-    while i < bytes.len() && (bytes[i].is_ascii_digit() || matches!(bytes[i], b'.' | b',')) {
-        i += 1;
+    loop {
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || matches!(bytes[i], b'.' | b',')) {
+            i += 1;
+        }
+        // PARSE-4: a space or NBSP *between two digits* is a digit-group
+        // separator (`1 000.00 EUR`), not the end of the number. Stopping here
+        // used to hand `000.00 EUR` to the commodity and leave the quantity at
+        // 1. Anything else (including `_`, which hledger rejects outright) ends
+        // the numeric prefix.
+        let Some(separator) = digit_group_space_len(&token[i..]) else {
+            break;
+        };
+        if !token[i + separator..].starts_with(|c: char| c.is_ascii_digit()) {
+            break;
+        }
+        i += separator;
     }
     if i < bytes.len() && matches!(bytes[i], b'e' | b'E') {
         let mut j = i + 1;
@@ -1347,6 +2157,20 @@ fn split_commodity_number(
         .next()
         .ok_or_else(|| ParseError::MalformedAmount(token.to_string()))?;
 
+    // A double-quoted commodity on the left (`"green apples" 3`). Quoting is how
+    // hledger writes a symbol containing spaces or digits, and the quotes are
+    // delimiters — they are not part of the name (PARSE-9).
+    if first == '"' {
+        let (commodity, rest) = split_quoted_commodity(token)
+            .ok_or_else(|| ParseError::MalformedAmount(token.to_string()))?;
+        let spaced = rest.starts_with(char::is_whitespace);
+        let number = rest.trim().to_string();
+        if number.is_empty() {
+            return Err(ParseError::MalformedAmount(token.to_string()));
+        }
+        return Ok((commodity, number, CommoditySide::Left, spaced));
+    }
+
     if is_commodity_char(first) {
         let end = token
             .char_indices()
@@ -1388,18 +2212,44 @@ fn split_commodity_number(
         let end = numeric_prefix_len(token);
         let number = token[..end].to_string();
         let rest = &token[end..];
-        let commodity = rest.trim().to_string();
+        let trailing = rest.trim();
         if number.is_empty() {
             return Err(ParseError::MalformedAmount(token.to_string()));
         }
-        if commodity.is_empty() {
+        if trailing.is_empty() {
             // A bare number with no commodity symbol: hledger models this as the
             // empty commodity, displayed left-side with no spacing.
-            return Ok((commodity, number, CommoditySide::Left, false));
+            return Ok((String::new(), number, CommoditySide::Left, false));
         }
         let spaced = rest.starts_with(char::is_whitespace);
+        let commodity = if trailing.starts_with('"') {
+            // A quoted right-side commodity (`3 "green apples"`) may contain
+            // spaces, but nothing may follow the closing quote.
+            match split_quoted_commodity(trailing) {
+                Some((commodity, after)) if after.trim().is_empty() => commodity,
+                _ => return Err(ParseError::MalformedAmount(token.to_string())),
+            }
+        } else {
+            // PARSE-4: everything left over used to become the commodity name,
+            // so `0x10 XX` silently parsed as 0 of commodity `x10 XX` and
+            // `100.0O USD` as 100.0 of `O USD`. hledger rejects both, and
+            // requires quoting for any symbol containing a space.
+            if trailing.chars().any(char::is_whitespace) {
+                return Err(ParseError::MalformedAmount(token.to_string()));
+            }
+            trailing.to_string()
+        };
         Ok((commodity, number, CommoditySide::Right, spaced))
     }
+}
+
+/// Split a leading double-quoted commodity symbol off `text`, returning the
+/// unquoted name and the remainder. `None` when `text` does not start with a
+/// quote or the quote is never closed.
+fn split_quoted_commodity(text: &str) -> Option<(String, &str)> {
+    let quoted = text.strip_prefix('"')?;
+    let end = quoted.find('"')?;
+    Some((quoted[..end].to_string(), &quoted[end + 1..]))
 }
 
 /// Analyze a bare numeric literal, returning `(decimal_mark, digit_groups,
@@ -1466,10 +2316,20 @@ fn analyze_number(
         };
         let mut sizes: Vec<u8> = integer_part
             .split(mark)
-            .skip(1)
-            .map(|segment| u8::try_from(segment.len()).unwrap_or(u8::MAX))
+            .map(|segment| u8::try_from(segment.chars().count()).unwrap_or(u8::MAX))
             .collect();
         sizes.reverse();
+        // Sizes run right-to-left. The leftmost group is a partial group and is
+        // dropped unless it is at least as wide as the group beside it, matching
+        // hledger: `1,000.00` -> [3] and `1.234.567` -> [3,3], but
+        // `123,456.00` -> [3,3] and `1.2.3` -> [1,1,1].
+        let leading_is_full = match sizes.as_slice() {
+            [.., inner, leading] => leading >= inner,
+            _ => false,
+        };
+        if !leading_is_full {
+            sizes.pop();
+        }
         DigitGroups { mark, sizes }
     });
 

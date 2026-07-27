@@ -244,10 +244,10 @@ async fn holdings_defaults_and_bad_mode() {
     // No query at all → 200 (asOf defaults to today).
     let (status, allow_origin, _) = get_on(&journal, "/api/holdings").await;
     assert_eq!(status, StatusCode::OK);
+    // SEC-1: same-origin only by default — no CORS layer, so no allow-origin.
     assert_eq!(
-        allow_origin.as_deref(),
-        Some("*"),
-        "permissive CORS covers holdings"
+        allow_origin, None,
+        "holdings must not be readable cross-origin"
     );
 
     let (status, _, _) = get_on(&journal, "/api/holdings?mode=neither").await;

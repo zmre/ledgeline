@@ -33,7 +33,11 @@
 //!   fingerprint, refusing (with [`EditError::ExternalChange`]) — and writing
 //!   nothing — rather than clobbering a file that changed underneath it.
 //! - **Atomic write.** `save` writes each changed file to a temp file in the
-//!   same directory, `fsync`s it, and `rename`s it over the target.
+//!   same directory, `fsync`s it, and `rename`s it over the target. The temp
+//!   file is created exclusively (so a planted symlink cannot capture the write)
+//!   and inherits the target's mode and ownership, so saving never widens the
+//!   permissions on the user's books. See [`atomic_write`] for exactly what does
+//!   and does not survive the rename.
 //! - **Single writer.** Mutations take `&mut self`; the server will wrap the
 //!   editor in a `Mutex` in the next increment (no OS-level lock yet).
 
@@ -1348,21 +1352,52 @@ fn render_priced(commodity: &Commodity, quantity: Dec, style: &AmountStyle) -> S
     }
 }
 
+/// The widest fractional precision [`render_dec`] will lay out.
+///
+/// Nothing the engine itself produces comes close: [`Dec::parse`] caps at 10
+/// places and [`Dec::mul`] at most sums its operands' scales. Only a [`Dec`]
+/// built directly from unvalidated wire input can exceed this. 255 is hledger's
+/// own maximum displayed precision, so the clamp cannot truncate a value hledger
+/// could have written.
+const MAX_RENDER_PLACES: u32 = 255;
+
 /// Render a [`Dec`] using `mark` as the decimal separator, exactly (no rounding,
 /// no grouping): `Dec::new(180_000, 2)` → `1800.00`, `Dec::new(5, 3)` → `0.005`.
+///
+/// # Total by construction
+/// `Dec::places` is a `u32` but Rust's format width is a `u16`, so the obvious
+/// `format!("{digits:0>width$}", width = places + 1)` panics with *"Formatting
+/// argument out of range"* once `places >= 65535`. Since [`format_transaction`]
+/// returns a `String` and cannot signal failure, this function must be total.
+/// Two changes make it so:
+///
+/// - the zero padding is built with [`str::repeat`], which takes no width
+///   argument and so has no such limit;
+/// - `places` is clamped to [`MAX_RENDER_PLACES`], bounding the output to a few
+///   hundred bytes rather than the ~64 KB single amount line a `places = 65534`
+///   request would otherwise commit to the user's books.
+///
+/// A clamped render is a *different number* from the one passed in, and it is
+/// never silently written: it differs from the input by at least a factor of ten,
+/// so the reparse-and-compare guard in [`JournalEditor::add_transaction`] /
+/// [`JournalEditor::replace_transaction`] rejects it with
+/// [`EditError::RoundTripMismatch`]. Validating `places` at the wire boundary
+/// remains the primary fix; this is the backstop that keeps the core from
+/// panicking or allocating unboundedly if that boundary is ever bypassed.
 fn render_dec(value: Dec, mark: char) -> String {
     let negative = value.mantissa < 0;
     let digits = value.mantissa.unsigned_abs().to_string();
-    let body = if value.places == 0 {
+    let places = value.places.min(MAX_RENDER_PLACES) as usize;
+    let body = if places == 0 {
         digits
     } else {
-        let places = value.places as usize;
         // Ensure there is at least one integer digit before the mark.
-        let padded = if digits.len() <= places {
-            format!("{digits:0>width$}", width = places + 1)
-        } else {
-            digits
+        let padded = match (places + 1).checked_sub(digits.len()) {
+            Some(zeros) if zeros > 0 => "0".repeat(zeros) + &digits,
+            _ => digits,
         };
+        // `padded.len() > places` holds in both branches, so this cannot wrap,
+        // and every byte is ASCII, so the split is on a char boundary.
         let split = padded.len() - places;
         format!("{}{mark}{}", &padded[..split], &padded[split..])
     };
@@ -1491,28 +1526,69 @@ fn costs_equivalent(input: &Amount, parsed: &Amount) -> bool {
 // Atomic write
 // ---------------------------------------------------------------------------
 
-/// Write `bytes` to `path` atomically: temp file in the same directory,
-/// `fsync`, then `rename` over the target (best-effort directory `fsync`).
-fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
-    let dir = dir.unwrap_or_else(|| Path::new("."));
-    let file_name = path.file_name().map_or_else(
+/// Mode for a temp file at creation, and for a target that does not yet exist:
+/// owner-only. A financial record defaults closed rather than umask-derived.
+#[cfg(unix)]
+const NEW_FILE_MODE: u32 = 0o600;
+
+/// Distinct temp names tried before giving up. `create_new` refuses to open an
+/// existing path, so a collision — accidental or hostile — costs a retry.
+const TEMP_NAME_ATTEMPTS: usize = 8;
+
+/// Symlink hops followed when resolving the write target, bounding a link loop.
+const MAX_SYMLINK_HOPS: usize = 32;
+
+/// Write `bytes` to `path` atomically: temp file in the same directory, `fsync`,
+/// then `rename` over the target (best-effort directory `fsync`).
+///
+/// # What is carried forward
+/// The rename installs a brand-new inode, so nothing about the old file survives
+/// unless it is copied forward explicitly. This function copies:
+///
+/// - **Permission bits** (Unix). The target's mode is applied to the temp file
+///   before the rename, so a journal kept at `0600` stays at `0600` instead of
+///   being silently recreated at `0666 & ~umask` — world-readable under the
+///   common `umask 022`. A target that does not exist yet is created `0600`,
+///   deliberately ignoring a permissive umask.
+/// - **Owner and group** (Unix, best effort). `fchown` is attempted and its
+///   failure ignored, since an unprivileged process cannot give a file away.
+///   This matters only when a privileged process edits another user's journal;
+///   in the ordinary case the temp file is already owned by the right user.
+/// - **The symlink at `path`, if any.** The write is redirected to the file the
+///   link resolves to, so the link itself survives. A plain rename over `path`
+///   would have replaced the link with a regular file.
+///
+/// # What is NOT carried forward
+/// - **ACLs and extended attributes.** The new inode gets none. A journal
+///   protected by a POSIX ACL, or carrying xattrs (macOS quarantine/Finder
+///   metadata, SELinux labels), loses them on the first save. Preserving these
+///   needs platform-specific APIs this crate does not link.
+/// - **Hard links.** `rename` rebinds only this name; a second hard link to the
+///   journal keeps pointing at the OLD inode and silently retains the pre-edit
+///   content. This is inherent to rename-based atomic writes. The alternative —
+///   truncating and rewriting in place — would preserve links, ACLs and xattrs
+///   but opens a window in which a crash leaves a half-written journal, which is
+///   the worse failure for an irreplaceable primary record.
+/// - **Inode number, birth time, and open file descriptors** on the old inode,
+///   which continue to observe the pre-edit content.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let target = resolve_symlinks(path);
+    let dir = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = target.file_name().map_or_else(
         || "journal".to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
-    let tmp_path = dir.join(format!(".{file_name}.ledgeline-{}.tmp", unique_suffix()));
 
-    let write_result = (|| -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&tmp_path)?;
-        file.write_all(bytes)?;
-        file.sync_all()
-    })();
-    if let Err(err) = write_result {
+    let (tmp_path, file) = create_temp_file(dir, &file_name)?;
+    if let Err(err) = fill_temp_file(file, bytes, &target) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(err);
     }
 
-    if let Err(err) = std::fs::rename(&tmp_path, path) {
+    if let Err(err) = std::fs::rename(&tmp_path, &target) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(err);
     }
@@ -1523,6 +1599,114 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+/// Write `bytes` into the open temp `file`, give it `target`'s ownership and
+/// mode, and only then flush both to stable storage — so a crash between the
+/// `fsync` and the `rename` cannot leave a file whose contents are durable but
+/// whose permissions are not. Consumes `file` so the handle is closed before the
+/// caller renames it (required on Windows, harmless elsewhere).
+fn fill_temp_file(mut file: std::fs::File, bytes: &[u8], target: &Path) -> std::io::Result<()> {
+    file.write_all(bytes)?;
+    carry_forward_metadata(&file, target);
+    file.sync_all()
+}
+
+/// Follow `path` through up to [`MAX_SYMLINK_HOPS`] symlinks and return the path
+/// whose contents the rename should replace.
+///
+/// Renaming straight over a symlink replaces the *link* with a regular file,
+/// silently detaching the journal from wherever the user pointed it. Renaming
+/// over its resolved target leaves the link intact. A dangling link resolves to
+/// its (non-existent) target, so the write creates the file the link already
+/// names.
+///
+/// The hop limit exists purely to guarantee termination on a link *loop*. A loop
+/// names no real file, so resolution stops on one of the links and the rename
+/// replaces it with a regular file — the same outcome as before this function
+/// existed, and the only one available.
+fn resolve_symlinks(path: &Path) -> PathBuf {
+    std::iter::successors(Some(path.to_path_buf()), |current| {
+        let link = std::fs::symlink_metadata(current)
+            .ok()
+            .filter(|meta| meta.file_type().is_symlink())
+            .and_then(|_| std::fs::read_link(current).ok())?;
+        Some(match current.parent() {
+            Some(dir) if link.is_relative() => dir.join(link),
+            _ => link,
+        })
+    })
+    .take(MAX_SYMLINK_HOPS)
+    .last()
+    .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// Create a fresh temp file next to the target, returning its path and an open
+/// handle, retrying on a name collision.
+///
+/// Uses `create_new` (`O_CREAT | O_EXCL`), which fails rather than opening an
+/// existing path and — the point — refuses to follow a symlink planted at that
+/// name. A local attacker who guesses the temp name therefore cannot redirect
+/// the journal's contents into a file of their choosing; they can only force a
+/// retry.
+fn create_temp_file(dir: &Path, file_name: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
+    (0..TEMP_NAME_ATTEMPTS)
+        .find_map(|_| {
+            let tmp_path = dir.join(format!(".{file_name}.ledgeline-{}.tmp", unique_suffix()));
+            match open_new_exclusive(&tmp_path) {
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => None,
+                result => Some(result.map(|file| (tmp_path, file))),
+            }
+        })
+        .unwrap_or_else(|| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "could not create a temp file in {} after {TEMP_NAME_ATTEMPTS} attempts",
+                    dir.display()
+                ),
+            ))
+        })
+}
+
+/// Open `path` for writing, failing if anything — file, directory or symlink —
+/// already exists there.
+fn open_new_exclusive(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Never wider than owner-only while the journal's contents are in
+        // flight; the target's real mode is applied just before the rename.
+        options.mode(NEW_FILE_MODE);
+    }
+    options.open(path)
+}
+
+/// Give the temp file `target`'s ownership and permission bits so the rename
+/// does not relax them.
+///
+/// Best effort by design: on failure the temp file keeps [`NEW_FILE_MODE`],
+/// which is *narrower* than any target it might replace, and failing the save
+/// outright would cost the user an edit to their books to avoid a strictly safe
+/// outcome. Ownership is set before the mode because `chown` clears the
+/// set-user-ID and set-group-ID bits.
+#[cfg(unix)]
+fn carry_forward_metadata(file: &std::fs::File, target: &Path) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    // No target yet: keep the owner-only default rather than a umask-derived one.
+    let Ok(existing) = std::fs::metadata(target) else {
+        return;
+    };
+    let _ = std::os::unix::fs::fchown(file, Some(existing.uid()), Some(existing.gid()));
+    let _ = file.set_permissions(std::fs::Permissions::from_mode(existing.mode() & 0o7777));
+}
+
+/// Non-Unix platforms expose no portable mode/ownership model here; the temp
+/// file keeps whatever the OS gave it, as before.
+#[cfg(not(unix))]
+fn carry_forward_metadata(_file: &std::fs::File, _target: &Path) {}
 
 /// A per-process-unique suffix for the temp file name.
 fn unique_suffix() -> String {
@@ -1611,6 +1795,92 @@ mod tests {
         assert_eq!(render_dec(Dec::new(1000, 0), '.'), "1000");
         assert_eq!(render_dec(Dec::new(64500, 2), ','), "645,00");
         assert_eq!(render_dec(Dec::new(0, 0), '.'), "0");
+    }
+
+    /// SEC-2 item 4: `render_dec` must be total. Rust's format width is a `u16`,
+    /// so the old `format!("{digits:0>width$}")` panicked with "Formatting
+    /// argument out of range" once `places >= 65535` — reachable straight from
+    /// the edit wire, where it returned no HTTP response at all.
+    #[test]
+    fn render_dec_is_total_for_extreme_places() {
+        let expected = |places: u32| {
+            let places = places.min(MAX_RENDER_PLACES) as usize;
+            if places == 0 {
+                "5".to_string()
+            } else {
+                format!("0.{}5", "0".repeat(places - 1))
+            }
+        };
+
+        for places in [
+            0,
+            1,
+            10,
+            MAX_RENDER_PLACES - 1,
+            MAX_RENDER_PLACES,
+            MAX_RENDER_PLACES + 1,
+            65_534, // the last value the old code survived
+            65_535, // the first value the old code panicked on
+            u32::MAX,
+        ] {
+            let rendered = render_dec(Dec::new(5, places), '.');
+            assert_eq!(rendered, expected(places), "at places = {places}");
+            assert!(
+                rendered.len() <= MAX_RENDER_PLACES as usize + 2,
+                "output must stay bounded at places = {places}, got {} bytes",
+                rendered.len()
+            );
+        }
+    }
+
+    /// The widest mantissa at the widest scale: no panic, no unbounded string,
+    /// and `i128::MIN` still negates safely via `unsigned_abs`.
+    #[test]
+    fn render_dec_handles_the_extreme_mantissa() {
+        let rendered = render_dec(Dec::new(i128::MIN, u32::MAX), '.');
+        assert!(rendered.starts_with("-0."));
+        // sign + leading zero + mark + MAX_RENDER_PLACES fractional digits.
+        assert_eq!(rendered.len(), MAX_RENDER_PLACES as usize + 3);
+        assert!(rendered.ends_with(&i128::MIN.unsigned_abs().to_string()));
+    }
+
+    /// SEC-8: the temp file is opened with `create_new`, so a symlink planted at
+    /// the temp path cannot capture the journal's contents. `O_CREAT | O_EXCL`
+    /// refuses to follow a final symlink, which is what makes this safe.
+    #[cfg(unix)]
+    #[test]
+    fn temp_file_creation_refuses_a_planted_symlink() {
+        let dir = std::env::temp_dir().join(format!("ledgeline-sec8-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        let decoy = dir.join("decoy.txt");
+        std::fs::write(&decoy, "untouched").expect("write decoy");
+        let planted = dir.join("planted.tmp");
+        std::os::unix::fs::symlink(&decoy, &planted).expect("plant symlink");
+
+        let err = open_new_exclusive(&planted).expect_err("must refuse a planted symlink");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(&decoy).expect("read decoy"),
+            "untouched",
+            "the symlink target must not have been opened or truncated"
+        );
+
+        // A fresh name succeeds, and is never wider than owner-only from birth.
+        // Asserting a SUBSET of NEW_FILE_MODE rather than equality keeps this
+        // independent of the runner's umask, which can only narrow it further.
+        let fresh = dir.join("fresh.tmp");
+        let file = open_new_exclusive(&fresh).expect("a fresh name opens");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = file.metadata().expect("stat").permissions().mode() & 0o777;
+        assert_eq!(
+            mode & !NEW_FILE_MODE,
+            0,
+            "temp file mode {mode:o} is wider than {NEW_FILE_MODE:o}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

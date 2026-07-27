@@ -1531,8 +1531,10 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "axum",
+ "base64",
  "clap",
  "dirs",
+ "getrandom 0.3.4",
  "http-body-util",
  "ledgeline-core",
  "mime_guess",
@@ -1542,6 +1544,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tao",
  "tempfile",
  "thiserror 2.0.18",
@@ -3133,10 +3136,14 @@ checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
  "bitflags 2.13.1",
  "bytes",
+ "futures-util",
  "http",
+ "http-body",
+ "http-body-util",
  "pin-project-lite",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

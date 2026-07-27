@@ -327,6 +327,80 @@ fn status_str(status: Status) -> &'static str {
 }
 
 // ===========================================================================
+// /api/diagnostics
+// ===========================================================================
+
+/// A journal-wide diagnostic, shaped to drop straight into the SPA's existing
+/// `Problem` type (`web/src/lib/checks/engine.ts`) so the checks UI needs no new
+/// type to render one.
+///
+/// An unbalanced transaction and a failed balance assertion are DIAGNOSTICS, not
+/// parse errors: the journal always opens, and neither ever blocks opening,
+/// editing or reloading. See [`crate::parse::check_transaction_balances`] and
+/// [`crate::assertions::check_balance_assertions`] for why.
+#[derive(Debug, Serialize)]
+pub struct WireDiagnostic {
+    /// 0-based index into the SAME transactions array `/transactions` serves,
+    /// so the UI can flag the row.
+    #[serde(rename = "txnIndex")]
+    txn_index: usize,
+    /// `"unbalanced"` or `"assertion"`.
+    rule: &'static str,
+    /// Always `"error"`; the SPA's `Severity` is `info|warning|error`.
+    severity: &'static str,
+    /// Human-readable, hledger-style.
+    message: String,
+}
+
+/// Diagnostic severity. Both rules are errors.
+const DIAGNOSTIC_ERROR: &str = "error";
+
+/// Every diagnostic in `journal`: the unbalanced transactions first (in file
+/// order), then the failed balance assertions (in hledger's evaluation order,
+/// which is date order and deliberately preserved).
+///
+/// A check whose arithmetic overflows `i128` — unreachable for a real journal,
+/// since a literal that large is already rejected at parse — contributes
+/// nothing rather than aborting the payload. The journal must always open, and
+/// the frozen wire contract has no third `rule` to report the failure under.
+#[must_use]
+pub fn journal_to_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    let unbalanced = crate::parse::check_transaction_balances(journal)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|failure| WireDiagnostic {
+            txn_index: failure.transaction_index,
+            rule: "unbalanced",
+            severity: DIAGNOSTIC_ERROR,
+            message: failure.message(),
+        });
+    let assertions = crate::assertions::check_balance_assertions(journal)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|failure| WireDiagnostic {
+            txn_index: failure.transaction_index,
+            rule: "assertion",
+            severity: DIAGNOSTIC_ERROR,
+            message: failure.message(),
+        });
+    unbalanced.chain(assertions).collect()
+}
+
+/// [`journal_to_diagnostics`] as the `{"diagnostics": [...]}` payload. The array
+/// is always present and is `[]` — never null, never absent — when the journal
+/// is clean.
+///
+/// # Errors
+/// Propagates any `serde_json` error (never expected for these records).
+pub fn journal_to_diagnostics_value(
+    journal: &Journal,
+) -> Result<serde_json::Value, serde_json::Error> {
+    Ok(serde_json::json!({
+        "diagnostics": serde_json::to_value(journal_to_diagnostics(journal))?,
+    }))
+}
+
+// ===========================================================================
 // /version
 // ===========================================================================
 

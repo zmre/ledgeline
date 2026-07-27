@@ -761,9 +761,81 @@ async fn bad_interval_is_400() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-/// The permissive CORS layer covers the native report routes too.
+/// Every endpoint that takes `count`. All four reached `Vec::with_capacity(n)`
+/// with an unclamped user `usize`; `/api/budget` additionally indexed
+/// `buckets[0]`.
+const COUNT_ENDPOINTS: [&str; 4] = [
+    "/api/budget",
+    "/api/reports/cashflow",
+    "/api/reports/networth",
+    "/api/holdings/series",
+];
+
+/// SEC-2: an out-of-range `count` is a client error (400) with a clear message —
+/// NOT a panic, and not a silently clamped report that would render a
+/// plausible-looking chart nobody asked for.
+///
+/// `count=0` used to panic `index out of bounds` in `budget_report`;
+/// `count=18446744073709551615` used to panic `capacity overflow` in
+/// `last_n_buckets` on all four. Both returned a 500 once `CatchPanicLayer` was
+/// installed; neither should reach a panic at all.
 #[tokio::test]
-async fn report_get_carries_permissive_cors_header() {
+async fn out_of_range_count_is_400_on_every_endpoint() {
+    let journal = sample_journal();
+    for endpoint in COUNT_ENDPOINTS {
+        for count in ["0", "1201", "18446744073709551615"] {
+            let uri = format!("{endpoint}?count={count}");
+            let (status, _, _) = get_on(&journal, &uri).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "GET {uri} must be a 400, not a panic or a clamped report"
+            );
+        }
+        // Negative and non-numeric counts are rejected by the query extractor.
+        for count in ["-1", "lots"] {
+            let uri = format!("{endpoint}?count={count}");
+            let (status, _, _) = get_on(&journal, &uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "GET {uri} must be a 400");
+        }
+    }
+}
+
+/// The boundaries of the accepted range still serve a real report, so the
+/// validation rejects only what is genuinely out of range.
+#[tokio::test]
+async fn in_range_count_is_accepted_on_every_endpoint() {
+    let journal = sample_journal();
+    for endpoint in COUNT_ENDPOINTS {
+        for count in ["1", "12", "1200"] {
+            let uri = format!("{endpoint}?count={count}");
+            let (status, _, _) = get_on(&journal, &uri).await;
+            assert_eq!(status, StatusCode::OK, "GET {uri} must still be a 200");
+        }
+    }
+}
+
+/// `count` is optional: omitting it keeps the documented default rather than
+/// tripping the new range check.
+#[tokio::test]
+async fn absent_count_still_uses_the_default() {
+    let journal = sample_journal();
+    for endpoint in COUNT_ENDPOINTS {
+        let (status, _, _) = get_on(&journal, endpoint).await;
+        assert_eq!(status, StatusCode::OK, "GET {endpoint} must be a 200");
+    }
+    // The default is 12 buckets, so an explicit 12 matches an omitted count.
+    assert_eq!(
+        body_ok(&journal, "/api/budget").await,
+        body_ok(&journal, "/api/budget?count=12").await
+    );
+}
+
+/// SEC-1: the native report routes are same-origin only, like everything else —
+/// a cross-origin `Origin` gets no `access-control-allow-origin` back, so the
+/// browser will not let the page that asked read the report.
+#[tokio::test]
+async fn report_get_carries_no_cors_header_by_default() {
     let journal = sample_journal();
     let (status, allow_origin, _) = get_on(
         &journal,
@@ -771,5 +843,8 @@ async fn report_get_carries_permissive_cors_header() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(allow_origin.as_deref(), Some("*"));
+    assert_eq!(
+        allow_origin, None,
+        "no CORS layer is installed unless --allow-origin names an exact origin"
+    );
 }

@@ -10,7 +10,13 @@
 //! and `/api/*` routes always win):
 //! - `/` and `/index.html` → the SPA shell (`index.html`), with a small marker
 //!   script injected so the SPA knows it is running embedded and should use
-//!   same-origin relative URLs.
+//!   same-origin relative URLs — and, when the server requires one, the access
+//!   token the SPA must present on every API call.
+//!
+//! The shell is deliberately the one thing served WITHOUT a token: the browser
+//! has nothing to present until it has loaded the page. That is safe against a
+//! hostile *web page* (no CORS layer, so it cannot read the shell) but not
+//! against another local process — see the threat model in [`crate::security`].
 //! - a real embedded asset path (e.g. `/_app/immutable/...`, `/robots.txt`) →
 //!   that file, with a guessed `Content-Type` (and a long immutable cache for
 //!   the content-hashed `_app/immutable/` assets).
@@ -26,6 +32,8 @@ use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
 use rust_embed::RustEmbed;
 
+use crate::security::{self, AccessToken};
+
 /// The built SPA. Resolved relative to this crate so the workspace layout
 /// (`crates/ledgeline-server` → `web/build`) is explicit; `build.rs` guarantees
 /// the folder exists even on a fresh checkout.
@@ -39,15 +47,33 @@ struct SpaAssets;
 /// setup modal and is immune to a stale/ephemeral port in `localStorage`.
 const EMBED_MARKER: &str = "<script>window.__LEDGELINE_EMBEDDED__=true</script>";
 
+/// The marker script, extended with the per-process access token when the server
+/// requires one. A token in the page body is unreadable cross-origin, so this is
+/// how the same-origin SPA gets its credential for free.
+///
+/// [`AccessToken::parse`] restricts the token to `[A-Za-z0-9._-]`, so it cannot
+/// break out of the JavaScript string literal it lands in.
+fn embed_script(token: Option<&AccessToken>) -> Cow<'static, str> {
+    match token {
+        None => Cow::Borrowed(EMBED_MARKER),
+        Some(token) => Cow::Owned(format!(
+            "<script>window.__LEDGELINE_EMBEDDED__=true;window.__LEDGELINE_TOKEN__=\"{}\"</script>",
+            token.as_str()
+        )),
+    }
+}
+
 /// Shown only when the SPA was never built AND `build.rs`'s placeholder is
 /// somehow missing too — a belt-and-suspenders fallback, never the normal path.
 const MISSING_SPA_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\">\
 <title>Ledgeline</title></head><body><h1>Ledgeline SPA not built</h1>\
 <p>Run <code>bun run build</code> in <code>web/</code>, then rebuild.</p></body></html>";
 
-/// The SPA shell with the embedded-mode marker injected right after `<head>`
-/// (falling back to a prefix if the document has no `<head>`).
-fn injected_index() -> String {
+/// The SPA shell with the embedded-mode marker (and access token, when there is
+/// one) injected right after `<head>` — falling back to a prefix if the document
+/// has no `<head>`.
+fn injected_index(token: Option<&AccessToken>) -> String {
+    let marker = embed_script(token);
     let raw = match SpaAssets::get("index.html") {
         Some(file) => String::from_utf8_lossy(&file.data).into_owned(),
         None => return MISSING_SPA_HTML.to_string(),
@@ -55,14 +81,28 @@ fn injected_index() -> String {
     match raw.find("<head>") {
         Some(head) => {
             let at = head + "<head>".len();
-            let mut out = String::with_capacity(raw.len() + EMBED_MARKER.len());
+            let mut out = String::with_capacity(raw.len() + marker.len());
             out.push_str(&raw[..at]);
-            out.push_str(EMBED_MARKER);
+            out.push_str(&marker);
             out.push_str(&raw[at..]);
             out
         }
-        None => format!("{EMBED_MARKER}{raw}"),
+        None => format!("{marker}{raw}"),
     }
+}
+
+/// The shell response, carrying a Content-Security-Policy computed from the
+/// bytes we are about to send: `script-src` gets a `'sha256-…'` for each inline
+/// script actually present, so the policy tracks both SvelteKit's per-build
+/// bootstrap script and the token we just injected.
+fn shell_response(token: Option<&AccessToken>) -> Response {
+    let html = injected_index(token);
+    let csp = security::shell_csp(&html);
+    let mut response = Html(html).into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_SECURITY_POLICY, csp);
+    response
 }
 
 /// Serve an embedded asset with a guessed content type, caching the
@@ -84,11 +124,11 @@ fn asset_response(path: &str, data: Cow<'static, [u8]>) -> Response {
 
 /// Router `fallback`: serve the SPA (shell + assets) for everything the explicit
 /// wire / `/api/*` routes did not match. See the module docs for the contract.
-pub(crate) async fn fallback(uri: Uri) -> Response {
+pub(crate) async fn fallback(uri: Uri, token: Option<AccessToken>) -> Response {
     let path = uri.path().trim_start_matches('/');
 
     if path.is_empty() || path == "index.html" {
-        return Html(injected_index()).into_response();
+        return shell_response(token.as_ref());
     }
     // An `/api/...` miss must be a real 404 — serving the shell here would break
     // the native client's engine-presence detection.
@@ -98,6 +138,55 @@ pub(crate) async fn fallback(uri: Uri) -> Response {
     match SpaAssets::get(path) {
         Some(file) => asset_response(path, file.data),
         // Unknown non-asset path → hand SvelteKit's client-side router the shell.
-        None => Html(injected_index()).into_response(),
+        None => shell_response(token.as_ref()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_token() -> AccessToken {
+        AccessToken::parse("token-for-unit-tests").expect("well-formed")
+    }
+
+    #[test]
+    fn embed_script_omits_the_token_when_there_is_none() {
+        assert_eq!(embed_script(None), EMBED_MARKER);
+    }
+
+    #[test]
+    fn embed_script_publishes_the_token_to_the_page() {
+        let script = embed_script(Some(&sample_token()));
+        assert!(script.contains("window.__LEDGELINE_EMBEDDED__=true"));
+        assert!(script.contains("window.__LEDGELINE_TOKEN__=\"token-for-unit-tests\""));
+    }
+
+    /// The shell's CSP must cover the exact script bytes it ships, token and
+    /// all — otherwise the browser silently refuses to boot the SPA.
+    #[test]
+    fn shell_csp_hashes_the_injected_token_script() {
+        let html = injected_index(Some(&sample_token()));
+        let csp = security::shell_csp(&html);
+        let csp = csp.to_str().expect("ascii policy");
+        for script in inline_scripts(&html) {
+            let hash = security::csp_sha256(script);
+            assert!(
+                csp.contains(&hash),
+                "CSP is missing the hash for an inline script it serves: {script:?}"
+            );
+        }
+        assert!(csp.contains("connect-src 'self'"));
+    }
+
+    /// Every inline `<script>` body in `html`, mirroring what a browser sees.
+    fn inline_scripts(html: &str) -> Vec<&str> {
+        html.split("<script")
+            .skip(1)
+            .filter_map(|chunk| chunk.split_once('>'))
+            .filter(|(open, _)| !open.contains("src="))
+            .filter_map(|(_, rest)| rest.split_once("</script>"))
+            .map(|(body, _)| body)
+            .collect()
     }
 }

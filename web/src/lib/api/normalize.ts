@@ -6,13 +6,25 @@
 // Emits frozen domain objects; Dec is built from decimalMantissa/decimalPlaces
 // with a Number.isSafeInteger guard (never a silent float fallback).
 
+import type {Problem, Severity} from "$lib/checks/engine";
 import type {AccountDecl} from "$lib/domain/accountTypes";
 import {parseAccountTypeTag} from "$lib/domain/accountTypes";
 import type {Dec} from "$lib/domain/money";
 import {formatAmount} from "$lib/domain/money";
 import type {Amount, AmountStyle, Posting, PriceDirective, Transaction, TxnStatus} from "$lib/domain/types";
 import {ApiShapeError} from "./client";
-import type {RawAccount, RawAmount, RawAmountStyle, RawMarketPrice, RawPosting, RawPriceDirective, RawQuantity, RawTransaction} from "./types.raw";
+import type {
+    RawAccount,
+    RawAmount,
+    RawAmountStyle,
+    RawDiagnostic,
+    RawJournalPayload,
+    RawMarketPrice,
+    RawPosting,
+    RawPriceDirective,
+    RawQuantity,
+    RawTransaction,
+} from "./types.raw";
 
 /** Shallow-freeze an array without losing its mutable-typed contract. */
 function frozen<T>(items: T[]): T[] {
@@ -142,9 +154,90 @@ function toTransaction(raw: RawTransaction): Transaction {
     return Object.freeze(txn);
 }
 
+/**
+ * The transactions array out of either journal payload shape: a bare array
+ * (plain hledger-web / pre-diagnostics engine) or a `{transactions, diagnostics}`
+ * envelope. Returns null when it is neither.
+ */
+function journalTransactions(raw: unknown): RawTransaction[] | null {
+    if (Array.isArray(raw)) return raw as RawTransaction[];
+    if (typeof raw === "object" && raw !== null) {
+        const envelope = (raw as RawJournalPayload).transactions;
+        if (Array.isArray(envelope)) return envelope;
+    }
+    return null;
+}
+
 export function normalizeTransactions(raw: unknown): Transaction[] {
-    if (!Array.isArray(raw)) throw new ApiShapeError("GET /transactions: expected a JSON array");
-    return raw.map((txn) => toTransaction(txn as RawTransaction));
+    const list = journalTransactions(raw);
+    if (list === null) throw new ApiShapeError("GET /transactions: expected a JSON array");
+    return list.map((txn) => toTransaction(txn));
+}
+
+/** The only `rule` values the engine emits. Adding one = a single entry here. */
+const DIAGNOSTIC_RULES: ReadonlySet<string> = new Set(["unbalanced", "assertion"]);
+/** Valid `Severity` values (the domain enum); anything else is junk we refuse to hand the UI. */
+const DIAGNOSTIC_SEVERITIES: ReadonlySet<string> = new Set<Severity>(["error", "warning", "info"]);
+
+/**
+ * One wire diagnostic → a `Problem`, or null when the entry is unusable.
+ *
+ * Deliberately does NOT throw, unlike every other decoder in this file: these
+ * are advisory findings the engine attaches to a journal it opened
+ * successfully, so a junk entry must cost us that ONE finding, never the whole
+ * journal load.
+ *
+ * The index translation is the subtle part. The wire `txnIndex` is a 0-based
+ * position in the served array, but `Problem.txnIndex` is matched against
+ * `Transaction.index` (hledger's 1-based `tindex`) by the row flags, the
+ * drawer's date/description lookup and `problems.requestFocus`. So the position
+ * is resolved through `txns` to the transaction's own index. A position outside
+ * the array cannot be anchored to a row at all, so it is dropped.
+ */
+function toDiagnostic(raw: unknown, txns: readonly Transaction[]): Problem | null {
+    if (typeof raw !== "object" || raw === null) return null;
+    const entry = raw as RawDiagnostic;
+    if (typeof entry.rule !== "string" || !DIAGNOSTIC_RULES.has(entry.rule)) return null;
+    if (typeof entry.severity !== "string" || !DIAGNOSTIC_SEVERITIES.has(entry.severity)) return null;
+    if (typeof entry.message !== "string" || entry.message.trim() === "") return null;
+    const position = entry.txnIndex;
+    if (position === undefined || !Number.isInteger(position) || position < 0 || position >= txns.length) return null;
+    return Object.freeze({
+        txnIndex: txns[position].index,
+        rule: entry.rule,
+        severity: entry.severity as Severity,
+        message: entry.message,
+    });
+}
+
+/**
+ * Engine-computed journal diagnostics off the journal payload → `Problem`s, for
+ * merging into the checks pipeline (see CheckContext.diagnostics).
+ *
+ * Total and non-throwing by contract: a missing/null/non-array `diagnostics`
+ * field, a payload that is a bare transactions array (older engine), or an
+ * entry with a bad rule/severity/message/txnIndex all degrade to "no
+ * diagnostics" or a skipped entry. Exact duplicates are collapsed — the drawer
+ * keys its list by `txnIndex + message`, and Svelte throws on a duplicate key.
+ */
+export function normalizeDiagnostics(raw: unknown, txns: readonly Transaction[]): Problem[] {
+    let list: unknown[];
+    if (Array.isArray(raw)) list = raw;
+    else if (typeof raw === "object" && raw !== null && Array.isArray((raw as RawJournalPayload).diagnostics)) {
+        list = (raw as RawJournalPayload).diagnostics as unknown[];
+    } else return frozen([]);
+
+    const problems: Problem[] = [];
+    const seen = new Set<string>();
+    for (const item of list) {
+        const problem = toDiagnostic(item, txns);
+        if (problem === null) continue;
+        const key = `${problem.txnIndex} ${problem.rule} ${problem.message}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        problems.push(problem);
+    }
+    return frozen(problems);
 }
 
 const marketPriceStyle = (qty: Dec): AmountStyle => Object.freeze({side: "L" as const, spaced: false, precision: qty.p, decimalPoint: ".", digitGroups: null});

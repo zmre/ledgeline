@@ -14,6 +14,7 @@
 //     market value $10,552.63 with em-dash basis/gain and inline warnings
 
 import {expect, test, type Page} from "@playwright/test";
+import {API_TOKEN} from "../playwright.config";
 
 const API_URL = "http://127.0.0.1:5099";
 const FIXED_NOW = new Date(2026, 6, 8, 12, 0, 0); // local 2026-07-08
@@ -22,9 +23,12 @@ const EM_DASH = "—";
 
 test.beforeEach(async ({page}) => {
     await page.clock.setFixedTime(FIXED_NOW); // Date is fake, timers keep running (URL-sync debounce)
-    await page.addInitScript((url) => {
-        localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url}));
-    }, API_URL);
+    await page.addInitScript(
+        ([url, token]) => {
+            localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token}));
+        },
+        [API_URL, API_TOKEN]
+    );
 });
 
 function stat(page: Page, title: string) {

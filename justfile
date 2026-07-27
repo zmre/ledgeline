@@ -9,8 +9,30 @@ dev:
 test:
     cd web && bun run test:unit
 
+# Without LEDGELINE_API_URL the *.integration.test.ts suites report as SKIPPED, so
+# plain `just test` never exercises the fixture→engine→JSON→decode→rendered-string
+# path at all. Local twin of the CI `e2e` job's first half.
+# Run the round-trip contract tests against a live engine (vitest)
+test-integration port="5055":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -p ledgeline-server
+    ./target/debug/ledgeline --server fixtures/sample.journal --port {{port}} &
+    server=$!
+    trap 'kill "$server" 2>/dev/null || true' EXIT
+    for _ in $(seq 1 60); do
+        curl -fsS http://127.0.0.1:{{port}}/version >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+    curl -fsS http://127.0.0.1:{{port}}/version
+    cd web && LEDGELINE_API_URL=http://127.0.0.1:{{port}} bun run test:unit
+
+# playwright.config.ts launches ../target/debug/ledgeline as the fixture API
+# server, so build it first ($LEDGELINE_BIN overrides that path, as CI does to
+# point at the Nix-built binary).
 # Run e2e tests (playwright)
 e2e:
+    cargo build -p ledgeline-server
     cd web && bun run test:e2e
 
 # Typecheck + svelte-check
