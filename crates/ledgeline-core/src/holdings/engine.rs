@@ -787,6 +787,201 @@ fn latest_cost_prices(
     Ok(latest)
 }
 
+/// The valuation commodity used when the journal declares no prices at all and
+/// the caller names none either.
+const FALLBACK_BASE: &str = "$";
+
+/// Every non-currency commodity with a POSITIVE net quantity in scope at
+/// `as_of` — exactly the symbols that become rows in the report, and so exactly
+/// the ones whose pricing decides whether the portfolio reads as a number or as
+/// zero.
+///
+/// A deliberately cheap pre-pass: it nets share quantities and nothing else,
+/// with none of [`build_pools`]'s basis/taint/split/flow machinery, because it
+/// has to run BEFORE a base commodity exists — choosing that base is what it is
+/// for.
+fn held_symbols(
+    txns: &[Transaction],
+    as_of: &str,
+    in_scope: &dyn Fn(&str) -> bool,
+    declared: &BTreeMap<String, AccountType>,
+) -> Result<Vec<Commodity>, ReportError> {
+    let mut net: BTreeMap<&str, Dec> = BTreeMap::new();
+    for txn in txns {
+        if txn.date.as_str() > as_of {
+            continue;
+        }
+        for posting in &txn.postings {
+            if !in_scope(&posting.account.0) || !is_holding_account(&posting.account.0, declared) {
+                continue;
+            }
+            for amount in &posting.amounts {
+                if is_currency(&amount.commodity.0) {
+                    continue;
+                }
+                let slot = net
+                    .entry(amount.commodity.0.as_str())
+                    .or_insert_with(Dec::zero);
+                *slot = slot.add(amount.quantity)?;
+            }
+        }
+    }
+    Ok(net
+        .into_iter()
+        .filter(|(_, shares)| shares.mantissa > 0)
+        .map(|(symbol, _)| Commodity(symbol.to_string()))
+        .collect())
+}
+
+/// How many of `held` the report could actually put a per-unit price on if it
+/// valued everything in `target`.
+///
+/// It runs the SAME two lookups [`compute_holdings`] runs — a `P` directive
+/// (direct, or converted through a rate to `target`) and then a cost annotation
+/// — so a candidate's measured coverage can never disagree with the report the
+/// candidate is being chosen for.
+fn coverage(
+    held: &[Commodity],
+    target: &Commodity,
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    db: &PriceDb,
+    as_of: &str,
+) -> Result<usize, ReportError> {
+    let cost_prices = latest_cost_prices(txns, db, target, as_of)?;
+    let mut covered = 0;
+    for symbol in held {
+        let priced = symbol == target
+            || latest_directive_price(prices, db, &symbol.0, target, as_of)?.is_some()
+            || cost_prices.contains_key(&symbol.0);
+        if priced {
+            covered += 1;
+        }
+    }
+    Ok(covered)
+}
+
+/// The commodity a holdings report over `scope` values everything in.
+///
+/// `scope.value_in` wins outright when set — that is the caller (a `valueIn`
+/// query param, or the journal's own `D` directive) saying what the answer
+/// should be denominated in, and second-guessing it would just move the
+/// surprise somewhere else.
+///
+/// Otherwise the candidates from [`PriceDb::base_candidates`] are walked in rank
+/// order and the one that prices the MOST in-scope holdings wins, ties going to
+/// the higher-ranked (more frequent, then lexically smaller) candidate. Rank
+/// alone — the old rule — has no idea what it is valuing: three jotted-down
+/// `P … 1.15 EUR` travel cross-rates outvote the single `P VTI $120.00` pricing
+/// an entire portfolio, EUR becomes the base, nothing connects VTI to EUR, and a
+/// $1,200 portfolio reports $0 (HOLD-3). Coverage is what makes the DEFAULT
+/// safe, which matters far more than the override: almost nobody will set one.
+///
+/// This is NOT what hledger does, because hledger never faces the question: its
+/// `-V` values each commodity in ITS OWN latest price target, so the same
+/// journal yields `$1,200.00` for VTI and leaves the untouched travel currencies
+/// in EUR — a multi-commodity result this report's single `base` field cannot
+/// represent. Picking the base that prices the most of the portfolio is the
+/// closest single-commodity approximation of that.
+fn choose_base(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    db: &PriceDb,
+    as_of: &str,
+    value_in: Option<&Commodity>,
+    in_scope: &dyn Fn(&str) -> bool,
+    declared: &BTreeMap<String, AccountType>,
+) -> Result<Commodity, ReportError> {
+    if let Some(target) = value_in {
+        return Ok(target.clone());
+    }
+    // One candidate (the overwhelmingly common single-currency journal) or none:
+    // there is nothing to choose between, so skip the scan entirely and leave
+    // that journal exactly as fast as it was.
+    let candidates = db.base_candidates();
+    if candidates.len() < 2 {
+        return Ok(candidates
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Commodity(FALLBACK_BASE.to_string())));
+    }
+    let held = held_symbols(txns, as_of, in_scope, declared)?;
+    if held.is_empty() {
+        return Ok(candidates[0].clone());
+    }
+    let mut best = &candidates[0];
+    let mut best_covered = 0;
+    for candidate in candidates {
+        let covered = coverage(&held, candidate, txns, prices, db, as_of)?;
+        if covered > best_covered {
+            best = candidate;
+            best_covered = covered;
+        }
+        if best_covered == held.len() {
+            break; // nothing can beat pricing everything
+        }
+    }
+    Ok(best.clone())
+}
+
+/// The commodity a holdings report over `scope` will value everything in —
+/// [`choose_base`] exposed so callers can pin it.
+///
+/// [`holdings_series`](crate::holdings::holdings_series) uses it to value every
+/// point of a trend in ONE commodity (the scope's holdings, and so the safest
+/// base, differ from bucket to bucket), and the HTTP layer uses it to answer
+/// "what would this request be denominated in?" without computing the report.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn valuation_base(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    scope: &HoldingsScope,
+) -> Result<Commodity, ReportError> {
+    let db = PriceDb::build(prices);
+    let predicate = scope_predicate(scope);
+    let declared = declared_types(&account_decls_from(accounts));
+    choose_base(
+        txns,
+        prices,
+        &db,
+        &scope.as_of,
+        scope.value_in.as_ref(),
+        &predicate,
+        &declared,
+    )
+}
+
+/// True when valuing this scope in `target` prices at least one of the holdings
+/// it contains (vacuously true for a scope that holds nothing).
+///
+/// The HTTP layer's admission test for an explicit `valueIn`: a commodity that
+/// prices NOTHING — a typo, or a real commodity with no route to the portfolio —
+/// yields a report of all-zero totals and one `unpriced` warning per row, which
+/// is precisely the "plausible number instead of an error" failure this review is
+/// against. Answering `400` instead costs one cheap netting pass.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn prices_any_held(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    scope: &HoldingsScope,
+    target: &Commodity,
+) -> Result<bool, ReportError> {
+    let db = PriceDb::build(prices);
+    let predicate = scope_predicate(scope);
+    let declared = declared_types(&account_decls_from(accounts));
+    let held = held_symbols(txns, &scope.as_of, &predicate, &declared)?;
+    if held.is_empty() {
+        return Ok(true);
+    }
+    Ok(coverage(&held, target, txns, prices, &db, &scope.as_of)? > 0)
+}
+
 /// Account predicate for a scope: `Include` + empty set = everything;
 /// `account_matches` subtree semantics. Port of the TS `scopePredicate`.
 fn scope_predicate(scope: &HoldingsScope) -> impl Fn(&str) -> bool + '_ {
@@ -826,15 +1021,20 @@ pub fn compute_holdings(
     scope: &HoldingsScope,
 ) -> Result<HoldingsReport, ReportError> {
     let db = PriceDb::build(prices);
-    let base_commodity = db
-        .base_commodity()
-        .cloned()
-        .unwrap_or_else(|| Commodity("$".to_string()));
-    let base = base_commodity.0.clone();
     let predicate = scope_predicate(scope);
     let account_tags = account_tag_map(accounts);
     let commodity_names = commodity_name_map(commodity_tags);
     let declared = declared_types(&account_decls_from(accounts));
+    let base_commodity = choose_base(
+        txns,
+        prices,
+        &db,
+        &scope.as_of,
+        scope.value_in.as_ref(),
+        &predicate,
+        &declared,
+    )?;
+    let base = base_commodity.0.clone();
     let pools = build_pools(
         txns,
         &db,
@@ -862,6 +1062,12 @@ pub fn compute_holdings(
                 mode: scope.mode,
                 as_of: start.to_string(),
                 gain_since: None,
+                // Pin the base rather than letting the start snapshot choose its
+                // own: the scope holds different symbols at `start` than at
+                // `as_of`, so coverage could legitimately favour a different
+                // commodity there — and subtracting a value in one commodity
+                // from a value in another is not a gain.
+                value_in: Some(base_commodity.clone()),
             };
             compute_holdings(txns, prices, accounts, commodity_tags, &start_scope)?
                 .holdings
@@ -1101,8 +1307,8 @@ pub fn compute_holdings(
 mod tests {
     use super::*;
     use crate::holdings::test_helpers::{
-        account_decl, amt, buy, buy_no_cost, commodity_tags, pd, posting, scope, scope_since, sell,
-        txn, usd, with_cost,
+        account_decl, amt, buy, buy_no_cost, commodity_tags, pd, posting, scope, scope_in,
+        scope_since, sell, txn, usd, with_cost,
     };
     use crate::holdings::types::HoldingsReport;
 
@@ -3076,5 +3282,164 @@ mod tests {
             Some(Dec::new(200, 0)),
             "windowed gain total"
         );
+    }
+
+    // ---- choosing the valuation commodity (HOLD-3) ----
+
+    /// 10 VTI bought at `$120.00`, priced by one `P VTI $120.00` directive.
+    fn usd_portfolio() -> Vec<Transaction> {
+        vec![txn(
+            1,
+            "2026-01-05",
+            vec![
+                buy("assets:broker:vti", "VTI", 10, 12000, true),
+                posting("assets:broker:cash", vec![usd(-120_000)], &[]),
+            ],
+            &[],
+        )]
+    }
+
+    /// The single `P VTI $120.00` that prices the portfolio, plus three jotted
+    /// travel cross-rates that price nothing it holds.
+    fn cross_rate_prices() -> Vec<PriceDirective> {
+        vec![
+            pd("2026-06-30", "VTI", 12000, "$"),
+            pd("2026-07-01", "GBP", 115, "EUR"),
+            pd("2026-07-02", "CHF", 115, "EUR"),
+            pd("2026-07-03", "SEK", 115, "EUR"),
+        ]
+    }
+
+    /// HOLD-3. Frequency puts `EUR` first (3 votes to 1) and nothing connects
+    /// `VTI` to `EUR`, so the whole $1,200 portfolio used to read `$0` with a
+    /// null basis. Coverage is what has to win.
+    #[test]
+    fn base_prefers_the_commodity_that_actually_prices_the_portfolio() {
+        let prices = cross_rate_prices();
+        assert_eq!(
+            PriceDb::build(&prices).base_commodity(),
+            Some(&Commodity("EUR".to_string())),
+            "the frequency rule alone still says EUR — that is the bug being overridden"
+        );
+        let report = run(
+            &usd_portfolio(),
+            &prices,
+            &scope("2026-07-16", ScopeMode::Include, &[]),
+        );
+        // hledger 1.52: `bal --value=end,'$'` → $1,200.00 assets:broker:vti.
+        assert_eq!(report.base, "$");
+        assert_eq!(report.totals.market_value, Dec::new(120_000, 2));
+        assert_eq!(report.totals.basis, Some(Dec::new(120_000, 2)));
+        assert!(
+            report.warnings.is_empty(),
+            "a fully priced, fully costed position warns about nothing: {:?}",
+            report.warnings
+        );
+    }
+
+    /// When every candidate prices the portfolio equally well, the old ranking
+    /// still decides — coverage only breaks the cases it can see a difference in.
+    #[test]
+    fn base_falls_back_to_frequency_when_coverage_ties() {
+        let prices = vec![
+            pd("2026-06-30", "VTI", 12000, "$"),
+            pd("2026-06-30", "VTI", 11000, "EUR"),
+            pd("2026-07-01", "GBP", 115, "EUR"),
+        ];
+        let report = run(
+            &usd_portfolio(),
+            &prices,
+            &scope("2026-07-16", ScopeMode::Include, &[]),
+        );
+        assert_eq!(report.base, "EUR", "EUR outvotes $ 2:1 and prices VTI too");
+        // hledger 1.52: `bal --value=end,EUR` → 1100.00 EUR assets:broker:vti.
+        assert_eq!(report.totals.market_value, Dec::new(110_000, 2));
+    }
+
+    /// An explicit `value_in` is used verbatim — including when it prices
+    /// nothing. Second-guessing the caller would just move the surprise.
+    #[test]
+    fn explicit_value_in_is_honoured_over_the_automatic_choice() {
+        let txns = usd_portfolio();
+        let prices = cross_rate_prices();
+        let priced = run(
+            &txns,
+            &prices,
+            &scope_in("2026-07-16", ScopeMode::Include, &[], "$"),
+        );
+        assert_eq!(priced.base, "$");
+        assert_eq!(priced.totals.market_value, Dec::new(120_000, 2));
+
+        let unpriced = run(
+            &txns,
+            &prices,
+            &scope_in("2026-07-16", ScopeMode::Include, &[], "EUR"),
+        );
+        assert_eq!(unpriced.base, "EUR");
+        assert!(unpriced.totals.market_value.is_zero());
+        // The HTTP layer refuses this request outright — see `prices_any_held`.
+        assert!(
+            !prices_any_held(
+                &txns,
+                &prices,
+                &[],
+                &scope("2026-07-16", ScopeMode::Include, &[]),
+                &Commodity("EUR".to_string()),
+            )
+            .expect("coverage math does not overflow")
+        );
+    }
+
+    /// The admission test the `valueIn` param is held to: `$` prices the
+    /// portfolio, `EUR` and a typo do not, and a scope holding nothing accepts
+    /// anything (there is nothing to leave unpriced).
+    #[test]
+    fn prices_any_held_answers_the_valuation_admission_question() {
+        let txns = usd_portfolio();
+        let prices = cross_rate_prices();
+        let any = |scope: &HoldingsScope, target: &str| {
+            prices_any_held(&txns, &prices, &[], scope, &Commodity(target.to_string()))
+                .expect("coverage math does not overflow")
+        };
+        let held = scope("2026-07-16", ScopeMode::Include, &[]);
+        assert!(any(&held, "$"));
+        assert!(any(&held, "VTI"), "a commodity always prices itself");
+        assert!(!any(&held, "EUR"));
+        assert!(!any(&held, "NOPE"));
+        // Nothing held at all (before the buy): no holding can be left unpriced.
+        let empty = scope("2025-01-01", ScopeMode::Include, &[]);
+        assert!(any(&empty, "EUR"));
+        assert!(any(&empty, "NOPE"));
+    }
+
+    /// The commodity a report will be denominated in, without computing it.
+    #[test]
+    fn valuation_base_reports_the_choice_the_report_will_make() {
+        let txns = usd_portfolio();
+        let prices = cross_rate_prices();
+        let base = |scope: &HoldingsScope| {
+            valuation_base(&txns, &prices, &[], scope)
+                .expect("base resolution does not overflow")
+                .0
+        };
+        assert_eq!(base(&scope("2026-07-16", ScopeMode::Include, &[])), "$");
+        assert_eq!(
+            base(&scope_in("2026-07-16", ScopeMode::Include, &[], "EUR")),
+            "EUR"
+        );
+        // No holdings in scope: nothing to cover, so the ranking answers.
+        assert_eq!(base(&scope("2025-01-01", ScopeMode::Include, &[])), "EUR");
+    }
+
+    /// With no `P` directives at all there is nothing to rank, and the report
+    /// keeps its historical `$` fallback.
+    #[test]
+    fn base_falls_back_to_dollars_without_any_prices() {
+        let report = run(
+            &usd_portfolio(),
+            &[],
+            &scope("2026-07-16", ScopeMode::Include, &[]),
+        );
+        assert_eq!(report.base, "$");
     }
 }

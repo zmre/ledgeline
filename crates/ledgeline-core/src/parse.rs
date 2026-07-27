@@ -192,6 +192,7 @@ impl Ctx {
             commodity_styles: self.commodity_styles,
             commodity_tags: self.commodity_tags,
             prices: self.prices,
+            default_commodity: self.default_commodity.map(|(commodity, _style)| commodity),
         }
     }
 }

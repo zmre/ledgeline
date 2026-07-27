@@ -31,6 +31,7 @@ fn all_accounts_scope() -> HoldingsScope {
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
         gain_since: None,
+        value_in: None,
     }
 }
 
@@ -220,6 +221,7 @@ fn scoping_to_a_single_stock_account_isolates_it() {
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
         gain_since: None,
+        value_in: None,
     };
     let report = compute_holdings(
         &journal.transactions,
@@ -248,6 +250,7 @@ fn windowed_report() -> HoldingsReport {
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
         gain_since: Some("2026-01-01".to_string()),
+        value_in: None,
     };
     compute_holdings(
         &journal.transactions,
@@ -355,6 +358,7 @@ fn holding_name(text: &str, symbol: &str) -> String {
         mode: ScopeMode::Include,
         as_of: "2024-12-31".to_string(),
         gain_since: None,
+        value_in: None,
     };
     let report = compute_holdings(
         &journal.transactions,

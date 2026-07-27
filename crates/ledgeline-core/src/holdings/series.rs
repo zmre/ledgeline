@@ -14,7 +14,7 @@ use crate::reports::{
     Interval, ReportError, bucket_end, bucket_label, compare_iso, last_n_buckets,
 };
 
-use super::engine::compute_holdings;
+use super::engine::{compute_holdings, valuation_base};
 use super::types::HoldingsScope;
 
 /// One point in a [`HoldingsSeries`].
@@ -63,6 +63,12 @@ pub fn holdings_series(
     count: usize,
 ) -> Result<HoldingsSeries, ReportError> {
     let keys = last_n_buckets(&scope.as_of, interval, count)?;
+    // Resolve the valuation commodity ONCE, from the scope's own `as_of`, and
+    // pin every point to it. Each point is a different snapshot holding a
+    // different set of symbols, so left to choose for itself an early (or empty)
+    // bucket could legitimately land on a different commodity than the last one —
+    // and a trend line whose units change partway along is worse than no trend.
+    let base_commodity = valuation_base(txns, prices, accounts, scope)?;
     let mut base = "$".to_string();
     let mut has_basis = false;
     let mut points = Vec::with_capacity(keys.len());
@@ -80,6 +86,7 @@ pub fn holdings_series(
             // The trend tracks market value/basis only; gain windowing is a
             // per-snapshot concern and never applies to a series point.
             gain_since: None,
+            value_in: Some(base_commodity.clone()),
         };
         let report = compute_holdings(txns, prices, accounts, commodity_tags, &point_scope)?;
         base = report.base;
@@ -104,7 +111,7 @@ pub fn holdings_series(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::holdings::test_helpers::{buy, posting, scope, txn, usd};
+    use crate::holdings::test_helpers::{amt, buy, pd, posting, scope, txn, usd, with_cost};
     use crate::holdings::types::ScopeMode;
 
     // VTI: 10 @ $200 on 2025-02-10, +10 @ $220 on 2025-04-10; priced $250 from
@@ -133,12 +140,7 @@ mod tests {
     }
 
     fn prices() -> Vec<PriceDirective> {
-        vec![crate::holdings::test_helpers::pd(
-            "2025-01-01",
-            "VTI",
-            25000,
-            "$",
-        )]
+        vec![pd("2025-01-01", "VTI", 25000, "$")]
     }
 
     fn values(series: &HoldingsSeries) -> Vec<f64> {
@@ -224,6 +226,66 @@ mod tests {
                 .iter()
                 .all(|p| p.basis.is_some_and(|b| b.is_zero()))
         );
+    }
+
+    /// HOLD-3. The scope holds a `$`-priced symbol early and a EUR-priced one at
+    /// `as_of`, so left to choose for itself each point would pick whichever
+    /// commodity prices ITS OWN holdings — plotting dollars and euros on one
+    /// line. The base is resolved once, from `scope.as_of`, and pinned.
+    #[test]
+    fn every_point_is_valued_in_one_pinned_commodity() {
+        let txns = vec![
+            txn(
+                1,
+                "2025-01-05",
+                vec![
+                    buy("assets:broker:us", "USDSYM", 10, 10000, true),
+                    posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-03-05",
+                vec![
+                    posting("assets:broker:us", vec![amt("USDSYM", -10, 0)], &[]),
+                    posting("assets:broker:cash", vec![usd(100_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                3,
+                "2025-04-05",
+                vec![
+                    posting(
+                        "assets:broker:eu",
+                        vec![with_cost(amt("EURSYM", 10, 0), 5000, true, "EUR")],
+                        &[],
+                    ),
+                    posting("assets:broker:cash", vec![amt("EUR", -50000, 2)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = vec![
+            pd("2025-01-01", "USDSYM", 10000, "$"),
+            pd("2025-04-01", "EURSYM", 5000, "EUR"),
+        ];
+        let series = holdings_series(
+            &txns,
+            &prices,
+            &[],
+            &[],
+            &scope("2025-05-31", ScopeMode::Include, &[]),
+            Interval::Monthly,
+            5,
+        )
+        .unwrap();
+        // At `as_of` only EURSYM is held, and nothing connects it to `$`.
+        assert_eq!(series.base, "EUR");
+        // January–March hold only the `$`-priced symbol, which EUR cannot value:
+        // an honest zero, NOT a $1,000 point smuggled onto a euro axis.
+        assert_eq!(values(&series), vec![0.0, 0.0, 0.0, 500.0, 500.0]);
     }
 
     #[test]

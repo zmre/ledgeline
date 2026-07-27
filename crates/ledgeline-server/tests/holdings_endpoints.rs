@@ -262,3 +262,163 @@ async fn holdings_defaults_and_bad_mode() {
     let (status, _, _) = get_on(&journal, "/api/holdings/series?interval=fortnightly").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+// ===========================================================================
+// `valueIn` — the valuation commodity (CLEANUP.md HOLD-3)
+// ===========================================================================
+
+/// A journal from `fixtures/reports/`, parsed the way the server parses one.
+fn reports_fixture(name: &str) -> Journal {
+    let path = common::fixtures_dir().join("reports").join(name);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name} readable: {e}"));
+    ledgeline_core::parse_journal(&text, &path.to_string_lossy()).expect("journal parses")
+}
+
+const FX_AS_OF: &str = "asOf=2026-07-16";
+
+/// HOLD-3 over HTTP: three unrelated `P … 1.15 EUR` travel rates used to make
+/// EUR the base, leaving a $1,200 portfolio at `marketValue = 0` with a null
+/// basis. hledger 1.52 says `$1,200.00`; so do we now.
+#[tokio::test]
+async fn holdings_default_base_prices_the_portfolio() {
+    let journal = reports_fixture("fx-cross-rates.journal");
+    let body = body_ok(&journal, &format!("/api/holdings?{FX_AS_OF}")).await;
+    assert_eq!(body["base"], "$");
+    assert_eq!(canon(&body["totals"]["marketValue"]), (1200, 0));
+    assert_eq!(canon(&body["totals"]["basis"]), (1200, 0));
+    assert_eq!(
+        body["warnings"].as_array().unwrap().len(),
+        0,
+        "no unpriced/missing-basis warnings survive: {}",
+        body["warnings"]
+    );
+    // The trend agrees, point for point.
+    let series = body_ok(
+        &journal,
+        &format!("/api/holdings/series?{FX_AS_OF}&interval=monthly&count=2"),
+    )
+    .await;
+    assert_eq!(series["base"], "$");
+    let points = series["points"].as_array().unwrap();
+    assert!(points.iter().all(|p| canon(&p["marketValue"]) == (1200, 0)));
+}
+
+/// An explicit `valueIn` overrides the automatic choice on both endpoints.
+#[tokio::test]
+async fn holdings_value_in_overrides_the_base() {
+    let journal = reports_fixture("fx-cross-rates-declared.journal");
+    // Default for THIS journal is `$` (its `D` directive) — see below.
+    let eur = body_ok(&journal, &format!("/api/holdings?{FX_AS_OF}&valueIn=EUR")).await;
+    assert_eq!(eur["base"], "EUR");
+    // hledger 1.52: `bal --value=end,EUR` → 1100.00 EUR assets:broker:vti.
+    assert_eq!(canon(&eur["totals"]["marketValue"]), (1100, 0));
+    assert_eq!(eur["totals"]["basis"], Value::Null);
+
+    let series = body_ok(
+        &journal,
+        &format!("/api/holdings/series?{FX_AS_OF}&valueIn=EUR&count=1"),
+    )
+    .await;
+    assert_eq!(series["base"], "EUR");
+    assert_eq!(canon(&series["points"][0]["marketValue"]), (1100, 0));
+
+    // An empty `valueIn` is not a request — it falls through to the default.
+    let empty = body_ok(&journal, &format!("/api/holdings?{FX_AS_OF}&valueIn=")).await;
+    assert_eq!(empty["base"], "$");
+}
+
+/// A `valueIn` that prices nothing in scope is a `400`, not an all-zero
+/// portfolio: a typo and a real-but-unreachable commodity fail the same way.
+#[tokio::test]
+async fn holdings_value_in_that_prices_nothing_is_rejected() {
+    let journal = reports_fixture("fx-cross-rates.journal");
+    for symbol in ["EUR", "NOPE", "GBP"] {
+        for route in ["/api/holdings", "/api/holdings/series"] {
+            let (status, _, _) =
+                get_on(&journal, &format!("{route}?{FX_AS_OF}&valueIn={symbol}")).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "{route}?valueIn={symbol} must be refused, not answered with zeros"
+            );
+        }
+    }
+    // The body names the parameter's value and says why.
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(format!("/api/holdings?{FX_AS_OF}&valueIn=NOPE"))
+        .body(Body::empty())
+        .expect("request builds");
+    let response = ledgeline_server::app(&journal)
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .expect("body collects")
+        .to_bytes();
+    let message = String::from_utf8_lossy(&bytes);
+    assert!(message.contains("NOPE"), "{message}");
+    assert!(message.contains("no price directive"), "{message}");
+
+    // …but a commodity that DOES price the portfolio is fine.
+    let ok = body_ok(&journal, &format!("/api/holdings?{FX_AS_OF}&valueIn=$")).await;
+    assert_eq!(ok["base"], "$");
+}
+
+/// With no `valueIn`, the journal's own `D` directive decides — here it is the
+/// only thing that can, because both candidates price the portfolio equally
+/// well and frequency alone would answer EUR.
+#[tokio::test]
+async fn holdings_falls_back_to_the_d_directive() {
+    let declared = reports_fixture("fx-cross-rates-declared.journal");
+    assert_eq!(
+        declared.default_commodity.as_ref().map(|c| c.0.as_str()),
+        Some("$")
+    );
+    let body = body_ok(&declared, &format!("/api/holdings?{FX_AS_OF}")).await;
+    assert_eq!(body["base"], "$", "`D $1,000.00` settles the tie");
+    // hledger 1.52: `bal --value=end,'$'` → $1,200.00 assets:broker:vti.
+    assert_eq!(canon(&body["totals"]["marketValue"]), (1200, 0));
+    assert_eq!(canon(&body["totals"]["basis"]), (1200, 0));
+    assert_eq!(
+        body_ok(
+            &declared,
+            &format!("/api/holdings/series?{FX_AS_OF}&count=1")
+        )
+        .await["base"],
+        "$"
+    );
+
+    // Drop the `D` line and the same journal reports in EUR again — the fallback
+    // is doing the work, not some other difference between the two fixtures.
+    let without_d = reports_fixture("fx-cross-rates.journal");
+    assert_eq!(without_d.default_commodity, None);
+    let sample = sample_journal();
+    assert_eq!(
+        sample.default_commodity, None,
+        "the main fixture declares no `D`, so its base is unchanged"
+    );
+}
+
+/// A `D` commodity that cannot price the portfolio is DEMOTED, not obeyed: the
+/// caller did not ask for it on this request, so the engine's own choice wins
+/// rather than the report collapsing to zero.
+#[tokio::test]
+async fn an_unusable_d_directive_falls_through_to_the_engine() {
+    let text = std::fs::read_to_string(
+        common::fixtures_dir()
+            .join("reports")
+            .join("fx-cross-rates.journal"),
+    )
+    .expect("fixture readable");
+    let journal = ledgeline_core::parse_journal(&format!("D 1,00 EUR\n{text}"), "<inline>")
+        .expect("journal parses");
+    assert_eq!(
+        journal.default_commodity.as_ref().map(|c| c.0.as_str()),
+        Some("EUR")
+    );
+    let body = body_ok(&journal, &format!("/api/holdings?{FX_AS_OF}")).await;
+    assert_eq!(body["base"], "$");
+    assert_eq!(canon(&body["totals"]["marketValue"]), (1200, 0));
+}

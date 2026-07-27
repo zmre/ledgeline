@@ -151,6 +151,15 @@ pub fn scope(as_of: &str, mode: ScopeMode, accounts: &[&str]) -> HoldingsScope {
         mode,
         as_of: as_of.to_string(),
         gain_since: None,
+        value_in: None,
+    }
+}
+
+/// Scope shorthand pinned to an explicit valuation commodity.
+pub fn scope_in(as_of: &str, mode: ScopeMode, accounts: &[&str], value_in: &str) -> HoldingsScope {
+    HoldingsScope {
+        value_in: Some(Commodity(value_in.to_string())),
+        ..scope(as_of, mode, accounts)
     }
 }
 

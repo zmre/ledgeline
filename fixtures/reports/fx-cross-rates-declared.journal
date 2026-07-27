@@ -1,0 +1,35 @@
+; Valuation-commodity fixture (CLEANUP.md HOLD-3), `D`-directive half.
+;
+; Here BOTH candidate bases price the portfolio, so "the base that prices the
+; most holdings" cannot break the tie and frequency alone would answer `EUR`
+; (two `… EUR` directives against one `… $`). The journal states which commodity
+; it is denominated in — `D $1,000.00` — and that is what settles it.
+;
+; Deleting the `D` line flips the report to EUR (`marketValue = 1,100.00 EUR`,
+; `basis = null`, since no rate converts the `$120.00` cost annotation to EUR),
+; which is exactly what the `d_directive_*` tests assert in both directions.
+;
+; Verified against hledger 1.52:
+;   $ hledger -f fixtures/reports/fx-cross-rates-declared.journal bal --value=end,'$' -e 2026-07-16
+;     → $1,200.00 assets:broker:vti
+
+D $1,000.00
+
+account assets:broker:vti    ; type: A
+account assets:broker:cash   ; type: A
+account equity:opening       ; type: E
+
+2026-01-01 opening balance
+    assets:broker:cash    $2,000.00
+    equity:opening
+
+2026-01-05 buy VTI
+    assets:broker:vti     10 VTI @ $120.00
+    assets:broker:cash
+
+; VTI is quoted in both commodities, so both can value the position.
+P 2026-06-30 VTI $120.00
+P 2026-06-30 VTI 110.00 EUR
+
+; One more EUR-targeted rate, enough to outvote `$` on frequency alone.
+P 2026-07-01 GBP 1.15 EUR

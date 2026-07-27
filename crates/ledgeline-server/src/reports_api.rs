@@ -26,9 +26,9 @@ use axum::http::StatusCode;
 use ledgeline_core::Dec;
 use ledgeline_core::holdings::{
     Holding, HoldingsReport, HoldingsScope, HoldingsSeries, PriceSource, ScopeMode, WarningKind,
-    compute_holdings, holdings_series,
+    compute_holdings, holdings_series, prices_any_held,
 };
-use ledgeline_core::model::Commodity;
+use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
     BudgetCell, BudgetOpts, BudgetReport, Cadence, ChangeKind, ChangeRow, CostOfLiving,
@@ -882,6 +882,83 @@ fn parse_mode(raw: Option<&str>) -> Result<ScopeMode, ApiError> {
     }
 }
 
+/// Resolve the commodity a holdings request is valued in, in precedence order:
+/// the explicit `valueIn` param, then the journal's own `D` default-commodity
+/// directive, then `None` — which hands the choice to the engine (see
+/// `holdings::valuation_base`, which picks the candidate that actually prices
+/// the portfolio).
+///
+/// An explicit `valueIn` that prices NONE of the in-scope holdings is a `400`,
+/// matching [`parse_interval`]/[`parse_count`]/[`parse_date`]: a typo, or a real
+/// commodity with no route to the portfolio, would otherwise be answered with an
+/// all-zero total and one `unpriced` warning per row — a plausible-looking
+/// number in place of an error, which is exactly the failure HOLD-3 is about.
+///
+/// The `D` fallback is held to the same test but DEMOTED rather than rejected:
+/// nobody asked for it on this request, so a journal whose declared commodity
+/// happens not to price its securities falls through to the engine's own choice
+/// instead of being refused. `scope` is the request's scope with `value_in` not
+/// yet filled in; only its accounts/mode/`as_of` are read.
+fn resolve_value_in(
+    journal: &Journal,
+    scope: &HoldingsScope,
+    raw: Option<&str>,
+) -> Result<Option<Commodity>, ApiError> {
+    let prices_anything = |target: &Commodity| {
+        prices_any_held(
+            &journal.transactions,
+            &journal.prices,
+            &journal.accounts,
+            scope,
+            target,
+        )
+        .map_err(|err| report_error(&err))
+    };
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(symbol) => {
+            let target = Commodity(symbol.to_string());
+            if prices_anything(&target)? {
+                Ok(Some(target))
+            } else {
+                Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "cannot value these holdings in '{symbol}': no price directive or cost \
+                         annotation connects any holding in scope to it"
+                    ),
+                ))
+            }
+        }
+        None => match journal.default_commodity.clone() {
+            Some(declared) if prices_anything(&declared)? => Ok(Some(declared)),
+            _ => Ok(None),
+        },
+    }
+}
+
+/// The scope shared by `/api/holdings` and `/api/holdings/series`: the same
+/// account selection, date and valuation commodity, validated the same way.
+fn holdings_scope(
+    journal: &Journal,
+    accounts: Option<&str>,
+    mode: Option<&str>,
+    as_of: Option<String>,
+    gain_since: Option<String>,
+    value_in: Option<&str>,
+) -> Result<HoldingsScope, ApiError> {
+    let scope = HoldingsScope {
+        accounts: parse_accounts(accounts),
+        mode: parse_mode(mode)?,
+        as_of: parse_date("asOf", as_of, today_utc)?,
+        gain_since: parse_opt_date("gainSince", gain_since)?,
+        value_in: None,
+    };
+    Ok(HoldingsScope {
+        value_in: resolve_value_in(journal, &scope, value_in)?,
+        ..scope
+    })
+}
+
 /// Split a comma-separated `accounts` param into a set of subtree roots, trimming
 /// whitespace and dropping empties. `None`/empty ⇒ the empty set = all accounts.
 fn parse_accounts(raw: Option<&str>) -> BTreeSet<String> {
@@ -1023,13 +1100,17 @@ pub(crate) struct SubscriptionsQuery {
     exclude_desc: Option<String>,
 }
 
-/// `?asOf=&accounts=&mode=&gainSince=` — holdings snapshot.
+/// `?asOf=&accounts=&mode=&gainSince=&valueIn=` — holdings snapshot.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HoldingsQuery {
     as_of: Option<String>,
     accounts: Option<String>,
     mode: Option<String>,
+    /// Commodity to value the portfolio in (e.g. `$`, `EUR`), overriding both
+    /// the journal's `D` directive and the engine's own choice. See
+    /// [`resolve_value_in`].
+    value_in: Option<String>,
     /// Gain-measurement window start (`YYYY-MM-DD`). Absent/empty = all-time
     /// average-cost gain (unchanged). When set, `gain`/`gainPct` (and totals +
     /// gainers/losers) become `marketValue(asOf) − valueAtStart`; `basis` stays
@@ -1037,7 +1118,7 @@ pub(crate) struct HoldingsQuery {
     gain_since: Option<String>,
 }
 
-/// `?asOf=&accounts=&mode=&interval=&count=` — holdings trend.
+/// `?asOf=&accounts=&mode=&interval=&count=&valueIn=` — holdings trend.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HoldingsSeriesQuery {
@@ -1046,6 +1127,10 @@ pub(crate) struct HoldingsSeriesQuery {
     mode: Option<String>,
     interval: Option<String>,
     count: Option<usize>,
+    /// Commodity to value the trend in. Same contract as [`HoldingsQuery`]'s,
+    /// and validated against the same scope, so the chart and the table beside
+    /// it can never end up in different commodities.
+    value_in: Option<String>,
 }
 
 // ===========================================================================
@@ -1236,17 +1321,25 @@ pub(crate) async fn subscriptions(
 /// `totals.gain`/`totals.gainPct` are windowed while `totals.basis` stays all-
 /// time; `topGainers`/`topLosers` rank by the windowed `gainPct`. The JSON keys
 /// are unchanged — only the meaning of `gain`/`gainPct` shifts.
+///
+/// `valueIn=COMMODITY` (optional) fixes the commodity everything is reported in
+/// — the `base` field, every `marketValue`, every `basis`. Absent, the journal's
+/// `D` default-commodity directive is used, and failing that the engine picks
+/// the price target that actually prices the portfolio. A commodity that prices
+/// nothing in scope is a `400`; see [`resolve_value_in`].
 pub(crate) async fn holdings(
     State(state): State<AppState>,
     Query(query): Query<HoldingsQuery>,
 ) -> Result<Json<WireHoldingsReport>, ApiError> {
     let snapshot = state.snapshot();
-    let scope = HoldingsScope {
-        accounts: parse_accounts(query.accounts.as_deref()),
-        mode: parse_mode(query.mode.as_deref())?,
-        as_of: parse_date("asOf", query.as_of, today_utc)?,
-        gain_since: parse_opt_date("gainSince", query.gain_since)?,
-    };
+    let scope = holdings_scope(
+        &snapshot.journal,
+        query.accounts.as_deref(),
+        query.mode.as_deref(),
+        query.as_of,
+        query.gain_since,
+        query.value_in.as_deref(),
+    )?;
     let report = compute_holdings(
         &snapshot.journal.transactions,
         &snapshot.journal.prices,
@@ -1259,19 +1352,22 @@ pub(crate) async fn holdings(
 }
 
 /// `GET /api/holdings/series` — portfolio market value (and basis) at each of the
-/// last `count` period boundaries ending at `asOf`. Same scope as `/api/holdings`.
+/// last `count` period boundaries ending at `asOf`. Same scope — and same
+/// `valueIn` contract — as `/api/holdings`.
 pub(crate) async fn holdings_series_report(
     State(state): State<AppState>,
     Query(query): Query<HoldingsSeriesQuery>,
 ) -> Result<Json<WireHoldingsSeries>, ApiError> {
     let snapshot = state.snapshot();
-    let scope = HoldingsScope {
-        accounts: parse_accounts(query.accounts.as_deref()),
-        mode: parse_mode(query.mode.as_deref())?,
-        as_of: parse_date("asOf", query.as_of, today_utc)?,
+    let scope = holdings_scope(
+        &snapshot.journal,
+        query.accounts.as_deref(),
+        query.mode.as_deref(),
+        query.as_of,
         // The trend tracks market value/basis only — no per-point gain window.
-        gain_since: None,
-    };
+        None,
+        query.value_in.as_deref(),
+    )?;
     let interval = parse_interval(query.interval.as_deref())?;
     let count = parse_count(query.count)?;
     let series = holdings_series(

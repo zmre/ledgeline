@@ -6,6 +6,7 @@
 //! but not `Eq`).
 
 use crate::decimal::Dec;
+use crate::model::Commodity;
 use std::collections::BTreeSet;
 
 /// Include vs. exclude semantics for a [`HoldingsScope`].
@@ -37,6 +38,16 @@ pub struct HoldingsScope {
     /// null-propagating when held-but-unpriced at `start`). `basis` is
     /// unaffected — it always stays the all-time average-cost basis.
     pub gain_since: Option<String>,
+    /// The commodity to value the whole report in, overriding the automatic
+    /// choice. Mirrors `NetWorthOpts::value_in` (and hledger's
+    /// `--value=end,COMM`).
+    ///
+    /// `None` (the default) lets the engine choose — see
+    /// `engine::choose_base`, which walks `PriceDb::base_candidates` and takes
+    /// the first that actually prices the in-scope holdings. Set it when the
+    /// caller knows better: the `/api/holdings` `valueIn` query param, or the
+    /// journal's own `D` default-commodity directive.
+    pub value_in: Option<Commodity>,
 }
 
 /// Where a holding's price came from.

@@ -25,7 +25,7 @@ pub mod types;
 mod test_helpers;
 
 pub use commodities::is_currency;
-pub use engine::compute_holdings;
+pub use engine::{compute_holdings, prices_any_held, valuation_base};
 pub use series::{HoldingsPoint, HoldingsSeries, holdings_series};
 pub use types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,

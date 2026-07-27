@@ -244,6 +244,7 @@ fn holdings_and_net_worth_agree_on_the_cost_priced_gld_lot() {
         mode: ScopeMode::Include,
         as_of: "2026-06-30".to_string(),
         gain_since: None,
+        value_in: None,
     };
 
     // The set every Insights box now uses: inferred first so an explicit price

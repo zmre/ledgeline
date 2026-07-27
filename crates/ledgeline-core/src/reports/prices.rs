@@ -24,9 +24,10 @@ pub struct PriceDb {
     /// Directives per priced commodity, stable-sorted ascending by date (so the
     /// last-declared wins for equal dates on the reverse scan).
     by_commodity: BTreeMap<Commodity, Vec<PriceDirective>>,
-    /// Default valuation target: the most frequent price commodity (ties broken
-    /// lexically); `None` when there are no directives.
-    base: Option<Commodity>,
+    /// Every commodity something is priced IN, ranked most-frequent first with
+    /// lexical ties — the candidate valuation targets. Empty when there are no
+    /// directives.
+    targets: Vec<Commodity>,
 }
 
 impl PriceDb {
@@ -45,29 +46,22 @@ impl PriceDb {
             list.sort_by(|a, b| a.date.cmp(&b.date));
         }
 
-        let mut counts: BTreeMap<Commodity, usize> = BTreeMap::new();
-        let mut base: Option<Commodity> = None;
+        // Candidate valuation targets, ranked by how often something is priced in
+        // them. A `BTreeMap`'s keys are already lexical, so a STABLE sort by
+        // descending count leaves ties in lexical order — the same
+        // most-frequent-then-lexical winner the old running-argmax loop picked,
+        // now with the runners-up kept (see [`PriceDb::base_candidates`]).
+        let mut counts: BTreeMap<&Commodity, usize> = BTreeMap::new();
         for directive in directives {
-            let target = &directive.price.commodity;
-            let count = {
-                let slot = counts.entry(target.clone()).or_insert(0);
-                *slot += 1;
-                *slot
-            };
-            let base_count = base
-                .as_ref()
-                .and_then(|b| counts.get(b))
-                .copied()
-                .unwrap_or(0);
-            let replace = match &base {
-                None => true,
-                Some(b) => count > base_count || (count == base_count && target < b),
-            };
-            if replace {
-                base = Some(target.clone());
-            }
+            *counts.entry(&directive.price.commodity).or_insert(0) += 1;
         }
-        PriceDb { by_commodity, base }
+        let mut targets: Vec<Commodity> = counts.keys().map(|target| (*target).clone()).collect();
+        targets.sort_by_key(|target| std::cmp::Reverse(counts[target]));
+
+        PriceDb {
+            by_commodity,
+            targets,
+        }
     }
 
     /// The latest directive for `commodity` dated ≤ `as_of` that also satisfies
@@ -111,7 +105,24 @@ impl PriceDb {
     /// there are no directives).
     #[must_use]
     pub fn base_commodity(&self) -> Option<&Commodity> {
-        self.base.as_ref()
+        self.targets.first()
+    }
+
+    /// Every commodity something is priced IN, most frequent first (lexical
+    /// ties) — [`PriceDb::base_commodity`] is just the head of this list.
+    ///
+    /// Frequency alone is a poor way to pick ONE valuation commodity, because it
+    /// has no idea what is being valued: three jotted-down `P … EUR` travel
+    /// cross-rates outvote the single `P VTI $120.00` that prices an entire
+    /// portfolio, and the portfolio then reads as zero because nothing connects
+    /// VTI to EUR (HOLD-3). Callers that know what they need to value should walk
+    /// these candidates and take the first one that actually prices it — see
+    /// `holdings::engine::choose_base`. hledger sidesteps the question by valuing
+    /// each commodity in ITS OWN latest price target rather than choosing a
+    /// single base at all.
+    #[must_use]
+    pub fn base_candidates(&self) -> &[Commodity] {
+        &self.targets
     }
 
     /// The market-price graph in effect at `as_of` — hledger's

@@ -1,0 +1,41 @@
+; Valuation-commodity fixture (CLEANUP.md HOLD-3) — a plain USD portfolio that a
+; handful of unrelated FX cross-rates used to flip into a foreign base, zeroing
+; the whole report.
+;
+; The journal declares FOUR `P` directives. Only ONE of them prices anything
+; that is actually held (`VTI` in `$`); the other three are exchange rates for
+; currencies jotted down on a trip, none of which the portfolio touches. Ranking
+; valuation targets by how OFTEN they appear makes `EUR` the base (3 votes vs 1),
+; and no chain of prices connects `VTI` to `EUR` — so a $1,200.00 position
+; reported `marketValue = 0`, `basis = null`, and an `unpriced VTI` warning.
+;
+; Verified against hledger 1.52 (which never picks a single base — it values each
+; commodity in its own latest price target, so the cross-rates cannot interfere):
+;   $ hledger -f fixtures/reports/fx-cross-rates.journal bal --value=end,'$' -e 2026-07-16
+;     → $1,200.00 assets:broker:vti, $800.00 assets:broker:cash
+;   $ hledger -f fixtures/reports/fx-cross-rates.journal bal --value=end -e 2026-07-16
+;     → identical (VTI's own latest price is the `$` one)
+;
+; `D` is deliberately ABSENT here so the fixture exercises the engine's automatic
+; choice; `fx-cross-rates-declared.journal` adds it.
+
+account assets:broker:vti    ; type: A
+account assets:broker:cash   ; type: A
+account equity:opening       ; type: E
+
+2026-01-01 opening balance
+    assets:broker:cash    $2,000.00
+    equity:opening
+
+2026-01-05 buy VTI
+    assets:broker:vti     10 VTI @ $120.00
+    assets:broker:cash
+
+; The only price that values a holding.
+P 2026-06-30 VTI $120.00
+
+; Three unrelated travel cross-rates. Nothing in the portfolio is denominated in
+; any of them, and none of them reaches VTI.
+P 2026-07-01 GBP 1.15 EUR
+P 2026-07-02 CHF 1.15 EUR
+P 2026-07-03 SEK 1.15 EUR

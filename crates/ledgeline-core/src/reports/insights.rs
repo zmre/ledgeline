@@ -283,6 +283,23 @@ pub(super) fn base_commodity(journal: &Journal) -> Result<Commodity, ReportError
         .unwrap_or_else(|| Commodity("$".to_string())))
 }
 
+/// The valuation commodity for this dashboard's holdings boxes: the price set's
+/// most-frequent target, exactly as [`base_commodity`] picks it.
+///
+/// Pinned EXPLICITLY, per price set, because the holdings engine now chooses a
+/// base that actually prices the portfolio (HOLD-3) while this dashboard still
+/// labels every box with the frequency-ranked base above. Letting the two
+/// diverge would render an investment gain computed in one commodity under a
+/// heading naming another. Fixing the dashboard's own choice is HOLD-3's
+/// remaining reach, tracked separately; this keeps insights bit-for-bit as it
+/// was.
+fn holdings_base(prices: &[PriceDirective]) -> Commodity {
+    PriceDb::build(prices)
+        .base_commodity()
+        .cloned()
+        .unwrap_or_else(|| Commodity("$".to_string()))
+}
+
 /// Base-commodity percent change, `None` when the previous base value is absent
 /// or zero (a change from nothing has no defined percent).
 fn pct_change(current: &MixedAmount, previous: &MixedAmount, base: &Commodity) -> Option<f64> {
@@ -509,6 +526,7 @@ fn perf(
         mode: ScopeMode::Include,
         as_of: as_of.to_string(),
         gain_since: Some(since.to_string()),
+        value_in: Some(holdings_base(prices)),
     };
     let report = compute_holdings(
         &journal.transactions,
@@ -673,6 +691,7 @@ fn portfolio_at(
         mode: ScopeMode::Include,
         as_of: as_of.to_string(),
         gain_since: None,
+        value_in: Some(holdings_base(prices)),
     };
     compute_holdings(
         &journal.transactions,
@@ -701,6 +720,7 @@ fn movers(
         mode: ScopeMode::Include,
         as_of: as_of.to_string(),
         gain_since: Some(since.to_string()),
+        value_in: Some(holdings_base(prices)),
     };
     let report = compute_holdings(
         &journal.transactions,
@@ -944,6 +964,7 @@ mod tests {
             commodity_styles: Vec::new(),
             commodity_tags: Vec::new(),
             prices,
+            default_commodity: None,
         }
     }
 
