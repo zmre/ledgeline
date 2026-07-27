@@ -79,6 +79,28 @@ async fn get_on(journal: &Journal, uri: &str) -> (StatusCode, Option<String>, Va
     (status, allow_origin, body)
 }
 
+/// Issue `GET uri` and return the status plus the PLAIN-TEXT body — for the
+/// rejection tests, which assert on the message a caller actually sees.
+async fn get_error(journal: &Journal, uri: &str) -> (StatusCode, String) {
+    let request = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .expect("request builds");
+    let response = app(journal)
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collects")
+        .to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
 async fn body_ok(journal: &Journal, uri: &str) -> Value {
     let (status, _, body) = get_on(journal, uri).await;
     assert_eq!(status, StatusCode::OK, "GET {uri} should be 200 OK");
@@ -828,6 +850,186 @@ async fn absent_count_still_uses_the_default() {
     assert_eq!(
         body_ok(&journal, "/api/budget").await,
         body_ok(&journal, "/api/budget?count=12").await
+    );
+}
+
+// ---- RPT-4: query-param date validation ----
+
+/// EVERY (endpoint, date parameter) pair in the native report API.
+///
+/// RPT-4's point is how BROAD the silent failure was: each of these fed an
+/// unvalidated caller string straight into the engine's lexical `&str` date
+/// comparisons, where a malformed value cannot fail — it just sorts somewhere
+/// wrong and the report comes back plausible-looking with a `200`.
+const DATE_PARAMS: [(&str, &str); 12] = [
+    ("/api/reports/balancesheet", "asOf"),
+    ("/api/reports/incomestatement", "from"),
+    ("/api/reports/incomestatement", "to"),
+    ("/api/reports/cashflow", "end"),
+    ("/api/reports/networth", "end"),
+    ("/api/budget", "end"),
+    ("/api/insights", "start"),
+    ("/api/insights", "end"),
+    ("/api/subscriptions", "asOf"),
+    ("/api/holdings", "asOf"),
+    ("/api/holdings", "gainSince"),
+    ("/api/holdings/series", "asOf"),
+];
+
+/// RPT-4: a malformed date is a client error on every endpoint and every date
+/// param, with a message that names the param and echoes the value.
+///
+/// The listed values are the realistic ones: a typo (`2026-7-1x`), a
+/// paste-gone-wrong (`garbage`), a date that is shaped right but does not exist
+/// (`2026-02-30`, `2026-13-01`), a two-digit year, and a truncated date. hledger
+/// rejects all six.
+#[tokio::test]
+async fn malformed_date_is_400_on_every_endpoint_and_param() {
+    let journal = sample_journal();
+    for (endpoint, param) in DATE_PARAMS {
+        for value in [
+            "2026-7-1x",
+            "garbage",
+            "2026-02-30",
+            "2026-13-01",
+            "26-07-01",
+            "2026-07",
+        ] {
+            let uri = format!("{endpoint}?{param}={value}");
+            let (status, message) = get_error(&journal, &uri).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "GET {uri} must be a 400, not a plausible-looking report"
+            );
+            assert!(
+                message.contains(param) && message.contains(value),
+                "GET {uri} should say which param and value it rejected, got {message:?}"
+            );
+        }
+    }
+}
+
+/// RPT-4: an EXPLICIT empty date is rejected too — it used to sort below every
+/// real date and serve an empty report with a `200` (`?asOf=` returned
+/// `grandTotal: {}`). The one exception is `gainSince`, whose empty value is its
+/// documented "all-time gain" sentinel.
+#[tokio::test]
+async fn empty_date_is_400_except_the_gain_since_sentinel() {
+    let journal = sample_journal();
+    for (endpoint, param) in DATE_PARAMS {
+        let uri = format!("{endpoint}?{param}=");
+        let (status, _) = get_error(&journal, &uri).await;
+        let expected = if param == "gainSince" {
+            StatusCode::OK
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        assert_eq!(status, expected, "GET {uri}");
+    }
+    // The sentinel means "all-time", i.e. exactly the same report as omitting it.
+    assert_eq!(
+        body_ok(&journal, "/api/holdings?gainSince=").await,
+        body_ok(&journal, "/api/holdings").await
+    );
+}
+
+/// RPT-4: the unpadded and `/`- or `.`-separated spellings that `hledger 1.52`
+/// accepts for `-b`/`-e` are accepted here too, and normalize to the ISO date —
+/// so a URL answer agrees with `hledger -e <the same date>`, and a date that is
+/// legal inside a journal is legal in a query string.
+#[tokio::test]
+async fn hledger_date_spellings_normalize_to_the_iso_date() {
+    let journal = sample_journal();
+    for (endpoint, param) in DATE_PARAMS {
+        let iso = body_ok(&journal, &format!("{endpoint}?{param}=2026-06-30")).await;
+        for spelling in ["2026-6-30", "2026/6/30", "2026.6.30", "2026/06/30"] {
+            let uri = format!("{endpoint}?{param}={spelling}");
+            assert_eq!(
+                body_ok(&journal, &uri).await,
+                iso,
+                "GET {uri} must equal the 2026-06-30 report"
+            );
+        }
+    }
+}
+
+/// RPT-4, with the finding's own numbers. `?asOf=2026-7-1` is a date hledger
+/// accepts; it used to serve the ALL-TIME grand total ($47,871.41) with a `200`
+/// because `"2026-7-1"` sorts above every real 2026 date.
+#[tokio::test]
+async fn hand_typed_as_of_no_longer_serves_the_all_time_total() {
+    let journal = sample_journal();
+    let hand_typed = body_ok(&journal, "/api/reports/balancesheet?asOf=2026-7-1").await;
+    let padded = body_ok(&journal, "/api/reports/balancesheet?asOf=2026-07-01").await;
+    assert_eq!(hand_typed, padded);
+    assert_eq!(
+        wire_ma(&hand_typed["grandTotal"])["$"],
+        canon(4_834_045, 2),
+        "asOf=2026-7-1 must be the 2026-07-01 total, $48,340.45"
+    );
+    assert_eq!(
+        wire_ma(
+            &body_ok(&journal, "/api/reports/balancesheet?asOf=2026-12-31").await["grandTotal"]
+        )["$"],
+        canon(4_787_141, 2),
+        "the all-time total is a DIFFERENT number, $47,871.41 — the one the bug served"
+    );
+}
+
+/// RPT-4: a garbage `end` used to grow a `2026-00` bucket (from a `"7-"` month
+/// slice) whose `bucket_end` of `2026-00-00` sorts below every real date, so the
+/// trailing column of every period report was silently wrong.
+#[tokio::test]
+async fn malformed_end_no_longer_produces_a_garbage_bucket() {
+    let journal = sample_journal();
+    for endpoint in [
+        "/api/reports/cashflow",
+        "/api/reports/networth",
+        "/api/budget",
+    ] {
+        let uri = format!("{endpoint}?end=2026-7-1&count=3");
+        let buckets = body_ok(&journal, &uri).await["buckets"].clone();
+        assert_eq!(
+            buckets,
+            serde_json::json!(["2026-05", "2026-06", "2026-07"]),
+            "GET {uri} must bucket by the real date, not 2026-00"
+        );
+    }
+}
+
+/// RPT-4 (related): `changeMin` used to swallow anything `Dec::parse` rejected
+/// and quietly substitute the $10.00 default, silently widening the "biggest
+/// change" list the caller asked to narrow.
+#[tokio::test]
+async fn unparseable_change_min_is_400() {
+    let journal = sample_journal();
+    for value in ["zzz", "1-2", "$10"] {
+        let uri = format!("/api/insights?changeMin={value}");
+        let (status, message) = get_error(&journal, &uri).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "GET {uri} must be a 400, not a silent $10.00 default"
+        );
+        assert!(message.contains("changeMin"), "{message}");
+    }
+    // `,` is a digit-group separator when the decimal mark is `.`, so `1,000` is
+    // a well-formed 1000 and stays accepted — the finding's own example was not
+    // actually a mis-parse. It is emphatically NOT the $10.00 default.
+    let grouped = body_ok(&journal, "/api/insights?changeMin=1%2C000").await;
+    assert_eq!(
+        grouped,
+        body_ok(&journal, "/api/insights?changeMin=1000").await
+    );
+    assert_ne!(
+        grouped,
+        body_ok(&journal, "/api/insights?changeMin=10").await
+    );
+    // Absent and explicitly empty both keep the documented $10.00 default.
+    assert_eq!(
+        body_ok(&journal, "/api/insights?changeMin=").await,
+        body_ok(&journal, "/api/insights?changeMin=10").await
     );
 }
 

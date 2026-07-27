@@ -7,7 +7,15 @@
 //! engine splits it down the middle (`mid`), so the previous period is
 //! `[start, mid]` and the current period is `[mid + 1 day, end]`. For a span of
 //! two whole years anchored on month boundaries this yields two clean 12-month
-//! halves (the "Year-over-year" preset).
+//! halves (the "Year-over-year" preset). A span covering an odd number of days
+//! cannot be halved; the extra day goes to the previous period and both periods
+//! publish their day count ([`InsightsPeriod::prev_days`]) so the imbalance is
+//! visible rather than silent.
+//!
+//! Every priced box is valued from ONE price set — explicit `P` directives plus
+//! the prices inferred from `@`/`@@` cost annotations — so the net-worth box and
+//! the holdings boxes can never put two different values for the same position
+//! on the same screen.
 //!
 //! No new money-math primitive is introduced: every metric reuses exact-decimal
 //! [`MixedAmount`]/[`Dec`] building blocks. Percent changes are the only `f64`s,
@@ -23,16 +31,25 @@ use super::aggregate::{PostingFilter, account_totals};
 use super::income_statement::income_statement;
 use super::mixed_amount::MixedAmount;
 use super::net_worth::{NetWorthOpts, net_worth};
-use super::periods::{Interval, add_days, bucket_end, bucket_key, days_between};
+use super::periods::{Interval, add_days, add_months, bucket_end, bucket_key, days_between};
 use super::prices::{PriceDb, infer_market_prices};
 use crate::decimal::Dec;
 use crate::holdings::{HoldingsReport, HoldingsScope, PriceSource, ScopeMode, compute_holdings};
-use crate::model::{Commodity, Journal, Transaction};
+use crate::model::{Commodity, Journal, PriceDirective, Transaction};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Number of rows shown in each "biggest / top" list box.
 const TOP_N: usize = 5;
+
+/// Label suffix marking a parent account's OWN direct postings, as opposed to
+/// its inclusive subtree total (see [`account_changes`]).
+///
+/// Separated by a SPACE rather than a colon on purpose. Consumers display the
+/// last colon-segment of an account name, so a `:(own)` segment would render as
+/// a bare "(own)" with the category name lost; ` (own)` renders as
+/// "food (own)" with no change needed at the display layer.
+const OWN_SUFFIX: &str = " (own)";
 
 /// Inputs to [`insights`]. `start`/`end` are inclusive ISO dates.
 #[derive(Debug, Clone)]
@@ -67,6 +84,18 @@ pub struct InsightsPeriod {
     pub curr_start: String,
     /// Current period end (`= end`).
     pub curr_end: String,
+    /// Inclusive day count of the previous period.
+    ///
+    /// A span covering an ODD number of days cannot be halved, so one period is
+    /// necessarily a day longer than the other (`2026-01-01 … 2026-01-31` splits
+    /// 16/15). That day is worth ~6.7% of a month-long period, and it lands in
+    /// every delta and percent on the dashboard. The engine cannot make the
+    /// asymmetry go away; publishing both day counts is what lets a caller SEE
+    /// it — and normalise, since [`CostOfLiving`]'s whole-month counts are too
+    /// coarse to resolve a single day.
+    pub prev_days: u32,
+    /// Inclusive day count of the current period. See [`InsightsPeriod::prev_days`].
+    pub curr_days: u32,
 }
 
 /// A metric's current + previous value with the exact change and a base-
@@ -135,12 +164,13 @@ pub enum ChangeKind {
     Ended,
 }
 
-/// One leaf-account change between the two periods (Boxes 7 & 9). Values are the
+/// One account's change between the two periods (Boxes 7 & 9). Values are the
 /// base commodity, sign-adjusted so an increase reads positive for both expense
 /// and revenue lists.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChangeRow {
-    /// The leaf account name.
+    /// The account name, carrying [`OWN_SUFFIX`] when the row covers only a
+    /// parent's own direct postings rather than a whole leaf account.
     pub account: String,
     /// Current-period amount (base commodity, display-signed).
     pub current: Dec,
@@ -218,9 +248,9 @@ pub struct InsightsReport {
     pub investment: InvestmentPerf,
     /// Box 6: cash balance at each period end.
     pub cash_balance: MetricDelta,
-    /// Box 7: biggest leaf-account expense changes (current vs previous).
+    /// Box 7: biggest expense-account changes (current vs previous).
     pub expense_changes: Vec<ChangeRow>,
-    /// Box 9: biggest leaf-account revenue changes (current vs previous).
+    /// Box 9: biggest revenue-account changes (current vs previous).
     pub revenue_changes: Vec<ChangeRow>,
     /// Box 8: biggest stock movers over the current period.
     pub movers: Vec<MoverRow>,
@@ -228,12 +258,26 @@ pub struct InsightsReport {
     pub top_txns: Vec<TopTxn>,
 }
 
+/// Explicit `P` directives PLUS the prices implied by `@`/`@@` cost annotations
+/// (hledger's `--infer-market-prices`). Inferred go FIRST so an explicit price
+/// wins a same-date tie — the precedence [`net_worth`] already uses.
+///
+/// EVERY priced box on the dashboard must be handed this same set. Valuing the
+/// net-worth box from the inferred set while the holdings boxes saw only the
+/// explicit one put two different values for the same position on one screen:
+/// `fixtures/sample.journal`'s gifted GLD lot is priced solely by the `@ 0.005
+/// GLD` annotation on its balancing equity leg, so net worth counted it at
+/// 5 × $200 = $1,000 while holdings reported it unpriced and dropped it.
+fn all_prices(journal: &Journal) -> Result<Vec<PriceDirective>, ReportError> {
+    let mut all = infer_market_prices(&journal.transactions)?;
+    all.extend_from_slice(&journal.prices);
+    Ok(all)
+}
+
 /// The base valuation commodity: the combined explicit + inferred price set's
 /// base, or `$` when the journal declares no prices.
 pub(super) fn base_commodity(journal: &Journal) -> Result<Commodity, ReportError> {
-    let mut all = infer_market_prices(&journal.transactions)?;
-    all.extend_from_slice(&journal.prices);
-    Ok(PriceDb::build(&all)
+    Ok(PriceDb::build(&all_prices(journal)?)
         .base_commodity()
         .cloned()
         .unwrap_or_else(|| Commodity("$".to_string())))
@@ -355,6 +399,11 @@ fn year_month(date: &str) -> (i64, i64) {
     (year, month)
 }
 
+/// Inclusive day count of `[from, to]`, zero for an inverted range.
+fn days_inclusive(from: &str, to: &str) -> u32 {
+    u32::try_from(days_between(from, to) + 1).unwrap_or(0)
+}
+
 /// True when `date` is the first day of its month.
 fn is_month_start(date: &str) -> bool {
     date.get(8..10) == Some("01")
@@ -372,6 +421,13 @@ fn is_month_end(date: &str) -> bool {
 /// each — so a leap day never shifts the divide (the "Year-over-year" preset
 /// gets two clean 12-month halves). Any other span falls back to the pure
 /// day-count midpoint.
+///
+/// When the span covers an odd number of days the halves cannot be equal and
+/// the extra day goes to the PREVIOUS period. That is arbitrary but fixed, and
+/// no shift of this boundary can remove the imbalance — `(n + 1) / 2` merely
+/// moves it onto the spans that split evenly today, and `(n − 1) / 2` hands the
+/// same advantage to the current period instead. The honest remedy is to report
+/// the imbalance, which [`InsightsPeriod::prev_days`] / `curr_days` do.
 fn split_mid(start: &str, end: &str) -> String {
     if is_month_start(start) && is_month_end(end) {
         let months = months_between(start, end);
@@ -388,22 +444,66 @@ fn split_mid(start: &str, end: &str) -> String {
     add_days(start, days_between(start, end) / 2)
 }
 
-/// Whole calendar months spanned by an inclusive `[from, to]` range (e.g.
-/// `2025-07-01 … 2026-06-30` → 12). Never zero for a valid range.
+/// Months of ELAPSED TIME in an inclusive `[from, to]` range, rounded to the
+/// nearest whole month (`2025-07-01 … 2026-06-30` → 12, and so is the
+/// non-aligned `2025-01-15 … 2026-01-14`). Never zero for a valid range.
+///
+/// Measured over the half-open span `[from, to + 1 day)`, which is exactly what
+/// a period total covers. The previous definition counted every calendar month
+/// the range TOUCHED (`month_index(to) − month_index(from) + 1`) and so
+/// over-counted by up to a whole month on any span that is not month-aligned:
+/// `2025-01-15 … 2025-07-15` touches 7 months but is 6 months long. Since the
+/// caller divides a period total by this to get an average monthly cost of
+/// living, the extra month understated the cost by ~14%.
+///
+/// Rounding (not truncating) the leftover keeps the two halves of a split span
+/// symmetric: truncation reports `2025-07-16 … 2026-01-14` as 5 months — it is
+/// 5 months and 30 days — against 6 for its sibling, which would swap a 14%
+/// understatement for a 20% overstatement.
+///
+/// A sub-month range floors to 1. The caller divides by this value, and one
+/// month is the coarsest honest answer a whole-month count can give (a six-day
+/// period cannot express a monthly rate at all).
 fn months_between(from: &str, to: &str) -> u32 {
-    let month_index = |date: &str| -> i64 {
-        let year: i64 = date.get(0..4).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let month: i64 = date.get(5..7).and_then(|s| s.parse().ok()).unwrap_or(0);
-        year * 12 + month
+    if to < from {
+        return 0;
+    }
+    let end = add_days(to, 1);
+    let (from_year, from_month) = year_month(from);
+    let (end_year, end_month) = year_month(&end);
+    // Calendar-month distance is an upper bound on the whole months elapsed:
+    // exact once `end`'s day-of-month has reached `from`'s, one too many before
+    // that — so a single correction step suffices.
+    let approx = (end_year * 12 + end_month) - (from_year * 12 + from_month);
+    let whole = if add_months(from, approx) > end {
+        approx - 1
+    } else {
+        approx
     };
-    let diff = month_index(to) - month_index(from) + 1;
-    u32::try_from(diff.max(0)).unwrap_or(0)
+    // Round on the leftover fraction of the month that follows.
+    let anniversary = add_months(from, whole);
+    let remainder = days_between(&anniversary, &end);
+    let step = days_between(&anniversary, &add_months(from, whole + 1));
+    let months = if step > 0 && remainder * 2 >= step {
+        whole + 1
+    } else {
+        whole
+    };
+    u32::try_from(months.max(1)).unwrap_or(1)
 }
 
 /// Portfolio performance over `(since, as_of]`: the windowed holdings gain,
 /// `marketValue(as_of) − marketValue(since)`, in the base commodity. The
 /// whole (unscoped) portfolio is used.
-fn perf(journal: &Journal, as_of: &str, since: &str) -> Result<PerfPoint, ReportError> {
+///
+/// `prices` is the combined set from [`all_prices`], so this box values a
+/// position exactly as the net-worth box does.
+fn perf(
+    journal: &Journal,
+    prices: &[PriceDirective],
+    as_of: &str,
+    since: &str,
+) -> Result<PerfPoint, ReportError> {
     let scope = HoldingsScope {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
@@ -412,7 +512,7 @@ fn perf(journal: &Journal, as_of: &str, since: &str) -> Result<PerfPoint, Report
     };
     let report = compute_holdings(
         &journal.transactions,
-        &journal.prices,
+        prices,
         &journal.accounts,
         &journal.commodity_tags,
         &scope,
@@ -428,13 +528,14 @@ fn base_of(total: Option<&MixedAmount>, base: &Commodity) -> Dec {
     total.and_then(|ma| ma.get(base)).unwrap_or_else(Dec::zero)
 }
 
-/// Biggest leaf-account changes within `category` between the two periods
-/// (Boxes 7 & 9). Only leaves (accounts that are not an ancestor of another
-/// posted account) are compared, so a parent rollup never double-counts. Values
-/// are the base commodity; `flip` negates them so revenue increases read
-/// positive (income is stored negative). Accounts with no previous-period
-/// activity are skipped (nothing to compare); the rest are ranked by the size of
-/// the move in real money, then top `TOP_N`.
+/// Biggest account changes within `category` between the two periods (Boxes 7 &
+/// 9). Each posted account is compared on its OWN direct postings, so nothing
+/// double-counts and a parent's direct spending is never lost; a parent that
+/// also has posted children is labelled with [`OWN_SUFFIX`]. Values are the base
+/// commodity; `flip` negates them so revenue increases read positive (income is
+/// stored negative). Accounts with no previous-period activity are skipped
+/// (nothing to compare); the rest are ranked by the size of the move in real
+/// money, then top `TOP_N`.
 struct ChangeOpts<'a> {
     /// Inclusive current-period range.
     current: (&'a str, &'a str),
@@ -450,7 +551,7 @@ struct ChangeOpts<'a> {
     declared: &'a BTreeMap<String, AccountType>,
 }
 
-fn leaf_changes(txns: &[Transaction], opts: &ChangeOpts) -> Result<Vec<ChangeRow>, ReportError> {
+fn account_changes(txns: &[Transaction], opts: &ChangeOpts) -> Result<Vec<ChangeRow>, ReportError> {
     let &ChangeOpts {
         current,
         previous,
@@ -484,20 +585,37 @@ fn leaf_changes(txns: &[Transaction], opts: &ChangeOpts) -> Result<Vec<ChangeRow
             names.insert(account.clone());
         }
     }
-    // Keep only leaves — an account that is not an ancestor of another posted one.
-    let leaves: Vec<&String> = names
+    // EVERY posted account contributes its own direct postings. `account_totals`
+    // sums per FULL account name with no roll-up, so a parent's figure and its
+    // children's are disjoint and listing both cannot double-count — the same
+    // invariant `cash_balance` relies on.
+    //
+    // Dropping non-leaves (the previous behaviour) therefore discarded real
+    // money instead of preventing double-counting: `expenses:food` posted
+    // directly $500 → $900 alongside `expenses:food:dining` $100 → $120 reported
+    // only the +$20 dining move, while Box 2 correctly showed the full +$420 —
+    // one dashboard contradicting itself.
+    //
+    // A parent's own row is labelled `<account> (own)` so it is never mistaken
+    // for the inclusive subtree rollup.
+    let compared: Vec<(String, &String)> = names
         .iter()
-        .filter(|account| {
+        .map(|account| {
             let prefix = format!("{account}:");
-            !names.iter().any(|other| other.starts_with(prefix.as_str()))
+            let label = if names.iter().any(|other| other.starts_with(prefix.as_str())) {
+                format!("{account}{OWN_SUFFIX}")
+            } else {
+                account.clone()
+            };
+            (label, account)
         })
         .collect();
 
     let threshold = change_min.abs()?;
     let mut rows: Vec<ChangeRow> = Vec::new();
-    for leaf in leaves {
-        let mut cur = base_of(curr_totals.get(leaf), base);
-        let mut prev = base_of(prev_totals.get(leaf), base);
+    for (label, account) in compared {
+        let mut cur = base_of(curr_totals.get(account), base);
+        let mut prev = base_of(prev_totals.get(account), base);
         if flip {
             cur = cur.neg()?;
             prev = prev.neg()?;
@@ -521,7 +639,7 @@ fn leaf_changes(txns: &[Transaction], opts: &ChangeOpts) -> Result<Vec<ChangeRow
             (Some(change), ChangeKind::Changed)
         };
         rows.push(ChangeRow {
-            account: leaf.clone(),
+            account: label,
             current: cur,
             previous: prev,
             delta,
@@ -543,8 +661,13 @@ fn leaf_changes(txns: &[Transaction], opts: &ChangeOpts) -> Result<Vec<ChangeRow
     Ok(rows)
 }
 
-/// Snapshot the whole portfolio as of `as_of` (no gain window).
-fn portfolio_at(journal: &Journal, as_of: &str) -> Result<HoldingsReport, ReportError> {
+/// Snapshot the whole portfolio as of `as_of` (no gain window), valued with
+/// `prices`.
+fn portfolio_at(
+    journal: &Journal,
+    prices: &[PriceDirective],
+    as_of: &str,
+) -> Result<HoldingsReport, ReportError> {
     let scope = HoldingsScope {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
@@ -553,7 +676,7 @@ fn portfolio_at(journal: &Journal, as_of: &str) -> Result<HoldingsReport, Report
     };
     compute_holdings(
         &journal.transactions,
-        &journal.prices,
+        prices,
         &journal.accounts,
         &journal.commodity_tags,
         &scope,
@@ -567,7 +690,12 @@ fn portfolio_at(journal: &Journal, as_of: &str) -> Result<HoldingsReport, Report
 /// price directive or fell back to the purchase-cost annotation — see
 /// [`MoverRow::start_estimated`], which the UI surfaces so a lifetime gain is
 /// never mistaken for a period return.
-fn movers(journal: &Journal, as_of: &str, since: &str) -> Result<Vec<MoverRow>, ReportError> {
+fn movers(
+    journal: &Journal,
+    prices: &[PriceDirective],
+    as_of: &str,
+    since: &str,
+) -> Result<Vec<MoverRow>, ReportError> {
     let scope = HoldingsScope {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
@@ -576,7 +704,7 @@ fn movers(journal: &Journal, as_of: &str, since: &str) -> Result<Vec<MoverRow>, 
     };
     let report = compute_holdings(
         &journal.transactions,
-        &journal.prices,
+        prices,
         &journal.accounts,
         &journal.commodity_tags,
         &scope,
@@ -585,7 +713,14 @@ fn movers(journal: &Journal, as_of: &str, since: &str) -> Result<Vec<MoverRow>, 
     // Re-run the snapshot at the window start to inspect HOW each position was
     // priced there: a `Cost`-sourced (or absent) price means the baseline is the
     // purchase cost, not a market value.
-    let estimated: BTreeSet<String> = portfolio_at(journal, since)?
+    //
+    // This probe deliberately uses the EXPLICIT `P` directives only, not the
+    // combined set the values above came from. An INFERRED price is derived from
+    // a cost annotation, so feeding the combined set here would report every
+    // cost-priced position as `Directive`-sourced and silently clear the flag on
+    // exactly the holdings it exists to warn about. Explicit-only keeps the flag
+    // meaning what it says: "no real market quote existed at the window start".
+    let estimated: BTreeSet<String> = portfolio_at(journal, &journal.prices, since)?
         .holdings
         .iter()
         .filter(|holding| {
@@ -675,7 +810,13 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     let mid = split_mid(start, end);
     let curr_start = add_days(&mid, 1);
 
-    let base = base_commodity(journal)?;
+    // Built ONCE and shared by every priced box, so the holdings boxes and the
+    // net-worth box can never disagree about what a position is worth.
+    let prices = all_prices(journal)?;
+    let base = PriceDb::build(&prices)
+        .base_commodity()
+        .cloned()
+        .unwrap_or_else(|| Commodity("$".to_string()));
     // Declared account types drive EVERY box's classification, so a cost booked
     // outside an `expenses:` root (or in another language) is still a cost.
     let decls = account_decls(journal);
@@ -721,8 +862,8 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
 
     // Box 5 — investment performance (current: since mid; previous: since start).
     let investment = InvestmentPerf {
-        current: perf(journal, end, &mid)?,
-        previous: perf(journal, &mid, start)?,
+        current: perf(journal, &prices, end, &mid)?,
+        previous: perf(journal, &prices, &mid, start)?,
     };
 
     // Boxes 7 & 9 — biggest leaf-account expense / revenue changes (current period
@@ -738,8 +879,8 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
         flip: false,
         declared: &declared,
     };
-    let expense_changes = leaf_changes(txns, &change_opts)?;
-    let revenue_changes = leaf_changes(
+    let expense_changes = account_changes(txns, &change_opts)?;
+    let revenue_changes = account_changes(
         txns,
         &ChangeOpts {
             category: AccountType::Revenue,
@@ -749,7 +890,7 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     )?;
 
     // Box 8 — biggest stock movers over the current period.
-    let movers_list = movers(journal, end, &mid)?;
+    let movers_list = movers(journal, &prices, end, &mid)?;
 
     // Box 10 — largest transactions in the current period.
     let top_txns = top_transactions(txns, &curr_start, end, &base)?;
@@ -761,6 +902,8 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
             end: end.to_string(),
             prev_start: start.to_string(),
             prev_end: mid.clone(),
+            prev_days: days_inclusive(start, &mid),
+            curr_days: days_inclusive(&curr_start, end),
             curr_start,
             curr_end: end.to_string(),
         },
@@ -879,6 +1022,39 @@ mod tests {
         .expect("insights succeeds")
     }
 
+    /// `months_between` measures ELAPSED months over `[from, to + 1 day)`, so a
+    /// non-month-aligned span is no longer inflated by the calendar months it
+    /// merely touches. Ties round up.
+    #[test]
+    fn months_between_counts_elapsed_months_not_touched_ones() {
+        // Month-aligned spans: identical to the old touched-month count, which is
+        // what keeps `split_mid`'s calendar branch and the presets stable.
+        assert_eq!(months_between("2025-07-01", "2026-06-30"), 12);
+        assert_eq!(months_between("2023-01-01", "2024-12-31"), 24);
+        assert_eq!(months_between("2025-01-01", "2025-01-31"), 1);
+        // Leap February is a whole month, not a short one.
+        assert_eq!(months_between("2024-02-01", "2024-02-29"), 1);
+
+        // Non-aligned spans: 2025-01-15 … 2026-01-14 is 12 months, not the 13
+        // calendar months it touches.
+        assert_eq!(months_between("2025-01-15", "2026-01-14"), 12);
+        // ...and its two halves are 6 and 6, not 7 and 7.
+        assert_eq!(months_between("2025-01-15", "2025-07-16"), 6);
+        assert_eq!(months_between("2025-07-17", "2026-01-14"), 6);
+
+        // Day-of-month clamping: 2025-01-31 … 2025-02-28 is 29 days ≈ 1 month.
+        assert_eq!(months_between("2025-01-31", "2025-02-28"), 1);
+        // 41 days rounds down to 1; 45 (exactly 1½) rounds up to 2.
+        assert_eq!(months_between("2025-01-01", "2025-02-10"), 1);
+        assert_eq!(months_between("2025-01-01", "2025-02-14"), 2);
+
+        // Sub-month ranges floor to 1 — the caller divides by this.
+        assert_eq!(months_between("2025-01-01", "2025-01-11"), 1);
+        assert_eq!(months_between("2025-06-05", "2025-06-05"), 1);
+        // Only an inverted range is zero.
+        assert_eq!(months_between("2025-06-01", "2025-01-01"), 0);
+    }
+
     #[test]
     fn splits_span_at_the_midpoint() {
         let report = run(&sample());
@@ -960,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn leaf_changes_movers_and_top_txns() {
+    fn account_changes_movers_and_top_txns() {
         let report = run(&sample());
 
         // Expense changes: only food is comparable — the taxes category has no

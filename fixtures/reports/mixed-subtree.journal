@@ -1,0 +1,26 @@
+; RPT-2 · a subtree whose declared types disagree with its parent's.
+;
+; `assets` is type A but `assets:receivable` is type L, so rolling up BEFORE
+; the type filter nets a liability into an asset row and fabricates a parent
+; (`assets = $700`) that hledger never shows.
+;
+; hledger 1.52 reference (verified, `hledger -f mixed-subtree.journal ...`):
+;   bs --depth 3  Assets: assets:bank $1000.00 (total $1000.00)
+;                 Liabilities: assets:receivable $300.00 (total $300.00)
+;                 Net $700.00
+;   bs --depth 1  Assets: assets $1000.00 / Liabilities: assets $300.00
+;                 (hledger clamps WITHIN each section, so `assets` appears in
+;                 both with that section's own subtotal)
+;   bal type:AL   assets:receivable $-300.00, assets:bank $1000.00, total $700.00
+
+account assets             ; type: A
+account assets:receivable  ; type: L
+account assets:bank        ; type: A
+
+2026-01-05 Opening
+    assets:bank            $1000.00
+    equity:opening        $-1000.00
+
+2026-01-10 Customer credit
+    assets:receivable      $-300.00
+    income:sales            $300.00

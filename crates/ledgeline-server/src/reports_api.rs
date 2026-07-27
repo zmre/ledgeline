@@ -719,6 +719,156 @@ fn parse_count(raw: Option<usize>) -> Result<usize, ApiError> {
     }
 }
 
+/// Validate one date and normalize it to ISO `YYYY-MM-DD`, or return the reason
+/// it is not a date. [`parse_date`] wraps the reason in a `400`.
+///
+/// **Why this has to exist (RPT-4).** The whole report engine orders and windows
+/// dates by comparing the strings themselves (`reports::aggregate`,
+/// `reports::periods`), which is only chronological because every date it has
+/// ever seen came out of the journal parser as a fixed-width `YYYY-MM-DD`. A
+/// query param bypassed that parser entirely, so a hand-typed `?end=2026-7-1`
+/// stayed `"2026-7-1"` — a string that sorts ABOVE `"2026-12-31"` and whose
+/// month slice is `"7-"`, i.e. bucket `2026-00`. Nothing errored: the balance
+/// sheet quietly served the all-time total, the period reports grew a garbage
+/// trailing bucket, and `?asOf=` (empty) sorted below everything and served an
+/// empty report with a `200`. Validating the shape here restores the invariant
+/// the engine assumes rather than teaching every comparison to distrust it.
+///
+/// **What is accepted** is exactly what hledger's own `-b`/`-e` accept, verified
+/// against `hledger 1.52`: a four-digit year, `-`, `/` or `.` separators, and
+/// unpadded month/day components. `2026-7-1`, `2026/7/1` and `2026.7.1` all
+/// normalize to `2026-07-01` — the same normalization Ledgeline's journal parser
+/// (`parse::normalize_date`) already applies to journal dates, so a date that is
+/// legal INSIDE a journal is also legal in a URL, and a URL answer agrees with
+/// `hledger -e <same-date>`. hledger rejects `26-07-01`, `2026-13-01`,
+/// `2026-02-30` and `garbage`; so do we.
+fn normalize_iso_date(raw: &str) -> Result<String, String> {
+    const SHAPE: &str = "expected YYYY-MM-DD (a four-digit year, then month and day, \
+                         separated by `-`, `/` or `.`)";
+
+    let parts: Vec<&str> = raw.split(['-', '/', '.']).collect();
+    let [year_src, month_src, day_src] = parts[..] else {
+        return Err(SHAPE.to_string());
+    };
+    // Digits only, and width-checked: a 4-digit year is what keeps the ISO form
+    // fixed-width, which is what makes the engine's lexical ordering correct.
+    let component = |src: &str, widths: std::ops::RangeInclusive<usize>| -> Option<i32> {
+        (widths.contains(&src.len()) && src.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| src.parse().ok())
+            .flatten()
+    };
+    let (Some(year), Some(month), Some(day)) = (
+        component(year_src, 4..=4),
+        component(month_src, 1..=2),
+        component(day_src, 1..=2),
+    ) else {
+        return Err(SHAPE.to_string());
+    };
+    // The day must be valid FOR ITS MONTH: `2026-02-30` and `2023-02-29` are
+    // shaped like dates but are not dates, and hledger rejects both. Mirrors the
+    // PARSE-6 check the journal parser applies (`parse::normalize_date`).
+    if !(1..=12).contains(&month) {
+        return Err(format!("there is no month {month}"));
+    }
+    if !(1..=days_in_month(year, month)).contains(&day) {
+        return Err(format!(
+            "month {month:02} of {year:04} has no day {day} (it has {})",
+            days_in_month(year, month)
+        ));
+    }
+    Ok(format!("{year:04}-{month:02}-{day:02}"))
+}
+
+/// The number of days in `month` (1-12) of `year`.
+///
+/// Duplicated from `ledgeline_core::parse` (and, in `i64`, from
+/// `reports::periods`) only because both copies are private to their modules and
+/// neither crate exports a date validator. Folding all three into one place is
+/// the `IsoDate` newtype of DRY-2; this copy is confined to the HTTP boundary
+/// until then.
+fn days_in_month(year: i32, month: i32) -> i32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// The proleptic Gregorian leap-year rule hledger's `Data.Time` calendar uses.
+fn is_leap_year(year: i32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+/// Validate `raw` as an ISO date, naming `field` in the `400` message.
+fn checked_date(field: &str, raw: &str) -> Result<String, ApiError> {
+    normalize_iso_date(raw).map_err(|reason| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("invalid {field} date '{raw}': {reason}"),
+        )
+    })
+}
+
+/// Validate a date param, falling back to `default` when it is absent.
+///
+/// An EXPLICIT but malformed value — including an explicit empty one, which used
+/// to sort below every real date and produce an empty report — is a `400`,
+/// matching [`parse_interval`] and [`parse_count`]: the caller asked a question
+/// we cannot answer, and a report for some other date is not the answer. (The
+/// SPA's `queryString` omits empty params rather than sending them, so this
+/// costs it nothing.)
+fn parse_date(
+    field: &str,
+    raw: Option<String>,
+    default: impl FnOnce() -> String,
+) -> Result<String, ApiError> {
+    match raw {
+        None => Ok(default()),
+        Some(value) => checked_date(field, &value),
+    }
+}
+
+/// Validate an OPTIONAL date param, where absent AND empty both mean `None`.
+///
+/// Only `gainSince` uses this: an empty `gainSince` is its documented sentinel
+/// for "all-time gain" (see [`holdings`]), so unlike the defaulted params above
+/// an empty value here is a real request, not a malformed date.
+fn parse_opt_date(field: &str, raw: Option<String>) -> Result<Option<String>, ApiError> {
+    match raw.filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(value) => checked_date(field, &value).map(Some),
+    }
+}
+
+/// The "biggest change" floor used when `changeMin` is absent: $10 in the base
+/// commodity.
+const DEFAULT_CHANGE_MIN: Dec = Dec::new(1000, 2);
+
+/// Validate a `changeMin` magnitude, defaulting to [`DEFAULT_CHANGE_MIN`] when
+/// absent or empty. Returns a `400` tuple for anything [`Dec::parse`] rejects.
+///
+/// This REJECTS rather than falling back, for the same reason as [`parse_count`]:
+/// `changeMin` is the floor that decides which rows appear in the "biggest
+/// change" boxes, so quietly substituting $10 for a value the caller wrote (say
+/// `changeMin=$500`, or a comma-decimal `changeMin=500,00`) answers a different
+/// question with a shorter, plausible-looking list and no way to tell.
+///
+/// Note the decimal mark is `.`, so `,`/`_`/space are digit-group separators —
+/// `changeMin=1,000` is a well-formed 1000 and stays accepted.
+fn parse_change_min(raw: Option<&str>) -> Result<Dec, ApiError> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(DEFAULT_CHANGE_MIN),
+        Some(value) => Dec::parse(value, '.').map_err(|err| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid changeMin '{value}': {err}"),
+            )
+        }),
+    }
+}
+
 /// Parse a holdings scope mode, defaulting to `include` when absent. Returns a
 /// `400` tuple for an unrecognized value.
 fn parse_mode(raw: Option<&str>) -> Result<ScopeMode, ApiError> {
@@ -908,7 +1058,7 @@ pub(crate) async fn balancesheet(
     Query(query): Query<BalanceSheetQuery>,
 ) -> Result<Json<WireSectionedReport>, ApiError> {
     let snapshot = state.snapshot();
-    let as_of = query.as_of.unwrap_or_else(today_utc);
+    let as_of = parse_date("asOf", query.as_of, today_utc)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
     let declared = declared_types(&account_decls(&snapshot.journal));
     let report = balance_sheet(&snapshot.journal.transactions, &as_of, depth, &declared)
@@ -923,10 +1073,8 @@ pub(crate) async fn incomestatement(
 ) -> Result<Json<WireSectionedReport>, ApiError> {
     let snapshot = state.snapshot();
     let today = today_utc();
-    let from = query
-        .from
-        .unwrap_or_else(|| format!("{}-01-01", &today[..4]));
-    let to = query.to.unwrap_or(today);
+    let from = parse_date("from", query.from, || format!("{}-01-01", &today[..4]))?;
+    let to = parse_date("to", query.to, || today)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
     let declared = declared_types(&account_decls(&snapshot.journal));
     let report = income_statement(&snapshot.journal.transactions, &from, &to, depth, &declared)
@@ -941,7 +1089,7 @@ pub(crate) async fn cashflow(
     Query(query): Query<CashFlowQuery>,
 ) -> Result<Json<WirePeriodReport>, ApiError> {
     let snapshot = state.snapshot();
-    let end = query.end.unwrap_or_else(today_utc);
+    let end = parse_date("end", query.end, today_utc)?;
     let interval = parse_interval(query.interval.as_deref())?;
     let count = parse_count(query.count)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
@@ -970,7 +1118,7 @@ pub(crate) async fn networth(
     Query(query): Query<NetWorthQuery>,
 ) -> Result<Json<WirePeriodReport>, ApiError> {
     let snapshot = state.snapshot();
-    let end = query.end.unwrap_or_else(today_utc);
+    let end = parse_date("end", query.end, today_utc)?;
     let interval = parse_interval(query.interval.as_deref())?;
     let count = parse_count(query.count)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
@@ -1002,7 +1150,7 @@ pub(crate) async fn budget(
     Query(query): Query<BudgetQuery>,
 ) -> Result<Json<WireBudgetReport>, ApiError> {
     let snapshot = state.snapshot();
-    let end = query.end.unwrap_or_else(today_utc);
+    let end = parse_date("end", query.end, today_utc)?;
     let interval = parse_interval(query.interval.as_deref())?;
     let count = parse_count(query.count)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
@@ -1036,16 +1184,10 @@ pub(crate) async fn insights_report(
     Query(query): Query<InsightsQuery>,
 ) -> Result<Json<WireInsightsReport>, ApiError> {
     let snapshot = state.snapshot();
-    let end = query.end.unwrap_or_else(today_utc);
-    let start = query.start.unwrap_or_else(|| default_insights_start(&end));
+    let end = parse_date("end", query.end, today_utc)?;
+    let start = parse_date("start", query.start, || default_insights_start(&end))?;
     let cost_exclude = parse_csv(query.exclude.as_deref(), DEFAULT_COST_EXCLUDE);
-    // Default "biggest change" floor: $10 in the base commodity; a malformed
-    // value falls back to the default rather than erroring.
-    let change_min = query
-        .change_min
-        .as_deref()
-        .and_then(|raw| Dec::parse(raw, '.').ok())
-        .unwrap_or_else(|| Dec::new(1000, 2));
+    let change_min = parse_change_min(query.change_min.as_deref())?;
     let opts = InsightsOpts {
         start: &start,
         end: &end,
@@ -1064,7 +1206,7 @@ pub(crate) async fn subscriptions(
     Query(query): Query<SubscriptionsQuery>,
 ) -> Result<Json<WireSubscriptionsReport>, ApiError> {
     let snapshot = state.snapshot();
-    let as_of = query.as_of.unwrap_or_else(today_utc);
+    let as_of = parse_date("asOf", query.as_of, today_utc)?;
     let defaults = SubscriptionOpts::default();
     let exclude_desc = parse_csv(query.exclude_desc.as_deref(), DEFAULT_EXCLUDE_DESC);
     let opts = SubscriptionOpts {
@@ -1102,8 +1244,8 @@ pub(crate) async fn holdings(
     let scope = HoldingsScope {
         accounts: parse_accounts(query.accounts.as_deref()),
         mode: parse_mode(query.mode.as_deref())?,
-        as_of: query.as_of.unwrap_or_else(today_utc),
-        gain_since: query.gain_since.filter(|start| !start.is_empty()),
+        as_of: parse_date("asOf", query.as_of, today_utc)?,
+        gain_since: parse_opt_date("gainSince", query.gain_since)?,
     };
     let report = compute_holdings(
         &snapshot.journal.transactions,
@@ -1126,7 +1268,7 @@ pub(crate) async fn holdings_series_report(
     let scope = HoldingsScope {
         accounts: parse_accounts(query.accounts.as_deref()),
         mode: parse_mode(query.mode.as_deref())?,
-        as_of: query.as_of.unwrap_or_else(today_utc),
+        as_of: parse_date("asOf", query.as_of, today_utc)?,
         // The trend tracks market value/basis only — no per-point gain window.
         gain_since: None,
     };
@@ -1143,4 +1285,162 @@ pub(crate) async fn holdings_series_report(
     )
     .map_err(|err| report_error(&err))?;
     Ok(Json(wire_holdings_series(&series)))
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The forms `hledger 1.52` itself accepts for `-b`/`-e`, all normalizing to
+    /// the same fixed-width ISO date the report engine's lexical ordering needs.
+    #[test]
+    fn accepts_and_normalizes_every_hledger_date_spelling() {
+        for raw in [
+            "2026-07-01",
+            "2026-7-1",
+            "2026/7/1",
+            "2026/07/01",
+            "2026.7.1",
+            "2026-07-1",
+            "2026-7-01",
+        ] {
+            assert_eq!(
+                normalize_iso_date(raw).as_deref(),
+                Ok("2026-07-01"),
+                "{raw} should normalize to 2026-07-01"
+            );
+        }
+    }
+
+    /// Month/day boundaries and the leap-year rule, including the century cases.
+    #[test]
+    fn accepts_real_calendar_boundaries() {
+        for raw in [
+            "2024-02-29", // leap year
+            "2000-02-29", // 400-divisible century IS a leap year
+            "2026-01-31",
+            "2026-12-31",
+            "0001-01-01",
+            "9999-12-31",
+        ] {
+            assert!(
+                normalize_iso_date(raw).is_ok(),
+                "{raw} is a real date and must be accepted"
+            );
+        }
+    }
+
+    /// RPT-4: every one of these used to flow straight into a `&str` comparison.
+    #[test]
+    fn rejects_malformed_dates() {
+        for raw in [
+            "",             // sorted below every real date → an empty report
+            "garbage",      // sorted above every real date → the all-time total
+            "2026",         // too few components
+            "2026-07",      // too few components
+            "2026-07-01-1", // too many components
+            "07-01",        // yearless: needs a `Y` directive, meaningless in a URL
+            "26-07-01",     // two-digit year (hledger rejects it too)
+            "12026-01-01",  // five-digit year would break the fixed-width slices
+            "2026-007-01",  // over-wide month
+            "2026-07-001",  // over-wide day
+            "2026--7-1",    // empty component
+            "2026-x7-01",   // non-digit
+            "2026-+7-01",   // signed component
+            " 2026-07-01",  // untrimmed
+            "2026-07-01 ",  // untrimmed
+            "-2026-07-01",  // leading separator (a negative year)
+        ] {
+            assert!(
+                normalize_iso_date(raw).is_err(),
+                "{raw:?} is not a date and must be rejected"
+            );
+        }
+    }
+
+    /// Shaped like a date, but not a date. hledger rejects all of these.
+    #[test]
+    fn rejects_impossible_calendar_dates() {
+        for raw in [
+            "2026-02-30",
+            "2026-02-29", // 2026 is not a leap year
+            "2023-02-29",
+            "1900-02-29", // century, not 400-divisible → not a leap year
+            "2026-04-31",
+            "2026-13-01",
+            "2026-00-01",
+            "2026-01-00",
+            "2026-01-32",
+        ] {
+            assert!(
+                normalize_iso_date(raw).is_err(),
+                "{raw} is not a real date and must be rejected"
+            );
+        }
+    }
+
+    /// The `400` body names the parameter, echoes the value, and says why —
+    /// enough to fix the request without reading the source.
+    #[test]
+    fn rejection_message_names_the_field_and_the_reason() {
+        let (status, message) = checked_date("asOf", "2026-02-30").expect_err("not a date");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(message.contains("asOf"), "{message}");
+        assert!(message.contains("2026-02-30"), "{message}");
+        assert!(message.contains("no day 30"), "{message}");
+
+        let (_, message) = checked_date("end", "nope").expect_err("not a date");
+        assert!(message.contains("YYYY-MM-DD"), "{message}");
+    }
+
+    /// An absent param keeps its default; an explicit malformed one is a `400`.
+    #[test]
+    fn parse_date_defaults_only_when_absent() {
+        assert_eq!(
+            parse_date("asOf", None, || "2026-06-30".to_string()),
+            Ok("2026-06-30".to_string())
+        );
+        assert_eq!(
+            parse_date("asOf", Some("2026-6-30".to_string()), String::new),
+            Ok("2026-06-30".to_string())
+        );
+        // An explicit empty value is NOT "absent": it used to sort below every
+        // real date and serve an empty report with a 200.
+        assert!(parse_date("asOf", Some(String::new()), String::new).is_err());
+    }
+
+    /// `gainSince` keeps its documented empty-means-all-time sentinel, but a
+    /// non-empty value still has to be a real date.
+    #[test]
+    fn parse_opt_date_keeps_the_empty_sentinel() {
+        assert_eq!(parse_opt_date("gainSince", None), Ok(None));
+        assert_eq!(parse_opt_date("gainSince", Some(String::new())), Ok(None));
+        assert_eq!(
+            parse_opt_date("gainSince", Some("2026-1-2".to_string())),
+            Ok(Some("2026-01-02".to_string()))
+        );
+        assert!(parse_opt_date("gainSince", Some("2026-02-30".to_string())).is_err());
+    }
+
+    /// `changeMin` keeps hledger's digit-group separators but no longer swallows
+    /// a value it cannot read.
+    #[test]
+    fn parse_change_min_rejects_instead_of_defaulting() {
+        assert_eq!(parse_change_min(None), Ok(DEFAULT_CHANGE_MIN));
+        assert_eq!(parse_change_min(Some("")), Ok(DEFAULT_CHANGE_MIN));
+        assert_eq!(parse_change_min(Some("25.50")), Ok(Dec::new(2550, 2)));
+        // `,` is a digit-group separator when the decimal mark is `.`, so this
+        // is a well-formed 1000 — NOT the $10.00 the finding predicted.
+        assert_eq!(parse_change_min(Some("1,000")), Ok(Dec::new(1000, 0)));
+        for raw in ["zzz", "$10", "10%", "1.0.0.x"] {
+            assert!(
+                parse_change_min(Some(raw)).is_err(),
+                "{raw} must be a 400, not a silent $10.00"
+            );
+        }
+    }
 }

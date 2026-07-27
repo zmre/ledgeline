@@ -102,6 +102,13 @@ pub fn roll_up(
 }
 
 /// Keep only accounts with at most `depth` segments.
+///
+/// `depth == 0` selects nothing, which is "totals only": `hledger --depth 0`
+/// likewise shows no per-account detail, collapsing everything into a single
+/// `...` row and printing just the totals. Callers must therefore never derive a
+/// total from this function's output — every report total here is summed from
+/// the unclamped accounts, so `?depth=0` reports hledger's totals rather than
+/// zeros (RPT-4).
 #[must_use]
 pub fn at_depth(
     rolled: &BTreeMap<String, MixedAmount>,
@@ -112,4 +119,37 @@ pub fn at_depth(
         .filter(|(account, _)| account.split(':').count() <= depth)
         .map(|(account, ma)| (account.clone(), ma.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decimal::Dec;
+    use crate::model::Commodity;
+
+    fn rolled() -> BTreeMap<String, MixedAmount> {
+        let mut totals = BTreeMap::new();
+        totals.insert(
+            "assets:bank:checking".to_string(),
+            MixedAmount::single(Commodity("$".into()), Dec::new(1000, 2)),
+        );
+        roll_up(&totals).unwrap()
+    }
+
+    #[test]
+    fn at_depth_keeps_accounts_up_to_the_limit() {
+        assert_eq!(
+            at_depth(&rolled(), 2).keys().collect::<Vec<_>>(),
+            ["assets", "assets:bank"]
+        );
+        assert_eq!(at_depth(&rolled(), 3).len(), 3);
+        assert_eq!(at_depth(&rolled(), 9).len(), 3);
+    }
+
+    /// `--depth 0` is "totals only" — no per-account rows. Report totals are
+    /// summed from the unclamped accounts, so they survive this (RPT-4).
+    #[test]
+    fn at_depth_zero_selects_nothing() {
+        assert!(at_depth(&rolled(), 0).is_empty());
+    }
 }

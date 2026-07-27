@@ -176,15 +176,21 @@ async fn holdings_gain_since_windows_the_gain() {
     let base = body_ok(&journal, &format!("/api/holdings?asOf={AS_OF}")).await;
     assert_eq!(canon(&holding(&base, "AAPL")["gain"]), (923_775, 3));
 
-    // Windowed since 2026-01-01: value_at_start = 15 sh × $255 = $3825, so
-    // gain = $5269.875 − $3825 = $1444.875; basis stays the all-time $4346.10.
+    // Windowed since 2026-01-01. value_at_start = 15 sh × $255 = $3825.00, and
+    // 4.5 sh were BOUGHT in-window on 2026-03-10 for $1117.35 — money put in, not
+    // money made — so it is netted out:
+    //   gain = $5269.875 − $3825.00 − $1117.35 = $327.525
+    // Cross-check per share: 15 × ($270.25−$255.00) + 4.5 × ($270.25−$248.30)
+    //                      = $228.75 + $98.775 = $327.525.
+    // This asserted $1444.875 until HOLD-2, i.e. the purchase was reported as gain.
+    // Basis stays the all-time $4346.10.
     let windowed = body_ok(
         &journal,
         &format!("/api/holdings?asOf={AS_OF}&gainSince=2026-01-01"),
     )
     .await;
     let aapl = holding(&windowed, "AAPL");
-    assert_eq!(canon(&aapl["gain"]), (1_444_875, 3), "windowed gain");
+    assert_eq!(canon(&aapl["gain"]), (327_525, 3), "windowed gain");
     assert_eq!(canon(&aapl["basis"]), (43461, 1), "basis stays all-time");
 }
 

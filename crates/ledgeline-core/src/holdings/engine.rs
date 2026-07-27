@@ -6,6 +6,21 @@
 //! is kept in the valuation base commodity; a cost-less acquisition lot taints
 //! the pool (`basis = None`) — we never guess a basis from price directives.
 //!
+//! Four movements are NOT ordinary acquisitions and are handled apart, because
+//! reading them as one produced a confidently-wrong number:
+//! - a **split** re-denominates an open position — it scales `shares` and leaves
+//!   `basis`/`first_basis_date` alone (see [`is_redenomination`]);
+//! - a **same-transaction round trip** at two different prices is not the pure
+//!   transfer its zero net makes it look like (see [`is_pure_transfer`]);
+//! - a pool that ever goes **negative** is tainted for good: the lot that was
+//!   oversold was never entered, so nothing bought later has a knowable average
+//!   cost;
+//! - a **return of capital** (cash out of a one-security account) reduces basis.
+//!
+//! Under a `gain_since` window the gain is `mv(as_of) − mv(start) − flows`, so
+//! money paid in or taken out moves the baseline instead of masquerading as a
+//! gain (see `reference_of` in [`compute_holdings`]).
+//!
 //! All money math is exact [`Dec`], reusing the same non-normalizing multiply
 //! (`reports::prices::mul_raw`) as the valuation engine so the ported numbers
 //! line up with the TS `domain/money` representation bit-for-bit. The only
@@ -92,6 +107,21 @@ struct DatedPrice {
     date: String,
 }
 
+/// Why a pool's basis is unknown. Distinct from the wire-level [`WarningKind`]
+/// (which the SPA matches exhaustively and so cannot grow here) purely so the
+/// warning MESSAGE can name the actual cause — all three used to be reported
+/// identically as "acquired without a cost annotation".
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TaintReason {
+    /// An acquisition lot arrived with no cost annotation at all.
+    CostlessLot,
+    /// A lot's cost was annotated in a commodity with no rate to the base.
+    UnconvertibleCost(String),
+    /// Net shares dipped below zero, so the average cost of whatever is held
+    /// afterwards is unknowable (see the sticky taint in [`build_pools`]).
+    WentNegative,
+}
+
 /// Average-cost pool for one stock symbol. Only the fields consumed by
 /// [`compute_holdings`] are tracked (the TS `costlessBuyTxns`/`negativeCrossTxn`/
 /// `lastTxnIndex` feed the separate WP-10 check rules, which are out of scope
@@ -99,10 +129,21 @@ struct DatedPrice {
 struct SymbolPool {
     /// Net shares over processed postings (may be zero or negative).
     shares: Dec,
-    /// Running basis in the base commodity; meaningful only when not `tainted`.
+    /// Running basis in the base commodity; meaningful only when `taint` is
+    /// `None`.
     basis: Dec,
-    /// True once any acquisition lot lacked a usable cost.
-    tainted: bool,
+    /// Why the basis is untrustworthy; `None` while it is still exact. First
+    /// cause wins, so the message names the EARLIEST thing that went wrong.
+    taint: Option<TaintReason>,
+    /// True once net shares dipped below zero. Sticky: re-buying does not
+    /// restore a knowable average cost, because the lot that was oversold was
+    /// never entered in the first place.
+    went_negative: bool,
+    /// Net value contributed to this symbol inside the gain window
+    /// `(gain_since, as_of]` — buy costs minus sell proceeds, in the base
+    /// commodity. `None` once an in-window leg could not be valued at all;
+    /// always `Some(0)` when no window is set.
+    window_flow: Option<Dec>,
     /// Date the current position was opened (reset on each re-open); `None`
     /// until a buy is seen.
     first_basis_date: Option<String>,
@@ -119,10 +160,19 @@ impl SymbolPool {
         Self {
             shares: Dec::zero(),
             basis: Dec::zero(),
-            tainted: false,
+            taint: None,
+            went_negative: false,
+            window_flow: Some(Dec::zero()),
             first_basis_date: None,
             accounts: Vec::new(),
             name: symbol.to_string(),
+        }
+    }
+
+    /// Record `reason` unless the basis is already tainted (first cause wins).
+    fn taint_with(&mut self, reason: TaintReason) {
+        if self.taint.is_none() {
+            self.taint = Some(reason);
         }
     }
 }
@@ -190,6 +240,233 @@ fn cost_in_base(
     }
 }
 
+/// A leg's cost in the base commodity, SIGNED by the leg's own direction: a buy
+/// is value flowing INTO the pool, a sell value flowing out. `@@` totals are
+/// written unsigned in a journal (`-10 VTI @@ $1500.00`), so their sign has to
+/// come from the quantity rather than from the annotation.
+fn signed_cost_in_base(
+    qty: Dec,
+    cost: &Cost,
+    db: &PriceDb,
+    base: &Commodity,
+    date: &str,
+) -> Result<Option<Dec>, ReportError> {
+    let Some(value) = cost_in_base(qty, Some(cost), db, base, date)? else {
+        return Ok(None);
+    };
+    if cost.kind == CostKind::Unit {
+        return Ok(Some(value)); // `qty × unit_price` already carries the sign
+    }
+    let magnitude = value.abs()?;
+    Ok(Some(if qty.mantissa < 0 {
+        magnitude.neg()?
+    } else {
+        magnitude
+    }))
+}
+
+/// The value one in-scope leg moved into (`> 0`) or out of (`< 0`) the pool, in
+/// the base commodity — a contribution or a withdrawal for the windowed gain.
+/// A cost annotation is authoritative; a bare leg (an external transfer in or
+/// out) falls back to the market price on its own date. `None` when neither is
+/// available, which makes the whole window's gain honestly unknown rather than
+/// quietly wrong.
+fn leg_flow(
+    entry: &LotEntry,
+    commodity: &Commodity,
+    db: &PriceDb,
+    base: &Commodity,
+    date: &str,
+) -> Result<Option<Dec>, ReportError> {
+    match entry.cost.as_ref() {
+        Some(cost) => signed_cost_in_base(entry.qty, cost, db, base, date),
+        None => db
+            .lookup_in(commodity, base, date)
+            .map(|price| mul_raw(entry.qty, price.quantity))
+            .transpose()
+            .map_err(ReportError::from),
+    }
+}
+
+/// True when `symbol` is the ONLY commodity whose quantity moves in `txn` — no
+/// cash consideration, no second security. A split re-labels one security's
+/// share count; nothing else changes hands.
+fn moves_only(txn: &Transaction, symbol: &str) -> bool {
+    txn.postings
+        .iter()
+        .flat_map(|posting| &posting.amounts)
+        .all(|amount| amount.quantity.is_zero() || amount.commodity.0 == symbol)
+}
+
+/// True when any posting of `txn` moves a non-zero quantity of `symbol`.
+fn moves_symbol(txn: &Transaction, symbol: &str) -> bool {
+    txn.postings
+        .iter()
+        .flat_map(|posting| &posting.amounts)
+        .any(|amount| amount.commodity.0 == symbol && !amount.quantity.is_zero())
+}
+
+/// True when every `symbol` amount in `txn` — in any account, in or out of
+/// scope — is free of a cost annotation.
+fn all_symbol_legs_costless(txn: &Transaction, symbol: &str) -> bool {
+    txn.postings
+        .iter()
+        .flat_map(|posting| &posting.amounts)
+        .all(|amount| amount.commodity.0 != symbol || amount.cost.is_none())
+}
+
+/// True when any posting of `txn` lands in a revenue or expense account. Those
+/// mark compensation (an RSU vest), a fee, or a gift — value really did arrive
+/// or leave, so the transaction is never a pure re-denomination.
+fn touches_income_or_expense(txn: &Transaction, declared: &BTreeMap<String, AccountType>) -> bool {
+    txn.postings.iter().any(|posting| {
+        matches!(
+            resolve_account_type(&posting.account.0, declared),
+            Some(AccountType::Revenue | AccountType::Expense)
+        )
+    })
+}
+
+/// Signed total of `symbol` legs posted to EQUITY accounts in `txn` — the
+/// counter-side that absorbs a split booked as `assets +n / equity:splits -n`.
+fn equity_share_total(
+    txn: &Transaction,
+    symbol: &str,
+    declared: &BTreeMap<String, AccountType>,
+) -> Result<Dec, ReportError> {
+    let mut total = Dec::zero();
+    for posting in &txn.postings {
+        if resolve_account_type(&posting.account.0, declared) != Some(AccountType::Equity) {
+            continue;
+        }
+        for amount in &posting.amounts {
+            if amount.commodity.0 == symbol {
+                total = total.add(amount.quantity)?;
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// True when this transaction RE-DENOMINATES an already-open `symbol` position
+/// (a stock split, or a reverse split) rather than changing the value held. A
+/// split must leave `basis` and `first_basis_date` alone and only scale the
+/// share count — treating its cost-less share leg as an acquisition destroys
+/// the basis of a cleanly-annotated position.
+///
+/// The test is deliberately narrow. Everything below must hold:
+/// - the position is already open in scope (`shares > 0`) — a cost-less arrival
+///   into an EMPTY pool is a transfer-in whose basis genuinely is unknown;
+/// - no `symbol` leg anywhere in the transaction carries a cost annotation;
+/// - `symbol` is the only commodity that moves (no cash, no second security);
+/// - no revenue/expense account is touched (that would be a vest, fee or gift);
+/// - and the shares are visibly absorbed rather than sourced: either the
+///   in-scope legs contain BOTH signs (the same-transaction `-n`/`+m` spelling)
+///   or an equity leg carries the opposite sign to the net (`equity:splits`).
+///
+/// **Known ambiguity.** An ACATS-style share transfer-in booked against equity
+/// (`assets:brokerA +5 TSLA` / `equity:transfers -5 TSLA`) is spelled exactly
+/// like the second form. When the pool is EMPTY the two are told apart (a
+/// transfer-in taints, as before); when the same symbol is already held they are
+/// indistinguishable from the journal alone, and this reads it as a split. That
+/// is the trade the fix accepts: silently keeping a correct basis through the
+/// common case (splits) at the cost of an over-optimistic basis in the rare one
+/// (topping up a position by external transfer with no cost recorded).
+fn is_redenomination(
+    txn: &Transaction,
+    symbol: &str,
+    entries: &[LotEntry],
+    net: Dec,
+    shares_before: Dec,
+    declared: &BTreeMap<String, AccountType>,
+) -> Result<bool, ReportError> {
+    if shares_before.mantissa <= 0
+        || net.is_zero()
+        || !all_symbol_legs_costless(txn, symbol)
+        || !moves_only(txn, symbol)
+        || touches_income_or_expense(txn, declared)
+    {
+        return Ok(false);
+    }
+    let two_sided = entries.iter().any(|entry| entry.qty.mantissa > 0)
+        && entries.iter().any(|entry| entry.qty.mantissa < 0);
+    if two_sided {
+        return Ok(true);
+    }
+    let equity = equity_share_total(txn, symbol, declared)?;
+    Ok(equity.mantissa != 0 && (equity.mantissa > 0) != (net.mantissa > 0))
+}
+
+/// True when a zero-net set of in-scope legs really is a pure MOVE between
+/// in-scope accounts (leave the basis alone) rather than a same-transaction
+/// round trip that re-prices the position.
+///
+/// Cost-compatible means one of two things: nothing was re-costed on the way in
+/// (every incoming leg is bare, the ordinary transfer spelling), or the legs'
+/// costs cancel exactly (the position was moved at a single price). A sell at
+/// one price paired with a re-buy at another moves real money and must be
+/// processed leg by leg.
+fn is_pure_transfer(
+    entries: &[LotEntry],
+    db: &PriceDb,
+    base: &Commodity,
+    date: &str,
+) -> Result<bool, ReportError> {
+    if entries
+        .iter()
+        .filter(|entry| entry.qty.mantissa > 0)
+        .all(|entry| entry.cost.is_none())
+    {
+        return Ok(true);
+    }
+    let mut total = Dec::zero();
+    for entry in entries {
+        let Some(cost) = entry.cost.as_ref() else {
+            return Ok(false); // a bare leg alongside costed ones: not comparable
+        };
+        let Some(value) = signed_cost_in_base(entry.qty, cost, db, base, date)? else {
+            return Ok(false); // unconvertible cost: cannot prove it nets out
+        };
+        total = total.add(value)?;
+    }
+    Ok(total.is_zero())
+}
+
+/// For every in-scope holding account, the single stock symbol it holds, or
+/// `None` when it holds several. A currency posting into a one-security account
+/// is a basis adjustment (a return of capital); in an account that mixes cash
+/// and shares it cannot be attributed to anything and is left alone.
+fn sole_symbols_by_account(
+    txns: &[Transaction],
+    as_of: &str,
+    in_scope: &dyn Fn(&str) -> bool,
+    declared: &BTreeMap<String, AccountType>,
+) -> BTreeMap<String, Option<String>> {
+    let mut sole: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for txn in txns {
+        if txn.date.as_str() > as_of {
+            continue;
+        }
+        for posting in &txn.postings {
+            if !in_scope(&posting.account.0) || !is_holding_account(&posting.account.0, declared) {
+                continue;
+            }
+            for amount in &posting.amounts {
+                if is_currency(&amount.commodity.0) {
+                    continue;
+                }
+                let slot = sole
+                    .entry(posting.account.0.clone())
+                    .or_insert_with(|| Some(amount.commodity.0.clone()));
+                if slot.as_deref() != Some(amount.commodity.0.as_str()) {
+                    *slot = None; // a second security: no longer attributable
+                }
+            }
+        }
+    }
+    sole
+}
+
 /// Per-journal lookups [`build_pools`] needs: security names from account and
 /// `commodity` directives, plus declared account types so a share movement's
 /// funding leg is recognized by TYPE rather than by what its root is called.
@@ -203,11 +480,17 @@ struct PoolLookups<'a> {
 /// Build one average-cost pool per stock symbol from postings dated ≤ `as_of`
 /// whose account passes `in_scope`. Port of the TS `buildPools`; see that
 /// function's doc for the netting/taint/reduction rules.
+///
+/// `window_start`, when set, additionally accumulates each pool's
+/// `window_flow`: the value contributed to (or withdrawn from) the symbol over
+/// `(window_start, as_of]`, which the windowed gain subtracts so a paycheck
+/// contribution is not reported as a gain.
 fn build_pools(
     txns: &[Transaction],
     db: &PriceDb,
     base: &Commodity,
     as_of: &str,
+    window_start: Option<&str>,
     in_scope: &dyn Fn(&str) -> bool,
     lookups: &PoolLookups,
 ) -> Result<BTreeMap<String, SymbolPool>, ReportError> {
@@ -219,15 +502,21 @@ fn build_pools(
     let mut pools: BTreeMap<String, SymbolPool> = BTreeMap::new();
     // symbol -> account -> net shares.
     let mut per_account: BTreeMap<String, BTreeMap<String, Dec>> = BTreeMap::new();
+    let sole_symbols = sole_symbols_by_account(txns, as_of, in_scope, declared);
 
     for txn in journal_order(txns) {
         if txn.date.as_str() > as_of {
             continue;
         }
+        // The gain window is half-open: `mv(window_start)` already includes
+        // everything dated ≤ `window_start`, so only later flows are additions.
+        let in_window = window_start.is_some_and(|start| txn.date.as_str() > start);
 
         // Gather this txn's in-scope stock legs per symbol (posting order
-        // preserved within each symbol's Vec; symbols are independent pools).
+        // preserved within each symbol's Vec; symbols are independent pools),
+        // plus any return-of-capital basis reductions.
         let mut by_symbol: BTreeMap<String, Vec<LotEntry>> = BTreeMap::new();
+        let mut basis_returns: BTreeMap<String, Dec> = BTreeMap::new();
         for posting in &txn.postings {
             // Skip out-of-scope accounts and non-holding (equity/income/expense)
             // legs: the latter are a share movement's funding/disposal counter-
@@ -237,6 +526,30 @@ fn build_pools(
             }
             for amount in &posting.amounts {
                 if is_currency(&amount.commodity.0) {
+                    // Return of capital: cash paid OUT of an account that holds
+                    // exactly one security, in a transaction that moves none of
+                    // that security and touches no income/expense account, is a
+                    // basis reduction — not a dividend (which lands in a cash
+                    // account and correctly leaves shares and basis alone).
+                    if amount.quantity.mantissa < 0
+                        && let Some(Some(symbol)) = sole_symbols.get(&posting.account.0)
+                        && !moves_symbol(txn, symbol)
+                        && !touches_income_or_expense(txn, declared)
+                    {
+                        let reduction = if amount.commodity == *base {
+                            Some(amount.quantity)
+                        } else {
+                            db.lookup_in(&amount.commodity, base, &txn.date)
+                                .map(|rate| mul_raw(amount.quantity, rate.quantity))
+                                .transpose()?
+                        };
+                        if let Some(reduction) = reduction {
+                            let slot = basis_returns
+                                .entry(symbol.clone())
+                                .or_insert_with(Dec::zero);
+                            *slot = slot.add(reduction)?;
+                        }
+                    }
                     continue;
                 }
                 let symbol = amount.commodity.0.clone();
@@ -280,22 +593,50 @@ fn build_pools(
             for entry in entries {
                 net = net.add(entry.qty)?;
             }
-            if net.is_zero() {
-                continue; // pure transfer within scope: zero shares, zero basis impact
-            }
             let Some(pool) = pools.get_mut(symbol) else {
                 continue; // unreachable: gathered above
             };
+            // A zero net is a move between in-scope accounts — but only when the
+            // legs are cost-compatible. A sell-and-re-buy of equal size at
+            // DIFFERENT prices also nets to zero and must not be swallowed.
+            if net.is_zero() && is_pure_transfer(entries, db, base, &txn.date)? {
+                continue; // zero shares, zero basis impact, zero flow
+            }
+            // A split only re-labels the share count: scale `shares` and leave
+            // `basis`/`first_basis_date` (and the flow — no value moved) alone.
+            if is_redenomination(txn, symbol, entries, net, pool.shares, declared)? {
+                pool.shares = pool.shares.add(net)?;
+                if pool.shares.mantissa < 0 {
+                    // A "split" that removes more than was ever held is not one;
+                    // fall back to the same sticky taint a bare oversell gets.
+                    pool.went_negative = true;
+                    pool.taint_with(TaintReason::WentNegative);
+                }
+                continue;
+            }
+            let commodity = Commodity(symbol.clone());
             for entry in entries {
                 let leg_before = pool.shares;
                 let leg_after = leg_before.add(entry.qty)?;
+                if in_window {
+                    let flow = leg_flow(entry, &commodity, db, base, &txn.date)?;
+                    pool.window_flow = match (pool.window_flow, flow) {
+                        (Some(running), Some(flow)) => Some(running.add(flow)?),
+                        _ => None, // an unvaluable in-window leg: gain unknowable
+                    };
+                }
                 if entry.qty.mantissa > 0 {
                     if leg_before.mantissa <= 0 {
                         // (re)opening the position resets its basis date
                         pool.first_basis_date = Some(txn.date.clone());
                     }
                     match cost_in_base(entry.qty, entry.cost.as_ref(), db, base, &txn.date)? {
-                        None => pool.tainted = true,
+                        None => pool.taint_with(match entry.cost.as_ref() {
+                            None => TaintReason::CostlessLot,
+                            Some(cost) => {
+                                TaintReason::UnconvertibleCost(cost.amount.commodity.0.clone())
+                            }
+                        }),
                         Some(lot_cost) => pool.basis = pool.basis.add(lot_cost)?,
                     }
                 } else if entry.qty.mantissa < 0 && leg_before.mantissa > 0 {
@@ -305,7 +646,34 @@ fn build_pools(
                         Dec::new(0, pool.basis.places)
                     };
                 }
+                if leg_after.mantissa < 0 {
+                    // Sticky: once more shares have left than ever arrived, the
+                    // opening lot was never entered, so the average cost of
+                    // anything bought afterwards is unknowable. Re-buying used
+                    // to silently pile a full new cost onto a zeroed basis.
+                    pool.went_negative = true;
+                    pool.taint_with(TaintReason::WentNegative);
+                }
                 pool.shares = leg_after;
+            }
+        }
+
+        // Return of capital reduces the basis of the security it was paid on.
+        for (symbol, reduction) in &basis_returns {
+            let Some(pool) = pools.get_mut(symbol) else {
+                continue;
+            };
+            let reduced = pool.basis.add(*reduction)?;
+            // Capital returned beyond the basis is a realised gain, not a
+            // negative cost; clamp rather than report a below-zero basis.
+            pool.basis = if reduced.mantissa < 0 {
+                Dec::new(0, reduced.places)
+            } else {
+                reduced
+            };
+            if in_window && let Some(running) = pool.window_flow {
+                // Cash left the position: a withdrawal, like a partial sell.
+                pool.window_flow = Some(running.add(*reduction)?);
             }
         }
     }
@@ -323,35 +691,52 @@ fn build_pools(
     Ok(pools)
 }
 
-/// Latest `P` directive ≤ `as_of` pricing `symbol` directly in `base` (ties: last
+/// Latest `P` directive ≤ `as_of` pricing `symbol` in `base` (ties: last
 /// declared wins), with its date. Port of the TS `latestDirectivePrice` (scans
 /// the raw directive list so it can return the date, unlike `PriceDb::lookup_in`).
+///
+/// A directive priced in `base` always wins. Failing that, the latest directive
+/// in ANY commodity that converts to `base` is used, applying exactly the same
+/// conversion [`latest_cost_prices`] already applies to cost annotations — so a
+/// `P XYZ 100.00 EUR` + `P EUR $1.10` pair prices XYZ instead of reading as
+/// unpriced and dropping it out of the portfolio totals. The security's quote
+/// keeps its own date (that is what `HoldingPrice.date` reports); the rate that
+/// converts it is the one in force at `as_of`, the valuation date.
 fn latest_directive_price(
     prices: &[PriceDirective],
+    db: &PriceDb,
     symbol: &str,
-    base: &str,
+    base: &Commodity,
     as_of: &str,
-) -> Option<DatedPrice> {
-    let mut best: Option<DatedPrice> = None;
+) -> Result<Option<DatedPrice>, ReportError> {
+    let mut direct: Option<DatedPrice> = None;
+    let mut converted: Option<DatedPrice> = None;
     for directive in prices {
-        if directive.commodity.0 != symbol
-            || directive.price.commodity.0 != base
-            || directive.date.as_str() > as_of
-        {
+        if directive.commodity.0 != symbol || directive.date.as_str() > as_of {
             continue;
         }
-        let take = match &best {
-            None => true,
-            Some(current) => directive.date.as_str() >= current.date.as_str(),
+        let newer = |current: &Option<DatedPrice>| {
+            current
+                .as_ref()
+                .is_none_or(|best| directive.date.as_str() >= best.date.as_str())
         };
-        if take {
-            best = Some(DatedPrice {
-                qty: directive.price.quantity,
+        if directive.price.commodity == *base {
+            if newer(&direct) {
+                direct = Some(DatedPrice {
+                    qty: directive.price.quantity,
+                    date: directive.date.clone(),
+                });
+            }
+        } else if newer(&converted)
+            && let Some(rate) = db.lookup_in(&directive.price.commodity, base, as_of)
+        {
+            converted = Some(DatedPrice {
+                qty: mul_raw(directive.price.quantity, rate.quantity)?,
                 date: directive.date.clone(),
             });
         }
     }
-    best
+    Ok(direct.or(converted))
 }
 
 /// Per symbol, the latest cost annotation ≤ `as_of` usable as a base-commodity
@@ -415,12 +800,15 @@ fn scope_predicate(scope: &HoldingsScope) -> impl Fn(&str) -> bool + '_ {
     }
 }
 
-/// `gain / basis × 100` as a display-boundary `f64`, or `None` when basis is zero.
-fn gain_pct(gain: Dec, basis: Dec) -> Option<f64> {
-    if basis.is_zero() {
+/// `gain / reference × 100` as a display-boundary `f64`, or `None` when there is
+/// no capital to measure against. A zero reference has always been undefined; a
+/// NEGATIVE one (possible once windowed withdrawals exceed the starting value)
+/// would silently flip the sign of the percentage, so it is refused too.
+fn gain_pct(gain: Dec, reference: Dec) -> Option<f64> {
+    if reference.mantissa <= 0 {
         None
     } else {
-        Some((gain.floating_point() / basis.floating_point()) * 100.0)
+        Some((gain.floating_point() / reference.floating_point()) * 100.0)
     }
 }
 
@@ -452,6 +840,7 @@ pub fn compute_holdings(
         &db,
         &base_commodity,
         &scope.as_of,
+        scope.gain_since.as_deref(),
         &predicate,
         &PoolLookups {
             account_tags: &account_tags,
@@ -481,16 +870,31 @@ pub fn compute_holdings(
                 .collect()
         }
     };
-    // The baseline a holding's gain is measured from: its all-time `basis`
-    // (default), or its value at the window start (`gain_since`).
-    let reference_of = |symbol: &str, basis: Option<Dec>| -> Option<Dec> {
+    // The capital a holding's gain is measured against: its all-time `basis`
+    // (default), or — under `gain_since` — the capital actually at work over the
+    // window, `value_at_start + net_contributions`.
+    //
+    // Subtracting the contributions is what makes the windowed number a GAIN
+    // rather than a change in value. Without it, buying $1000 more of a
+    // flat-priced fund inside the window reads as +$1000 of gain and selling
+    // reads as a loss of the whole proceeds — every account taking a paycheck
+    // contribution showed a fabricated YTD figure. Using the same sum as the
+    // percentage's denominator makes it a simple-Dietz return: money in and out
+    // moves the baseline, not the gain.
+    let reference_of = |symbol: &str, basis: Option<Dec>| -> Result<Option<Dec>, ReportError> {
         if scope.gain_since.is_none() {
-            basis
-        } else {
-            start_values
-                .get(symbol)
-                .copied()
-                .unwrap_or_else(|| Some(Dec::zero()))
+            return Ok(basis);
+        }
+        let start = start_values
+            .get(symbol)
+            .copied()
+            .unwrap_or_else(|| Some(Dec::zero()));
+        let flow = pools.get(symbol).and_then(|pool| pool.window_flow);
+        match (start, flow) {
+            (Some(start), Some(flow)) => Ok(Some(start.add(flow)?)),
+            // Held-but-unpriced at the start, or an in-window leg that could not
+            // be valued: refuse the windowed gain rather than invent one.
+            _ => Ok(None),
         }
     };
 
@@ -513,18 +917,19 @@ pub fn compute_holdings(
             continue;
         }
 
-        let price = match latest_directive_price(prices, symbol, &base, &scope.as_of) {
-            Some(directive) => Some(HoldingPrice {
-                qty: directive.qty,
-                date: directive.date,
-                source: PriceSource::Directive,
-            }),
-            None => cost_prices.get(symbol).map(|cost| HoldingPrice {
-                qty: cost.qty,
-                date: cost.date.clone(),
-                source: PriceSource::Cost,
-            }),
-        };
+        let price =
+            match latest_directive_price(prices, &db, symbol, &base_commodity, &scope.as_of)? {
+                Some(directive) => Some(HoldingPrice {
+                    qty: directive.qty,
+                    date: directive.date,
+                    source: PriceSource::Directive,
+                }),
+                None => cost_prices.get(symbol).map(|cost| HoldingPrice {
+                    qty: cost.qty,
+                    date: cost.date.clone(),
+                    source: PriceSource::Cost,
+                }),
+            };
         if price.is_none() {
             warnings.push(HoldingsWarning {
                 symbol: symbol.clone(),
@@ -534,23 +939,48 @@ pub fn compute_holdings(
                 ),
             });
         }
-        if pool.tainted {
+        // A pool that dipped below zero is shown (it is positive again now) but
+        // its basis is not knowable, so the warning stays attached to the row.
+        if pool.went_negative {
             warnings.push(HoldingsWarning {
+                symbol: symbol.clone(),
+                kind: WarningKind::NegativeShares,
+                message: format!(
+                    "{symbol}: net shares dipped below zero before this date — the opening position was likely never entered, so the average cost of the shares still held is unknown"
+                ),
+            });
+        }
+        // `WentNegative` is already reported above; the other two reasons each
+        // get their own text (they used to share the cost-less lot's message).
+        match &pool.taint {
+            None | Some(TaintReason::WentNegative) => {}
+            Some(TaintReason::CostlessLot) => warnings.push(HoldingsWarning {
                 symbol: symbol.clone(),
                 kind: WarningKind::MissingBasis,
                 message: format!("{symbol}: acquired without a cost annotation — basis unknown"),
-            });
+            }),
+            Some(TaintReason::UnconvertibleCost(commodity)) => warnings.push(HoldingsWarning {
+                symbol: symbol.clone(),
+                kind: WarningKind::MissingBasis,
+                message: format!(
+                    "{symbol}: cost annotated in {commodity}, which has no price in {base} on that date — basis unknown"
+                ),
+            }),
         }
 
-        let basis = if pool.tainted { None } else { Some(pool.basis) };
+        let basis = if pool.taint.is_none() {
+            Some(pool.basis)
+        } else {
+            None
+        };
         let market_value = match &price {
             Some(p) => Some(mul_raw(pool.shares, p.qty)?),
             None => None,
         };
         // `gain = market_value − reference`, where `reference` is the all-time
-        // basis (default) or the value at the window start (`gain_since`); `basis`
-        // itself stays all-time on the row regardless.
-        let reference = reference_of(symbol, basis);
+        // basis (default) or the window's invested capital (`gain_since`);
+        // `basis` itself stays all-time on the row regardless.
+        let reference = reference_of(symbol, basis)?;
         let gain = match (market_value, reference) {
             (Some(mv), Some(r)) => Some(mv.sub(r)?),
             _ => None,
@@ -585,8 +1015,8 @@ pub fn compute_holdings(
     // is tainted or unpriced, `basis`/`gain`/`gainPct` sum over only the rows that
     // carry the needed inputs. `basis` sums the "fully-known" rows — a known
     // `basis` AND a market value; `gain` sums `market_value − reference` over the
-    // rows that have a `reference` (all-time `basis` by default, or the
-    // window-start value under `gain_since`) AND a market value; `gainPct` divides
+    // rows that have a `reference` (all-time `basis` by default, or the window's
+    // invested capital under `gain_since`) AND a market value; `gainPct` divides
     // that gain by the reference sum over the same rows. Each is `None` only when
     // its set is empty — i.e. every shown holding is excluded (all tainted/unpriced
     // → an honest dash). An EMPTY portfolio keeps a real zero (you own nothing, so
@@ -608,7 +1038,7 @@ pub fn compute_holdings(
                 None => basis,
             });
         }
-        if let Some(reference) = reference_of(&holding.symbol, holding.basis) {
+        if let Some(reference) = reference_of(&holding.symbol, holding.basis)? {
             gain_total = Some(match gain_total {
                 Some(gt) => gt.add(mv.sub(reference)?)?,
                 None => mv.sub(reference)?,
@@ -1783,8 +2213,17 @@ mod tests {
     }
 
     #[test]
-    fn gain_since_before_position_opened_counts_full_value_pct_undefined() {
-        // Window starts BEFORE the buy → not held at start → value_at_start = 0.
+    fn gain_since_before_position_opened_measures_against_the_contribution() {
+        // REVISED (was `..._counts_full_value_pct_undefined`). The window starts
+        // BEFORE the buy, so `value_at_start` is 0 — but the $2000 spent inside
+        // the window is a CONTRIBUTION, not a gain. The old expectation
+        // (`gain = $2500`, the entire market value, `gain_pct = None`) is exactly
+        // the HOLD-2 defect: it reported the money you put in as money you made.
+        //
+        // Now the reference is `value_at_start + contributions` = $0 + $2000, so
+        // the gain is the $500 the position actually appreciated, and the
+        // percentage is defined (25%) because there IS capital to measure
+        // against — it just arrived mid-window rather than before it.
         let txns = [txn(
             1,
             "2025-03-10",
@@ -1800,14 +2239,801 @@ mod tests {
         assert_eq!(vti.market_value, Some(Dec::new(2500, 0)));
         assert_eq!(
             vti.gain,
-            Some(Dec::new(2500, 0)),
-            "all of it is gain since a start that predates the purchase"
+            Some(Dec::new(500, 0)),
+            "only the appreciation over the $2000 contributed inside the window"
         );
-        assert_eq!(
-            vti.gain_pct, None,
-            "percent is undefined against a zero start"
-        );
+        assert!(close(vti.gain_pct.unwrap(), 25.0));
         assert_eq!(vti.basis, Some(Dec::new(2000, 0)));
+        // Totals follow the same reference.
+        assert_eq!(report.totals.gain, Some(Dec::new(500, 0)));
+    }
+
+    #[test]
+    fn windowed_gain_excludes_a_mid_window_contribution() {
+        // HOLD-2 case 1: price FLAT at $100 throughout. Hold 10 VTI, buy 10 more
+        // inside the window. The old engine reported `mv(asOf) − mv(start)` =
+        // $2000 − $1000 = +$1000 (+100%) — the contribution itself.
+        let txns = [
+            txn(
+                1,
+                "2025-06-01",
+                vec![
+                    buy("assets:broker:vti", "VTI", 10, 10000, true),
+                    posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2026-03-01",
+                vec![
+                    buy("assets:broker:vti", "VTI", 10, 10000, true),
+                    posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = [
+            pd("2025-01-01", "VTI", 10000, "$"),
+            pd("2026-01-01", "VTI", 10000, "$"),
+            pd("2026-06-30", "VTI", 10000, "$"),
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope_since("2026-06-30", ScopeMode::Include, &[], "2026-01-01"),
+        );
+        let vti = only(&report, "VTI");
+        assert_eq!(vti.market_value, Some(Dec::new(2000, 0)));
+        assert_eq!(vti.gain, Some(Dec::zero()), "a flat price cannot gain");
+        assert!(close(vti.gain_pct.unwrap(), 0.0));
+        assert_eq!(report.totals.gain, Some(Dec::zero()));
+        assert!(report.top_gainers.is_empty(), "nothing actually gained");
+    }
+
+    #[test]
+    fn windowed_gain_excludes_a_mid_window_withdrawal() {
+        // HOLD-2 case 2: price FLAT at $150 throughout. Hold 20 VTI, sell 10
+        // inside the window. The old engine reported $1500 − $3000 = −$1500
+        // (−50%) — the proceeds, booked as a loss.
+        let txns = [
+            txn(
+                1,
+                "2025-06-01",
+                vec![
+                    buy("assets:broker:vti", "VTI", 20, 10000, true),
+                    posting("assets:broker:cash", vec![usd(-200_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2026-03-01",
+                vec![
+                    posting(
+                        "assets:broker:vti",
+                        vec![with_cost(amt("VTI", -10, 0), 15000, true, "$")],
+                        &[],
+                    ),
+                    posting("assets:broker:cash", vec![usd(150_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = [
+            pd("2025-01-01", "VTI", 15000, "$"),
+            pd("2026-01-01", "VTI", 15000, "$"),
+            pd("2026-06-30", "VTI", 15000, "$"),
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope_since("2026-06-30", ScopeMode::Include, &[], "2026-01-01"),
+        );
+        let vti = only(&report, "VTI");
+        assert_eq!(vti.market_value, Some(Dec::new(1500, 0)));
+        assert_eq!(
+            vti.gain,
+            Some(Dec::zero()),
+            "the $1500 taken out is a withdrawal, not a loss"
+        );
+        assert!(close(vti.gain_pct.unwrap(), 0.0));
+        assert!(report.top_losers.is_empty(), "nothing actually lost");
+    }
+
+    #[test]
+    fn windowed_gain_refuses_when_an_in_window_leg_cannot_be_valued() {
+        // A mid-window lot is bought with a cost annotated in a currency that has
+        // no rate to the base, so the contribution's size is unknowable — the
+        // windowed gain is refused rather than silently counting the arrival as a
+        // gain.
+        let txns = [
+            txn(
+                1,
+                "2025-06-01",
+                vec![buy("assets:broker:zzz", "ZZZ", 10, 10000, true)],
+                &[],
+            ),
+            txn(
+                2,
+                "2026-03-01",
+                vec![posting(
+                    "assets:broker:zzz",
+                    vec![with_cost(amt("ZZZ", 10, 0), 10000, true, "GBP")],
+                    &[],
+                )],
+                &[],
+            ),
+        ];
+        // No GBP→$ rate anywhere, so the £1000 cost cannot be sized in dollars.
+        let prices = [
+            pd("2026-01-01", "ZZZ", 10000, "$"),
+            pd("2026-06-30", "ZZZ", 10000, "$"),
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope_since("2026-06-30", ScopeMode::Include, &[], "2026-01-01"),
+        );
+        let zzz = only(&report, "ZZZ");
+        assert_eq!(zzz.market_value, Some(Dec::new(2000, 0)));
+        assert_eq!(zzz.gain, None, "an unvaluable in-window flow refuses");
+        assert_eq!(zzz.gain_pct, None);
+        assert_eq!(report.totals.gain, None);
+    }
+
+    // ---- stock splits (HOLD-1) ----
+
+    /// 10 AAPL bought cleanly at $100 — basis $1000 — for the split cases.
+    fn opened_aapl() -> Transaction {
+        txn(
+            1,
+            "2025-01-05",
+            vec![
+                buy("assets:broker:aapl", "AAPL", 10, 10000, true),
+                posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+            ],
+            &[],
+        )
+    }
+
+    #[test]
+    fn split_booked_against_equity_scales_shares_and_keeps_basis() {
+        // Spelling A: `assets +10 AAPL` / `equity:splits -10 AAPL`. The share-only
+        // leg has no cost, which used to taint the pool: basis and gain both
+        // collapsed to null, and took the portfolio totals with them.
+        let txns = [
+            opened_aapl(),
+            txn(
+                2,
+                "2025-06-01",
+                vec![
+                    buy_no_cost("assets:broker:aapl", "AAPL", 10),
+                    sell("equity:splits", "AAPL", 10),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "AAPL", 6000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let aapl = only(&report, "AAPL");
+        assert_eq!(aapl.shares, Dec::new(20, 0));
+        assert_eq!(aapl.basis, Some(Dec::new(100_000, 2)), "basis survives");
+        assert_eq!(aapl.market_value, Some(Dec::new(1200, 0)));
+        assert_eq!(aapl.gain, Some(Dec::new(200, 0)));
+        assert_eq!(
+            aapl.first_basis_date.as_deref(),
+            Some("2025-01-05"),
+            "a split does not restart the holding period"
+        );
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert_eq!(report.totals.basis, Some(Dec::new(1000, 0)));
+        assert_eq!(report.totals.gain, Some(Dec::new(200, 0)));
+    }
+
+    #[test]
+    fn split_as_a_same_account_pair_scales_shares_and_keeps_basis() {
+        // Spelling B: `assets -10 AAPL` / `assets +20 AAPL`. This one used to
+        // wipe the basis TWICE — `reduce_basis(basis, 0, 10)` zeroed it and the
+        // cost-less `+20` then tainted it and reset `first_basis_date`.
+        let txns = [
+            opened_aapl(),
+            txn(
+                2,
+                "2025-06-01",
+                vec![
+                    sell("assets:broker:aapl", "AAPL", 10),
+                    buy_no_cost("assets:broker:aapl", "AAPL", 20),
+                    sell("equity:splits", "AAPL", 10),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "AAPL", 6000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let aapl = only(&report, "AAPL");
+        assert_eq!(aapl.shares, Dec::new(20, 0));
+        assert_eq!(aapl.basis, Some(Dec::new(100_000, 2)));
+        assert_eq!(aapl.first_basis_date.as_deref(), Some("2025-01-05"));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    #[test]
+    fn reverse_split_scales_down_and_keeps_basis() {
+        // 1-for-2: 10 AAPL become 5. The share count halves, the basis does not.
+        let txns = [
+            opened_aapl(),
+            txn(
+                2,
+                "2025-06-01",
+                vec![
+                    sell("assets:broker:aapl", "AAPL", 10),
+                    buy_no_cost("assets:broker:aapl", "AAPL", 5),
+                    buy_no_cost("equity:splits", "AAPL", 5),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "AAPL", 24000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let aapl = only(&report, "AAPL");
+        assert_eq!(aapl.shares, Dec::new(5, 0));
+        assert_eq!(aapl.basis, Some(Dec::new(100_000, 2)));
+        assert_eq!(aapl.market_value, Some(Dec::new(1200, 0)));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    #[test]
+    fn a_bare_sell_is_never_read_as_a_reverse_split() {
+        // Guard: a one-sided cost-less DISPOSAL (no cash, no equity counter-leg)
+        // is a sale, not a re-denomination — it must still reduce the basis
+        // proportionally. Reading it as a split would leave the basis of a
+        // half-sold position at its full original value.
+        let txns = [
+            opened_aapl(),
+            txn(
+                2,
+                "2025-06-01",
+                vec![sell("assets:broker:aapl", "AAPL", 5)],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "AAPL", 12000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let aapl = only(&report, "AAPL");
+        assert_eq!(aapl.shares, Dec::new(5, 0));
+        assert_eq!(
+            aapl.basis,
+            Some(Dec::new(50000, 2)),
+            "half the basis leaves"
+        );
+    }
+
+    #[test]
+    fn a_share_leg_paired_with_cash_is_never_read_as_a_split() {
+        // Guard: any cash consideration in the transaction means value moved, so
+        // the cost-less leg is an acquisition with an unknown basis, not a split.
+        let txns = [
+            opened_aapl(),
+            txn(
+                2,
+                "2025-06-01",
+                vec![
+                    buy_no_cost("assets:broker:aapl", "AAPL", 10),
+                    posting("assets:broker:cash", vec![usd(-120_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "AAPL", 12000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let aapl = only(&report, "AAPL");
+        assert_eq!(aapl.shares, Dec::new(20, 0));
+        assert_eq!(aapl.basis, None, "a cost-less purchase still taints");
+        assert_eq!(report.warnings[0].kind, WarningKind::MissingBasis);
+    }
+
+    #[test]
+    fn an_rsu_vest_into_an_open_position_is_never_read_as_a_split() {
+        // Guard: the income leg proves shares arrived from outside as
+        // compensation, so their basis is genuinely unknown.
+        let txns = [
+            opened_aapl(),
+            txn(
+                2,
+                "2025-06-01",
+                vec![
+                    buy_no_cost("assets:broker:aapl", "AAPL", 10),
+                    sell("income:rsu", "AAPL", 10),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "AAPL", 12000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let aapl = only(&report, "AAPL");
+        assert_eq!(aapl.shares, Dec::new(20, 0));
+        assert_eq!(aapl.basis, None);
+    }
+
+    #[test]
+    fn split_detection_ignores_a_second_security_in_the_same_transaction() {
+        // Guard: an exchange (`-10 AAPL` / `+5 XYZ`) moves value between two
+        // securities and is not a re-denomination of either.
+        let txns = [
+            opened_aapl(),
+            txn(
+                2,
+                "2025-06-01",
+                vec![
+                    sell("assets:broker:aapl", "AAPL", 5),
+                    buy_no_cost("assets:broker:xyz", "XYZ", 5),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[
+                pd("2025-07-01", "AAPL", 12000, "$"),
+                pd("2025-07-01", "XYZ", 12000, "$"),
+            ],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        assert_eq!(only(&report, "AAPL").shares, Dec::new(5, 0));
+        assert_eq!(
+            only(&report, "AAPL").basis,
+            Some(Dec::new(50000, 2)),
+            "the AAPL sale still reduces AAPL's basis"
+        );
+        assert_eq!(only(&report, "XYZ").basis, None);
+    }
+
+    #[test]
+    fn equity_transfer_into_an_already_held_symbol_reads_as_a_split() {
+        // PINS THE ACCEPTED AMBIGUITY. An ACATS-style transfer-in booked against
+        // equity is spelled identically to a split; when the pool is EMPTY the
+        // two are distinguishable (see
+        // `share_transfer_in_via_equity_is_not_read_as_negative`, which still
+        // taints), but when the same symbol is already held they are not, and the
+        // engine chooses the split reading. The consequence — basis unchanged for
+        // a larger share count — is deliberate and documented on
+        // `is_redenomination`; this test exists so the choice cannot drift
+        // silently.
+        let txns = [
+            opened_aapl(),
+            txn(
+                2,
+                "2025-06-01",
+                vec![
+                    buy_no_cost("assets:broker:aapl", "AAPL", 10),
+                    sell("equity:transfers", "AAPL", 10),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "AAPL", 12000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let aapl = only(&report, "AAPL");
+        assert_eq!(aapl.shares, Dec::new(20, 0));
+        assert_eq!(aapl.basis, Some(Dec::new(100_000, 2)));
+    }
+
+    // ---- oversold-then-reopened pools (HOLD-4) ----
+
+    #[test]
+    fn oversold_then_reopened_pool_reports_an_unknown_basis_and_warns() {
+        // Buy 10 @ $100, oversell 15 (the opening lot was never entered), re-buy
+        // 10 @ $200 → 5 shares held. The old engine zeroed the basis at the
+        // crossing and then piled the full $2000 re-buy on top, reporting
+        // `basis $2000` ($400/share) for shares whose true average cost is $200 —
+        // and, because the pool is positive again at `as_of`, it showed no
+        // warning at all.
+        let txns = [
+            txn(
+                1,
+                "2025-01-05",
+                vec![
+                    buy("assets:broker:vti", "VTI", 10, 10000, true),
+                    posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-03-01",
+                vec![
+                    posting(
+                        "assets:broker:vti",
+                        vec![with_cost(amt("VTI", -15, 0), 12000, true, "$")],
+                        &[],
+                    ),
+                    posting("assets:broker:cash", vec![usd(180_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                3,
+                "2025-05-01",
+                vec![
+                    buy("assets:broker:vti", "VTI", 10, 20000, true),
+                    posting("assets:broker:cash", vec![usd(-200_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "VTI", 30000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let vti = only(&report, "VTI");
+        assert_eq!(vti.shares, Dec::new(5, 0));
+        assert_eq!(vti.basis, None, "the average cost is genuinely unknowable");
+        assert_eq!(vti.gain, None, "no basis, no gain — not a confident −$500");
+        assert_eq!(vti.market_value, Some(Dec::new(1500, 0)));
+        let negatives: Vec<&HoldingsWarning> = report
+            .warnings
+            .iter()
+            .filter(|w| w.kind == WarningKind::NegativeShares)
+            .collect();
+        assert_eq!(negatives.len(), 1, "{:?}", report.warnings);
+        assert!(negatives[0].message.contains("dipped below zero"));
+        // The taint is reported once, by the warning that explains the cause.
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|w| w.kind != WarningKind::MissingBasis)
+        );
+        assert_eq!(report.totals.basis, None);
+    }
+
+    // ---- FX for directive prices ----
+
+    #[test]
+    fn directive_price_in_a_non_base_commodity_is_converted() {
+        // `P XYZ 100.00 EUR` + `P EUR $1.10` prices XYZ at $110. The directive
+        // path used to demand an exact base match, so XYZ silently fell back to a
+        // stale cost annotation (or read as unpriced) while the cost path had
+        // been converting all along.
+        let txns = [txn(
+            1,
+            "2025-01-05",
+            vec![
+                buy("assets:broker:xyz", "XYZ", 10, 9000, true),
+                posting("assets:broker:cash", vec![usd(-90000)], &[]),
+            ],
+            &[],
+        )];
+        let prices = [
+            pd("2025-02-01", "XYZ", 10000, "EUR"),
+            pd("2025-02-01", "EUR", 110, "$"),
+            pd("2025-02-01", "VTI", 12000, "$"),
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        assert_eq!(report.base, "$");
+        let xyz = only(&report, "XYZ");
+        let price = xyz.price.as_ref().expect("XYZ priced via the FX chain");
+        assert_eq!(price.source, PriceSource::Directive);
+        assert_eq!(price.date, "2025-02-01");
+        assert_eq!(price.qty, Dec::new(11000, 2)); // €100.00 × 1.10
+        assert_eq!(xyz.market_value, Some(Dec::new(1100, 0)));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    #[test]
+    fn a_base_direct_directive_still_wins_over_a_convertible_one() {
+        let txns = [txn(
+            1,
+            "2025-01-05",
+            vec![buy("assets:broker:xyz", "XYZ", 10, 9000, true)],
+            &[],
+        )];
+        let prices = [
+            pd("2025-02-01", "XYZ", 10000, "EUR"),
+            pd("2025-01-15", "XYZ", 5000, "$"),
+            pd("2025-02-01", "EUR", 110, "$"),
+            pd("2025-02-01", "VTI", 12000, "$"),
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let price = only(&report, "XYZ").price.as_ref().expect("priced");
+        assert_eq!(price.qty, Dec::new(5000, 2), "the $ directive wins");
+        assert_eq!(price.date, "2025-01-15");
+    }
+
+    #[test]
+    fn unconvertible_cost_warning_names_the_commodity() {
+        // The taint message used to claim the lot was "acquired without a cost
+        // annotation" even when it carried one that simply could not be valued.
+        let txns = [
+            txn(
+                1,
+                "2025-01-10",
+                vec![posting(
+                    "a",
+                    vec![with_cost(amt("XYZ", 10, 0), 10000, true, "GBP")],
+                    &[],
+                )],
+                &[],
+            ),
+            txn(2, "2025-01-10", vec![buy_no_cost("a", "NOP", 10)], &[]),
+        ];
+        let prices = [
+            pd("2025-02-01", "XYZ", 15000, "$"),
+            pd("2025-02-01", "NOP", 15000, "$"),
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope("2025-06-30", ScopeMode::Include, &[]),
+        );
+        let messages: BTreeMap<&str, &str> = report
+            .warnings
+            .iter()
+            .map(|w| (w.symbol.as_str(), w.message.as_str()))
+            .collect();
+        assert!(
+            messages["XYZ"].contains("cost annotated in GBP"),
+            "was: {}",
+            messages["XYZ"]
+        );
+        assert!(messages["NOP"].contains("acquired without a cost annotation"));
+    }
+
+    // ---- same-transaction round trips ----
+
+    #[test]
+    fn same_transaction_round_trip_at_a_new_price_repools_the_basis() {
+        // Hold 10 VTI (basis $1000); one transaction sells all 10 at $100 and
+        // re-buys 10 at $500. The zero-net shortcut used to swallow the whole
+        // transaction, leaving `basis $1000` against a $5000 market value and
+        // reporting a +400% gain that never happened.
+        let txns = [
+            txn(
+                1,
+                "2025-01-05",
+                vec![
+                    buy("assets:broker:vti", "VTI", 10, 10000, true),
+                    posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-03-01",
+                vec![
+                    posting(
+                        "assets:broker:vti",
+                        vec![with_cost(amt("VTI", -10, 0), 10000, true, "$")],
+                        &[],
+                    ),
+                    buy("assets:broker:vti", "VTI", 10, 50000, true),
+                    posting("assets:broker:cash", vec![usd(-400_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "VTI", 50000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let vti = only(&report, "VTI");
+        assert_eq!(vti.shares, Dec::new(10, 0));
+        assert_eq!(vti.basis, Some(Dec::new(500_000, 2)), "re-costed at $500");
+        assert_eq!(vti.market_value, Some(Dec::new(5000, 0)));
+        assert_eq!(vti.gain, Some(Dec::zero()));
+    }
+
+    #[test]
+    fn a_transfer_costed_identically_on_both_legs_is_still_a_pure_move() {
+        // Guard for the round-trip fix: costs that cancel exactly mean the
+        // position merely moved accounts at one price — the basis is untouched.
+        let txns = [
+            txn(
+                1,
+                "2025-01-05",
+                vec![buy("assets:broker:a", "VTI", 10, 10000, true)],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-03-01",
+                vec![
+                    posting(
+                        "assets:broker:a",
+                        vec![with_cost(amt("VTI", -4, 0), 25000, true, "$")],
+                        &[],
+                    ),
+                    buy("assets:broker:b", "VTI", 4, 25000, true),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "VTI", 25000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let vti = only(&report, "VTI");
+        assert_eq!(vti.shares, Dec::new(10, 0));
+        assert_eq!(vti.basis, Some(Dec::new(100_000, 2)), "unchanged");
+        assert_eq!(
+            vti.accounts,
+            vec!["assets:broker:a".to_string(), "assets:broker:b".to_string()]
+        );
+    }
+
+    // ---- return of capital ----
+
+    #[test]
+    fn return_of_capital_reduces_the_basis() {
+        // Cash paid out of the account that holds AAPL — and nothing else — is a
+        // return of the capital invested, so the basis falls from $1000 to $970.
+        let txns = [
+            opened_aapl(),
+            txn(
+                2,
+                "2025-04-01",
+                vec![
+                    posting("assets:broker:cash", vec![usd(3000)], &[]),
+                    posting("assets:broker:aapl", vec![usd(-3000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "AAPL", 11000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let aapl = only(&report, "AAPL");
+        assert_eq!(aapl.shares, Dec::new(10, 0), "shares are untouched");
+        assert_eq!(aapl.basis, Some(Dec::new(97000, 2)));
+        assert_eq!(aapl.gain, Some(Dec::new(130, 0))); // $1100 − $970
+    }
+
+    #[test]
+    fn an_ordinary_dividend_leaves_shares_and_basis_alone() {
+        // Pins the behaviour that is already right: a dividend lands in a CASH
+        // account, so it never reaches the security's basis.
+        let txns = [
+            opened_aapl(),
+            txn(
+                2,
+                "2025-05-01",
+                vec![
+                    posting("assets:broker:cash", vec![usd(2500)], &[]),
+                    posting("income:dividends", vec![usd(-2500)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "AAPL", 11000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let aapl = only(&report, "AAPL");
+        assert_eq!(aapl.shares, Dec::new(10, 0));
+        assert_eq!(aapl.basis, Some(Dec::new(100_000, 2)));
+    }
+
+    #[test]
+    fn cash_in_an_account_holding_two_securities_never_touches_a_basis() {
+        // Guard: the adjustment is only attributable when the account holds
+        // exactly one security. A mixed account's cash movements are left alone.
+        let txns = [
+            txn(
+                1,
+                "2025-01-05",
+                vec![
+                    buy("assets:broker", "AAPL", 10, 10000, true),
+                    buy("assets:broker", "VTI", 10, 10000, true),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-04-01",
+                vec![
+                    posting("assets:bank", vec![usd(3000)], &[]),
+                    posting("assets:broker", vec![usd(-3000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[
+                pd("2025-07-01", "AAPL", 10000, "$"),
+                pd("2025-07-01", "VTI", 10000, "$"),
+            ],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        assert_eq!(only(&report, "AAPL").basis, Some(Dec::new(100_000, 2)));
+        assert_eq!(only(&report, "VTI").basis, Some(Dec::new(100_000, 2)));
+    }
+
+    #[test]
+    fn the_cash_leg_of_a_trade_in_the_same_account_is_not_a_basis_return() {
+        // Guard: a brokerage that books the share leg and its cash consideration
+        // in ONE account would otherwise have every purchase halve its own basis.
+        let txns = [txn(
+            1,
+            "2025-01-05",
+            vec![
+                buy("assets:broker", "AAPL", 10, 10000, true),
+                posting("assets:broker", vec![usd(-100_000)], &[]),
+            ],
+            &[],
+        )];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "AAPL", 11000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        assert_eq!(only(&report, "AAPL").basis, Some(Dec::new(100_000, 2)));
+    }
+
+    // ---- price staleness ----
+
+    #[test]
+    fn a_price_carries_forward_indefinitely_but_reports_its_true_date() {
+        // Carry-forward is unbounded by design (a quote does not expire), so a
+        // years-old `P` still values the position. The row therefore has to carry
+        // the quote's REAL date: that is the only thing a caller can use to tell
+        // a live price from a stale one.
+        let txns = [txn(
+            1,
+            "2019-01-05",
+            vec![buy("assets:broker:aapl", "AAPL", 10, 10000, true)],
+            &[],
+        )];
+        let report = run(
+            &txns,
+            &[pd("2019-02-01", "AAPL", 12000, "$")],
+            &scope("2026-06-30", ScopeMode::Include, &[]),
+        );
+        let aapl = only(&report, "AAPL");
+        let price = aapl.price.as_ref().expect("carried forward");
+        assert_eq!(price.qty, Dec::new(12000, 2));
+        assert_eq!(
+            price.date, "2019-02-01",
+            "seven years stale, and says so — the age is `as_of − price.date`"
+        );
+        assert_eq!(report.as_of, "2026-06-30");
+        assert_eq!(aapl.market_value, Some(Dec::new(1200, 0)));
     }
 
     #[test]

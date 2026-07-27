@@ -2,7 +2,9 @@
 //!
 //! One row per asset/liability account clamped to `depth` (natural signs:
 //! liabilities negative), one column per bucket; `totals[i]` = net worth at the
-//! end of bucket `i` (always the full depth-1 roots, so it is depth-independent).
+//! end of bucket `i` (summed over every asset/liability account, so it is
+//! depth-independent — matching `hledger bal type:AL`, whose total does not move
+//! with `--depth`).
 //! Every commodity is valued to `value_in ?? prices.base_commodity()` via the
 //! latest direct `P` directive ≤ the bucket end — where the price set is the
 //! journal's explicit `P` directives PLUS the prices inferred from `@`/`@@` cost
@@ -32,8 +34,11 @@ struct BucketData {
     as_of: String,
     /// Asset/liability accounts clamped to the report depth — the report rows.
     rows: BTreeMap<String, MixedAmount>,
-    /// The depth-1 asset/liability roots — summed and valued for the total.
-    roots: BTreeMap<String, MixedAmount>,
+    /// Sum of every asset/liability account's own balance — the (unvalued) net
+    /// worth. Summed over the accounts themselves rather than over rolled-up
+    /// depth-1 roots, so it is genuinely depth-independent and does not read
+    /// zero when the typed accounts sit below depth 1 (RPT-1).
+    total: MixedAmount,
 }
 
 /// Value `ma` in `target` (identity when `None`), collapsing to a single-target
@@ -118,29 +123,36 @@ pub fn net_worth(
         } else {
             end_of_bucket
         };
-        let rolled = roll_up(&account_totals(
+        let direct = account_totals(
             txns,
             &PostingFilter {
                 to: Some(&as_of),
                 ..PostingFilter::default()
             },
-        )?)?;
-        // Keep asset/liability accounts (by root category); rows are clamped to
-        // `depth`, roots (depth 1) drive the depth-independent total.
-        let asset_liability: BTreeMap<String, MixedAmount> = rolled
+        )?;
+        // Keep asset/liability accounts by effective TYPE — a liability declared
+        // `type: L` under a non-English root still belongs in net worth, and a
+        // `type: C` cash account still counts as an asset.
+        //
+        // Filtered BEFORE the roll-up (RPT-2): rolling up first lets a parent
+        // net in children of a different effective type, so an `assets ; type: A`
+        // parent of an `assets:receivable ; type: L` child produced a row that
+        // was neither. Rolling up the members instead keeps every parent row
+        // equal to the sum of the asset/liability accounts beneath it.
+        let members: BTreeMap<String, MixedAmount> = direct
             .into_iter()
             .filter(|(account, _)| {
-                // By effective TYPE: a liability declared `type: L` under a
-                // non-English root still belongs in net worth, and a `type: C`
-                // cash account still counts as an asset.
                 is_account_type(account, declared, AccountType::Asset)
                     || is_account_type(account, declared, AccountType::Liability)
             })
             .collect();
+        let total = members
+            .values()
+            .try_fold(MixedAmount::new(), |acc, ma| acc.ma_add(ma))?;
         per_bucket.push(BucketData {
             as_of,
-            rows: at_depth(&asset_liability, depth),
-            roots: at_depth(&asset_liability, 1),
+            rows: at_depth(&roll_up(&members)?, depth),
+            total,
         });
     }
 
@@ -174,16 +186,18 @@ pub fn net_worth(
 
     let mut totals: Vec<MixedAmount> = Vec::with_capacity(per_bucket.len());
     for (i, bucket) in per_bucket.iter().enumerate() {
-        let mut sum = MixedAmount::new();
-        for ma in bucket.roots.values() {
-            sum = sum.ma_add(ma)?;
-        }
         let sink = if i == last_bucket {
             Some(&mut meta)
         } else {
             None
         };
-        totals.push(valued(&sum, target.as_ref(), &prices, &bucket.as_of, sink)?);
+        totals.push(valued(
+            &bucket.total,
+            target.as_ref(),
+            &prices,
+            &bucket.as_of,
+            sink,
+        )?);
     }
 
     let meta_out = if meta.unpriced.is_empty() {
@@ -350,17 +364,18 @@ mod tests {
             Some(c("EUR")),
         )
         .unwrap();
-        // $ has no price in EUR → skipped.
+        // No directive prices $ in EUR, but hledger's price graph reverses the
+        // `P 2026-01-31 EUR $1.10` edge, so $100.00 is worth 1/1.10 × 100 =
+        // 90.90909091 EUR on top of the 50.00 EUR held. Nothing is unpriced.
+        //   $ hledger -f … bal assets --value=end,EUR -e 2026-02-01
+        //     EUR 90.90909091  assets:bank:checking
+        //     EUR 50.00000000  assets:wise
+        //    EUR 140.90909091
         assert_eq!(
             report.rows[0].values,
-            [MixedAmount::single(c("EUR"), Dec::new(5000, 2))]
+            [MixedAmount::single(c("EUR"), Dec::new(14_090_909_091, 8))]
         );
-        assert_eq!(
-            report.meta,
-            Some(ReportMeta {
-                unpriced: vec![c("$")]
-            })
-        );
+        assert_eq!(report.meta, None);
     }
 
     #[test]

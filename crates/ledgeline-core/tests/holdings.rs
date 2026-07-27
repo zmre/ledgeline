@@ -240,12 +240,8 @@ fn scoping_to_a_single_stock_account_isolates_it() {
     assert_eq!(report.totals.basis, Some(Dec::new(469_336, 2)));
 }
 
-#[test]
-fn gain_since_windows_the_gain_without_touching_basis() {
-    // At 2026-01-01 the AAPL position was 15 sh (the 4.5-sh buy is 2026-03-10),
-    // priced $255.00 (P 2025-12-31) → value_at_start = $3825.00. So the windowed
-    // gain is $5269.875 − $3825 = $1444.875, distinct from the all-time $923.775,
-    // while `basis` stays the all-time average cost $4346.10.
+/// The scope used by both windowed-gain tests: everything, since 2026-01-01.
+fn windowed_report() -> HoldingsReport {
     let journal = fixture_journal();
     let scope = HoldingsScope {
         accounts: BTreeSet::new(),
@@ -253,14 +249,31 @@ fn gain_since_windows_the_gain_without_touching_basis() {
         as_of: AS_OF.to_string(),
         gain_since: Some("2026-01-01".to_string()),
     };
-    let report = compute_holdings(
+    compute_holdings(
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
         &journal.commodity_tags,
         &scope,
     )
-    .expect("compute");
+    .expect("compute")
+}
+
+#[test]
+fn gain_since_nets_out_a_mid_window_purchase() {
+    // REVISED for HOLD-2 (was `gain_since_windows_the_gain_without_touching_basis`,
+    // expecting $1444.875). At 2026-01-01 the AAPL position was 15 sh priced
+    // $255.00 (P 2025-12-31) → value_at_start = $3825.00, and the 4.5-sh buy on
+    // 2026-03-10 @ $248.30 falls INSIDE the window: $1117.35 of new money.
+    //
+    // The old expectation, `mv − value_at_start` = $5269.875 − $3825 = $1444.875,
+    // booked that $1117.35 purchase as if the position had earned it. Netting the
+    // contribution out leaves the appreciation that actually happened:
+    //   15.0 sh × ($270.25 − $255.00)  = $228.750
+    //  + 4.5 sh × ($270.25 − $248.30)  =  $98.775
+    //                                   = $327.525
+    // `basis` is untouched by the window and stays the all-time $4346.10.
+    let report = windowed_report();
     let aapl = holding(&report, "AAPL");
     assert_eq!(
         aapl.basis,
@@ -268,7 +281,29 @@ fn gain_since_windows_the_gain_without_touching_basis() {
         "basis stays all-time"
     );
     assert_eq!(aapl.market_value, Some(Dec::new(5_269_875, 3)));
-    assert_eq!(aapl.gain, Some(Dec::new(1_444_875, 3)), "windowed gain");
+    assert_eq!(aapl.gain, Some(Dec::new(327_525, 3)), "windowed gain");
+}
+
+#[test]
+fn gain_since_nets_out_a_mid_window_sale() {
+    // The withdrawal half of HOLD-2, on the same fixture. VTI held 25 sh at
+    // 2026-01-01 priced $298.40 → value_at_start = $7460.00, and the 2026-04-14
+    // partial sell of 8 sh @ $301.55 takes $2412.40 back out inside the window.
+    //
+    // Measuring `mv − value_at_start` alone reported $5282.75 − $7460.00 =
+    // −$2177.25: a 29% "loss" on a position whose price ROSE all window. Netting
+    // the sale out gives the real result:
+    //    8 sh × ($301.55 − $298.40) =  $25.20   (sold on the way up)
+    //  + 17 sh × ($310.75 − $298.40) = $209.95
+    //                                 = $235.15
+    let report = windowed_report();
+    let vti = holding(&report, "VTI");
+    assert_eq!(vti.market_value, Some(Dec::new(528_275, 2)));
+    assert_eq!(vti.gain, Some(Dec::new(23515, 2)), "windowed gain");
+    assert!(
+        vti.gain_pct.is_some_and(|pct| pct > 0.0),
+        "a rising price cannot report a loss"
+    );
 }
 
 #[test]

@@ -1,15 +1,22 @@
 //! Market-price database + valuation — port of
-//! `web/src/lib/reports/prices.ts`.
+//! `web/src/lib/reports/prices.ts`, extended to hledger's transitive price
+//! graph.
 //!
-//! Direct conversions only: a commodity is valued via the latest `P` directive
-//! dated ≤ `as_of` that prices it directly in the target commodity. Commodities
-//! without such a price are SKIPPED (never guessed) and reported via the
-//! optional [`ValuationMeta`] out-param.
+//! Valuation walks the market-price GRAPH in effect at `as_of` rather than
+//! looking for a single direct price, mirroring
+//! `Hledger.Data.Valuation.priceLookup`: the shortest chain of *forward* prices
+//! (`P`-declared or cost-inferred) from the commodity to the target, and only if
+//! there is none, the shortest chain that may additionally traverse *reversed*
+//! edges. Commodities from which the target is unreachable are SKIPPED (never
+//! guessed) and reported via the optional [`ValuationMeta`] out-param.
+//!
+//! See [`PriceGraph`] for the edge set, edge ordering and tie-breaking rules,
+//! all of which are held to hledger's behaviour.
 
 use super::mixed_amount::MixedAmount;
-use crate::decimal::{Dec, DecError};
+use crate::decimal::{Dec, DecError, MAX_PARSE_PLACES};
 use crate::model::{Amount, Commodity, CostKind, PriceDirective, Transaction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A market-price lookup table built from `P` directives.
 #[derive(Debug, Clone)]
@@ -106,13 +113,285 @@ impl PriceDb {
     pub fn base_commodity(&self) -> Option<&Commodity> {
         self.base.as_ref()
     }
+
+    /// The market-price graph in effect at `as_of` — hledger's
+    /// `makePriceGraph`. Build it once and reuse it across commodities.
+    #[must_use]
+    pub fn graph_at(&self, as_of: &str) -> PriceGraph<'_> {
+        // hledger indexes prices by (from, to) PAIR and takes each pair's
+        // latest entry ≤ the date, so at most one edge exists per directed pair.
+        // Iterating the date-sorted list and letting later entries overwrite
+        // reproduces that, including "explicit wins a same-date tie" (callers
+        // append the explicit directives after the inferred ones).
+        //
+        // The edge ORDER is load-bearing for tie-breaking (see [`PriceGraph`]):
+        // hledger walks `M.elems` of that pair-keyed map, i.e. ascending by
+        // `(from, to)`. A `BTreeMap` of commodities keyed by `from`, each
+        // holding a `BTreeMap` keyed by `to`, yields exactly that order.
+        let forward: Vec<Edge<'_>> = self
+            .by_commodity
+            .iter()
+            .flat_map(|(from, directives)| {
+                let latest: BTreeMap<&Commodity, Dec> = directives
+                    .iter()
+                    .filter(|directive| directive.date.as_str() <= as_of)
+                    .map(|directive| (&directive.price.commodity, directive.price.quantity))
+                    .collect();
+                latest
+                    .into_iter()
+                    .map(move |(to, rate)| Edge { from, to, rate })
+            })
+            .collect();
+
+        // Reverse edges for pairs with no forward edge of their own, appended in
+        // forward order (hledger: `forwardprices ++ reverseprices`).
+        let forward_pairs: BTreeSet<(&Commodity, &Commodity)> =
+            forward.iter().map(|edge| (edge.from, edge.to)).collect();
+        let all: Vec<Edge<'_>> = forward
+            .iter()
+            .copied()
+            .chain(
+                forward
+                    .iter()
+                    .filter(|edge| !forward_pairs.contains(&(edge.to, edge.from)))
+                    .filter_map(|edge| {
+                        reverse_rate(edge.rate).map(|rate| Edge {
+                            from: edge.to,
+                            to: edge.from,
+                            rate,
+                        })
+                    }),
+            )
+            .collect();
+
+        PriceGraph { forward, all }
+    }
+}
+
+/// One directed edge of the price graph: one unit of `from` is worth `rate` of
+/// `to`.
+#[derive(Debug, Clone, Copy)]
+struct Edge<'a> {
+    from: &'a Commodity,
+    to: &'a Commodity,
+    rate: Dec,
+}
+
+/// The market-price graph in effect on a single date — hledger's `PriceGraph`,
+/// built by [`PriceDb::graph_at`].
+///
+/// hledger's preference order, which [`PriceGraph::rate`] reproduces:
+///
+/// 1. the shortest chain of *forward* edges (a declared or inferred `P`), then
+/// 2. the shortest chain that may also use *reverse* edges (`1/rate`, added only
+///    for pairs that have no forward edge of their own).
+///
+/// A one-hop chain is just a direct price, so this subsumes the old direct-only
+/// lookup; and because a forward chain of ANY length is preferred over a reverse
+/// edge, `A→B→C` beats `1/(C→A)`.
+///
+/// Ties between equal-length chains resolve exactly as hledger's
+/// `pricesShortestPath` does: edges are ordered by `(from, to)` ascending with
+/// every reverse edge after every forward one (each in its originating forward
+/// edge's position), the breadth-first frontier is extended in order, and the
+/// left-most complete path at the first complete length wins. Verified against
+/// hledger 1.52 — see `tests/reports_prices.rs`.
+#[derive(Debug, Clone)]
+pub struct PriceGraph<'a> {
+    /// Declared/inferred edges, at most one per directed pair, ordered by
+    /// `(from, to)`.
+    forward: Vec<Edge<'a>>,
+    /// `forward`, then the reversed edges of pairs that have no forward edge.
+    all: Vec<Edge<'a>>,
+}
+
+impl PriceGraph<'_> {
+    /// What one unit of `from` is worth in `to`, or `None` when no chain of
+    /// prices connects them (or when they are the same commodity, which hledger
+    /// also reports as "no price" — the caller treats it as identity).
+    ///
+    /// # Errors
+    /// Returns [`DecError`] on decimal overflow while combining a chain.
+    pub fn rate(&self, from: &Commodity, to: &Commodity) -> Result<Option<Dec>, DecError> {
+        if from == to {
+            return Ok(None);
+        }
+        let Some(chain) =
+            shortest_path(from, to, &self.forward).or_else(|| shortest_path(from, to, &self.all))
+        else {
+            return Ok(None);
+        };
+        chain_rate(&chain).map(Some)
+    }
+}
+
+/// The commodities reachable from `start` over `edges` (including `start`).
+///
+/// A cheap O(V+E) guard in front of the exhaustive search below. hledger's
+/// breadth-first search enumerates every simple path out of `start` before
+/// concluding there is none, which is the *common* case here — a genuinely
+/// unpriced commodity, hit once per account per period. Skipping it when the
+/// target is unreachable is semantics-preserving (an unreachable target has no
+/// path by definition) and keeps a densely connected FX graph from turning one
+/// unpriced commodity into a combinatorial blow-up.
+fn reachable<'a>(start: &'a Commodity, edges: &[Edge<'a>]) -> BTreeSet<&'a Commodity> {
+    let mut seen: BTreeSet<&Commodity> = BTreeSet::from([start]);
+    let mut pending: Vec<&Commodity> = vec![start];
+    while let Some(node) = pending.pop() {
+        for edge in edges.iter().filter(|edge| edge.from == node) {
+            if seen.insert(edge.to) {
+                pending.push(edge.to);
+            }
+        }
+    }
+    seen
+}
+
+/// A partially explored chain: indices into the edge slice, plus the edges still
+/// usable on this branch (in slice order).
+struct Partial {
+    path: Vec<usize>,
+    unused: Vec<usize>,
+}
+
+/// The rates along the shortest chain of `edges` from `start` to `end`, or
+/// `None` when there is none — a port of hledger's `pricesShortestPath`.
+///
+/// Breadth-first, extending the whole frontier one hop at a time and stopping at
+/// the left-most complete path of the first complete length. A branch never
+/// revisits a commodity (hledger drops every edge pointing back into the path's
+/// nodes), so a cycle in the price graph cannot loop forever: chains are simple,
+/// hence at most one hop shorter than the commodity count.
+fn shortest_path(start: &Commodity, end: &Commodity, edges: &[Edge<'_>]) -> Option<Vec<Dec>> {
+    if !reachable(start, edges).contains(end) {
+        return None;
+    }
+    let mut frontier = vec![Partial {
+        path: Vec::new(),
+        unused: (0..edges.len()).collect(),
+    }];
+    loop {
+        let mut extended: Vec<Partial> = Vec::new();
+        for partial in &frontier {
+            let path_end = partial.path.last().map_or(start, |&i| edges[i].to);
+            let (out, rest): (Vec<usize>, Vec<usize>) = partial
+                .unused
+                .iter()
+                .copied()
+                .partition(|&i| edges[i].from == path_end);
+            for step in out {
+                let path: Vec<usize> = partial.path.iter().copied().chain([step]).collect();
+                let visited: Vec<&Commodity> = std::iter::once(start)
+                    .chain(path.iter().map(|&i| edges[i].to))
+                    .collect();
+                let unused = rest
+                    .iter()
+                    .copied()
+                    .filter(|&i| !visited.contains(&edges[i].to))
+                    .collect();
+                extended.push(Partial { path, unused });
+            }
+        }
+        if extended.is_empty() {
+            return None;
+        }
+        if let Some(complete) = extended
+            .iter()
+            .find(|partial| partial.path.last().is_some_and(|&i| edges[i].to == end))
+        {
+            return Some(complete.path.iter().map(|&i| edges[i].rate).collect());
+        }
+        frontier = extended;
+    }
+}
+
+/// Maximum fractional places kept for a rate we DERIVE (a reversed edge or a
+/// multi-hop chain).
+///
+/// hledger's rates are `Data.Decimal`s, so its `1/rate` saturates at that type's
+/// 255-place ceiling — effectively exact — and is merely *displayed* at
+/// `defaultMaxPrecision` (8). `Dec` is `i128`-backed, so neither an unbounded
+/// reciprocal nor an unbounded chain product is representable. We keep
+/// [`MAX_PARSE_PLACES`] places, the most a price can carry once parsed, which is
+/// finer than anything hledger prints, and round half-even beyond that.
+const MAX_RATE_PLACES: u32 = MAX_PARSE_PLACES;
+
+/// Combine a chain's edge rates into one rate, as hledger does: the exact
+/// product (its `Decimal` multiply normalizes, stripping trailing zeros) padded
+/// back out to the widest scale seen among the edges (`setMinDecimalPlaces`).
+///
+/// ROUNDING HAPPENS HERE, once per hop, and only above
+/// `max(MAX_RATE_PLACES, widest edge scale)`. A single-edge chain therefore
+/// returns that edge's rate bit-for-bit (normalizing then padding back to its own
+/// scale is the identity), so direct valuation is unchanged; only chains, whose
+/// scales would otherwise add up and overflow `i128`, are capped.
+fn chain_rate(rates: &[Dec]) -> Result<Dec, DecError> {
+    let min_places = rates.iter().map(|rate| rate.places).max().unwrap_or(0);
+    let max_places = min_places.max(MAX_RATE_PLACES);
+    let product = rates.iter().try_fold(Dec::new(1, 0), |acc, rate| {
+        capped(acc.mul(*rate)?, max_places)
+    })?;
+    padded(product, min_places)
+}
+
+/// Round `value` half-even down to at most `max_places` fractional places.
+fn capped(value: Dec, max_places: u32) -> Result<Dec, DecError> {
+    if value.places <= max_places {
+        return Ok(value);
+    }
+    let divisor = pow10(value.places - max_places)?;
+    Ok(Dec::new(
+        div_round_half_even(value.mantissa, divisor)?,
+        max_places,
+    ))
+}
+
+/// Pad `value` with trailing zeros up to `min_places` fractional places.
+fn padded(value: Dec, min_places: u32) -> Result<Dec, DecError> {
+    if value.places >= min_places {
+        return Ok(value);
+    }
+    let factor = pow10(min_places - value.places)?;
+    Ok(Dec::new(
+        value
+            .mantissa
+            .checked_mul(factor)
+            .ok_or(DecError::Overflow)?,
+        min_places,
+    ))
+}
+
+/// The rate of a reversed edge: `1/unit`, exact when that terminates within
+/// [`MAX_RATE_PLACES`] places and rounded half-even to that many otherwise.
+///
+/// This is what makes a commodity priced only as a cost/price DENOMINATOR
+/// valuable at all. [`exact_reciprocal`] alone is not enough: `1/220` has a
+/// prime factor of 11 and never terminates, so `10 AAPL @ $220.00` used to
+/// leave the `-$2,200.00` cash leg unvalued. hledger reverses a zero rate to
+/// zero rather than dropping the edge; we match that.
+fn reverse_rate(unit: Dec) -> Option<Dec> {
+    if unit.mantissa == 0 {
+        return Some(Dec::zero());
+    }
+    if let Some(exact) = exact_reciprocal(unit)
+        && exact.places <= MAX_RATE_PLACES
+    {
+        return Some(exact);
+    }
+    // 1/unit = 10^unit.places / |unit.mantissa|, scaled by 10^MAX_RATE_PLACES so
+    // the single half-even division lands on that many fractional places.
+    let sign = unit.mantissa.signum();
+    let magnitude = unit.mantissa.checked_abs()?;
+    let numerator = pow10(unit.places.checked_add(MAX_RATE_PLACES)?).ok()?;
+    let quotient = div_round_half_even(numerator, magnitude).ok()?;
+    Some(Dec::new(sign.checked_mul(quotient)?, MAX_RATE_PLACES))
 }
 
 /// Out-param for [`value_at`]: commodities that had to be skipped (deduped, in
 /// encounter order — which, over a `BTreeMap`, is lexical).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValuationMeta {
-    /// Commodities with no direct price to the target at `as_of`.
+    /// Commodities from which no chain of prices reaches the target at `as_of`.
     pub unpriced: Vec<Commodity>,
 }
 
@@ -186,9 +465,11 @@ pub(crate) fn per_unit_from_total(total: Dec, qty: Dec) -> Result<Dec, DecError>
 /// `None` when `1/unit` does not terminate in base 10 (its reduced denominator
 /// has a prime factor other than 2 or 5) or when `unit` is zero.
 ///
-/// Used to mirror hledger's price-graph reversal: from an inferred `P` directive
-/// the reverse rate is derived so a commodity that appears only as a cost
-/// DENOMINATOR (e.g. the GLD gift's `… @ 0.005 GLD` leg) is still valued.
+/// The exact arm of [`reverse_rate`], and what [`infer_market_prices`] uses to
+/// emit a reverse `P` directive alongside a cost-inferred one, so a commodity
+/// that appears only as a cost DENOMINATOR (e.g. the GLD gift's
+/// `… @ 0.005 GLD` leg) is priced in the directive list itself and not only in
+/// the valuation graph.
 fn exact_reciprocal(unit: Dec) -> Option<Dec> {
     if unit.mantissa == 0 {
         return None;
@@ -273,8 +554,9 @@ pub fn infer_market_prices(txns: &[Transaction]) -> Result<Vec<PriceDirective>, 
 }
 
 /// Value a [`MixedAmount`] in `target` at `as_of`: identity for `target` itself,
-/// exact `mul_raw` via the latest direct price otherwise. Commodities without a
-/// direct price are SKIPPED and, when `meta` is given, recorded there (deduped).
+/// exact `mul_raw` by the [`PriceGraph`] rate otherwise. Commodities the target
+/// is unreachable from are SKIPPED and, when `meta` is given, recorded there
+/// (deduped).
 ///
 /// # Errors
 /// Returns [`DecError`] on decimal overflow.
@@ -285,15 +567,30 @@ pub fn value_at(
     as_of: &str,
     mut meta: Option<&mut ValuationMeta>,
 ) -> Result<Dec, DecError> {
+    // The graph is built lazily, and only for commodities that actually need a
+    // CHAIN. A direct price is a one-hop chain and one hop always wins, so
+    // `PriceGraph::rate` would return exactly that price back (see
+    // `a_direct_price_is_returned_unchanged`) — while building the graph costs a
+    // pass over every directive. Keeping the direct hit on the old cheap path
+    // leaves the common "everything is priced in the target" journal as fast as
+    // it was: 5k `P` directives over 200 accounts × 12 buckets stays ~6ms
+    // instead of ~215ms.
+    let mut graph: Option<PriceGraph<'_>> = None;
     let mut total = Dec::zero();
     for (commodity, qty) in ma.iter() {
         if commodity == target {
             total = total.add(*qty)?;
             continue;
         }
-        match db.lookup_in(commodity, target, as_of) {
-            Some(price) => {
-                total = total.add(mul_raw(*qty, price.quantity)?)?;
+        let rate = match db.lookup_in(commodity, target, as_of) {
+            Some(price) => Some(price.quantity),
+            None => graph
+                .get_or_insert_with(|| db.graph_at(as_of))
+                .rate(commodity, target)?,
+        };
+        match rate {
+            Some(rate) => {
+                total = total.add(mul_raw(*qty, rate)?)?;
             }
             None => {
                 if let Some(sink) = meta.as_deref_mut()
@@ -457,6 +754,206 @@ mod tests {
             value_at(&ma, &c("$"), &db, "2026-07-08", None).unwrap(),
             Dec::new(0, 0)
         );
+    }
+
+    /// The rate one unit of `from` fetches in `to`, through the graph at
+    /// `as_of` — the unit under test for every chain case below.
+    fn rate(db: &PriceDb, from: &str, to: &str, as_of: &str) -> Option<Dec> {
+        db.graph_at(as_of)
+            .rate(&c(from), &c(to))
+            .expect("rate math does not overflow")
+    }
+
+    /// `P GBP 1.20 EUR` + `P EUR $1.10` prices GBP in `$` at 1.32 even though no
+    /// directive mentions the pair (RPT-3).
+    #[test]
+    fn rate_chains_through_an_intermediate_commodity() {
+        let db = PriceDb::build(&[
+            price("2026-01-01", "GBP", amount("EUR", 120, 2)),
+            price("2026-01-02", "EUR", amount("$", 110, 2)),
+        ]);
+        // hledger: `bal --value=end,'$'` on 100.00 GBP => $132.00.
+        assert_eq!(rate(&db, "GBP", "$", "2026-02-01"), Some(Dec::new(132, 2)));
+        let ma = MixedAmount::single(c("GBP"), Dec::new(10000, 2));
+        assert_eq!(
+            value_at(&ma, &c("$"), &db, "2026-02-01", None).unwrap(),
+            Dec::new(1_320_000, 4)
+        );
+    }
+
+    /// Three hops compose, and the chain rate keeps hledger's scale rule
+    /// (normalized product, padded back to the widest edge scale).
+    #[test]
+    fn rate_chains_three_hops() {
+        let db = PriceDb::build(&[
+            price("2026-01-01", "A", amount("B", 2, 0)),
+            price("2026-01-01", "B", amount("C", 3, 0)),
+            price("2026-01-01", "C", amount("D", 5, 0)),
+        ]);
+        // hledger: 7 A --value=end,D => 210 D.
+        assert_eq!(rate(&db, "A", "D", "2026-02-01"), Some(Dec::new(30, 0)));
+        let ma = MixedAmount::single(c("A"), Dec::new(7, 0));
+        assert_eq!(
+            value_at(&ma, &c("D"), &db, "2026-02-01", None).unwrap(),
+            Dec::new(210, 0)
+        );
+    }
+
+    /// Only `A→B` and `C→B` exist, so reaching C needs the REVERSED `B→C` edge.
+    #[test]
+    fn rate_uses_a_reverse_edge_when_no_forward_chain_exists() {
+        let db = PriceDb::build(&[
+            price("2026-01-01", "A", amount("B", 2, 0)),
+            price("2026-01-01", "C", amount("B", 4, 0)),
+        ]);
+        // hledger: chain A>B 2, B>C 0.25 => 10 A --value=end,C => 5 C.
+        assert_eq!(rate(&db, "A", "C", "2026-02-01"), Some(Dec::new(50, 2)));
+    }
+
+    /// A forward chain of ANY length beats a one-hop reverse: `A→B→C` (6) is
+    /// taken over `1/(C→A)` (0.2).
+    #[test]
+    fn rate_prefers_a_forward_chain_over_a_reverse_edge() {
+        let db = PriceDb::build(&[
+            price("2026-01-01", "A", amount("B", 2, 0)),
+            price("2026-01-01", "B", amount("C", 3, 0)),
+            price("2026-01-01", "C", amount("A", 5, 0)),
+        ]);
+        // hledger: 1 A --value=end,C => 6 C (not 0.2).
+        assert_eq!(rate(&db, "A", "C", "2026-02-01"), Some(Dec::new(6, 0)));
+    }
+
+    /// Equal-length forward chains resolve by edge order — `(from, to)`
+    /// ascending — NOT by the order the directives were declared.
+    #[test]
+    fn equal_length_chains_break_the_tie_by_commodity_order() {
+        // X>M>Z = 2×5 = 10 ; X>N>Z = 3×7 = 21. hledger picks 10 either way.
+        let m_first = vec![
+            price("2026-01-01", "X", amount("M", 2, 0)),
+            price("2026-01-01", "X", amount("N", 3, 0)),
+            price("2026-01-01", "M", amount("Z", 5, 0)),
+            price("2026-01-01", "N", amount("Z", 7, 0)),
+        ];
+        let n_first: Vec<PriceDirective> = m_first.iter().rev().cloned().collect();
+        for directives in [m_first, n_first] {
+            let db = PriceDb::build(&directives);
+            assert_eq!(rate(&db, "X", "Z", "2026-02-01"), Some(Dec::new(10, 0)));
+        }
+    }
+
+    /// The same tie-break holds for reverse edges: they keep the order of the
+    /// forward edges they came from.
+    #[test]
+    fn equal_length_reverse_chains_break_the_tie_the_same_way() {
+        let db = PriceDb::build(&[
+            price("2026-01-01", "N", amount("A", 4, 0)),
+            price("2026-01-01", "N", amount("Z", 7, 0)),
+            price("2026-01-01", "M", amount("A", 2, 0)),
+            price("2026-01-01", "M", amount("Z", 5, 0)),
+        ]);
+        // hledger: A>M 0.5, M>Z 5 => 2.5 (not A>N>Z = 0.25×7 = 1.75).
+        assert_eq!(rate(&db, "A", "Z", "2026-02-01"), Some(Dec::new(25, 1)));
+    }
+
+    /// Every forward edge is tried before every reverse edge at the same depth,
+    /// so `A>F>Z` (a forward hop then a reverse hop) wins over `A>R>Z` (a
+    /// reverse hop then a forward hop).
+    #[test]
+    fn forward_edges_are_extended_before_reverse_edges() {
+        let db = PriceDb::build(&[
+            price("2026-01-01", "A", amount("F", 2, 0)),
+            price("2026-01-01", "Z", amount("F", 5, 0)),
+            price("2026-01-01", "R", amount("A", 3, 0)),
+            price("2026-01-01", "R", amount("Z", 7, 0)),
+        ]);
+        // hledger: A>F 2, F>Z 0.2 => 0.4 (not A>R 1/3, R>Z 7 => 2.333…).
+        assert_eq!(rate(&db, "A", "Z", "2026-02-01"), Some(Dec::new(4, 1)));
+    }
+
+    /// A cycle in the price graph terminates instead of looping, and an
+    /// unreachable target is still reported as unpriced.
+    #[test]
+    fn a_cycle_terminates_and_an_unreachable_target_is_unpriced() {
+        let db = PriceDb::build(&[
+            price("2026-01-01", "A", amount("B", 2, 0)),
+            price("2026-01-01", "B", amount("C", 3, 0)),
+            price("2026-01-01", "C", amount("A", 5, 0)),
+        ]);
+        assert_eq!(rate(&db, "A", "ZZZ", "2026-02-01"), None);
+        let ma = MixedAmount::single(c("A"), Dec::new(1, 0));
+        let mut meta = ValuationMeta::default();
+        assert_eq!(
+            value_at(&ma, &c("ZZZ"), &db, "2026-02-01", Some(&mut meta)).unwrap(),
+            Dec::zero()
+        );
+        assert_eq!(meta.unpriced, vec![c("A")]);
+    }
+
+    /// A chain is only built from prices already in effect: a directive dated
+    /// after `as_of` cannot complete one.
+    #[test]
+    fn a_chain_needs_every_hop_in_effect_at_as_of() {
+        let db = PriceDb::build(&[
+            price("2026-01-01", "GBP", amount("EUR", 120, 2)),
+            price("2026-03-01", "EUR", amount("$", 110, 2)),
+        ]);
+        assert_eq!(rate(&db, "GBP", "$", "2026-02-01"), None);
+        assert_eq!(rate(&db, "GBP", "$", "2026-03-01"), Some(Dec::new(132, 2)));
+    }
+
+    /// A direct price is a one-hop chain, so it must come back bit-for-bit —
+    /// same mantissa AND same scale as the directive (goldens depend on it).
+    #[test]
+    fn a_direct_price_is_returned_unchanged() {
+        let db = PriceDb::build(&directives());
+        let direct = rate(&db, "EUR", "$", "2026-01-15").unwrap();
+        assert_eq!(direct.mantissa, 110);
+        assert_eq!(direct.places, 2);
+    }
+
+    #[test]
+    fn reverse_rate_is_exact_when_it_terminates_and_rounded_otherwise() {
+        assert_eq!(reverse_rate(Dec::new(5, 3)), Some(Dec::new(200, 0))); // 1/0.005
+        assert_eq!(reverse_rate(Dec::new(4, 0)), Some(Dec::new(25, 2))); // 1/4
+        // 1/220 has a prime factor of 11 — hledger carries it to `Data.Decimal`'s
+        // 255-place ceiling, we round half-even at MAX_RATE_PLACES.
+        assert_eq!(
+            reverse_rate(Dec::new(22000, 2)),
+            Some(Dec::new(45_454_545, 10))
+        );
+        assert_eq!(
+            reverse_rate(Dec::new(3, 0)),
+            Some(Dec::new(3_333_333_333, 10))
+        );
+        assert_eq!(reverse_rate(Dec::new(-2, 0)), Some(Dec::new(-5, 1)));
+        // hledger's `marketPriceReverse` maps a zero rate to a zero rate.
+        assert_eq!(reverse_rate(Dec::zero()), Some(Dec::zero()));
+    }
+
+    /// The MEDIUM half of RPT-3: `10 AAPL @ $220.00` must value the `-$2,200.00`
+    /// cash leg back into AAPL instead of dropping it.
+    #[test]
+    fn a_non_terminating_reciprocal_still_values_the_cash_leg() {
+        let txns = vec![txn(
+            1,
+            "2026-01-05",
+            vec![
+                (
+                    "assets:broker",
+                    vec![unit_cost("AAPL", 10, 0, "$", 22000, 2)],
+                ),
+                ("assets:cash", vec![usd(-220_000)]),
+            ],
+        )];
+        let db = PriceDb::build(&infer_market_prices(&txns).unwrap());
+        let mut ma = MixedAmount::single(c("AAPL"), Dec::new(10, 0));
+        ma.accumulate(&c("$"), Dec::new(-220_000, 2)).unwrap();
+        let mut meta = ValuationMeta::default();
+        let value = value_at(&ma, &c("AAPL"), &db, "2026-02-01", Some(&mut meta)).unwrap();
+        // hledger nets these to 0 (its 255-place 1/220 leaves ~1e-250); ours
+        // leaves the MAX_RATE_PLACES residue, well under any display precision.
+        assert!(meta.unpriced.is_empty());
+        assert!(value.abs().unwrap() < Dec::new(1, 6));
     }
 
     #[test]
