@@ -14,7 +14,10 @@
 //!   transfer its zero net makes it look like (see [`is_pure_transfer`]);
 //! - a pool that ever goes **negative** is tainted for good: the lot that was
 //!   oversold was never entered, so nothing bought later has a knowable average
-//!   cost;
+//!   cost. A pool that is STILL negative at `as_of` is reported all the same —
+//!   its market value is real on the balance sheet, so withholding it left
+//!   `Σ market_value + cash` disagreeing with net worth (see
+//!   [`compute_holdings`]); presentation is the SPA's business, not the engine's;
 //! - a **return of capital** (cash out of a one-security account) reduces basis.
 //!
 //! Under a `gain_since` window the gain is `mv(as_of) − mv(start) − flows`, so
@@ -1087,22 +1090,35 @@ pub fn compute_holdings(
     // contribution showed a fabricated YTD figure. Using the same sum as the
     // percentage's denominator makes it a simple-Dietz return: money in and out
     // moves the baseline, not the gain.
-    let reference_of = |symbol: &str, basis: Option<Dec>| -> Result<Option<Dec>, ReportError> {
-        if scope.gain_since.is_none() {
-            return Ok(basis);
-        }
-        let start = start_values
-            .get(symbol)
-            .copied()
-            .unwrap_or_else(|| Some(Dec::zero()));
-        let flow = pools.get(symbol).and_then(|pool| pool.window_flow);
-        match (start, flow) {
-            (Some(start), Some(flow)) => Ok(Some(start.add(flow)?)),
-            // Held-but-unpriced at the start, or an in-window leg that could not
-            // be valued: refuse the windowed gain rather than invent one.
-            _ => Ok(None),
-        }
-    };
+    //
+    // A position that is NET SHORT at `as_of` has no reference in either mode.
+    // Its opening lot was never entered, so neither its all-time cost nor its
+    // value at a window start is a real number, and a fabricated one would
+    // distort the whole portfolio's return through the denominator. Refusing it
+    // here keeps `gain`/`gain_pct` null on the row (so it never reaches
+    // `top_gainers`/`top_losers`) and keeps it out of the gain totals — exactly
+    // the treatment a tainted row already gets, while its market value still
+    // counts.
+    let reference_of =
+        |symbol: &str, shares: Dec, basis: Option<Dec>| -> Result<Option<Dec>, ReportError> {
+            if shares.mantissa <= 0 {
+                return Ok(None);
+            }
+            if scope.gain_since.is_none() {
+                return Ok(basis);
+            }
+            let start = start_values
+                .get(symbol)
+                .copied()
+                .unwrap_or_else(|| Some(Dec::zero()));
+            let flow = pools.get(symbol).and_then(|pool| pool.window_flow);
+            match (start, flow) {
+                (Some(start), Some(flow)) => Ok(Some(start.add(flow)?)),
+                // Held-but-unpriced at the start, or an in-window leg that could
+                // not be valued: refuse the windowed gain rather than invent one.
+                _ => Ok(None),
+            }
+        };
 
     let mut holdings: Vec<Holding> = Vec::new();
     let mut warnings: Vec<HoldingsWarning> = Vec::new();
@@ -1111,16 +1127,27 @@ pub fn compute_holdings(
         if pool.shares.is_zero() {
             continue; // fully sold: dropped silently
         }
-        if pool.shares.mantissa < 0 {
+        // A position that is still NET SHORT at `as_of` is reported like any
+        // other, not dropped. The balance sheet carries those shares and values
+        // them, so omitting the row made the portfolio total and net worth
+        // disagree by exactly the short's market value with nothing on the wire
+        // tying them together. Emitting it keeps `Σ market_value` equal to
+        // `totals.market_value` by construction and hands the SPA the symbol and
+        // the amount it needs to hide the row behind an accurate note.
+        //
+        // `basis` and `gain` stay `None` — the opening lot was never entered, so
+        // there is no cost to report (`taint` is already `WentNegative` here, by
+        // the same rule that taints a pool which merely dipped below zero).
+        let short = pool.shares.mantissa < 0;
+        if short {
             warnings.push(HoldingsWarning {
                 symbol: symbol.clone(),
                 kind: WarningKind::NegativeShares,
                 message: format!(
-                    "{symbol}: net shares are negative (-{deficit} shares) — the opening position was likely never entered; row hidden",
+                    "{symbol}: net shares are negative (-{deficit} shares) — the opening position was likely never entered, so its basis and gain are unknown; its market value is still counted in the totals",
                     deficit = abs_shares_2dp(pool.shares)
                 ),
             });
-            continue;
         }
 
         let price =
@@ -1145,9 +1172,11 @@ pub fn compute_holdings(
                 ),
             });
         }
-        // A pool that dipped below zero is shown (it is positive again now) but
-        // its basis is not knowable, so the warning stays attached to the row.
-        if pool.went_negative {
+        // A pool that dipped below zero but recovered is shown with a positive
+        // share count, and its basis is not knowable, so the warning stays
+        // attached to the row. A pool that is STILL short got the sharper
+        // "net shares are negative" message above instead — one warning, not two.
+        if pool.went_negative && !short {
             warnings.push(HoldingsWarning {
                 symbol: symbol.clone(),
                 kind: WarningKind::NegativeShares,
@@ -1186,7 +1215,7 @@ pub fn compute_holdings(
         // `gain = market_value − reference`, where `reference` is the all-time
         // basis (default) or the window's invested capital (`gain_since`);
         // `basis` itself stays all-time on the row regardless.
-        let reference = reference_of(symbol, basis)?;
+        let reference = reference_of(symbol, pool.shares, basis)?;
         let gain = match (market_value, reference) {
             (Some(mv), Some(r)) => Some(mv.sub(r)?),
             _ => None,
@@ -1227,7 +1256,9 @@ pub fn compute_holdings(
     // its set is empty — i.e. every shown holding is excluded (all tainted/unpriced
     // → an honest dash). An EMPTY portfolio keeps a real zero (you own nothing, so
     // your basis is $0, not "unknown"), matching the series' empty-scope behavior.
-    // `market_value` is unrestricted: the whole priced portfolio.
+    // `market_value` is unrestricted: the whole priced portfolio, INCLUDING any
+    // net-short row (whose value is negative). That is what makes
+    // `totals.market_value + cash` equal the valued balance sheet.
     let empty = holdings.is_empty();
     let mut market_value = Dec::zero();
     let mut basis_total: Option<Dec> = empty.then_some(Dec::zero());
@@ -1244,7 +1275,7 @@ pub fn compute_holdings(
                 None => basis,
             });
         }
-        if let Some(reference) = reference_of(&holding.symbol, holding.basis)? {
+        if let Some(reference) = reference_of(&holding.symbol, holding.shares, holding.basis)? {
             gain_total = Some(match gain_total {
                 Some(gt) => gt.add(mv.sub(reference)?)?,
                 None => mv.sub(reference)?,
@@ -1853,12 +1884,35 @@ mod tests {
         assert!(report.warnings.is_empty());
     }
 
+    /// REVISED: the engine no longer drops a net-short pool, it reports it (the
+    /// balance sheet values those shares, so hiding them broke reconciliation —
+    /// see `report_invariants::holdings_reconcile_even_when_a_short_position_is_open`).
+    /// The row carries the short share count and no basis/gain; hiding it is the
+    /// SPA's job.
     #[test]
-    fn drops_negative_pool_with_warning() {
+    fn reports_negative_pool_with_warning_but_no_basis() {
         let txns = [txn(1, "2025-01-10", vec![sell("a", "SHT", 5)], &[])];
-        let report = run(&txns, &[], &scope("2025-06-30", ScopeMode::Include, &[]));
-        assert!(report.holdings.is_empty());
-        assert_eq!(report.warnings.len(), 1);
+        let report = run(
+            &txns,
+            &[pd("2025-02-01", "SHT", 1000, "$")],
+            &scope("2025-06-30", ScopeMode::Include, &[]),
+        );
+        let sht = only(&report, "SHT");
+        assert_eq!(sht.shares, Dec::new(-5, 0));
+        assert_eq!(sht.market_value, Some(Dec::new(-50, 0)), "-5 × $10.00");
+        assert_eq!(sht.basis, None, "the opening lot was never entered");
+        assert_eq!(sht.gain, None);
+        assert_eq!(sht.gain_pct, None);
+        // No account nets positive, so no account "holds" it.
+        assert!(sht.accounts.is_empty());
+        // The negative value is the whole portfolio total, and is NOT smuggled
+        // into the basis/gain totals.
+        assert_eq!(report.totals.market_value, Dec::new(-50, 0));
+        assert_eq!(report.totals.basis, None);
+        assert_eq!(report.totals.gain, None);
+        assert!(report.top_gainers.is_empty() && report.top_losers.is_empty());
+
+        assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
         assert_eq!(report.warnings[0].symbol, "SHT");
         assert_eq!(report.warnings[0].kind, WarningKind::NegativeShares);
         assert!(report.warnings[0].message.contains("never entered"));
@@ -2353,8 +2407,13 @@ mod tests {
             &[],
         )];
         let report = run(&txns, &[], &scope("2025-06-30", ScopeMode::Include, &[]));
-        assert_eq!(report.warnings.len(), 1);
+        // Two warnings now: the short itself, then `unpriced` — the row is
+        // reported, so (like any other reported row) it is checked for a price.
+        // The negative-shares warning is pushed first.
+        assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
+        assert_eq!(report.warnings[1].kind, WarningKind::Unpriced);
         let message = &report.warnings[0].message;
+        assert_eq!(report.warnings[0].kind, WarningKind::NegativeShares);
         assert!(message.contains("-5.00 shares"), "message was: {message}");
         assert!(message.contains("never entered"));
 

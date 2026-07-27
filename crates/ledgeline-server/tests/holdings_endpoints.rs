@@ -90,14 +90,16 @@ async fn holdings_report_shape_and_positions() {
     assert_eq!(body["asOf"], AS_OF);
     assert_eq!(body["base"], "$");
 
-    // Sorted market value desc, unpriced (GLD) last.
+    // Sorted market value desc, unpriced (GLD) last. TSLA is net −2 sh (sold,
+    // never bought) and is REPORTED, not withheld — its −$630.00 is real on the
+    // balance sheet, so it sorts below the two positive rows and above unpriced.
     let symbols: Vec<&str> = body["holdings"]
         .as_array()
         .unwrap()
         .iter()
         .map(|h| h["symbol"].as_str().unwrap())
         .collect();
-    assert_eq!(symbols, ["VTI", "AAPL", "GLD"]);
+    assert_eq!(symbols, ["VTI", "AAPL", "TSLA", "GLD"]);
 
     // AAPL: priced by directive, average-cost basis, positive gain.
     let aapl = holding(&body, "AAPL");
@@ -118,6 +120,19 @@ async fn holdings_report_shape_and_positions() {
     assert_eq!(canon(&vti["basis"]), (469_336, 2)); // $4693.36
     assert_eq!(canon(&vti["marketValue"]), (528_275, 2)); // $5282.75
 
+    // TSLA: net short. Priced off the `@ $315.00` on the sale itself (no P
+    // directive), so it carries a real negative market value; basis/gain stay
+    // null because the opening lot was never entered.
+    let tsla = holding(&body, "TSLA");
+    assert_eq!(canon(&tsla["shares"]), (-2, 0));
+    assert_eq!(tsla["price"]["source"], "cost");
+    assert_eq!(canon(&tsla["price"]["qty"]), (315, 0)); // $315.00
+    assert_eq!(canon(&tsla["marketValue"]), (-630, 0)); // −2 × $315.00
+    assert!(tsla["basis"].is_null(), "TSLA basis is null");
+    assert!(tsla["gain"].is_null());
+    assert!(tsla["gainPct"].is_null());
+    assert_eq!(tsla["accounts"].as_array().unwrap().len(), 0);
+
     // GLD: tainted (basis null) + unpriced (price/marketValue null).
     let gld = holding(&body, "GLD");
     assert!(gld["basis"].is_null(), "GLD basis is null");
@@ -135,10 +150,17 @@ async fn holdings_report_shape_and_positions() {
             .all(|h| h["symbol"] != "NVDA")
     );
 
-    // Partial totals: GLD is tainted+unpriced (excluded), but AAPL + VTI still
-    // count. basis = $4346.10 + $4693.36 = $9039.46; gain = $923.775 + $589.39 =
-    // $1513.165. Market value stays the whole priced portfolio.
-    assert_eq!(canon(&body["totals"]["marketValue"]), (10_552_625, 3)); // $10552.625
+    // Partial totals: GLD is tainted+unpriced and TSLA is short (neither has a
+    // knowable cost), so both are out of basis/gain, but AAPL + VTI still count.
+    // basis = $4346.10 + $4693.36 = $9039.46; gain = $923.775 + $589.39 =
+    // $1513.165.
+    //
+    // Market value is the whole PRICED portfolio, short row included:
+    //   VTI $5282.75 + AAPL $5269.875 − TSLA $630.00 = $9922.625.
+    // This asserted $10,552.625 while the short was withheld — the $630.00 by
+    // which the portfolio total used to overshoot the valued balance sheet
+    // (hledger: `$17,532.38` for assets:broker at 2026-06-30, cash included).
+    assert_eq!(canon(&body["totals"]["marketValue"]), (9_922_625, 3)); // $9922.625
     assert_eq!(canon(&body["totals"]["basis"]), (903_946, 2)); // $9039.46
     assert_eq!(canon(&body["totals"]["gain"]), (1_513_165, 3)); // $1513.165
 
@@ -150,6 +172,8 @@ async fn holdings_report_shape_and_positions() {
         .map(|h| h["symbol"].as_str().unwrap())
         .collect();
     assert_eq!(gainers, ["AAPL", "VTI"]);
+    // TSLA's market value is deeply negative but its gain is null, so it is not
+    // a "loser" — a rank needs a reference, and a short has none.
     assert!(body["topLosers"].as_array().unwrap().is_empty());
 
     // Warnings: GLD unpriced + missing-basis, then TSLA negative-shares.

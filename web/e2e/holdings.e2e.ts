@@ -9,9 +9,13 @@
 //   - VTI (assets:broker:taxable:vti): 17 sh, remaining basis $4,693.36, P 2026-06-30
 //     $310.75 → $5,282.75; first buy is 2025-02-20, so VTI is absent at 2025-01-01
 //   - GLD: 5 sh gifted 2025-08-20 with no cost annotation and no P price → null basis,
-//     unpriced; NVDA fully sold 2026-01-20; TSLA net -2 sh (never bought) → row hidden
+//     unpriced; NVDA fully sold 2026-01-20 → genuinely gone; TSLA net -2 sh (sold but
+//     never bought) → the ENGINE reports it at -$630.00, because the balance sheet
+//     values those shares; the UI hides the row and explains it in a note beneath
 //   - default scope (GLD in scope) ⇒ totals basis/gain are NULL (honest-totals rule):
-//     market value $10,552.63 with em-dash basis/gain and inline warnings
+//     market value $9,922.63 ($5,282.75 + $5,269.88 − $630.00) with em-dash basis/gain
+//     and inline warnings. That total is what makes the portfolio agree with the valued
+//     balance sheet (hledger `bal assets:broker … --value=end,'$'` → $17,532.38 w/ cash)
 
 import {expect, test, type Page} from "@playwright/test";
 import {API_TOKEN} from "../playwright.config";
@@ -69,9 +73,16 @@ test("holdings: table shows fixture holdings with honest (null) totals", async (
     await expect(gainers).toContainText("VTI");
     await expect(page.getByTestId("top-losers")).toHaveCount(0);
 
+    // The short TSLA row is hidden from the table but NOT from the totals, so the
+    // note under the table is what accounts for the difference between the visible
+    // rows ($10,552.63) and the stated total ($9,922.63).
+    const hiddenNote = page.getByTestId("holdings-hidden-note");
+    await expect(hiddenNote).toContainText("TSLA");
+    await expect(hiddenNote).toContainText("$-630.00");
+
     // Partial totals: GLD (tainted+unpriced) is excluded; cost basis + gain sum the
     // known holdings (AAPL + VTI) and a note names the excluded row. Warnings explain.
-    await expect(stat(page, "Market value")).toContainText("$10,552.63");
+    await expect(stat(page, "Market value")).toContainText("$9,922.63");
     await expect(stat(page, "Cost basis")).toContainText("$9,039.46");
     await expect(stat(page, "Unrealized gain %")).toContainText("+16.7%");
     const warnings = page.getByTestId("holdings-warnings");
@@ -90,7 +101,9 @@ test("holdings: excluding the VTI account removes VTI and shrinks the pie and st
 
     await expect(page.getByTestId("holding-VTI")).toHaveCount(0);
     await expect(page.getByTestId("holding-AAPL")).toBeVisible();
-    await expect(stat(page, "Market value")).toContainText("$5,269.88");
+    // Excluding only the VTI account leaves the short TSLA in scope, so the total is
+    // AAPL $5,269.88 − TSLA $630.00 = $4,639.88 (verified against the live engine).
+    await expect(stat(page, "Market value")).toContainText("$4,639.88");
     // Only one priced holding left → the pie loses the slice and gainers/losers hide.
     await expect(page.getByTestId("holdings-pie-legend")).not.toContainText("VTI");
     await expect(page.getByTestId("gainers-losers")).toHaveCount(0);

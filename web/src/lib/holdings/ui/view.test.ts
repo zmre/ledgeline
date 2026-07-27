@@ -2,7 +2,19 @@ import {describe, expect, it} from "vitest";
 import {dec, formatDec, type Dec} from "$lib/domain/money";
 import type {Holding} from "$lib/holdings/types";
 import {amt, txn, usd} from "$lib/holdings/test-helpers";
-import {EM_DASH, formatGainPct, formatShares, PIE_OTHER, pieSlices, sortHoldings, stockAccounts, untotaledBasisCount, type SortKey} from "./view";
+import {
+    EM_DASH,
+    formatGainPct,
+    formatShares,
+    partitionShortPositions,
+    PIE_OTHER,
+    pieSlices,
+    shortPositionNote,
+    sortHoldings,
+    stockAccounts,
+    untotaledBasisCount,
+    type SortKey,
+} from "./view";
 
 /** Priced holding with marketValue in whole dollars; `overrides` fills whichever other fields a test sorts on. */
 function holding(symbol: string, marketValueDollars: number | null, overrides: Partial<Holding> = {}): Holding {
@@ -109,6 +121,64 @@ describe("UNIT holdings view helpers", () => {
             expect(untotaledBasisCount([known, holding("AAPL", 50, {basis: dec(500n, 0)})])).toBe(0);
             expect(untotaledBasisCount([tainted, unpricedTainted])).toBe(2);
             expect(untotaledBasisCount([])).toBe(0);
+        });
+    });
+
+    describe("partitionShortPositions", () => {
+        it("hides only the net-negative rows, preserving engine order in both halves", () => {
+            const vti = holding("VTI", 5282, {shares: dec(17n, 0)});
+            const tsla = holding("TSLA", -630, {shares: dec(-2n, 0)});
+            const gld = holding("GLD", null, {shares: dec(5n, 0)});
+            const {shown, hidden} = partitionShortPositions([vti, tsla, gld]);
+            expect(shown.map((h) => h.symbol)).toEqual(["VTI", "GLD"]);
+            expect(hidden.map((h) => h.symbol)).toEqual(["TSLA"]);
+        });
+
+        it("compares the exact mantissa, so a sub-unit short is still short", () => {
+            // −0.5 sh: a float-free sign test (0.5 rounds to 0 under a 2dp display cap).
+            const {shown, hidden} = partitionShortPositions([holding("FRC", -12, {shares: dec(-5n, 1)})]);
+            expect(shown).toEqual([]);
+            expect(hidden.map((h) => h.symbol)).toEqual(["FRC"]);
+        });
+
+        it("keeps everything when nothing is short", () => {
+            const rows = [holding("VTI", 100, {shares: dec(1n, 0)}), holding("AAPL", 50, {shares: dec(2n, 0)})];
+            expect(partitionShortPositions(rows).shown).toHaveLength(2);
+            expect(partitionShortPositions(rows).hidden).toEqual([]);
+            expect(partitionShortPositions([]).hidden).toEqual([]);
+        });
+    });
+
+    describe("shortPositionNote", () => {
+        it("is null when nothing is hidden, so the note never renders", () => {
+            expect(shortPositionNote([], fmt)).toBeNull();
+        });
+
+        it("names the symbol and the exact value the totals still carry (singular)", () => {
+            const note = shortPositionNote([holding("TSLA", -630, {shares: dec(-2n, 0)})], fmt);
+            expect(note).toBe(
+                "1 short position is hidden (TSLA): net shares are negative, so the opening purchase was likely never recorded. " +
+                    "Its market value ($-630.00) is still counted in the totals above."
+            );
+        });
+
+        it("pluralizes and sums exactly across several shorts", () => {
+            const note = shortPositionNote([holding("TSLA", -630, {shares: dec(-2n, 0)}), holding("SHT", -70, {shares: dec(-1n, 0)})], fmt);
+            expect(note).toContain("2 short positions are hidden (TSLA, SHT)");
+            expect(note).toContain("the opening purchases were likely never recorded");
+            expect(note).toContain("Their market value ($-700.00) is still counted in the totals above.");
+        });
+
+        it("drops the value clause when no hidden row is priced (it contributes nothing either way)", () => {
+            const note = shortPositionNote([holding("SHT", null, {shares: dec(-1n, 0)})], fmt);
+            expect(note).toContain("1 short position is hidden (SHT)");
+            expect(note).toContain("No price is known for it, so it adds nothing to the totals.");
+            expect(note).not.toContain("market value");
+        });
+
+        it("counts only the priced shorts toward the stated value", () => {
+            const note = shortPositionNote([holding("TSLA", -630, {shares: dec(-2n, 0)}), holding("SHT", null, {shares: dec(-1n, 0)})], fmt);
+            expect(note).toContain("Their market value ($-630.00) is still counted in the totals above.");
         });
     });
 

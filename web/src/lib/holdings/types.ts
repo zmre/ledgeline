@@ -26,11 +26,17 @@ export interface Holding {
     symbol: string;
     /** `name:` tag, else symbol. */
     name: string;
-    /** In-scope accounts currently holding shares. */
+    /** In-scope accounts currently holding shares; empty for a net-short row. */
     accounts: string[];
-    /** > 0 by construction. */
+    /**
+     * Non-zero by construction (a sold-out position is dropped), but NOT always
+     * positive: a symbol sold without ever being bought is reported net-SHORT,
+     * because the balance sheet carries and values exactly those shares. The
+     * holdings page hides such rows and explains it — see
+     * ui/view.ts `partitionShortPositions`.
+     */
     shares: Dec;
-    /** null = tainted (some lot lacks a cost). */
+    /** null = tainted (some lot lacks a cost, or the pool went short). */
     basis: Dec | null;
     /** Date the current position was opened (first lot since shares were last ≤ 0); null only if never bought in scope. */
     firstBasisDate: ISODate | null;
@@ -52,8 +58,9 @@ export interface HoldingsWarning {
 export interface HoldingsReport {
     asOf: ISODate;
     base: string;
-    /** shares > 0, sorted market value desc (unpriced last, by symbol). */
+    /** shares !== 0, sorted market value desc (unpriced last, by symbol). */
     holdings: Holding[];
+    /** `marketValue` sums every priced row, net-short rows included (negatively), so it reconciles with net worth. */
     totals: {marketValue: Dec; basis: Dec | null; gain: Dec | null; gainPct: number | null};
     /** gainPct > 0 only, sorted desc, ≤ 5. */
     topGainers: Holding[];

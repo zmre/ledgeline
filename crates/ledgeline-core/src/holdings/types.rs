@@ -78,12 +78,17 @@ pub struct Holding {
     pub symbol: String,
     /// The `name:` tag if seen, else the symbol.
     pub name: String,
-    /// In-scope accounts currently holding shares (net > 0), sorted.
+    /// In-scope accounts currently holding shares (net > 0), sorted. Empty for a
+    /// net-short position that no account holds any of.
     pub accounts: Vec<String>,
-    /// Net shares held (`> 0` by construction — negative/zero rows are dropped).
+    /// Net shares held. Non-zero by construction (a fully sold-out position is
+    /// dropped), but NOT necessarily positive: a symbol sold without ever being
+    /// bought is reported net-short, because the balance sheet carries and values
+    /// exactly those shares. See [`WarningKind::NegativeShares`].
     pub shares: Dec,
     /// Average-cost basis in the base commodity; `None` = tainted (some lot
-    /// lacked a usable cost).
+    /// lacked a usable cost, or the pool went short so the opening lot is
+    /// missing).
     pub basis: Option<Dec>,
     /// Date the current position was opened (reset on each full sell-out);
     /// `None` only if never bought in scope.
@@ -105,6 +110,12 @@ pub enum WarningKind {
     /// A lot was acquired without a usable cost annotation (basis unknown).
     MissingBasis,
     /// Net shares went negative (an opening position was likely never entered).
+    ///
+    /// The row is still reported, with its (negative) market value counted in
+    /// `totals.market_value` and its `basis`/`gain` left `None`. Consumers that
+    /// present a portfolio table are expected to hide such rows and say so —
+    /// nobody "holds" −2 shares — but the totals must keep the value, or the
+    /// portfolio stops reconciling with the balance sheet.
     NegativeShares,
     /// No market price or usable cost annotation (excluded from totals).
     Unpriced,
@@ -128,7 +139,9 @@ pub struct HoldingsWarning {
 /// holding excluded (an empty portfolio still reports a real zero).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HoldingsTotals {
-    /// Sum of priced market values (unpriced holdings excluded).
+    /// Sum of priced market values (unpriced holdings excluded; net-short rows
+    /// INCLUDED, negatively). Adding the scope's cash reproduces the valued
+    /// balance sheet exactly.
     pub market_value: Dec,
     /// Sum of basis over priced holdings with a known basis; `None` only when
     /// none qualify (all shown holdings tainted/unpriced).
@@ -146,7 +159,7 @@ pub struct HoldingsReport {
     pub as_of: String,
     /// Base valuation commodity (`PriceDb` base, else `"$"`).
     pub base: String,
-    /// Holdings with `shares > 0`, sorted by market value desc (unpriced last,
+    /// Holdings with `shares != 0`, sorted by market value desc (unpriced last,
     /// then by symbol).
     pub holdings: Vec<Holding>,
     /// Portfolio totals.

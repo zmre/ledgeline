@@ -13,6 +13,7 @@
 import {describe, expect, it} from "vitest";
 import {formatAmount} from "$lib/domain/money";
 import type {MixedAmount} from "$lib/domain/money";
+import {partitionShortPositions, shortPositionNote} from "$lib/holdings/ui/view";
 import {styleFor} from "$lib/insights/series";
 import {formatTotals} from "$lib/journal/rowModel";
 import {reportStyles} from "$lib/reports/ui/styles";
@@ -67,7 +68,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(report.rows.length).toBeGreaterThan(0);
     });
 
-    it("holdings render AAPL/VTI values, GLD tainted, NVDA/TSLA absent, partial totals", async () => {
+    it("holdings render AAPL/VTI values, GLD tainted, NVDA absent, TSLA short-and-hidden, partial totals", async () => {
         const txns = normalizeTransactions(await new HledgerApi(url).transactions());
         const report = decodeHoldingsReport(await new LedgelineApi(url).holdings({asOf: AS_OF, accounts: "", mode: "include"}));
         expect(report.base).toBe("$");
@@ -76,8 +77,9 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
             h.marketValue === null ? "—" : formatAmount({commodity: "$", qty: h.marketValue, style});
 
         const bySymbol = new Map(report.holdings.map((h) => [h.symbol, h]));
-        // Priced holdings, sorted market value desc → VTI before AAPL.
-        expect(report.holdings.map((h) => h.symbol)).toEqual(["VTI", "AAPL", "GLD"]);
+        // Sorted market value desc → VTI before AAPL, then the net-short TSLA
+        // (−$630.00), then unpriced GLD.
+        expect(report.holdings.map((h) => h.symbol)).toEqual(["VTI", "AAPL", "TSLA", "GLD"]);
 
         const aapl = bySymbol.get("AAPL")!;
         expect(aapl.name).toBe("Apple Inc.");
@@ -90,20 +92,42 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(fmt(vti)).toBe("$5,282.75");
         expect(vti.basis === null ? "—" : formatAmount({commodity: "$", qty: vti.basis, style})).toBe("$4,693.36");
 
-        // GLD present but tainted (null basis, unpriced); NVDA fully sold, TSLA net-negative → both hidden.
+        // GLD present but tainted (null basis, unpriced). NVDA was fully sold → 0
+        // shares → genuinely gone. TSLA is net −2 sh (sold, never bought): the
+        // engine reports it, because the balance sheet values those shares.
         expect(bySymbol.get("GLD")!.basis).toBeNull();
         expect(bySymbol.has("NVDA")).toBe(false);
-        expect(bySymbol.has("TSLA")).toBe(false);
+        const tsla = bySymbol.get("TSLA")!;
+        expect(tsla.shares).toEqual({m: -2n, p: 0});
+        expect(fmt(tsla)).toBe("$-630.00");
+        expect(tsla.basis).toBeNull(); // the opening lot was never entered
+        expect(tsla.gain).toBeNull();
 
-        // Partial totals: GLD (tainted+unpriced) excluded; basis/gain sum the known holdings (AAPL+VTI).
-        expect(formatAmount({commodity: "$", qty: report.totals.marketValue, style})).toBe("$10,552.63");
+        // Partial totals: GLD (tainted+unpriced) and TSLA (short) are out of
+        // basis/gain; market value carries the short, so it reads $630.00 below
+        // the $10,552.63 it showed while the row was withheld. That $9,922.63 is
+        // what makes the portfolio agree with the valued balance sheet
+        // (hledger `bal assets:broker … --value=end,'$'` → $17,532.38 with cash).
+        expect(formatAmount({commodity: "$", qty: report.totals.marketValue, style})).toBe("$9,922.63");
         expect(report.totals.basis === null ? "—" : formatAmount({commodity: "$", qty: report.totals.basis, style})).toBe("$9,039.46");
         expect(report.totals.gain === null ? "—" : formatAmount({commodity: "$", qty: report.totals.gain, style})).toBe("$1,513.17");
 
-        // Warnings explain GLD (twice) + TSLA; both priced holdings are gainers.
+        // Warnings explain GLD (twice) + TSLA; both priced holdings are gainers,
+        // and the short is in NEITHER ranking (a null gain has nothing to rank).
         expect(report.warnings.map((w) => `${w.symbol}:${w.kind}`)).toEqual(["GLD:unpriced", "GLD:missing-basis", "TSLA:negative-shares"]);
         expect(report.topGainers.map((h) => h.symbol)).toEqual(["AAPL", "VTI"]);
         expect(report.topLosers).toEqual([]);
+
+        // What the /holdings page then does with that report: the short is kept
+        // out of the table and accounted for by the note under it. This is the
+        // closest check to the rendered page available without a DOM.
+        const {shown, hidden} = partitionShortPositions(report.holdings);
+        expect(shown.map((h) => h.symbol)).toEqual(["VTI", "AAPL", "GLD"]);
+        expect(hidden.map((h) => h.symbol)).toEqual(["TSLA"]);
+        expect(shortPositionNote(hidden, (v) => formatAmount({commodity: "$", qty: v, style}))).toBe(
+            "1 short position is hidden (TSLA): net shares are negative, so the opening purchase was likely never recorded. " +
+                "Its market value ($-630.00) is still counted in the totals above."
+        );
     });
 
     it("holdings series returns a trailing window with a partial basis line (GLD excluded)", async () => {

@@ -1204,20 +1204,14 @@ fn holdings_reconcile_with_the_balance_sheet_broker_subtree() {
     }
 }
 
-/// PINNED DIVERGENCE (a real reconciliation gap, reported under RPT-5).
+/// The short-position case of the reconciliation above, ENFORCED (it was pinned
+/// as a $630.00 divergence under RPT-5 until the engine stopped withholding the
+/// row).
 ///
-/// At 2026-06-30 the two reports disagree by exactly **$630.00**:
-///
-/// | side | figure |
-/// |---|---|
-/// | `Σ holdings.market_value + cash` | `$18,162.375` |
-/// | valued balance-sheet `assets:broker` | `$17,532.375` |
-///
-/// The gap is the 2026-06-22 `assets:broker:taxable:tsla -2 TSLA @ $315.00`
-/// record — a sale of a position that was never opened. The balance sheet
-/// carries the resulting `-2.0 TSLA` and values it at `-$630.00`; the holdings
-/// engine hides any non-positive position (emitting `NegativeShares`) and so
-/// contributes nothing. hledger sides with the balance sheet:
+/// At 2026-06-30 the fixture holds `assets:broker:taxable:tsla -2 TSLA` — the
+/// 2026-06-22 `-2 TSLA @ $315.00` record, a sale of a position that was never
+/// opened. The balance sheet carries those −2.0 shares and values them at
+/// −$630.00, and hledger agrees:
 ///
 /// ```text
 /// $ hledger -f fixtures/sample.journal bal assets:broker -e 2026-07-01 \
@@ -1225,13 +1219,15 @@ fn holdings_reconcile_with_the_balance_sheet_broker_subtree() {
 ///     $17,532.38  assets:broker
 /// ```
 ///
-/// Hiding the row is defensible (it is not a position anyone holds), but the
-/// warning does not say how much value is being withheld, so a dashboard shows
-/// a portfolio total and a net worth that are $630 apart with nothing tying
-/// them together. This test pins the size and the cause, so the gap cannot
-/// change silently.
+/// The engine used to hide any non-positive position (emitting `NegativeShares`
+/// and nothing else), so `Σ holdings.market_value + cash` read $18,162.375
+/// against a $17,532.375 net worth — a dashboard showing two numbers $630 apart
+/// with nothing tying them together. The row is now reported, with its negative
+/// market value in the totals and its unknowable `basis`/`gain` left null; the
+/// SPA is what hides it, behind a note that says so. Both sides now agree at
+/// hledger's $17,532.375, and this test enforces that rather than pinning a gap.
 #[test]
-fn holdings_omit_short_positions_that_the_balance_sheet_still_values() {
+fn holdings_reconcile_even_when_a_short_position_is_open() {
     let journal = common::fixture_journal();
     let db = price_db(&journal);
     let target = usd();
@@ -1243,11 +1239,29 @@ fn holdings_omit_short_positions_that_the_balance_sheet_still_values() {
     // The short position exists on the balance sheet…
     let tsla = Commodity("TSLA".to_string());
     assert_eq!(row.get(&tsla), Some(Dec::new(-2, 0)));
-    // …and is absent from holdings, with a warning but no amount.
+    // …and is now reported by the holdings engine too, at the SAME share count
+    // and the same value the balance sheet assigns it.
+    let short = holdings
+        .holdings
+        .iter()
+        .find(|h| h.symbol == "TSLA")
+        .expect("the short TSLA row is reported, not withheld");
+    assert_eq!(short.shares, Dec::new(-2, 0));
+    assert_eq!(short.market_value, Some(Dec::new(-630, 0)), "-2 × $315.00");
+    // Its capital is unknowable (the opening lot was never entered), so no basis
+    // and no gain are invented — the GLD precedent, applied to a short.
+    assert_eq!(short.basis, None);
+    assert_eq!(short.gain, None);
+    assert_eq!(short.gain_pct, None);
+    // …and it never sneaks into the gainer/loser rankings on a null gain.
     assert!(
-        !holdings.holdings.iter().any(|h| h.symbol == "TSLA"),
-        "holdings hides the short TSLA row"
+        holdings
+            .top_gainers
+            .iter()
+            .chain(&holdings.top_losers)
+            .all(|h| h.symbol != "TSLA")
     );
+    // The warning still explains the row (that is what the SPA's note reads).
     assert!(
         holdings.warnings.iter().any(|w| w.symbol == "TSLA"
             && w.kind == ledgeline_core::holdings::WarningKind::NegativeShares),
@@ -1263,19 +1277,25 @@ fn holdings_omit_short_positions_that_the_balance_sheet_still_values() {
         .expect("summing market values must not overflow");
     let balance_sheet_value = value_at(&row, &target, &db, as_of, None).expect("value_at");
 
-    // The gap is exactly the value the balance sheet assigns the hidden lot.
-    let hidden = MixedAmount::single(tsla, Dec::new(-2, 0));
-    let hidden_value = value_at(&hidden, &target, &db, as_of, None).expect("value_at");
-    assert_eq!(hidden_value, Dec::new(-630, 0), "-2 TSLA @ $315.00");
+    // THE INVARIANT: no residue. Σ market value + cash IS the valued subtree.
     assert_eq!(
         market.add(cash).expect("add"),
-        balance_sheet_value.sub(hidden_value).expect("sub"),
-        "holdings exceed the valued balance sheet by exactly the hidden short position"
+        balance_sheet_value,
+        "Σ holdings market value + cash == valued assets:broker at {as_of}"
+    );
+    // Independently: the short is carried at exactly the balance sheet's figure.
+    let short_row = MixedAmount::single(tsla, Dec::new(-2, 0));
+    assert_eq!(
+        value_at(&short_row, &target, &db, as_of, None).expect("value_at"),
+        short.market_value.expect("the short is priced"),
     );
 
-    // The concrete numbers, so a change in either shows up as a diff.
-    assert_eq!(market.add(cash).expect("add"), Dec::new(18_162_375, 3));
+    // The concrete numbers, so a change in either shows up as a diff. Both sides
+    // moved onto hledger's figure: the totals used to read $18,162.375 (= this
+    // $17,532.375 + the $630.00 that was being withheld).
+    assert_eq!(market.add(cash).expect("add"), Dec::new(17_532_375, 3));
     assert_eq!(balance_sheet_value, Dec::new(17_532_375, 3));
+    assert_eq!(holdings.totals.market_value, Dec::new(10_922_625, 3));
 }
 
 /// GLD — flagged in CLEANUP.md as a $1,000 dashboard discrepancy — reconciles

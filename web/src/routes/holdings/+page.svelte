@@ -17,7 +17,7 @@
     import HoldingsTrend from "$lib/holdings/ui/HoldingsTrend.svelte";
     import ScopeBar from "$lib/holdings/ui/ScopeBar.svelte";
     import {startHoldingsUrlSync} from "$lib/holdings/ui/urlSync";
-    import {stockAccounts} from "$lib/holdings/ui/view";
+    import {partitionShortPositions, shortPositionNote, stockAccounts} from "$lib/holdings/ui/view";
     import {formatChartValue, formatCompactChartValue, styleFor} from "$lib/insights/series";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import {holdingsData, holdingsScope} from "$lib/stores/holdings.svelte";
@@ -59,6 +59,14 @@
     const formatTrendAxis = (v: number): string => formatCompactChartValue(v, base, style);
     const accountNames = $derived(stockAccounts(journal.txns));
 
+    // The engine reports net-SHORT rows (sold more than was ever bought) so its
+    // totals reconcile with the balance sheet, but nobody holds −2 shares, so the
+    // table, pie and stat tiles show the real positions only. The totals stay the
+    // engine's — never recomputed here — and the note below the table accounts for
+    // the difference.
+    const positions = $derived(partitionShortPositions(report?.holdings ?? []));
+    const hiddenNote = $derived(shortPositionNote(positions.hidden, format));
+
     let insightsOpen = $state(true);
 </script>
 
@@ -68,7 +76,7 @@
     <ScopeBar {accountNames} />
 
     {#if ready && report !== null}
-        {#if report.holdings.length > 0}
+        {#if positions.shown.length > 0}
             <section class="collapse-arrow bg-base-200 collapse" data-testid="holdings-insights">
                 <input type="checkbox" bind:checked={insightsOpen} aria-label="Toggle holdings insights" />
                 <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
@@ -79,10 +87,10 @@
                     </span>
                 </div>
                 <div class="collapse-content flex flex-col gap-4">
-                    <HoldingsStats totals={report.totals} holdings={report.holdings} {format} {gainPeriod} />
+                    <HoldingsStats totals={report.totals} holdings={positions.shown} {format} {gainPeriod} />
                     <div class="grid grid-cols-1 items-center gap-4 lg:grid-cols-2">
                         <div>
-                            <HoldingsPie holdings={report.holdings} {format} />
+                            <HoldingsPie holdings={positions.shown} {format} />
                         </div>
                         <GainersLosers {report} {format} />
                     </div>
@@ -103,7 +111,7 @@
             </div>
         {/if}
 
-        {#if report.holdings.length === 0}
+        {#if positions.shown.length === 0}
             <div class="card bg-base-200" data-testid="holdings-empty">
                 <div class="card-body items-center py-16 text-center">
                     <h2 class="card-title">No stock holdings in scope</h2>
@@ -114,9 +122,14 @@
             </div>
         {:else}
             <div class="flex justify-end">
+                <!-- The export is the full engine report, short rows included: a spreadsheet whose rows sum to its own totals. -->
                 <ExportButton run={() => exportHoldingsXlsx(report, {title: "Holdings", params: `As of ${report.asOf}`}, `holdings-${report.asOf}.xlsx`)} />
             </div>
-            <HoldingsTable holdings={report.holdings} totals={report.totals} {format} {gainPeriod} />
+            <HoldingsTable holdings={positions.shown} totals={report.totals} {format} {gainPeriod} />
+        {/if}
+        <!-- Why the visible rows do not add up to the totals row above them. -->
+        {#if hiddenNote !== null}
+            <p class="text-base-content/60 px-1 text-xs" data-testid="holdings-hidden-note">{hiddenNote}</p>
         {/if}
     {:else if report === null && holdingsData.status === "error"}
         <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="holdings-error">
