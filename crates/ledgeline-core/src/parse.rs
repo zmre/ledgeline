@@ -51,6 +51,7 @@ use crate::model::{
     CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr, PeriodicTransaction, Posting,
     PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
 };
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -1217,6 +1218,40 @@ fn parse_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<RawPosting,
     })
 }
 
+/// Whether a posting source line **elides its amount**, leaving the value for
+/// the balancing pass to infer.
+///
+/// # Why the write path asks
+/// An elided amount is not cosmetic. Once the inferred value is written out
+/// explicitly, that leg can no longer disagree with the others, so hledger's own
+/// imbalance detection is permanently disabled for the transaction — the very
+/// check that catches a mistyped amount.
+///
+/// # What counts as elided
+/// A bare account, and also a posting whose only content after the account is a
+/// balance assertion (`assets:cash    = $99.00`, the reconcile-to-statement
+/// idiom): [`parse_amount_and_assertion`] records `amount: None` for that too.
+///
+/// Shares [`split_comment`] and [`split_account_amount`] with [`parse_posting`],
+/// so the answer is by construction the one the parser reached. A second,
+/// independent notion of "has an amount" would be exactly the drift this exists
+/// to prevent.
+pub(crate) fn posting_line_elides_amount(line: &str) -> bool {
+    let (main, _) = split_comment(line);
+    let trimmed = main.trim_start();
+    let after_status = trimmed
+        .strip_prefix(['*', '!'])
+        .map_or(trimmed, str::trim_start);
+    let amount_expr = split_account_amount(after_status).1.trim();
+    // Mirrors `parse_amount_and_assertion`: the written amount is whatever
+    // precedes the first `=`.
+    amount_expr
+        .find('=')
+        .map_or(amount_expr, |eq| &amount_expr[..eq])
+        .trim()
+        .is_empty()
+}
+
 /// Classify a posting's account field by its wrapping brackets and return the
 /// bare account name: `(a)` -> unbalanced virtual, `[a]` -> balanced virtual,
 /// anything else (including parens/brackets in the middle) -> regular.
@@ -1893,13 +1928,26 @@ fn group_residual<'a>(
             // The value a priced amount contributes is its COST, exactly as the
             // inference path values it.
             let (commodity, quantity, style) = cost_value(amount)?;
-            let entry = sums.entry(commodity).or_insert_with(|| Residual {
-                total: Dec::zero(),
-                style,
-                written_precision: None,
-                cost_precision: 0,
-            });
-            entry.total = entry.total.add(quantity)?;
+            let entry = match sums.entry(commodity) {
+                // Seeded with the FIRST contribution rather than with a zero at
+                // scale 0. `Dec::add` rescales BOTH operands to the wider scale,
+                // and `10^255` overflows `i128` however small the mantissa it
+                // multiplies — so `Dec::zero().add(5e-255)` failed, and the whole
+                // balance check returned `Overflow` for a journal that parses
+                // cleanly and balances exactly. Seeding is arithmetically
+                // identical (`0 + q == q`) and cannot overflow.
+                Entry::Vacant(slot) => slot.insert(Residual {
+                    total: quantity,
+                    style,
+                    written_precision: None,
+                    cost_precision: 0,
+                }),
+                Entry::Occupied(slot) => {
+                    let entry = slot.into_mut();
+                    entry.total = entry.total.add(quantity)?;
+                    entry
+                }
+            };
             if amount.cost.is_none() {
                 let written = entry.written_precision.unwrap_or(0).max(style.precision);
                 entry.written_precision = Some(written);

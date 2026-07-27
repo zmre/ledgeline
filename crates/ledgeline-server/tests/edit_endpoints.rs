@@ -720,6 +720,406 @@ async fn oversized_mantissa_is_rejected() {
     let _ = std::fs::remove_file(&path);
 }
 
+// ---------------------------------------------------------------------------
+// DL-2 — balance assertions and posting types survive a full replace
+// ---------------------------------------------------------------------------
+
+/// CLEANUP's DL-2 example, with an opening balance so the `= $99.00` anchor and
+/// the `== $500.00` total anchor genuinely hold under hledger.
+const ASSERTIONS_AND_VIRTUALS: &str = "\
+2025-12-31 Opening balances
+    assets:cash  $100.00
+    assets:checking  $502.00
+    equity:opening  $-602.00
+
+2026-01-01 A
+    expenses:a  $1.00
+    assets:cash  $-1.00 = $99.00
+    [budget:env]  $1.00
+    [budget:avail]  $-1.00
+
+2026-01-02 B
+    expenses:b  $2.00
+    assets:checking  $-2.00 == $500.00
+    (tracking:note)  $7.00
+";
+
+/// DL-2, the whole finding in one test: a `PUT` that echoes back what the API
+/// served must not destroy a balance assertion or silently promote a virtual
+/// posting to a real one.
+///
+/// Before the fix this returned `200` and wrote four PLAIN postings: the
+/// `= $99.00` reconciliation anchor was gone from the file forever, and the two
+/// `[budget:…]` balanced-virtual envelope legs had become REAL postings —
+/// moving $1.00 onto the balance sheet that was never there, in every report.
+#[tokio::test]
+async fn put_round_trips_balance_assertions_and_posting_types() {
+    let (state, path) = state_for(ASSERTIONS_AND_VIRTUALS);
+
+    // Transaction A: a plain regular posting, a regular posting carrying `=`,
+    // and two balanced-virtual `[...]` legs.
+    let body = json!({
+        "date": "2026-01-01",
+        "description": "A",
+        "postings": [
+            { "account": "expenses:a", "type": "regular",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "100", "places": 2 } } },
+            { "account": "assets:cash", "type": "regular",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "-100", "places": 2 } },
+              "balanceAssertion": {
+                  "amount": { "commodity": "$", "quantity": { "mantissa": "9900", "places": 2 } },
+                  "total": false, "inclusive": false } },
+            { "account": "budget:env", "type": "balancedVirtual",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "100", "places": 2 } } },
+            { "account": "budget:avail", "type": "balancedVirtual",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "-100", "places": 2 } } }
+        ]
+    });
+    let (status, response) = request(&state, "PUT", "/api/transactions/2", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "put should be 200: {response}");
+
+    // The response reports what actually landed, so a client can echo it again.
+    let postings = &response["transaction"]["postings"];
+    assert_eq!(postings[0]["type"], "regular");
+    assert_eq!(postings[1]["type"], "regular");
+    assert_eq!(postings[1]["balanceAssertion"]["amount"]["commodity"], "$");
+    assert_eq!(
+        postings[1]["balanceAssertion"]["amount"]["quantity"]["mantissa"],
+        "9900"
+    );
+    assert_eq!(postings[1]["balanceAssertion"]["total"], false);
+    assert_eq!(postings[2]["type"], "balancedVirtual");
+    assert_eq!(postings[3]["type"], "balancedVirtual");
+
+    // Transaction B: a `==` TOTAL assertion and an unbalanced `(virtual)` leg.
+    let body = json!({
+        "date": "2026-01-02",
+        "description": "B",
+        "postings": [
+            { "account": "expenses:b", "type": "regular",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "200", "places": 2 } } },
+            { "account": "assets:checking", "type": "regular",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "-200", "places": 2 } },
+              "balanceAssertion": {
+                  "amount": { "commodity": "$", "quantity": { "mantissa": "50000", "places": 2 } },
+                  "total": true, "inclusive": false } },
+            { "account": "tracking:note", "type": "virtual",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "700", "places": 2 } } }
+        ]
+    });
+    let (status, response) = request(&state, "PUT", "/api/transactions/3", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "put should be 200: {response}");
+    assert_eq!(response["transaction"]["postings"][2]["type"], "virtual");
+    assert_eq!(
+        response["transaction"]["postings"][1]["balanceAssertion"]["total"],
+        true
+    );
+
+    // Both anchors and both bracket forms are still in the file.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        on_disk,
+        "\
+2025-12-31 Opening balances
+    assets:cash  $100.00
+    assets:checking  $502.00
+    equity:opening  $-602.00
+
+2026-01-01 A
+    expenses:a      $1.00
+    assets:cash     $-1.00  = $99.00
+    [budget:env]    $1.00
+    [budget:avail]  $-1.00
+
+2026-01-02 B
+    expenses:b       $2.00
+    assets:checking  $-2.00  == $500.00
+    (tracking:note)  $7.00
+"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The subaccount-inclusive operators (`=*` and `==*`) round-trip too — they are
+/// the `inclusive` flag, orthogonal to `total`.
+#[tokio::test]
+async fn add_round_trips_subaccount_inclusive_assertions() {
+    let (state, path) = state_for(THREE_TXNS);
+
+    let body = json!({
+        "date": "2024-01-04",
+        "description": "D",
+        "position": "append",
+        "postings": [
+            { "account": "expenses:d",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "400", "places": 2 } } },
+            { "account": "assets:bank",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "-400", "places": 2 } },
+              "balanceAssertion": {
+                  "amount": { "commodity": "$", "quantity": { "mantissa": "1000", "places": 2 } },
+                  "total": true, "inclusive": true } }
+        ]
+    });
+    let (status, response) = request(&state, "POST", "/api/transactions", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "add should be 201: {response}");
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        on_disk.contains("==* $10.00"),
+        "the `==*` operator must survive; file was:\n{on_disk}"
+    );
+    let assertion = &response["transaction"]["postings"][1]["balanceAssertion"];
+    assert_eq!(assertion["inclusive"], true);
+    assert_eq!(assertion["total"], true);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// An unrecognized posting `type` is a `400` — never a silent fallback to
+/// `regular`, which is precisely how DL-2 destroyed envelope postings. Matches
+/// `reports_api::parse_interval`'s handling of an unknown enum value.
+#[tokio::test]
+async fn unknown_posting_type_is_400_and_file_unchanged() {
+    let (state, path) = state_for(ASSERTIONS_AND_VIRTUALS);
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    for bad in ["sneaky", "Regular", "RegularPosting", "balancedvirtual", ""] {
+        let body = json!({
+            "date": "2026-01-01",
+            "description": "A",
+            "postings": [
+                { "account": "expenses:a", "type": bad,
+                  "amount": { "commodity": "$", "quantity": { "mantissa": "100", "places": 2 } } },
+                { "account": "assets:cash" }
+            ]
+        });
+        let (status, _) = request(&state, "PUT", "/api/transactions/2", Some(body)).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "type={bad:?} must be a 400, not a silent `regular`"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "type={bad:?} must not have written to the journal"
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A malformed balance assertion is a `400` before it can reach the core: a
+/// blank commodity (which would render as a bare number and re-read as whatever
+/// the journal defaults to), an assertion on the elided leg (which the writer
+/// would drop on the floor), and the SEC-5 amount bounds applied to the asserted
+/// amount as well as the posting amount.
+#[tokio::test]
+async fn malformed_balance_assertion_is_400_and_file_unchanged() {
+    let (state, path) = state_for(ASSERTIONS_AND_VIRTUALS);
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let cash_with_assertion = |assertion: Value, with_amount: bool| {
+        let mut posting = json!({ "account": "assets:cash", "balanceAssertion": assertion });
+        if with_amount {
+            posting["amount"] =
+                json!({ "commodity": "$", "quantity": { "mantissa": "-100", "places": 2 } });
+        }
+        json!({
+            "date": "2026-01-01",
+            "description": "A",
+            "postings": [
+                { "account": "expenses:a",
+                  "amount": { "commodity": "$", "quantity": { "mantissa": "100", "places": 2 } } },
+                posting
+            ]
+        })
+    };
+    let dollars = json!({ "commodity": "$", "quantity": { "mantissa": "9900", "places": 2 } });
+
+    let cases: Vec<(&str, Value)> = vec![
+        (
+            "blank commodity",
+            cash_with_assertion(
+                json!({ "amount": { "commodity": "  ", "quantity": { "mantissa": "9900", "places": 2 } } }),
+                true,
+            ),
+        ),
+        (
+            "assertion on the elided leg",
+            cash_with_assertion(json!({ "amount": dollars }), false),
+        ),
+        (
+            "oversized asserted mantissa",
+            cash_with_assertion(
+                json!({ "amount": { "commodity": "$",
+                                    "quantity": { "mantissa": "1000000000000000000000000000001", "places": 2 } } }),
+                true,
+            ),
+        ),
+        (
+            "oversized asserted places",
+            cash_with_assertion(
+                json!({ "amount": { "commodity": "$", "quantity": { "mantissa": "9900", "places": 65534 } } }),
+                true,
+            ),
+        ),
+        (
+            "non-numeric asserted mantissa",
+            cash_with_assertion(
+                json!({ "amount": { "commodity": "$", "quantity": { "mantissa": "9,900", "places": 2 } } }),
+                true,
+            ),
+        ),
+    ];
+
+    for (name, body) in cases {
+        let (status, message) = request(&state, "PUT", "/api/transactions/2", Some(body)).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{name} must be a 400: {message}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "{name} must not have written to the journal"
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------------
+// DL-5 — a failed save must never publish the edit that failed
+// ---------------------------------------------------------------------------
+
+/// Something that parses as a journal at open time but not afterwards.
+const UNPARSEABLE: &str = "this is not a journal ((((\n";
+
+/// DL-5: when a save fails AND the journal cannot be re-read to re-sync, the
+/// server must publish NOTHING and say so.
+///
+/// `resync_from_disk` used to swallow the re-open error and publish
+/// `editor.journal()` regardless — the in-memory journal *still carrying the
+/// edit that had just failed to write*. The user got a `409`, re-fetched, and
+/// was served their change back as though it had been saved, while the file on
+/// disk had never contained it and never would.
+#[tokio::test]
+async fn failed_save_with_unreadable_journal_publishes_nothing() {
+    let (state, path) = state_for(THREE_TXNS);
+    assert_eq!(transaction_count(&state).await, 3);
+
+    // The file changes under us AND becomes unparseable: `save` refuses (the
+    // content no longer matches what was loaded) and the re-open then fails too.
+    std::fs::write(&path, UNPARSEABLE).unwrap();
+
+    let body = json!({
+        "date": "2024-01-02",
+        "description": "PHANTOM EDIT NEVER SAVED",
+        "postings": [
+            { "account": "expenses:b",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "200", "places": 2 } } },
+            { "account": "assets:bank" }
+        ]
+    });
+    let (put_status, message) = request(&state, "PUT", "/api/transactions/2", Some(body)).await;
+
+    // THE finding: the served snapshot must still be the last state that was
+    // successfully READ. Asserted before the status code because publishing an
+    // edit that reached no file is the damage; the status is how we report it.
+    let (status, served) = request(&state, "GET", "/transactions", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let descriptions: Vec<&str> = served
+        .as_array()
+        .expect("transactions array")
+        .iter()
+        .map(|txn| txn["tdescription"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        descriptions,
+        vec!["A", "B", "C"],
+        "an edit that never reached the file must never be published"
+    );
+    assert_eq!(
+        put_status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a failed save whose re-sync ALSO fails must not answer as a plain conflict: {message}"
+    );
+
+    // The editor was unbound rather than left holding an unpersisted edit, so a
+    // later save can never flush that phantom to disk.
+    let (status, _) = request(&state, "DELETE", "/api/transactions/1", None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_IMPLEMENTED,
+        "the editor must be unbound, not left carrying the failed edit"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), UNPARSEABLE);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// DL-5's other entry point: the mid-patch failure path. `apply_patch` commits
+/// its ops to the in-memory rope ONE AT A TIME, so a later one failing leaves an
+/// applied-but-unsaved description change; if the re-sync that discards it
+/// cannot re-read the file, that change must not be published either.
+#[tokio::test]
+async fn failed_patch_with_unreadable_journal_publishes_nothing() {
+    let (state, path) = state_for(THREE_TXNS);
+
+    std::fs::write(&path, UNPARSEABLE).unwrap();
+
+    // The description op succeeds in memory; the out-of-range posting then fails.
+    let body = json!({
+        "description": "PHANTOM PATCH NEVER SAVED",
+        "postings": [ { "index": 99, "account": "expenses:nope" } ]
+    });
+    let (status, message) = request(&state, "PATCH", "/api/transactions/2", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the failed re-sync must win over the patch's own 404: {message}"
+    );
+
+    let (_, served) = request(&state, "GET", "/transactions", None).await;
+    let published = serde_json::to_string(&served).unwrap();
+    assert!(
+        !published.contains("PHANTOM PATCH NEVER SAVED"),
+        "the half-applied patch must never be published: {published}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The Ok branch of the same code path must be untouched: when the file IS still
+/// readable, a failed save still re-syncs to disk and publishes THAT — the
+/// behavior `external_change_yields_409_and_resyncs_snapshot` pins for DELETE,
+/// asserted here for the PUT path and its 409.
+#[tokio::test]
+async fn failed_save_with_readable_journal_still_resyncs_and_409s() {
+    let (state, path) = state_for(THREE_TXNS);
+
+    let external = "\
+2099-01-01 * external edit
+    expenses:x  $1.00
+    assets:y
+";
+    std::fs::write(&path, external).unwrap();
+
+    let body = json!({
+        "date": "2024-01-02",
+        "description": "never lands",
+        "postings": [
+            { "account": "expenses:b",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "200", "places": 2 } } },
+            { "account": "assets:bank" }
+        ]
+    });
+    let (status, _) = request(&state, "PUT", "/api/transactions/2", Some(body)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Re-synced to the external file, and the external content is intact.
+    assert_eq!(transaction_count(&state).await, 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// The sample fixture's text, copied into each temp journal under test.
 fn sample_text() -> String {
     std::fs::read_to_string(common::fixture_journal_path()).expect("sample.journal readable")

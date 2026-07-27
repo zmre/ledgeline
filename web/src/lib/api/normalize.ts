@@ -11,12 +11,13 @@ import type {AccountDecl} from "$lib/domain/accountTypes";
 import {parseAccountTypeTag} from "$lib/domain/accountTypes";
 import type {Dec} from "$lib/domain/money";
 import {formatAmount} from "$lib/domain/money";
-import type {Amount, AmountStyle, Posting, PriceDirective, Transaction, TxnStatus} from "$lib/domain/types";
+import type {Amount, AmountStyle, BalanceAssertion, Posting, PostingType, PriceDirective, Transaction, TxnStatus} from "$lib/domain/types";
 import {ApiShapeError} from "./client";
 import type {
     RawAccount,
     RawAmount,
     RawAmountStyle,
+    RawBalanceAssertion,
     RawDiagnostic,
     RawJournalPayload,
     RawMarketPrice,
@@ -106,6 +107,32 @@ function toTags(raw: unknown[] | undefined): [string, string][] {
     return frozen(tags);
 }
 
+/**
+ * hledger's `ptype` → the domain enum. Anything unrecognized (including the
+ * field being absent, as in older wire dumps) reads as `"regular"`, which is
+ * what hledger itself means by an unbracketed account.
+ */
+function toPostingType(raw: string | undefined): PostingType {
+    if (raw === "VirtualPosting") return "virtual";
+    if (raw === "BalancedVirtualPosting") return "balancedVirtual";
+    return "regular";
+}
+
+/**
+ * `pbalanceassertion` → the domain assertion, or undefined when the posting
+ * asserts nothing. A record without a usable `baamount` is dropped rather than
+ * thrown on: a junk assertion must not cost the whole journal load, and the
+ * edit form treats "no assertion" as its safe default anyway.
+ */
+function toBalanceAssertion(raw: RawBalanceAssertion | null | undefined, context: string): BalanceAssertion | undefined {
+    if (raw === null || raw === undefined || raw.baamount === undefined) return undefined;
+    return Object.freeze({
+        amount: toAmount(raw.baamount, `${context} balance assertion`),
+        inclusive: raw.bainclusive === true,
+        total: raw.batotal === true,
+    });
+}
+
 function toPosting(raw: RawPosting, context: string): Posting {
     const account = raw.paccount ?? "";
     const posting: Posting = {
@@ -116,6 +143,12 @@ function toPosting(raw: RawPosting, context: string): Posting {
         tags: toTags(raw.ptags),
     };
     if (typeof raw.pdate === "string") posting.date = raw.pdate;
+    // Both are set only when they carry information, matching `date` above — so
+    // "absent" is the ordinary posting and every consumer defaults the same way.
+    const type = toPostingType(raw.ptype);
+    if (type !== "regular") posting.type = type;
+    const assertion = toBalanceAssertion(raw.pbalanceassertion, `${context} posting "${account}"`);
+    if (assertion !== undefined) posting.balanceAssertion = assertion;
     return Object.freeze(posting);
 }
 

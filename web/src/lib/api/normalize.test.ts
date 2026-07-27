@@ -545,6 +545,97 @@ describe("UNIT normalizeDiagnostics", () => {
     });
 });
 
+// DL-2: the write path can only preserve a posting's type and balance assertion
+// if the READ path decodes them. `/transactions` has always served both; nothing
+// decoded them, so the edit popup could not round-trip what it never saw.
+describe("UNIT normalizeTransactions — posting type and balance assertion", () => {
+    /** A posting in the hledger-web wire shape, with `ptype`/`pbalanceassertion` overridable. */
+    function rawPosting(account: string, mantissa: number, extra: Record<string, unknown> = {}): unknown {
+        return {
+            paccount: account,
+            pstatus: "Unmarked",
+            pcomment: "",
+            ptags: [],
+            pdate: null,
+            pdate2: null,
+            pbalanceassertion: null,
+            ptype: "RegularPosting",
+            pamount: [
+                {
+                    acommodity: "$",
+                    aquantity: {decimalMantissa: mantissa, decimalPlaces: 2, floatingPoint: mantissa / 100},
+                    astyle: usdStyleModern,
+                    acost: null,
+                },
+            ],
+            ...extra,
+        };
+    }
+
+    const assertionWire = {
+        baamount: {acommodity: "$", aquantity: {decimalMantissa: 9900, decimalPlaces: 2, floatingPoint: 99}, astyle: usdStyleModern, acost: null},
+        bainclusive: false,
+        batotal: false,
+        baposition: {sourceColumn: 1, sourceLine: 3, sourceName: "x.journal"},
+    };
+
+    const wireTxn = {
+        tindex: 2,
+        tdate: "2026-01-01",
+        tdate2: null,
+        tstatus: "Unmarked",
+        tdescription: "A",
+        tcode: "",
+        tcomment: "",
+        ttags: [],
+        tpostings: [
+            rawPosting("expenses:a", 100),
+            rawPosting("assets:cash", -100, {pbalanceassertion: assertionWire}),
+            rawPosting("budget:env", 100, {ptype: "BalancedVirtualPosting"}),
+            rawPosting("tracking:note", 700, {ptype: "VirtualPosting"}),
+        ],
+    };
+
+    it("decodes ptype, leaving an ordinary posting's type absent", () => {
+        const [txn] = normalizeTransactions([wireTxn]);
+        expect(txn.postings[0].type).toBeUndefined(); // RegularPosting → absent
+        expect(txn.postings[2].type).toBe("balancedVirtual");
+        expect(txn.postings[3].type).toBe("virtual");
+    });
+
+    it("decodes a balance assertion, and leaves it absent when there is none", () => {
+        const [txn] = normalizeTransactions([wireTxn]);
+        expect(txn.postings[0].balanceAssertion).toBeUndefined();
+        expect(txn.postings[1].balanceAssertion).toEqual({
+            amount: {commodity: "$", qty: {m: 9900n, p: 2}, style: {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]}},
+            inclusive: false,
+            total: false,
+        });
+    });
+
+    it("reads the == (total) and =* (inclusive) flags", () => {
+        const totalInclusive = {
+            ...wireTxn,
+            tpostings: [rawPosting("assets:cash", -100, {pbalanceassertion: {...assertionWire, batotal: true, bainclusive: true}})],
+        };
+        const [txn] = normalizeTransactions([totalInclusive]);
+        expect(txn.postings[0].balanceAssertion?.total).toBe(true);
+        expect(txn.postings[0].balanceAssertion?.inclusive).toBe(true);
+    });
+
+    it("tolerates an unknown ptype and an assertion record with no amount", () => {
+        const junk = {
+            ...wireTxn,
+            tpostings: [rawPosting("a:b", 100, {ptype: "SomeFuturePosting", pbalanceassertion: {bainclusive: true}})],
+        };
+        const [txn] = normalizeTransactions([junk]);
+        // An unrecognized type reads as regular (what an unbracketed account means)…
+        expect(txn.postings[0].type).toBeUndefined();
+        // …and an unusable assertion is dropped rather than sinking the load.
+        expect(txn.postings[0].balanceAssertion).toBeUndefined();
+    });
+});
+
 describe("UNIT normalizeTransactions journal payload envelope", () => {
     it("accepts a {transactions, diagnostics} envelope as well as a bare array", () => {
         const enveloped = normalizeTransactions({transactions: [modernTxn], diagnostics: [unbalancedDiag]});

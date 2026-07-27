@@ -42,6 +42,14 @@ export interface RawAmount {
     acostbasis?: unknown; // 2.0-preview
 }
 
+/** A `=`/`==`/`=*`/`==*` balance assertion; `baposition` is source info we ignore. */
+export interface RawBalanceAssertion {
+    baamount?: RawAmount;
+    bainclusive?: boolean;
+    batotal?: boolean;
+    baposition?: unknown;
+}
+
 export interface RawPosting {
     paccount?: string;
     pamount?: RawAmount[];
@@ -50,8 +58,8 @@ export interface RawPosting {
     ptags?: unknown[];
     pdate?: string | null;
     pdate2?: string | null;
-    pbalanceassertion?: unknown;
-    ptype?: string;
+    pbalanceassertion?: RawBalanceAssertion | null;
+    ptype?: string; // "RegularPosting" | "VirtualPosting" | "BalancedVirtualPosting"
     poriginal?: unknown;
     ptransaction_?: string;
 }

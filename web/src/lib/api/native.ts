@@ -75,12 +75,31 @@ export interface WirePostingAmount {
     cost?: WireCost;
 }
 
-/** One posting: an account and an OPTIONAL amount — no `amount` marks the elided/inferred leg. */
+/** Real / unbalanced-virtual `(a)` / balanced-virtual `[a]` on the write wire. */
+export type WirePostingType = "regular" | "virtual" | "balancedVirtual";
+
+/** A `=`/`==`/`=*`/`==*` balance assertion: `total` is `==`, `inclusive` is `=*`. */
+export interface WireBalanceAssertion {
+    amount: {commodity: string; quantity: WireDec};
+    inclusive: boolean;
+    total: boolean;
+}
+
+/**
+ * One posting: an account and an OPTIONAL amount — no `amount` marks the elided/inferred leg.
+ *
+ * `type` and `balanceAssertion` are optional, but omitting them means the
+ * posting HAS neither — the engine writes exactly what it is sent. A
+ * read-modify-write (the edit popup's PUT) must therefore echo both back or it
+ * destroys them, which is what DL-2 was.
+ */
 export interface WirePostingInput {
     account: string;
     status?: WireStatus;
     comment?: string;
     amount?: WirePostingAmount;
+    type?: WirePostingType;
+    balanceAssertion?: WireBalanceAssertion;
 }
 
 /** `POST /api/transactions` (ADD) / `PUT /api/transactions/{index}` (REPLACE) request body. */
@@ -119,7 +138,7 @@ export interface WireTransaction {
     status: WireStatus;
     code: string;
     description: string;
-    postings: {account: string; amounts: WirePostingAmount[]; status: string; type: string}[];
+    postings: {account: string; amounts: WirePostingAmount[]; status: string; type: string; balanceAssertion?: WireBalanceAssertion}[];
 }
 
 /** 201 (ADD) / 200 (REPLACE, PATCH) response: the resulting transaction + its (re)assigned index. */

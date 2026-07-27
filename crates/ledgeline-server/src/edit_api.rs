@@ -41,6 +41,23 @@
 //! A posting `amount` may also carry a `cost`:
 //! `{ "kind": "unit"|"total", "amount": { "commodity": "$", "quantity": <Dec> } }`.
 //!
+//! A posting may also carry `type` and `balanceAssertion`:
+//! ```json
+//! { "account": "assets:cash",
+//!   "type": "regular",                   // regular|virtual|balancedVirtual (default regular)
+//!   "amount": { "commodity": "$", "quantity": { "mantissa": "-100", "places": 2 } },
+//!   "balanceAssertion": {                // the `= AMOUNT` reconciliation anchor
+//!     "amount": { "commodity": "$", "quantity": { "mantissa": "9900", "places": 2 } },
+//!     "total": false,                    // true ⇒ `==` (this commodity ONLY)
+//!     "inclusive": false                 // true ⇒ `=*` (include subaccounts)
+//!   } }
+//! ```
+//! Both are OPTIONAL but NOT defaulted-away on a replace: a `PUT` that omits
+//! them writes a posting that genuinely has neither. That is DL-2 — these
+//! fields did not exist, so every `PUT` erased balance assertions and rewrote
+//! `[balanced-virtual]` and `(virtual)` postings as real ones, with a `200`.
+//! Any client doing a read-modify-write must echo them back, as the SPA does.
+//!
 //! # Amount style inference (correctness-critical)
 //! The editor renders each amount through its [`AmountStyle`] and then re-parses
 //! to validate the round-trip, so a wrong decimal mark (e.g. rendering a EUR
@@ -67,8 +84,8 @@ use axum::http::StatusCode;
 use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::edit::InsertPosition;
 use ledgeline_core::model::{
-    AccountName, Amount, AmountStyle, Commodity, CommoditySide, Cost, CostKind, Journal, Posting,
-    PostingType, SourcePos, Status, Tindex, Transaction,
+    AccountName, Amount, AmountStyle, BalanceAssertion, Commodity, CommoditySide, Cost, CostKind,
+    Journal, Posting, PostingType, SourcePos, Status, Tindex, Transaction,
 };
 use ledgeline_core::{Dec, EditError, JournalEditor};
 use serde::{Deserialize, Serialize};
@@ -89,12 +106,55 @@ struct WireDecIn {
     places: u32,
 }
 
-/// The priced side of a cost annotation: a bare commodity + quantity.
+/// A bare commodity + quantity, with no cost of its own: the priced side of a
+/// cost annotation, and the asserted side of a balance assertion.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PricedAmountIn {
     commodity: String,
     quantity: WireDecIn,
+}
+
+/// A `=` / `==` / `=*` / `==*` balance assertion on a posting — the
+/// reconciliation anchor that pins an account's running balance at that point.
+///
+/// The two flags pick the operator, exactly as the model stores them: `total`
+/// asserts the account holds ONLY this commodity (`==`), `inclusive` includes
+/// subaccounts (`=*`). Both default to `false`, i.e. a plain `=`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BalanceAssertionIn {
+    amount: PricedAmountIn,
+    #[serde(default)]
+    inclusive: bool,
+    #[serde(default)]
+    total: bool,
+}
+
+/// Real / unbalanced-virtual / balanced-virtual on the wire (hledger's `ptype`).
+///
+/// The spellings are exactly the ones this module SERIALIZES (see [`ptype_str`]),
+/// so a posting the API handed out round-trips straight back through it. An
+/// unrecognized value is rejected by serde as an unknown variant, which the
+/// handlers surface as a `400` — never a silent fallback to `Regular`, which is
+/// what DL-2 was: a `[budget:env]` envelope posting quietly rewritten as a real
+/// one, moving money onto the balance sheet that was never there.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+enum PostingTypeIn {
+    Regular,
+    Virtual,
+    BalancedVirtual,
+}
+
+impl From<PostingTypeIn> for PostingType {
+    fn from(ptype: PostingTypeIn) -> Self {
+        match ptype {
+            PostingTypeIn::Regular => PostingType::Regular,
+            PostingTypeIn::Virtual => PostingType::Virtual,
+            PostingTypeIn::BalancedVirtual => PostingType::BalancedVirtual,
+        }
+    }
 }
 
 /// A `@`/`@@` cost annotation on a posting amount.
@@ -118,6 +178,12 @@ struct AmountIn {
 /// One posting: an account and an optional amount. No `amount` marks the elided
 /// leg whose value the parser infers from the balance. An optional `comment`
 /// carries a same-line posting comment (so a full replace round-trips it).
+///
+/// `type` and `balanceAssertion` exist so a REPLACE cannot silently destroy
+/// either (DL-2). Both are optional for backwards compatibility, but "absent"
+/// means "this posting has none" — so a client that reads a transaction and
+/// writes it back MUST echo them, exactly as it already echoes `comment`. The
+/// SPA does this in `editMapping.ts`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PostingIn {
@@ -128,6 +194,12 @@ struct PostingIn {
     amount: Option<AmountIn>,
     #[serde(default)]
     comment: Option<String>,
+    /// Real / virtual `(a)` / balanced-virtual `[a]`; absent = `regular`.
+    #[serde(default, rename = "type")]
+    ptype: Option<PostingTypeIn>,
+    /// The `= AMOUNT` reconciliation anchor; absent = no assertion.
+    #[serde(default)]
+    balance_assertion: Option<BalanceAssertionIn>,
 }
 
 /// The `POST /api/transactions` (add) and `PUT /api/transactions/{index}`
@@ -267,6 +339,16 @@ struct NativeAmount {
     cost: Option<Box<NativeCost>>,
 }
 
+/// A serialized balance assertion (the `= AMOUNT` anchor), in the same shape
+/// [`BalanceAssertionIn`] accepts so the response round-trips back as a request.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeBalanceAssertion {
+    amount: NativeAmount,
+    inclusive: bool,
+    total: bool,
+}
+
 /// A serialized posting: account plus its (possibly inferred) amounts.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -276,6 +358,10 @@ struct NativePosting {
     status: &'static str,
     #[serde(rename = "type")]
     ptype: &'static str,
+    /// Absent when the posting has no assertion — so the response says exactly
+    /// what landed in the file, and a client can echo it straight back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    balance_assertion: Option<NativeBalanceAssertion>,
 }
 
 /// A serialized transaction as it landed in the journal after the reparse (its
@@ -404,8 +490,9 @@ fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddR
     editor
         .add_transaction(&transaction, position)
         .map_err(edit_error)?;
-    save_and_publish(state, editor).map_err(edit_error)?;
+    save_and_publish(state, &mut guard)?;
 
+    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
     let added = editor
         .journal()
         .transactions
@@ -429,8 +516,9 @@ fn delete_transaction_locked(state: &AppState, index: u32) -> Result<DeleteRespo
     editor
         .delete_transaction(Tindex(index))
         .map_err(edit_error)?;
-    save_and_publish(state, editor).map_err(edit_error)?;
+    save_and_publish(state, &mut guard)?;
 
+    let editor = guard.as_ref().ok_or_else(editing_disabled)?;
     Ok(DeleteResponse {
         deleted_index: index,
         remaining: editor.transaction_count(),
@@ -449,10 +537,11 @@ fn replace_transaction_locked(
     editor
         .replace_transaction(Tindex(index), &transaction)
         .map_err(edit_error)?;
-    save_and_publish(state, editor).map_err(edit_error)?;
+    save_and_publish(state, &mut guard)?;
 
     // An in-place replace adds/removes no transactions and reorders none, so the
     // target keeps its `tindex`.
+    let editor = guard.as_ref().ok_or_else(editing_disabled)?;
     let updated = editor
         .journal()
         .transactions
@@ -485,12 +574,13 @@ fn patch_transaction_locked(
         // after an earlier one committed to memory, re-sync from disk so the
         // in-memory editor and the served snapshot never diverge from the file.
         if let Err(error) = apply_patch(editor, index, request) {
-            resync_from_disk(state, editor);
+            resync_from_disk(state, &mut guard)?;
             return Err(edit_error(error));
         }
-        save_and_publish(state, editor).map_err(edit_error)?;
+        save_and_publish(state, &mut guard)?;
     }
 
+    let editor = guard.as_ref().ok_or_else(editing_disabled)?;
     let updated = editor
         .journal()
         .transactions
@@ -530,29 +620,71 @@ fn apply_patch(
 /// unpersisted, so we [`resync_from_disk`] — discarding that edit, re-syncing the
 /// rope/fingerprint, and publishing the on-disk state — so the editor and the
 /// served snapshot stay consistent with the file. The original save error is
-/// returned for the caller to map (a `409` tells the client to re-fetch/retry).
-fn save_and_publish(state: &AppState, editor: &mut JournalEditor) -> Result<(), EditError> {
+/// then returned (a `409` tells the client to re-fetch/retry), UNLESS the
+/// re-sync itself failed, in which case its `500` wins: that is the more serious
+/// condition and the one the user has to act on.
+fn save_and_publish(state: &AppState, slot: &mut Option<JournalEditor>) -> Result<(), ApiError> {
+    let editor = slot.as_mut().ok_or_else(editing_disabled)?;
     match editor.save() {
         Ok(()) => {
             state.replace_journal(editor.journal());
             Ok(())
         }
         Err(error) => {
-            resync_from_disk(state, editor);
-            Err(error)
+            resync_from_disk(state, slot)?;
+            Err(edit_error(error))
         }
     }
 }
 
-/// Discard any un-saved in-memory edit by re-opening the editor from disk (best
-/// effort), then republish the snapshot from whatever is now bound — so the
-/// editor and the served snapshot both track the on-disk file. Used after a save
-/// failure and after a partial (multi-op) edit fails midway.
-fn resync_from_disk(state: &AppState, editor: &mut JournalEditor) {
-    if let Ok(reopened) = JournalEditor::open(editor.path().to_path_buf()) {
-        *editor = reopened;
+/// Discard any un-saved in-memory edit by re-opening the editor from disk, then
+/// republish the snapshot from it — so the editor and the served snapshot both
+/// track the on-disk file. Used after a save failure and after a partial
+/// (multi-op) edit fails midway.
+///
+/// DL-5. The re-open MUST be allowed to fail loudly. This used to swallow the
+/// error and publish `editor.journal()` regardless — which, when the file had
+/// been deleted or made unparseable, published the in-memory journal *still
+/// carrying the edit that had just failed to write*. The user got a `409`,
+/// re-fetched, and saw their change served back as though it had been saved,
+/// while the file on disk had never contained it.
+///
+/// So on failure we publish NOTHING (the last known-good snapshot stays served)
+/// and unbind the editor rather than keep one whose rope holds an unpersisted
+/// edit — a later save against it is how that phantom would reach the file.
+/// This mirrors [`AppState::reopen_editor`], which unbinds on the same failure.
+fn resync_from_disk(state: &AppState, slot: &mut Option<JournalEditor>) -> Result<(), ApiError> {
+    let Some(path) = slot.as_ref().map(|editor| editor.path().to_path_buf()) else {
+        // Nothing bound, so there is no un-saved edit to discard and nothing new
+        // to publish; the caller's own error stands.
+        return Ok(());
+    };
+    match JournalEditor::open(path) {
+        Ok(reopened) => {
+            state.replace_journal(reopened.journal());
+            *slot = Some(reopened);
+            Ok(())
+        }
+        Err(error) => {
+            *slot = None;
+            Err(resync_failed(&error))
+        }
     }
-    state.replace_journal(editor.journal());
+}
+
+/// The `500` for DL-5's failure branch: the edit did not reach the file AND the
+/// file could not be re-read afterwards, so the server can neither apply nor
+/// re-sync. Says both halves plainly, because the dangerous reading of a bare
+/// `409` here is "it saved after all".
+fn resync_failed(error: &EditError) -> ApiError {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!(
+            "your change was NOT saved, and the journal file could not be re-read afterwards to \
+             re-sync ({error}). The served data is the last state that was successfully read; \
+             editing is disabled until the file is readable again and the journal is re-opened."
+        ),
+    )
 }
 
 /// Lock the editor mutex, recovering from poisoning by re-reading the file.
@@ -728,16 +860,69 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, ApiErr
         Some(amount) => vec![build_amount(journal, amount)?],
         None => Vec::new(),
     };
+    let balance_assertion = input
+        .balance_assertion
+        .as_ref()
+        .map(|assertion| build_assertion(journal, assertion, &input.account, amounts.is_empty()))
+        .transpose()?;
     Ok(Posting {
         status: input.status.map_or(Status::Unmarked, Status::from),
-        ptype: PostingType::Regular,
+        ptype: input.ptype.map_or(PostingType::Regular, PostingType::from),
         account: AccountName(input.account.clone()),
         amounts,
-        balance_assertion: None,
+        balance_assertion,
         date: None,
         date2: None,
         comment: comment_string(input.comment.as_deref()),
         tags: Vec::new(),
+    })
+}
+
+/// Build a [`BalanceAssertion`] from the wire, refusing the two shapes the
+/// journal must never be asked to hold (DL-2's "do not let a malformed
+/// assertion reach the core").
+///
+/// * **A blank commodity** would render as a BARE asserted number (`= 99.00`),
+///   which re-reads under a journal `D` default-commodity directive as a
+///   *different* commodity. That is a silent change of which balance is being
+///   anchored, and the round-trip guard cannot see it as one because the text it
+///   wrote is the text it reads back.
+/// * **An assertion with no amount on the same posting.** hledger accepts
+///   `assets:cash  = $99.00`, but this writer cannot produce it: the formatter
+///   emits an assertion only alongside a posting's first amount line, so an
+///   amount-less posting would drop it on the floor — the exact silent loss
+///   DL-2 is about. Refusing is the honest answer; the SPA always sends the
+///   balanced amount, so this is unreachable from the popup.
+fn build_assertion(
+    journal: &Journal,
+    input: &BalanceAssertionIn,
+    account: &str,
+    posting_has_no_amount: bool,
+) -> Result<BalanceAssertion, ApiError> {
+    if input.amount.commodity.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the balance assertion on '{account}' needs a commodity: a bare asserted number \
+                 would re-read as whatever commodity the journal defaults to"
+            ),
+        ));
+    }
+    if posting_has_no_amount {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the balance assertion on '{account}' needs an amount on the same posting: an \
+                 assertion cannot be written on the inferred (elided) leg"
+            ),
+        ));
+    }
+    Ok(BalanceAssertion {
+        amount: build_priced_amount(journal, &input.amount)?,
+        inclusive: input.inclusive,
+        total: input.total,
+        // Placeholder; the reparse recomputes it, like the transaction's own span.
+        position: SourcePos { line: 1, column: 1 },
     })
 }
 
@@ -768,17 +953,24 @@ fn build_amount(journal: &Journal, input: &AmountIn) -> Result<Amount, ApiError>
 }
 
 fn build_cost(journal: &Journal, input: &CostIn) -> Result<Cost, ApiError> {
-    let commodity = Commodity(input.amount.commodity.clone());
-    let quantity = dec_from_wire(&input.amount.quantity)?;
-    let style = infer_style(journal, &commodity, quantity.places);
     Ok(Cost {
         kind: input.kind.into(),
-        amount: Amount {
-            commodity,
-            quantity,
-            style,
-            cost: None,
-        },
+        amount: build_priced_amount(journal, &input.amount)?,
+    })
+}
+
+/// A bare (cost-free) [`Amount`] from the wire, with its style inferred from the
+/// journal. Shared by the cost annotation and the balance assertion, which are
+/// the two places an amount can appear without a nested cost of its own.
+fn build_priced_amount(journal: &Journal, input: &PricedAmountIn) -> Result<Amount, ApiError> {
+    let commodity = Commodity(input.commodity.clone());
+    let quantity = dec_from_wire(&input.quantity)?;
+    let style = infer_style(journal, &commodity, quantity.places);
+    Ok(Amount {
+        commodity,
+        quantity,
+        style,
+        cost: None,
     })
 }
 
@@ -926,6 +1118,13 @@ fn native_posting(posting: &Posting) -> NativePosting {
         amounts: posting.amounts.iter().map(native_amount).collect(),
         status: status_str(posting.status),
         ptype: ptype_str(posting.ptype),
+        balance_assertion: posting.balance_assertion.as_ref().map(|assertion| {
+            NativeBalanceAssertion {
+                amount: native_amount(&assertion.amount),
+                inclusive: assertion.inclusive,
+                total: assertion.total,
+            }
+        }),
     }
 }
 
