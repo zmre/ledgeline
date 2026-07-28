@@ -13,8 +13,17 @@
 
     let {report, format}: {report: HoldingsReport; format: (v: Dec) => string} = $props();
 
-    const pricedCount = $derived(report.holdings.filter((h) => h.marketValue !== null).length);
-    const visible = $derived(pricedCount >= 2 && (report.topGainers.length > 0 || report.topLosers.length > 0));
+    /**
+     * Holdings that could actually be ranked — a gain is what this panel sorts by.
+     *
+     * Not "priced": a net-short row HAS a market value (negative) but its basis is
+     * unknowable, so its gain is null and it can appear in neither list. Counting
+     * it toward the threshold showed a one-name "Top gainers" panel whenever a
+     * short was in scope, which is the degenerate case the threshold exists to
+     * suppress.
+     */
+    const rankableCount = $derived(report.holdings.filter((h) => h.gain !== null).length);
+    const visible = $derived(rankableCount >= 2 && (report.topGainers.length > 0 || report.topLosers.length > 0));
 </script>
 
 {#snippet list(title: string, entries: Holding[], testid: string)}
