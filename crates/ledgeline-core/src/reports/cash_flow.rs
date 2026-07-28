@@ -8,10 +8,9 @@ use super::ReportError;
 use super::account_types::{AccountType, infer_account_type};
 use super::aggregate::{at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
-use super::periods::{Interval, bucket_end, bucket_start, compare_iso, last_n_buckets};
+use super::periods::{Interval, bucket_span, last_n_buckets};
 use super::types::{PeriodReport, PeriodRow};
 use crate::model::Transaction;
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Name-based "cash-like asset" heuristic — the fallback when a journal declares
@@ -54,16 +53,7 @@ pub fn cash_flow(
     // replace one `account_totals` re-scan per bucket (PERF-5).
     let ranges: Vec<(String, String)> = buckets
         .iter()
-        .map(|key| {
-            let start = bucket_start(key)?;
-            let end_of_bucket = bucket_end(key)?;
-            let to = if compare_iso(end, &end_of_bucket) == Ordering::Less {
-                end.to_string()
-            } else {
-                end_of_bucket
-            };
-            Ok((start, to))
-        })
+        .map(|key| bucket_span(key, end))
         .collect::<Result<_, ReportError>>()?;
 
     // ONE pass over every posting, summing per FULL account name into its own

@@ -34,7 +34,9 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::decimal::{Dec, DecError};
-use crate::model::{AccountDeclaration, Commodity, Cost, CostKind, PriceDirective, Transaction};
+use crate::model::{
+    AccountDeclaration, Commodity, Cost, CostKind, PriceDirective, Tindex, Transaction,
+};
 use crate::reports::account_types::{account_decls_from, declared_types, resolve_account_type};
 use crate::reports::prices::{div_round_half_even, mul_raw, per_unit_from_total, pow10};
 use crate::reports::{AccountType, PriceDb, ReportError, account_matches};
@@ -125,10 +127,13 @@ enum TaintReason {
     WentNegative,
 }
 
-/// Average-cost pool for one stock symbol. Only the fields consumed by
-/// [`compute_holdings`] are tracked (the TS `costlessBuyTxns`/`negativeCrossTxn`/
-/// `lastTxnIndex` feed the separate WP-10 check rules, which are out of scope
-/// here).
+/// Average-cost pool for one stock symbol.
+///
+/// Alongside the running arithmetic each pool carries its TRANSACTION
+/// ATTRIBUTION — `costless_buy_txns` / `negative_cross_txn` / `last_txn` — so a
+/// warning can name the rows that caused it rather than only the symbol. That is
+/// bookkeeping over the same date-ordered walk, not extra math, and it is what
+/// `/api/diagnostics` needs to hand the SPA a `Problem` with a `txnIndex`.
 ///
 /// `Clone` so a replay can FREEZE the running pool at a series boundary and keep
 /// going — the pool at each point is the same object the single-date build
@@ -147,6 +152,23 @@ struct SymbolPool {
     /// restore a knowable average cost, because the lot that was oversold was
     /// never entered in the first place.
     went_negative: bool,
+    /// Transactions holding ≥ 1 acquisition lot of the CURRENTLY held position
+    /// whose cost was unusable (absent, or annotated in a commodity with no rate
+    /// to the base). Journal order, deduped, and cleared alongside `taint` by a
+    /// clean close — the lots it named are gone, so it no longer describes
+    /// anything held.
+    costless_buy_txns: Vec<Tindex>,
+    /// The most recent transaction that took the running share total from
+    /// non-negative to negative; `None` for a pool that has never been short.
+    ///
+    /// It is kept even after the pool recovers, because a pool that dipped below
+    /// zero and came back still warns (its taint is sticky), and that crossing is
+    /// still the row that explains why.
+    negative_cross_txn: Option<Tindex>,
+    /// The latest transaction touching this symbol. Every pool has one — it is
+    /// created BY such a transaction — so it is the always-available anchor for
+    /// a warning about the position as a whole rather than about one lot.
+    last_txn: Tindex,
     /// Net value contributed to this symbol inside the gain window
     /// `(gain_since, as_of]` — buy costs minus sell proceeds, in the base
     /// commodity. `None` once an in-window leg could not be valued at all;
@@ -164,12 +186,16 @@ struct SymbolPool {
 }
 
 impl SymbolPool {
-    fn new(symbol: &str) -> Self {
+    /// A fresh pool for `symbol`, opened by transaction `txn`.
+    fn new(symbol: &str, txn: Tindex) -> Self {
         Self {
             shares: Dec::zero(),
             basis: Dec::zero(),
             taint: None,
             went_negative: false,
+            costless_buy_txns: Vec::new(),
+            negative_cross_txn: None,
+            last_txn: txn,
             window_flow: Some(Dec::zero()),
             first_basis_date: None,
             accounts: Vec::new(),
@@ -181,6 +207,14 @@ impl SymbolPool {
     fn taint_with(&mut self, reason: TaintReason) {
         if self.taint.is_none() {
             self.taint = Some(reason);
+        }
+    }
+
+    /// Blame `txn` for a cost-less acquisition lot. Deduped against the last
+    /// entry only: the walk is date-ordered, so a repeat can only be adjacent.
+    fn blame_costless_lot(&mut self, txn: Tindex) {
+        if self.costless_buy_txns.last() != Some(&txn) {
+            self.costless_buy_txns.push(txn);
         }
     }
 }
@@ -760,10 +794,12 @@ fn replay_pools(
                     cost: amount.cost.as_deref().cloned(),
                 });
 
-                // Ensure the pool exists; update its name and per-account tally.
+                // Ensure the pool exists; update its name, latest-touch anchor
+                // and per-account tally.
                 let pool = pools
                     .entry(symbol.clone())
-                    .or_insert_with(|| SymbolPool::new(&symbol));
+                    .or_insert_with(|| SymbolPool::new(&symbol, txn.index));
+                pool.last_txn = txn.index;
                 // Precedence: the posting's own `name:` comment tag, then the
                 // `commodity`-directive `name:` (keyed by symbol — the canonical
                 // place a security is named), then the account's own + ancestors'
@@ -807,15 +843,20 @@ fn replay_pools(
             // A split only re-labels the share count: scale `shares` and leave
             // `basis`/`first_basis_date` (and the flow — no value moved) alone.
             if is_redenomination(txn, symbol, entries, net, pool.shares, declared)? {
+                let before = pool.shares;
                 pool.shares = pool.shares.add(net)?;
                 if pool.shares.mantissa < 0 {
                     // A "split" that removes more than was ever held is not one;
                     // fall back to the same sticky taint a bare oversell gets.
                     pool.went_negative = true;
                     pool.taint_with(TaintReason::WentNegative);
+                    if before.mantissa >= 0 {
+                        pool.negative_cross_txn = Some(txn.index);
+                    }
                 }
                 continue;
             }
+            let before = pool.shares;
             let commodity = Commodity(symbol.clone());
             for entry in entries {
                 let leg_before = pool.shares;
@@ -846,14 +887,24 @@ fn replay_pools(
                         // basis of what is held now is genuinely unknown (HOLD-4)
                         // and the taint must stay.
                         pool.taint = None;
+                        // …and neither do the rows it blamed: those lots are
+                        // sold, so flagging them would point at transactions
+                        // that no longer describe anything held.
+                        pool.costless_buy_txns.clear();
                     }
                     match cost_in_base(entry.qty, entry.cost.as_ref(), db, base, &txn.date)? {
-                        None => pool.taint_with(match entry.cost.as_ref() {
-                            None => TaintReason::CostlessLot,
-                            Some(cost) => {
-                                TaintReason::UnconvertibleCost(cost.amount.commodity.0.clone())
-                            }
-                        }),
+                        None => {
+                            pool.taint_with(match entry.cost.as_ref() {
+                                None => TaintReason::CostlessLot,
+                                Some(cost) => {
+                                    TaintReason::UnconvertibleCost(cost.amount.commodity.0.clone())
+                                }
+                            });
+                            // Blamed for BOTH taint reasons: an unconvertible
+                            // cost is as unusable as an absent one, and the row
+                            // to look at is the same one either way.
+                            pool.blame_costless_lot(txn.index);
+                        }
                         Some(lot_cost) => pool.basis = pool.basis.add(lot_cost)?,
                     }
                 } else if entry.qty.mantissa < 0 && leg_before.mantissa > 0 {
@@ -872,6 +923,12 @@ fn replay_pools(
                     pool.taint_with(TaintReason::WentNegative);
                 }
                 pool.shares = leg_after;
+            }
+            // The CROSSING is a property of the transaction, not of a leg: a
+            // txn that sells into the red and buys back out of it inside itself
+            // never left the position short, so it is not the row to flag.
+            if before.mantissa >= 0 && pool.shares.mantissa < 0 {
+                pool.negative_cross_txn = Some(txn.index);
             }
         }
 
@@ -1503,6 +1560,11 @@ fn assemble_report(
         // `basis` and `gain` stay `None` — the opening lot was never entered, so
         // there is no cost to report (`taint` is already `WentNegative` here, by
         // the same rule that taints a pool which merely dipped below zero).
+        // Anchor for a warning about the POSITION rather than about one lot:
+        // the transaction that took the total negative when there was one, else
+        // the latest touch (a pool that opened short never "crossed" — its very
+        // first transaction is both).
+        let crossing = vec![pool.negative_cross_txn.unwrap_or(pool.last_txn)];
         let short = pool.shares.mantissa < 0;
         if short {
             warnings.push(HoldingsWarning {
@@ -1512,6 +1574,7 @@ fn assemble_report(
                     "{symbol}: net shares are negative (-{deficit} shares) — the opening position was likely never entered, so its basis and gain are unknown; its market value is still counted in the totals",
                     deficit = abs_shares_2dp(pool.shares)
                 ),
+                txns: crossing.clone(),
             });
         }
 
@@ -1531,9 +1594,12 @@ fn assemble_report(
             warnings.push(HoldingsWarning {
                 symbol: symbol.clone(),
                 kind: WarningKind::Unpriced,
+                // Pricing is a property of the position, not of any one lot, so
+                // the anchor is the latest transaction touching the symbol.
                 message: format!(
                     "{symbol}: no market price or usable cost annotation — excluded from totals"
                 ),
+                txns: vec![pool.last_txn],
             });
         }
         // A pool that dipped below zero but recovered is shown with a positive
@@ -1547,16 +1613,20 @@ fn assemble_report(
                 message: format!(
                     "{symbol}: net shares dipped below zero before this date — the opening position was likely never entered, so the average cost of the shares still held is unknown"
                 ),
+                txns: crossing,
             });
         }
         // `WentNegative` is already reported above; the other two reasons each
         // get their own text (they used to share the cost-less lot's message).
+        // Both anchor to every offending lot still held — a symbol bought
+        // cost-lessly three times flags all three rows, not just the first.
         match &pool.taint {
             None | Some(TaintReason::WentNegative) => {}
             Some(TaintReason::CostlessLot) => warnings.push(HoldingsWarning {
                 symbol: symbol.clone(),
                 kind: WarningKind::MissingBasis,
                 message: format!("{symbol}: acquired without a cost annotation — basis unknown"),
+                txns: pool.costless_buy_txns.clone(),
             }),
             Some(TaintReason::UnconvertibleCost(commodity)) => warnings.push(HoldingsWarning {
                 symbol: symbol.clone(),
@@ -1564,6 +1634,7 @@ fn assemble_report(
                 message: format!(
                     "{symbol}: cost annotated in {commodity}, which has no price in {base} on that date — basis unknown"
                 ),
+                txns: pool.costless_buy_txns.clone(),
             }),
         }
 
@@ -1970,6 +2041,9 @@ mod tests {
                 symbol: "GLD".to_string(),
                 kind: WarningKind::MissingBasis,
                 message: report.warnings[0].message.clone(),
+                // Anchored to the cost-less buy itself (txn 1), not to the VTI
+                // purchase that happens to be the journal's latest transaction.
+                txns: vec![Tindex(1)],
             }]
         );
         assert!(report.warnings[0].message.contains("GLD"));

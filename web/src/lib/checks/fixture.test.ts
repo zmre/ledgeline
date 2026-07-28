@@ -1,7 +1,12 @@
-// WP-08/WP-10 DoD: the fixture journal's deliberate problem records (WP-09,
-// plus the WP-10 stock records) are all flagged with the correct severities.
-// Input is the RAW v1.52 API snapshot through the normalizer — the same path
-// production data takes.
+// WP-08 DoD: the fixture journal's deliberate problem records (WP-09) are all
+// flagged with the correct severities. Input is the RAW v1.52 API snapshot
+// through the normalizer — the same path production data takes.
+//
+// The WP-10 STOCK records of the same journal (the 2025-08-20 GLD gift, the
+// 2026-06-22 TSLA sell) are no longer computed here: the Rust holdings engine
+// reports them through /api/diagnostics, so they are asserted end to end in
+// checks/stock-diagnostics.test.ts, which feeds this same journal's captured
+// wire payload through the pipeline. See DRY-1.
 
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
@@ -43,28 +48,11 @@ describe("UNIT checks over fixture API snapshot", () => {
         expect(byRule("unbalanced")).toEqual([]);
     });
 
-    it("flags the 2025-08-20 GLD gift lot as missing basis (warning)", () => {
-        const missingBasis = byRule("stock-missing-basis");
-        expect(missingBasis).toHaveLength(1);
-        expect(missingBasis[0].severity).toBe("warning");
-        expect(missingBasis[0].message).toContain("GLD");
-        expect(dateOf(missingBasis[0])).toBe("2025-08-20");
-    });
-
-    it("flags GLD as unpriced (no P directive, no usable cost annotation)", () => {
-        const unpriced = byRule("stock-unpriced");
-        expect(unpriced).toHaveLength(1);
-        expect(unpriced[0].severity).toBe("warning");
-        expect(unpriced[0].message).toContain("GLD");
-        expect(dateOf(unpriced[0])).toBe("2025-08-20");
-    });
-
-    it("flags the 2026-06-22 never-bought TSLA sell as negative shares (warning)", () => {
-        const negative = byRule("stock-negative");
-        expect(negative).toHaveLength(1);
-        expect(negative[0].severity).toBe("warning");
-        expect(negative[0].message).toContain("TSLA");
-        expect(dateOf(negative[0])).toBe("2026-06-22");
+    it("computes no stock findings locally — the engine owns those now", () => {
+        // Asserted rather than assumed: a stray local reimplementation of any of
+        // the three would double every stock finding in the drawer, since the
+        // engine's copy arrives through CheckContext.diagnostics regardless.
+        expect(problems.filter((p) => p.rule.startsWith("stock-"))).toEqual([]);
     });
 
     it("flags exactly the transactions dated after today as future-dated (clock-independent)", () => {

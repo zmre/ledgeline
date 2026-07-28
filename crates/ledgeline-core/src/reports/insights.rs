@@ -31,7 +31,7 @@ use super::aggregate::{PostingFilter, account_totals};
 use super::income_statement::income_statement;
 use super::mixed_amount::MixedAmount;
 use super::net_worth::{NetWorthOpts, net_worth_priced};
-use super::periods::{Interval, add_days, add_months, bucket_end, bucket_key, days_between};
+use super::periods::{Interval, add_days, add_months, bucket_end, bucket_key, days_between, parts};
 use super::prices::{PriceDb, infer_market_prices};
 use crate::decimal::Dec;
 use crate::holdings::{HoldingsReport, HoldingsScope, PriceSource, ScopeMode, compute_holdings};
@@ -400,9 +400,12 @@ fn cost_of_living_total(
 }
 
 /// `(year, month)` parsed from an ISO date (0 for a malformed field).
+///
+/// Delegates to [`super::periods::parts`], the crate's one ISO field parser —
+/// this used to re-slice `0..4`/`5..7` itself (DRY-2). The fallback is
+/// unchanged: `parts` also yields 0 for a field it cannot parse.
 fn year_month(date: &str) -> (i64, i64) {
-    let year = date.get(0..4).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let month = date.get(5..7).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let (year, month, _) = parts(date);
     (year, month)
 }
 
@@ -439,11 +442,14 @@ fn split_mid(start: &str, end: &str) -> String {
     if is_month_start(start) && is_month_end(end) {
         let months = months_between(start, end);
         if months >= 2 && months.is_multiple_of(2) {
-            let (year, month) = year_month(start);
-            let index = year * 12 + (month - 1) + (i64::from(months / 2) - 1);
-            let mid_year = index.div_euclid(12);
-            let mid_month = index.rem_euclid(12) + 1;
-            if let Ok(mid) = bucket_end(&format!("{mid_year:04}-{mid_month:02}")) {
+            // The last day of the FINAL month of the first half: step `start`
+            // forward by `months / 2 − 1` calendar months, then take that
+            // month's end. This used to re-derive `add_months`' month-index
+            // arithmetic inline (DRY-2); `start` is a month start here (the
+            // guard above), so `add_months`' day clamp is a no-op and the two
+            // spellings agree exactly.
+            let last_month = add_months(start, i64::from(months / 2) - 1);
+            if let Ok(mid) = bucket_end(&bucket_key(&last_month, Interval::Monthly)) {
                 return mid;
             }
         }

@@ -40,7 +40,7 @@ use super::ReportError;
 use super::aggregate::roll_up;
 use super::mixed_amount::MixedAmount;
 use super::periods::{
-    Interval, bucket_end, bucket_key, bucket_start, compare_iso, last_n_buckets, next_bucket,
+    Interval, bucket_key, bucket_span, bucket_start, compare_iso, last_n_buckets, next_bucket,
 };
 use crate::model::{PeriodExpr, PeriodicTransaction, Transaction};
 use std::cmp::Ordering;
@@ -240,16 +240,7 @@ pub fn budget_report(
     // replace one `account_totals` re-scan per bucket (PERF-5).
     let ranges: Vec<(String, String)> = buckets
         .iter()
-        .map(|key| {
-            let start = bucket_start(key)?;
-            let bucket_end_date = bucket_end(key)?;
-            let to = if compare_iso(opts.end, &bucket_end_date) == Ordering::Less {
-                opts.end.to_string()
-            } else {
-                bucket_end_date
-            };
-            Ok((start, to))
-        })
+        .map(|key| bucket_span(key, opts.end))
         .collect::<Result<_, ReportError>>()?;
 
     // ONE pass over every posting, summing per FULL account name into its own

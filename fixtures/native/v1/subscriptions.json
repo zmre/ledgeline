@@ -1,0 +1,1 @@
+{"asOf":"2026-07-08","lookbackStart":"2024-07-08","monthly":[{"payee":"Oakview Properties","cadence":"monthly","typicalAmount":{"mantissa":"187500","places":2},"annualizedCost":{"mantissa":"22500","places":0},"occurrences":24,"firstSeen":"2024-08-01","lastSeen":"2026-07-01","nextExpected":"2026-08-01","accounts":["expenses:housing:rent"],"manual":false}],"annual":[]}

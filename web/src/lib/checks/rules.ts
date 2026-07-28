@@ -5,9 +5,7 @@
 import {declaredTypes, resolveAccountType, type AccountType} from "../domain/accountTypes";
 import {add, isZero, mul, neg, type Dec} from "../domain/money";
 import type {Amount, Transaction} from "../domain/types";
-import {buildPools, latestCostPrices, latestDirectivePrice, type SymbolPool} from "../holdings/engine";
 import {today} from "../reports/periods";
-import {buildPriceDb, type PriceDb} from "../reports/prices";
 import type {CheckContext, CheckRule, Problem} from "./engine";
 
 /** Plain decimal rendering for problem messages (no locale styling — messages are diagnostics). */
@@ -153,68 +151,20 @@ const futureDate: CheckRule = {
 };
 
 /**
- * Journal-wide (unscoped) average-cost pools at today, sorted by symbol for
- * deterministic report order (WP-10 stock rules).
+ * All rules, in report order. Adding a rule = one object here.
  *
- * Every account is in scope, but the declared types still matter: `buildPools`
- * drops share legs posted to equity/revenue/expense, which are the funding side
- * of a movement rather than a place shares are held. Passing `ctx.decls` is what
- * keeps these rules agreeing with the Holdings page (FE-2).
+ * The three WP-10 stock rules (`stock-missing-basis`, `stock-negative`,
+ * `stock-unpriced`) are NOT here: they are computed by the Rust holdings engine
+ * and arrive through `CheckContext.diagnostics` off `/api/diagnostics`, exactly
+ * like `unbalanced` and `assertion`. They used to run here over a second,
+ * TypeScript copy of the average-cost pools, and the two copies had drifted far
+ * enough to give opposite answers for the same journal — a 2-for-1 split read as
+ * a cost-less acquisition here while the Holdings page reported its real basis
+ * (DRY-1). One engine now answers both.
+ *
+ * The visible consequence: against a plain `hledger-web` backend, which has no
+ * `/api/diagnostics` route, there are no stock findings at all. That is the same
+ * trade the engine-computed `unbalanced` diagnostics already make, and it is the
+ * right one — a wrong finding is worse than no finding.
  */
-function stockPools(txns: Transaction[], ctx: CheckContext): {db: PriceDb; base: string; asOf: string; pools: SymbolPool[]} {
-    const db = buildPriceDb(ctx.prices);
-    const base = db.baseCommodity() ?? "$";
-    const asOf = today();
-    const declared = declaredTypes(ctx.decls ?? []);
-    const pools = [...buildPools(txns, db, base, asOf, () => true, declared).values()].sort((a, b) => (a.symbol < b.symbol ? -1 : 1));
-    return {db, base, asOf, pools};
-}
-
-const stockMissingBasis: CheckRule = {
-    id: "stock-missing-basis",
-    run(txns: Transaction[], ctx: CheckContext): Problem[] {
-        return stockPools(txns, ctx)
-            .pools.filter((pool) => pool.shares.m > 0n)
-            .flatMap((pool) =>
-                pool.costlessBuyTxns.map((txnIndex) => ({
-                    txnIndex,
-                    rule: "stock-missing-basis",
-                    severity: "warning" as const,
-                    message: `${pool.symbol} lot acquired without a cost annotation — cost basis is unknown`,
-                }))
-            );
-    },
-};
-
-const stockNegative: CheckRule = {
-    id: "stock-negative",
-    run(txns: Transaction[], ctx: CheckContext): Problem[] {
-        return stockPools(txns, ctx)
-            .pools.filter((pool) => pool.shares.m < 0n)
-            .map((pool) => ({
-                txnIndex: pool.negativeCrossTxn ?? pool.lastTxnIndex,
-                rule: "stock-negative",
-                severity: "warning" as const,
-                message: `${pool.symbol} net shares are negative (${decToString(pool.shares)}) — the opening position was likely never entered`,
-            }));
-    },
-};
-
-const stockUnpriced: CheckRule = {
-    id: "stock-unpriced",
-    run(txns: Transaction[], ctx: CheckContext): Problem[] {
-        const {db, base, asOf, pools} = stockPools(txns, ctx);
-        const costPrices = latestCostPrices(txns, db, base, asOf);
-        return pools
-            .filter((pool) => pool.shares.m > 0n && latestDirectivePrice(ctx.prices, pool.symbol, base, asOf) === null && !costPrices.has(pool.symbol))
-            .map((pool) => ({
-                txnIndex: pool.lastTxnIndex,
-                rule: "stock-unpriced",
-                severity: "warning" as const,
-                message: `${pool.symbol} has no P price directive and no usable cost annotation — market value is unknown`,
-            }));
-    },
-};
-
-/** All rules, in report order. Adding a rule = one object here. */
-export const ALL_RULES: CheckRule[] = [unbalanced, pending, uncategorized, missingDescription, futureDate, stockMissingBasis, stockNegative, stockUnpriced];
+export const ALL_RULES: CheckRule[] = [unbalanced, pending, uncategorized, missingDescription, futureDate];

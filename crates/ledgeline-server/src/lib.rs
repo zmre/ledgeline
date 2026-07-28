@@ -88,9 +88,16 @@ pub(crate) struct Snapshot {
     pub(crate) commodities: Bytes,
     pub(crate) accounts: Bytes,
     /// The `{"diagnostics": [...]}` payload: every unbalanced transaction and
-    /// failed balance assertion in the journal, each shaped like the SPA's
-    /// `Problem`. Precomputed with the rest because both checks are a whole-
-    /// journal pass, and republished on every hot-swap so it never goes stale.
+    /// failed balance assertion in the journal, plus the three stock findings
+    /// (unknown cost basis, net-negative shares, unpriced position), each shaped
+    /// like the SPA's `Problem`. Precomputed with the rest because all of them
+    /// are whole-journal passes, and republished on every hot-swap so it never
+    /// goes stale.
+    ///
+    /// The stock half used to be recomputed in the browser from a second, drifted
+    /// copy of the holdings engine (DRY-1); it is served from here so the
+    /// Problems drawer and the Holdings page cannot disagree about the same
+    /// journal.
     pub(crate) diagnostics: Bytes,
 }
 
@@ -115,35 +122,44 @@ impl Snapshot {
     ///
     /// The seven payloads are independent read-only passes over the same journal,
     /// and `/transactions` alone is roughly half the work (563 ms of the 1,048 ms
-    /// at 200k). Building it on one extra thread while the other six run here
-    /// overlaps the two halves almost perfectly, which is what keeps this — the
-    /// bulk of app startup, of every live-reload, and of every edit's republish —
-    /// near the cost of its single most expensive payload.
+    /// at 200k). Building it on one extra thread while the rest run here overlaps
+    /// the two halves almost perfectly, which is what keeps this — the bulk of
+    /// app startup, of every live-reload, and of every edit's republish — near
+    /// the cost of its single most expensive payload.
+    ///
+    /// `/api/diagnostics` takes a thread of its own for the same reason. It grew
+    /// a holdings pass when the stock findings moved out of the browser (DRY-1):
+    /// 131 ms at 200k on top of the balance and assertion checks' 139 ms, which
+    /// is enough to make the remainder — about 485 ms — overtake `/transactions`
+    /// and become the critical path. On its own thread the three groups are
+    /// 563 / 346 / 270 ms and the build still costs what its largest payload does.
     fn from_journal(journal: Arc<Journal>) -> Self {
-        let (transactions, rest) = std::thread::scope(|scope| {
+        let (transactions, diagnostics, rest) = std::thread::scope(|scope| {
             let transactions = scope.spawn(|| json_bytes(&wire::journal_to_transactions(&journal)));
+            let diagnostics = scope.spawn(|| {
+                json_bytes(&DiagnosticsBody {
+                    diagnostics: &wire::journal_to_all_diagnostics(&journal),
+                })
+            });
             let rest = (
                 json_bytes(&wire::version_value()),
                 json_bytes(&wire::journal_to_accountnames(&journal)),
                 json_bytes(&wire::journal_to_prices(&journal)),
                 json_bytes(&wire::journal_to_commodities(&journal)),
                 json_bytes(&wire::journal_to_accounts(&journal)),
-                json_bytes(&DiagnosticsBody {
-                    diagnostics: &wire::journal_to_diagnostics(&journal),
-                }),
             );
-            // The only way this join fails is a panic in the serializer, which
-            // would have aborted the request anyway; resume it on this thread so
+            // The only way a join fails is a panic in the serializer, which would
+            // have aborted the request anyway; resume it on this thread so
             // `CatchPanicLayer` still turns it into a 500 rather than a snapshot
-            // silently missing its largest payload.
-            (
-                transactions.join().unwrap_or_else(|payload| {
-                    std::panic::resume_unwind(payload);
-                }),
-                rest,
-            )
+            // silently missing a payload.
+            let joined = |handle: std::thread::ScopedJoinHandle<'_, Bytes>| {
+                handle
+                    .join()
+                    .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+            };
+            (joined(transactions), joined(diagnostics), rest)
         });
-        let (version, accountnames, prices, commodities, accounts, diagnostics) = rest;
+        let (version, accountnames, prices, commodities, accounts) = rest;
         Self {
             etag: next_etag(),
             version,

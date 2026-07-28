@@ -30,7 +30,7 @@
 use super::ReportError;
 use super::account_types::{AccountType, account_decls, declared_types, resolve_account_type};
 use super::insights::base_commodity;
-use super::periods::{add_months, days_between};
+use super::periods::{add_months, days_between, parts};
 use crate::decimal::Dec;
 use crate::model::{Commodity, Journal, Transaction};
 use std::collections::BTreeMap;
@@ -306,13 +306,18 @@ fn cluster_by_amount(mut charges: Vec<Charge>, tolerance_pct: f64) -> Vec<Vec<Ch
 }
 
 /// Day of the month (1–31) of an ISO date.
+///
+/// Delegates to [`super::periods::parts`], the crate's one ISO field parser —
+/// this used to re-slice `8..10` itself (DRY-2). The fallback is unchanged:
+/// `parts` also yields 0 for a field it cannot parse.
 fn day_of_month(date: &str) -> i64 {
-    date.get(8..10).and_then(|d| d.parse().ok()).unwrap_or(0)
+    parts(date).2
 }
 
-/// Month (1–12) of an ISO date.
+/// Month (1–12) of an ISO date. Delegates to [`super::periods::parts`]; see
+/// [`day_of_month`].
 fn month_of(date: &str) -> i64 {
-    date.get(5..7).and_then(|m| m.parse().ok()).unwrap_or(0)
+    parts(date).1
 }
 
 /// Distance between two days-of-month, wrapping around the end of the month so

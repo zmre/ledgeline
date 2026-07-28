@@ -5,7 +5,11 @@ import {budgetSpan, buildReportQuery, reports, sameReportQuery, type ReportQuery
 /** A minimal engine response for a sectioned (bs/is) report. */
 const sectioned = (title: string) => ({
     sections: [{title, rows: [], total: {}}],
-    total: {},
+    // `grandTotal`, not `total` — the engine's key (reports_api.rs
+    // WireSectionedReport::grand_total). This said `total` until decodeMixed
+    // was made strict (DRY-3): the misspelling decoded to an empty Map and the
+    // stub quietly stood for a report with a zero grand total.
+    grandTotal: {},
 });
 
 /** Stub the network so `reports.load` decodes a real payload without an engine. */

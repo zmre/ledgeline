@@ -207,8 +207,18 @@ export function normalizeTransactions(raw: unknown): Transaction[] {
     return list.map((txn) => toTransaction(txn));
 }
 
-/** The only `rule` values the engine emits. Adding one = a single entry here. */
-const DIAGNOSTIC_RULES: ReadonlySet<string> = new Set(["unbalanced", "assertion"]);
+/**
+ * The only `rule` values the engine emits. Adding one = a single entry here.
+ *
+ * Mirrors `DIAGNOSTIC_RULES` in `crates/ledgeline-core/src/wire.rs`; a Rust test
+ * (`diagnostic_rules_match_the_spa_allow_list`) reads this very line and fails
+ * if the two drift, because a rule the engine emits and this set omits is
+ * silently dropped — a finding that vanishes with no error anywhere.
+ *
+ * The three `stock-*` rules arrived when the SPA stopped computing them from its
+ * own copy of the holdings engine (DRY-1) and started reading the engine's.
+ */
+const DIAGNOSTIC_RULES: ReadonlySet<string> = new Set(["unbalanced", "assertion", "stock-missing-basis", "stock-negative", "stock-unpriced"]);
 /** Valid `Severity` values (the domain enum); anything else is junk we refuse to hand the UI. */
 const DIAGNOSTIC_SEVERITIES: ReadonlySet<string> = new Set<Severity>(["error", "warning", "info"]);
 

@@ -42,14 +42,21 @@ fn journal(text: &str) -> Journal {
     parse_journal(text, "/tmp/diagnostics.journal").expect("journal parses")
 }
 
-/// The `diagnostics` array of the wire payload for `text`.
+/// The HLEDGER-LEVEL diagnostics for `text`, serialized.
+///
+/// Deliberately `journal_to_diagnostics` and not the whole
+/// `/api/diagnostics` payload: this suite is about PARSE-1 and PARSE-2, and
+/// most of its journals below post bare commodity amounts (`a 10 AAA`) that the
+/// stock rules correctly report as cost-less, unpriced holdings. Mixing the two
+/// halves in here would drown the signal. The stock half has its own suite in
+/// `stock_diagnostics.rs`, which also pins how the two combine.
 fn diagnostics(text: &str) -> Vec<Value> {
-    let value = wire::journal_to_diagnostics_value(&journal(text)).expect("payload serializes");
-    value
-        .get("diagnostics")
-        .and_then(Value::as_array)
+    let found = wire::journal_to_diagnostics(&journal(text));
+    serde_json::to_value(found)
+        .expect("payload serializes")
+        .as_array()
         .cloned()
-        .unwrap_or_else(|| panic!("payload has a `diagnostics` array: {value}"))
+        .expect("a diagnostics array")
 }
 
 /// The one diagnostic `text` produces, or a panic naming what was found.

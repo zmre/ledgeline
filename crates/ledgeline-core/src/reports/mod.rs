@@ -59,8 +59,9 @@ pub use insights::{
 pub use mixed_amount::MixedAmount;
 pub use net_worth::{NetWorthOpts, net_worth};
 pub use periods::{
-    Interval, add_days, bucket_end, bucket_key, bucket_label, bucket_start, compare_iso,
-    days_between, last_n_buckets, next_bucket,
+    Interval, add_days, add_months, bucket_as_of, bucket_end, bucket_key, bucket_label,
+    bucket_span, bucket_start, compare_iso, days_between, iso_from_days, last_n_buckets,
+    next_bucket,
 };
 pub use prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
 pub use subscriptions::{

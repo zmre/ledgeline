@@ -29,6 +29,7 @@ use ledgeline_core::holdings::{
     compute_holdings, holdings_series, prices_any_held,
 };
 use ledgeline_core::model::{Commodity, Journal};
+use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
     BudgetCell, BudgetOpts, BudgetReport, Cadence, ChangeKind, ChangeRow, CostOfLiving,
@@ -50,9 +51,25 @@ const DEFAULT_COUNT: usize = 12;
 // ===========================================================================
 // Wire representation of the report result types
 // ===========================================================================
+//
+// EVERY `Wire*` struct below carries `#[serde(rename_all = "camelCase")]`,
+// including the ones whose fields are all single-word today and for which the
+// attribute is therefore a no-op (DRY-3). It is deliberately unconditional: the
+// SPA mirror in `web/src/lib/api/nativeDecode.ts` is hand-written and spells
+// every key camelCase, so a struct without the attribute is a trap that springs
+// the first time somebody adds a multi-word field — serde would emit
+// `first_seen`, the decoder would read `firstSeen`, and (for a money field) the
+// SPA would render `$0.00` with no error on either side. Adding it everywhere
+// costs nothing and removes the trap rather than documenting it.
+//
+// The `fixtures/native/v1/` goldens (`just snapshot-native`) are the other half
+// of that guard: they pin the actual bytes, and are replayed by
+// `tests/native_wire_golden.rs` and decoded by `nativeDecode.test.ts`, so a
+// renamed field fails on both sides instead of silently zeroing a report.
 
 /// An exact decimal on the wire: `mantissa / 10^places`.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireDec {
     /// STRING-encoded significand (see the module doc): computed values can
     /// exceed the JS safe-integer range, so a JSON number would lose precision.
@@ -81,6 +98,7 @@ fn wire_mixed(ma: &MixedAmount) -> WireMixed {
 
 /// One row of a sectioned report.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireReportRow {
     account: String,
     depth: usize,
@@ -90,6 +108,7 @@ struct WireReportRow {
 
 /// A titled group of rows plus its subtree total.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireSection {
     title: String,
     rows: Vec<WireReportRow>,
@@ -139,6 +158,7 @@ fn wire_sectioned(report: &SectionedReport) -> WireSectionedReport {
 
 /// One row of a period report: one `MixedAmount` per bucket.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WirePeriodRow {
     account: String,
     depth: usize,
@@ -147,12 +167,14 @@ struct WirePeriodRow {
 
 /// Extra result info (currently only unpriced commodities in net worth).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireReportMeta {
     unpriced: Vec<String>,
 }
 
 /// Cash flow / net worth: one column per bucket, oldest → newest.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct WirePeriodReport {
     buckets: Vec<String>,
     rows: Vec<WirePeriodRow>,
@@ -184,6 +206,7 @@ fn wire_period(report: &PeriodReport) -> WirePeriodReport {
 /// goal (e.g. `<unbudgeted>`); an empty object `{}` is a budgeted account with no
 /// goal in that bucket.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireBudgetCell {
     actual: WireMixed,
     goal: Option<WireMixed>,
@@ -198,6 +221,7 @@ fn wire_budget_cell(cell: &BudgetCell) -> WireBudgetCell {
 
 /// One budget row: an account and its per-bucket cells.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireBudgetRow {
     account: String,
     depth: usize,
@@ -206,6 +230,7 @@ struct WireBudgetRow {
 
 /// A budget report: bucket keys, rows, and a grand-total row of cells.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct WireBudgetReport {
     buckets: Vec<String>,
     rows: Vec<WireBudgetRow>,
@@ -247,6 +272,7 @@ struct WireInsightsPeriod {
 
 /// A current/previous metric with its exact change and a base-commodity percent.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireMetricDelta {
     current: WireMixed,
     previous: WireMixed,
@@ -299,6 +325,7 @@ fn wire_perf_point(point: &PerfPoint) -> WirePerfPoint {
 
 /// A leaf-account change row (Boxes 7 & 9). `kind` is `"changed" | "new" | "ended"`.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireChangeRow {
     account: String,
     current: WireDec,
@@ -347,6 +374,7 @@ fn wire_mover(row: &MoverRow) -> WireMoverRow {
 
 /// A top-transaction row (Box 10).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireTopTxn {
     index: u32,
     date: String,
@@ -386,6 +414,7 @@ pub(crate) struct WireInsightsReport {
 
 /// Investment performance for both periods.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireInvestmentPerf {
     current: WirePerfPoint,
     previous: WirePerfPoint,
@@ -496,6 +525,7 @@ fn wire_opt_dec(dec: Option<Dec>) -> Option<WireDec> {
 /// A holding's resolved price → `{qty, date, source}` (`source` kebab-free:
 /// `"directive"` | `"cost"`).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireHoldingPrice {
     qty: WireDec,
     date: String,
@@ -544,6 +574,7 @@ fn wire_holding(holding: &Holding) -> WireHolding {
 /// A scope-local warning → `{symbol, kind, message}` (`kind` kebab-case, matching
 /// the TS union: `"missing-basis"` | `"negative-shares"` | `"unpriced"`).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireWarning {
     symbol: String,
     kind: &'static str,
@@ -655,24 +686,10 @@ fn today_utc() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| (elapsed.as_secs() / 86_400) as i64)
         .unwrap_or(0);
-    let (year, month, day) = civil_from_days(days);
-    format!("{year:04}-{month:02}-{day:02}")
-}
-
-/// Howard Hinnant's `civil_from_days` (day 0 = 1970-01-01) — a dependency-free
-/// proleptic-Gregorian conversion, used solely for the "today" default.
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe.div_euclid(1_460) + doe.div_euclid(36_524) - doe.div_euclid(146_096))
-        .div_euclid(365);
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe.div_euclid(4) - yoe.div_euclid(100));
-    let mp = (5 * doy + 2).div_euclid(153);
-    let day = doy - (153 * mp + 2).div_euclid(5) + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    (year + i64::from(month <= 2), month, day)
+    // The calendar itself lives in `reports::periods` — this file used to carry a
+    // verbatim copy of Howard Hinnant's `civil_from_days` (DRY-2). The clock read
+    // stays here, because `reports` is deliberately clock-free.
+    periods::iso_from_days(days)
 }
 
 /// Parse a report interval, defaulting to monthly when absent. Returns a `400`
@@ -997,13 +1014,14 @@ fn parse_csv(raw: Option<&str>, defaults: &[&str]) -> Vec<String> {
 /// The default comparison-span start when the request omits `start`: the first
 /// day of the month 24 months before `end` (a trailing two-year "Year-over-
 /// year" window). The SPA normally sends explicit month-aligned dates.
+///
+/// This was a third copy of the month-index arithmetic, with its OWN malformed-
+/// date fallback (`1970`/`1`, where `periods::parts` falls back to `0`). The
+/// fallback is unreachable — `end` has already been through `parse_date` →
+/// `normalize_iso_date`, so a malformed value is a 400 and the default is
+/// `today_utc()` — so unforking it costs nothing and removes the divergence.
 fn default_insights_start(end: &str) -> String {
-    let year: i64 = end.get(0..4).and_then(|s| s.parse().ok()).unwrap_or(1970);
-    let month: i64 = end.get(5..7).and_then(|s| s.parse().ok()).unwrap_or(1);
-    let index = year * 12 + (month - 1) - 24;
-    let start_year = index.div_euclid(12);
-    let start_month = index.rem_euclid(12) + 1;
-    format!("{start_year:04}-{start_month:02}-01")
+    format!("{}-01", &periods::add_months(end, -24)[..7])
 }
 
 /// An HTTP error: a status plus a human-readable message.
@@ -1210,7 +1228,12 @@ pub(crate) async fn incomestatement(
 ) -> Result<Json<WireSectionedReport>, ApiError> {
     let snapshot = state.snapshot();
     let today = today_utc();
-    let from = parse_date("from", query.from, || format!("{}-01-01", &today[..4]))?;
+    // `bucket_start(bucket_key(today, Yearly))`, not `&today[..4]`: a raw byte
+    // slice of a date string is the shape DRY-2 exists to stop, and it would
+    // panic rather than degrade on a short input.
+    let from = parse_date("from", query.from, || {
+        format!("{}-01-01", periods::bucket_key(&today, Interval::Yearly))
+    })?;
     let to = parse_date("to", query.to, || today)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
     compute(move || {

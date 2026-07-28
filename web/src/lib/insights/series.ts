@@ -1,15 +1,22 @@
 // Insights chart data (WP-05). Pure TS: no Svelte/DOM imports.
 //
 // All accumulation is exact (`Dec`); `toNumber()` only at the chart display
-// boundary (PieDatum.value / LineSeries point values). `bucketKey` is a local
-// pure-string-math implementation (WP-06's lib/reports/periods.ts owns the
-// canonical one; reconcile when it lands — same keys: daily "YYYY-MM-DD",
-// weekly = ISO date of the week's Monday, monthly "YYYY-MM").
+// boundary (PieDatum.value / LineSeries point values).
+//
+// Bucket math comes from `lib/reports/periods.ts`, the canonical date engine.
+// This module used to carry its own `daysFromCivil`/`civilFromDays`/`bucketKey`
+// against a note promising to "reconcile when WP-06 lands"; it landed, and the
+// two had drifted — the local weekly key was the ISO date of the week's Monday
+// ("2026-07-06") where the canonical one is the ISO-8601 week ("2026-W28").
+// The canonical form won (DRY-2): it is unambiguous on a chart axis, where a
+// Monday date is indistinguishable from a daily bucket, and it keeps this file
+// agreeing with the Rust engine's `reports::periods`.
 
 import {accountMatches, categorize, clampAccount, type RootCategory} from "$lib/domain/accounts";
 import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
 import {add, cmp, dec, formatAmount, neg, sub, toNumber, type Dec} from "$lib/domain/money";
-import type {Amount, AmountStyle, ISODate, Transaction} from "$lib/domain/types";
+import type {Amount, AmountStyle, Transaction} from "$lib/domain/types";
+import {bucketKey, nextBucket, type Interval as PeriodsInterval} from "$lib/reports/periods";
 
 export interface PieDatum {
     account: string;
@@ -24,7 +31,14 @@ export interface LineSeries {
     points: {bucket: string; value: number}[];
 }
 
-export type Interval = "daily" | "weekly" | "monthly";
+/**
+ * The intervals the journal chart offers: a deliberate NARROWING of the
+ * canonical `periods.Interval` (no quarterly/yearly), so picking one that
+ * `ChartWidget`'s selector does not offer is a type error. Derived via `Extract`
+ * rather than restated, so renaming an interval upstream breaks this loudly
+ * instead of silently re-forking the pair.
+ */
+export type Interval = Extract<PeriodsInterval, "daily" | "weekly" | "monthly">;
 
 /** Label used for the folded tail of small accounts (parens: not a legal hledger segment clash risk). */
 export const OTHER = "(other)";
@@ -32,79 +46,6 @@ export const OTHER = "(other)";
 const ZERO: Dec = dec(0n, 0);
 
 const DEFAULT_STYLE: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: null};
-
-// ---------- date bucketing (pure integer/string math; never `new Date(...)`) ----------
-
-/** Days since civil 1970-01-01 (Howard Hinnant's days_from_civil, integer math). */
-function daysFromCivil(y: number, m: number, d: number): number {
-    y -= m <= 2 ? 1 : 0;
-    const era = Math.floor(y / 400);
-    const yoe = y - era * 400;
-    const doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1;
-    const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
-    return era * 146097 + doe - 719468;
-}
-
-/** Inverse of daysFromCivil. */
-function civilFromDays(z: number): {y: number; m: number; d: number} {
-    z += 719468;
-    const era = Math.floor(z / 146097);
-    const doe = z - era * 146097;
-    const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
-    const y = yoe + era * 400;
-    const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
-    const mp = Math.floor((5 * doy + 2) / 153);
-    const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
-    const m = mp + (mp < 10 ? 3 : -9);
-    return {y: y + (m <= 2 ? 1 : 0), m, d};
-}
-
-function pad(n: number, width: number): string {
-    return String(n).padStart(width, "0");
-}
-
-function isoFromDays(days: number): ISODate {
-    const {y, m, d} = civilFromDays(days);
-    return `${pad(y, 4)}-${pad(m, 2)}-${pad(d, 2)}`;
-}
-
-function daysFromIso(date: ISODate): number {
-    return daysFromCivil(Number(date.slice(0, 4)), Number(date.slice(5, 7)), Number(date.slice(8, 10)));
-}
-
-/**
- * Bucket an ISO date: daily → the date itself; weekly → the ISO date of that
- * week's Monday; monthly → "YYYY-MM". Keys compare/sort lexically within an interval.
- */
-export function bucketKey(date: ISODate, interval: Interval): string {
-    switch (interval) {
-        case "daily":
-            return date;
-        case "weekly": {
-            const days = daysFromIso(date);
-            // 1970-01-01 was a Thursday; make Monday offset 0.
-            const monday = days - ((((days + 3) % 7) + 7) % 7);
-            return isoFromDays(monday);
-        }
-        case "monthly":
-            return date.slice(0, 7);
-    }
-}
-
-/** The bucket immediately after `bucket` (used to zero-fill gaps in line series). */
-function nextBucket(bucket: string, interval: Interval): string {
-    switch (interval) {
-        case "daily":
-            return isoFromDays(daysFromIso(bucket) + 1);
-        case "weekly":
-            return isoFromDays(daysFromIso(bucket) + 7);
-        case "monthly": {
-            const y = Number(bucket.slice(0, 4));
-            const m = Number(bucket.slice(5, 7));
-            return m === 12 ? `${pad(y + 1, 4)}-01` : `${pad(y, 4)}-${pad(m + 1, 2)}`;
-        }
-    }
-}
 
 // ---------- shared accumulation helpers ----------
 

@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {bucketEnd, bucketKey, bucketLabel, bucketStart, compareISO, lastNBuckets, today} from "./periods";
+import {bucketEnd, bucketKey, bucketLabel, bucketStart, compareISO, lastNBuckets, nextBucket, today} from "./periods";
 
 /** The zone vite.config.ts pins the suite to; restored after the `today()` cases retune it. */
 const PINNED_TZ = process.env.TZ;
@@ -105,6 +105,42 @@ describe("UNIT reports/periods", () => {
 
         it("returns an empty list for n ≤ 0", () => {
             expect(lastNBuckets("2026-07-08", "monthly", 0)).toEqual([]);
+        });
+    });
+
+    describe("nextBucket", () => {
+        it("steps each interval forward by one bucket", () => {
+            expect(nextBucket("2026-07-08", "daily")).toBe("2026-07-09");
+            expect(nextBucket("2026-07", "monthly")).toBe("2026-08");
+            expect(nextBucket("2026-Q3", "quarterly")).toBe("2026-Q4");
+            expect(nextBucket("2026", "yearly")).toBe("2027");
+            expect(nextBucket("2026-W28", "weekly")).toBe("2026-W29");
+        });
+
+        it("rolls over year, month and week-year boundaries", () => {
+            expect(nextBucket("2026-12", "monthly")).toBe("2027-01");
+            expect(nextBucket("2026-Q4", "quarterly")).toBe("2027-Q1");
+            expect(nextBucket("2024-02-28", "daily")).toBe("2024-02-29"); // leap day
+            expect(nextBucket("2023-02-28", "daily")).toBe("2023-03-01");
+            expect(nextBucket("2024-12", "monthly")).toBe("2025-01");
+            // 2020 is a 53-week ISO year; W53 is real and precedes 2021-W01.
+            expect(nextBucket("2020-W52", "weekly")).toBe("2020-W53");
+            expect(nextBucket("2020-W53", "weekly")).toBe("2021-W01");
+            expect(nextBucket("2025-W52", "weekly")).toBe("2026-W01");
+        });
+
+        it("is the inverse of lastNBuckets' backward walk", () => {
+            for (const interval of ["daily", "weekly", "monthly", "quarterly", "yearly"] as const) {
+                const keys = lastNBuckets("2026-03-15", interval, 8);
+                for (let i = 0; i + 1 < keys.length; i += 1) {
+                    expect(nextBucket(keys[i], interval)).toBe(keys[i + 1]);
+                }
+            }
+        });
+
+        it("throws RangeError for an unrecognized key", () => {
+            expect(() => nextBucket("garbage", "monthly")).toThrow(RangeError);
+            expect(() => nextBucket("2026-Q5", "quarterly")).toThrow(RangeError);
         });
     });
 

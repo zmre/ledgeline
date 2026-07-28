@@ -6,7 +6,7 @@
 //! but not `Eq`).
 
 use crate::decimal::Dec;
-use crate::model::Commodity;
+use crate::model::{Commodity, Tindex};
 use std::collections::BTreeSet;
 
 /// Include vs. exclude semantics for a [`HoldingsScope`].
@@ -128,8 +128,27 @@ pub struct HoldingsWarning {
     pub symbol: String,
     /// What went wrong.
     pub kind: WarningKind,
-    /// Human-readable detail (matches the TS message strings).
+    /// Human-readable detail.
     pub message: String,
+    /// The transactions this warning is anchored to — 1-based [`Tindex`]es, in
+    /// journal order, deduped. Never empty: a pool only exists because some
+    /// transaction touched it.
+    ///
+    /// This is what lets a consumer flag the offending ROW rather than only
+    /// naming the symbol, which is why `/api/diagnostics` can carry these
+    /// warnings in the SPA's `Problem` shape (`{txnIndex, rule, severity,
+    /// message}`) alongside the unbalanced/assertion findings.
+    ///
+    /// One warning can name several transactions:
+    /// [`WarningKind::MissingBasis`] anchors to EVERY acquisition lot of the
+    /// currently-held position whose cost was unusable, so a symbol bought
+    /// cost-lessly three times flags three rows. The other two kinds anchor to
+    /// exactly one: the transaction that took the running total negative
+    /// ([`WarningKind::NegativeShares`], falling back to the latest touch when
+    /// the pool opened short), and the latest transaction touching the symbol
+    /// ([`WarningKind::Unpriced`] — pricing is a property of the position, not
+    /// of any one lot).
+    pub txns: Vec<Tindex>,
 }
 
 /// Portfolio-level totals. `basis`/`gain`/`gain_pct` are PARTIAL: they sum over

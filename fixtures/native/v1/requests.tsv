@@ -1,0 +1,22 @@
+# The pinned native-wire request set (DRY-3). ONE source of truth, read by all
+# three consumers so a fixture, a Rust assertion and a TS assertion can never
+# drift apart:
+#   - `just snapshot-native`  regenerates <name>.json from a live engine
+#   - crates/ledgeline-server/tests/native_wire_golden.rs  replays each URI
+#   - web/src/lib/api/nativeDecode.test.ts  decodes each <name>.json
+#
+# Format: <name>\t<uri>. Blank lines and `#` comments are ignored.
+#
+# EVERY date is pinned. fixtures/sample.journal ends 2026-07-04, so 2026-07-08
+# is "today" for it — the same as-of the e2e clock and nativeLive.integration.
+# test.ts already pin. Nothing here may fall back to the server's system clock,
+# or the committed bytes would change tomorrow.
+balancesheet	/api/reports/balancesheet?asOf=2026-07-08&depth=2
+incomestatement	/api/reports/incomestatement?from=2026-01-01&to=2026-07-08&depth=2
+cashflow	/api/reports/cashflow?end=2026-07-08&interval=monthly&count=3&depth=2
+networth	/api/reports/networth?end=2026-07-08&interval=monthly&count=3&depth=2
+budget	/api/budget?end=2026-07-08&interval=monthly&count=3&depth=2
+insights	/api/insights?start=2025-07-01&end=2026-07-08
+subscriptions	/api/subscriptions?asOf=2026-07-08
+holdings	/api/holdings?asOf=2026-07-08
+holdings-series	/api/holdings/series?asOf=2026-07-08&interval=monthly&count=3

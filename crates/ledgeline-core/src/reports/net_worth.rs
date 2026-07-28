@@ -23,11 +23,10 @@ use super::ReportError;
 use super::account_types::{AccountType, is_account_type};
 use super::aggregate::{at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
-use super::periods::{Interval, bucket_end, compare_iso, last_n_buckets};
+use super::periods::{Interval, bucket_as_of, last_n_buckets};
 use super::prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
 use super::types::{PeriodReport, PeriodRow, ReportMeta};
 use crate::model::{Commodity, PriceDirective, Transaction};
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 struct BucketData {
@@ -153,14 +152,7 @@ pub(super) fn net_worth_priced(
     // search and the balances be carried forward as a running prefix sum.
     let as_ofs: Vec<String> = buckets
         .iter()
-        .map(|key| {
-            let end_of_bucket = bucket_end(key)?;
-            Ok(if compare_iso(end, &end_of_bucket) == Ordering::Less {
-                end.to_string()
-            } else {
-                end_of_bucket
-            })
-        })
+        .map(|key| bucket_as_of(key, end))
         .collect::<Result<_, ReportError>>()?;
 
     // ONE pass over every posting, instead of one `account_totals` re-scan per

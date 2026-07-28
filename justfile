@@ -47,6 +47,43 @@ golden:
 snapshot-api:
     ./scripts/snapshot-api.sh
 
+# The native /api/* wire has no schema codegen: 28 Rust `Wire*` structs are
+# mirrored by hand in web/src/lib/api/nativeDecode.ts. Renaming a Rust field
+# used to compile, typecheck and pass every test on both sides while the SPA
+# quietly rendered $0.00 (CLEANUP.md DRY-3). These committed bodies close that:
+# native_wire_golden.rs replays each URI and compares BYTES, and
+# nativeDecode.test.ts decodes these same files, so a rename fails on BOTH sides.
+# Regenerate ONLY when the wire contract changed on purpose, and review the diff.
+# Snapshot raw native /api/* JSON responses into fixtures/native/v1/
+snapshot-native port="5078":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # A pinned token, not a random one: the snapshot must be reproducible, and
+    # this server only ever sees fixtures/sample.journal on loopback.
+    export LEDGELINE_TOKEN=ledgeline-native-fixture-token
+    out=fixtures/native/v1
+    cargo build -p ledgeline-server
+    ./target/debug/ledgeline --server fixtures/sample.journal --port {{port}} &
+    server=$!
+    trap 'kill "$server" 2>/dev/null || true' EXIT
+    # /version is token-gated too, so the readiness probe has to authenticate.
+    auth=(-H "Authorization: Bearer $LEDGELINE_TOKEN")
+    for _ in $(seq 1 60); do
+        curl -fsS "${auth[@]}" "http://127.0.0.1:{{port}}/version" >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+    curl -fsS "${auth[@]}" "http://127.0.0.1:{{port}}/version" >/dev/null # fail loudly if it never came up
+    count=0
+    while IFS=$'\t' read -r name uri; do
+        case "$name" in ''|'#'*) continue ;; esac
+        # No trailing newline and no reformatting: these are the RAW response
+        # bytes, so the Rust golden test can compare them byte-for-byte
+        # (matching the fixtures/api/v1.52 convention).
+        curl -fsS "${auth[@]}" "http://127.0.0.1:{{port}}$uri" > "$out/$name.json"
+        count=$((count + 1))
+    done < "$out/requests.tsv"
+    echo "snapshotted $count native endpoints into $out"
+
 # Production build (static SPA)
 build:
     cd web && bun run build

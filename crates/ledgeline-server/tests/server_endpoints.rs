@@ -19,7 +19,7 @@ use axum::http::{HeaderName, Request, StatusCode, header};
 use common::{account_contract, compare, fixture_journal, read_snapshot};
 use http_body_util::BodyExt;
 use ledgeline_server::{AccessToken, AppState, Security, app, router_with_security};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 /// Issue `GET uri` (with an `Origin` header) against a fresh clone of the app and
@@ -88,13 +88,63 @@ async fn accounts_contract_matches_snapshot() {
     );
 }
 
-/// `GET /api/diagnostics` serves the frozen `{"diagnostics": [...]}` contract:
-/// one `Problem`-shaped element per unbalanced transaction (PARSE-1) and per
-/// failed balance assertion (PARSE-2). `fixtures/sample.journal` has neither, so
-/// the array must be present and EMPTY — never null, never absent.
+/// `GET /api/diagnostics` serves the `{"diagnostics": [...]}` contract: one
+/// `Problem`-shaped element per unbalanced transaction (PARSE-1), per failed
+/// balance assertion (PARSE-2), and per stock finding (DRY-1).
+///
+/// `fixtures/sample.journal` balances and asserts cleanly, so its payload is
+/// exactly the three stock warnings it plants on purpose — the ones the SPA used
+/// to recompute in TypeScript. The array is always present; a journal with none
+/// of the three serves `[]`, never null and never absent (see
+/// `diagnostics_is_empty_for_a_journal_with_nothing_to_report`).
 #[tokio::test]
-async fn diagnostics_serves_an_empty_array_for_a_clean_journal() {
+async fn diagnostics_serves_the_sample_journals_stock_findings() {
     let body = body_of("/api/diagnostics").await;
+    let found = body["diagnostics"]
+        .as_array()
+        .expect("diagnostics is an array");
+    let anchors: Vec<(&Value, &Value)> = found
+        .iter()
+        .map(|diagnostic| (&diagnostic["txnIndex"], &diagnostic["rule"]))
+        .collect();
+    assert_eq!(
+        anchors,
+        vec![
+            (&json!(99), &json!("stock-missing-basis")),
+            (&json!(179), &json!("stock-negative")),
+            (&json!(99), &json!("stock-unpriced")),
+        ],
+        "{body}"
+    );
+    // Warnings, never errors: this journal is one hledger accepts.
+    assert!(found.iter().all(|d| d["severity"] == "warning"), "{body}");
+}
+
+/// The empty case the contract still guarantees: present, `[]`, never null.
+#[tokio::test]
+async fn diagnostics_is_empty_for_a_journal_with_nothing_to_report() {
+    let journal = ledgeline_core::parse_journal(
+        "2024-01-01 t\n    expenses:x   $1.00\n    assets:bank\n",
+        "/tmp/diagnostics-clean.journal",
+    )
+    .expect("journal parses");
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/diagnostics")
+        .body(Body::empty())
+        .expect("request builds");
+    let response = app(&journal)
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collects")
+        .to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).expect("body is JSON");
     assert_eq!(body, serde_json::json!({"diagnostics": []}));
 }
 

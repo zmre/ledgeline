@@ -260,39 +260,40 @@ struct DiagnosticsBody<'a> {
 /// Post-PERF-1 this is seven `serde_json::to_vec` calls and NO journal clone —
 /// the snapshot shares the editor's `Arc<Journal>` (PERF-1b), which is O(1) and
 /// so contributes nothing worth modelling here. `/transactions` is about half
-/// the total, so the server splits it onto one extra thread and runs the other
-/// six alongside; this mirrors that split, because a sequential replica would
-/// report a snapshot build the server no longer performs.
+/// the total and `/api/diagnostics` is the next largest (it runs the balance
+/// checks AND, since DRY-1, a holdings pass), so the server splits those two
+/// onto threads of their own and runs the remaining five alongside; this mirrors
+/// that split, because a sequential replica would report a snapshot build the
+/// server no longer performs.
 ///
 /// **Hand-kept copy.** `Snapshot` is `pub(crate)` in the server crate, so this
 /// cannot call the real thing. If `Snapshot::from_journal` gains or loses a
 /// payload, or stops overlapping them, update this or the number silently stops
 /// meaning what it says.
 fn snapshot_payloads(journal: &Journal) -> [Vec<u8>; 7] {
-    let (transactions, rest) = std::thread::scope(|scope| {
+    let (transactions, diagnostics, rest) = std::thread::scope(|scope| {
         let transactions =
             scope.spawn(|| serde_json::to_vec(&wire::journal_to_transactions(journal)).unwrap());
+        let diagnostics = scope.spawn(|| {
+            serde_json::to_vec(&DiagnosticsBody {
+                diagnostics: &wire::journal_to_all_diagnostics(journal),
+            })
+            .unwrap()
+        });
         let rest = [
             serde_json::to_vec(&wire::version_value()).unwrap(),
             serde_json::to_vec(&wire::journal_to_accountnames(journal)).unwrap(),
             serde_json::to_vec(&wire::journal_to_prices(journal)).unwrap(),
             serde_json::to_vec(&wire::journal_to_commodities(journal)).unwrap(),
             serde_json::to_vec(&wire::journal_to_accounts(journal)).unwrap(),
-            serde_json::to_vec(&DiagnosticsBody {
-                diagnostics: &wire::journal_to_diagnostics(journal),
-            })
-            .unwrap(),
         ];
-        (transactions.join().unwrap(), rest)
+        (
+            transactions.join().unwrap(),
+            diagnostics.join().unwrap(),
+            rest,
+        )
     });
-    let [
-        version,
-        accountnames,
-        prices,
-        commodities,
-        accounts,
-        diagnostics,
-    ] = rest;
+    let [version, accountnames, prices, commodities, accounts] = rest;
     [
         version,
         accountnames,

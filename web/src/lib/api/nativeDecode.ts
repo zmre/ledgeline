@@ -11,6 +11,18 @@
 //   - Dec          → {mantissa: <string>, places}  (value = mantissa / 10^places; BigInt-decoded)
 //   - MixedAmount  → {"<commodity>": Dec, …}  (zero commodities already dropped)
 //   - nulls kept (basis/price/gain/…); camelCase keys map 1:1 onto the domain types.
+//
+// The Raw* interfaces below mirror 28 Rust `Wire*` structs BY HAND — there is no
+// codegen across this seam. What keeps the two halves honest is
+// fixtures/native/v1/*.json (regenerate with `just snapshot-native`): the engine
+// asserts its live responses against those bytes in
+// crates/ledgeline-server/tests/native_wire_golden.rs, and nativeDecode.test.ts
+// decodes the same files. Renaming a field on either side fails both suites.
+//
+// Corollary, and the reason decodeDec/decodeMixed both THROW on an absent value:
+// a field this decoder cannot find must never become 0. Every money field in the
+// reports path runs through decodeMixed, and "absent" silently rendering $0.00
+// was a live bug class (CLEANUP.md DRY-3).
 
 import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
@@ -282,15 +294,45 @@ function decodeOptDec(raw: RawDec | null | undefined, context: string): Dec | nu
     return raw === null || raw === undefined ? null : decodeDec(raw, context);
 }
 
-/** {"<commodity>": Dec, …} → a plain Map (domain MixedAmount). Zero commodities are already dropped server-side. */
+/**
+ * {"<commodity>": Dec, …} → a plain Map (domain MixedAmount). Zero commodities
+ * are already dropped server-side, so `{}` is a legitimate empty amount.
+ *
+ * STRICT, exactly like decodeDec: a missing field throws rather than decoding to
+ * an empty Map (CLEANUP.md DRY-3). This used to return `new Map()` for
+ * undefined, and since every money field in the reports path comes through here
+ * — section `total`, `grandTotal`, period `values`/`totals`, budget `actual` —
+ * a renamed or dropped Rust field rendered `$0.00` (`format.ts` fmtBase) or `0`
+ * (`ReportTable.svelte`) with nothing raising anywhere. An empty amount and an
+ * amount the server never sent are not the same fact, and only one of them is
+ * safe to show a human as a balance.
+ *
+ * All 13 `WireMixed` fields in `reports_api.rs` are plain `BTreeMap` fields with
+ * no `skip_serializing_if`, so every one of them is ALWAYS on the wire. The one
+ * nullable case (`BudgetCell.goal: Option<WireMixed>`) serializes as `null`, not
+ * as an absent key, and has [`decodeOptMixed`].
+ */
 function decodeMixed(raw: RawMixed | undefined, context: string): MixedAmount {
-    const out: MixedAmount = new Map();
-    if (raw === undefined || raw === null) return out;
+    if (raw === undefined || raw === null) {
+        throw new ApiShapeError(`${context}: missing amount (expected an object of commodity → decimal, {} if empty)`);
+    }
     if (typeof raw !== "object") throw new ApiShapeError(`${context}: expected an object of commodity → decimal`);
+    const out: MixedAmount = new Map();
     for (const [commodity, value] of Object.entries(raw)) {
         out.set(commodity, decodeDec(value, `${context} "${commodity}"`));
     }
     return out;
+}
+
+/**
+ * A nullable MixedAmount: `null` (a deliberate "no such amount") stays null;
+ * anything else must decode. Mirrors decodeOptDec. Only `BudgetCell.goal` is
+ * nullable — `null` = the account has no goal at all (`<unbudgeted>`), `{}` = it
+ * is budgeted but has no goal in THIS bucket. Those two render differently, so
+ * the distinction has to survive decoding.
+ */
+function decodeOptMixed(raw: RawMixed | null | undefined, context: string): MixedAmount | null {
+    return raw === null || raw === undefined ? null : decodeMixed(raw, context);
 }
 
 /** A JSON array of strings, or [] when absent. */
@@ -384,7 +426,7 @@ function decodeBudgetCell(raw: RawBudgetCell | undefined, context: string): Budg
     return Object.freeze({
         actual: decodeMixed(raw.actual, `${context} actual`),
         // null (no goal) stays null; an object (incl. {} = budgeted-but-zero) decodes to a Map.
-        goal: raw.goal === null || raw.goal === undefined ? null : decodeMixed(raw.goal, `${context} goal`),
+        goal: decodeOptMixed(raw.goal, `${context} goal`),
     });
 }
 
