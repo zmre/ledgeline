@@ -31,7 +31,7 @@
 //! TS `divRoundHalfEven`.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{AccountDeclaration, Commodity, Cost, CostKind, PriceDirective, Transaction};
@@ -129,6 +129,11 @@ enum TaintReason {
 /// [`compute_holdings`] are tracked (the TS `costlessBuyTxns`/`negativeCrossTxn`/
 /// `lastTxnIndex` feed the separate WP-10 check rules, which are out of scope
 /// here).
+///
+/// `Clone` so a replay can FREEZE the running pool at a series boundary and keep
+/// going — the pool at each point is the same object the single-date build
+/// finished with, not a re-derivation of it.
+#[derive(Clone)]
 struct SymbolPool {
     /// Net shares over processed postings (may be zero or negative).
     shares: Dec,
@@ -439,6 +444,11 @@ fn is_pure_transfer(
 /// `None` when it holds several. A currency posting into a one-security account
 /// is a basis adjustment (a return of capital); in an account that mixes cash
 /// and shares it cannot be attributed to anything and is left alone.
+///
+/// The DEFINITION of the rule, kept as the oracle
+/// [`sole_symbols_at`] is checked against; the replay reads the equivalent
+/// [`SoleSymbolFacts`] instead so no `as_of` needs its own journal pass.
+#[cfg(test)]
 fn sole_symbols_by_account(
     txns: &[Transaction],
     as_of: &str,
@@ -470,47 +480,236 @@ fn sole_symbols_by_account(
     sole
 }
 
-/// Per-journal lookups [`build_pools`] needs: security names from account and
-/// `commodity` directives, plus declared account types so a share movement's
-/// funding leg is recognized by TYPE rather than by what its root is called.
-#[derive(Clone, Copy)]
-struct PoolLookups<'a> {
-    account_tags: &'a HashMap<&'a str, &'a [(String, String)]>,
-    commodity_names: &'a HashMap<&'a str, &'a str>,
-    declared: &'a BTreeMap<String, AccountType>,
+/// What [`sole_symbols_by_account`] answers for one account at ANY `as_of`,
+/// reduced to two dates.
+///
+/// This is the ONE thing in the replay that looks past the transaction being
+/// processed: the sole-symbol map is resolved from the whole `≤ as_of` range and
+/// then applied to every transaction in it, so a single shared replay cannot
+/// simply carry it forward — an account that is one-security in July and
+/// two-security in September answers differently for a July point and a
+/// September one, about the very same July transaction. Reducing it to
+/// `(first_date, symbol, ambiguous_from)` makes any date's answer an O(accounts)
+/// read, which is what lets [`pool_snapshots`] tell cheaply whether the points
+/// agree (they nearly always do) and share one replay.
+struct SoleSymbolFacts {
+    /// Date of the account's first in-scope non-currency posting. Before it the
+    /// account is ABSENT from the map — so a cash leg dated EARLIER than the
+    /// account's first security reduces no basis at an early `as_of`, but does
+    /// at a later one.
+    first_date: String,
+    /// The commodity of that first posting: the sole symbol for as long as the
+    /// account holds only one.
+    symbol: String,
+    /// Date a SECOND distinct commodity first appeared, from which the account
+    /// answers `Some(None)` — held securities are no longer attributable.
+    ambiguous_from: Option<String>,
 }
 
-/// Build one average-cost pool per stock symbol from postings dated ≤ `as_of`
-/// whose account passes `in_scope`. Port of the TS `buildPools`; see that
-/// function's doc for the netting/taint/reduction rules.
+/// [`SoleSymbolFacts`] per account, for every `as_of` up to `as_of`.
+///
+/// Restricted to the accounts the replay can actually ASK about — those that
+/// take a currency leg OUT at some point — because the restriction is what keeps
+/// a series to one replay. An ordinary `assets:broker:cash` is asked about
+/// constantly but holds no security, so it has no facts and answers "absent"
+/// forever; an ordinary `assets:broker:vti` holds one but never pays cash out,
+/// so it is never asked. Dropping both leaves most journals with an EMPTY map,
+/// which is trivially the same at every point.
+fn sole_symbol_facts(
+    ordered: &[&Transaction],
+    as_of: &str,
+    in_scope: &dyn Fn(&str) -> bool,
+    declared: &BTreeMap<String, AccountType>,
+) -> BTreeMap<String, SoleSymbolFacts> {
+    let mut facts: BTreeMap<String, SoleSymbolFacts> = BTreeMap::new();
+    let mut asked_about: BTreeSet<&str> = BTreeSet::new();
+    for txn in ordered {
+        if txn.date.as_str() > as_of {
+            break; // `ordered` is date-ascending
+        }
+        for posting in &txn.postings {
+            if !in_scope(&posting.account.0) || !is_holding_account(&posting.account.0, declared) {
+                continue;
+            }
+            for amount in &posting.amounts {
+                if is_currency(&amount.commodity.0) {
+                    if amount.quantity.mantissa < 0 {
+                        asked_about.insert(posting.account.0.as_str());
+                    }
+                    continue;
+                }
+                match facts.get_mut(&posting.account.0) {
+                    Some(known) => {
+                        if known.ambiguous_from.is_none() && known.symbol != amount.commodity.0 {
+                            known.ambiguous_from = Some(txn.date.clone());
+                        }
+                    }
+                    None => {
+                        facts.insert(
+                            posting.account.0.clone(),
+                            SoleSymbolFacts {
+                                first_date: txn.date.clone(),
+                                symbol: amount.commodity.0.clone(),
+                                ambiguous_from: None,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+    facts.retain(|account, _| asked_about.contains(account.as_str()));
+    facts
+}
+
+/// [`sole_symbols_by_account`]'s answer at `as_of`, read off precomputed facts
+/// instead of re-scanning the journal.
+fn sole_symbols_at(
+    facts: &BTreeMap<String, SoleSymbolFacts>,
+    as_of: &str,
+) -> BTreeMap<String, Option<String>> {
+    facts
+        .iter()
+        .filter(|(_, known)| known.first_date.as_str() <= as_of)
+        .map(|(account, known)| {
+            let sole = match known.ambiguous_from.as_deref() {
+                Some(from) if from <= as_of => None,
+                _ => Some(known.symbol.clone()),
+            };
+            (account.clone(), sole)
+        })
+        .collect()
+}
+
+/// Everything a holdings replay reads that does NOT depend on `as_of`: the one
+/// date-ordered view of the journal, the price database, security names from
+/// account and `commodity` directives, and declared account types (so a share
+/// movement's funding leg is recognized by TYPE rather than by what its root is
+/// called).
+///
+/// Hoisting these is half of PERF-5b: a 12-point series used to rebuild all of
+/// it — including a fresh `PriceDb` and a fresh sort of the whole journal —
+/// twelve times over.
+struct HoldingsInputs<'a> {
+    txns: &'a [Transaction],
+    /// Journal order: date asc, then txn index asc. The only sort the report
+    /// needs, shared by the replay and by every `latest_cost_prices` scan
+    /// `choose_base` runs per candidate.
+    ordered: Vec<&'a Transaction>,
+    db: PriceDb,
+    account_tags: HashMap<&'a str, &'a [(String, String)]>,
+    commodity_names: HashMap<&'a str, &'a str>,
+    declared: BTreeMap<String, AccountType>,
+}
+
+impl<'a> HoldingsInputs<'a> {
+    fn build(
+        txns: &'a [Transaction],
+        prices: &[PriceDirective],
+        accounts: &'a [AccountDeclaration],
+        commodity_tags: &'a [(Commodity, Vec<(String, String)>)],
+    ) -> Self {
+        Self {
+            txns,
+            ordered: journal_order(txns),
+            db: PriceDb::build(prices),
+            account_tags: account_tag_map(accounts),
+            commodity_names: commodity_name_map(commodity_tags),
+            declared: declared_types(&account_decls_from(accounts)),
+        }
+    }
+}
+
+/// The replay state frozen at one `as_of` — exactly what a single-date
+/// [`build_pools`]-plus-[`latest_cost_prices`] pair used to hand
+/// [`assemble_report`].
+#[derive(Default)]
+struct PoolSnapshot {
+    pools: BTreeMap<String, SymbolPool>,
+    cost_prices: BTreeMap<String, DatedPrice>,
+}
+
+/// Freeze the running state into a report-ready snapshot: clone the pools and
+/// fill in each one's `accounts` (the in-scope accounts whose OWN net shares are
+/// still positive) from the per-account tallies — the same final pass the
+/// single-date build did, now done once per boundary.
+fn freeze(
+    pools: &BTreeMap<String, SymbolPool>,
+    per_account: &BTreeMap<String, BTreeMap<String, Dec>>,
+    cost_prices: &BTreeMap<String, DatedPrice>,
+) -> PoolSnapshot {
+    let mut pools = pools.clone();
+    for (symbol, accounts) in per_account {
+        if let Some(pool) = pools.get_mut(symbol) {
+            // BTreeMap key order is lexical, matching the TS explicit `.sort()`.
+            pool.accounts = accounts
+                .iter()
+                .filter(|(_, shares)| shares.mantissa > 0)
+                .map(|(account, _)| account.clone())
+                .collect();
+        }
+    }
+    PoolSnapshot {
+        pools,
+        cost_prices: cost_prices.clone(),
+    }
+}
+
+/// Build one average-cost pool per stock symbol — plus the latest usable cost
+/// price per symbol — from postings whose account passes `in_scope`, snapshotting
+/// the running state at each date in `as_ofs`. Port of the TS `buildPools`; see
+/// that function's doc for the netting/taint/reduction rules.
+///
+/// `as_ofs` is ASCENDING, and each snapshot is what a replay stopped at that
+/// date would have produced, because every rule below reads only the
+/// transaction being processed and the pool state before it — the one exception,
+/// the sole-symbol map, is passed in already resolved for these dates (see
+/// [`pool_snapshots`]). This is the other half of PERF-5b: 12 points cost one
+/// pass, not twelve.
 ///
 /// `window_start`, when set, additionally accumulates each pool's
 /// `window_flow`: the value contributed to (or withdrawn from) the symbol over
 /// `(window_start, as_of]`, which the windowed gain subtracts so a paycheck
 /// contribution is not reported as a gain.
-fn build_pools(
-    txns: &[Transaction],
-    db: &PriceDb,
+fn replay_pools(
+    inputs: &HoldingsInputs<'_>,
     base: &Commodity,
-    as_of: &str,
+    as_ofs: &[&str],
     window_start: Option<&str>,
     in_scope: &dyn Fn(&str) -> bool,
-    lookups: &PoolLookups,
-) -> Result<BTreeMap<String, SymbolPool>, ReportError> {
-    let &PoolLookups {
+    sole_symbols: &BTreeMap<String, Option<String>>,
+) -> Result<Vec<PoolSnapshot>, ReportError> {
+    let HoldingsInputs {
+        ordered,
+        db,
         account_tags,
         commodity_names,
         declared,
-    } = lookups;
+        ..
+    } = inputs;
     let mut pools: BTreeMap<String, SymbolPool> = BTreeMap::new();
     // symbol -> account -> net shares.
     let mut per_account: BTreeMap<String, BTreeMap<String, Dec>> = BTreeMap::new();
-    let sole_symbols = sole_symbols_by_account(txns, as_of, in_scope, declared);
+    // Folded into the same pass rather than run as a second one: it is the same
+    // date-ordered walk, and it is the ONLY other input that is a running
+    // prefix of the journal.
+    let mut cost_prices: BTreeMap<String, DatedPrice> = BTreeMap::new();
+    let mut snapshots: Vec<PoolSnapshot> = Vec::with_capacity(as_ofs.len());
+    let Some(&last) = as_ofs.last() else {
+        return Ok(snapshots);
+    };
 
-    for txn in journal_order(txns) {
-        if txn.date.as_str() > as_of {
-            continue;
+    for txn in ordered {
+        if txn.date.as_str() > last {
+            break; // `ordered` is date-ascending, so nothing later can qualify
         }
+        // Freeze every boundary this transaction has moved past. A `while`, not
+        // an `if`: consecutive points can share a date, and empty buckets are
+        // common at the start of a long series.
+        while snapshots.len() < as_ofs.len() && txn.date.as_str() > as_ofs[snapshots.len()] {
+            snapshots.push(freeze(&pools, &per_account, &cost_prices));
+        }
+        fold_cost_prices(txn, db, base, &mut cost_prices)?;
         // The gain window is half-open: `mv(window_start)` already includes
         // everything dated ≤ `window_start`, so only later flows are additions.
         let in_window = window_start.is_some_and(|start| txn.date.as_str() > start);
@@ -681,17 +880,57 @@ fn build_pools(
         }
     }
 
-    for (symbol, accounts) in &per_account {
-        if let Some(pool) = pools.get_mut(symbol) {
-            // BTreeMap key order is lexical, matching the TS explicit `.sort()`.
-            pool.accounts = accounts
-                .iter()
-                .filter(|(_, shares)| shares.mantissa > 0)
-                .map(|(account, _)| account.clone())
-                .collect();
-        }
+    while snapshots.len() < as_ofs.len() {
+        snapshots.push(freeze(&pools, &per_account, &cost_prices));
     }
-    Ok(pools)
+    Ok(snapshots)
+}
+
+/// [`replay_pools`] over dates that may not agree about the sole-symbol map.
+///
+/// The map is resolved from the whole `≤ as_of` range, so points that disagree
+/// about it would have replayed the SAME transaction differently and cannot
+/// share a pass. Consecutive points that agree — nearly always all of them, see
+/// [`sole_symbol_facts`] — get one replay between them; a disagreement splits
+/// the series there and costs one extra pass, never a wrong number.
+fn pool_snapshots(
+    inputs: &HoldingsInputs<'_>,
+    facts: &BTreeMap<String, SoleSymbolFacts>,
+    base: &Commodity,
+    as_ofs: &[String],
+    window_start: Option<&str>,
+    in_scope: &dyn Fn(&str) -> bool,
+) -> Result<Vec<PoolSnapshot>, ReportError> {
+    let mut snapshots: Vec<PoolSnapshot> = Vec::with_capacity(as_ofs.len());
+    let mut run: Vec<&str> = Vec::new();
+    let mut run_symbols: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for as_of in as_ofs {
+        let sole = sole_symbols_at(facts, as_of);
+        if !run.is_empty() && sole != run_symbols {
+            snapshots.extend(replay_pools(
+                inputs,
+                base,
+                &run,
+                window_start,
+                in_scope,
+                &run_symbols,
+            )?);
+            run.clear();
+        }
+        run_symbols = sole;
+        run.push(as_of.as_str());
+    }
+    if !run.is_empty() {
+        snapshots.extend(replay_pools(
+            inputs,
+            base,
+            &run,
+            window_start,
+            in_scope,
+            &run_symbols,
+        )?);
+    }
+    Ok(snapshots)
 }
 
 /// Latest `P` directive ≤ `as_of` pricing `symbol` in `base` (ties: last
@@ -742,50 +981,69 @@ fn latest_directive_price(
     Ok(direct.or(converted))
 }
 
+/// Fold one transaction's cost annotations into the running "latest usable
+/// base-commodity price per symbol" map — the WHOLE journal is scanned (not just
+/// in-scope), buys and sells alike. Later dates overwrite earlier ones, so
+/// walking the journal in date order leaves the latest annotation ≤ the current
+/// date standing: the map is a running prefix, which is what lets a series read
+/// it off at each boundary instead of rescanning.
+fn fold_cost_prices(
+    txn: &Transaction,
+    db: &PriceDb,
+    base: &Commodity,
+    latest: &mut BTreeMap<String, DatedPrice>,
+) -> Result<(), ReportError> {
+    for posting in &txn.postings {
+        for amount in &posting.amounts {
+            let Some(cost) = amount.cost.as_deref() else {
+                continue;
+            };
+            if is_currency(&amount.commodity.0) || amount.quantity.is_zero() {
+                continue;
+            }
+            let per_unit = if cost.kind == CostKind::Unit {
+                cost.amount.quantity
+            } else {
+                per_unit_from_total(cost.amount.quantity, amount.quantity)?
+            };
+            let in_base = if cost.amount.commodity == *base {
+                per_unit
+            } else {
+                match db.lookup_in(&cost.amount.commodity, base, &txn.date) {
+                    Some(rate) => mul_raw(per_unit, rate.quantity)?,
+                    None => continue,
+                }
+            };
+            latest.insert(
+                amount.commodity.0.clone(),
+                DatedPrice {
+                    qty: in_base,
+                    date: txn.date.clone(),
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Per symbol, the latest cost annotation ≤ `as_of` usable as a base-commodity
-/// price — scanned across the WHOLE journal (not just in-scope), buys and sells
-/// alike. Port of the TS `latestCostPrices`.
+/// price. Port of the TS `latestCostPrices`.
+///
+/// Only [`coverage`] still calls this: it measures a CANDIDATE base, so it runs
+/// before the replay has a base to fold prices in. The report's own copy comes
+/// out of the replay.
 fn latest_cost_prices(
-    txns: &[Transaction],
+    ordered: &[&Transaction],
     db: &PriceDb,
     base: &Commodity,
     as_of: &str,
 ) -> Result<BTreeMap<String, DatedPrice>, ReportError> {
     let mut latest: BTreeMap<String, DatedPrice> = BTreeMap::new();
-    for txn in journal_order(txns) {
+    for txn in ordered {
         if txn.date.as_str() > as_of {
-            continue;
+            break; // `ordered` is date-ascending
         }
-        for posting in &txn.postings {
-            for amount in &posting.amounts {
-                let Some(cost) = amount.cost.as_deref() else {
-                    continue;
-                };
-                if is_currency(&amount.commodity.0) || amount.quantity.is_zero() {
-                    continue;
-                }
-                let per_unit = if cost.kind == CostKind::Unit {
-                    cost.amount.quantity
-                } else {
-                    per_unit_from_total(cost.amount.quantity, amount.quantity)?
-                };
-                let in_base = if cost.amount.commodity == *base {
-                    per_unit
-                } else {
-                    match db.lookup_in(&cost.amount.commodity, base, &txn.date) {
-                        Some(rate) => mul_raw(per_unit, rate.quantity)?,
-                        None => continue,
-                    }
-                };
-                latest.insert(
-                    amount.commodity.0.clone(),
-                    DatedPrice {
-                        qty: in_base,
-                        date: txn.date.clone(),
-                    },
-                );
-            }
-        }
+        fold_cost_prices(txn, db, base, &mut latest)?;
     }
     Ok(latest)
 }
@@ -846,12 +1104,12 @@ fn held_symbols(
 fn coverage(
     held: &[Commodity],
     target: &Commodity,
-    txns: &[Transaction],
+    ordered: &[&Transaction],
     prices: &[PriceDirective],
     db: &PriceDb,
     as_of: &str,
 ) -> Result<usize, ReportError> {
-    let cost_prices = latest_cost_prices(txns, db, target, as_of)?;
+    let cost_prices = latest_cost_prices(ordered, db, target, as_of)?;
     let mut covered = 0;
     for symbol in held {
         let priced = symbol == target
@@ -887,17 +1145,16 @@ fn coverage(
 /// represent. Picking the base that prices the most of the portfolio is the
 /// closest single-commodity approximation of that.
 fn choose_base(
-    txns: &[Transaction],
+    inputs: &HoldingsInputs<'_>,
     prices: &[PriceDirective],
-    db: &PriceDb,
     as_of: &str,
     value_in: Option<&Commodity>,
     in_scope: &dyn Fn(&str) -> bool,
-    declared: &BTreeMap<String, AccountType>,
 ) -> Result<Commodity, ReportError> {
     if let Some(target) = value_in {
         return Ok(target.clone());
     }
+    let db = &inputs.db;
     // One candidate (the overwhelmingly common single-currency journal) or none:
     // there is nothing to choose between, so skip the scan entirely and leave
     // that journal exactly as fast as it was.
@@ -908,14 +1165,14 @@ fn choose_base(
             .cloned()
             .unwrap_or_else(|| Commodity(FALLBACK_BASE.to_string())));
     }
-    let held = held_symbols(txns, as_of, in_scope, declared)?;
+    let held = held_symbols(inputs.txns, as_of, in_scope, &inputs.declared)?;
     if held.is_empty() {
         return Ok(candidates[0].clone());
     }
     let mut best = &candidates[0];
     let mut best_covered = 0;
     for candidate in candidates {
-        let covered = coverage(&held, candidate, txns, prices, db, as_of)?;
+        let covered = coverage(&held, candidate, &inputs.ordered, prices, db, as_of)?;
         if covered > best_covered {
             best = candidate;
             best_covered = covered;
@@ -943,17 +1200,15 @@ pub fn valuation_base(
     accounts: &[AccountDeclaration],
     scope: &HoldingsScope,
 ) -> Result<Commodity, ReportError> {
-    let db = PriceDb::build(prices);
     let predicate = scope_predicate(scope);
-    let declared = declared_types(&account_decls_from(accounts));
+    // No `commodity` directives: choosing a base never reads a security's name.
+    let inputs = HoldingsInputs::build(txns, prices, accounts, &[]);
     choose_base(
-        txns,
+        &inputs,
         prices,
-        &db,
         &scope.as_of,
         scope.value_in.as_ref(),
         &predicate,
-        &declared,
     )
 }
 
@@ -975,14 +1230,21 @@ pub fn prices_any_held(
     scope: &HoldingsScope,
     target: &Commodity,
 ) -> Result<bool, ReportError> {
-    let db = PriceDb::build(prices);
     let predicate = scope_predicate(scope);
-    let declared = declared_types(&account_decls_from(accounts));
-    let held = held_symbols(txns, &scope.as_of, &predicate, &declared)?;
+    // No `commodity` directives: measuring coverage never reads a security's name.
+    let inputs = HoldingsInputs::build(txns, prices, accounts, &[]);
+    let held = held_symbols(txns, &scope.as_of, &predicate, &inputs.declared)?;
     if held.is_empty() {
         return Ok(true);
     }
-    Ok(coverage(&held, target, txns, prices, &db, &scope.as_of)? > 0)
+    Ok(coverage(
+        &held,
+        target,
+        &inputs.ordered,
+        prices,
+        &inputs.db,
+        &scope.as_of,
+    )? > 0)
 }
 
 /// Account predicate for a scope: `Include` + empty set = everything;
@@ -1023,62 +1285,150 @@ pub fn compute_holdings(
     commodity_tags: &[(Commodity, Vec<(String, String)>)],
     scope: &HoldingsScope,
 ) -> Result<HoldingsReport, ReportError> {
-    let db = PriceDb::build(prices);
     let predicate = scope_predicate(scope);
-    let account_tags = account_tag_map(accounts);
-    let commodity_names = commodity_name_map(commodity_tags);
-    let declared = declared_types(&account_decls_from(accounts));
+    let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags);
     let base_commodity = choose_base(
-        txns,
+        &inputs,
         prices,
-        &db,
         &scope.as_of,
         scope.value_in.as_ref(),
         &predicate,
-        &declared,
     )?;
-    let base = base_commodity.0.clone();
-    let pools = build_pools(
-        txns,
-        &db,
+    // `gain_since` re-runs the report at the window start, so the facts have to
+    // cover the LATER of the two dates; `as_of` is it.
+    let facts = sole_symbol_facts(&inputs.ordered, &scope.as_of, &predicate, &inputs.declared);
+    report_at(
+        &inputs,
+        &facts,
+        prices,
         &base_commodity,
         &scope.as_of,
         scope.gain_since.as_deref(),
         &predicate,
-        &PoolLookups {
-            account_tags: &account_tags,
-            commodity_names: &commodity_names,
-            declared: &declared,
-        },
-    )?;
-    let cost_prices = latest_cost_prices(txns, &db, &base_commodity, &scope.as_of)?;
+    )
+}
 
-    // Gain window: when `scope.gain_since` is set, the gain is measured against
+/// [`compute_holdings`] at each of `as_ofs` (ASCENDING), sharing one replay.
+///
+/// Every report is exactly what [`compute_holdings`] returns for a scope with
+/// that `as_of`, `value_in: Some(base)` and `gain_since: None` — the per-point
+/// scope [`holdings_series`](super::series::holdings_series) builds — and the
+/// pinned `base` is returned alongside, resolved ONCE from `scope.as_of` (see
+/// [`valuation_base`], which this replaces for the series so the journal is
+/// sorted and the `PriceDb` built once rather than twice).
+pub(super) fn holdings_at_each(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    commodity_tags: &[(Commodity, Vec<(String, String)>)],
+    scope: &HoldingsScope,
+    as_ofs: &[String],
+) -> Result<(Commodity, Vec<HoldingsReport>), ReportError> {
+    let predicate = scope_predicate(scope);
+    let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags);
+    let base_commodity = choose_base(
+        &inputs,
+        prices,
+        &scope.as_of,
+        scope.value_in.as_ref(),
+        &predicate,
+    )?;
+    let Some(last) = as_ofs.last() else {
+        return Ok((base_commodity, Vec::new()));
+    };
+    let facts = sole_symbol_facts(&inputs.ordered, last, &predicate, &inputs.declared);
+    // The trend tracks market value/basis only; gain windowing is a per-snapshot
+    // concern and never applies to a series point, so there is no window flow to
+    // accumulate and no start snapshot to recurse into.
+    let snapshots = pool_snapshots(&inputs, &facts, &base_commodity, as_ofs, None, &predicate)?;
+    let reports = as_ofs
+        .iter()
+        .zip(snapshots)
+        .map(|(as_of, snapshot)| {
+            assemble_report(
+                &inputs,
+                prices,
+                &base_commodity,
+                as_of,
+                None,
+                &snapshot,
+                &BTreeMap::new(),
+            )
+        })
+        .collect::<Result<Vec<_>, ReportError>>()?;
+    Ok((base_commodity, reports))
+}
+
+/// One holdings snapshot at `as_of` from prebuilt inputs — [`compute_holdings`]
+/// minus the per-call setup, so the `gain_since` start snapshot can reuse it
+/// instead of rebuilding the whole world one level down.
+fn report_at(
+    inputs: &HoldingsInputs<'_>,
+    facts: &BTreeMap<String, SoleSymbolFacts>,
+    prices: &[PriceDirective],
+    base_commodity: &Commodity,
+    as_of: &str,
+    gain_since: Option<&str>,
+    in_scope: &dyn Fn(&str) -> bool,
+) -> Result<HoldingsReport, ReportError> {
+    let sole = sole_symbols_at(facts, as_of);
+    let snapshot = replay_pools(
+        inputs,
+        base_commodity,
+        &[as_of],
+        gain_since,
+        in_scope,
+        &sole,
+    )?
+    .pop()
+    .unwrap_or_default(); // one date in, one snapshot out
+
+    // Gain window: when `gain_since` is set, the gain is measured against
     // each position's market value at that start date (a plain all-time snapshot
     // re-run at `start`), not against its all-time cost basis. `symbol → value at
     // start` (`Some(0)` = not held at `start`; `None` = held-but-unpriced there).
-    let start_values: BTreeMap<String, Option<Dec>> = match scope.gain_since.as_deref() {
+    //
+    // The start snapshot is pinned to the SAME base rather than choosing its
+    // own: the scope holds different symbols at `start` than at `as_of`, so
+    // coverage could legitimately favour a different commodity there — and
+    // subtracting a value in one commodity from a value in another is not a gain.
+    let start_values: BTreeMap<String, Option<Dec>> = match gain_since {
         None => BTreeMap::new(),
-        Some(start) => {
-            let start_scope = HoldingsScope {
-                accounts: scope.accounts.clone(),
-                mode: scope.mode,
-                as_of: start.to_string(),
-                gain_since: None,
-                // Pin the base rather than letting the start snapshot choose its
-                // own: the scope holds different symbols at `start` than at
-                // `as_of`, so coverage could legitimately favour a different
-                // commodity there — and subtracting a value in one commodity
-                // from a value in another is not a gain.
-                value_in: Some(base_commodity.clone()),
-            };
-            compute_holdings(txns, prices, accounts, commodity_tags, &start_scope)?
-                .holdings
-                .into_iter()
-                .map(|holding| (holding.symbol, holding.market_value))
-                .collect()
-        }
+        Some(start) => report_at(inputs, facts, prices, base_commodity, start, None, in_scope)?
+            .holdings
+            .into_iter()
+            .map(|holding| (holding.symbol, holding.market_value))
+            .collect(),
     };
+    assemble_report(
+        inputs,
+        prices,
+        base_commodity,
+        as_of,
+        gain_since,
+        &snapshot,
+        &start_values,
+    )
+}
+
+/// Price one replayed snapshot and turn it into the report for its `as_of`: the
+/// per-symbol pricing, warnings, sorting and PARTIAL totals.
+///
+/// Split out of [`compute_holdings`] because it is the only per-`as_of` work
+/// left once the pools are replayed once — and it costs O(symbols), not O(txns),
+/// which is why a 60-point series now costs about what a 12-point one does.
+fn assemble_report(
+    inputs: &HoldingsInputs<'_>,
+    prices: &[PriceDirective],
+    base_commodity: &Commodity,
+    as_of: &str,
+    gain_since: Option<&str>,
+    snapshot: &PoolSnapshot,
+    start_values: &BTreeMap<String, Option<Dec>>,
+) -> Result<HoldingsReport, ReportError> {
+    let db = &inputs.db;
+    let base = base_commodity.0.clone();
+    let PoolSnapshot { pools, cost_prices } = snapshot;
     // The capital a holding's gain is measured against: its all-time `basis`
     // (default), or — under `gain_since` — the capital actually at work over the
     // window, `value_at_start + net_contributions`.
@@ -1104,7 +1454,7 @@ pub fn compute_holdings(
             if shares.mantissa <= 0 {
                 return Ok(None);
             }
-            if scope.gain_since.is_none() {
+            if gain_since.is_none() {
                 return Ok(basis);
             }
             let start = start_values
@@ -1123,7 +1473,7 @@ pub fn compute_holdings(
     let mut holdings: Vec<Holding> = Vec::new();
     let mut warnings: Vec<HoldingsWarning> = Vec::new();
     // A BTreeMap iterates in symbol order — matches the TS explicit symbol sort.
-    for (symbol, pool) in &pools {
+    for (symbol, pool) in pools {
         if pool.shares.is_zero() {
             continue; // fully sold: dropped silently
         }
@@ -1150,19 +1500,18 @@ pub fn compute_holdings(
             });
         }
 
-        let price =
-            match latest_directive_price(prices, &db, symbol, &base_commodity, &scope.as_of)? {
-                Some(directive) => Some(HoldingPrice {
-                    qty: directive.qty,
-                    date: directive.date,
-                    source: PriceSource::Directive,
-                }),
-                None => cost_prices.get(symbol).map(|cost| HoldingPrice {
-                    qty: cost.qty,
-                    date: cost.date.clone(),
-                    source: PriceSource::Cost,
-                }),
-            };
+        let price = match latest_directive_price(prices, db, symbol, base_commodity, as_of)? {
+            Some(directive) => Some(HoldingPrice {
+                qty: directive.qty,
+                date: directive.date,
+                source: PriceSource::Directive,
+            }),
+            None => cost_prices.get(symbol).map(|cost| HoldingPrice {
+                qty: cost.qty,
+                date: cost.date.clone(),
+                source: PriceSource::Cost,
+            }),
+        };
         if price.is_none() {
             warnings.push(HoldingsWarning {
                 symbol: symbol.clone(),
@@ -1319,7 +1668,7 @@ pub fn compute_holdings(
     top_losers.truncate(5);
 
     Ok(HoldingsReport {
-        as_of: scope.as_of.clone(),
+        as_of: as_of.to_string(),
         base,
         holdings,
         totals: HoldingsTotals {
@@ -3500,5 +3849,173 @@ mod tests {
             &scope("2026-07-16", ScopeMode::Include, &[]),
         );
         assert_eq!(report.base, "$");
+    }
+
+    // ---- sole-symbol facts (the one rule the replay re-derives) ----
+
+    /// Every shape the sole-symbol rule can take, spread over time so each one
+    /// has a BEFORE and an AFTER within the sweep below.
+    fn sole_symbol_journal() -> Vec<Transaction> {
+        vec![
+            // `late` takes cash out BEFORE it has ever held a security. At an
+            // early `as_of` it is absent from the map (no reduction); at a late
+            // one it is `Some("GLD")` and this very transaction reduces GLD's
+            // basis retroactively.
+            txn(
+                1,
+                "2025-01-10",
+                vec![
+                    posting("assets:broker:late", vec![usd(-1000)], &[]),
+                    posting("assets:bank", vec![usd(1000)], &[]),
+                ],
+                &[],
+            ),
+            // `one` holds exactly one security, forever.
+            txn(
+                2,
+                "2025-02-10",
+                vec![buy("assets:broker:one", "AAPL", 10, 10000, true)],
+                &[],
+            ),
+            txn(
+                3,
+                "2025-02-20",
+                vec![
+                    posting("assets:broker:one", vec![usd(-500)], &[]),
+                    posting("assets:bank", vec![usd(500)], &[]),
+                ],
+                &[],
+            ),
+            // `mixed` is single-security until August, then two.
+            txn(
+                4,
+                "2025-03-10",
+                vec![buy("assets:broker:mixed", "VTI", 10, 10000, true)],
+                &[],
+            ),
+            txn(
+                5,
+                "2025-04-10",
+                vec![
+                    posting("assets:broker:mixed", vec![usd(-700)], &[]),
+                    posting("assets:bank", vec![usd(700)], &[]),
+                ],
+                &[],
+            ),
+            // `quiet` holds a security but never pays cash out: never asked
+            // about, so the facts drop it.
+            txn(
+                6,
+                "2025-05-10",
+                vec![buy("assets:broker:quiet", "GLD", 10, 10000, true)],
+                &[],
+            ),
+            // `sameday` takes on two securities in ONE transaction: ambiguous
+            // from that very date, never `Some`.
+            txn(
+                7,
+                "2025-06-10",
+                vec![
+                    buy("assets:broker:sameday", "AAPL", 1, 10000, true),
+                    buy("assets:broker:sameday", "VTI", 1, 10000, true),
+                    posting("assets:broker:sameday", vec![usd(-200)], &[]),
+                ],
+                &[],
+            ),
+            // A non-holding account: excluded by both implementations.
+            txn(
+                8,
+                "2025-07-10",
+                vec![
+                    posting("equity:opening", vec![usd(-300)], &[]),
+                    posting("assets:bank", vec![usd(300)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                9,
+                "2025-08-10",
+                vec![buy("assets:broker:mixed", "AAPL", 1, 10000, true)],
+                &[],
+            ),
+            txn(
+                10,
+                "2025-09-10",
+                vec![buy("assets:broker:late", "GLD", 3, 10000, true)],
+                &[],
+            ),
+        ]
+    }
+
+    /// `sole_symbols_at` reads two dates off a precomputed summary where
+    /// `sole_symbols_by_account` re-scans the journal. They must agree at EVERY
+    /// date for every account the replay can ask about — this is the only rule
+    /// the multi-date replay re-derives rather than moves, and the rule looks
+    /// PAST the transaction it is applied to, so an off-by-one here would
+    /// silently move a return-of-capital basis reduction.
+    #[test]
+    fn precomputed_sole_symbols_match_the_rescan_at_every_date() {
+        let txns = sole_symbol_journal();
+        let sc = scope("2025-12-31", ScopeMode::Include, &[]);
+        let predicate = scope_predicate(&sc);
+        let declared = BTreeMap::new();
+        let ordered = journal_order(&txns);
+        let facts = sole_symbol_facts(&ordered, "2025-12-31", &predicate, &declared);
+
+        // Only the accounts that both hold a security AND pay cash out survive;
+        // `quiet` (never asked) and `assets:broker:cash`-alikes (never holds)
+        // are exactly the ones a series must not be split by.
+        let kept: Vec<&str> = facts.keys().map(String::as_str).collect();
+        assert_eq!(
+            kept,
+            [
+                "assets:broker:late",
+                "assets:broker:mixed",
+                "assets:broker:one",
+                "assets:broker:sameday",
+            ]
+        );
+
+        // Sweep the 1st, 10th, 11th and 28th of every month of 2025 — the 10th
+        // and 11th straddle every transition date in the journal above.
+        for month in 1..=12 {
+            for day in [1, 10, 11, 28] {
+                let as_of = format!("2025-{month:02}-{day:02}");
+                let rescanned = sole_symbols_by_account(&txns, &as_of, &predicate, &declared);
+                let precomputed = sole_symbols_at(&facts, &as_of);
+                for account in facts.keys() {
+                    assert_eq!(
+                        precomputed.get(account),
+                        rescanned.get(account),
+                        "{account} at {as_of}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The facts are capped at a date, but a LATER cap must not change any
+    /// earlier date's answer — `holdings_at_each` builds one set of facts for
+    /// the whole series and evaluates every point against it, while
+    /// `compute_holdings` caps at its own `as_of`.
+    #[test]
+    fn a_later_facts_cap_does_not_change_an_earlier_answer() {
+        let txns = sole_symbol_journal();
+        let sc = scope("2025-12-31", ScopeMode::Include, &[]);
+        let predicate = scope_predicate(&sc);
+        let declared = BTreeMap::new();
+        let ordered = journal_order(&txns);
+        let full = sole_symbol_facts(&ordered, "2025-12-31", &predicate, &declared);
+        for month in 1..=12 {
+            let as_of = format!("2025-{month:02}-15");
+            let capped = sole_symbol_facts(&ordered, &as_of, &predicate, &declared);
+            let from_full = sole_symbols_at(&full, &as_of);
+            let from_capped = sole_symbols_at(&capped, &as_of);
+            // The wider cap may KEEP an account the narrow one drops (it is
+            // asked about later), but never disagrees about one they share.
+            for (account, sole) in &from_capped {
+                assert_eq!(from_full.get(account), Some(sole), "{account} at {as_of}");
+            }
+        }
     }
 }

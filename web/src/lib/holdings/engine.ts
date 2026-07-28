@@ -8,6 +8,7 @@
 // taints the pool (basis: null) — we never guess a basis from price directives.
 
 import {accountMatches} from "../domain/accounts";
+import {declaredTypes, resolveAccountType, type AccountDecl, type AccountType} from "../domain/accountTypes";
 import {add, cmp, dec, isZero, mul, sub, toNumber, type Dec} from "../domain/money";
 import type {ISODate, PriceDirective, Transaction} from "../domain/types";
 import {buildPriceDb, type PriceDb} from "../reports/prices";
@@ -67,6 +68,24 @@ function perUnitFromTotal(total: Dec, qty: Dec): Dec {
     return {m: divRoundHalfEven(scaledTotal, absQty), p};
 }
 
+/**
+ * True when securities can actually be HELD in `account` — i.e. its resolved
+ * type is not equity/revenue/expense. Those three are the funding/disposal
+ * counter-side of a share movement (the "source" of the shares, exactly like
+ * `equity:opening` for cash), so a share leg posted to them must NOT count
+ * toward a symbol's net shares. If it did, a vest booked against `income:rsu`
+ * would net its transaction to zero — the shares would never enter the pool —
+ * and a later sale would drive the pool negative, even though the balance
+ * sheet, which sums only asset + liability accounts, shows it non-negative.
+ *
+ * Port of Rust's `is_holding_account` (holdings/engine.rs); the two must agree,
+ * which is what checks/parity.test.ts pins.
+ */
+function isHoldingAccount(account: string, declared: ReadonlyMap<string, AccountType>): boolean {
+    const type = resolveAccountType(account, declared);
+    return type !== "equity" && type !== "revenue" && type !== "expense";
+}
+
 /** Average-cost pool for one stock symbol — the shared substrate for computeHoldings and the WP-10 check rules. */
 export interface SymbolPool {
     symbol: string;
@@ -74,12 +93,18 @@ export interface SymbolPool {
     shares: Dec;
     /** Running basis in the base commodity; meaningful only when `tainted` is false. */
     basis: Dec;
-    /** True once any acquisition lot lacked a usable cost. */
+    /** True once an acquisition lot of the CURRENTLY held position lacked a usable cost (cleared by a clean close — see buildPools). */
     tainted: boolean;
-    /** Txn indices with ≥1 cost-less acquisition lot, journal order, deduped. */
+    /** Txn indices with ≥1 cost-less acquisition lot of the currently held position, journal order, deduped. */
     costlessBuyTxns: number[];
     /** Most recent txn that took the running share total negative, if any. */
     negativeCrossTxn: number | null;
+    /**
+     * True once net shares have dipped below zero. Sticky, and it suppresses the
+     * close-clears-the-taint reset: the lot that was oversold was never entered,
+     * so no later close is a clean one.
+     */
+    wentNegative: boolean;
     /** Date the current position was opened (first buy since shares were last ≤ 0); null until a buy is seen. */
     firstBasisDate: ISODate | null;
     /** Accounts whose own net shares are > 0, sorted. */
@@ -110,9 +135,11 @@ interface LotEntry {
 
 /**
  * Build one average-cost pool per stock symbol from postings dated ≤ asOf
- * whose account passes `inScope`. Within a transaction the in-scope legs of a
- * symbol are netted FIRST: a net of zero is a transfer between own accounts —
- * no share or basis impact, so cost-less transfer legs never taint the pool.
+ * whose account passes `inScope` AND can hold securities at all (see
+ * isHoldingAccount — `declared` is the journal's declared account types, from
+ * /accounts). Within a transaction the in-scope legs of a symbol are netted
+ * FIRST: a net of zero is a transfer between own accounts — no share or basis
+ * impact, so cost-less transfer legs never taint the pool.
  * Otherwise legs apply in posting order: buys with a cost annotation add cost
  * in the base commodity (`@` per-unit multiplies, `@@` is the total; non-base
  * costs convert via the latest direct P directive at the txn date, else the
@@ -120,8 +147,19 @@ interface LotEntry {
  * proportionally at average cost. Overselling clamps basis to zero, and a
  * sell from a non-positive position leaves basis untouched (there is no
  * average cost to apply).
+ *
+ * Closing the position cleanly (to exactly zero, never having been oversold)
+ * clears the taint: the lots whose cost was unknown are gone, and whatever is
+ * bought next has a basis of its own.
  */
-export function buildPools(txns: Transaction[], db: PriceDb, base: string, asOf: ISODate, inScope: (account: string) => boolean): Map<string, SymbolPool> {
+export function buildPools(
+    txns: Transaction[],
+    db: PriceDb,
+    base: string,
+    asOf: ISODate,
+    inScope: (account: string) => boolean,
+    declared: ReadonlyMap<string, AccountType>
+): Map<string, SymbolPool> {
     const pools = new Map<string, SymbolPool>();
     const perAccount = new Map<string, Map<string, Dec>>();
 
@@ -135,6 +173,7 @@ export function buildPools(txns: Transaction[], db: PriceDb, base: string, asOf:
                 tainted: false,
                 costlessBuyTxns: [],
                 negativeCrossTxn: null,
+                wentNegative: false,
                 firstBasisDate: null,
                 accounts: [],
                 name: symbol,
@@ -152,7 +191,10 @@ export function buildPools(txns: Transaction[], db: PriceDb, base: string, asOf:
         // Gather this txn's in-scope stock legs per symbol (posting order preserved).
         const bySymbol = new Map<string, LotEntry[]>();
         for (const posting of txn.postings) {
-            if (!inScope(posting.account)) continue;
+            // Out-of-scope accounts, and non-holding (equity/revenue/expense)
+            // legs: the latter are a share movement's funding/disposal counter-
+            // side, not a place shares are held (see isHoldingAccount).
+            if (!inScope(posting.account) || !isHoldingAccount(posting.account, declared)) continue;
             for (const amount of posting.amounts) {
                 if (isCurrency(amount.commodity)) continue;
                 const entries = bySymbol.get(amount.commodity);
@@ -180,6 +222,14 @@ export function buildPools(txns: Transaction[], db: PriceDb, base: string, asOf:
                 const legAfter = add(legBefore, entry.qty);
                 if (entry.qty.m > 0n) {
                     if (legBefore.m <= 0n) pool.firstBasisDate = txn.date; // (re)opening the position resets its basis date
+                    if (legBefore.m === 0n && !pool.wentNegative) {
+                        // Re-opening after a clean close: every lot whose cost was
+                        // unknown has been sold, so the new position's basis is
+                        // knowable again and the old cost-less buys no longer
+                        // describe anything held.
+                        pool.tainted = false;
+                        pool.costlessBuyTxns = [];
+                    }
                     const lotCost = costInBase(entry.qty, entry.cost, db, base, txn.date);
                     if (lotCost === null) {
                         pool.tainted = true;
@@ -190,6 +240,7 @@ export function buildPools(txns: Transaction[], db: PriceDb, base: string, asOf:
                 } else if (entry.qty.m < 0n && legBefore.m > 0n) {
                     pool.basis = legAfter.m >= 0n ? reduceBasis(pool.basis, legAfter, legBefore) : dec(0n, pool.basis.p);
                 }
+                if (legAfter.m < 0n) pool.wentNegative = true;
                 pool.shares = legAfter;
             }
             if (before.m >= 0n && pool.shares.m < 0n) pool.negativeCrossTxn = txn.index;
@@ -260,11 +311,16 @@ function scopePredicate(scope: HoldingsScope): (account: string) => boolean {
     return scope.mode === "include" ? (account) => selected.length === 0 || matches(account) : (account) => !matches(account);
 }
 
-/** Stock holdings, average-cost basis, prices, and gains for the scoped journal as of `scope.asOf`. */
-export function computeHoldings(txns: Transaction[], prices: PriceDirective[], scope: HoldingsScope): HoldingsReport {
+/**
+ * Stock holdings, average-cost basis, prices, and gains for the scoped journal
+ * as of `scope.asOf`. `decls` are the journal's declared account types (from
+ * /accounts); without them accounts are typed by hledger's name conventions
+ * alone, exactly as every other type-aware report degrades.
+ */
+export function computeHoldings(txns: Transaction[], prices: PriceDirective[], scope: HoldingsScope, decls: readonly AccountDecl[] = []): HoldingsReport {
     const db = buildPriceDb(prices);
     const base = db.baseCommodity() ?? "$";
-    const pools = buildPools(txns, db, base, scope.asOf, scopePredicate(scope));
+    const pools = buildPools(txns, db, base, scope.asOf, scopePredicate(scope), declaredTypes(decls));
     const costPrices = latestCostPrices(txns, db, base, scope.asOf);
 
     const holdings: Holding[] = [];

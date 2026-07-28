@@ -1,5 +1,5 @@
-import {afterEach, describe, expect, it, vi} from "vitest";
-import {ApiShapeError, ApiUnreachableError, HledgerApi} from "./client";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
+import {ApiShapeError, ApiTimeoutError, ApiUnreachableError, HledgerApi, isNotModified, REQUEST_TIMEOUT_MS, resetConditionalCache} from "./client";
 
 const jsonResponse = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
 
@@ -60,5 +60,108 @@ describe("UNIT HledgerApi", () => {
         const api = new HledgerApi("http://127.0.0.1:5000");
         await expect(api.transactions()).resolves.toEqual([{tindex: 1}]);
         await expect(api.prices()).resolves.toEqual([{mpdate: "2026-01-01"}]);
+    });
+});
+
+/**
+ * The request deadline (FE-5f) and the conditional GET (PERF-2) share the same
+ * few lines, and getting them wrong together is worse than either alone: an
+ * `ETag` recorded off the response HEADERS survives a body read that is then
+ * aborted, and the next poll replays that tag, is told 304, and keeps the OLDER
+ * journal it still has while believing it current. So the tag is only recorded
+ * once the body is in hand, and these tests pin both halves.
+ */
+describe("UNIT HledgerApi deadlines and conditional GET", () => {
+    /** 200 + ETag; `body` may reject to model a read that was cut off mid-stream. */
+    const tagged = (etag: string, body: () => Promise<unknown>): Response =>
+        ({status: 200, ok: true, headers: new Headers({ETag: etag}), json: body}) as unknown as Response;
+
+    const lastInit = (mock: ReturnType<typeof vi.fn>): RequestInit => mock.mock.calls[mock.mock.calls.length - 1][1] as RequestInit;
+    const headersOf = (mock: ReturnType<typeof vi.fn>): Record<string, string> => (lastInit(mock).headers ?? {}) as Record<string, string>;
+
+    beforeEach(() => {
+        resetConditionalCache();
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+        resetConditionalCache();
+    });
+
+    it("replays the recorded ETag and reads a 304 as NOT_MODIFIED", async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(tagged('"v1"', () => Promise.resolve([{tindex: 1}])))
+            .mockResolvedValueOnce({status: 304, ok: false, headers: new Headers()} as unknown as Response);
+        vi.stubGlobal("fetch", fetchMock);
+
+        const api = new HledgerApi("http://127.0.0.1:5000", undefined, {conditional: true});
+        await expect(api.transactions()).resolves.toEqual([{tindex: 1}]);
+        expect(headersOf(fetchMock)["If-None-Match"]).toBeUndefined();
+
+        expect(isNotModified(await api.transactions())).toBe(true);
+        expect(headersOf(fetchMock)["If-None-Match"]).toBe('"v1"');
+    });
+
+    it("stays unconditional for a client that did not opt in", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(tagged('"v1"', () => Promise.resolve([])));
+        vi.stubGlobal("fetch", fetchMock);
+        const api = new HledgerApi("http://127.0.0.1:5000");
+        await api.transactions();
+        await api.transactions();
+        expect(headersOf(fetchMock)["If-None-Match"]).toBeUndefined();
+    });
+
+    it("does not record an ETag for a body it never finished reading", async () => {
+        // What an aborted or timed-out read looks like: headers (with the tag)
+        // arrived, the body did not.
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(tagged('"v2"', () => Promise.reject(new DOMException("aborted", "AbortError"))))
+            .mockResolvedValueOnce(tagged('"v2"', () => Promise.resolve([{tindex: 1}])));
+        vi.stubGlobal("fetch", fetchMock);
+
+        const api = new HledgerApi("http://127.0.0.1:5000", undefined, {conditional: true});
+        await expect(api.transactions()).rejects.toThrow(ApiShapeError);
+        // The retry must ask unconditionally — we hold nothing that '"v2"' describes.
+        await expect(api.transactions()).resolves.toEqual([{tindex: 1}]);
+        expect(fetchMock.mock.calls.every((call) => (call[1] as RequestInit & {headers: Record<string, string>}).headers["If-None-Match"] === undefined)).toBe(
+            true
+        );
+    });
+
+    it("passes an abort signal to fetch and fails a response that never arrives", async () => {
+        vi.useFakeTimers();
+        const fetchMock = vi.fn().mockImplementation(
+            (_url: string, init: RequestInit) =>
+                new Promise((_resolve, reject) => {
+                    init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {once: true});
+                })
+        );
+        vi.stubGlobal("fetch", fetchMock);
+
+        const api = new HledgerApi("http://127.0.0.1:5000");
+        const pending = api.transactions();
+        const assertion = expect(pending).rejects.toThrow(ApiTimeoutError);
+        await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+        await assertion;
+        expect(lastInit(fetchMock).signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it("cancels an in-flight request when the caller's signal aborts", async () => {
+        const controller = new AbortController();
+        const fetchMock = vi.fn().mockImplementation(
+            (_url: string, init: RequestInit) =>
+                new Promise((_resolve, reject) => {
+                    init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {once: true});
+                })
+        );
+        vi.stubGlobal("fetch", fetchMock);
+
+        const api = new HledgerApi("http://127.0.0.1:5000", undefined, {signal: controller.signal});
+        const pending = api.transactions();
+        const assertion = expect(pending).rejects.toThrow(ApiUnreachableError);
+        controller.abort();
+        await assertion;
     });
 });

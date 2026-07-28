@@ -166,6 +166,84 @@ describe("UNIT holdings/engine taint and pricing", () => {
     });
 });
 
+describe("UNIT holdings/engine non-holding (equity/income/expense) legs", () => {
+    it("keeps the shares of an RSU vest funded from income", () => {
+        const txns = [txn(1, "2025-01-15", [buyNoCost("assets:brokerage", "ACME", 10), {account: "income:rsu", amounts: [amt("ACME", -10, 0)]}])];
+        const acme = only(computeHoldings(txns, [pd("2025-02-01", "ACME", 10000)], scope("2025-06-30")), "ACME");
+        expect(toNumber(acme.shares)).toBe(10);
+        expect(acme.basis).toBeNull(); // a costless vest: basis genuinely unknown
+        expect(acme.accounts).toEqual(["assets:brokerage"]);
+    });
+
+    it("keeps the shares of an opening balance booked against equity", () => {
+        const txns = [txn(1, "2025-01-01", [buyNoCost("assets:brokerage", "VTI", 100), {account: "equity:opening balances", amounts: [amt("VTI", -100, 0)]}])];
+        expect(toNumber(only(computeHoldings(txns, [pd("2025-02-01", "VTI", 25000)], scope("2025-06-30")), "VTI").shares)).toBe(100);
+    });
+
+    it("classifies the funding leg by declared type, not by name", () => {
+        const txns = [txn(1, "2025-01-15", [buyNoCost("assets:brokerage", "ACME", 10), {account: "vesting:rsu", amounts: [amt("ACME", -10, 0)]}])];
+        const prices = [pd("2025-02-01", "ACME", 10000)];
+        const declared = computeHoldings(txns, prices, scope("2025-06-30"), [{name: "vesting", type: "revenue"}]);
+        expect(toNumber(only(declared, "ACME").shares)).toBe(10);
+        // Undeclared, `vesting:rsu` reads as an ordinary account, so the legs net
+        // out as a transfer and no position exists at all.
+        expect(computeHoldings(txns, prices, scope("2025-06-30")).holdings).toEqual([]);
+    });
+});
+
+describe("UNIT holdings/engine taint is cleared when the position closes", () => {
+    const prices = [pd("2025-04-01", "GLD", 25000)];
+
+    it("a fully closed then re-opened position reports the new lot's known basis", () => {
+        const txns = [
+            txn(1, "2025-01-10", [buyNoCost("a", "GLD", 10)]), // gift: basis unknown
+            txn(2, "2025-02-10", [sell("a", "GLD", 10)]), // …and gone again
+            txn(3, "2025-03-10", [buy("a", "GLD", 5, 20000)]), // 5 @ $200: fully known
+        ];
+        const report = computeHoldings(txns, prices, scope("2025-06-30"));
+        const gld = only(report, "GLD");
+        expect(toNumber(gld.shares)).toBe(5);
+        expect(cmp(gld.basis!, dec(100000, 2))).toBe(0);
+        expect(report.warnings).toEqual([]);
+        expect(toNumber(report.totals.basis!)).toBe(1000);
+    });
+
+    it("keeps the taint while the tainted lot is still held", () => {
+        const txns = [
+            txn(1, "2025-01-10", [buyNoCost("a", "GLD", 10)]),
+            txn(2, "2025-02-10", [sell("a", "GLD", 4)]), // partial: 6 of the unknown lot remain
+            txn(3, "2025-03-10", [buy("a", "GLD", 5, 20000)]),
+        ];
+        const report = computeHoldings(txns, prices, scope("2025-06-30"));
+        expect(only(report, "GLD").basis).toBeNull();
+        expect(report.warnings.map((w) => w.kind)).toEqual(["missing-basis"]);
+    });
+
+    it("keeps the taint when the position passed through negative on its way back to flat", () => {
+        const txns = [
+            txn(1, "2025-01-10", [buyNoCost("a", "GLD", 10)]),
+            txn(2, "2025-02-10", [sell("a", "GLD", 15)]), // 10 → -5
+            txn(3, "2025-03-10", [buy("a", "GLD", 5, 5000)]), // -5 → 0: flat, but not a clean close
+            txn(4, "2025-04-10", [buy("a", "GLD", 3, 20000)]),
+        ];
+        const report = computeHoldings(txns, prices, scope("2025-06-30"));
+        expect(only(report, "GLD").basis).toBeNull();
+    });
+
+    it("keeps the taint when the position was re-opened out of a NEGATIVE one", () => {
+        // The oversold lot was never entered, so the average cost of what is held
+        // afterwards is not knowable (Rust calls this the sticky-negative taint).
+        const txns = [
+            txn(1, "2025-01-10", [buyNoCost("a", "GLD", 4)]),
+            txn(2, "2025-02-10", [sell("a", "GLD", 10)]), // 4 → -6
+            txn(3, "2025-03-10", [buy("a", "GLD", 8, 20000)]), // -6 → 2
+        ];
+        const report = computeHoldings(txns, prices, scope("2025-06-30"));
+        expect(only(report, "GLD").basis).toBeNull();
+        expect(report.warnings.map((w) => w.kind)).toEqual(["missing-basis"]);
+    });
+});
+
 describe("UNIT holdings/engine firstBasisDate", () => {
     const prices = [pd("2025-02-01", "VTI", 25000)];
 

@@ -99,8 +99,11 @@ bench-save name="baseline":
     LEDGELINE_BENCH_SIZES=5000,50000,200000 cargo bench -p ledgeline-core -- --save-baseline {{name}}
 
 # Re-run all three sizes and report the change against a saved baseline.
+# `--baseline-lenient`, not `--baseline`: criterion PANICS when a bench has no
+# entry in the named baseline, so adding one new bench would abort the whole
+# comparison partway. Lenient skips the missing one and compares the rest.
 bench-compare name="baseline":
-    LEDGELINE_BENCH_SIZES=5000,50000,200000 cargo bench -p ledgeline-core -- --baseline {{name}}
+    LEDGELINE_BENCH_SIZES=5000,50000,200000 cargo bench -p ledgeline-core -- --baseline-lenient {{name}}
 
 # Peak RSS of holding one journal's Snapshot, stage by stage. macOS only
 # (`/usr/bin/time -l`); on Linux swap in `/usr/bin/time -v`.

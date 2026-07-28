@@ -23,15 +23,20 @@
     const connTitle = $derived(conn === "error" ? (journal.error ?? "connection error") : (settings.serverUrl ?? "No hledger-web server configured"));
 
     let reconnectOpen = $state(false);
-    let lastServerUrl = settings.serverUrl;
-    // When the setup modal verifies a NEW url, close the reconnect modal and refetch.
+    let storageNoticeDismissed = $state(false);
+    let lastVerified = settings.serverNonce;
+    // Every SUCCESSFUL verification refetches — keyed on settings.serverNonce,
+    // not on the URL. Reconnecting to the same address (the overwhelmingly
+    // common case: the engine restarted on the same port) left the URL
+    // unchanged, so this effect never fired and neither did the pages' own
+    // `url !== attemptedUrl` guards — the Reconnect button did nothing at all.
+    // `force` because the round it needs to replace is the hung one (FE-5d).
     $effect(() => {
-        const url = settings.serverUrl;
-        if (url !== lastServerUrl) {
-            lastServerUrl = url;
-            reconnectOpen = false;
-            if (url !== null) void journal.refresh();
-        }
+        const nonce = settings.serverNonce;
+        if (nonce === lastVerified) return;
+        lastVerified = nonce;
+        reconnectOpen = false;
+        if (settings.serverUrl !== null) void journal.refresh({force: true});
     });
 </script>
 
@@ -70,7 +75,7 @@
                             title="Refresh journal data now"
                             aria-label="Refresh journal data now"
                             disabled={conn === "loading"}
-                            onclick={() => void journal.refresh()}
+                            onclick={() => void journal.refresh({force: true})}
                         >
                             <svg
                                 class="h-4 w-4 {conn === 'loading' ? 'animate-spin' : ''}"
@@ -102,6 +107,17 @@
     </div>
     <ProblemsDrawer />
 </div>
+
+<!-- Corrupt localStorage used to drop the saved server URL and every column
+     preference in silence, so the app just reappeared at first-run setup. -->
+{#if settings.storageError !== null && !storageNoticeDismissed}
+    <div class="toast toast-start z-40">
+        <div class="alert alert-warning max-w-md" data-testid="settings-storage-error">
+            <span class="grow break-words">{settings.storageError}</span>
+            <button type="button" class="btn btn-sm shrink-0" onclick={() => (storageNoticeDismissed = true)}>Dismiss</button>
+        </div>
+    </div>
+{/if}
 
 {#if settings.serverUrl === null || reconnectOpen}
     <ServerSetupModal />

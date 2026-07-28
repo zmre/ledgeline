@@ -42,6 +42,8 @@ function classify(error: unknown): EditFailure {
 }
 
 let canEdit = $state(false);
+/** Non-null when the last probe could not REACH the server, so `canEdit` is stale rather than known. */
+let probeError = $state<string | null>(null);
 let busy = $state(false);
 /** True after a 409: the file changed on disk — the page shows a refresh banner. */
 let conflict = $state(false);
@@ -65,14 +67,18 @@ async function run(action: (api: LedgelineApi) => Promise<unknown>): Promise<Edi
     busy = true;
     try {
         await action(api);
-        await journal.refresh();
+        // `force`: a refresh already in flight issued its GETs BEFORE this
+        // write, so joining it would confirm the edit against pre-write data
+        // and then bank that as the current fingerprint — which suppresses the
+        // swap for the correct data when it does arrive (FE-5e).
+        await journal.refresh({force: true});
         conflict = false;
         return OK;
     } catch (error) {
         const failure = classify(error);
         if (failure.kind === "conflict") {
             conflict = true;
-            await journal.refresh();
+            await journal.refresh({force: true});
         } else if (failure.kind === "unavailable") {
             canEdit = false;
         }
@@ -110,18 +116,35 @@ export const editing = {
         notice = failure;
     },
 
-    /** Probe write availability for the configured server (called when the URL is set). */
+    /** Why the last probe couldn't be answered, or null when it was. Non-null means `canEdit` is a GUESS. */
+    get probeError(): string | null {
+        return probeError;
+    },
+
+    /**
+     * Probe write availability for the configured server (called when the URL is
+     * set, and again after a refresh that follows a failed probe).
+     *
+     * A probe that comes back is authoritative: 404 means read-only, anything
+     * else means the write routes are there. A probe that never comes back says
+     * nothing at all, and treating the two alike is what let one dropped packet
+     * remove every edit affordance — the Add button, the inline editors, the
+     * popup — for the rest of the session, with no message and nothing to click
+     * (FE-5g). So an unreachable probe keeps whatever was last known and records
+     * why, leaving the retry to the caller.
+     */
     async probe(): Promise<void> {
         const api = client();
         if (api === null) {
             canEdit = false;
+            probeError = null;
             return;
         }
         try {
             canEdit = await api.probeEditing();
-        } catch {
-            // Unreachable / CORS-blocked / non-native — degrade to read-only.
-            canEdit = false;
+            probeError = null;
+        } catch (error) {
+            probeError = error instanceof Error ? error.message : String(error);
         }
     },
 

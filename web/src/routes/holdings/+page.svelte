@@ -22,6 +22,7 @@
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import {holdingsData, holdingsScope} from "$lib/stores/holdings.svelte";
     import {journal} from "$lib/stores/journal.svelte";
+    import {dataView} from "$lib/stores/loadState";
     import {settings} from "$lib/stores/settings.svelte";
 
     // Reset the scope from the URL once (fresh visits open at today), then
@@ -39,16 +40,26 @@
         }
     });
 
-    // Fetch the native holdings report + trend whenever the scope changes (or the server is first configured).
+    // Fetch the native holdings report + trend whenever the scope changes, the
+    // server is first configured, or the user reconnects. The nonce is in the
+    // key because a reconnect usually leaves the URL identical (the engine
+    // restarted on the same port), and keying on the URL alone meant this page
+    // never retried after one (FE-5d).
+    const loadKey = $derived({url: settings.serverUrl, nonce: settings.serverNonce, scope: holdingsScope.value});
     $effect(() => {
-        const url = settings.serverUrl;
-        const scope = holdingsScope.value;
+        const {url, scope} = loadKey;
         if (url !== null) void holdingsData.load(url, scope);
     });
 
     const report = $derived(holdingsData.report);
     const trend = $derived(holdingsData.trend);
-    const ready = $derived(report !== null && journal.txns.length > 0);
+    // Readiness is the ENGINE's report, nothing else. It used to also require
+    // `journal.txns.length > 0` — a row count from the separate hledger-web
+    // feed — so a working engine plus a failing feed spun forever, and so did a
+    // legitimately empty journal on a new user's first run (FE-5c). The base
+    // commodity's display style is the only thing that feed contributes here,
+    // and `styleFor` already falls back when it has none.
+    const view = $derived(dataView(holdingsData.status, report !== null));
     const nativeUnavailable = $derived(holdingsData.error instanceof NativeApiUnavailableError);
 
     const base = $derived(report?.base ?? "$");
@@ -75,7 +86,17 @@
 <div class="flex flex-col gap-3">
     <ScopeBar {accountNames} />
 
-    {#if ready && report !== null}
+    <!-- Error first: tested after the data branch and gated on `report === null`,
+         this could never fire once a report had loaded, so moving the as-of and
+         hitting a 500 kept the OLD date's portfolio on screen (FE-5). -->
+    {#if view === "error"}
+        <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="holdings-error">
+            <span>{nativeUnavailable ? holdingsData.error?.message : `Couldn't load holdings: ${holdingsData.error?.message ?? "unknown error"}`}</span>
+            {#if !nativeUnavailable}
+                <button type="button" class="btn btn-sm" onclick={() => void holdingsData.load(settings.serverUrl ?? "", holdingsScope.value)}>Retry</button>
+            {/if}
+        </div>
+    {:else if view === "data" && report !== null}
         {#if positions.shown.length > 0}
             <section class="collapse-arrow bg-base-200 collapse" data-testid="holdings-insights">
                 <input type="checkbox" bind:checked={insightsOpen} aria-label="Toggle holdings insights" />
@@ -131,13 +152,6 @@
         {#if hiddenNote !== null}
             <p class="text-base-content/60 px-1 text-xs" data-testid="holdings-hidden-note">{hiddenNote}</p>
         {/if}
-    {:else if report === null && holdingsData.status === "error"}
-        <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="holdings-error">
-            <span>{nativeUnavailable ? holdingsData.error?.message : `Couldn't load holdings: ${holdingsData.error?.message ?? "unknown error"}`}</span>
-            {#if !nativeUnavailable}
-                <button type="button" class="btn btn-sm" onclick={() => void holdingsData.load(settings.serverUrl ?? "", holdingsScope.value)}>Retry</button>
-            {/if}
-        </div>
     {:else}
         <div class="flex items-center justify-center py-24" aria-label="Loading holdings">
             <span class="loading loading-spinner loading-lg"></span>
@@ -149,7 +163,7 @@
     <div class="toast toast-end z-30">
         <div class="alert alert-error">
             <span class="max-w-xs truncate" title={journal.error}>{journal.error}</span>
-            <button type="button" class="btn btn-sm" onclick={() => void journal.refresh()}>Retry</button>
+            <button type="button" class="btn btn-sm" onclick={() => void journal.refresh({force: true})}>Retry</button>
         </div>
     </div>
 {/if}

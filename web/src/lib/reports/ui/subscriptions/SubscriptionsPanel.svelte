@@ -9,6 +9,7 @@
     import {NativeApiUnavailableError} from "$lib/api/native";
     import type {AmountStyle} from "$lib/domain/types";
     import {today} from "$lib/reports/periods";
+    import {dataView} from "$lib/stores/loadState";
     import {subscriptions} from "$lib/stores/subscriptions.svelte";
     import SubscriptionsBox from "./SubscriptionsBox.svelte";
 
@@ -21,11 +22,21 @@
     });
 
     const report = $derived(subscriptions.report);
+    // Error before data (FE-5): with the data branch first, a failed reload left
+    // yesterday's detected subscriptions on screen with nothing to say so.
+    const view = $derived(dataView(subscriptions.status, report !== null));
     const nativeUnavailable = $derived(subscriptions.error instanceof NativeApiUnavailableError);
 </script>
 
 <div class="flex flex-col gap-4" data-testid="subscriptions-panel">
-    {#if report !== null}
+    {#if view === "error"}
+        <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="subscriptions-error">
+            <span>{nativeUnavailable ? subscriptions.error?.message : `Couldn't load subscriptions: ${subscriptions.error?.message ?? "unknown error"}`}</span>
+            {#if !nativeUnavailable}
+                <button type="button" class="btn btn-sm" onclick={() => void subscriptions.load(serverUrl ?? "", today())}>Retry</button>
+            {/if}
+        </div>
+    {:else if view === "data" && report !== null}
         <div class="text-base-content/60 text-xs">
             Recurring charges detected in <span class="text-base-content/80 font-medium">{report.lookbackStart} → {report.asOf}</span>
         </div>
@@ -63,13 +74,6 @@
             them with a comma (<code class="text-base-content/70">category:infra, subscription:true</code>) — a tag's value runs to the next comma, so without
             one the new tag is swallowed by the previous one.
         </p>
-    {:else if subscriptions.status === "error"}
-        <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="subscriptions-error">
-            <span>{nativeUnavailable ? subscriptions.error?.message : `Couldn't load subscriptions: ${subscriptions.error?.message ?? "unknown error"}`}</span>
-            {#if !nativeUnavailable}
-                <button type="button" class="btn btn-sm" onclick={() => void subscriptions.load(serverUrl ?? "", today())}>Retry</button>
-            {/if}
-        </div>
     {:else}
         <div class="flex items-center justify-center py-24" aria-label="Loading subscriptions">
             <span class="loading loading-spinner loading-lg"></span>

@@ -1,6 +1,6 @@
 // Pure display helpers for the holdings UI (WP-10). No Svelte/DOM imports —
 // unit-tested under node; the .svelte components stay thin.
-import {add, cmp, dec, formatDec, toNumber, type Dec} from "$lib/domain/money";
+import {add, cmp, dec, formatDec, MAX_QUANTITY_DECIMALS, toNumber, type Dec} from "$lib/domain/money";
 import type {AmountStyle, Transaction} from "$lib/domain/types";
 import {isCurrency} from "$lib/holdings/commodities";
 import type {Holding} from "$lib/holdings/types";
@@ -105,15 +105,21 @@ export function pieSlices(holdings: readonly Holding[], format: (v: Dec) => stri
     return slices.map((s) => ({...s, share: total > 0 ? (s.value / total) * 100 : 0}));
 }
 
-const SHARES_STYLE: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
+const SHARES_STYLE: Omit<AmountStyle, "precision"> = {side: "L", spaced: false, decimalPoint: ".", digitGroups: [",", [3]]};
 
 /**
- * Share quantities for the table: exact Dec formatting capped at 2 decimal
- * places (the app-wide display rule), with trailing fraction zeros trimmed —
- * "19.5" and "17", never "19.50" / "17.0".
+ * Share quantities for the table.
+ *
+ * A share count is NOT money: its unit of account is whatever the journal
+ * wrote, not the cent, so the 2-place money cap does not apply here — under it
+ * a 0.00123456 BTC position read `0` in the Shares column next to a real dollar
+ * market value, and 1.00123456 BTC read `1`. Formatted at the quantity's OWN
+ * precision (bounded by MAX_QUANTITY_DECIMALS) with trailing fraction zeros
+ * trimmed, so whole and half-share counts are unchanged: "19.5" and "17", never
+ * "19.50" / "17.0".
  */
 export function formatShares(shares: Dec): string {
-    const s = formatDec(shares, SHARES_STYLE);
+    const s = formatDec(shares, {...SHARES_STYLE, precision: shares.p}, MAX_QUANTITY_DECIMALS);
     return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }
 

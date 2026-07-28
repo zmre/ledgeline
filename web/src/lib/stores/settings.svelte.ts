@@ -43,6 +43,18 @@ function embeddedServerUrl(): string | null {
     return (window as {__LEDGELINE_EMBEDDED__?: boolean}).__LEDGELINE_EMBEDDED__ === true ? window.location.origin : null;
 }
 
+/**
+ * Why the persisted settings could not be read, when that happened.
+ *
+ * A corrupt blob throws out of `JSON.parse`, and the catch used to discard
+ * everything in it — the verified server URL and every column preference —
+ * without a word, so the app reappeared at the first-run setup modal as if it
+ * had never been configured and the user had no idea why (FE-5g). Recording it
+ * lets the layout say so; the settings themselves still fall back to defaults,
+ * because there is genuinely nothing else to fall back to.
+ */
+let storageError: string | null = null;
+
 function load(): PersistedSettings {
     const embedded = embeddedServerUrl();
     if (typeof localStorage === "undefined") return {...defaults(), serverUrl: embedded ?? null};
@@ -56,12 +68,25 @@ function load(): PersistedSettings {
             columns: {...defaultColumns(), ...(typeof parsed.columns === "object" && parsed.columns !== null ? parsed.columns : {})},
             insightsOpen: typeof parsed.insightsOpen === "boolean" ? parsed.insightsOpen : true,
         };
-    } catch {
+    } catch (cause) {
+        storageError = `Saved settings couldn't be read (${cause instanceof Error ? cause.message : String(cause)}) — starting from defaults.`;
+        console.warn(`[settings] ${storageError}`, cause);
         return {...defaults(), serverUrl: embedded ?? null};
     }
 }
 
 const state = $state<PersistedSettings>(load());
+
+/**
+ * Bumped by every SUCCESSFUL `setServerUrl`, including one that verifies the
+ * address already stored.
+ *
+ * The URL alone cannot express "the user just reconnected": the common recovery
+ * is the engine restarting on the same port, which leaves it identical. Every
+ * refetch guard keyed on the URL therefore sat still and the Reconnect button
+ * did nothing (FE-5d).
+ */
+let serverNonce = $state(0);
 
 function persist(): void {
     if (typeof localStorage === "undefined") return;
@@ -75,6 +100,14 @@ export const settings = {
     /** null until a server URL has been verified — the layout shows the setup modal. */
     get serverUrl(): string | null {
         return state.serverUrl;
+    },
+    /** Increments on every successful `setServerUrl`; refetch guards key on it so a same-URL reconnect still fires. */
+    get serverNonce(): number {
+        return serverNonce;
+    },
+    /** Why the persisted settings were discarded at startup, or null when they loaded (set once, never changes). */
+    get storageError(): string | null {
+        return storageError;
     },
     get columns(): ColumnConfig {
         return state.columns;
@@ -113,6 +146,11 @@ export const settings = {
         await new HledgerApi(normalized, candidate ?? undefined).version();
         if (token !== undefined) state.serverToken = candidate;
         state.serverUrl = normalized;
+        // AFTER the URL, so anything reacting to the nonce reads the new one.
+        // Bumped even when `normalized` equals what was already stored: that is
+        // exactly the reconnect-to-a-restarted-engine case, and it is the only
+        // signal distinguishing it from no change at all.
+        serverNonce += 1;
         persist();
     },
 };

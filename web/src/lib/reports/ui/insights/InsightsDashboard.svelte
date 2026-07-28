@@ -10,6 +10,7 @@
     import type {MetricDelta} from "$lib/reports/insightsTypes";
     import type {ReportParams} from "$lib/reports/ui/params";
     import {insights} from "$lib/stores/insights.svelte";
+    import {dataView} from "$lib/stores/loadState";
     import ChangeList from "./ChangeList.svelte";
     import {deltaLine, extras, fmt, fmtBase, fmtSignedAmount, fmtSignedPct, monthlyAverage, signClass} from "./format";
     import MoversList from "./MoversList.svelte";
@@ -27,6 +28,10 @@
     });
 
     const report = $derived(insights.report);
+    // Error before data (FE-5): with the data branch first, moving the period
+    // and hitting a failure left the PREVIOUS period's boxes on screen under the
+    // new period's dates.
+    const view = $derived(dataView(insights.status, report !== null));
     const nativeUnavailable = $derived(insights.error instanceof NativeApiUnavailableError);
 
     /**
@@ -58,7 +63,16 @@
 <div class="flex flex-col gap-4" data-testid="insights-dashboard">
     <PeriodControl bind:start={params.insStart} bind:end={params.insEnd} />
 
-    {#if report !== null}
+    {#if view === "error"}
+        <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="insights-error">
+            <span>{nativeUnavailable ? insights.error?.message : `Couldn't load insights: ${insights.error?.message ?? "unknown error"}`}</span>
+            {#if !nativeUnavailable}
+                <button type="button" class="btn btn-sm" onclick={() => void insights.load(serverUrl ?? "", {start: params.insStart, end: params.insEnd})}
+                    >Retry</button
+                >
+            {/if}
+        </div>
+    {:else if view === "data" && report !== null}
         {@const base = report.base}
         {@const period = report.period}
         {@const inv = report.investment}
@@ -155,15 +169,6 @@
                 testid="insights-box-revenuechanges"
             />
             <TopTxnsList rows={report.topTxns} {base} {styles} testid="insights-box-toptxns" />
-        </div>
-    {:else if insights.status === "error"}
-        <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="insights-error">
-            <span>{nativeUnavailable ? insights.error?.message : `Couldn't load insights: ${insights.error?.message ?? "unknown error"}`}</span>
-            {#if !nativeUnavailable}
-                <button type="button" class="btn btn-sm" onclick={() => void insights.load(serverUrl ?? "", {start: params.insStart, end: params.insEnd})}
-                    >Retry</button
-                >
-            {/if}
         </div>
     {:else}
         <div class="flex items-center justify-center py-24" aria-label="Loading insights">

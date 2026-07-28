@@ -28,16 +28,29 @@ let error = $state<string | null>(null);
 let fetchedAt = $state<number | null>(null);
 
 let inFlight: Promise<void> | null = null;
+/** The server URL the in-flight round is asking; a reconnect elsewhere must not join it. */
+let inFlightUrl: string | null = null;
+/** Cancels the in-flight round when a newer one supersedes it. */
+let inFlightAbort: AbortController | null = null;
+/**
+ * Monotonic round id. Only the newest round may touch state.
+ *
+ * Without it a round could still be answering after it had been superseded and
+ * would write its (older) result anyway — most damagingly `lastFingerprint`,
+ * which is the one variable that decides whether a LATER, correct result gets
+ * swapped in at all.
+ */
+let roundToken = 0;
 let lastFingerprint = 0;
 
 /**
  * Content-aware change fingerprint so polling refreshes don't churn every
  * $derived when nothing changed, while never discarding a REAL change — an
  * in-place edit to any transaction (recategorize, amount fix) must swap state,
- * not just appends. djb2 over each txn's index/date/status/haystack plus its
- * postings' EXACT amounts, then account names, price directives, and declared
- * account types (a `type:` edit must recompute the cash-flow report). Exported
- * for unit tests.
+ * not just appends. djb2 over each txn's index/dates/status/haystack plus its
+ * postings' account, status, date, type, balance assertion and EXACT amounts,
+ * then account names, price directives, and declared account types (a `type:`
+ * edit must recompute the cash-flow report). Exported for unit tests.
  *
  * The haystack alone is NOT enough, even though it mentions amounts: it is
  * built for searching, so its amounts run through `formatAmount`, which rounds
@@ -67,10 +80,27 @@ export function contentFingerprint(
     for (const t of list) {
         h = (Math.imul(h, 33) + t.index) >>> 0;
         mixStr(t.date);
+        // Secondary date: nothing else here mixes it, and it is absent from the
+        // haystack, so adding/clearing one used to hash identically.
+        mixStr(t.date2 ?? "");
         mixStr(t.status);
         mixStr(t.haystack);
         for (const posting of t.postings) {
             mixStr(posting.account);
+            // Per-posting status and date, the posting type (`(a)` / `[a]`) and
+            // the balance assertion are all invisible to the haystack, so an
+            // edit that touches only one of them produced an unchanged
+            // fingerprint — the refresh fetched the new journal and then threw
+            // it away, permanently (see `lastFingerprint` in doRefresh).
+            mixStr(posting.status);
+            mixStr(posting.date ?? "");
+            mixStr(posting.type ?? "regular");
+            if (posting.balanceAssertion !== undefined) {
+                const assertion = posting.balanceAssertion;
+                mixStr(assertion.amount.commodity);
+                mixDec(assertion.amount.qty);
+                mixStr(`${assertion.inclusive ? "*" : ""}${assertion.total ? "=" : ""}`);
+            }
             for (const amount of posting.amounts) {
                 mixStr(amount.commodity);
                 mixDec(amount.qty);
@@ -87,7 +117,14 @@ export function contentFingerprint(
         mixStr(p.date);
         mixStr(p.commodity);
         mixStr(p.price.commodity);
-        h = (Math.imul(h, 33) + Number(BigInt.asIntN(32, p.price.qty.m))) >>> 0;
+        // `mixDec`, exactly like every other amount. The old line mixed
+        // `Number(BigInt.asIntN(32, qty.m))` — mantissa only, truncated to 32
+        // bits — so `P VTI $1.00` (m=100n,p=2) and `P VTI $100` (m=100n,p=0)
+        // hashed the same, as did any two 8-dp mantissas 2^32 apart. Prices
+        // drive holdings and every valuation report, and a skipped swap also
+        // rewrites `lastFingerprint`, so a collision stranded a stale portfolio
+        // on screen for good rather than for one poll.
+        mixDec(p.price.qty);
     }
     for (const d of decls) {
         mixStr(d.name);
@@ -109,23 +146,31 @@ export function contentFingerprint(
 /**
  * One fetch round.
  *
+ * `token` is this round's id: every write below is guarded on it still being
+ * the newest, so a round that has been superseded (by a reconnect, or by the
+ * forced refetch after a write) resolves without touching state — including
+ * `lastFingerprint`, whose whole job is to decide what the NEXT round is
+ * allowed to swap in.
+ *
  * `unconditional` forces a full refetch by first forgetting every recorded
  * ETag; `doRefresh` sets it for the single retry it does when a conditional
- * round comes back mixed (see below).
+ * round comes back mixed (see below). That retry is a continuation of the same
+ * round, so it keeps the same token and signal.
  */
-async function doRefresh(unconditional = false): Promise<void> {
+async function doRefresh(token: number, unconditional: boolean, signal: AbortSignal): Promise<void> {
     const baseUrl = settings.serverUrl;
     if (baseUrl === null) {
+        if (token !== roundToken) return;
         status = "error";
         error = "No hledger-web server configured";
         return;
     }
     if (unconditional) resetConditionalCache();
-    status = "loading";
+    if (token === roundToken) status = "loading";
     try {
         // `conditional`: this is the one caller that repeats these requests
         // forever (a 30-second poll) and can act on a 304 by keeping what it has.
-        const api = new HledgerApi(baseUrl, undefined, {conditional: true});
+        const api = new HledgerApi(baseUrl, undefined, {conditional: true, signal});
         // Diagnostics are advisory and Ledgeline-native: a plain hledger-web has
         // no such route. Failing it to `null` here (rather than letting it reject
         // the whole `Promise.all`) is what keeps the journal loading against any
@@ -136,8 +181,14 @@ async function doRefresh(unconditional = false): Promise<void> {
             api.accountNames(),
             api.prices(),
             api.accounts(),
-            new LedgelineApi(baseUrl).diagnostics().catch(() => null),
+            new LedgelineApi(baseUrl, {signal}).diagnostics().catch(() => null),
         ]);
+
+        // Superseded while the network was answering: these payloads describe a
+        // server, or a moment, the app has already moved on from. Falling
+        // through would write `lastFingerprint` from them and make the newer
+        // round's swap look like a no-op.
+        if (token !== roundToken) return;
 
         // Every journal payload comes from one server-side snapshot carrying one
         // ETag, so an unchanged journal answers 304 on all three of the big
@@ -148,7 +199,7 @@ async function doRefresh(unconditional = false): Promise<void> {
             // `fetchedAt === null` means we have ETags but no state to keep — a
             // round that recorded them and then failed to normalize. Refetch.
             if (fetchedAt === null) {
-                await doRefresh(true);
+                await doRefresh(token, true, signal);
                 return;
             }
             fetchedAt = Date.now();
@@ -164,7 +215,7 @@ async function doRefresh(unconditional = false): Promise<void> {
             // Bounded: the retry sends no `If-None-Match`, so it cannot come back
             // mixed again.
             if (unconditional) throw new Error("the server answered 304 to an unconditional request");
-            await doRefresh(true);
+            await doRefresh(token, true, signal);
             return;
         }
 
@@ -195,9 +246,36 @@ async function doRefresh(unconditional = false): Promise<void> {
         status = "ready";
         error = null;
     } catch (cause) {
+        // A superseded round's failure is not the user's problem — most of the
+        // time it IS the supersession (we aborted it ourselves).
+        if (token !== roundToken) return;
         status = "error";
         error = cause instanceof Error ? cause.message : String(cause);
     }
+}
+
+/**
+ * Begin a new round, superseding and cancelling any round already running.
+ *
+ * The abort is what makes a hung server recoverable: without it the previous
+ * round holds its socket until the deadline, and the promise every caller is
+ * waiting on with it.
+ */
+function startRound(): Promise<void> {
+    const token = ++roundToken;
+    inFlightAbort?.abort();
+    const controller = new AbortController();
+    inFlightAbort = controller;
+    inFlightUrl = settings.serverUrl;
+    const promise = doRefresh(token, false, controller.signal).finally(() => {
+        // A newer round owns these now; clearing them would strand it.
+        if (token !== roundToken) return;
+        inFlight = null;
+        inFlightUrl = null;
+        inFlightAbort = null;
+    });
+    inFlight = promise;
+    return promise;
 }
 
 export const journal = {
@@ -233,12 +311,27 @@ export const journal = {
     get fetchedAt(): number | null {
         return fetchedAt;
     },
-    /** Full refetch of /transactions, /accountnames, /prices, /accounts. Concurrent calls share one in-flight request. */
-    refresh(): Promise<void> {
-        inFlight ??= doRefresh().finally(() => {
-            inFlight = null;
-        });
-        return inFlight;
+    /**
+     * Full refetch of /transactions, /accountnames, /prices, /accounts.
+     *
+     * Concurrent calls share one in-flight round — but only when that round is
+     * answering the same question. Two cases must never join one:
+     *
+     *  - `force`, for any caller that has just CHANGED something the round is
+     *    reading. A round's GETs went out before the write did, so joining it
+     *    resolves the write "ok" against pre-edit data and then records the
+     *    pre-edit fingerprint, which suppresses the swap for the real result
+     *    too. Visibly: toggle one row's status, then another's, and the second
+     *    badge doesn't move for up to 30 seconds — and since the cycle button
+     *    steps from the DISPLAYED status, clicking again advances the journal
+     *    file two steps (FE-5e).
+     *  - a different `serverUrl`. Reconnecting handed back the OLD server's
+     *    promise, and every page guard had already latched, so nothing retried
+     *    against the new one (FE-5d).
+     */
+    refresh(options?: {force?: boolean}): Promise<void> {
+        if (inFlight !== null && options?.force !== true && inFlightUrl === settings.serverUrl) return inFlight;
+        return startRound();
     },
 };
 

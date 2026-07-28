@@ -91,15 +91,25 @@ describe("UNIT holdings view helpers", () => {
     });
 
     describe("formatShares", () => {
-        it("caps display at 2 decimals and trims trailing zeros", () => {
+        it("keeps the quantity's own precision and trims trailing zeros", () => {
             expect(formatShares(dec(195000n, 4))).toBe("19.5"); // 19.5000
             expect(formatShares(dec(170n, 1))).toBe("17"); // 17.0
             expect(formatShares(dec(45n, 1))).toBe("4.5");
             expect(formatShares(dec(123456n, 2))).toBe("1,234.56");
         });
 
-        it("rounds (half away from zero) rather than truncating", () => {
-            expect(formatShares(dec(19999n, 3))).toBe("20"); // 19.999 → 20.00 → 20
+        // FE-6: a share count is not money. Under the 2-place MONEY cap these
+        // read "0" and "1" next to a real dollar market value.
+        it("does not round fractional units to cents", () => {
+            expect(formatShares(dec(123456n, 8))).toBe("0.00123456"); // 0.00123456 BTC, was "0"
+            expect(formatShares(dec(100123456n, 8))).toBe("1.00123456"); // was "1"
+            expect(formatShares(dec(19999n, 3))).toBe("19.999"); // 19.999 units are not 20 units
+        });
+
+        it("caps at 8 places, rounding half away from zero, and keeps a sub-satoshi dust row readable", () => {
+            expect(formatShares(dec(1999999995n, 10))).toBe("0.2"); // 0.1999999995 → 0.20000000 → trimmed
+            expect(formatShares(dec(123456789n, 10))).toBe("0.01234568"); // 0.0123456789 rounds up at place 8
+            expect(formatShares(dec(1n, 12))).toBe("0"); // below 1e-8: the short zero beats a row of zeros
         });
     });
 

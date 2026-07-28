@@ -1,0 +1,386 @@
+{
+    "asOf": "2024-12-31",
+    "base": "$",
+    "holdings": [
+        {
+            "symbol": "OPEN",
+            "name": "OPEN",
+            "accounts": [
+                "assets:brokerage"
+            ],
+            "shares": {
+                "mantissa": "100",
+                "places": 0
+            },
+            "basis": {
+                "mantissa": "100000",
+                "places": 2
+            },
+            "firstBasisDate": "2024-01-02",
+            "price": {
+                "qty": {
+                    "mantissa": "1200",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "120000",
+                "places": 2
+            },
+            "gain": {
+                "mantissa": "20000",
+                "places": 2
+            },
+            "gainPct": 20.0
+        },
+        {
+            "symbol": "SPLIT",
+            "name": "SPLIT",
+            "accounts": [
+                "assets:brokerage"
+            ],
+            "shares": {
+                "mantissa": "20",
+                "places": 0
+            },
+            "basis": {
+                "mantissa": "100000",
+                "places": 2
+            },
+            "firstBasisDate": "2024-03-25",
+            "price": {
+                "qty": {
+                    "mantissa": "5500",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "110000",
+                "places": 2
+            },
+            "gain": {
+                "mantissa": "10000",
+                "places": 2
+            },
+            "gainPct": 10.0
+        },
+        {
+            "symbol": "ROUND",
+            "name": "ROUND",
+            "accounts": [
+                "assets:brokerage"
+            ],
+            "shares": {
+                "mantissa": "5",
+                "places": 0
+            },
+            "basis": null,
+            "firstBasisDate": "2024-06-15",
+            "price": {
+                "qty": {
+                    "mantissa": "21000",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "105000",
+                "places": 2
+            },
+            "gain": null,
+            "gainPct": null
+        },
+        {
+            "symbol": "BUY",
+            "name": "BUY",
+            "accounts": [
+                "assets:brokerage"
+            ],
+            "shares": {
+                "mantissa": "10",
+                "places": 0
+            },
+            "basis": {
+                "mantissa": "50000",
+                "places": 2
+            },
+            "firstBasisDate": "2024-03-01",
+            "price": {
+                "qty": {
+                    "mantissa": "6500",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "65000",
+                "places": 2
+            },
+            "gain": {
+                "mantissa": "15000",
+                "places": 2
+            },
+            "gainPct": 30.0
+        },
+        {
+            "symbol": "VEST",
+            "name": "VEST",
+            "accounts": [
+                "assets:brokerage"
+            ],
+            "shares": {
+                "mantissa": "10",
+                "places": 0
+            },
+            "basis": null,
+            "firstBasisDate": "2024-02-01",
+            "price": {
+                "qty": {
+                    "mantissa": "3000",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "30000",
+                "places": 2
+            },
+            "gain": null,
+            "gainPct": null
+        },
+        {
+            "symbol": "XFER",
+            "name": "XFER",
+            "accounts": [
+                "holdings:sep"
+            ],
+            "shares": {
+                "mantissa": "10",
+                "places": 0
+            },
+            "basis": {
+                "mantissa": "25000",
+                "places": 2
+            },
+            "firstBasisDate": "2024-03-15",
+            "price": {
+                "qty": {
+                    "mantissa": "2700",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "27000",
+                "places": 2
+            },
+            "gain": {
+                "mantissa": "2000",
+                "places": 2
+            },
+            "gainPct": 8.0
+        },
+        {
+            "symbol": "GRANT",
+            "name": "GRANT",
+            "accounts": [
+                "assets:brokerage"
+            ],
+            "shares": {
+                "mantissa": "5",
+                "places": 0
+            },
+            "basis": null,
+            "firstBasisDate": "2024-02-15",
+            "price": {
+                "qty": {
+                    "mantissa": "800",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "4000",
+                "places": 2
+            },
+            "gain": null,
+            "gainPct": null
+        }
+    ],
+    "totals": {
+        "marketValue": {
+            "mantissa": "461000",
+            "places": 2
+        },
+        "basis": {
+            "mantissa": "275000",
+            "places": 2
+        },
+        "gain": {
+            "mantissa": "47000",
+            "places": 2
+        },
+        "gainPct": 17.09090909090909
+    },
+    "topGainers": [
+        {
+            "symbol": "BUY",
+            "name": "BUY",
+            "accounts": [
+                "assets:brokerage"
+            ],
+            "shares": {
+                "mantissa": "10",
+                "places": 0
+            },
+            "basis": {
+                "mantissa": "50000",
+                "places": 2
+            },
+            "firstBasisDate": "2024-03-01",
+            "price": {
+                "qty": {
+                    "mantissa": "6500",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "65000",
+                "places": 2
+            },
+            "gain": {
+                "mantissa": "15000",
+                "places": 2
+            },
+            "gainPct": 30.0
+        },
+        {
+            "symbol": "OPEN",
+            "name": "OPEN",
+            "accounts": [
+                "assets:brokerage"
+            ],
+            "shares": {
+                "mantissa": "100",
+                "places": 0
+            },
+            "basis": {
+                "mantissa": "100000",
+                "places": 2
+            },
+            "firstBasisDate": "2024-01-02",
+            "price": {
+                "qty": {
+                    "mantissa": "1200",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "120000",
+                "places": 2
+            },
+            "gain": {
+                "mantissa": "20000",
+                "places": 2
+            },
+            "gainPct": 20.0
+        },
+        {
+            "symbol": "SPLIT",
+            "name": "SPLIT",
+            "accounts": [
+                "assets:brokerage"
+            ],
+            "shares": {
+                "mantissa": "20",
+                "places": 0
+            },
+            "basis": {
+                "mantissa": "100000",
+                "places": 2
+            },
+            "firstBasisDate": "2024-03-25",
+            "price": {
+                "qty": {
+                    "mantissa": "5500",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "110000",
+                "places": 2
+            },
+            "gain": {
+                "mantissa": "10000",
+                "places": 2
+            },
+            "gainPct": 10.0
+        },
+        {
+            "symbol": "XFER",
+            "name": "XFER",
+            "accounts": [
+                "holdings:sep"
+            ],
+            "shares": {
+                "mantissa": "10",
+                "places": 0
+            },
+            "basis": {
+                "mantissa": "25000",
+                "places": 2
+            },
+            "firstBasisDate": "2024-03-15",
+            "price": {
+                "qty": {
+                    "mantissa": "2700",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "27000",
+                "places": 2
+            },
+            "gain": {
+                "mantissa": "2000",
+                "places": 2
+            },
+            "gainPct": 8.0
+        }
+    ],
+    "topLosers": [],
+    "warnings": [
+        {
+            "symbol": "GRANT",
+            "kind": "missing-basis",
+            "message": "GRANT: acquired without a cost annotation \u2014 basis unknown"
+        },
+        {
+            "symbol": "ROUND",
+            "kind": "missing-basis",
+            "message": "ROUND: acquired without a cost annotation \u2014 basis unknown"
+        },
+        {
+            "symbol": "VEST",
+            "kind": "missing-basis",
+            "message": "VEST: acquired without a cost annotation \u2014 basis unknown"
+        }
+    ]
+}

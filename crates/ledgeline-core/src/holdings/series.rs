@@ -1,10 +1,12 @@
 //! Holdings-over-time series — port of `web/src/lib/holdings/series.ts`.
 //!
-//! A portfolio snapshot at each of the last `count` period boundaries is
-//! [`compute_holdings`] mapped over a date series: only `as_of` time-travels; the
-//! account scope is unchanged. Reusing `compute_holdings` unchanged keeps the
-//! totals math a single source of truth (at the cost of one full recompute per
-//! point, which is fine at `count ≈ 12`).
+//! A portfolio snapshot at each of the last `count` period boundaries: only
+//! `as_of` time-travels; the account scope is unchanged. The totals math stays a
+//! single source of truth because every point IS a `compute_holdings` report —
+//! but the whole series is produced by ONE date-ordered replay of the
+//! average-cost pools (`engine::holdings_at_each`) rather than one full
+//! recompute per point, which used to make the endpoint cost `count ×
+//! compute_holdings` and made it the slowest one measured.
 
 use std::cmp::Ordering;
 
@@ -14,7 +16,7 @@ use crate::reports::{
     Interval, ReportError, bucket_end, bucket_label, compare_iso, last_n_buckets,
 };
 
-use super::engine::{compute_holdings, valuation_base};
+use super::engine::holdings_at_each;
 use super::types::HoldingsScope;
 
 /// One point in a [`HoldingsSeries`].
@@ -63,32 +65,31 @@ pub fn holdings_series(
     count: usize,
 ) -> Result<HoldingsSeries, ReportError> {
     let keys = last_n_buckets(&scope.as_of, interval, count)?;
-    // Resolve the valuation commodity ONCE, from the scope's own `as_of`, and
-    // pin every point to it. Each point is a different snapshot holding a
-    // different set of symbols, so left to choose for itself an early (or empty)
-    // bucket could legitimately land on a different commodity than the last one —
-    // and a trend line whose units change partway along is worse than no trend.
-    let base_commodity = valuation_base(txns, prices, accounts, scope)?;
+    // Each bucket's last day, clamped so the final point never overshoots
+    // `scope.as_of`. Ascending, which is what lets one replay serve them all.
+    let dates = keys
+        .iter()
+        .map(|key| {
+            let end = bucket_end(key)?;
+            Ok(if compare_iso(&end, &scope.as_of) == Ordering::Greater {
+                scope.as_of.clone()
+            } else {
+                end
+            })
+        })
+        .collect::<Result<Vec<String>, ReportError>>()?;
+    // The valuation commodity is resolved ONCE, from the scope's own `as_of`,
+    // and every point is pinned to it. Each point is a different snapshot
+    // holding a different set of symbols, so left to choose for itself an early
+    // (or empty) bucket could legitimately land on a different commodity than
+    // the last one — and a trend line whose units change partway along is worse
+    // than no trend.
+    let (_, reports) = holdings_at_each(txns, prices, accounts, commodity_tags, scope, &dates)?;
+
     let mut base = "$".to_string();
     let mut has_basis = false;
     let mut points = Vec::with_capacity(keys.len());
-    for key in keys {
-        let end = bucket_end(&key)?;
-        let date = if compare_iso(&end, &scope.as_of) == Ordering::Greater {
-            scope.as_of.clone()
-        } else {
-            end
-        };
-        let point_scope = HoldingsScope {
-            accounts: scope.accounts.clone(),
-            mode: scope.mode,
-            as_of: date.clone(),
-            // The trend tracks market value/basis only; gain windowing is a
-            // per-snapshot concern and never applies to a series point.
-            gain_since: None,
-            value_in: Some(base_commodity.clone()),
-        };
-        let report = compute_holdings(txns, prices, accounts, commodity_tags, &point_scope)?;
+    for ((key, date), report) in keys.iter().zip(dates).zip(reports) {
         base = report.base;
         if report.totals.basis.is_some() {
             has_basis = true;
@@ -96,7 +97,7 @@ pub fn holdings_series(
         points.push(HoldingsPoint {
             date,
             bucket: key.clone(),
-            label: bucket_label(&key),
+            label: bucket_label(key),
             market_value: report.totals.market_value,
             basis: report.totals.basis,
         });
@@ -107,6 +108,9 @@ pub fn holdings_series(
         has_basis,
     })
 }
+
+#[cfg(test)]
+mod replay_identity;
 
 #[cfg(test)]
 mod tests {

@@ -71,6 +71,65 @@ export class ApiShapeError extends Error {
 }
 
 /**
+ * The request was still outstanding when its deadline passed.
+ *
+ * A SUBCLASS of [`ApiUnreachableError`] on purpose: to every caller a request
+ * that never came back is a server that cannot be reached, and they already
+ * classify that (the setup modal's launch hint, `editing`'s "network" failure
+ * kind). The distinct type only exists so the message can say what happened.
+ */
+export class ApiTimeoutError extends ApiUnreachableError {
+    constructor(message: string, options?: ErrorOptions) {
+        super(message, options);
+        this.name = "ApiTimeoutError";
+    }
+}
+
+/**
+ * How long any single request may take, headers AND body, before it is aborted.
+ *
+ * There was no deadline at all, and nothing in `web/src` passed a `signal`, so
+ * one request to a server that accepted the connection and then went quiet hung
+ * forever. That is worse than it sounds: the journal store dedups concurrent
+ * refreshes behind one promise, so the poller, the toolbar's refresh button and
+ * every error toast's Retry all handed back that same dead promise, and
+ * `editing.run()`'s `finally { busy = false }` never ran — the edit popup froze
+ * behind a spinner with no way out (FE-5f).
+ */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Run `request` under a deadline, wired to an optional caller `signal` so a
+ * superseded round can cancel it early.
+ *
+ * The deadline covers the whole exchange, not just the headers: `run` receives
+ * the composed signal and the timer is only cleared once its promise settles,
+ * so a server that sends `200 OK` and then stalls the body is caught too.
+ */
+export async function withDeadline<T>(what: string, timeoutMs: number, signal: AbortSignal | undefined, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, timeoutMs);
+    const relay = (): void => controller.abort();
+    if (signal !== undefined) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener("abort", relay, {once: true});
+    }
+    try {
+        return await run(controller.signal);
+    } catch (cause) {
+        if (timedOut) throw new ApiTimeoutError(`${what} timed out after ${Math.round(timeoutMs / 1000)}s`, {cause});
+        throw cause;
+    } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", relay);
+    }
+}
+
+/**
  * What a conditional GET returns when the server answered `304 Not Modified`:
  * the body we already have is still current, and no body was transferred.
  *
@@ -133,6 +192,10 @@ export interface HledgerApiOptions {
      * requests often enough for it to matter.
      */
     conditional?: boolean;
+    /** Cancels every request this client makes — a superseded refresh round aborts its predecessor. */
+    signal?: AbortSignal;
+    /** Per-request deadline; defaults to [`REQUEST_TIMEOUT_MS`]. */
+    timeoutMs?: number;
 }
 
 export class HledgerApi {
@@ -142,11 +205,15 @@ export class HledgerApi {
     private readonly token?: string;
     /** See [`HledgerApiOptions.conditional`]. */
     private readonly conditional: boolean;
+    private readonly signal?: AbortSignal;
+    private readonly timeoutMs: number;
 
     constructor(baseUrl: string, token?: string, options?: HledgerApiOptions) {
         this.baseUrl = baseUrl.replace(/\/+$/, "");
         this.token = token;
         this.conditional = options?.conditional ?? false;
+        this.signal = options?.signal;
+        this.timeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
     }
 
     private headers(): Record<string, string> {
@@ -172,29 +239,38 @@ export class HledgerApi {
         const headers = this.headers();
         const known = conditional ? etagByUrl.get(url) : undefined;
         if (known !== undefined) headers["If-None-Match"] = known;
-        let response: Response;
-        try {
-            // no-store: journal data must always come from the live server, never the HTTP cache
-            response = await fetch(url, {headers, cache: "no-store"});
-        } catch (cause) {
-            throw new ApiUnreachableError(`Cannot reach hledger-web at ${this.baseUrl} (network or CORS failure)`, {cause});
-        }
-        if (response.status === 304) return NOT_MODIFIED;
-        if (!response.ok) {
-            throw new ApiUnreachableError(`GET ${url} responded ${response.status} ${response.statusText}`);
-        }
-        if (conditional) {
-            const etag = response.headers.get("ETag");
-            // Drop a stale entry when the server stops sending one, so we never
-            // revalidate against a tag it no longer knows.
-            if (etag === null) etagByUrl.delete(url);
-            else etagByUrl.set(url, etag);
-        }
-        try {
-            return (await response.json()) as unknown;
-        } catch (cause) {
-            throw new ApiShapeError(`GET ${route}: response is not valid JSON`, {cause});
-        }
+        return withDeadline(`GET ${url}`, this.timeoutMs, this.signal, async (signal) => {
+            let response: Response;
+            try {
+                // no-store: journal data must always come from the live server, never the HTTP cache
+                response = await fetch(url, {headers, cache: "no-store", signal});
+            } catch (cause) {
+                throw new ApiUnreachableError(`Cannot reach hledger-web at ${this.baseUrl} (network or CORS failure)`, {cause});
+            }
+            if (response.status === 304) return NOT_MODIFIED;
+            if (!response.ok) {
+                throw new ApiUnreachableError(`GET ${url} responded ${response.status} ${response.statusText}`);
+            }
+            let body: unknown;
+            try {
+                body = (await response.json()) as unknown;
+            } catch (cause) {
+                throw new ApiShapeError(`GET ${route}: response is not valid JSON`, {cause});
+            }
+            // Recorded only once the body is IN HAND. Recording it off the
+            // headers meant an aborted or timed-out read — which now happens by
+            // design, on every superseded round — left behind a tag for a
+            // payload we never parsed; the next poll would send it, be told 304,
+            // and keep the older journal it still had while believing it current.
+            if (conditional) {
+                const etag = response.headers.get("ETag");
+                // Drop a stale entry when the server stops sending one, so we never
+                // revalidate against a tag it no longer knows.
+                if (etag === null) etagByUrl.delete(url);
+                else etagByUrl.set(url, etag);
+            }
+            return body;
+        });
     }
 
     async version(): Promise<string> {

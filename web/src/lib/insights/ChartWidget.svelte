@@ -71,6 +71,20 @@
     const category = $derived<RootCategory | undefined>(group === "all" ? undefined : group);
 
     const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared}));
+
+    // A pie encodes parts of a whole by AREA, and a negative part has none.
+    // Drawing |value| (the old behaviour) turned a −$500 travel refund into a
+    // positive wedge worth a fifth of a $2,000 rent pie, and inflated the whole
+    // from the true $1,500 net to $2,500 — only the tooltip carried the sign.
+    // Netting is not an option either: pieData already nets per account group,
+    // so a negative datum IS that category's net credit for the period and has
+    // nothing left to net into.
+    //
+    // So the pie draws the positive parts, whose areas do sum to the whole it
+    // claims to partition, and the credits are named underneath with their
+    // signed amounts rather than silently redrawn as spending.
+    const pieSlices = $derived(pie.filter((d) => d.value > 0));
+    const pieCredits = $derived(pie.filter((d) => d.value < 0));
     const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared}));
 
     // Color follows the account, not the mode: both datasets come from the same
@@ -168,16 +182,22 @@
     </div>
 
     {#if mode === "pie"}
-        {#if pie.length === 0}
-            <p class="text-base-content/60 py-10 text-center text-sm">No {commodity} activity in the filtered period.</p>
+        {#if pieSlices.length === 0}
+            <p class="text-base-content/60 py-10 text-center text-sm">
+                {#if pieCredits.length === 0}
+                    No {commodity} activity in the filtered period.
+                {:else}
+                    Every {commodity} category nets to a credit in this period, so there is nothing for a pie to divide.
+                {/if}
+            </p>
         {:else}
             <div class="h-64 w-full sm:h-72" data-testid="insights-pie">
                 <PieChart
-                    data={pie}
+                    data={pieSlices}
                     key="account"
                     label="account"
-                    value={(d) => Math.abs(d.value)}
-                    cRange={pie.map((d) => colorOf[d.account] ?? OTHER_COLOR)}
+                    value={(d) => d.value}
+                    cRange={pieSlices.map((d) => colorOf[d.account] ?? OTHER_COLOR)}
                     padAngle={0.02}
                     legend={{placement: "right", orientation: "vertical", classes: {root: "hidden sm:block"}}}
                 >
@@ -197,13 +217,19 @@
             </div>
             <!-- legend fallback for narrow screens (identity is never color-alone) -->
             <ul class="text-base-content/70 mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs sm:hidden">
-                {#each pie as d (d.account)}
+                {#each pieSlices as d (d.account)}
                     <li class="flex items-center gap-1">
                         <span class="inline-block h-2 w-2 rounded-full" style="background:{colorOf[d.account] ?? OTHER_COLOR}"></span>
                         {d.account}
                     </li>
                 {/each}
             </ul>
+        {/if}
+        <!-- Categories that net to a credit have no area in a pie; name them instead of drawing them positive. -->
+        {#if pieCredits.length > 0}
+            <p class="text-base-content/60 mt-1 px-1 text-xs" data-testid="insights-pie-credits">
+                Not shown (net credit in this period): {pieCredits.map((d) => `${d.account} ${d.formatted}`).join(", ")}.
+            </p>
         {/if}
     {:else if rows.length === 0}
         <p class="text-base-content/60 py-10 text-center text-sm">No {commodity} activity in the filtered period.</p>

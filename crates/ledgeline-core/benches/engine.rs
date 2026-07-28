@@ -481,24 +481,31 @@ fn bench_holdings(c: &mut Criterion, fixtures: &[Fixture]) {
         // The slowest endpoint measured (1,599 ms at 200k): `compute_holdings`
         // re-run per point. Should approach `compute_holdings` itself once the
         // pools are replayed once in date order.
-        group.bench_with_input(
-            BenchmarkId::new("holdings_series_12", &id),
-            fixture,
-            |b, fixture| {
-                b.iter(|| {
-                    holdings_series(
-                        black_box(&fixture.journal.transactions),
-                        &fixture.journal.prices,
-                        &fixture.journal.accounts,
-                        &fixture.journal.commodity_tags,
-                        &fixture.scope,
-                        Interval::Monthly,
-                        12,
-                    )
-                    .unwrap()
-                });
-            },
-        );
+        //
+        // Both point counts are measured because the POINT of PERF-5b is that
+        // cost stops scaling with the point count: `12` alone cannot tell a 12×
+        // replay apart from a single one that happens to be slow. The pair is
+        // the gate — `60 / 12` must collapse from ~5× to ~1×.
+        for count in [12usize, 60] {
+            group.bench_with_input(
+                BenchmarkId::new(format!("holdings_series_{count}"), &id),
+                fixture,
+                |b, fixture| {
+                    b.iter(|| {
+                        holdings_series(
+                            black_box(&fixture.journal.transactions),
+                            &fixture.journal.prices,
+                            &fixture.journal.accounts,
+                            &fixture.journal.commodity_tags,
+                            &fixture.scope,
+                            Interval::Monthly,
+                            count,
+                        )
+                        .unwrap()
+                    });
+                },
+            );
+        }
     }
     group.finish();
 }

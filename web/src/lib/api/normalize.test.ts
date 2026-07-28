@@ -1,7 +1,7 @@
 import {readFileSync} from "node:fs";
-import {describe, expect, it} from "vitest";
+import {describe, expect, it, vi} from "vitest";
 import {ApiShapeError} from "./client";
-import {normalizeAccounts, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "./normalize";
+import {lastSkippedAccountCount, normalizeAccounts, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "./normalize";
 
 // Hand-rolled wire samples (fixtures/api snapshots are WP-09).
 // "Modern" shape verified against a live hledger 1.52: acost/asdecimalmark/UnitCost.
@@ -675,5 +675,33 @@ describe("UNIT normalizeAccounts", () => {
 
     it("throws ApiShapeError when the payload is not an array", () => {
         expect(() => normalizeAccounts({nope: true})).toThrow(ApiShapeError);
+    });
+
+    it("counts and reports malformed entries instead of dropping them in silence (FE-5g)", () => {
+        // A dropped declaration is not a small loss: reports classify accounts
+        // by their DECLARED type, so losing one re-buckets a whole subtree and
+        // makes its totals read zero — a wrong answer that looks like a right
+        // one. Skipping it quietly left nothing to notice.
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        try {
+            const raw = [{aname: "assets", adeclarationinfo: {aditags: [["type", "A"]]}}, {aname: 42}, {nothing: true}];
+            expect(normalizeAccounts(raw)).toEqual([{name: "assets", type: "asset"}]);
+            expect(lastSkippedAccountCount()).toBe(2);
+            expect(warn).toHaveBeenCalledTimes(1);
+            expect(String(warn.mock.calls[0][0])).toMatch(/skipped 2 malformed entries/);
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it("stays silent about the empty root account, which every healthy payload has", () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        try {
+            expect(normalizeAccounts([{aname: "", adeclarationinfo: null}, {aname: "assets"}])).toEqual([{name: "assets", type: null}]);
+            expect(lastSkippedAccountCount()).toBe(0);
+            expect(warn).not.toHaveBeenCalled();
+        } finally {
+            warn.mockRestore();
+        }
     });
 });

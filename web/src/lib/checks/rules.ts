@@ -32,6 +32,39 @@ function balanceValue(amount: Amount): {commodity: string; qty: Dec} {
     return {commodity: cost.commodity, qty: amount.qty.m < 0n ? neg(cost.qty) : cost.qty};
 }
 
+/**
+ * hledger's two INDEPENDENT balancing groups. Real postings balance among
+ * themselves and balanced-virtual `[a]` postings balance among themselves, each
+ * with its own one-posting elision budget (`[v] $10 / [v] / a $1 / b` is
+ * accepted by hledger 1.52). Unbalanced-virtual `(a)` postings are in NEITHER:
+ * being excluded from balancing is the whole meaning of the parentheses, so
+ * summing them reported every envelope/budget journal as unbalanced.
+ */
+const BALANCING_GROUPS = [
+    {type: "regular", label: "postings"},
+    {type: "balancedVirtual", label: "balanced virtual postings"},
+] as const;
+
+/** One balancing group's finding, or none when it balances (or elides its remainder). */
+function balanceGroup(txn: Transaction, postings: Transaction["postings"], label: string): Problem[] {
+    const problem = (message: string): Problem[] => [{txnIndex: txn.index, rule: "unbalanced", severity: "error", message}];
+    const elided = postings.filter((posting) => posting.amounts.length === 0).length;
+    if (elided >= 2) return problem(`${elided} ${label} have no amount — at most one may be elided`);
+    if (elided === 1) return []; // the amountless posting absorbs the remainder
+    const residue = new Map<string, Dec>();
+    for (const posting of postings) {
+        for (const amount of posting.amounts) {
+            const {commodity, qty} = balanceValue(amount);
+            const prev = residue.get(commodity);
+            residue.set(commodity, prev === undefined ? qty : add(prev, qty));
+        }
+    }
+    const nonzero = [...residue.entries()].filter(([, qty]) => !isZero(qty));
+    if (nonzero.length === 0) return [];
+    const detail = nonzero.map(([commodity, qty]) => `${commodity} ${decToString(qty)}`).join(", ");
+    return problem(`${label} do not sum to zero: ${detail} remaining`);
+}
+
 const unbalanced: CheckRule = {
     id: "unbalanced",
     run(txns: Transaction[], ctx: CheckContext): Problem[] {
@@ -39,34 +72,15 @@ const unbalanced: CheckRule = {
         // CheckContext.engineChecked. Deferring avoids both a duplicate finding
         // and this rule's false positives on journals hledger accepts.
         if (ctx.engineChecked === true) return [];
-        const problems: Problem[] = [];
-        for (const txn of txns) {
-            const elided = txn.postings.filter((posting) => posting.amounts.length === 0).length;
-            if (elided >= 2) {
-                problems.push({
-                    txnIndex: txn.index,
-                    rule: "unbalanced",
-                    severity: "error",
-                    message: `${elided} postings have no amount — at most one may be elided`,
-                });
-                continue;
-            }
-            if (elided === 1) continue; // the amountless posting absorbs the remainder
-            const residue = new Map<string, Dec>();
-            for (const posting of txn.postings) {
-                for (const amount of posting.amounts) {
-                    const {commodity, qty} = balanceValue(amount);
-                    const prev = residue.get(commodity);
-                    residue.set(commodity, prev === undefined ? qty : add(prev, qty));
-                }
-            }
-            const nonzero = [...residue.entries()].filter(([, qty]) => !isZero(qty));
-            if (nonzero.length > 0) {
-                const detail = nonzero.map(([commodity, qty]) => `${commodity} ${decToString(qty)}`).join(", ");
-                problems.push({txnIndex: txn.index, rule: "unbalanced", severity: "error", message: `postings do not sum to zero: ${detail} remaining`});
-            }
-        }
-        return problems;
+        return txns.flatMap((txn) =>
+            BALANCING_GROUPS.flatMap((group) =>
+                balanceGroup(
+                    txn,
+                    txn.postings.filter((posting) => (posting.type ?? "regular") === group.type),
+                    group.label
+                )
+            )
+        );
     },
 };
 
@@ -138,12 +152,21 @@ const futureDate: CheckRule = {
     },
 };
 
-/** Journal-wide (unscoped) average-cost pools at today, sorted by symbol for deterministic report order (WP-10 stock rules). */
+/**
+ * Journal-wide (unscoped) average-cost pools at today, sorted by symbol for
+ * deterministic report order (WP-10 stock rules).
+ *
+ * Every account is in scope, but the declared types still matter: `buildPools`
+ * drops share legs posted to equity/revenue/expense, which are the funding side
+ * of a movement rather than a place shares are held. Passing `ctx.decls` is what
+ * keeps these rules agreeing with the Holdings page (FE-2).
+ */
 function stockPools(txns: Transaction[], ctx: CheckContext): {db: PriceDb; base: string; asOf: string; pools: SymbolPool[]} {
     const db = buildPriceDb(ctx.prices);
     const base = db.baseCommodity() ?? "$";
     const asOf = today();
-    const pools = [...buildPools(txns, db, base, asOf, () => true).values()].sort((a, b) => (a.symbol < b.symbol ? -1 : 1));
+    const declared = declaredTypes(ctx.decls ?? []);
+    const pools = [...buildPools(txns, db, base, asOf, () => true, declared).values()].sort((a, b) => (a.symbol < b.symbol ? -1 : 1));
     return {db, base, asOf, pools};
 }
 
