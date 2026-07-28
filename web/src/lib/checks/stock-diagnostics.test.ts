@@ -161,3 +161,34 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION stock diagnos
         expect(await response.json()).toEqual(load("fixtures/parity/diagnostics.json"));
     });
 });
+
+// ---------------------------------------------------------------------------
+// The wire ⇄ SPA allow-list
+// ---------------------------------------------------------------------------
+
+describe("UNIT the engine's rule vocabulary matches the SPA allow-list", () => {
+    // `normalizeDiagnostics` DROPS any rule it does not recognize, and drops it
+    // SILENTLY — an engine finding the SPA has never heard of simply never
+    // appears, with no error on either side to say so. Something has to make
+    // widening the enum a two-sided change.
+    //
+    // This assertion lived in crates/ledgeline-core/tests/stock_diagnostics.rs
+    // and read the TypeScript. It passed under `cargo test` and FAILED under
+    // `nix build .#tests` — which is what CI runs — because that derivation's
+    // source is `craneLib.cleanCargoSource`, so `web/` is not in it at all.
+    // Reading in this direction always works: vitest runs from a full checkout.
+    it("declares exactly the rules wire.rs does", () => {
+        const wire = readFileSync(new URL("../../../../crates/ledgeline-core/src/wire.rs", import.meta.url), "utf8");
+        const block = /pub const DIAGNOSTIC_RULES: \[&str; \d+\] = \[([^\]]*)\]/.exec(wire);
+        expect(block, "wire.rs declares DIAGNOSTIC_RULES").not.toBeNull();
+        const rust = [...block![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+
+        const norm = readFileSync(new URL("../api/normalize.ts", import.meta.url), "utf8");
+        const line = norm.split("\n").find((l) => l.includes("const DIAGNOSTIC_RULES"));
+        expect(line, "normalize.ts declares DIAGNOSTIC_RULES").toBeDefined();
+        const spa = [...line!.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+
+        expect(spa).toEqual(rust);
+        expect(rust.length).toBeGreaterThanOrEqual(5); // guard against both regexes matching nothing
+    });
+});

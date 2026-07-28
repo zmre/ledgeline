@@ -371,10 +371,11 @@ const DIAGNOSTIC_WARNING: &str = "warning";
 /// drawer groups them. The first two are hledger-level errors; the last three
 /// are the stock findings from the holdings engine.
 ///
-/// This is the wire contract the SPA's `DIAGNOSTIC_RULES` allow-list mirrors;
-/// `diagnostic_rules_match_the_spa_allow_list` in
-/// `crates/ledgeline-core/tests/stock_diagnostics.rs` reads the TypeScript and
-/// fails if the two drift apart.
+/// This is the wire contract the SPA's `DIAGNOSTIC_RULES` allow-list mirrors.
+/// The SPA drops an unrecognized rule SILENTLY, so the two are pinned together
+/// by `web/src/lib/checks/stock-diagnostics.test.ts`, which reads both files —
+/// it lives on that side because `nix build .#tests` builds from
+/// `cleanCargoSource`, which does not contain `web/`.
 pub const DIAGNOSTIC_RULES: [&str; 5] = [
     "unbalanced",
     "assertion",

@@ -380,31 +380,13 @@ fn the_committed_sample_capture_still_describes_the_engine() {
 // ---------------------------------------------------------------------------
 // The wire ⇄ SPA allow-list
 // ---------------------------------------------------------------------------
-
-#[test]
-fn diagnostic_rules_match_the_spa_allow_list() {
-    // `normalizeDiagnostics` DROPS any rule it does not recognize, and drops it
-    // silently — an engine finding the SPA has never heard of simply never
-    // appears, with no error anywhere to say so. Reading the TypeScript is ugly
-    // but it is the only thing that makes widening the enum a two-sided change.
-    let source = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src/lib/api/normalize.ts"),
-    )
-    .expect("normalize.ts readable");
-    let line = source
-        .lines()
-        .find(|line| line.contains("const DIAGNOSTIC_RULES"))
-        .expect("normalize.ts declares DIAGNOSTIC_RULES");
-    for rule in wire::DIAGNOSTIC_RULES {
-        assert!(
-            line.contains(&format!("\"{rule}\"")),
-            "the SPA allow-list is missing `{rule}` and would drop it silently:\n{line}"
-        );
-    }
-    // …and nothing extra, so a rule deleted here is deleted there too.
-    assert_eq!(
-        line.matches('"').count() / 2,
-        wire::DIAGNOSTIC_RULES.len(),
-        "the two lists must be the same size:\n{line}"
-    );
-}
+//
+// `diagnostic_rules_match_the_spa_allow_list` used to live here and read
+// `web/src/lib/api/normalize.ts`. It passed under `cargo test` and FAILED under
+// `nix build .#tests` — which is what CI runs — because that derivation's source
+// is `craneLib.cleanCargoSource`, so `web/` is not in it at all.
+//
+// The assertion now lives in `web/src/lib/checks/stock-diagnostics.test.ts`,
+// which reads BOTH files: vitest always runs from a full checkout, so it works
+// in CI and locally. It is mutation-checked — widening DIAGNOSTIC_RULES on
+// either side fails it.
