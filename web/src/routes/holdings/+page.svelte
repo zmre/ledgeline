@@ -7,7 +7,8 @@
     // the URL (?asof=&acct=&mode=) via the WP-04 replaceState pattern. Display
     // styles for the base commodity come from the journal wire feed (styleFor).
     import {onMount} from "svelte";
-    import {NativeApiUnavailableError} from "$lib/api/native";
+    import AsyncSection from "$lib/components/AsyncSection.svelte";
+    import ErrorToast from "$lib/components/ErrorToast.svelte";
     import {formatAmount, type Dec} from "$lib/domain/money";
     import {exportHoldingsXlsx} from "$lib/export/xlsx";
     import GainersLosers from "$lib/holdings/ui/GainersLosers.svelte";
@@ -22,7 +23,7 @@
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import {holdingsData, holdingsScope} from "$lib/stores/holdings.svelte";
     import {journal} from "$lib/stores/journal.svelte";
-    import {dataView} from "$lib/stores/loadState";
+    import {loadJournalWhenReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
     // Reset the scope from the URL once (fresh visits open at today), then
@@ -31,14 +32,7 @@
     onMount(() => startHoldingsUrlSync());
 
     // Load the journal once a server URL is configured (base-commodity styles + the scope-bar account list only).
-    let attemptedUrl: string | null = null;
-    $effect(() => {
-        const url = settings.serverUrl;
-        if (url !== null && url !== attemptedUrl) {
-            attemptedUrl = url;
-            void journal.refresh();
-        }
-    });
+    loadJournalWhenReady();
 
     // Fetch the native holdings report + trend whenever the scope changes, the
     // server is first configured, or the user reconnects. The nonce is in the
@@ -53,14 +47,12 @@
 
     const report = $derived(holdingsData.report);
     const trend = $derived(holdingsData.trend);
-    // Readiness is the ENGINE's report, nothing else. It used to also require
-    // `journal.txns.length > 0` — a row count from the separate hledger-web
-    // feed — so a working engine plus a failing feed spun forever, and so did a
-    // legitimately empty journal on a new user's first run (FE-5c). The base
-    // commodity's display style is the only thing that feed contributes here,
-    // and `styleFor` already falls back when it has none.
-    const view = $derived(dataView(holdingsData.status, report !== null));
-    const nativeUnavailable = $derived(holdingsData.error instanceof NativeApiUnavailableError);
+    // Readiness (`holdingsData.view`) is the ENGINE's report, nothing else. It
+    // used to also require `journal.txns.length > 0` — a row count from the
+    // separate hledger-web feed — so a working engine plus a failing feed spun
+    // forever, and so did a legitimately empty journal on a new user's first
+    // run (FE-5c). The base commodity's display style is the only thing that
+    // feed contributes here, and `styleFor` already falls back when it has none.
 
     const base = $derived(report?.base ?? "$");
     const gainPeriod = $derived(holdingsScope.value.gainPeriod);
@@ -86,84 +78,77 @@
 <div class="flex flex-col gap-3">
     <ScopeBar {accountNames} />
 
-    <!-- Error first: tested after the data branch and gated on `report === null`,
-         this could never fire once a report had loaded, so moving the as-of and
-         hitting a 500 kept the OLD date's portfolio on screen (FE-5). -->
-    {#if view === "error"}
-        <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="holdings-error">
-            <span>{nativeUnavailable ? holdingsData.error?.message : `Couldn't load holdings: ${holdingsData.error?.message ?? "unknown error"}`}</span>
-            {#if !nativeUnavailable}
-                <button type="button" class="btn btn-sm" onclick={() => void holdingsData.load(settings.serverUrl ?? "", holdingsScope.value)}>Retry</button>
-            {/if}
-        </div>
-    {:else if view === "data" && report !== null}
-        {#if positions.shown.length > 0}
-            <section class="collapse-arrow bg-base-200 collapse" data-testid="holdings-insights">
-                <input type="checkbox" bind:checked={insightsOpen} aria-label="Toggle holdings insights" />
-                <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
-                    <h2 class="text-sm font-semibold tracking-tight">Insights</h2>
-                    <span class="text-sm">
-                        <span class="text-base-content/60 mr-1">Market value</span>
-                        <span class="font-semibold">{format(report.totals.marketValue)}</span>
-                    </span>
-                </div>
-                <div class="collapse-content flex flex-col gap-4">
-                    <HoldingsStats totals={report.totals} holdings={positions.shown} {format} {gainPeriod} />
-                    <div class="grid grid-cols-1 items-center gap-4 lg:grid-cols-2">
-                        <div>
-                            <HoldingsPie holdings={positions.shown} {format} />
-                        </div>
-                        <GainersLosers {report} {format} />
+    <!-- Error first — ordered once, inside <AsyncSection>: tested after the data
+         branch and gated on `report === null`, it could never fire once a report
+         had loaded, so moving the as-of and hitting a 500 kept the OLD date's
+         portfolio on screen (FE-5). -->
+    <AsyncSection
+        view={holdingsData.view}
+        value={report}
+        error={holdingsData.error}
+        testid="holdings-error"
+        label="holdings"
+        loadingLabel="Loading holdings"
+        onRetry={() => void holdingsData.load(settings.serverUrl ?? "", holdingsScope.value)}
+    >
+        {#snippet children(report)}
+            {#if positions.shown.length > 0}
+                <section class="collapse-arrow bg-base-200 collapse" data-testid="holdings-insights">
+                    <input type="checkbox" bind:checked={insightsOpen} aria-label="Toggle holdings insights" />
+                    <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
+                        <h2 class="text-sm font-semibold tracking-tight">Insights</h2>
+                        <span class="text-sm">
+                            <span class="text-base-content/60 mr-1">Market value</span>
+                            <span class="font-semibold">{format(report.totals.marketValue)}</span>
+                        </span>
                     </div>
-                    {#if trend !== null}
-                        <HoldingsTrend {trend} formatValue={formatTrendValue} formatAxis={formatTrendAxis} />
-                    {/if}
-                </div>
-            </section>
-        {/if}
+                    <div class="collapse-content flex flex-col gap-4">
+                        <HoldingsStats totals={report.totals} holdings={positions.shown} {format} {gainPeriod} />
+                        <div class="grid grid-cols-1 items-center gap-4 lg:grid-cols-2">
+                            <div>
+                                <HoldingsPie holdings={positions.shown} {format} />
+                            </div>
+                            <GainersLosers {report} {format} />
+                        </div>
+                        {#if trend !== null}
+                            <HoldingsTrend {trend} formatValue={formatTrendValue} formatAxis={formatTrendAxis} />
+                        {/if}
+                    </div>
+                </section>
+            {/if}
 
-        {#if report.warnings.length > 0}
-            <div class="alert alert-warning rounded-box items-start px-3 py-2 text-sm" role="alert" data-testid="holdings-warnings">
-                <ul class="list-inside list-disc">
-                    {#each report.warnings as warning (warning.symbol + warning.kind)}
-                        <li>{warning.message}</li>
-                    {/each}
-                </ul>
-            </div>
-        {/if}
-
-        {#if positions.shown.length === 0}
-            <div class="card bg-base-200" data-testid="holdings-empty">
-                <div class="card-body items-center py-16 text-center">
-                    <h2 class="card-title">No stock holdings in scope</h2>
-                    <p class="text-base-content/60">
-                        No non-currency commodities are held by the selected accounts as of {report.asOf}. Widen the scope or pick a later date.
-                    </p>
+            {#if report.warnings.length > 0}
+                <div class="alert alert-warning rounded-box items-start px-3 py-2 text-sm" role="alert" data-testid="holdings-warnings">
+                    <ul class="list-inside list-disc">
+                        {#each report.warnings as warning (warning.symbol + warning.kind)}
+                            <li>{warning.message}</li>
+                        {/each}
+                    </ul>
                 </div>
-            </div>
-        {:else}
-            <div class="flex justify-end">
-                <!-- The export is the full engine report, short rows included: a spreadsheet whose rows sum to its own totals. -->
-                <ExportButton run={() => exportHoldingsXlsx(report, {title: "Holdings", params: `As of ${report.asOf}`}, `holdings-${report.asOf}.xlsx`)} />
-            </div>
-            <HoldingsTable holdings={positions.shown} totals={report.totals} {format} {gainPeriod} />
-        {/if}
-        <!-- Why the visible rows do not add up to the totals row above them. -->
-        {#if hiddenNote !== null}
-            <p class="text-base-content/60 px-1 text-xs" data-testid="holdings-hidden-note">{hiddenNote}</p>
-        {/if}
-    {:else}
-        <div class="flex items-center justify-center py-24" aria-label="Loading holdings">
-            <span class="loading loading-spinner loading-lg"></span>
-        </div>
-    {/if}
+            {/if}
+
+            {#if positions.shown.length === 0}
+                <div class="card bg-base-200" data-testid="holdings-empty">
+                    <div class="card-body items-center py-16 text-center">
+                        <h2 class="card-title">No stock holdings in scope</h2>
+                        <p class="text-base-content/60">
+                            No non-currency commodities are held by the selected accounts as of {report.asOf}. Widen the scope or pick a later date.
+                        </p>
+                    </div>
+                </div>
+            {:else}
+                <div class="flex justify-end">
+                    <!-- The export is the full engine report, short rows included: a spreadsheet whose rows sum to its own totals. -->
+                    <ExportButton run={() => exportHoldingsXlsx(report, {title: "Holdings", params: `As of ${report.asOf}`}, `holdings-${report.asOf}.xlsx`)} />
+                </div>
+                <HoldingsTable holdings={positions.shown} totals={report.totals} {format} {gainPeriod} />
+            {/if}
+            <!-- Why the visible rows do not add up to the totals row above them. -->
+            {#if hiddenNote !== null}
+                <p class="text-base-content/60 px-1 text-xs" data-testid="holdings-hidden-note">{hiddenNote}</p>
+            {/if}
+        {/snippet}
+    </AsyncSection>
 </div>
 
-{#if journal.status === "error" && journal.error !== null}
-    <div class="toast toast-end z-30">
-        <div class="alert alert-error">
-            <span class="max-w-xs truncate" title={journal.error}>{journal.error}</span>
-            <button type="button" class="btn btn-sm" onclick={() => void journal.refresh({force: true})}>Retry</button>
-        </div>
-    </div>
-{/if}
+<ErrorToast message={journal.status === "error" ? journal.error : null} onRetry={() => void journal.refresh({force: true})} />

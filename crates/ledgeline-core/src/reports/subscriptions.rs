@@ -24,8 +24,10 @@
 //!
 //! Every threshold lives in [`SubscriptionOpts`] rather than being hard-coded,
 //! so they can be tuned (and later moved into a config file) without touching
-//! the algorithm. Money stays exact [`Dec`]; floats appear only in the tolerance
-//! comparisons, never in a reported amount.
+//! the algorithm. Everything is exact [`Dec`] — including the amount tolerance,
+//! which used to be compared in `f64` and so let a charge landing exactly on the
+//! boundary decide whether a subscription was detected (see
+//! [`cluster_by_amount`]).
 
 use super::ReportError;
 use super::account_types::{AccountType, account_decls, declared_types, resolve_account_type};
@@ -132,7 +134,10 @@ pub struct SubscriptionOpts<'a> {
     pub lookback_months: i64,
     /// How far two charges may differ (percent of the smaller) and still count
     /// as the same recurring amount — absorbs price rises and FX drift.
-    pub amount_tolerance_pct: f64,
+    ///
+    /// Exact `Dec`, not `f64`: this is a threshold, and a threshold decides
+    /// whether a subscription is reported. See [`cluster_by_amount`].
+    pub amount_tolerance_pct: Dec,
     /// How far the billing day may drift and still count as the same cadence.
     pub date_tolerance_days: i64,
     /// Charges needed before a monthly cadence is believed.
@@ -165,7 +170,7 @@ impl Default for SubscriptionOpts<'_> {
         Self {
             as_of: "",
             lookback_months: 24,
-            amount_tolerance_pct: 15.0,
+            amount_tolerance_pct: Dec::new(15, 0),
             date_tolerance_days: 4,
             min_monthly: 5,
             min_annual: 2,
@@ -286,23 +291,37 @@ fn expense_charge(
 /// Charges are sorted ascending and cut wherever the next amount exceeds the
 /// current group's smallest by more than `tolerance_pct`, so every group spans
 /// at most that much — a $9.99 subscription never absorbs a $49.99 purchase.
-fn cluster_by_amount(mut charges: Vec<Charge>, tolerance_pct: f64) -> Vec<Vec<Charge>> {
+///
+/// The comparison is exact. It used to convert both amounts to `f64` and test
+/// against `low × (1 + tol/100)`, where neither the amount nor the ratio is
+/// binary-representable: at 15% tolerance a $6.00 anchor produced a ceiling of
+/// 6.899999999999999467, so a $6.90 charge — a rise of exactly the tolerance,
+/// the very thing the tolerance exists to absorb — fell outside the cluster.
+/// That is not a rounding artifact in a displayed figure; it splits the cluster,
+/// drops both halves below [`SubscriptionOpts::min_monthly`], and the
+/// subscription is **not detected at all** (DRY-5).
+fn cluster_by_amount(
+    mut charges: Vec<Charge>,
+    tolerance_pct: Dec,
+) -> Result<Vec<Vec<Charge>>, ReportError> {
     charges.sort_by_key(|charge| charge.amount);
+    // `charge <= anchor × (1 + tol/100)` with the division cleared: multiply
+    // both sides by 100 and compare `charge × 100` against `anchor × (100 + tol)`.
+    // Every term is then exact `Dec`, and `Dec`'s `Ord` is exact too.
+    let hundred = Dec::new(100, 0);
+    let ceiling_factor = hundred.add(tolerance_pct)?;
     let mut clusters: Vec<Vec<Charge>> = Vec::new();
     for charge in charges {
-        let fits = clusters.last().is_some_and(|cluster| {
-            cluster.first().is_some_and(|anchor| {
-                let low = anchor.amount.floating_point();
-                let ceiling = low * (1.0 + tolerance_pct / 100.0);
-                charge.amount.floating_point() <= ceiling
-            })
-        });
+        let fits = match clusters.last().and_then(|cluster| cluster.first()) {
+            Some(anchor) => charge.amount.mul(hundred)? <= anchor.amount.mul(ceiling_factor)?,
+            None => false,
+        };
         match (fits, clusters.last_mut()) {
             (true, Some(cluster)) => cluster.push(charge),
             _ => clusters.push(vec![charge]),
         }
     }
-    clusters
+    Ok(clusters)
 }
 
 /// Day of the month (1–31) of an ISO date.
@@ -476,7 +495,7 @@ pub fn detect_subscriptions(
 
     for (payee, charges) in by_payee {
         let payee_charges = charges.len();
-        for cluster in cluster_by_amount(charges, opts.amount_tolerance_pct) {
+        for cluster in cluster_by_amount(charges, opts.amount_tolerance_pct)? {
             // One charge per date: a repeated same-day, same-price purchase is
             // shopping, not an extra billing cycle.
             let mut dated: BTreeMap<String, &Charge> = BTreeMap::new();

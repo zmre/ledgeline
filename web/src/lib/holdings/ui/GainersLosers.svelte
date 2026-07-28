@@ -8,6 +8,7 @@
      holdings are priced (a single-entry "top 5" is noise, per plans/10). -->
 <script lang="ts">
     import {toNumber, type Dec} from "$lib/domain/money";
+    import {signClass} from "$lib/format/sign";
     import type {Holding, HoldingsReport} from "$lib/holdings/types";
     import {formatGainPct} from "./view";
 
@@ -31,14 +32,13 @@
         <h3 class="text-base-content/60 mb-1 text-xs font-semibold tracking-wide uppercase">{title}</h3>
         <ul class="flex flex-col gap-1">
             {#each entries as h (h.symbol)}
-                {@const negative = (h.gainPct ?? 0) < 0}
                 <li class="flex items-baseline gap-2 text-sm">
                     <span class="tooltip tooltip-right before:max-w-64 before:whitespace-normal" data-tip={h.name}>
                         <button type="button" class="cursor-help font-medium">{h.symbol}</button>
                     </span>
-                    <span class={negative ? "text-error" : "text-success"}>{formatGainPct(h.gainPct)}</span>
+                    <span class={signClass(h.gainPct)}>{formatGainPct(h.gainPct)}</span>
                     {#if h.gain !== null}
-                        <span class="ml-auto font-mono text-xs tabular-nums {toNumber(h.gain) < 0 ? 'text-error' : 'text-success'}">{format(h.gain)}</span>
+                        <span class="ml-auto font-mono text-xs tabular-nums {signClass(toNumber(h.gain))}">{format(h.gain)}</span>
                     {/if}
                 </li>
             {/each}

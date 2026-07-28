@@ -363,3 +363,98 @@ fn narrowing_the_window_drops_charges_that_fall_outside_it() {
         ["Twilio", "Netflix", "Spotify", "Apple"]
     );
 }
+
+// ---- the amount tolerance is an exact boundary, not a floating-point one ----
+
+/// Six monthly charges at `first` (×3) then `second` (×3), all on the 10th, all
+/// funded from one checking account so nothing reads as stale.
+///
+/// Whether these form ONE cluster or two is the whole question: at six charges
+/// a single cluster clears the default `min_monthly` of 5 and is reported; split
+/// into two threes, neither half qualifies and the subscription vanishes.
+fn two_price_journal(first: &str, second: &str) -> Journal {
+    let dates = [
+        "2025-01-10",
+        "2025-02-10",
+        "2025-03-10",
+        "2025-04-10",
+        "2025-05-10",
+        "2025-06-10",
+    ];
+    let mut text = String::new();
+    for (i, date) in dates.iter().enumerate() {
+        let amount = if i < 3 { first } else { second };
+        text.push_str(&format!(
+            "{date} Boundary Co\n    expenses:subscriptions   ${amount}\n    assets:bank:checking\n\n"
+        ));
+    }
+    parse_journal(&text, "boundary.journal").expect("boundary journal parses")
+}
+
+fn boundary_report(first: &str, second: &str) -> SubscriptionsReport {
+    detect_subscriptions(
+        &two_price_journal(first, second),
+        &SubscriptionOpts {
+            as_of: "2025-06-30",
+            ..SubscriptionOpts::default()
+        },
+    )
+    .expect("detection succeeds")
+}
+
+#[test]
+fn a_rise_of_exactly_the_tolerance_stays_one_subscription() {
+    // $6.00 → $6.90 is a rise of EXACTLY the 15% default tolerance, so the
+    // charges belong to one cluster and the subscription is detected.
+    //
+    // This is the case the old `f64` comparison got wrong. Neither $6.00 nor the
+    // 1.15 ratio is binary-representable, and the product rounded DOWN:
+    // `6.0 * (1.0 + 15.0 / 100.0) == 6.899999999999999467`, just under $6.90. The
+    // charge fell outside the cluster, the cluster split 3/3, both halves landed
+    // below `min_monthly`, and the subscription was not reported at all — an
+    // entire row missing from the user's list because of the last bit of a
+    // double. Exact `Dec` compares `690 × 100 <= 600 × 115`, i.e. `69000 <=
+    // 69000`, which is the equality the tolerance is defined to include.
+    let report = boundary_report("6.00", "6.90");
+    let found = find(&report.monthly, "Boundary Co").expect("charge on the boundary is detected");
+    assert_eq!(found.cadence, Cadence::Monthly);
+    assert_eq!(found.occurrences, 6, "one cluster spanning both prices");
+    // Median of the six sorted amounts, so the reported figure is a real charge.
+    assert_eq!(found.typical_amount, Dec::new(690, 2));
+    assert_eq!(found.annualized_cost, Dec::new(8280, 2));
+}
+
+#[test]
+fn a_rise_one_cent_past_the_tolerance_splits_the_cluster() {
+    // The other side of the same boundary: $6.00 → $6.91 exceeds 15%
+    // (`691 × 100 > 600 × 115`, i.e. `69100 > 69000`), so the cluster genuinely
+    // splits and neither half reaches `min_monthly`. The fix widens nothing — it
+    // makes the cut land exactly where the threshold says, and the two tests
+    // together pin it to the cent.
+    let report = boundary_report("6.00", "6.91");
+    assert!(
+        find(&report.monthly, "Boundary Co").is_none(),
+        "a rise past the tolerance must still split the cluster"
+    );
+    assert!(report.monthly.is_empty() && report.annual.is_empty());
+}
+
+#[test]
+fn the_tolerance_boundary_is_exact_at_every_scale_of_charge() {
+    // The same equality holds wherever the anchor sits, including amounts whose
+    // f64 image is nowhere near their decimal value. Each pair is `anchor` and
+    // `anchor × 1.15` to the cent; all must cluster.
+    for (low, high) in [
+        ("1.40", "1.61"),
+        ("2.60", "2.99"),
+        ("6.00", "6.90"),
+        ("19.80", "22.77"),
+        ("119.80", "137.77"),
+    ] {
+        let report = boundary_report(low, high);
+        assert!(
+            find(&report.monthly, "Boundary Co").is_some(),
+            "${low} → ${high} is exactly +15% and must stay one subscription"
+        );
+    }
+}

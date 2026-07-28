@@ -37,6 +37,7 @@
 //! threat model on [`security`] before putting either on a real socket.
 
 mod edit_api;
+mod error;
 mod reports_api;
 mod security;
 mod spa;

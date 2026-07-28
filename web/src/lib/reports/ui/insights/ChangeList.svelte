@@ -8,6 +8,7 @@
      compare against" from "nothing moved much". -->
 <script lang="ts">
     import type {AmountStyle} from "$lib/domain/types";
+    import {NEUTRAL_CLASS, sentimentClass} from "$lib/format/sign";
     import type {ChangeRow} from "$lib/reports/insightsTypes";
     import {fmt} from "./format";
 
@@ -36,11 +37,12 @@
     }
 
     function badge(row: ChangeRow): {text: string; klass: string} {
-        if (row.kind === "ended") return {text: "ended", klass: "text-base-content/50"};
+        if (row.kind === "ended") return {text: "ended", klass: NEUTRAL_CLASS};
         const pct = row.pct ?? 0;
-        const klass = pct === 0 ? "text-base-content/50" : pct > 0 === goodWhenUp ? "text-success" : "text-error";
         const arrow = pct > 0 ? "▲" : pct < 0 ? "▼" : "";
-        return {text: `${arrow} ${Math.abs(pct).toFixed(0)}%`, klass};
+        // One decimal, matching `deltaLine`'s "(12.3%)" directly above these
+        // rows — this badge alone rounded to whole percents.
+        return {text: `${arrow} ${Math.abs(pct).toFixed(1)}%`, klass: sentimentClass(pct, goodWhenUp)};
     }
 </script>
 
@@ -59,7 +61,8 @@
                         <span class="truncate" title={row.account}>{leaf(row.account)}</span>
                         <span class="flex items-center gap-2 whitespace-nowrap">
                             <span class="font-mono tabular-nums">{fmt(base, row.current, styles)}</span>
-                            <span class="{b.klass} w-16 text-right font-medium">{b.text}</span>
+                            <!-- w-20, not w-16: the badge gained a decimal place. -->
+                            <span class="{b.klass} w-20 text-right font-medium">{b.text}</span>
                         </span>
                     </li>
                 {/each}

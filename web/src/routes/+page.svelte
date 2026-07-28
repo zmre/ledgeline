@@ -3,6 +3,7 @@
     // above the virtualized transaction table; the totals footer stays pinned.
     // On mount (and whenever a server URL is first configured) → journal.refresh().
     import {onMount, untrack} from "svelte";
+    import ErrorToast from "$lib/components/ErrorToast.svelte";
     import FilterBar from "$lib/filters/FilterBar.svelte";
     import {startUrlSync} from "$lib/filters/urlSync";
     import InsightsPanel from "$lib/insights/InsightsPanel.svelte";
@@ -15,6 +16,7 @@
     import {editing} from "$lib/stores/editing.svelte";
     import {filters} from "$lib/stores/filters.svelte";
     import {getFilteredTxns, journal, startPolling} from "$lib/stores/journal.svelte";
+    import {onServerReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
     const txns = $derived(getFilteredTxns());
@@ -42,20 +44,15 @@
     // URL (debounced replaceState). onMount's return value is its cleanup.
     onMount(() => startUrlSync());
 
-    let attempted: string | null = null;
-    $effect(() => {
-        const url = settings.serverUrl;
-        // Keyed on the nonce too: reconnecting usually leaves the URL identical
-        // (the engine restarted on the same port), and this guard latching on
-        // the URL alone is why a reconnect never re-probed (FE-5d).
-        const key = `${settings.serverNonce}|${url}`;
-        if (url !== null && key !== attempted) {
-            attempted = key;
-            void journal.refresh();
-            // Detect the native write endpoints so edit affordances only show
-            // against the Ledgeline engine (not a plain, read-only hledger-web).
-            void editing.probe();
-        }
+    // Keyed on the server nonce, not just the URL: reconnecting usually leaves
+    // the URL identical (the engine restarted on the same port), and latching on
+    // the URL alone is why a reconnect never re-probed (FE-5d). `onServerReady`
+    // owns that latch now, for all three pages.
+    onServerReady(() => {
+        void journal.refresh();
+        // Detect the native write endpoints so edit affordances only show
+        // against the Ledgeline engine (not a plain, read-only hledger-web).
+        void editing.probe();
     });
 
     // A probe that could not reach the server left `canEdit` a guess rather than
@@ -136,11 +133,4 @@
 
 <!-- Stale-data case only: when the load failed with nothing to show, the panel
      above says so in full and this would just repeat it. -->
-{#if journal.status === "error" && journal.error !== null && !loadFailed}
-    <div class="toast toast-end z-30">
-        <div class="alert alert-error">
-            <span class="max-w-xs truncate" title={journal.error}>{journal.error}</span>
-            <button type="button" class="btn btn-sm" onclick={() => void journal.refresh({force: true})}>Retry</button>
-        </div>
-    </div>
-{/if}
+<ErrorToast message={journal.status === "error" && !loadFailed ? journal.error : null} onRetry={() => void journal.refresh({force: true})} />

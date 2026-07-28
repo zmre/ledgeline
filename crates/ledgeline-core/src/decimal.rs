@@ -143,8 +143,20 @@ impl Dec {
         Self::new(mantissa, places)
     }
 
-    /// Display-only conversion to `f64` (`mantissa / 10^places`). Never used for
-    /// arithmetic or equality.
+    /// Display-boundary conversion to `f64` (`mantissa / 10^places`), lossy
+    /// above 2^53.
+    ///
+    /// Used for exactly two things: the wire's convenience number field
+    /// (`wire.rs`), and the percent-change arithmetic the reports publish as
+    /// `f64` (`insights::pct_change`, `holdings::engine::gain_pct`). A percent is
+    /// already a lossy summary and is never added back into a balance, so that
+    /// arithmetic is contained.
+    ///
+    /// What it must NOT do is decide anything: no equality, no ordering, no
+    /// threshold, no ranking that truncates. Every such site is exact `Dec`
+    /// ([`Ord`] included). This doc previously read "Never used for arithmetic or
+    /// equality" — false in both halves at the time, and a doc that lies about an
+    /// invariant is how wrong tests get written (DRY-5).
     #[must_use]
     pub fn floating_point(&self) -> f64 {
         (self.mantissa as f64) / 10f64.powi(self.places as i32)
@@ -311,17 +323,71 @@ impl PartialOrd for Dec {
     }
 }
 
+/// Number of decimal digits in `value`; zero has none.
+///
+/// `x × 10^exp` has exactly `digits(x) + exp` of them, which is what lets
+/// [`cmp_scaled`] settle a comparison without performing the multiplication.
+fn digits(value: u128) -> u32 {
+    value.checked_ilog10().map_or(0, |log| log + 1)
+}
+
+/// Compare `x × 10^exp` against `y` exactly, for magnitudes whose scaled form
+/// may not fit in a `u128`.
+///
+/// The decimal digit count decides every comparison but one: a number with more
+/// digits is the larger, and scaling by a power of ten shifts that count by
+/// exactly `exp`. When the counts agree the product has as many digits as `y`,
+/// so either it fits in a `u128` and is compared outright, or it exceeds
+/// `u128::MAX` — and `y` does not — making it the larger. Nothing here can
+/// overflow, so there is no inexact path to fall back to.
+fn cmp_scaled(x: u128, exp: u32, y: u128) -> Ordering {
+    if x == 0 || y == 0 {
+        // `x × 10^exp` is zero exactly when `x` is, so the raw compare is right.
+        return x.cmp(&y);
+    }
+    match (u64::from(digits(x)) + u64::from(exp)).cmp(&u64::from(digits(y))) {
+        Ordering::Equal => match 10u128
+            .checked_pow(exp)
+            .and_then(|factor| x.checked_mul(factor))
+        {
+            Some(scaled) => scaled.cmp(&y),
+            None => Ordering::Greater,
+        },
+        counts => counts,
+    }
+}
+
+/// Total, **exact** ordering by numeric value — no float path at any magnitude.
+///
+/// This used to rescale both sides to the larger scale and, when that overflowed
+/// `i128`, compare `f64`s with `unwrap_or(Ordering::Equal)`. Two values 0.3
+/// apart then reported `Equal`, and because [`PartialEq`] is defined in terms of
+/// this, every `BTreeMap<_, Dec>` key, every `sort`, and every `dedup` in the
+/// engine inherited it (DRY-5). Comparing the sign first and then the magnitudes
+/// removes the multiplication that overflowed, so the fallback has nothing left
+/// to be a fallback for.
 impl Ord for Dec {
     fn cmp(&self, other: &Self) -> Ordering {
-        let places = self.places.max(other.places);
-        match (self.rescaled(places), other.rescaled(places)) {
-            (Ok(a), Ok(b)) => a.mantissa.cmp(&b.mantissa),
-            // Only reachable for astronomically large values; fall back to a
-            // finite float comparison so ordering stays total and panic-free.
-            _ => self
-                .floating_point()
-                .partial_cmp(&other.floating_point())
-                .unwrap_or(Ordering::Equal),
+        match self.mantissa.signum().cmp(&other.mantissa.signum()) {
+            Ordering::Equal => {}
+            sign => return sign,
+        }
+        // Same sign (or both zero). `unsigned_abs` is total where `neg` is not:
+        // it handles `i128::MIN`, which has no positive counterpart.
+        let (x, y) = (self.mantissa.unsigned_abs(), other.mantissa.unsigned_abs());
+        // Comparing `x / 10^p` against `y / 10^q` is comparing `x × 10^q`
+        // against `y × 10^p`; dividing through by the common `10^min(p, q)`
+        // leaves one scaling, on whichever side carries the smaller scale.
+        let magnitude = if self.places <= other.places {
+            cmp_scaled(x, other.places - self.places, y)
+        } else {
+            cmp_scaled(y, self.places - other.places, x).reverse()
+        };
+        // Below zero, the larger magnitude is the smaller value.
+        if self.mantissa < 0 {
+            magnitude.reverse()
+        } else {
+            magnitude
         }
     }
 }
@@ -329,6 +395,100 @@ impl Ord for Dec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    /// Stripping trailing zeros is a CANONICAL form: for a value `m / 10^p`, the
+    /// representation with either `p == 0` or `10 ∤ m` is unique. (If
+    /// `m₁/10^p₁ = m₂/10^p₂` with both canonical and `p₁ < p₂`, then
+    /// `m₂ = m₁ × 10^(p₂−p₁)` is divisible by ten, contradicting `p₂`'s
+    /// canonicity.) So two `Dec`s are numerically equal exactly when their
+    /// normalized forms match field-for-field — an equality oracle that never
+    /// rescales and therefore cannot overflow, which is what makes it a valid
+    /// check on the very inputs the old `Ord` got wrong.
+    fn same_value(a: Dec, b: Dec) -> bool {
+        let (a, b) = (a.normalized(), b.normalized());
+        a.mantissa == b.mantissa && a.places == b.places
+    }
+
+    proptest! {
+        /// `Ord` is a total order that agrees with numeric value at EVERY
+        /// magnitude — including the range where aligning the two scales
+        /// overflows `i128`, which is precisely where it used to compare `f64`s
+        /// and collapse distinct values to `Equal`.
+        #[test]
+        fn ord_is_exact_and_antisymmetric_at_any_magnitude(
+            ma in any::<i128>(),
+            pa in 0u32..80,
+            mb in any::<i128>(),
+            pb in 0u32..80,
+        ) {
+            let (a, b) = (Dec::new(ma, pa), Dec::new(mb, pb));
+
+            prop_assert_eq!(a.cmp(&b), b.cmp(&a).reverse());
+            prop_assert_eq!(a.cmp(&a), Ordering::Equal);
+            // The heart of it: `Equal` must mean equal, never "too large to tell".
+            prop_assert_eq!(a == b, same_value(a, b));
+        }
+
+        /// Transitivity, over triples spanning the same overflow-prone range.
+        /// A comparator that reports unequal values as `Equal` breaks this, and
+        /// `BTreeMap` silently corrupts when its key comparator is not a total
+        /// order.
+        #[test]
+        fn ord_is_transitive(
+            ma in any::<i128>(), pa in 0u32..80,
+            mb in any::<i128>(), pb in 0u32..80,
+            mc in any::<i128>(), pc in 0u32..80,
+        ) {
+            let (a, b, c) = (Dec::new(ma, pa), Dec::new(mb, pb), Dec::new(mc, pc));
+            let mut sorted = [a, b, c];
+            sorted.sort();
+            prop_assert!(sorted[0] <= sorted[1]);
+            prop_assert!(sorted[1] <= sorted[2]);
+            prop_assert!(sorted[0] <= sorted[2]);
+        }
+
+        /// The same exactness check, but with the generator aimed squarely at
+        /// the overflow zone.
+        ///
+        /// This one earns its keep where the uniform version above does not:
+        /// mantissas within a factor of ten of `i128::MAX` make aligning two
+        /// different scales overflow every time, so every case here takes the
+        /// path the old implementation resolved with `f64`. Uniform `i128`s
+        /// essentially never land there — verified by reverting `Ord` and
+        /// watching the uniform properties still pass while these fail.
+        #[test]
+        fn ord_is_exact_where_scales_cannot_be_aligned(
+            ma in (i128::MAX / 10)..=i128::MAX,
+            pa in 0u32..4,
+            mb in (i128::MAX / 10)..=i128::MAX,
+            pb in 0u32..4,
+        ) {
+            let (a, b) = (Dec::new(ma, pa), Dec::new(mb, pb));
+            prop_assert_eq!(a == b, same_value(a, b));
+            prop_assert_eq!(a.cmp(&b), b.cmp(&a).reverse());
+            // Negatives take the mirrored branch.
+            let (na, nb) = (Dec::new(-ma, pa), Dec::new(-mb, pb));
+            prop_assert_eq!(na == nb, same_value(na, nb));
+            prop_assert_eq!(na.cmp(&nb), a.cmp(&b).reverse());
+        }
+
+        /// Ordering agrees with subtraction wherever subtraction is defined —
+        /// an independent cross-check against the exact arithmetic the engine
+        /// actually runs on money.
+        #[test]
+        fn ord_agrees_with_subtraction(
+            ma in -(10i128.pow(30))..10i128.pow(30),
+            pa in 0u32..12,
+            mb in -(10i128.pow(30))..10i128.pow(30),
+            pb in 0u32..12,
+        ) {
+            let (a, b) = (Dec::new(ma, pa), Dec::new(mb, pb));
+            if let Ok(difference) = a.sub(b) {
+                prop_assert_eq!(a.cmp(&b), difference.cmp(&Dec::zero()));
+            }
+        }
+    }
 
     #[test]
     fn parses_grouped_dollar() {
@@ -498,6 +658,96 @@ mod tests {
             Dec::parse_with_mark("1 000 000", None).unwrap(),
             Dec::new(1_000_000, 0)
         );
+    }
+
+    /// The two values the old float fallback collapsed together.
+    ///
+    /// `HUGE` is `i128::MAX / 10 + 1` at scale 0; `i128::MAX` at scale 1 is
+    /// `0.3` less. Aligning them to a common scale multiplies `HUGE` by ten,
+    /// which overflows `i128` — the only door into the old fallback.
+    const HUGE: i128 = i128::MAX / 10 + 1;
+
+    #[test]
+    fn ord_is_exact_where_rescaling_overflows() {
+        let bigger = Dec::new(HUGE, 0);
+        let smaller = Dec::new(i128::MAX, 1);
+
+        // The premises. Rescaling to the common scale really does overflow...
+        assert!(HUGE.checked_mul(10).is_none());
+        // ...and both values really do share one `f64` image, so the old
+        // `partial_cmp(...).unwrap_or(Equal)` fallback returned `Equal` for two
+        // values a full 0.3 apart.
+        assert_eq!(bigger.floating_point(), smaller.floating_point());
+
+        // Exact ordering, in both directions and via every derived operator.
+        assert_eq!(bigger.cmp(&smaller), Ordering::Greater);
+        assert_eq!(smaller.cmp(&bigger), Ordering::Less);
+        assert!(bigger > smaller);
+        assert_ne!(bigger, smaller);
+
+        // `PartialEq` is `cmp == Equal`, so the collapse used to make these two
+        // distinct values collide as `BTreeMap` keys and vanish under `dedup`.
+        let mut map = std::collections::BTreeMap::new();
+        map.insert(bigger, "bigger");
+        map.insert(smaller, "smaller");
+        assert_eq!(map.len(), 2, "two different values must be two keys");
+        let mut values = vec![bigger, smaller];
+        values.dedup();
+        assert_eq!(values.len(), 2);
+
+        // Negatives mirror exactly: magnitude order inverts below zero.
+        let (neg_bigger, neg_smaller) = (Dec::new(-HUGE, 0), Dec::new(-i128::MAX, 1));
+        assert_eq!(neg_bigger.cmp(&neg_smaller), Ordering::Less);
+        assert!(neg_bigger < neg_smaller);
+
+        // Sign alone settles a cross-zero pair the old code could not scale.
+        assert!(neg_bigger < bigger);
+        assert!(neg_bigger < Dec::zero());
+        assert!(bigger > Dec::zero());
+    }
+
+    #[test]
+    fn ord_survives_extreme_scales_without_overflowing() {
+        // `places` is a `u32`, so the scale difference alone can dwarf any
+        // power of ten an `i128` can hold. Digit counting settles these without
+        // ever attempting the multiplication.
+        let tiny = Dec::new(i128::MAX, u32::MAX);
+        let one = Dec::new(1, 0);
+        assert!(tiny < one);
+        assert!(tiny > Dec::zero());
+        assert_eq!(tiny.cmp(&tiny), Ordering::Equal);
+
+        // `i128::MIN` has no positive counterpart, so `neg`/`abs` fail on it;
+        // ordering must not.
+        let min = Dec::new(i128::MIN, 0);
+        assert!(min < Dec::zero());
+        assert!(min < Dec::new(i128::MIN + 1, 0));
+        assert_eq!(min.cmp(&min), Ordering::Equal);
+    }
+
+    #[test]
+    fn ord_agrees_with_exact_rational_ordering() {
+        // Cross-check the digit-count shortcut against ordinary same-scale
+        // integer math over a spread of scales and signs. Every pair here is
+        // small enough that rescaling cannot overflow, so this pins the fast
+        // path to the arithmetic the old implementation used.
+        let mantissas = [-1_000_001i128, -999, -1, 0, 1, 999, 1_000_001];
+        for &ma in &mantissas {
+            for pa in 0u32..6 {
+                for &mb in &mantissas {
+                    for pb in 0u32..6 {
+                        let scale = pa.max(pb);
+                        let lhs = ma * 10i128.pow(scale - pa);
+                        let rhs = mb * 10i128.pow(scale - pb);
+                        assert_eq!(
+                            Dec::new(ma, pa).cmp(&Dec::new(mb, pb)),
+                            lhs.cmp(&rhs),
+                            "{ma}e-{pa} vs {mb}e-{pb}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

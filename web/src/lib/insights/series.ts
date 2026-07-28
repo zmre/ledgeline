@@ -16,6 +16,8 @@ import {accountMatches, categorize, clampAccount, type RootCategory} from "$lib/
 import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
 import {add, cmp, dec, formatAmount, neg, sub, toNumber, type Dec} from "$lib/domain/money";
 import type {Amount, AmountStyle, Transaction} from "$lib/domain/types";
+import {absDec, DEFAULT_AMOUNT_STYLE, ZERO} from "$lib/format/amounts";
+import {OTHER_LABEL} from "$lib/format/palette";
 import {bucketKey, nextBucket, type Interval as PeriodsInterval} from "$lib/reports/periods";
 
 export interface PieDatum {
@@ -40,18 +42,18 @@ export interface LineSeries {
  */
 export type Interval = Extract<PeriodsInterval, "daily" | "weekly" | "monthly">;
 
-/** Label used for the folded tail of small accounts (parens: not a legal hledger segment clash risk). */
-export const OTHER = "(other)";
+/**
+ * Label used for the folded tail of small accounts (parens: not a legal hledger
+ * segment clash risk). One literal, shared with the holdings pie — see
+ * `$lib/format/palette`, which also owns the muted colour it is drawn in.
+ */
+export const OTHER = OTHER_LABEL;
 
-const ZERO: Dec = dec(0n, 0);
-
-const DEFAULT_STYLE: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: null};
-
-// ---------- shared accumulation helpers ----------
-
-function absDec(d: Dec): Dec {
-    return d.m < 0n ? neg(d) : d;
-}
+// NOTE the behaviour change: this module's own default style used
+// `digitGroups: null`, so a commodity the journal feed gave no style for
+// charted as `1234.56` while every other surface rendered `1,234.56`. The
+// shared default groups.
+const DEFAULT_STYLE = DEFAULT_AMOUNT_STYLE;
 
 /**
  * Optional account selection (the filter bar's subtree roots). Insights receive

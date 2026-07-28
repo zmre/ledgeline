@@ -1,17 +1,17 @@
 <!-- Chart widget (WP-05): LayerChart pie/line for the filtered period.
      - mode toggle (pie | line), interval select (line only), commodity select when >1 in use
      - one commodity at a time; never sums across commodities
-     - colors: dataviz reference dark palette slots 1..6 + muted gray for "(other)",
-       validated with the dataviz skill validator against the daisyUI dark surface
-       (#191e24): lightness band PASS, chroma PASS, contrast >=3:1 PASS, worst adjacent
-       CVD dE 10.3 (floor band) — mitigated per the skill by an always-on legend,
-       pad-angle gaps between pie slices, and full tooltips.
+     - colors: the shared categorical palette ($lib/format/palette) + muted gray for
+       "(other)". That module documents the validator run and the slot order.
+       Secondary encoding, required by the skill at this CVD separation, is the
+       always-on legend, pad-angle gaps between pie slices, and full tooltips.
      - pie and line rank accounts identically (series.rankedAccounts), so an account
        keeps its hue across modes; slices/series are capped at 6 groups incl. "(other)". -->
 <script lang="ts">
     import {LineChart, PieChart, Tooltip} from "layerchart";
     import type {RootCategory} from "$lib/domain/accounts";
     import type {Transaction} from "$lib/domain/types";
+    import {colorAt, OTHER_COLOR} from "$lib/format/palette";
     import {
         categoriesInUse,
         commoditiesInUse,
@@ -35,9 +35,6 @@
         declared,
     }: {txns: Transaction[]; depth: number; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();
 
-    // Dark-mode categorical slots 1..6 from the dataviz reference palette (app theme is dark-only).
-    const PALETTE = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767"];
-    const OTHER_COLOR = "#898781"; // muted — the folded tail is context, not a series identity
     const MAX_GROUPS = 6;
 
     // Human labels for the category scope selector (root account groups).
@@ -89,14 +86,20 @@
 
     // Color follows the account, not the mode: both datasets come from the same
     // magnitude ranking, so slot assignment by first appearance stays consistent.
+    //
+    // `colorAt` FOLDS past the last slot; this used to be `PALETTE[slot++ %
+    // PALETTE.length]` over a 6-entry copy of the palette. Each dataset is
+    // capped at MAX_GROUPS, but the pie and the line can rank DIFFERENT
+    // accounts, so `slot` can reach 12 — and the modulo then handed a 7th
+    // account slot 1's blue, making it indistinguishable from the 1st.
     const colorOf: Record<string, string> = $derived.by(() => {
         const colors: Record<string, string> = {[OTHER]: OTHER_COLOR};
         let slot = 0;
         for (const s of line) {
-            colors[s.account] ??= PALETTE[slot++ % PALETTE.length];
+            colors[s.account] ??= colorAt(slot++);
         }
         for (const d of pie) {
-            colors[d.account] ??= PALETTE[slot++ % PALETTE.length];
+            colors[d.account] ??= colorAt(slot++);
         }
         return colors;
     });

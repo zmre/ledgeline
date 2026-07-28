@@ -4,6 +4,7 @@
 <script lang="ts">
     import {formatAmount, toNumber, type Dec} from "$lib/domain/money";
     import type {Transaction} from "$lib/domain/types";
+    import {signClass} from "$lib/format/sign";
     import {bigNumbers, commoditiesInUse, styleFor, type AccountSelection, type DeclaredTypes} from "./series";
 
     let {txns, accounts, allTxns, declared}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();
@@ -32,7 +33,7 @@
             {
                 label: "Net",
                 value: fmt(primary, primaryNums.net),
-                valueClass: toNumber(primaryNums.net) < 0 ? "text-error" : "text-success",
+                valueClass: signClass(toNumber(primaryNums.net)),
                 extras: extras((n) => n.net),
             },
         ];

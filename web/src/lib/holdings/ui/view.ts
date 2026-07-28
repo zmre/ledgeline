@@ -2,14 +2,16 @@
 // unit-tested under node; the .svelte components stay thin.
 import {add, cmp, dec, formatDec, MAX_QUANTITY_DECIMALS, toNumber, type Dec} from "$lib/domain/money";
 import type {AmountStyle, Transaction} from "$lib/domain/types";
+import {DEFAULT_AMOUNT_STYLE, fmtSignedPct} from "$lib/format/amounts";
+import {OTHER_LABEL} from "$lib/format/palette";
 import {isCurrency} from "$lib/holdings/commodities";
 import type {Holding} from "$lib/holdings/types";
 
 /** Null cells render as an em-dash everywhere on the holdings page. */
-export const EM_DASH = "—";
+export {EM_DASH} from "$lib/format/amounts";
 
 /** The folded pie tail's label — context, not a series identity (muted gray, like the insights chart). */
-export const PIE_OTHER = "(other)";
+export const PIE_OTHER = OTHER_LABEL;
 
 /**
  * Accounts that EVER hold a stock commodity (any posting amount in a
@@ -105,7 +107,9 @@ export function pieSlices(holdings: readonly Holding[], format: (v: Dec) => stri
     return slices.map((s) => ({...s, share: total > 0 ? (s.value / total) * 100 : 0}));
 }
 
-const SHARES_STYLE: Omit<AmountStyle, "precision"> = {side: "L", spaced: false, decimalPoint: ".", digitGroups: [",", [3]]};
+// Same grouping/point as money; only the precision differs, and it comes from
+// the quantity itself (see below).
+const SHARES_STYLE: Omit<AmountStyle, "precision"> = DEFAULT_AMOUNT_STYLE;
 
 /**
  * Share quantities for the table.
@@ -123,11 +127,16 @@ export function formatShares(shares: Dec): string {
     return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }
 
-/** Gain percent for display: explicit sign, one decimal ("+21.3%", "-3.4%"); em-dash when null. */
-export function formatGainPct(pct: number | null): string {
-    if (pct === null) return EM_DASH;
-    return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
-}
+/**
+ * Gain percent for display: explicit sign, one decimal ("+21.3%", "−3.4%");
+ * em-dash when null.
+ *
+ * This was a second, drifted implementation of `fmtSignedPct`: it wrote its
+ * minus as an ASCII hyphen where the insights dashboard wrote U+2212, and it
+ * signed ZERO as "+0.0%" — claiming a gain of nothing. Now one function, so the
+ * portfolio and the dashboard cannot disagree about what a percent looks like.
+ */
+export const formatGainPct = fmtSignedPct;
 
 /**
  * How many DISPLAYED holdings are left out of the PARTIAL cost-basis / gain

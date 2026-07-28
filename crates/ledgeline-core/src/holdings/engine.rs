@@ -1729,9 +1729,26 @@ fn assemble_report(
     // Only real signs: gainers gain_pct > 0 (desc), losers gain_pct < 0 (asc).
     // Filtering the already-MV-sorted list + a stable sort matches the TS
     // tie-ordering.
+    //
+    // MEMBERSHIP is decided on the exact `gain`, not on the `f64` percent.
+    // `gain_pct` is `Some` only when the reference is strictly positive, so it
+    // carries the sign of `gain` exactly — except that a small gain over a large
+    // reference can underflow to `0.0`, which dropped the row from BOTH lists
+    // (DRY-5). The ORDER within each list still uses `gain_pct`, which is an
+    // `f64`-typed figure by definition.
+    let is_gain = |h: &Holding, positive: bool| {
+        h.gain_pct.is_some()
+            && h.gain.is_some_and(|g| {
+                if positive {
+                    g.mantissa > 0
+                } else {
+                    g.mantissa < 0
+                }
+            })
+    };
     let mut top_gainers: Vec<Holding> = holdings
         .iter()
-        .filter(|h| h.gain_pct.is_some_and(|p| p > 0.0))
+        .filter(|h| is_gain(h, true))
         .cloned()
         .collect();
     top_gainers.sort_by(|a, b| {
@@ -1743,7 +1760,7 @@ fn assemble_report(
 
     let mut top_losers: Vec<Holding> = holdings
         .iter()
-        .filter(|h| h.gain_pct.is_some_and(|p| p < 0.0))
+        .filter(|h| is_gain(h, false))
         .cloned()
         .collect();
     top_losers.sort_by(|a, b| {
@@ -2738,6 +2755,67 @@ mod tests {
             .collect();
         assert_eq!(gainers, ["AAA", "BBB"]);
         assert!(report.top_losers.is_empty());
+    }
+
+    #[test]
+    fn gainer_membership_keys_off_the_exact_gain_not_the_float_percent() {
+        // Membership used to be `gain_pct.is_some_and(|p| p > 0.0)`, testing a
+        // lossy `f64` projection of a quantity the engine already knows exactly.
+        // `gain_pct` is `Some` only when the reference is strictly positive, so
+        // it carries `gain`'s sign — but it is a division, and a division can
+        // land on `0.0` (or `NaN`, when both operands underflow at extreme
+        // scales) for a gain that is not zero, which silently dropped the row
+        // from BOTH lists. Keying on `gain.mantissa` cannot.
+        let txns = [
+            txn(1, "2025-01-10", vec![buy("a", "UPP", 1, 10000, true)], &[]),
+            txn(2, "2025-01-10", vec![buy("a", "DWN", 1, 10000, true)], &[]),
+            txn(3, "2025-01-10", vec![buy("a", "FLT", 1, 10000, true)], &[]),
+        ];
+        let prices = [
+            pd("2025-02-01", "UPP", 12000, "$"),
+            pd("2025-02-01", "DWN", 8000, "$"),
+            pd("2025-02-01", "FLT", 10000, "$"), // unchanged: a real zero
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope("2025-06-30", ScopeMode::Include, &[]),
+        );
+
+        let names =
+            |rows: &[Holding]| -> Vec<String> { rows.iter().map(|h| h.symbol.clone()).collect() };
+        assert_eq!(names(&report.top_gainers), ["UPP"]);
+        assert_eq!(names(&report.top_losers), ["DWN"]);
+
+        // The invariant, stated directly against the exact figure: a row is a
+        // gainer exactly when its `gain` is positive, a loser exactly when
+        // negative, and a flat position is neither.
+        for holding in &report.top_gainers {
+            assert!(holding.gain.expect("a gainer has a gain").mantissa > 0);
+        }
+        for holding in &report.top_losers {
+            assert!(holding.gain.expect("a loser has a gain").mantissa < 0);
+        }
+        let flat = only(&report, "FLT");
+        assert_eq!(flat.gain, Some(Dec::zero()));
+
+        // Nothing with a real, signed gain may be missing from both lists.
+        for holding in &report.holdings {
+            let Some(gain) = holding.gain else { continue };
+            if holding.gain_pct.is_none() || gain.is_zero() {
+                continue;
+            }
+            let listed = report
+                .top_gainers
+                .iter()
+                .chain(&report.top_losers)
+                .any(|row| row.symbol == holding.symbol);
+            assert!(
+                listed,
+                "{} has a signed gain but is listed nowhere",
+                holding.symbol
+            );
+        }
     }
 
     // ---- holdings net == balance-sheet net (equity/income share legs) ----

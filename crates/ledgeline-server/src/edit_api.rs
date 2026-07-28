@@ -91,9 +91,8 @@ use ledgeline_core::{Dec, EditError, JournalEditor};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-
-/// An HTTP error: a status plus a human-readable message (mirrors `reports_api`).
-type ApiError = (StatusCode, String);
+use crate::error::AppError;
+use crate::reports_api::WireDec;
 
 // ===========================================================================
 // Request body
@@ -307,19 +306,10 @@ enum PositionIn {
 // Response body
 // ===========================================================================
 
-/// An exact decimal on the wire (string mantissa; see [`WireDecIn`]).
-#[derive(Serialize)]
-struct WireDecOut {
-    mantissa: String,
-    places: u32,
-}
-
-fn wire_dec_out(dec: Dec) -> WireDecOut {
-    WireDecOut {
-        mantissa: dec.mantissa.to_string(),
-        places: dec.places,
-    }
-}
+// The RESPONSE decimal is `reports_api::WireDec` (imported above), not a local
+// copy. This module used to carry a byte-identical `WireDecOut` + `wire_dec_out`
+// pair (DRY-4); sharing the one type is what keeps the read and write wires from
+// ever describing a decimal differently.
 
 /// A serialized cost annotation.
 #[derive(Serialize)]
@@ -334,7 +324,7 @@ struct NativeCost {
 #[serde(rename_all = "camelCase")]
 struct NativeAmount {
     commodity: String,
-    quantity: WireDecOut,
+    quantity: WireDec,
     #[serde(skip_serializing_if = "Option::is_none")]
     cost: Option<Box<NativeCost>>,
 }
@@ -399,6 +389,17 @@ pub(crate) struct DeleteResponse {
 // Handlers
 // ===========================================================================
 
+/// Unwrap a JSON request body, turning a malformed/absent one into the `400`
+/// all three body-taking handlers used to spell out identically.
+///
+/// The message text is part of the contract: `native.ts` surfaces it verbatim
+/// as a `ValidationError`, and `tests/error_surface.rs` pins it.
+fn json_body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, AppError> {
+    payload
+        .map(|Json(body)| body)
+        .map_err(|rejection| AppError::BadRequest(format!("invalid request body: {rejection}")))
+}
+
 /// `POST /api/transactions` — add a transaction from a native JSON body.
 ///
 /// Builds a [`Transaction`] (inferring each amount's style from the journal),
@@ -407,13 +408,8 @@ pub(crate) struct DeleteResponse {
 pub(crate) async fn add_transaction(
     State(state): State<AppState>,
     payload: Result<Json<AddRequest>, JsonRejection>,
-) -> Result<(StatusCode, Json<AddResponse>), ApiError> {
-    let Json(request) = payload.map_err(|rejection| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("invalid request body: {rejection}"),
-        )
-    })?;
+) -> Result<(StatusCode, Json<AddResponse>), AppError> {
+    let request = json_body(payload)?;
     // All editing work is synchronous and holds the std mutex only inside this
     // call — never across an `.await` — so the guard never crosses a yield point.
     let response = add_transaction_locked(&state, &request)?;
@@ -425,7 +421,7 @@ pub(crate) async fn add_transaction(
 pub(crate) async fn delete_transaction(
     State(state): State<AppState>,
     Path(index): Path<u32>,
-) -> Result<Json<DeleteResponse>, ApiError> {
+) -> Result<Json<DeleteResponse>, AppError> {
     let response = delete_transaction_locked(&state, index)?;
     Ok(Json(response))
 }
@@ -440,13 +436,8 @@ pub(crate) async fn replace_transaction(
     State(state): State<AppState>,
     Path(index): Path<u32>,
     payload: Result<Json<AddRequest>, JsonRejection>,
-) -> Result<Json<AddResponse>, ApiError> {
-    let Json(request) = payload.map_err(|rejection| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("invalid request body: {rejection}"),
-        )
-    })?;
+) -> Result<Json<AddResponse>, AppError> {
+    let request = json_body(payload)?;
     let response = replace_transaction_locked(&state, index, &request)?;
     Ok(Json(response))
 }
@@ -461,13 +452,8 @@ pub(crate) async fn patch_transaction(
     State(state): State<AppState>,
     Path(index): Path<u32>,
     payload: Result<Json<PatchRequest>, JsonRejection>,
-) -> Result<Json<AddResponse>, ApiError> {
-    let Json(request) = payload.map_err(|rejection| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("invalid request body: {rejection}"),
-        )
-    })?;
+) -> Result<Json<AddResponse>, AppError> {
+    let request = json_body(payload)?;
     let response = patch_transaction_locked(&state, index, &request)?;
     Ok(Json(response))
 }
@@ -476,9 +462,16 @@ pub(crate) async fn patch_transaction(
 // Locked, synchronous edit logic (no `.await` while the mutex is held)
 // ===========================================================================
 
-fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddResponse, ApiError> {
+/// The bound editor inside a held guard, or the `501` that says this server has
+/// none. Every locked operation below starts (and, after `save_and_publish`,
+/// resumes) with this, so the "editing disabled" answer is written once.
+fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEditor, AppError> {
+    slot.as_mut().ok_or_else(editing_disabled)
+}
+
+fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddResponse, AppError> {
     let mut guard = lock_editor(state)?;
-    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
+    let editor = bound(&mut guard)?;
 
     let transaction = build_transaction(editor.journal(), request)?;
     let position = request.insert_position();
@@ -487,21 +480,16 @@ fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddR
     // return the added transaction afterwards.
     let insert_pos = insertion_index(editor.journal(), &transaction, position);
 
-    editor
-        .add_transaction(&transaction, position)
-        .map_err(edit_error)?;
+    editor.add_transaction(&transaction, position)?;
     save_and_publish(state, &mut guard)?;
 
-    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
+    let editor = bound(&mut guard)?;
     let added = editor
         .journal()
         .transactions
         .get(insert_pos)
         .ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not locate the added transaction after saving".to_string(),
-            )
+            AppError::Internal("could not locate the added transaction after saving".to_string())
         })?;
     Ok(AddResponse {
         index: added.index.0,
@@ -509,19 +497,14 @@ fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddR
     })
 }
 
-fn delete_transaction_locked(state: &AppState, index: u32) -> Result<DeleteResponse, ApiError> {
+fn delete_transaction_locked(state: &AppState, index: u32) -> Result<DeleteResponse, AppError> {
     let mut guard = lock_editor(state)?;
-    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
-
-    editor
-        .delete_transaction(Tindex(index))
-        .map_err(edit_error)?;
+    bound(&mut guard)?.delete_transaction(Tindex(index))?;
     save_and_publish(state, &mut guard)?;
 
-    let editor = guard.as_ref().ok_or_else(editing_disabled)?;
     Ok(DeleteResponse {
         deleted_index: index,
-        remaining: editor.transaction_count(),
+        remaining: bound(&mut guard)?.transaction_count(),
     })
 }
 
@@ -529,30 +512,19 @@ fn replace_transaction_locked(
     state: &AppState,
     index: u32,
     request: &AddRequest,
-) -> Result<AddResponse, ApiError> {
+) -> Result<AddResponse, AppError> {
     let mut guard = lock_editor(state)?;
-    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
+    let editor = bound(&mut guard)?;
 
     let transaction = build_transaction(editor.journal(), request)?;
-    editor
-        .replace_transaction(Tindex(index), &transaction)
-        .map_err(edit_error)?;
+    editor.replace_transaction(Tindex(index), &transaction)?;
     save_and_publish(state, &mut guard)?;
 
     // An in-place replace adds/removes no transactions and reorders none, so the
     // target keeps its `tindex`.
-    let editor = guard.as_ref().ok_or_else(editing_disabled)?;
-    let updated = editor
-        .journal()
-        .transactions
-        .iter()
-        .find(|t| t.index == Tindex(index))
-        .ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not locate the replaced transaction after saving".to_string(),
-            )
-        })?;
+    let updated = find_transaction(bound(&mut guard)?, index).ok_or_else(|| {
+        AppError::Internal("could not locate the replaced transaction after saving".to_string())
+    })?;
     Ok(AddResponse {
         index: updated.index.0,
         transaction: native_transaction(updated),
@@ -563,9 +535,9 @@ fn patch_transaction_locked(
     state: &AppState,
     index: u32,
     request: &PatchRequest,
-) -> Result<AddResponse, ApiError> {
+) -> Result<AddResponse, AppError> {
     let mut guard = lock_editor(state)?;
-    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
+    let editor = bound(&mut guard)?;
 
     let changed =
         request.description.is_some() || request.status.is_some() || !request.postings.is_empty();
@@ -575,23 +547,26 @@ fn patch_transaction_locked(
         // in-memory editor and the served snapshot never diverge from the file.
         if let Err(error) = apply_patch(editor, index, request) {
             resync_from_disk(state, &mut guard)?;
-            return Err(edit_error(error));
+            return Err(error.into());
         }
         save_and_publish(state, &mut guard)?;
     }
 
-    let editor = guard.as_ref().ok_or_else(editing_disabled)?;
-    let updated = editor
-        .journal()
-        .transactions
-        .iter()
-        .find(|t| t.index == Tindex(index))
-        .ok_or(EditError::TransactionNotFound(index))
-        .map_err(edit_error)?;
+    let updated =
+        find_transaction(bound(&mut guard)?, index).ok_or(EditError::TransactionNotFound(index))?;
     Ok(AddResponse {
         index: updated.index.0,
         transaction: native_transaction(updated),
     })
+}
+
+/// The transaction with `tindex` `index` in the editor's current journal.
+fn find_transaction(editor: &JournalEditor, index: u32) -> Option<&Transaction> {
+    editor
+        .journal()
+        .transactions
+        .iter()
+        .find(|txn| txn.index == Tindex(index))
 }
 
 /// Apply a [`PatchRequest`]'s surgical edits to `editor` in order (description
@@ -623,8 +598,8 @@ fn apply_patch(
 /// then returned (a `409` tells the client to re-fetch/retry), UNLESS the
 /// re-sync itself failed, in which case its `500` wins: that is the more serious
 /// condition and the one the user has to act on.
-fn save_and_publish(state: &AppState, slot: &mut Option<JournalEditor>) -> Result<(), ApiError> {
-    let editor = slot.as_mut().ok_or_else(editing_disabled)?;
+fn save_and_publish(state: &AppState, slot: &mut Option<JournalEditor>) -> Result<(), AppError> {
+    let editor = bound(slot)?;
     match editor.save() {
         Ok(()) => {
             state.replace_journal(editor.journal());
@@ -632,7 +607,7 @@ fn save_and_publish(state: &AppState, slot: &mut Option<JournalEditor>) -> Resul
         }
         Err(error) => {
             resync_from_disk(state, slot)?;
-            Err(edit_error(error))
+            Err(error.into())
         }
     }
 }
@@ -653,7 +628,7 @@ fn save_and_publish(state: &AppState, slot: &mut Option<JournalEditor>) -> Resul
 /// and unbind the editor rather than keep one whose rope holds an unpersisted
 /// edit — a later save against it is how that phantom would reach the file.
 /// This mirrors [`AppState::reopen_editor`], which unbinds on the same failure.
-fn resync_from_disk(state: &AppState, slot: &mut Option<JournalEditor>) -> Result<(), ApiError> {
+fn resync_from_disk(state: &AppState, slot: &mut Option<JournalEditor>) -> Result<(), AppError> {
     let Some(path) = slot.as_ref().map(|editor| editor.path().to_path_buf()) else {
         // Nothing bound, so there is no un-saved edit to discard and nothing new
         // to publish; the caller's own error stands.
@@ -676,15 +651,12 @@ fn resync_from_disk(state: &AppState, slot: &mut Option<JournalEditor>) -> Resul
 /// file could not be re-read afterwards, so the server can neither apply nor
 /// re-sync. Says both halves plainly, because the dangerous reading of a bare
 /// `409` here is "it saved after all".
-fn resync_failed(error: &EditError) -> ApiError {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!(
-            "your change was NOT saved, and the journal file could not be re-read afterwards to \
-             re-sync ({error}). The served data is the last state that was successfully read; \
-             editing is disabled until the file is readable again and the journal is re-opened."
-        ),
-    )
+fn resync_failed(error: &EditError) -> AppError {
+    AppError::Internal(format!(
+        "your change was NOT saved, and the journal file could not be re-read afterwards to \
+         re-sync ({error}). The served data is the last state that was successfully read; \
+         editing is disabled until the file is readable again and the journal is re-opened."
+    ))
 }
 
 /// Lock the editor mutex, recovering from poisoning by re-reading the file.
@@ -703,7 +675,7 @@ fn resync_failed(error: &EditError) -> ApiError {
 /// state. If the re-open FAILS we unbind the editor rather than hand back a
 /// half-mutated one, and the caller gets a 500 — never a silent edit against
 /// corrupt state.
-fn lock_editor(state: &AppState) -> Result<MutexGuard<'_, Option<JournalEditor>>, ApiError> {
+fn lock_editor(state: &AppState) -> Result<MutexGuard<'_, Option<JournalEditor>>, AppError> {
     let mutex = state.editor();
     let mut guard = match mutex.lock() {
         Ok(guard) => return Ok(guard),
@@ -732,9 +704,8 @@ fn lock_editor(state: &AppState) -> Result<MutexGuard<'_, Option<JournalEditor>>
 
 /// The `500` returned when a prior panic poisoned the editor and the file could
 /// not be re-read to recover a trustworthy one (SEC-11).
-fn editor_poisoned() -> ApiError {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
+fn editor_poisoned() -> AppError {
+    AppError::Internal(
         "the editor was left in an indeterminate state by an earlier failure and the journal file \
          could not be re-read to recover; no edit was applied"
             .to_string(),
@@ -743,30 +714,11 @@ fn editor_poisoned() -> ApiError {
 
 /// The `501` returned when this state has no editor (built from a parsed journal
 /// with no backing file).
-fn editing_disabled() -> ApiError {
-    (
-        StatusCode::NOT_IMPLEMENTED,
+fn editing_disabled() -> AppError {
+    AppError::EditingDisabled(
         "editing is not enabled: this server was started without a journal file bound to an editor"
             .to_string(),
     )
-}
-
-/// Map an [`EditError`] onto its HTTP status + message.
-fn edit_error(error: EditError) -> ApiError {
-    let status = match error {
-        EditError::ExternalChange => StatusCode::CONFLICT,
-        EditError::Unbalanced
-        | EditError::Unsupported(_)
-        | EditError::ParseInvalidAfterEdit(_)
-        | EditError::RoundTripMismatch => StatusCode::BAD_REQUEST,
-        EditError::TransactionNotFound(_) | EditError::PostingNotFound { .. } => {
-            StatusCode::NOT_FOUND
-        }
-        EditError::Io(_) | EditError::Parse(_) | EditError::Decimal(_) | EditError::Internal(_) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-    };
-    (status, error.to_string())
 }
 
 /// The 0-based file-order position the new transaction will occupy after the
@@ -802,16 +754,14 @@ fn insertion_index(journal: &Journal, txn: &Transaction, position: InsertPositio
 // Build a `core::Transaction` from the request (with inferred styles)
 // ===========================================================================
 
-fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transaction, ApiError> {
+fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transaction, AppError> {
     if request.date.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(AppError::BadRequest(
             "a transaction needs a date".to_string(),
         ));
     }
     if request.postings.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(AppError::BadRequest(
             "a transaction needs at least one posting".to_string(),
         ));
     }
@@ -849,10 +799,9 @@ fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transact
     })
 }
 
-fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, ApiError> {
+fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppError> {
     if input.account.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(AppError::BadRequest(
             "a posting needs an account".to_string(),
         ));
     }
@@ -898,24 +847,18 @@ fn build_assertion(
     input: &BalanceAssertionIn,
     account: &str,
     posting_has_no_amount: bool,
-) -> Result<BalanceAssertion, ApiError> {
+) -> Result<BalanceAssertion, AppError> {
     if input.amount.commodity.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "the balance assertion on '{account}' needs a commodity: a bare asserted number \
-                 would re-read as whatever commodity the journal defaults to"
-            ),
-        ));
+        return Err(AppError::BadRequest(format!(
+            "the balance assertion on '{account}' needs a commodity: a bare asserted number \
+             would re-read as whatever commodity the journal defaults to"
+        )));
     }
     if posting_has_no_amount {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "the balance assertion on '{account}' needs an amount on the same posting: an \
-                 assertion cannot be written on the inferred (elided) leg"
-            ),
-        ));
+        return Err(AppError::BadRequest(format!(
+            "the balance assertion on '{account}' needs an amount on the same posting: an \
+             assertion cannot be written on the inferred (elided) leg"
+        )));
     }
     Ok(BalanceAssertion {
         amount: build_priced_amount(journal, &input.amount)?,
@@ -936,7 +879,7 @@ fn comment_string(raw: Option<&str>) -> String {
     }
 }
 
-fn build_amount(journal: &Journal, input: &AmountIn) -> Result<Amount, ApiError> {
+fn build_amount(journal: &Journal, input: &AmountIn) -> Result<Amount, AppError> {
     let commodity = Commodity(input.commodity.clone());
     let quantity = dec_from_wire(&input.quantity)?;
     let style = infer_style(journal, &commodity, quantity.places);
@@ -952,7 +895,7 @@ fn build_amount(journal: &Journal, input: &AmountIn) -> Result<Amount, ApiError>
     })
 }
 
-fn build_cost(journal: &Journal, input: &CostIn) -> Result<Cost, ApiError> {
+fn build_cost(journal: &Journal, input: &CostIn) -> Result<Cost, AppError> {
     Ok(Cost {
         kind: input.kind.into(),
         amount: build_priced_amount(journal, &input.amount)?,
@@ -962,7 +905,7 @@ fn build_cost(journal: &Journal, input: &CostIn) -> Result<Cost, ApiError> {
 /// A bare (cost-free) [`Amount`] from the wire, with its style inferred from the
 /// journal. Shared by the cost annotation and the balance assertion, which are
 /// the two places an amount can appear without a nested cost of its own.
-fn build_priced_amount(journal: &Journal, input: &PricedAmountIn) -> Result<Amount, ApiError> {
+fn build_priced_amount(journal: &Journal, input: &PricedAmountIn) -> Result<Amount, AppError> {
     let commodity = Commodity(input.commodity.clone());
     let quantity = dec_from_wire(&input.quantity)?;
     let style = infer_style(journal, &commodity, quantity.places);
@@ -993,33 +936,24 @@ const MAX_WIRE_MANTISSA: i128 = 10_i128.pow(30);
 /// re-reading the journal could never reproduce. Without it,
 /// `{"mantissa":"0","places":65534}` was accepted with a `201` and committed a
 /// multi-hundred-byte all-zeros amount line to the user's books.
-fn dec_from_wire(dec: &WireDecIn) -> Result<Dec, ApiError> {
+fn dec_from_wire(dec: &WireDecIn) -> Result<Dec, AppError> {
     let mantissa = dec.mantissa.trim().parse::<i128>().map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "invalid amount mantissa '{}': expected a base-10 integer string",
-                dec.mantissa
-            ),
-        )
+        AppError::BadRequest(format!(
+            "invalid amount mantissa '{}': expected a base-10 integer string",
+            dec.mantissa
+        ))
     })?;
     if dec.places > MAX_PARSE_PLACES {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "amount places {} is out of range (expected 0..={MAX_PARSE_PLACES})",
-                dec.places
-            ),
-        ));
+        return Err(AppError::BadRequest(format!(
+            "amount places {} is out of range (expected 0..={MAX_PARSE_PLACES})",
+            dec.places
+        )));
     }
     if mantissa.unsigned_abs() > MAX_WIRE_MANTISSA.unsigned_abs() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "amount mantissa '{}' is out of range (expected |mantissa| <= {MAX_WIRE_MANTISSA})",
-                dec.mantissa
-            ),
-        ));
+        return Err(AppError::BadRequest(format!(
+            "amount mantissa '{}' is out of range (expected |mantissa| <= {MAX_WIRE_MANTISSA})",
+            dec.mantissa
+        )));
     }
     Ok(Dec::new(mantissa, dec.places))
 }
@@ -1131,7 +1065,7 @@ fn native_posting(posting: &Posting) -> NativePosting {
 fn native_amount(amount: &Amount) -> NativeAmount {
     NativeAmount {
         commodity: amount.commodity.0.clone(),
-        quantity: wire_dec_out(amount.quantity),
+        quantity: amount.quantity.into(),
         cost: amount.cost.as_ref().map(|cost| {
             Box::new(NativeCost {
                 kind: costkind_str(cost.kind),
@@ -1231,7 +1165,7 @@ mod tests {
 
         match lock_editor(&state) {
             Ok(_) => panic!("recovery must fail once the journal file is gone"),
-            Err((status, _)) => assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR),
+            Err(error) => assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR),
         }
 
         // The suspect editor was dropped rather than served.

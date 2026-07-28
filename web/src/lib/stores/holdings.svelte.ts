@@ -15,6 +15,8 @@ import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
 import type {GainPeriod, HoldingsReport, HoldingsScope, HoldingsSeries} from "$lib/holdings/types";
 import {gainSinceFor} from "$lib/holdings/ui/gainPeriod";
 import {localToday} from "./filters.svelte";
+import type {DataView, LoadStatus} from "./loadState";
+import {createResource} from "./resource.svelte";
 
 /** Trailing series window shown under the details table (matches the former client-side default). */
 const TREND_INTERVAL = "monthly";
@@ -70,51 +72,51 @@ export const holdingsScope = {
     },
 };
 
-export type HoldingsStatus = "idle" | "loading" | "ready" | "error";
+/**
+ * Report and trend are ONE payload, not two.
+ *
+ * They are fetched together and are only ever meaningful together — a trend
+ * from the previous scope drawn under the current scope's table would be a
+ * quieter version of exactly the mismatch FE-1 was about. Holding them in one
+ * `createResource` value makes that impossible: both land in a single
+ * assignment or neither does.
+ */
+interface HoldingsPayload {
+    report: HoldingsReport;
+    trend: HoldingsSeries;
+}
 
-let report = $state<HoldingsReport | null>(null);
-let trend = $state<HoldingsSeries | null>(null);
-let status = $state<HoldingsStatus>("idle");
-let error = $state<Error | null>(null);
-let seq = 0;
+const resource = createResource<HoldingsScope, HoldingsPayload>(async (serverUrl, scope) => {
+    const api = new LedgelineApi(serverUrl);
+    const accounts = [...scope.accounts].join(",");
+    // gainSince narrows only the report's gain; the value-over-time series is always all-time.
+    const gainSince = gainSinceFor(scope.gainPeriod, scope.asOf);
+    const [rawReport, rawSeries] = await Promise.all([
+        api.holdings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince}),
+        api.holdingsSeries({asOf: scope.asOf, accounts, mode: scope.mode, interval: TREND_INTERVAL, count: TREND_COUNT}),
+    ]);
+    return {report: decodeHoldingsReport(rawReport), trend: decodeHoldingsSeries(rawSeries)};
+});
 
 export const holdingsData = {
     /** The decoded holdings report for the last loaded scope, or null before the first load. */
     get report(): HoldingsReport | null {
-        return report;
+        return resource.value?.report ?? null;
     },
     /** The value-over-time series for the last loaded scope, or null before the first load. */
     get trend(): HoldingsSeries | null {
-        return trend;
+        return resource.value?.trend ?? null;
     },
-    get status(): HoldingsStatus {
-        return status;
+    get status(): LoadStatus {
+        return resource.status;
     },
     get error(): Error | null {
-        return error;
+        return resource.error;
+    },
+    /** Which branch the page should render — error outranks stale data (FE-5). */
+    get view(): DataView {
+        return resource.view;
     },
     /** Fetch + decode the report and trend for `scope`; stale responses (superseded by a newer load) are discarded. */
-    async load(serverUrl: string, scope: HoldingsScope): Promise<void> {
-        const token = ++seq;
-        status = "loading";
-        try {
-            const api = new LedgelineApi(serverUrl);
-            const accounts = [...scope.accounts].join(",");
-            // gainSince narrows only the report's gain; the value-over-time series is always all-time.
-            const gainSince = gainSinceFor(scope.gainPeriod, scope.asOf);
-            const [rawReport, rawSeries] = await Promise.all([
-                api.holdings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince}),
-                api.holdingsSeries({asOf: scope.asOf, accounts, mode: scope.mode, interval: TREND_INTERVAL, count: TREND_COUNT}),
-            ]);
-            if (token !== seq) return;
-            report = decodeHoldingsReport(rawReport);
-            trend = decodeHoldingsSeries(rawSeries);
-            status = "ready";
-            error = null;
-        } catch (cause) {
-            if (token !== seq) return;
-            status = "error";
-            error = cause instanceof Error ? cause : new Error(String(cause));
-        }
-    },
+    load: resource.load,
 };

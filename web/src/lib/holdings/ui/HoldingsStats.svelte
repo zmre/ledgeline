@@ -6,17 +6,24 @@
      is genuinely null (every shown holding excluded). -->
 <script lang="ts">
     import {toNumber, type Dec} from "$lib/domain/money";
+    import {signClass} from "$lib/format/sign";
     import type {GainPeriod, HoldingsReport} from "$lib/holdings/types";
     import {gainWindowSuffix} from "./gainPeriod";
     import {EM_DASH, formatGainPct, untotaledBasisCount} from "./view";
 
-    let {totals, holdings, format, gainPeriod = "all"}: {totals: HoldingsReport["totals"]; holdings: HoldingsReport["holdings"]; format: (v: Dec) => string; gainPeriod?: GainPeriod} = $props();
+    let {
+        totals,
+        holdings,
+        format,
+        gainPeriod = "all",
+    }: {totals: HoldingsReport["totals"]; holdings: HoldingsReport["holdings"]; format: (v: Dec) => string; gainPeriod?: GainPeriod} = $props();
 
     // Displayed holdings excluded from the partial basis/gain totals (no recorded basis) → the muted note; 0 hides it.
     const excludedCount = $derived(untotaledBasisCount(holdings));
-    const excludedNote = $derived(excludedCount > 0 ? `Cost basis & gain exclude ${excludedCount} holding${excludedCount === 1 ? "" : "s"} with no recorded basis.` : null);
+    const excludedNote = $derived(
+        excludedCount > 0 ? `Cost basis & gain exclude ${excludedCount} holding${excludedCount === 1 ? "" : "s"} with no recorded basis.` : null
+    );
 
-    const signClass = (negative: boolean): string => (negative ? "text-error" : "text-success");
     // "Unrealized" only reads true for the all-time window; a windowed gain gets the window tag instead.
     const gainSuffix = $derived(gainWindowSuffix(gainPeriod));
     const gainLabel = $derived(gainPeriod === "all" ? "Unrealized gain" : `Gain${gainSuffix}`);
@@ -30,15 +37,19 @@
     const stats: Stat[] = $derived([
         {label: "Market value", value: format(totals.marketValue), valueClass: ""},
         {label: "Cost basis", value: totals.basis === null ? EM_DASH : format(totals.basis), valueClass: ""},
+        // The shared `signClass` handles null and zero itself. The local copy
+        // this replaces took an already-computed `negative: boolean`, so a gain
+        // of EXACTLY zero fell into its else-branch and was announced in success
+        // green; it is now neutral, like every other zero in the app.
         {
             label: gainLabel,
             value: totals.gain === null ? EM_DASH : format(totals.gain),
-            valueClass: totals.gain === null ? "" : signClass(toNumber(totals.gain) < 0),
+            valueClass: signClass(totals.gain === null ? null : toNumber(totals.gain)),
         },
         {
             label: gainPctLabel,
             value: formatGainPct(totals.gainPct),
-            valueClass: totals.gainPct === null ? "" : signClass(totals.gainPct < 0),
+            valueClass: signClass(totals.gainPct),
         },
     ]);
 </script>

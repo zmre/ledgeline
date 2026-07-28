@@ -116,9 +116,19 @@ describe("UNIT holdings view helpers", () => {
     describe("formatGainPct", () => {
         it("formats with explicit sign and one decimal, em-dash for null", () => {
             expect(formatGainPct(21.256)).toBe("+21.3%");
-            expect(formatGainPct(-3.44)).toBe("-3.4%");
-            expect(formatGainPct(0)).toBe("+0.0%");
             expect(formatGainPct(null)).toBe(EM_DASH);
+        });
+
+        // DRY-6: this was a second implementation of the insights dashboard's
+        // `fmtSignedPct`, and the two disagreed on both of these. It now IS
+        // that function, so these pin the single canonical rendering.
+        it("uses the typographic minus U+2212, not an ASCII hyphen", () => {
+            expect(formatGainPct(-3.44)).toBe("−3.4%");
+            expect(formatGainPct(-3.44)).not.toBe("-3.4%");
+        });
+
+        it("leaves zero unsigned — '+0.0%' claimed a gain that did not happen", () => {
+            expect(formatGainPct(0)).toBe("0.0%");
         });
     });
 

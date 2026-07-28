@@ -11,11 +11,11 @@ import type {ISODate} from "$lib/domain/types";
 import {monthsBetween} from "$lib/reports/periods";
 import type {BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
 import type {ReportInterval, ReportParams} from "$lib/reports/ui/params";
+import type {LoadStatus} from "./loadState";
+import {createResource} from "./resource.svelte";
 
 /** The union of every report shape the store can hold. */
 export type AnyReport = SectionedReport | PeriodReport | BudgetReport;
-
-export type ReportStatus = "idle" | "loading" | "ready" | "error";
 
 /** The exact query for one tab — only the fields that endpoint honors, so the fetch effect refires minimally. */
 export type ReportQuery =
@@ -112,50 +112,37 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
 }
 
 /**
- * The held report AND the query that produced it, stored as one value so they
- * can never drift apart.
+ * The report store: the held report AND the query that produced it, kept as one
+ * value by `createResource` so they can never drift apart.
  *
  * `bs`/`is` are both `SectionedReport` and `cf`/`nw` are both `PeriodReport`,
  * so the report's own shape cannot say which tab it belongs to and no type
  * error is possible when they are mixed up. The page used to pick a renderer by
  * shape alone: a balance sheet that was already loaded stayed on screen — and
  * in the export — when the P&L tab's fetch failed, under the P&L's label
- * (FE-1). Tagging the payload with its query is what lets the page refuse.
+ * (FE-1). Tagging the payload with its query is what lets the page refuse, and
+ * `reports.query` is how it asks.
+ *
+ * `report` is the historical name for the payload; the underlying resource
+ * calls it `value`.
  */
-let loaded = $state<{query: ReportQuery; report: AnyReport} | null>(null);
-let status = $state<ReportStatus>("idle");
-let error = $state<Error | null>(null);
-let seq = 0;
+const resource = createResource<ReportQuery, AnyReport>((serverUrl, query) => fetchReport(new LedgelineApi(serverUrl), query));
 
 export const reports = {
     /** The last successfully decoded report, or null before the first load. */
     get report(): AnyReport | null {
-        return loaded?.report ?? null;
+        return resource.value;
     },
     /** The query `report` came from — compare against the live one before rendering or exporting it. */
     get query(): ReportQuery | null {
-        return loaded?.query ?? null;
+        return resource.query;
     },
-    get status(): ReportStatus {
-        return status;
+    get status(): LoadStatus {
+        return resource.status;
     },
     get error(): Error | null {
-        return error;
+        return resource.error;
     },
     /** Fetch + decode the report for `query`; stale responses (superseded by a newer load) are discarded. */
-    async load(serverUrl: string, query: ReportQuery): Promise<void> {
-        const token = ++seq;
-        status = "loading";
-        try {
-            const next = await fetchReport(new LedgelineApi(serverUrl), query);
-            if (token !== seq) return;
-            loaded = {query, report: next};
-            status = "ready";
-            error = null;
-        } catch (cause) {
-            if (token !== seq) return;
-            status = "error";
-            error = cause instanceof Error ? cause : new Error(String(cause));
-        }
-    },
+    load: resource.load,
 };

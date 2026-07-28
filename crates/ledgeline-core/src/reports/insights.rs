@@ -33,6 +33,7 @@ use super::mixed_amount::MixedAmount;
 use super::net_worth::{NetWorthOpts, net_worth_priced};
 use super::periods::{Interval, add_days, add_months, bucket_end, bucket_key, days_between, parts};
 use super::prices::{PriceDb, infer_market_prices};
+use super::types::{PeriodReport, ReportMeta};
 use crate::decimal::Dec;
 use crate::holdings::{HoldingsReport, HoldingsScope, PriceSource, ScopeMode, compute_holdings};
 use crate::model::{Commodity, Journal, PriceDirective, Transaction};
@@ -256,6 +257,21 @@ pub struct InsightsReport {
     pub movers: Vec<MoverRow>,
     /// Box 10: largest transactions in the current period.
     pub top_txns: Vec<TopTxn>,
+    /// Valuation caveats for the headline [`InsightsReport::net_worth`] figure —
+    /// in practice the commodities held at the current period end with no price
+    /// to `base`, which are therefore MISSING from it.
+    ///
+    /// `Some` only when there is something to say. Without this the dashboard
+    /// silently under-reported net worth by however much the unpriced positions
+    /// were worth, while `/api/reports/networth` — the same engine, the same
+    /// number — reported the omission.
+    ///
+    /// Scoped to the CURRENT period end, matching
+    /// [`super::net_worth::net_worth`]'s own deliberate rule that `meta.unpriced`
+    /// is the as-of set and not the union across periods: a security first held
+    /// or first priced late is legitimately unpriced at earlier period ends, and
+    /// warning about that once it is fully valued at the date on screen is noise.
+    pub meta: Option<ReportMeta>,
 }
 
 /// Explicit `P` directives PLUS the prices implied by `@`/`@@` cost annotations
@@ -329,9 +345,16 @@ fn metric_delta(
     })
 }
 
-/// Net worth (market-valued in `base`) as of exactly `as_of`. A single daily
-/// bucket ending on `as_of` reuses the [`super::net_worth::net_worth`] engine so
-/// valuation and price inference match the Net Worth report.
+/// Net worth (market-valued in `base`) as of exactly `as_of`, WITH the
+/// valuation's `meta`. A single daily bucket ending on `as_of` reuses the
+/// [`super::net_worth::net_worth`] engine so valuation and price inference match
+/// the Net Worth report.
+///
+/// The `meta` is returned rather than dropped because it carries the
+/// unpriced-commodity warning. Discarding it meant a portfolio holding one
+/// unpriced security showed an understated net worth on the dashboard with no
+/// indication at all, while `/api/reports/networth` — the same engine, the same
+/// number — said so plainly (DRY-5).
 ///
 /// `prices` is the combined set from [`all_prices`] — the same one the public
 /// entry point would derive for itself, handed in so the two calls here do not
@@ -342,7 +365,7 @@ fn net_worth_at(
     as_of: &str,
     base: &Commodity,
     declared: &BTreeMap<String, AccountType>,
-) -> Result<MixedAmount, ReportError> {
+) -> Result<(MixedAmount, Option<ReportMeta>), ReportError> {
     let report = net_worth_priced(
         &journal.transactions,
         prices,
@@ -355,7 +378,8 @@ fn net_worth_at(
             declared,
         },
     )?;
-    Ok(report.totals.into_iter().next().unwrap_or_default())
+    let PeriodReport { totals, meta, .. } = report;
+    Ok((totals.into_iter().next().unwrap_or_default(), meta))
 }
 
 /// Summed balance of all cash-like accounts in `direct` (per-account totals for
@@ -641,7 +665,9 @@ fn account_changes(
     }
 
     let threshold = change_min.abs()?;
-    let mut rows: Vec<ChangeRow> = Vec::new();
+    // Each row is carried with the exact magnitude it will be ranked by, so the
+    // sort below never has to touch an `f64`.
+    let mut rows: Vec<(Dec, ChangeRow)> = Vec::new();
     for (label, account) in compared {
         let mut cur = base_of(curr_totals.get(account), base);
         let mut prev = base_of(prev_totals.get(account), base);
@@ -667,27 +693,33 @@ fn account_changes(
                 * 100.0;
             (Some(change), ChangeKind::Changed)
         };
-        rows.push(ChangeRow {
-            account: label,
-            current: cur,
-            previous: prev,
-            delta,
-            pct,
-            kind,
-        });
+        rows.push((
+            delta.abs()?,
+            ChangeRow {
+                account: label,
+                current: cur,
+                previous: prev,
+                delta,
+                pct,
+                kind,
+            },
+        ));
     }
     // Rank by the SIZE OF THE MOVE in real money (desc), then name. Ranking by
     // percent instead would let a $10 → $30 category outrank a $2,000 → $3,000 one.
-    rows.sort_by(|a, b| {
-        b.delta
-            .floating_point()
-            .abs()
-            .partial_cmp(&a.delta.floating_point().abs())
-            .unwrap_or(Ordering::Equal)
+    //
+    // The magnitude is compared as exact `Dec`. Via `f64` it was not just
+    // imprecise but *lossy in the ranking*: two deltas differing below the 53-bit
+    // mantissa compared equal, the tie fell through to the account name, and
+    // `truncate(TOP_N)` then deleted the loser from the dashboard outright —
+    // a row silently missing rather than merely mis-ordered (DRY-5).
+    rows.sort_by(|(a_magnitude, a), (b_magnitude, b)| {
+        b_magnitude
+            .cmp(a_magnitude)
             .then_with(|| a.account.cmp(&b.account))
     });
     rows.truncate(TOP_N);
-    Ok(rows)
+    Ok(rows.into_iter().map(|(_, row)| row).collect())
 }
 
 /// Snapshot the whole portfolio as of `as_of` (no gain window), valued with
@@ -896,11 +928,11 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     )?;
 
     // Box 3 — net worth at each period end (current end vs previous end = mid).
-    let net_worth_delta = metric_delta(
-        net_worth_at(journal, &prices, end, &base, &declared)?,
-        net_worth_at(journal, &prices, &mid, &base, &declared)?,
-        &base,
-    )?;
+    // The CURRENT end's valuation meta is kept and published: it names the
+    // commodities missing from the headline figure.
+    let (net_worth_curr, net_worth_meta) = net_worth_at(journal, &prices, end, &base, &declared)?;
+    let (net_worth_prev, _) = net_worth_at(journal, &prices, &mid, &base, &declared)?;
+    let net_worth_delta = metric_delta(net_worth_curr, net_worth_prev, &base)?;
 
     // Box 6 — cash balance at each period end.
     let cash_balance_delta = metric_delta(
@@ -978,6 +1010,7 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
         revenue_changes,
         movers: movers_list,
         top_txns,
+        meta: net_worth_meta,
     })
 }
 
@@ -1453,6 +1486,120 @@ mod tests {
         )
         .expect("insights succeeds");
         assert!(report.expense_changes.is_empty());
+    }
+
+    // ---- the unpriced-commodity warning reaches the dashboard ----
+
+    /// 10 shares of an unpriced security bought for $1,000, plus $500 left in
+    /// checking. There is no `P` directive for `NOPRICE` and no cost annotation
+    /// to infer one from, so it cannot be valued in `$` at any date.
+    fn unpriced_journal() -> Journal {
+        journal(vec![
+            txn(
+                1,
+                "2025-01-05",
+                vec![
+                    ("assets:bank:checking", vec![usd(150_000)]),
+                    ("income:salary", vec![usd(-150_000)]),
+                ],
+            ),
+            txn(
+                2,
+                "2025-01-08",
+                vec![
+                    ("assets:broker:noprice", vec![amount("NOPRICE", 10, 0)]),
+                    ("assets:bank:checking", vec![usd(-100_000)]),
+                ],
+            ),
+        ])
+    }
+
+    #[test]
+    fn unpriced_commodities_are_reported_alongside_the_net_worth_they_are_missing_from() {
+        let report = run(&unpriced_journal());
+
+        // The headline net worth counts the $500 still in checking and NOT the
+        // shares, because they cannot be valued. That understatement is the
+        // whole point: the figure is unavoidably partial...
+        assert_eq!(report.net_worth.current, usd_ma(50_000));
+
+        // ...so the report must say which commodity is missing from it. This
+        // used to be dropped on the floor: `net_worth`'s `meta` was discarded,
+        // `/api/reports/networth` surfaced the warning and `/api/insights` did
+        // not, and the dashboard showed an understated net worth with no
+        // indication at all (DRY-5).
+        assert_eq!(
+            report.meta,
+            Some(ReportMeta {
+                unpriced: vec![Commodity("NOPRICE".to_string())]
+            })
+        );
+    }
+
+    #[test]
+    fn a_fully_priced_journal_reports_no_caveat() {
+        // `meta` is `Some` only when there is something to warn about, so a
+        // journal the engine can value completely stays silent.
+        assert_eq!(run(&sample()).meta, None);
+    }
+
+    #[test]
+    fn changes_are_ranked_on_exact_magnitudes_not_float_images() {
+        // Two deltas that differ by one cent in the 30th significant digit:
+        // `f64` cannot tell them apart (53 bits ≈ 16 digits), so ranking by
+        // `floating_point().abs()` compared them EQUAL, fell through to the
+        // account-name tiebreak, and ordered them alphabetically. Exact `Dec`
+        // ranks them by the money they actually moved, so `zzz` — the larger
+        // move — leads despite sorting last by name.
+        //
+        // At TOP_N this is not a cosmetic reordering: the row pushed past the
+        // cut is dropped from the dashboard entirely.
+        let big = 1_000_000_000_000_000_000_000_000_000_000i128; // 10^30 cents
+        let j = journal(vec![
+            txn(
+                1,
+                "2025-03-01",
+                vec![
+                    ("expenses:aaa", vec![usd(100)]),
+                    ("expenses:zzz", vec![usd(100)]),
+                    ("assets:bank:checking", vec![usd(-200)]),
+                ],
+            ),
+            txn(
+                2,
+                "2026-03-01",
+                vec![
+                    ("expenses:aaa", vec![usd(big)]),
+                    ("expenses:zzz", vec![usd(big + 1)]), // one cent more
+                    ("assets:bank:checking", vec![usd(-(big * 2 + 1))]),
+                ],
+            ),
+        ]);
+        let report = insights(
+            &j,
+            &InsightsOpts {
+                start: "2025-01-01",
+                end: "2026-12-31",
+                cost_exclude: &[],
+                change_min: Dec::zero(),
+            },
+        )
+        .expect("insights succeeds");
+
+        // The two deltas really are indistinguishable as f64...
+        let deltas: Vec<f64> = report
+            .expense_changes
+            .iter()
+            .map(|row| row.delta.floating_point().abs())
+            .collect();
+        assert_eq!(deltas[0], deltas[1], "f64 cannot separate these");
+        // ...and really do differ by exactly one cent.
+        let accounts: Vec<&str> = report
+            .expense_changes
+            .iter()
+            .map(|row| row.account.as_str())
+            .collect();
+        assert_eq!(accounts, ["expenses:zzz", "expenses:aaa"]);
     }
 
     #[test]
