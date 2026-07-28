@@ -87,8 +87,13 @@ const rustBySymbol = new Map<string, WireHolding>(rust.holdings.map((h) => [h.sy
  * `is_holding_account` filter exists for (FE-2): a share leg whose counter-side
  * is equity, revenue-by-name, or revenue-by-DECLARATION, plus an ordinary
  * purchase and a transfer between two holding accounts.
+ *
+ * ROUND joined this list once Rust adopted TS's taint reset: a cost-less lot
+ * that is sold out IN FULL leaves nothing held whose cost is unknown, so the
+ * shares bought back afterwards report their real basis. It was a documented
+ * divergence (TS $1,000 / Rust null) until the Rust engine was fixed to match.
  */
-const AGREED = ["OPEN", "VEST", "GRANT", "BUY", "XFER"] as const;
+const AGREED = ["OPEN", "VEST", "GRANT", "BUY", "XFER", "ROUND"] as const;
 
 /**
  * Where the two still disagree, and why. Both engines are asserted against
@@ -107,18 +112,6 @@ const DIFFERENCES = [
         rustBasis: {mantissa: "100000", places: 2},
         tsWarns: true,
         rustWarns: false,
-    },
-    {
-        symbol: "ROUND",
-        what: "cost-less gift, sold out in full, then re-bought at a known cost",
-        // TS clears the taint on a clean close (FE-6): the lot whose cost was
-        // unknown is gone, so the 5 shares bought back at $200 have a knowable
-        // basis. Rust's taint is first-cause-wins and is never reset, so the
-        // pool stays MissingBasis for the life of the journal.
-        tsBasis: {mantissa: "100000", places: 2},
-        rustBasis: null,
-        tsWarns: false,
-        rustWarns: true,
     },
 ] as const;
 
@@ -204,20 +197,24 @@ describe("UNIT checks/holdings TS↔Rust parity — the differences that REMAIN"
     });
 
     it("totals: TS refuses a partial basis outright, Rust sums the rows it does know", () => {
-        // Rust HOLD-3 reports the basis of the untainted rows ($1,000 OPEN +
-        // $1,000 SPLIT + $500 BUY + $250 XFER); TS returns null the moment any
-        // row is tainted, so the Holdings page and a TS-rendered total would
-        // read differently.
+        // Rust reports the basis of every untainted row — $1,000 OPEN + $1,000
+        // SPLIT + $1,000 ROUND + $500 BUY + $250 XFER = $3,750 — while TS returns
+        // null the moment ANY row is tainted, so the Holdings page and a
+        // TS-rendered total read differently. (ROUND joined that sum when Rust
+        // adopted the taint reset; SPLIT is still Rust-only, per DIFFERENCES.)
         expect(ts.totals.basis).toBeNull();
         expect(ts.totals.gain).toBeNull();
         expect(ts.totals.gainPct).toBeNull();
-        expect(rust.totals.basis).toEqual({mantissa: "275000", places: 2});
-        expect(rust.totals.gain).toEqual({mantissa: "47000", places: 2});
+        expect(rust.totals.basis).toEqual({mantissa: "375000", places: 2});
+        expect(rust.totals.gain).toEqual({mantissa: "52000", places: 2});
     });
 
     it("gainers/losers: same rule, different membership, because the basis differs", () => {
+        // Both now rank ROUND. SPLIT is the only remaining asymmetry: Rust reads
+        // the split and keeps its basis, TS taints it, and a null gain cannot be
+        // ranked. Order is by gain descending, so ROUND lands last in both.
         expect(ts.topGainers.map((h) => h.symbol)).toEqual(["BUY", "OPEN", "XFER", "ROUND"]);
-        expect(rust.topGainers.map((h) => h.symbol)).toEqual(["BUY", "OPEN", "SPLIT", "XFER"]);
+        expect(rust.topGainers.map((h) => h.symbol)).toEqual(["BUY", "OPEN", "SPLIT", "XFER", "ROUND"]);
         expect(ts.topLosers).toEqual([]);
         expect(rust.topLosers).toEqual([]);
     });

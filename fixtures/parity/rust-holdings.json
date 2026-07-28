@@ -78,7 +78,10 @@
                 "mantissa": "5",
                 "places": 0
             },
-            "basis": null,
+            "basis": {
+                "mantissa": "100000",
+                "places": 2
+            },
             "firstBasisDate": "2024-06-15",
             "price": {
                 "qty": {
@@ -92,8 +95,11 @@
                 "mantissa": "105000",
                 "places": 2
             },
-            "gain": null,
-            "gainPct": null
+            "gain": {
+                "mantissa": "5000",
+                "places": 2
+            },
+            "gainPct": 5.0
         },
         {
             "symbol": "BUY",
@@ -222,14 +228,14 @@
             "places": 2
         },
         "basis": {
-            "mantissa": "275000",
+            "mantissa": "375000",
             "places": 2
         },
         "gain": {
-            "mantissa": "47000",
+            "mantissa": "52000",
             "places": 2
         },
-        "gainPct": 17.09090909090909
+        "gainPct": 13.866666666666665
     },
     "topGainers": [
         {
@@ -363,6 +369,39 @@
                 "places": 2
             },
             "gainPct": 8.0
+        },
+        {
+            "symbol": "ROUND",
+            "name": "ROUND",
+            "accounts": [
+                "assets:brokerage"
+            ],
+            "shares": {
+                "mantissa": "5",
+                "places": 0
+            },
+            "basis": {
+                "mantissa": "100000",
+                "places": 2
+            },
+            "firstBasisDate": "2024-06-15",
+            "price": {
+                "qty": {
+                    "mantissa": "21000",
+                    "places": 2
+                },
+                "date": "2024-12-31",
+                "source": "directive"
+            },
+            "marketValue": {
+                "mantissa": "105000",
+                "places": 2
+            },
+            "gain": {
+                "mantissa": "5000",
+                "places": 2
+            },
+            "gainPct": 5.0
         }
     ],
     "topLosers": [],
@@ -371,11 +410,6 @@
             "symbol": "GRANT",
             "kind": "missing-basis",
             "message": "GRANT: acquired without a cost annotation \u2014 basis unknown"
-        },
-        {
-            "symbol": "ROUND",
-            "kind": "missing-basis",
-            "message": "ROUND: acquired without a cost annotation \u2014 basis unknown"
         },
         {
             "symbol": "VEST",

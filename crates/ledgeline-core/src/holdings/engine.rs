@@ -832,6 +832,21 @@ fn replay_pools(
                         // (re)opening the position resets its basis date
                         pool.first_basis_date = Some(txn.date.clone());
                     }
+                    if leg_before.mantissa == 0 && !pool.went_negative {
+                        // Re-opening after a CLEAN close: every lot whose cost was
+                        // unknown has been sold, so nothing still held is described
+                        // by the old taint and the new position's basis is knowable
+                        // again. `reduce_basis` already drove the basis to zero on
+                        // the closing sell, so the lot cost added just below is the
+                        // whole of it.
+                        //
+                        // Gated on `went_negative` because a pool that passed
+                        // through zero from BELOW never really closed — those
+                        // shares were sold without ever being entered, so the
+                        // basis of what is held now is genuinely unknown (HOLD-4)
+                        // and the taint must stay.
+                        pool.taint = None;
+                    }
                     match cost_in_base(entry.qty, entry.cost.as_ref(), db, base, &txn.date)? {
                         None => pool.taint_with(match entry.cost.as_ref() {
                             None => TaintReason::CostlessLot,
@@ -3252,6 +3267,138 @@ mod tests {
         let aapl = only(&report, "AAPL");
         assert_eq!(aapl.shares, Dec::new(20, 0));
         assert_eq!(aapl.basis, Some(Dec::new(100_000, 2)));
+    }
+
+    // ---- taint cleared by a clean close ----
+
+    #[test]
+    fn a_clean_close_clears_the_taint_so_the_new_lot_reports_its_real_basis() {
+        // Gifted 10 GLD with no cost (basis unknowable), sell ALL 10, then buy 5
+        // @ $200. The 5 held were bought for exactly $1000 with a full cost
+        // annotation and the unknown-cost shares are gone, so the basis IS
+        // knowable. Rust used to report `basis: None` here forever — `taint_with`
+        // is "first cause wins" and nothing ever cleared it — while the TS engine
+        // reported $1000. Verified against a live server before the fix.
+        let txns = [
+            txn(
+                1,
+                "2025-01-10",
+                vec![
+                    posting("assets:broker:gld", vec![amt("GLD", 10, 0)], &[]),
+                    posting("income:gifts", vec![amt("GLD", -10, 0)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-06-01",
+                vec![
+                    posting(
+                        "assets:broker:gld",
+                        vec![with_cost(amt("GLD", -10, 0), 15000, true, "$")],
+                        &[],
+                    ),
+                    posting("assets:broker:cash", vec![usd(150_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                3,
+                "2025-09-01",
+                vec![
+                    buy("assets:broker:gld", "GLD", 5, 20000, true),
+                    posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-12-31", "GLD", 22000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let gld = only(&report, "GLD");
+        assert_eq!(gld.shares, Dec::new(5, 0));
+        assert_eq!(
+            gld.basis,
+            Some(Dec::new(100_000, 2)),
+            "the 5 held were bought for $1000, annotated"
+        );
+        assert_eq!(
+            gld.gain,
+            Some(Dec::new(10_000, 2)),
+            "$1100 mv - $1000 basis"
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|w| w.kind != WarningKind::MissingBasis),
+            "nothing held has an unknown cost: {:?}",
+            report.warnings
+        );
+        assert_eq!(report.totals.basis, Some(Dec::new(100_000, 2)));
+    }
+
+    #[test]
+    fn passing_through_zero_from_below_does_not_clear_the_taint() {
+        // The guard that makes the reset above sound. Buy 10 @ $100, oversell 15
+        // (shares -5), then buy 5 — shares land on exactly 0 and a later buy sees
+        // `leg_before == 0`. But this pool never CLOSED; it was oversold, so the
+        // 5 that arrive next still sit on lots that were never entered.
+        let txns = [
+            txn(
+                1,
+                "2025-01-05",
+                vec![
+                    buy("assets:broker:vti", "VTI", 10, 10000, true),
+                    posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-03-01",
+                vec![
+                    posting(
+                        "assets:broker:vti",
+                        vec![with_cost(amt("VTI", -15, 0), 12000, true, "$")],
+                        &[],
+                    ),
+                    posting("assets:broker:cash", vec![usd(180_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                3,
+                "2025-04-01",
+                vec![
+                    buy("assets:broker:vti", "VTI", 5, 20000, true),
+                    posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                4,
+                "2025-05-01",
+                vec![
+                    buy("assets:broker:vti", "VTI", 5, 20000, true),
+                    posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let report = run(
+            &txns,
+            &[pd("2025-07-01", "VTI", 30000, "$")],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let vti = only(&report, "VTI");
+        assert_eq!(vti.shares, Dec::new(5, 0));
+        assert_eq!(
+            vti.basis, None,
+            "oversold: passing through zero from below is not a clean close"
+        );
     }
 
     // ---- oversold-then-reopened pools (HOLD-4) ----
