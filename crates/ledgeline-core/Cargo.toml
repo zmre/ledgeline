@@ -6,6 +6,11 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+# `benches/corpus.rs` is a SHARED MODULE (the deterministic journal generator),
+# not a bench target: `benches/engine.rs` and the `examples/` measurement
+# binaries `#[path]`-include it. Auto-discovery would try to build it as its own
+# harness-less bench and fail for want of a `main`.
+autobenches = false
 
 [dependencies]
 serde = { workspace = true }
@@ -17,3 +22,19 @@ ropey = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
+# Benchmarking, per the IronCore Rust skill. Declared here rather than in the
+# workspace table because `ledgeline-core` is the only crate that benches. The
+# skill's `async_tokio` feature is deliberately NOT enabled: the engine is
+# entirely synchronous and has no runtime to drive.
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+
+# Per the IronCore Rust skill's bench layout: criterion supplies its own harness,
+# and the libtest harness must not also claim `--bench` (it would shadow
+# criterion's CLI and report zero benchmarks).
+[[bench]]
+name = "engine"
+path = "benches/engine.rs"
+harness = false
+
+[lib]
+bench = false

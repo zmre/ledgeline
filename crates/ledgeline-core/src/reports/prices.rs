@@ -72,11 +72,10 @@ impl PriceDb {
         as_of: &str,
         matches: impl Fn(&PriceDirective) -> bool,
     ) -> Option<&Amount> {
-        self.by_commodity
-            .get(commodity)?
+        in_effect(self.by_commodity.get(commodity)?, as_of)
             .iter()
             .rev()
-            .find(|directive| directive.date.as_str() <= as_of && matches(directive))
+            .find(|directive| matches(directive))
             .map(|directive| &directive.price)
     }
 
@@ -143,9 +142,8 @@ impl PriceDb {
             .by_commodity
             .iter()
             .flat_map(|(from, directives)| {
-                let latest: BTreeMap<&Commodity, Dec> = directives
+                let latest: BTreeMap<&Commodity, Dec> = in_effect(directives, as_of)
                     .iter()
-                    .filter(|directive| directive.date.as_str() <= as_of)
                     .map(|directive| (&directive.price.commodity, directive.price.quantity))
                     .collect();
                 latest
@@ -177,6 +175,34 @@ impl PriceDb {
 
         PriceGraph { forward, all }
     }
+}
+
+/// The prefix of one commodity's directives that is IN EFFECT at `as_of` — every
+/// entry dated ≤ it.
+///
+/// The list is stable-sorted ascending by date ([`PriceDb::build`]), so the
+/// in-effect entries are exactly a prefix and its length is a binary search
+/// rather than a scan. That is the whole of PERF-5d: [`PriceDb::latest`] used to
+/// filter on the date while walking backwards from the newest directive, which
+/// costs `O(1)` for a "value it as of today" query and `O(N)` for a historical
+/// one — and a net-worth or holdings series values a decades-long journal at
+/// every bucket, so the historical case is the *common* one. Same element
+/// chosen, same tie-breaking: the caller still scans this prefix newest-first,
+/// so a later same-date directive still wins.
+///
+/// The newest-directive test in front is not an optimization of the search but a
+/// guard against making the OTHER query worse: "value this as of today" needs no
+/// search at all, since every directive is already in effect, and going straight
+/// to `partition_point` would charge it log₂(N) date compares for an answer that
+/// one compare settles. With the guard, both ends of the range are cheap.
+fn in_effect<'a>(directives: &'a [PriceDirective], as_of: &str) -> &'a [PriceDirective] {
+    if directives
+        .last()
+        .is_some_and(|newest| newest.date.as_str() <= as_of)
+    {
+        return directives;
+    }
+    &directives[..directives.partition_point(|directive| directive.date.as_str() <= as_of)]
 }
 
 /// One directed edge of the price graph: one unit of `from` is worth `rate` of
@@ -685,6 +711,67 @@ mod tests {
             db.lookup(&c("EUR"), "2026-06-30").unwrap().commodity,
             c("GBP")
         );
+    }
+
+    /// [`PriceDb::latest`] binary-searches for the in-effect prefix instead of
+    /// filtering on the date while scanning backwards (PERF-5d). Pin it against
+    /// the definition it replaced, at EVERY date in and around a series with
+    /// duplicate dates and gaps — the boundaries are where an off-by-one would
+    /// hide.
+    #[test]
+    fn latest_agrees_with_a_reverse_scan_at_every_date() {
+        let series: Vec<PriceDirective> = [
+            ("2024-01-10", 100),
+            ("2024-03-05", 200),
+            ("2024-03-05", 300), // same date twice: the LAST one wins
+            ("2024-07-01", 400),
+            ("2025-01-01", 500),
+        ]
+        .iter()
+        .map(|(date, mantissa)| price(date, "AAPL", amount("$", *mantissa, 2)))
+        .collect();
+        let db = PriceDb::build(&series);
+
+        for as_of in [
+            "2023-12-31",
+            "2024-01-09",
+            "2024-01-10",
+            "2024-01-11",
+            "2024-03-04",
+            "2024-03-05",
+            "2024-03-06",
+            "2024-06-30",
+            "2024-07-01",
+            "2024-12-31",
+            "2025-01-01",
+            "2025-01-02",
+            "2099-01-01",
+        ] {
+            let want = series
+                .iter()
+                .rev()
+                .find(|directive| directive.date.as_str() <= as_of)
+                .map(|directive| directive.price.quantity);
+            assert_eq!(
+                db.lookup(&c("AAPL"), as_of).map(|price| price.quantity),
+                want,
+                "as_of {as_of}"
+            );
+        }
+    }
+
+    /// The same prefix drives `graph_at`, so a chain must see exactly the edges
+    /// in effect — no more, no fewer — at a date sitting between directives.
+    #[test]
+    fn in_effect_bounds_the_price_graph_at_a_mid_series_date() {
+        let db = PriceDb::build(&[
+            price("2024-01-01", "GBP", amount("EUR", 120, 2)),
+            price("2024-01-01", "EUR", amount("$", 110, 2)),
+            price("2026-01-01", "EUR", amount("$", 200, 2)),
+        ]);
+        assert_eq!(rate(&db, "GBP", "$", "2025-06-30"), Some(Dec::new(132, 2)));
+        assert_eq!(rate(&db, "GBP", "$", "2026-01-01"), Some(Dec::new(240, 2)));
+        assert_eq!(rate(&db, "GBP", "$", "2023-12-31"), None);
     }
 
     #[test]

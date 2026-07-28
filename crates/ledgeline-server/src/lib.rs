@@ -5,11 +5,16 @@
 //! app is exposed here as a library so integration tests can drive the real
 //! HTTP layer with `tower`'s `oneshot` (no sockets required).
 //!
-//! Each wire endpoint's JSON body is precomputed once from the journal and
-//! stored in an immutable [`Snapshot`]; handlers hand back the cached value. The
-//! native report/budget endpoints ([`reports_api`]) instead depend on request
-//! query params, so they are computed per request from the parsed [`Journal`]
-//! the same snapshot holds.
+//! Each wire endpoint's JSON body is serialized once from the journal into
+//! immutable [`Bytes`] and stored in a [`Snapshot`]; a request hands the buffer
+//! straight to the response body, which is a refcount bump rather than a copy
+//! (PERF-1 — holding `serde_json::Value` trees instead cost 2.7 GB and re-walked
+//! them on every request). The native report/budget endpoints ([`reports_api`])
+//! instead depend on request query params, so they are computed per request from
+//! the parsed [`Journal`] the same snapshot holds.
+//!
+//! Every snapshot carries an `ETag`, so the SPA's 30-second poll costs a `304`
+//! and no body at all until the journal actually changes (PERF-2).
 //!
 //! The whole snapshot lives behind an [`ArcSwap`] so the parsed journal can be
 //! HOT-SWAPPED at runtime (live-reload on file change; the desktop File→Open
@@ -38,17 +43,22 @@ mod spa;
 
 use arc_swap::ArcSwap;
 use axum::{
-    Json, Router,
+    Router,
+    body::{Body, Bytes},
     extract::State,
-    http::{HeaderValue, Uri, header},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware,
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
 use ledgeline_core::{EditError, Journal, JournalEditor, wire};
-use serde_json::Value;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use tower_http::CompressionLevel;
 use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::compression::CompressionLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 
 pub use security::{
@@ -57,41 +67,136 @@ pub use security::{
 
 /// An immutable, atomically-publishable view of one parsed journal: the parsed
 /// [`Journal`] for the per-request report handlers, plus every wire endpoint's
-/// payload precomputed once (so handler dispatch never re-serializes).
+/// body serialized once (so handler dispatch neither re-serializes nor copies).
+///
+/// The bodies are [`Bytes`], not `serde_json::Value` (PERF-1). A `Value` tree
+/// cost 8.5× what the JSON text it represents does — 2.7 GB at 200k transactions
+/// — held resident for the life of the snapshot, and every request deep-cloned
+/// it (691 ms) and re-walked it through serde (242 ms). Serialized bytes are
+/// serialized once at build time, and `Bytes::clone` is a refcount bump.
 pub(crate) struct Snapshot {
     /// The parsed journal, shared with the per-request report handlers.
     pub(crate) journal: Arc<Journal>,
-    pub(crate) version: Value,
-    pub(crate) accountnames: Value,
-    pub(crate) transactions: Value,
-    pub(crate) prices: Value,
-    pub(crate) commodities: Value,
-    pub(crate) accounts: Value,
+    /// This snapshot's `ETag`, identical across every endpoint it serves: all of
+    /// them are derived from the same journal and change together. See
+    /// [`next_etag`] for why it is a counter and not a content hash.
+    pub(crate) etag: HeaderValue,
+    pub(crate) version: Bytes,
+    pub(crate) accountnames: Bytes,
+    pub(crate) transactions: Bytes,
+    pub(crate) prices: Bytes,
+    pub(crate) commodities: Bytes,
+    pub(crate) accounts: Bytes,
     /// The `{"diagnostics": [...]}` payload: every unbalanced transaction and
     /// failed balance assertion in the journal, each shaped like the SPA's
     /// `Problem`. Precomputed with the rest because both checks are a whole-
     /// journal pass, and republished on every hot-swap so it never goes stale.
-    pub(crate) diagnostics: Value,
+    pub(crate) diagnostics: Bytes,
+}
+
+/// The `{"diagnostics": [...]}` envelope. `wire` exposes the array and the
+/// wrapped `Value` but not a wrapped *serializable*, and building the `Value`
+/// only to re-serialize it is exactly what PERF-1 is about.
+#[derive(Serialize)]
+struct DiagnosticsBody<'a> {
+    diagnostics: &'a [wire::WireDiagnostic],
 }
 
 impl Snapshot {
-    /// Precompute every endpoint payload from `journal`.
+    /// Serialize every endpoint body from `journal`, once.
+    ///
+    /// Takes the journal as an [`Arc`] rather than a reference so the caller's
+    /// already-parsed journal is shared, not deep-cloned (PERF-1b: the clone was
+    /// 86 ms and 284 MB at 200k for a journal nobody mutates).
     ///
     /// The wire serializers cannot fail for finite, string-keyed journal data,
-    /// so any (impossible) `serde_json` error collapses to JSON `null` — the
-    /// same guarantee Phase 1 relies on in `parse_to_transactions_value`.
-    fn from_journal(journal: &Journal) -> Self {
+    /// so any (impossible) `serde_json` error collapses to the JSON body `null`
+    /// — the same guarantee Phase 1 relies on in `parse_to_transactions_value`.
+    ///
+    /// The seven payloads are independent read-only passes over the same journal,
+    /// and `/transactions` alone is roughly half the work (563 ms of the 1,048 ms
+    /// at 200k). Building it on one extra thread while the other six run here
+    /// overlaps the two halves almost perfectly, which is what keeps this — the
+    /// bulk of app startup, of every live-reload, and of every edit's republish —
+    /// near the cost of its single most expensive payload.
+    fn from_journal(journal: Arc<Journal>) -> Self {
+        let (transactions, rest) = std::thread::scope(|scope| {
+            let transactions = scope.spawn(|| json_bytes(&wire::journal_to_transactions(&journal)));
+            let rest = (
+                json_bytes(&wire::version_value()),
+                json_bytes(&wire::journal_to_accountnames(&journal)),
+                json_bytes(&wire::journal_to_prices(&journal)),
+                json_bytes(&wire::journal_to_commodities(&journal)),
+                json_bytes(&wire::journal_to_accounts(&journal)),
+                json_bytes(&DiagnosticsBody {
+                    diagnostics: &wire::journal_to_diagnostics(&journal),
+                }),
+            );
+            // The only way this join fails is a panic in the serializer, which
+            // would have aborted the request anyway; resume it on this thread so
+            // `CatchPanicLayer` still turns it into a 500 rather than a snapshot
+            // silently missing its largest payload.
+            (
+                transactions.join().unwrap_or_else(|payload| {
+                    std::panic::resume_unwind(payload);
+                }),
+                rest,
+            )
+        });
+        let (version, accountnames, prices, commodities, accounts, diagnostics) = rest;
         Self {
-            journal: Arc::new(journal.clone()),
-            version: wire::version_value(),
-            accountnames: value_or_null(wire::journal_to_accountnames_value(journal)),
-            transactions: value_or_null(wire::journal_to_value(journal)),
-            prices: value_or_null(wire::journal_to_prices_value(journal)),
-            commodities: value_or_null(wire::journal_to_commodities_value(journal)),
-            accounts: value_or_null(wire::journal_to_accounts_value(journal)),
-            diagnostics: value_or_null(wire::journal_to_diagnostics_value(journal)),
+            etag: next_etag(),
+            version,
+            accountnames,
+            transactions,
+            prices,
+            commodities,
+            accounts,
+            diagnostics,
+            journal,
         }
     }
+}
+
+/// Serialize one endpoint body to JSON bytes, collapsing the unreachable
+/// `serde_json` error to the literal `null` rather than unwrapping.
+fn json_bytes<T: Serialize>(value: &T) -> Bytes {
+    serde_json::to_vec(value).map_or_else(|_| Bytes::from_static(b"null"), Bytes::from)
+}
+
+/// Mint the `ETag` for a freshly-built snapshot.
+///
+/// A per-process random prefix plus a monotonic counter, NOT a hash of the
+/// bodies: hashing 347 MB of JSON would add hundreds of milliseconds to every
+/// journal load, and the counter already answers the only question `If-None-Match`
+/// asks — "is this the same snapshot you gave me?". The random prefix is what
+/// keeps a client that cached generation 1 from a *previous* process being told
+/// `304` for a different journal that happens to also be on generation 1.
+///
+/// It errs toward re-sending: an edit that produces byte-identical payloads still
+/// bumps the counter, so a `304` can never serve stale data.
+fn next_etag() -> HeaderValue {
+    /// Randomized once per process, so ETags are unique across process restarts.
+    static PREFIX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    let prefix = PREFIX.get_or_init(|| {
+        let mut seed = [0u8; 8];
+        // A failed OS CSPRNG is not worth failing a journal load over: fall back
+        // to pid + start time, which still differs between concurrent and
+        // successive processes. The prefix only has to be unpredictable enough
+        // to avoid collisions; nothing security-relevant rests on it.
+        if getrandom::fill(&mut seed).is_err() {
+            let nanos = std::time::UNIX_EPOCH
+                .elapsed()
+                .map_or(0, |since| since.subsec_nanos());
+            seed = (u64::from(std::process::id()) << 32 | u64::from(nanos)).to_le_bytes();
+        }
+        u64::from_le_bytes(seed)
+    });
+    let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
+    HeaderValue::from_str(&format!("\"{prefix:016x}-{generation:x}\""))
+        .unwrap_or_else(|_| HeaderValue::from_static("\"ledgeline\""))
 }
 
 /// Cheaply-cloneable application state: an atomically-swappable [`Snapshot`] for
@@ -115,10 +220,22 @@ impl AppState {
     /// Build read-only state serving an already-parsed `journal`, with no backing
     /// file — the edit endpoints are disabled. Used by the oneshot test harness
     /// ([`app`]) and by callers that hot-swap journals in place without editing.
+    ///
+    /// This is the one constructor that must clone `journal`: it only borrows
+    /// one. Every path that *owns* a parsed journal — [`from_journal_path`],
+    /// [`reopen_editor`], [`rebind_editor`], [`replace_journal`] — shares the
+    /// editor's `Arc` instead (PERF-1b).
+    ///
+    /// [`from_journal_path`]: Self::from_journal_path
+    /// [`reopen_editor`]: Self::reopen_editor
+    /// [`rebind_editor`]: Self::rebind_editor
+    /// [`replace_journal`]: Self::replace_journal
     #[must_use]
     pub fn from_journal(journal: &Journal) -> Self {
         Self {
-            inner: Arc::new(ArcSwap::from_pointee(Snapshot::from_journal(journal))),
+            inner: Arc::new(ArcSwap::from_pointee(Snapshot::from_journal(Arc::new(
+                journal.clone(),
+            )))),
             editor: Arc::new(Mutex::new(None)),
         }
     }
@@ -133,7 +250,7 @@ impl AppState {
     /// does not parse.
     pub fn from_journal_path(path: impl AsRef<Path>) -> Result<Self, EditError> {
         let editor = JournalEditor::open(path.as_ref())?;
-        let snapshot = Snapshot::from_journal(editor.journal());
+        let snapshot = Snapshot::from_journal(Arc::clone(editor.journal()));
         Ok(Self {
             inner: Arc::new(ArcSwap::from_pointee(snapshot)),
             editor: Arc::new(Mutex::new(Some(editor))),
@@ -142,8 +259,13 @@ impl AppState {
 
     /// Atomically replace the served journal (and its precomputed payloads).
     /// In-flight requests keep their snapshot; subsequent ones see the new data.
-    pub fn replace_journal(&self, journal: &Journal) {
-        self.inner.store(Arc::new(Snapshot::from_journal(journal)));
+    ///
+    /// Takes the shared `Arc` — the shape [`JournalEditor::journal`] hands back —
+    /// so republishing after an edit shares the editor's journal rather than
+    /// deep-cloning it (PERF-1b).
+    pub fn replace_journal(&self, journal: &Arc<Journal>) {
+        self.inner
+            .store(Arc::new(Snapshot::from_journal(Arc::clone(journal))));
     }
 
     /// Re-open the bound editor from disk after an *external* change, republishing
@@ -159,8 +281,9 @@ impl AppState {
         let editor = guard.as_mut()?;
         match JournalEditor::open(editor.path().to_path_buf()) {
             Ok(reopened) => {
-                self.inner
-                    .store(Arc::new(Snapshot::from_journal(reopened.journal())));
+                self.inner.store(Arc::new(Snapshot::from_journal(Arc::clone(
+                    reopened.journal(),
+                ))));
                 *editor = reopened;
                 // The editor we just replaced may have been half-mutated by a
                 // panic mid-edit (SEC-11). Now that it is gone, the poison flag
@@ -192,8 +315,9 @@ impl AppState {
     pub fn rebind_editor(&self, path: impl AsRef<Path>) -> Result<(), EditError> {
         // Open first so a failure leaves the current editor + snapshot untouched.
         let editor = JournalEditor::open(path.as_ref())?;
-        self.inner
-            .store(Arc::new(Snapshot::from_journal(editor.journal())));
+        self.inner.store(Arc::new(Snapshot::from_journal(Arc::clone(
+            editor.journal(),
+        ))));
         let mut guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
         *guard = Some(editor);
         // The previously-bound editor is discarded wholesale, so any poison flag
@@ -223,10 +347,6 @@ impl AppState {
     pub(crate) fn editor(&self) -> &Mutex<Option<JournalEditor>> {
         &self.editor
     }
-}
-
-fn value_or_null(result: Result<Value, serde_json::Error>) -> Value {
-    result.unwrap_or(Value::Null)
 }
 
 /// Build an UNAUTHENTICATED router for a parsed `journal`.
@@ -264,6 +384,11 @@ pub fn router_with_state(state: AppState) -> Router {
 ///   requests that were addressed to us properly in the first place.
 /// * The token guard is a `route_layer`: it covers exactly the routes below and
 ///   never the SPA shell or its assets, which must stay reachable to bootstrap.
+///
+/// Compression (PERF-2) sits between the `Host` guard and routing, so it sees
+/// every route's body and the SPA's assets, but never a response the guards
+/// refused. It is opt-in per request — a client that sends no `Accept-Encoding`
+/// still gets the identity bytes straight out of the snapshot.
 pub fn router_with_security(state: AppState, security: Security) -> Router {
     let spa_token = security.token();
     let router = Router::new()
@@ -316,6 +441,14 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             async move { spa::fallback(uri, token).await }
         });
 
+    // `Fastest` (gzip level 1), not the default level 6: the /transactions body
+    // is hundreds of megabytes and this server's usual peer is the SPA on the
+    // same machine, where a second of CPU spent squeezing out a few more percent
+    // is a straight loss. Level 1 still gets the bulk of the ~20:1 ratio this
+    // payload compresses at, and it is what makes a LAN or `--allow-origin`
+    // client affordable.
+    let router = router.layer(CompressionLayer::new().quality(CompressionLevel::Fastest));
+
     let router = match security.cors_layer() {
         Some(cors) => router.layer(cors),
         // The default posture: no CORS layer at all, so a browser refuses to
@@ -346,35 +479,154 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .with_state(state)
 }
 
-// Each handler serves its endpoint's precomputed value from the current
-// snapshot. The journal is parsed and each value built once per snapshot (in
-// `Snapshot::from_journal`); a request only clones the single value being served
-// (serde does not serialize `Arc` without its opt-in `rc` feature, so we hand
-// `Json` an owned `Value`).
-async fn version(State(state): State<AppState>) -> Json<Value> {
-    Json(state.snapshot().version.clone())
+/// Serve one precomputed body from the current snapshot as
+/// `application/json`, or `304 Not Modified` when the client's `If-None-Match`
+/// already names this snapshot.
+///
+/// `Bytes::clone` is a refcount bump, so the 347 MB `/transactions` body is
+/// handed to the response without a copy and without re-serializing (PERF-1).
+/// `Cache-Control: no-cache` is "you may store this, but revalidate every time",
+/// which is exactly the contract the `ETag` needs: journal data must never be
+/// served from a cache without asking us first (PERF-2).
+fn serve(snapshot: &Snapshot, headers: &HeaderMap, body: &Bytes) -> Response {
+    let builder = Response::builder()
+        .header(header::ETAG, snapshot.etag.clone())
+        .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    let response = if if_none_match_hits(headers, &snapshot.etag) {
+        builder.status(StatusCode::NOT_MODIFIED).body(Body::empty())
+    } else {
+        builder
+            .status(StatusCode::OK)
+            .header(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )
+            .body(Body::from(body.clone()))
+    };
+    // `Response::builder` only fails on a malformed header, and every header
+    // here is either a constant or an already-validated `HeaderValue`.
+    response.unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-async fn accountnames(State(state): State<AppState>) -> Json<Value> {
-    Json(state.snapshot().accountnames.clone())
+/// Does the request's `If-None-Match` name `etag`?
+///
+/// RFC 9110 §13.1.2: the field is `*` or a comma-separated list of entity tags,
+/// and a `GET` compares them *weakly* — so a `W/` prefix on either side is
+/// ignored. Ours are always strong, but a proxy may re-tag them.
+fn if_none_match_hits(headers: &HeaderMap, etag: &HeaderValue) -> bool {
+    let Some(field) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let opaque = |tag: &str| tag.trim().trim_start_matches("W/").to_string();
+    let ours = opaque(etag.to_str().unwrap_or_default());
+    field
+        .split(',')
+        .any(|candidate| candidate.trim() == "*" || opaque(candidate) == ours)
 }
 
-async fn transactions(State(state): State<AppState>) -> Json<Value> {
-    Json(state.snapshot().transactions.clone())
+// Each handler serves its endpoint's body from the current snapshot. The journal
+// is parsed and each body serialized once per snapshot (in
+// `Snapshot::from_journal`); a request only bumps a refcount.
+async fn version(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let snapshot = state.snapshot();
+    serve(&snapshot, &headers, &snapshot.version)
 }
 
-async fn prices(State(state): State<AppState>) -> Json<Value> {
-    Json(state.snapshot().prices.clone())
+async fn accountnames(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let snapshot = state.snapshot();
+    serve(&snapshot, &headers, &snapshot.accountnames)
 }
 
-async fn commodities(State(state): State<AppState>) -> Json<Value> {
-    Json(state.snapshot().commodities.clone())
+async fn transactions(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let snapshot = state.snapshot();
+    serve(&snapshot, &headers, &snapshot.transactions)
 }
 
-async fn accounts(State(state): State<AppState>) -> Json<Value> {
-    Json(state.snapshot().accounts.clone())
+async fn prices(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let snapshot = state.snapshot();
+    serve(&snapshot, &headers, &snapshot.prices)
 }
 
-async fn diagnostics(State(state): State<AppState>) -> Json<Value> {
-    Json(state.snapshot().diagnostics.clone())
+async fn commodities(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let snapshot = state.snapshot();
+    serve(&snapshot, &headers, &snapshot.commodities)
+}
+
+async fn accounts(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let snapshot = state.snapshot();
+    serve(&snapshot, &headers, &snapshot.accounts)
+}
+
+async fn diagnostics(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let snapshot = state.snapshot();
+    serve(&snapshot, &headers, &snapshot.diagnostics)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_with(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_str(value).expect("test header is valid"),
+        );
+        headers
+    }
+
+    /// The whole risk of a conditional GET is answering `304` for data the
+    /// client does NOT already have, so this is the matcher's contract in full.
+    #[test]
+    fn if_none_match_matches_exactly_the_forms_rfc_9110_defines() {
+        let ours = HeaderValue::from_static("\"abc-1\"");
+
+        // Hits: exact, weak on either side, `*`, and anywhere in a list.
+        for field in [
+            "\"abc-1\"",
+            "W/\"abc-1\"",
+            "*",
+            "\"other\", \"abc-1\"",
+            "\"abc-1\", \"other\"",
+            "  \"abc-1\"  ",
+        ] {
+            assert!(
+                if_none_match_hits(&headers_with(field), &ours),
+                "If-None-Match: {field} should match {ours:?}"
+            );
+        }
+
+        // Misses: a different tag, a PREFIX of ours, ours as a prefix of theirs,
+        // and an unquoted spelling. Each of these answering 304 would strand the
+        // client on data it never received.
+        for field in ["\"abc-2\"", "\"abc\"", "\"abc-11\"", "abc-1", "\"\""] {
+            assert!(
+                !if_none_match_hits(&headers_with(field), &ours),
+                "If-None-Match: {field} must NOT match {ours:?}"
+            );
+        }
+
+        // No header at all is never a match.
+        assert!(!if_none_match_hits(&HeaderMap::new(), &ours));
+    }
+
+    /// A generation counter is only safe if it never repeats within a process.
+    #[test]
+    fn every_snapshot_gets_a_distinct_quoted_tag() {
+        let tags: std::collections::BTreeSet<String> = (0..64)
+            .map(|_| {
+                let tag = next_etag();
+                let text = tag.to_str().expect("ASCII").to_string();
+                assert!(
+                    text.starts_with('"') && text.ends_with('"'),
+                    "an entity-tag must be quoted: {text}"
+                );
+                text
+            })
+            .collect();
+        assert_eq!(tags.len(), 64, "generation counter must not repeat");
+    }
 }

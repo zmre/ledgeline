@@ -1137,6 +1137,55 @@ pub(crate) struct HoldingsSeriesQuery {
 // Handlers
 // ===========================================================================
 
+/// How many report computations may run at once.
+///
+/// The report engine is synchronous and CPU-bound, so this is really "how many
+/// cores may a pile of open tabs claim". Without a ceiling, N tabs each polling
+/// `/api/holdings/series` spawn N blocking threads, and at 200k transactions
+/// each one wants a core and hundreds of megabytes. The tokio *worker* threads
+/// are protected by `spawn_blocking` alone; this is what keeps the machine
+/// responsive as well.
+fn report_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+        tokio::sync::Semaphore::new(cores)
+    })
+}
+
+/// Run one report on the blocking pool and wrap the result as JSON (PERF-3).
+///
+/// Every handler below calls straight into the synchronous engine, which at 200k
+/// transactions is 0.5–1.6 seconds of solid CPU. Run directly on a tokio worker
+/// that blocks the whole runtime — 20 concurrent `/api/holdings/series` made a
+/// trivial `/version` take 1,051 ms instead of 0.3 ms, and because the desktop
+/// GUI hosts this runtime in-process, it stalls the app rather than merely an
+/// API. `spawn_blocking` moves the work to the blocking pool, where blocking is
+/// what the threads are for.
+///
+/// A panic inside `job` arrives here as a `JoinError` rather than unwinding
+/// through `CatchPanicLayer`, so it is mapped to the same `500` that layer would
+/// have produced (SEC-2: a panic must never drop the connection).
+async fn compute<T, F>(job: F) -> Result<Json<T>, ApiError>
+where
+    F: FnOnce() -> Result<T, ApiError> + Send + 'static,
+    T: Send + 'static,
+{
+    let Ok(_permit) = report_slots().acquire().await else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the report scheduler is shutting down".to_string(),
+        ));
+    };
+    match tokio::task::spawn_blocking(job).await {
+        Ok(result) => result.map(Json),
+        Err(error) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the report task failed: {error}"),
+        )),
+    }
+}
+
 /// `GET /api/reports/balancesheet` — assets + liabilities as of a date.
 pub(crate) async fn balancesheet(
     State(state): State<AppState>,
@@ -1145,10 +1194,13 @@ pub(crate) async fn balancesheet(
     let snapshot = state.snapshot();
     let as_of = parse_date("asOf", query.as_of, today_utc)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
-    let declared = declared_types(&account_decls(&snapshot.journal));
-    let report = balance_sheet(&snapshot.journal.transactions, &as_of, depth, &declared)
-        .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_sectioned(&report)))
+    compute(move || {
+        let declared = declared_types(&account_decls(&snapshot.journal));
+        let report = balance_sheet(&snapshot.journal.transactions, &as_of, depth, &declared)
+            .map_err(|err| report_error(&err))?;
+        Ok(wire_sectioned(&report))
+    })
+    .await
 }
 
 /// `GET /api/reports/incomestatement` — revenues + expenses over a range.
@@ -1161,10 +1213,13 @@ pub(crate) async fn incomestatement(
     let from = parse_date("from", query.from, || format!("{}-01-01", &today[..4]))?;
     let to = parse_date("to", query.to, || today)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
-    let declared = declared_types(&account_decls(&snapshot.journal));
-    let report = income_statement(&snapshot.journal.transactions, &from, &to, depth, &declared)
-        .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_sectioned(&report)))
+    compute(move || {
+        let declared = declared_types(&account_decls(&snapshot.journal));
+        let report = income_statement(&snapshot.journal.transactions, &from, &to, depth, &declared)
+            .map_err(|err| report_error(&err))?;
+        Ok(wire_sectioned(&report))
+    })
+    .await
 }
 
 /// `GET /api/reports/cashflow` — per-bucket cash-like-asset changes. The cash
@@ -1179,19 +1234,22 @@ pub(crate) async fn cashflow(
     let count = parse_count(query.count)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
 
-    let decls = account_decls(&snapshot.journal);
-    let predicate = cash_predicate(&decls);
-    let is_cash: &dyn Fn(&str) -> bool = &predicate;
-    let report = cash_flow(
-        &snapshot.journal.transactions,
-        &end,
-        interval,
-        count,
-        depth,
-        Some(is_cash),
-    )
-    .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_period(&report)))
+    compute(move || {
+        let decls = account_decls(&snapshot.journal);
+        let predicate = cash_predicate(&decls);
+        let is_cash: &dyn Fn(&str) -> bool = &predicate;
+        let report = cash_flow(
+            &snapshot.journal.transactions,
+            &end,
+            interval,
+            count,
+            depth,
+            Some(is_cash),
+        )
+        .map_err(|err| report_error(&err))?;
+        Ok(wire_period(&report))
+    })
+    .await
 }
 
 /// `GET /api/reports/networth` — market-valued net worth per bucket. Prices come
@@ -1212,21 +1270,24 @@ pub(crate) async fn networth(
         .filter(|symbol| !symbol.is_empty())
         .map(Commodity);
 
-    let declared = declared_types(&account_decls(&snapshot.journal));
-    let report = net_worth(
-        &snapshot.journal.transactions,
-        &snapshot.journal.prices,
-        &NetWorthOpts {
-            end: &end,
-            interval,
-            count,
-            depth,
-            value_in,
-            declared: &declared,
-        },
-    )
-    .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_period(&report)))
+    compute(move || {
+        let declared = declared_types(&account_decls(&snapshot.journal));
+        let report = net_worth(
+            &snapshot.journal.transactions,
+            &snapshot.journal.prices,
+            &NetWorthOpts {
+                end: &end,
+                interval,
+                count,
+                depth,
+                value_in,
+                declared: &declared,
+            },
+        )
+        .map_err(|err| report_error(&err))?;
+        Ok(wire_period(&report))
+    })
+    .await
 }
 
 /// `GET /api/budget` — actuals vs. periodic-rule goals per bucket.
@@ -1239,25 +1300,25 @@ pub(crate) async fn budget(
     let interval = parse_interval(query.interval.as_deref())?;
     let count = parse_count(query.count)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
-    let budget_desc = query
-        .budget_desc
-        .as_deref()
-        .filter(|pattern| !pattern.is_empty());
+    let budget_desc = query.budget_desc.filter(|pattern| !pattern.is_empty());
 
-    let opts = BudgetOpts {
-        end: &end,
-        interval,
-        count,
-        depth,
-        budget_desc,
-    };
-    let report = budget_report(
-        &snapshot.journal.transactions,
-        &snapshot.journal.periodic_transactions,
-        &opts,
-    )
-    .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_budget(&report)))
+    compute(move || {
+        let opts = BudgetOpts {
+            end: &end,
+            interval,
+            count,
+            depth,
+            budget_desc: budget_desc.as_deref(),
+        };
+        let report = budget_report(
+            &snapshot.journal.transactions,
+            &snapshot.journal.periodic_transactions,
+            &opts,
+        )
+        .map_err(|err| report_error(&err))?;
+        Ok(wire_budget(&report))
+    })
+    .await
 }
 
 /// `GET /api/insights` — the period-over-period dashboard. `start`/`end` bound
@@ -1273,14 +1334,17 @@ pub(crate) async fn insights_report(
     let start = parse_date("start", query.start, || default_insights_start(&end))?;
     let cost_exclude = parse_csv(query.exclude.as_deref(), DEFAULT_COST_EXCLUDE);
     let change_min = parse_change_min(query.change_min.as_deref())?;
-    let opts = InsightsOpts {
-        start: &start,
-        end: &end,
-        cost_exclude: &cost_exclude,
-        change_min,
-    };
-    let report = insights(&snapshot.journal, &opts).map_err(|err| report_error(&err))?;
-    Ok(Json(wire_insights(&report)))
+    compute(move || {
+        let opts = InsightsOpts {
+            start: &start,
+            end: &end,
+            cost_exclude: &cost_exclude,
+            change_min,
+        };
+        let report = insights(&snapshot.journal, &opts).map_err(|err| report_error(&err))?;
+        Ok(wire_insights(&report))
+    })
+    .await
 }
 
 /// `GET /api/subscriptions` — recurring monthly/annual charges inferred from
@@ -1294,18 +1358,25 @@ pub(crate) async fn subscriptions(
     let as_of = parse_date("asOf", query.as_of, today_utc)?;
     let defaults = SubscriptionOpts::default();
     let exclude_desc = parse_csv(query.exclude_desc.as_deref(), DEFAULT_EXCLUDE_DESC);
-    let opts = SubscriptionOpts {
-        as_of: &as_of,
-        lookback_months: query.lookback.unwrap_or(defaults.lookback_months).max(1),
-        min_monthly: query.min_monthly.unwrap_or(defaults.min_monthly).max(2),
-        min_annual: query.min_annual.unwrap_or(defaults.min_annual).max(2),
-        stale_months: query.stale_months.unwrap_or(defaults.stale_months).max(1),
-        exclude_desc: &exclude_desc,
-        ..defaults
-    };
-    let report =
-        detect_subscriptions(&snapshot.journal, &opts).map_err(|err| report_error(&err))?;
-    Ok(Json(wire_subscriptions(&report)))
+    let lookback_months = query.lookback.unwrap_or(defaults.lookback_months).max(1);
+    let min_monthly = query.min_monthly.unwrap_or(defaults.min_monthly).max(2);
+    let min_annual = query.min_annual.unwrap_or(defaults.min_annual).max(2);
+    let stale_months = query.stale_months.unwrap_or(defaults.stale_months).max(1);
+    compute(move || {
+        let opts = SubscriptionOpts {
+            as_of: &as_of,
+            lookback_months,
+            min_monthly,
+            min_annual,
+            stale_months,
+            exclude_desc: &exclude_desc,
+            ..SubscriptionOpts::default()
+        };
+        let report =
+            detect_subscriptions(&snapshot.journal, &opts).map_err(|err| report_error(&err))?;
+        Ok(wire_subscriptions(&report))
+    })
+    .await
 }
 
 /// `GET /api/holdings` — average-cost stock positions as of a date. `accounts`
@@ -1332,23 +1403,28 @@ pub(crate) async fn holdings(
     Query(query): Query<HoldingsQuery>,
 ) -> Result<Json<WireHoldingsReport>, ApiError> {
     let snapshot = state.snapshot();
-    let scope = holdings_scope(
-        &snapshot.journal,
-        query.accounts.as_deref(),
-        query.mode.as_deref(),
-        query.as_of,
-        query.gain_since,
-        query.value_in.as_deref(),
-    )?;
-    let report = compute_holdings(
-        &snapshot.journal.transactions,
-        &snapshot.journal.prices,
-        &snapshot.journal.accounts,
-        &snapshot.journal.commodity_tags,
-        &scope,
-    )
-    .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_holdings(&report)))
+    compute(move || {
+        // `holdings_scope` validates `valueIn` by scanning the whole journal for
+        // a price route, so it belongs on the blocking side with the report.
+        let scope = holdings_scope(
+            &snapshot.journal,
+            query.accounts.as_deref(),
+            query.mode.as_deref(),
+            query.as_of,
+            query.gain_since,
+            query.value_in.as_deref(),
+        )?;
+        let report = compute_holdings(
+            &snapshot.journal.transactions,
+            &snapshot.journal.prices,
+            &snapshot.journal.accounts,
+            &snapshot.journal.commodity_tags,
+            &scope,
+        )
+        .map_err(|err| report_error(&err))?;
+        Ok(wire_holdings(&report))
+    })
+    .await
 }
 
 /// `GET /api/holdings/series` — portfolio market value (and basis) at each of the
@@ -1359,28 +1435,31 @@ pub(crate) async fn holdings_series_report(
     Query(query): Query<HoldingsSeriesQuery>,
 ) -> Result<Json<WireHoldingsSeries>, ApiError> {
     let snapshot = state.snapshot();
-    let scope = holdings_scope(
-        &snapshot.journal,
-        query.accounts.as_deref(),
-        query.mode.as_deref(),
-        query.as_of,
-        // The trend tracks market value/basis only — no per-point gain window.
-        None,
-        query.value_in.as_deref(),
-    )?;
     let interval = parse_interval(query.interval.as_deref())?;
     let count = parse_count(query.count)?;
-    let series = holdings_series(
-        &snapshot.journal.transactions,
-        &snapshot.journal.prices,
-        &snapshot.journal.accounts,
-        &snapshot.journal.commodity_tags,
-        &scope,
-        interval,
-        count,
-    )
-    .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_holdings_series(&series)))
+    compute(move || {
+        let scope = holdings_scope(
+            &snapshot.journal,
+            query.accounts.as_deref(),
+            query.mode.as_deref(),
+            query.as_of,
+            // The trend tracks market value/basis only — no per-point gain window.
+            None,
+            query.value_in.as_deref(),
+        )?;
+        let series = holdings_series(
+            &snapshot.journal.transactions,
+            &snapshot.journal.prices,
+            &snapshot.journal.accounts,
+            &snapshot.journal.commodity_tags,
+            &scope,
+            interval,
+            count,
+        )
+        .map_err(|err| report_error(&err))?;
+        Ok(wire_holdings_series(&series))
+    })
+    .await
 }
 
 // ===========================================================================

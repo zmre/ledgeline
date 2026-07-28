@@ -37,14 +37,14 @@
 //! surfaced through [`ReportError`].
 
 use super::ReportError;
-use super::aggregate::{PostingFilter, account_totals, roll_up};
+use super::aggregate::roll_up;
 use super::mixed_amount::MixedAmount;
 use super::periods::{
     Interval, bucket_end, bucket_key, bucket_start, compare_iso, last_n_buckets, next_bucket,
 };
 use crate::model::{PeriodExpr, PeriodicTransaction, Transaction};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// The synthetic account collecting actuals with no budgeted ancestor. Matches
 /// hledger's literal `<unbudgeted>` pseudo-account name.
@@ -114,35 +114,41 @@ fn period_interval(period: PeriodExpr) -> Interval {
     }
 }
 
-/// An account's proper ancestors, nearest first (`a:b:c` → `["a:b", "a"]`).
-fn parent_accounts(account: &str) -> Vec<String> {
-    let segments: Vec<&str> = account.split(':').collect();
-    (1..segments.len())
-        .rev()
-        .map(|n| segments[..n].join(":"))
-        .collect()
-}
-
 /// Clamp a full account name to at most `depth` segments (`min` 1). Deeper
 /// accounts collapse onto their depth-`depth` ancestor.
-fn clip(account: &str, depth: usize) -> String {
-    account
-        .split(':')
-        .take(depth.max(1))
-        .collect::<Vec<_>>()
-        .join(":")
+///
+/// Returns a borrowed prefix: the clamped name is always a byte-prefix of the
+/// input, so no allocation is needed to find it.
+fn clip(account: &str, depth: usize) -> &str {
+    match account.match_indices(':').nth(depth.max(1) - 1) {
+        Some((cut, _)) => &account[..cut],
+        None => account,
+    }
 }
 
 /// Re-home an actual account under the budget tree: keep it if budgeted, else
 /// move it to its nearest budgeted ancestor, else to [`UNBUDGETED`].
-fn remap_account(account: &str, budgeted: &BTreeSet<String>) -> String {
+///
+/// Walks the ancestry by slicing at each `:` from the right — nearest ancestor
+/// first — rather than materializing every ancestor up front. The old version
+/// `join(":")`ed all of them on every call, which is `O(S²)` bytes allocated per
+/// account for an `S`-segment name (PERF-5), and it was called once per account
+/// PER BUCKET.
+///
+/// The result always borrows from `account` (or is the `'static` [`UNBUDGETED`]),
+/// which is what lets the caller memoize it without cloning.
+fn remap_account<'a>(account: &'a str, budgeted: &BTreeSet<String>) -> &'a str {
     if budgeted.contains(account) {
-        return account.to_string();
+        return account;
     }
-    parent_accounts(account)
-        .into_iter()
-        .find(|ancestor| budgeted.contains(ancestor))
-        .unwrap_or_else(|| UNBUDGETED.to_string())
+    let mut name = account;
+    while let Some(cut) = name.rfind(':') {
+        name = &name[..cut];
+        if budgeted.contains(name) {
+            return name;
+        }
+    }
+    UNBUDGETED
 }
 
 /// The dates a rule of interval `ri` fires on within the inclusive report span
@@ -226,28 +232,71 @@ pub fn budget_report(
         .collect();
 
     // --- Actuals: per bucket, remap + clip own totals, then roll up. ---
+    //
+    // Each bucket's inclusive `[start, to]` range, with the last one truncated
+    // at `opts.end`. `last_n_buckets` yields CONTIGUOUS, non-overlapping buckets
+    // oldest → newest, so the `to` bounds ascend strictly and every posting
+    // falls in at most one of them — which is what lets the binary search below
+    // replace one `account_totals` re-scan per bucket (PERF-5).
+    let ranges: Vec<(String, String)> = buckets
+        .iter()
+        .map(|key| {
+            let start = bucket_start(key)?;
+            let bucket_end_date = bucket_end(key)?;
+            let to = if compare_iso(opts.end, &bucket_end_date) == Ordering::Less {
+                opts.end.to_string()
+            } else {
+                bucket_end_date
+            };
+            Ok((start, to))
+        })
+        .collect::<Result<_, ReportError>>()?;
+
+    // ONE pass over every posting, summing per FULL account name into its own
+    // bucket — i.e. exactly what `account_totals(from, to)` produced per bucket,
+    // in the same transaction order. The remap+clip is deliberately NOT folded
+    // into this pass: it merges several accounts onto one name, and merging
+    // pruned per-account totals (as below) is not the same as merging their raw
+    // postings, because a commodity that nets to zero within one account is
+    // dropped before the merge and so cannot widen the merged scale.
+    let mut per_bucket_direct: Vec<BTreeMap<&str, MixedAmount>> =
+        vec![BTreeMap::new(); ranges.len()];
+    for txn in txns {
+        for posting in &txn.postings {
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            let index = ranges.partition_point(|(_, to)| to.as_str() < date);
+            let Some((start, _)) = ranges.get(index) else {
+                continue; // after the last bucket
+            };
+            if date < start.as_str() {
+                continue; // before the report span
+            }
+            let entry = per_bucket_direct[index]
+                .entry(posting.account.0.as_str())
+                .or_default();
+            for amount in &posting.amounts {
+                entry.accumulate(&amount.commodity, amount.quantity)?;
+            }
+        }
+    }
+
+    // The remap+clip depends only on the account name and the (bucket-
+    // independent) budgeted set, so it is resolved once per DISTINCT name
+    // instead of once per account per bucket (PERF-5).
+    let mut remapped: HashMap<&str, &str> = HashMap::new();
     let mut actual_own: Vec<BTreeMap<String, MixedAmount>> = Vec::with_capacity(buckets.len());
     let mut actual_incl: Vec<BTreeMap<String, MixedAmount>> = Vec::with_capacity(buckets.len());
-    for key in &buckets {
-        let start = bucket_start(key)?;
-        let bucket_end_date = bucket_end(key)?;
-        let to = if compare_iso(opts.end, &bucket_end_date) == Ordering::Less {
-            opts.end
-        } else {
-            bucket_end_date.as_str()
-        };
-        let direct = account_totals(
-            txns,
-            &PostingFilter {
-                from: Some(&start),
-                to: Some(to),
-                ..PostingFilter::default()
-            },
-        )?;
+    for direct in &per_bucket_direct {
         let mut own: BTreeMap<String, MixedAmount> = BTreeMap::new();
-        for (account, ma) in &direct {
-            let remapped = clip(&remap_account(account, &budgeted), opts.depth);
-            accumulate_into(own.entry(remapped).or_default(), ma)?;
+        for (account, ma) in direct {
+            // `account_totals` prunes zero commodities in one final sweep,
+            // BEFORE the remap merges accounts together.
+            let mut pruned = ma.clone();
+            pruned.drop_zeros();
+            let name = *remapped
+                .entry(account)
+                .or_insert_with(|| clip(remap_account(account, &budgeted), opts.depth));
+            accumulate_into(own.entry(name.to_string()).or_default(), &pruned)?;
         }
         for ma in own.values_mut() {
             ma.drop_zeros();
@@ -272,7 +321,7 @@ pub fn budget_report(
                 continue;
             };
             for posting in &rule.postings {
-                let name = clip(&posting.account.0, opts.depth);
+                let name = clip(&posting.account.0, opts.depth).to_string();
                 let entry = goal_own[index].entry(name).or_default();
                 for amount in &posting.amounts {
                     entry.accumulate(&amount.commodity, amount.quantity)?;

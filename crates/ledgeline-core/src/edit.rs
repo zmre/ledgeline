@@ -64,6 +64,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 use thiserror::Error;
 
@@ -234,7 +235,12 @@ pub struct JournalEditor {
     /// One buffer per distinct source file (main + includes-with-transactions),
     /// keyed by resolved absolute path.
     files: HashMap<PathBuf, FileBuf>,
-    journal: Journal,
+    /// Behind an [`Arc`] so a consumer that wants to *hold* the parsed journal —
+    /// the server's snapshot, above all — can share this one allocation instead
+    /// of deep-cloning it (PERF-1b: the clone was 86 ms and 284 MB at 200k
+    /// transactions). Replaced wholesale on every committed edit, so no edit is
+    /// ever visible through a previously-handed-out `Arc`.
+    journal: Arc<Journal>,
 }
 
 impl JournalEditor {
@@ -289,7 +295,7 @@ impl JournalEditor {
             source_name,
             main_key,
             files,
-            journal,
+            journal: Arc::new(journal),
         })
     }
 
@@ -300,8 +306,13 @@ impl JournalEditor {
     }
 
     /// The parsed journal, as of the last committed edit.
+    ///
+    /// Returned as the shared [`Arc`] rather than a plain `&Journal` so a caller
+    /// that needs to keep it (the server publishes it in every snapshot) can
+    /// clone the pointer instead of the journal. `&Arc<Journal>` deref-coerces to
+    /// `&Journal`, so read-only callers are unaffected.
     #[must_use]
-    pub fn journal(&self) -> &Journal {
+    pub fn journal(&self) -> &Arc<Journal> {
         &self.journal
     }
 
@@ -434,7 +445,7 @@ impl JournalEditor {
         })?;
         file.rope = candidate;
         file.dirty = true;
-        self.journal = reparsed;
+        self.journal = Arc::new(reparsed);
         Ok(())
     }
 

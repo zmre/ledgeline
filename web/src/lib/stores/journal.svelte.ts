@@ -4,7 +4,7 @@
 // state is swapped only after a successful normalize, so old data stays
 // visible on error (the route shows an error toast from `status`/`error`).
 
-import {HledgerApi} from "$lib/api/client";
+import {HledgerApi, isNotModified, resetConditionalCache} from "$lib/api/client";
 import {LedgelineApi} from "$lib/api/native";
 import {normalizeAccounts, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "$lib/api/normalize";
 import type {Problem} from "$lib/checks/engine";
@@ -106,16 +106,26 @@ export function contentFingerprint(
     return h;
 }
 
-async function doRefresh(): Promise<void> {
+/**
+ * One fetch round.
+ *
+ * `unconditional` forces a full refetch by first forgetting every recorded
+ * ETag; `doRefresh` sets it for the single retry it does when a conditional
+ * round comes back mixed (see below).
+ */
+async function doRefresh(unconditional = false): Promise<void> {
     const baseUrl = settings.serverUrl;
     if (baseUrl === null) {
         status = "error";
         error = "No hledger-web server configured";
         return;
     }
+    if (unconditional) resetConditionalCache();
     status = "loading";
     try {
-        const api = new HledgerApi(baseUrl);
+        // `conditional`: this is the one caller that repeats these requests
+        // forever (a 30-second poll) and can act on a 304 by keeping what it has.
+        const api = new HledgerApi(baseUrl, undefined, {conditional: true});
         // Diagnostics are advisory and Ledgeline-native: a plain hledger-web has
         // no such route. Failing it to `null` here (rather than letting it reject
         // the whole `Promise.all`) is what keeps the journal loading against any
@@ -128,6 +138,36 @@ async function doRefresh(): Promise<void> {
             api.accounts(),
             new LedgelineApi(baseUrl).diagnostics().catch(() => null),
         ]);
+
+        // Every journal payload comes from one server-side snapshot carrying one
+        // ETag, so an unchanged journal answers 304 on all three of the big
+        // conditional routes and there is nothing to normalize, hash or swap —
+        // the point of PERF-2. (`/accountnames` is small and unconditional; it
+        // derives from the same snapshot, so these three vouch for it.)
+        if (isNotModified(rawTxns) && isNotModified(rawPrices) && isNotModified(rawAccounts)) {
+            // `fetchedAt === null` means we have ETags but no state to keep — a
+            // round that recorded them and then failed to normalize. Refetch.
+            if (fetchedAt === null) {
+                await doRefresh(true);
+                return;
+            }
+            fetchedAt = Date.now();
+            status = "ready";
+            error = null;
+            if (import.meta.env.DEV) console.debug("[journal] 304 — nothing refetched");
+            return;
+        }
+        if (isNotModified(rawTxns) || isNotModified(rawPrices) || isNotModified(rawAccounts)) {
+            // A journal swap landed mid-round, so some routes answered 304 against
+            // the OLD snapshot while others returned the NEW one. The halves cannot
+            // be combined; drop the tags and take one clean unconditional round.
+            // Bounded: the retry sends no `If-None-Match`, so it cannot come back
+            // mixed again.
+            if (unconditional) throw new Error("the server answered 304 to an unconditional request");
+            await doRefresh(true);
+            return;
+        }
+
         const nextTxns = normalizeTransactions(rawTxns);
         const nextPrices = normalizePrices(rawPrices);
         const nextDecls = normalizeAccounts(rawAccounts);

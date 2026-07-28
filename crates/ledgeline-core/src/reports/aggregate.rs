@@ -76,6 +76,10 @@ pub fn account_totals(
 
 /// Add each account's total into itself and all ancestors (inclusive balances).
 ///
+/// Accumulates in place. The old form read the ancestor's running total back
+/// out, `ma_add`ed a fresh map and re-inserted it, cloning the accumulator once
+/// per descendant (PERF-5f).
+///
 /// # Errors
 /// Returns [`DecError`] on decimal overflow.
 pub fn roll_up(
@@ -85,17 +89,11 @@ pub fn roll_up(
     for (account, ma) in totals {
         let mut path = String::new();
         for segment in account.split(':') {
-            if path.is_empty() {
-                path.push_str(segment);
-            } else {
+            if !path.is_empty() {
                 path.push(':');
-                path.push_str(segment);
             }
-            let combined = match out.get(&path) {
-                Some(existing) => existing.ma_add(ma)?,
-                None => ma.clone(),
-            };
-            out.insert(path.clone(), combined);
+            path.push_str(segment);
+            out.entry(path.clone()).or_default().ma_add_assign(ma)?;
         }
     }
     Ok(out)

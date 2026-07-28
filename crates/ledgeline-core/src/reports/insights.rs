@@ -30,7 +30,7 @@ use super::accounts::account_matches;
 use super::aggregate::{PostingFilter, account_totals};
 use super::income_statement::income_statement;
 use super::mixed_amount::MixedAmount;
-use super::net_worth::{NetWorthOpts, net_worth};
+use super::net_worth::{NetWorthOpts, net_worth_priced};
 use super::periods::{Interval, add_days, add_months, bucket_end, bucket_key, days_between};
 use super::prices::{PriceDb, infer_market_prices};
 use crate::decimal::Dec;
@@ -260,7 +260,8 @@ pub struct InsightsReport {
 
 /// Explicit `P` directives PLUS the prices implied by `@`/`@@` cost annotations
 /// (hledger's `--infer-market-prices`). Inferred go FIRST so an explicit price
-/// wins a same-date tie — the precedence [`net_worth`] already uses.
+/// wins a same-date tie — the precedence [`super::net_worth::net_worth`] already
+/// uses, and exactly the set [`net_worth_priced`] expects.
 ///
 /// EVERY priced box on the dashboard must be handed this same set. Valuing the
 /// net-worth box from the inferred set while the holdings boxes saw only the
@@ -329,17 +330,22 @@ fn metric_delta(
 }
 
 /// Net worth (market-valued in `base`) as of exactly `as_of`. A single daily
-/// bucket ending on `as_of` reuses the [`net_worth`] engine so valuation and
-/// price inference match the Net Worth report.
+/// bucket ending on `as_of` reuses the [`super::net_worth::net_worth`] engine so
+/// valuation and price inference match the Net Worth report.
+///
+/// `prices` is the combined set from [`all_prices`] — the same one the public
+/// entry point would derive for itself, handed in so the two calls here do not
+/// re-run `infer_market_prices` over every posting twice (PERF-5c).
 fn net_worth_at(
     journal: &Journal,
+    prices: &[PriceDirective],
     as_of: &str,
     base: &Commodity,
     declared: &BTreeMap<String, AccountType>,
 ) -> Result<MixedAmount, ReportError> {
-    let report = net_worth(
+    let report = net_worth_priced(
         &journal.transactions,
-        &journal.prices,
+        prices,
         &NetWorthOpts {
             end: as_of,
             interval: Interval::Daily,
@@ -352,23 +358,16 @@ fn net_worth_at(
     Ok(report.totals.into_iter().next().unwrap_or_default())
 }
 
-/// Summed balance of all cash-like accounts as of `as_of` (postings dated ≤
-/// `as_of`). Direct per-account totals never overlap, so summing them cannot
-/// double-count. Natural signs; multi-commodity cash stays mixed.
+/// Summed balance of all cash-like accounts in `direct` (per-account totals for
+/// postings dated ≤ the as-of date). Direct per-account totals never overlap, so
+/// summing them cannot double-count. Natural signs; multi-commodity cash stays
+/// mixed.
 fn cash_balance(
-    txns: &[Transaction],
-    as_of: &str,
+    direct: &BTreeMap<String, MixedAmount>,
     is_cash: &dyn Fn(&str) -> bool,
 ) -> Result<MixedAmount, ReportError> {
-    let direct = account_totals(
-        txns,
-        &PostingFilter {
-            to: Some(as_of),
-            ..PostingFilter::default()
-        },
-    )?;
     let mut sum = MixedAmount::new();
-    for (account, ma) in &direct {
+    for (account, ma) in direct {
         if is_cash(account) {
             sum = sum.ma_add(ma)?;
         }
@@ -376,25 +375,16 @@ fn cash_balance(
     Ok(sum)
 }
 
-/// Total expenses over `[from, to]` excluding any account under a `cost_exclude`
-/// prefix. Expense postings carry their natural (positive-spent) sign.
+/// Total expenses in `direct` (a period's per-account totals) excluding any
+/// account under a `cost_exclude` prefix. Expense postings carry their natural
+/// (positive-spent) sign.
 fn cost_of_living_total(
-    txns: &[Transaction],
-    from: &str,
-    to: &str,
+    direct: &BTreeMap<String, MixedAmount>,
     cost_exclude: &[String],
     declared: &BTreeMap<String, AccountType>,
 ) -> Result<MixedAmount, ReportError> {
-    let direct = account_totals(
-        txns,
-        &PostingFilter {
-            from: Some(from),
-            to: Some(to),
-            ..PostingFilter::default()
-        },
-    )?;
     let mut sum = MixedAmount::new();
-    for (account, ma) in &direct {
+    for (account, ma) in direct {
         if resolve_account_type(account, declared) != Some(AccountType::Expense) {
             continue;
         }
@@ -509,36 +499,48 @@ fn months_between(from: &str, to: &str) -> u32 {
     u32::try_from(months.max(1)).unwrap_or(1)
 }
 
-/// Portfolio performance over `(since, as_of]`: the windowed holdings gain,
-/// `marketValue(as_of) − marketValue(since)`, in the base commodity. The
-/// whole (unscoped) portfolio is used.
+/// The whole (unscoped) portfolio over the window `(since, as_of]`, valued in
+/// `base`.
 ///
-/// `prices` is the combined set from [`all_prices`], so this box values a
-/// position exactly as the net-worth box does.
-fn perf(
+/// `prices` is the combined set from [`all_prices`], so this values a position
+/// exactly as the net-worth box does.
+///
+/// This is the single most expensive call on the dashboard: `compute_holdings`
+/// RECURSES when `gain_since` is set (it re-runs itself at the window start to
+/// get each position's baseline value), so one call here is two full engine
+/// passes. Boxes 5 and 8 both want the current window and used to ask for it
+/// separately with byte-identical scopes — four passes for one answer. They now
+/// share this one report (PERF-5c).
+fn window_holdings(
     journal: &Journal,
     prices: &[PriceDirective],
+    base: &Commodity,
     as_of: &str,
     since: &str,
-) -> Result<PerfPoint, ReportError> {
+) -> Result<HoldingsReport, ReportError> {
     let scope = HoldingsScope {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
         as_of: as_of.to_string(),
         gain_since: Some(since.to_string()),
-        value_in: Some(holdings_base(prices)),
+        value_in: Some(base.clone()),
     };
-    let report = compute_holdings(
+    compute_holdings(
         &journal.transactions,
         prices,
         &journal.accounts,
         &journal.commodity_tags,
         &scope,
-    )?;
-    Ok(PerfPoint {
+    )
+}
+
+/// Box 5's figure for one window: the windowed holdings gain,
+/// `marketValue(as_of) − marketValue(since)`, in the base commodity.
+fn perf_of(report: &HoldingsReport) -> PerfPoint {
+    PerfPoint {
         gain: report.totals.gain,
         gain_pct: report.totals.gain_pct,
-    })
+    }
 }
 
 /// The base-commodity quantity of an optional account total (zero when absent).
@@ -555,10 +557,6 @@ fn base_of(total: Option<&MixedAmount>, base: &Commodity) -> Dec {
 /// (nothing to compare); the rest are ranked by the size of the move in real
 /// money, then top `TOP_N`.
 struct ChangeOpts<'a> {
-    /// Inclusive current-period range.
-    current: (&'a str, &'a str),
-    /// Inclusive previous-period range.
-    previous: (&'a str, &'a str),
     /// Which accounts to compare, by effective type.
     category: AccountType,
     base: &'a Commodity,
@@ -569,32 +567,22 @@ struct ChangeOpts<'a> {
     declared: &'a BTreeMap<String, AccountType>,
 }
 
-fn account_changes(txns: &[Transaction], opts: &ChangeOpts) -> Result<Vec<ChangeRow>, ReportError> {
+/// `curr_totals`/`prev_totals` are the two periods' per-account totals. They are
+/// passed in rather than rebuilt because both call sites (expenses and revenue)
+/// use the SAME two date windows, and so does Box 4 — one set of sweeps feeds
+/// all of them instead of six (PERF-5c).
+fn account_changes(
+    curr_totals: &BTreeMap<String, MixedAmount>,
+    prev_totals: &BTreeMap<String, MixedAmount>,
+    opts: &ChangeOpts,
+) -> Result<Vec<ChangeRow>, ReportError> {
     let &ChangeOpts {
-        current,
-        previous,
         category,
         base,
         change_min,
         flip,
         declared,
     } = opts;
-    let curr_totals = account_totals(
-        txns,
-        &PostingFilter {
-            from: Some(current.0),
-            to: Some(current.1),
-            ..PostingFilter::default()
-        },
-    )?;
-    let prev_totals = account_totals(
-        txns,
-        &PostingFilter {
-            from: Some(previous.0),
-            to: Some(previous.1),
-            ..PostingFilter::default()
-        },
-    )?;
 
     // Union of in-category account names seen in either period.
     let mut names: BTreeSet<String> = BTreeSet::new();
@@ -616,18 +604,35 @@ fn account_changes(txns: &[Transaction], opts: &ChangeOpts) -> Result<Vec<Change
     //
     // A parent's own row is labelled `<account> (own)` so it is never mistaken
     // for the inclusive subtree rollup.
-    let compared: Vec<(String, &String)> = names
-        .iter()
-        .map(|account| {
-            let prefix = format!("{account}:");
-            let label = if names.iter().any(|other| other.starts_with(prefix.as_str())) {
-                format!("{account}{OWN_SUFFIX}")
-            } else {
-                account.clone()
-            };
-            (label, account)
-        })
-        .collect();
+    //
+    // `names` is sorted, so every descendant of `account` is contiguous starting
+    // at the first key ≥ `account:` — if that key is not itself a descendant,
+    // none are. One range probe per account replaces a scan of the whole set
+    // (PERF-5c), and the prefix buffer is reused instead of reallocated.
+    //
+    // Note this is NOT the same as testing whether the account's IMMEDIATE
+    // successor is prefixed by it: `expenses:food-truck` sorts between
+    // `expenses:food` and `expenses:food:dining` (`-` < `:`), so that shortcut
+    // would label a childless `expenses:food` as `(own)` whenever a sibling
+    // merely shares its name as a prefix.
+    let sorted: Vec<&String> = names.iter().collect();
+    let mut prefix = String::new();
+    let mut compared: Vec<(String, &String)> = Vec::with_capacity(sorted.len());
+    for account in &sorted {
+        prefix.clear();
+        prefix.push_str(account);
+        prefix.push(':');
+        let index = sorted.partition_point(|other| other.as_str() < prefix.as_str());
+        let has_children = sorted
+            .get(index)
+            .is_some_and(|other| other.starts_with(prefix.as_str()));
+        let label = if has_children {
+            format!("{account}{OWN_SUFFIX}")
+        } else {
+            (*account).clone()
+        };
+        compared.push((label, *account));
+    }
 
     let threshold = change_min.abs()?;
     let mut rows: Vec<ChangeRow> = Vec::new();
@@ -680,10 +685,11 @@ fn account_changes(txns: &[Transaction], opts: &ChangeOpts) -> Result<Vec<Change
 }
 
 /// Snapshot the whole portfolio as of `as_of` (no gain window), valued with
-/// `prices`.
+/// `prices` in `base` (which must be [`holdings_base`] of that same set).
 fn portfolio_at(
     journal: &Journal,
     prices: &[PriceDirective],
+    base: &Commodity,
     as_of: &str,
 ) -> Result<HoldingsReport, ReportError> {
     let scope = HoldingsScope {
@@ -691,7 +697,7 @@ fn portfolio_at(
         mode: ScopeMode::Include,
         as_of: as_of.to_string(),
         gain_since: None,
-        value_in: Some(holdings_base(prices)),
+        value_in: Some(base.clone()),
     };
     compute_holdings(
         &journal.transactions,
@@ -709,27 +715,12 @@ fn portfolio_at(
 /// price directive or fell back to the purchase-cost annotation — see
 /// [`MoverRow::start_estimated`], which the UI surfaces so a lifetime gain is
 /// never mistaken for a period return.
+/// `report` is the window's [`window_holdings`] output, shared with Box 5.
 fn movers(
     journal: &Journal,
-    prices: &[PriceDirective],
-    as_of: &str,
+    report: &HoldingsReport,
     since: &str,
 ) -> Result<Vec<MoverRow>, ReportError> {
-    let scope = HoldingsScope {
-        accounts: BTreeSet::new(),
-        mode: ScopeMode::Include,
-        as_of: as_of.to_string(),
-        gain_since: Some(since.to_string()),
-        value_in: Some(holdings_base(prices)),
-    };
-    let report = compute_holdings(
-        &journal.transactions,
-        prices,
-        &journal.accounts,
-        &journal.commodity_tags,
-        &scope,
-    )?;
-
     // Re-run the snapshot at the window start to inspect HOW each position was
     // priced there: a `Cost`-sourced (or absent) price means the baseline is the
     // purchase cost, not a market value.
@@ -740,17 +731,22 @@ fn movers(
     // cost-priced position as `Directive`-sourced and silently clear the flag on
     // exactly the holdings it exists to warn about. Explicit-only keeps the flag
     // meaning what it says: "no real market quote existed at the window start".
-    let estimated: BTreeSet<String> = portfolio_at(journal, &journal.prices, since)?
-        .holdings
-        .iter()
-        .filter(|holding| {
-            holding
-                .price
-                .as_ref()
-                .is_none_or(|price| price.source == PriceSource::Cost)
-        })
-        .map(|holding| holding.symbol.clone())
-        .collect();
+    let estimated: BTreeSet<String> = portfolio_at(
+        journal,
+        &journal.prices,
+        &holdings_base(&journal.prices),
+        since,
+    )?
+    .holdings
+    .iter()
+    .filter(|holding| {
+        holding
+            .price
+            .as_ref()
+            .is_none_or(|price| price.source == PriceSource::Cost)
+    })
+    .map(|holding| holding.symbol.clone())
+    .collect();
 
     let mut rows: Vec<MoverRow> = report
         .holdings
@@ -843,6 +839,42 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     let declared = declared_types(&decls);
     let is_cash = cash_predicate(&decls);
 
+    // The four posting sweeps every unpriced box is assembled from. Each
+    // `account_totals` call is a full pass over every posting, and these four
+    // windows were previously rebuilt EIGHT times — twice for `cash_balance`,
+    // twice for `cost_of_living_total`, and twice per `account_changes` call,
+    // both of which use the very same two period windows (PERF-5c).
+    let curr_totals = account_totals(
+        txns,
+        &PostingFilter {
+            from: Some(&curr_start),
+            to: Some(end),
+            ..PostingFilter::default()
+        },
+    )?;
+    let prev_totals = account_totals(
+        txns,
+        &PostingFilter {
+            from: Some(start),
+            to: Some(&mid),
+            ..PostingFilter::default()
+        },
+    )?;
+    let totals_at_end = account_totals(
+        txns,
+        &PostingFilter {
+            to: Some(end),
+            ..PostingFilter::default()
+        },
+    )?;
+    let totals_at_mid = account_totals(
+        txns,
+        &PostingFilter {
+            to: Some(&mid),
+            ..PostingFilter::default()
+        },
+    )?;
+
     // Boxes 1 & 2 — revenue and expenses per period (one income statement each).
     let is_curr = income_statement(txns, &curr_start, end, 1, &declared)?;
     let is_prev = income_statement(txns, start, &mid, 1, &declared)?;
@@ -859,49 +891,50 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
 
     // Box 3 — net worth at each period end (current end vs previous end = mid).
     let net_worth_delta = metric_delta(
-        net_worth_at(journal, end, &base, &declared)?,
-        net_worth_at(journal, &mid, &base, &declared)?,
+        net_worth_at(journal, &prices, end, &base, &declared)?,
+        net_worth_at(journal, &prices, &mid, &base, &declared)?,
         &base,
     )?;
 
     // Box 6 — cash balance at each period end.
     let cash_balance_delta = metric_delta(
-        cash_balance(txns, end, &is_cash)?,
-        cash_balance(txns, &mid, &is_cash)?,
+        cash_balance(&totals_at_end, &is_cash)?,
+        cash_balance(&totals_at_mid, &is_cash)?,
         &base,
     )?;
 
     // Box 4 — average monthly cost of living (totals + month counts; averaged
     // at the display boundary).
     let cost_of_living = CostOfLiving {
-        current_total: cost_of_living_total(txns, &curr_start, end, opts.cost_exclude, &declared)?,
-        previous_total: cost_of_living_total(txns, start, &mid, opts.cost_exclude, &declared)?,
+        current_total: cost_of_living_total(&curr_totals, opts.cost_exclude, &declared)?,
+        previous_total: cost_of_living_total(&prev_totals, opts.cost_exclude, &declared)?,
         months_current: months_between(&curr_start, end),
         months_previous: months_between(start, &mid),
     };
 
     // Box 5 — investment performance (current: since mid; previous: since start).
+    // The current window is ALSO what Box 8 ranks, so it is computed once here
+    // and shared (PERF-5c) — the two boxes built byte-identical scopes.
+    let current_window = window_holdings(journal, &prices, &base, end, &mid)?;
+    let previous_window = window_holdings(journal, &prices, &base, &mid, start)?;
     let investment = InvestmentPerf {
-        current: perf(journal, &prices, end, &mid)?,
-        previous: perf(journal, &prices, &mid, start)?,
+        current: perf_of(&current_window),
+        previous: perf_of(&previous_window),
     };
 
     // Boxes 7 & 9 — biggest leaf-account expense / revenue changes (current period
     // vs previous). Revenue is sign-flipped so an increase reads positive.
-    let current_range = (curr_start.as_str(), end);
-    let previous_range = (start, mid.as_str());
     let change_opts = ChangeOpts {
-        current: current_range,
-        previous: previous_range,
         category: AccountType::Expense,
         base: &base,
         change_min: opts.change_min,
         flip: false,
         declared: &declared,
     };
-    let expense_changes = account_changes(txns, &change_opts)?;
+    let expense_changes = account_changes(&curr_totals, &prev_totals, &change_opts)?;
     let revenue_changes = account_changes(
-        txns,
+        &curr_totals,
+        &prev_totals,
         &ChangeOpts {
             category: AccountType::Revenue,
             flip: true,
@@ -910,7 +943,7 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     )?;
 
     // Box 8 — biggest stock movers over the current period.
-    let movers_list = movers(journal, &prices, end, &mid)?;
+    let movers_list = movers(journal, &current_window, &mid)?;
 
     // Box 10 — largest transactions in the current period.
     let top_txns = top_transactions(txns, &curr_start, end, &base)?;

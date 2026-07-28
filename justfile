@@ -77,3 +77,39 @@ engine-check:
 # Run the local engine server (Phase 2+): `just serve-engine ~/finance/2026.journal`
 serve-engine file="fixtures/sample.journal":
     cargo run -p ledgeline-server -- {{file}}
+
+# --- Performance (see docs/perf-baseline.md) ---
+
+# Generate the deterministic synthetic corpus into target/perf/ and validate it
+# with `hledger check -s`. Sizes default to 5000 50000; pass your own.
+perf-corpus *sizes:
+    ./scripts/gen-perf-journals.sh {{sizes}}
+
+# Criterion benches over the 5k + 50k corpus. Optional filter, e.g.
+# `just bench reports/net_worth`. Missing corpora are generated on first use.
+bench filter="":
+    cargo bench -p ledgeline-core -- {{filter}}
+
+# Same, plus the 200k corpus CLEANUP.md's Phase 6 table was measured on (~30 min).
+bench-big filter="":
+    LEDGELINE_BENCH_SIZES=5000,50000,200000 cargo bench -p ledgeline-core -- {{filter}}
+
+# Record a named criterion baseline (all three sizes) to diff a later run against.
+bench-save name="baseline":
+    LEDGELINE_BENCH_SIZES=5000,50000,200000 cargo bench -p ledgeline-core -- --save-baseline {{name}}
+
+# Re-run all three sizes and report the change against a saved baseline.
+bench-compare name="baseline":
+    LEDGELINE_BENCH_SIZES=5000,50000,200000 cargo bench -p ledgeline-core -- --baseline {{name}}
+
+# Peak RSS of holding one journal's Snapshot, stage by stage. macOS only
+# (`/usr/bin/time -l`); on Linux swap in `/usr/bin/time -v`.
+perf-rss size="200000":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p ledgeline-core --example load_rss
+    for stage in text parse clone value snapshot bytes; do
+        peak=$(/usr/bin/time -l ./target/release/examples/load_rss {{size}} --stage "$stage" 2>&1 \
+            | awk '/maximum resident set size/ {print $1}')
+        awk -v s="$stage" -v p="$peak" 'BEGIN{printf "%-10s peak RSS %9.1f MB\n", s, p/1048576}'
+    done

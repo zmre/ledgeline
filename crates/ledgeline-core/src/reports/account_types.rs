@@ -5,9 +5,11 @@
 //! declared ancestor's, else inferred from the name. `Cash` is the subtype
 //! `hledger cashflow` selects on.
 
-use super::accounts::{RootCategory, categorize};
+use super::accounts::{RootCategory, ascii_or_lowercased, categorize};
 use crate::model::{AccountDeclaration, Journal};
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound;
 
 /// A resolved account type. `Cash`/`Conversion` are the two subtypes hledger
 /// tracks beyond the five roots.
@@ -55,23 +57,35 @@ pub struct AccountDecl {
     pub account_type: Option<AccountType>,
 }
 
+/// The cash-like segments hledger's Cash-account heuristic looks for below an
+/// asset root.
+const CASH_SEGMENTS: [&str; 7] = [
+    "cash", "bank", "checking", "chequing", "savings", "saving", "current",
+];
+
 /// hledger's Cash-account name heuristic, equivalent to the TS regex
 /// `^assets?(:.+)?:(cash|bank|che(ck|que)ing|savings?|current)(:|$)`:
 /// an `asset`/`assets`-rooted account with a cash-like segment anywhere below
 /// the root.
+///
+/// Splitting and then comparing case-insensitively, rather than lowercasing the
+/// whole name first, is what removes the per-call `String` (PERF-5e). It is the
+/// same classification: nothing lowercases to or from `:`, so the segmentation
+/// cannot move — see [`ascii_or_lowercased`] for the non-ASCII half.
 fn matches_cash_name(account: &str) -> bool {
-    let lower = account.to_lowercase();
-    let mut segments = lower.split(':');
-    match segments.next() {
-        Some("asset" | "assets") => {}
-        _ => return false,
-    }
-    segments.any(|segment| {
-        matches!(
-            segment,
-            "cash" | "bank" | "checking" | "chequing" | "savings" | "saving" | "current"
-        )
-    })
+    let lowered = ascii_or_lowercased(account);
+    let mut segments = lowered.split(':');
+    let asset_rooted = segments.next().is_some_and(|root| {
+        ["asset", "assets"]
+            .iter()
+            .any(|r| root.eq_ignore_ascii_case(r))
+    });
+    asset_rooted
+        && segments.any(|segment| {
+            CASH_SEGMENTS
+                .iter()
+                .any(|cash| segment.eq_ignore_ascii_case(cash))
+        })
 }
 
 /// Parse a `type:` tag value, case-insensitively; `None` when unrecognized.
@@ -184,10 +198,16 @@ pub fn resolve_account_type(
     }
     infer_account_type(account).or_else(|| {
         // Declared descendants are contiguous in the BTreeMap under `account:`.
-        let prefix = format!("{account}:");
+        // Seeking past `account` itself and taking while the name is still
+        // prefixed by it spans that block; the `:` test then rejects the
+        // siblings that merely share the same opening letters (`activos:banco`
+        // for `activo`) and would otherwise sort in among them. Same set, same
+        // order, without the `format!("{account}:")` key this allocated on every
+        // untyped account (PERF-5e).
         declared
-            .range(prefix.clone()..)
-            .take_while(|(declared_name, _)| declared_name.starts_with(&prefix))
+            .range::<str, _>((Bound::Excluded(account), Bound::Unbounded))
+            .take_while(|(declared_name, _)| declared_name.starts_with(account))
+            .filter(|(declared_name, _)| declared_name.as_bytes().get(account.len()) == Some(&b':'))
             .map(|(_, ty)| *ty)
             .try_fold(None::<AccountType>, |acc, ty| match acc {
                 None => Some(Some(ty)),
@@ -215,7 +235,14 @@ pub fn is_account_type(
     declared: &BTreeMap<String, AccountType>,
     category: AccountType,
 ) -> bool {
-    match resolve_account_type(account, declared) {
+    is_category(resolve_account_type(account, declared), category)
+}
+
+/// Whether an already-resolved type is a member of `category`, subtypes
+/// included. Shared by [`is_account_type`] and [`AccountTypes::is_type`] so the
+/// two cannot drift.
+fn is_category(resolved: Option<AccountType>, category: AccountType) -> bool {
+    match resolved {
         Some(AccountType::Cash) => matches!(category, AccountType::Asset | AccountType::Cash),
         Some(AccountType::Gain) => matches!(category, AccountType::Revenue | AccountType::Gain),
         Some(found) => found == category,
@@ -223,11 +250,85 @@ pub fn is_account_type(
     }
 }
 
+/// [`resolve_account_type`] memoized over one immutable set of declarations.
+///
+/// Resolution is pure but not free: it probes a `BTreeMap` once per ancestor
+/// and, when nothing in the ancestry is declared, infers from the name and then
+/// scans for declared descendants. Reports call it once per POSTING — 840k times
+/// at 200k transactions in `detect_subscriptions` alone — over only a couple of
+/// hundred DISTINCT account names, so every answer after the first is a repeat
+/// (PERF-5e).
+///
+/// Purity is intact: the cache observes nothing but its own declarations and the
+/// names it is asked about, so for a given `declared` this is the same total
+/// function as the free [`resolve_account_type`], only cheaper. No clock, no
+/// I/O.
+///
+/// The memo is interior-mutable so this stays a `&self` API, shareable by
+/// reference exactly where [`declared_types`]' map is passed today. That makes
+/// it `Send` but NOT `Sync` — the right trade for a cache built per report. A
+/// cache shared across threads (an HTTP snapshot serving concurrent requests)
+/// wants the eager form instead: resolve every account name in the journal once
+/// at build time into a plain immutable map.
+#[derive(Debug, Clone)]
+pub struct AccountTypes {
+    declared: BTreeMap<String, AccountType>,
+    memo: RefCell<HashMap<String, Option<AccountType>>>,
+}
+
+impl AccountTypes {
+    /// Memoize over the types declared by `decls`.
+    #[must_use]
+    pub fn new(decls: &[AccountDecl]) -> Self {
+        Self::from_declared(declared_types(decls))
+    }
+
+    /// Memoize over an already-built [`declared_types`] map.
+    #[must_use]
+    pub fn from_declared(declared: BTreeMap<String, AccountType>) -> Self {
+        Self {
+            declared,
+            memo: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// The declarations this was built from, for callers that still need to hand
+    /// the raw map to a free function.
+    #[must_use]
+    pub fn declared(&self) -> &BTreeMap<String, AccountType> {
+        &self.declared
+    }
+
+    /// [`resolve_account_type`], answered from the memo after the first ask.
+    pub fn resolve(&self, account: &str) -> Option<AccountType> {
+        if let Some(hit) = self.memo.borrow().get(account) {
+            return *hit;
+        }
+        let resolved = resolve_account_type(account, &self.declared);
+        self.memo.borrow_mut().insert(account.to_string(), resolved);
+        resolved
+    }
+
+    /// [`is_account_type`], answered from the memo.
+    pub fn is_type(&self, account: &str, category: AccountType) -> bool {
+        is_category(self.resolve(account), category)
+    }
+
+    /// True when `account`'s effective type is Cash — the [`cash_predicate`]
+    /// test, answered from the memo.
+    pub fn is_cash(&self, account: &str) -> bool {
+        self.resolve(account) == Some(AccountType::Cash)
+    }
+}
+
 /// Cash predicate for the cash-flow report: an account's effective type is Cash.
 /// With NO declared types this reduces to the pure name heuristic.
+///
+/// Backed by [`AccountTypes`], so the repeated asks a bucketed cash-flow report
+/// makes about the same handful of accounts cost one hash lookup each.
 pub fn cash_predicate(decls: &[AccountDecl]) -> impl Fn(&str) -> bool {
-    let declared = declared_types(decls);
-    move |account: &str| resolve_account_type(account, &declared) == Some(AccountType::Cash)
+    let types = AccountTypes::new(decls);
+    move |account: &str| types.is_cash(account)
 }
 
 /// Read the declared `type:` per account from a parsed journal's `account`
@@ -476,5 +577,132 @@ mod tests {
         let pred = cash_predicate(&[]);
         assert!(pred("assets:bank:checking"));
         assert!(!pred("assets:broker:taxable:aapl"));
+        // Memoized: the second ask must give the same answer as the first.
+        assert!(pred("assets:bank:checking"));
+        assert!(!pred("assets:broker:taxable:aapl"));
+    }
+
+    /// The Cash heuristic compares segments case-insensitively instead of
+    /// lowercasing the whole name, so the non-ASCII path has to keep doing the
+    /// real Unicode lowering: U+212A KELVIN SIGN folds to a plain `k`, which
+    /// `eq_ignore_ascii_case` alone would never see.
+    #[test]
+    fn cash_name_heuristic_keeps_unicode_lowering() {
+        assert!(matches_cash_name("assets:BAN\u{212A}"));
+        assert!(matches_cash_name("assets:BAN\u{212A}:checking"));
+        assert!(!matches_cash_name("assets:BAN\u{212A}X"));
+        assert!(!matches_cash_name("expenses:BAN\u{212A}"));
+    }
+
+    /// Every name in a chart that exercises all four resolution steps — own
+    /// declaration, declared ancestor, name inference, declared descendant — plus
+    /// the misses in between.
+    fn resolution_probe_chart() -> (BTreeMap<String, AccountType>, Vec<&'static str>) {
+        let declared = declared_types(&[
+            AccountDecl {
+                name: "assets".into(),
+                account_type: Some(AccountType::Asset),
+            },
+            AccountDecl {
+                name: "assets:bank:checking".into(),
+                account_type: Some(AccountType::Cash),
+            },
+            AccountDecl {
+                name: "cuenta:uno".into(),
+                account_type: Some(AccountType::Cash),
+            },
+            AccountDecl {
+                name: "cuenta:dos".into(),
+                account_type: Some(AccountType::Cash),
+            },
+            // Sorts between `cuenta` and `cuenta:` — the sibling the `:` test
+            // has to reject.
+            AccountDecl {
+                name: "cuenta-vieja".into(),
+                account_type: Some(AccountType::Liability),
+            },
+            AccountDecl {
+                name: "mixto:a".into(),
+                account_type: Some(AccountType::Liability),
+            },
+            AccountDecl {
+                name: "mixto:b".into(),
+                account_type: Some(AccountType::Expense),
+            },
+        ]);
+        let names = vec![
+            "assets",
+            "assets:bank",
+            "assets:bank:checking",
+            "assets:bank:checkingx",
+            "cuenta",
+            "cuenta:uno",
+            "cuenta-vieja",
+            "cuentax",
+            "mixto",
+            "mixto:a",
+            "expenses:food",
+            "liabilities:cc:visa",
+            "misc",
+            "",
+        ];
+        (declared, names)
+    }
+
+    /// The descendant fallback seeks past `account` itself rather than building
+    /// an `account:` key, so a sibling sorting between the two must not be
+    /// mistaken for a descendant — nor cut the scan short before the real ones.
+    #[test]
+    fn descendant_fallback_skips_siblings_that_sort_between_parent_and_children() {
+        let (declared, _) = resolution_probe_chart();
+        // `cuenta-vieja` (Liability) sorts before `cuenta:dos`; only the two
+        // `cuenta:` children count, and they agree on Cash.
+        assert_eq!(
+            resolve_account_type("cuenta", &declared),
+            Some(AccountType::Cash)
+        );
+        // `cuentax` has no descendants at all despite sharing a prefix.
+        assert_eq!(resolve_account_type("cuentax", &declared), None);
+        // Disagreeing descendants still collapse to `None`.
+        assert_eq!(resolve_account_type("mixto", &declared), None);
+    }
+
+    /// The memo must be indistinguishable from the free function, on every
+    /// resolution path and on repeat asks.
+    #[test]
+    fn account_types_memo_agrees_with_the_free_function() {
+        let (declared, names) = resolution_probe_chart();
+        let types = AccountTypes::from_declared(declared.clone());
+        for pass in 0..2 {
+            for name in &names {
+                assert_eq!(
+                    types.resolve(name),
+                    resolve_account_type(name, &declared),
+                    "pass {pass}, account {name:?}"
+                );
+                for category in [
+                    AccountType::Asset,
+                    AccountType::Liability,
+                    AccountType::Equity,
+                    AccountType::Revenue,
+                    AccountType::Expense,
+                    AccountType::Cash,
+                    AccountType::Conversion,
+                    AccountType::Gain,
+                ] {
+                    assert_eq!(
+                        types.is_type(name, category),
+                        is_account_type(name, &declared, category),
+                        "pass {pass}, account {name:?}, category {category:?}"
+                    );
+                }
+                assert_eq!(
+                    types.is_cash(name),
+                    resolve_account_type(name, &declared) == Some(AccountType::Cash),
+                    "pass {pass}, is_cash {name:?}"
+                );
+            }
+        }
+        assert_eq!(types.declared(), &declared);
     }
 }

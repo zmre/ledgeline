@@ -6,13 +6,13 @@
 
 use super::ReportError;
 use super::account_types::{AccountType, infer_account_type};
-use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
+use super::aggregate::{at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
 use super::periods::{Interval, bucket_end, bucket_start, compare_iso, last_n_buckets};
 use super::types::{PeriodReport, PeriodRow};
 use crate::model::Transaction;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Name-based "cash-like asset" heuristic — the fallback when a journal declares
 /// no account types. Delegates to hledger's Cash name inference.
@@ -23,6 +23,9 @@ pub fn is_cash_like(account: &str) -> bool {
 
 /// Per-bucket cash flow. `is_cash` overrides the name heuristic (pass the result
 /// of [`super::account_types::cash_predicate`] to honor declared `type:` tags).
+///
+/// `is_cash` must be a pure function of the account name: it is consulted once
+/// per DISTINCT account rather than once per account per bucket.
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow or bad bucket math.
@@ -44,23 +47,61 @@ pub fn cash_flow(
     let mut totals: Vec<MixedAmount> = Vec::with_capacity(buckets.len());
     let mut per_bucket: Vec<BTreeMap<String, MixedAmount>> = Vec::with_capacity(buckets.len());
 
-    for key in &buckets {
-        let start = bucket_start(key)?;
-        let end_of_bucket = bucket_end(key)?;
-        let to = if compare_iso(end, &end_of_bucket) == Ordering::Less {
-            end
-        } else {
-            end_of_bucket.as_str()
-        };
-        let mut direct = account_totals(
-            txns,
-            &PostingFilter {
-                from: Some(&start),
-                to: Some(to),
-                ..PostingFilter::default()
-            },
-        )?;
-        direct.retain(|account, _| is_cash(account));
+    // Each bucket's inclusive `[start, to]` range, with the last one truncated
+    // at `end`. `last_n_buckets` yields CONTIGUOUS, non-overlapping buckets
+    // oldest → newest, so the `to` bounds ascend strictly and every posting
+    // falls in at most one of them — which is what lets the binary search below
+    // replace one `account_totals` re-scan per bucket (PERF-5).
+    let ranges: Vec<(String, String)> = buckets
+        .iter()
+        .map(|key| {
+            let start = bucket_start(key)?;
+            let end_of_bucket = bucket_end(key)?;
+            let to = if compare_iso(end, &end_of_bucket) == Ordering::Less {
+                end.to_string()
+            } else {
+                end_of_bucket
+            };
+            Ok((start, to))
+        })
+        .collect::<Result<_, ReportError>>()?;
+
+    // ONE pass over every posting, summing per FULL account name into its own
+    // bucket — i.e. exactly what `account_totals(from, to)` would have produced
+    // for that bucket, and in the same transaction order, so no number can move.
+    let mut direct: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); ranges.len()];
+    let mut cash_like: HashMap<&str, bool> = HashMap::new();
+    for txn in txns {
+        for posting in &txn.postings {
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            let index = ranges.partition_point(|(_, to)| to.as_str() < date);
+            let Some((start, _)) = ranges.get(index) else {
+                continue; // after the last bucket
+            };
+            if date < start.as_str() {
+                continue; // before the report span
+            }
+            let account = posting.account.0.as_str();
+            if !*cash_like.entry(account).or_insert_with(|| is_cash(account)) {
+                continue;
+            }
+            let entry = direct[index].entry(account).or_default();
+            for amount in &posting.amounts {
+                entry.accumulate(&amount.commodity, amount.quantity)?;
+            }
+        }
+    }
+
+    for bucket in &direct {
+        // `account_totals` prunes zero commodities in one final sweep.
+        let direct: BTreeMap<String, MixedAmount> = bucket
+            .iter()
+            .map(|(account, ma)| {
+                let mut pruned = ma.clone();
+                pruned.drop_zeros();
+                ((*account).to_string(), pruned)
+            })
+            .collect();
 
         let mut total = MixedAmount::new();
         for ma in direct.values() {
