@@ -1,0 +1,24 @@
+; RPT-1 · "reports read zero" — typed accounts that sit BELOW depth 1.
+;
+; Every account is declared with a `type:` but they all hang off a single
+; `Personal:` root that is declared nowhere and means nothing to the English
+; name heuristic. A section total summed from `depth == 1` rows reads zero here,
+; because the only depth-1 account (`Personal`) has no single effective type.
+;
+; hledger 1.52 reference (verified, `hledger -f nested-types.journal ...`):
+;   bs  Assets $1000.00 / Liabilities $200.00 / Net $800.00
+;   is  Revenues $1000.00 / Expenses $200.00 / Net $800.00
+;   bal --value=end,'$' type:AL  ->  $800.00
+
+account Personal:Checking  ; type: C
+account Personal:Card      ; type: L
+account Personal:Salary    ; type: R
+account Personal:Food      ; type: X
+
+2026-01-05 Paycheck
+    Personal:Checking      $1000.00
+    Personal:Salary       $-1000.00
+
+2026-01-10 Groceries
+    Personal:Food            $200.00
+    Personal:Card           $-200.00

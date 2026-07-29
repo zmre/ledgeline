@@ -22,24 +22,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
 use ledgeline_core::Dec;
 use ledgeline_core::holdings::{
-    Holding, HoldingsReport, HoldingsScope, HoldingsSeries, PriceSource, ScopeMode, WarningKind,
-    compute_holdings, holdings_series,
+    Holding, HoldingPrice, HoldingsPoint, HoldingsReport, HoldingsScope, HoldingsSeries,
+    HoldingsTotals, HoldingsWarning, PriceSource, ScopeMode, WarningKind, compute_holdings,
+    holdings_series, prices_any_held,
 };
-use ledgeline_core::model::Commodity;
+use ledgeline_core::model::{Commodity, Journal};
+use ledgeline_core::reports::periods;
+use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    BudgetCell, BudgetOpts, BudgetReport, Cadence, ChangeKind, ChangeRow, CostOfLiving,
-    DEFAULT_EXCLUDE_DESC, InsightsOpts, InsightsReport, Interval, MetricDelta, MixedAmount,
-    MoverRow, NetWorthOpts, PerfPoint, PeriodReport, ReportError, SectionedReport, Subscription,
-    SubscriptionOpts, SubscriptionsReport, TopTxn, account_decls, balance_sheet, budget_report,
-    cash_flow, cash_predicate, declared_types, detect_subscriptions, income_statement, insights,
-    net_worth,
+    BudgetCell, BudgetOpts, BudgetReport, BudgetRow, Cadence, ChangeKind, ChangeRow, CostOfLiving,
+    DEFAULT_EXCLUDE_DESC, InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf,
+    MetricDelta, MixedAmount, MoverRow, NetWorthOpts, PerfPoint, PeriodReport, PeriodRow,
+    ReportMeta, ReportRow, Section, SectionedReport, Subscription, SubscriptionOpts,
+    SubscriptionsReport, TopTxn, account_decls, balance_sheet, budget_report, cash_flow,
+    cash_predicate, declared_types, detect_subscriptions, income_statement, insights, net_worth,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
+use crate::error::AppError;
 
 /// Account-depth clamp default (mirrors `ReportParams` in `web/.../params.ts`).
 const DEFAULT_DEPTH: usize = 2;
@@ -49,37 +52,63 @@ const DEFAULT_COUNT: usize = 12;
 // ===========================================================================
 // Wire representation of the report result types
 // ===========================================================================
+//
+// EVERY `Wire*` struct below carries `#[serde(rename_all = "camelCase")]`,
+// including the ones whose fields are all single-word today and for which the
+// attribute is therefore a no-op (DRY-3). It is deliberately unconditional: the
+// SPA mirror in `web/src/lib/api/nativeDecode.ts` is hand-written and spells
+// every key camelCase, so a struct without the attribute is a trap that springs
+// the first time somebody adds a multi-word field — serde would emit
+// `first_seen`, the decoder would read `firstSeen`, and (for a money field) the
+// SPA would render `$0.00` with no error on either side. Adding it everywhere
+// costs nothing and removes the trap rather than documenting it.
+//
+// The `fixtures/native/v1/` goldens (`just snapshot-native`) are the other half
+// of that guard: they pin the actual bytes, and are replayed by
+// `tests/native_wire_golden.rs` and decoded by `nativeDecode.test.ts`, so a
+// renamed field fails on both sides instead of silently zeroing a report.
 
 /// An exact decimal on the wire: `mantissa / 10^places`.
+///
+/// This is the ONE `Dec` → wire encoding. It used to be written out four times
+/// (twice here, once inline inside [`wire_mixed`], and once as `edit_api`'s
+/// byte-identical `WireDecOut`); `edit_api` now serializes through this type, so
+/// the read and write wires cannot describe a decimal differently.
 #[derive(Serialize)]
-struct WireDec {
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireDec {
     /// STRING-encoded significand (see the module doc): computed values can
     /// exceed the JS safe-integer range, so a JSON number would lose precision.
     mantissa: String,
     places: u32,
 }
 
+impl From<Dec> for WireDec {
+    fn from(dec: Dec) -> Self {
+        Self {
+            mantissa: dec.mantissa.to_string(),
+            places: dec.places,
+        }
+    }
+}
+
 /// A commodity-keyed bag of exact quantities → the SPA `Map<string, Dec>`. Zero
 /// commodities are dropped, matching the engine's zero-free result contract.
+///
+/// A plain function rather than a `From` impl: both `BTreeMap` and
+/// [`MixedAmount`] are foreign types, so the orphan rule forbids the impl.
 type WireMixed = BTreeMap<String, WireDec>;
 
 fn wire_mixed(ma: &MixedAmount) -> WireMixed {
     ma.iter()
         .filter(|(_, dec)| !dec.is_zero())
-        .map(|(commodity, dec)| {
-            (
-                commodity.0.clone(),
-                WireDec {
-                    mantissa: dec.mantissa.to_string(),
-                    places: dec.places,
-                },
-            )
-        })
+        .map(|(commodity, dec)| (commodity.0.clone(), WireDec::from(*dec)))
         .collect()
 }
 
 /// One row of a sectioned report.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireReportRow {
     account: String,
     depth: usize,
@@ -87,12 +116,34 @@ struct WireReportRow {
     inclusive: WireMixed,
 }
 
+impl From<&ReportRow> for WireReportRow {
+    fn from(row: &ReportRow) -> Self {
+        Self {
+            account: row.account.clone(),
+            depth: row.depth,
+            own: wire_mixed(&row.own),
+            inclusive: wire_mixed(&row.inclusive),
+        }
+    }
+}
+
 /// A titled group of rows plus its subtree total.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireSection {
     title: String,
     rows: Vec<WireReportRow>,
     total: WireMixed,
+}
+
+impl From<&Section> for WireSection {
+    fn from(section: &Section) -> Self {
+        Self {
+            title: section.title.clone(),
+            rows: section.rows.iter().map(WireReportRow::from).collect(),
+            total: wire_mixed(&section.total),
+        }
+    }
 }
 
 /// Balance sheet / income statement.
@@ -109,49 +160,55 @@ pub(crate) struct WireSectionedReport {
     grand_total: WireMixed,
 }
 
-fn wire_sectioned(report: &SectionedReport) -> WireSectionedReport {
-    WireSectionedReport {
-        as_of: report.as_of.clone(),
-        from: report.from.clone(),
-        to: report.to.clone(),
-        sections: report
-            .sections
-            .iter()
-            .map(|section| WireSection {
-                title: section.title.clone(),
-                rows: section
-                    .rows
-                    .iter()
-                    .map(|row| WireReportRow {
-                        account: row.account.clone(),
-                        depth: row.depth,
-                        own: wire_mixed(&row.own),
-                        inclusive: wire_mixed(&row.inclusive),
-                    })
-                    .collect(),
-                total: wire_mixed(&section.total),
-            })
-            .collect(),
-        grand_total: wire_mixed(&report.grand_total),
+impl From<&SectionedReport> for WireSectionedReport {
+    fn from(report: &SectionedReport) -> Self {
+        Self {
+            as_of: report.as_of.clone(),
+            from: report.from.clone(),
+            to: report.to.clone(),
+            sections: report.sections.iter().map(WireSection::from).collect(),
+            grand_total: wire_mixed(&report.grand_total),
+        }
     }
 }
 
 /// One row of a period report: one `MixedAmount` per bucket.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WirePeriodRow {
     account: String,
     depth: usize,
     values: Vec<WireMixed>,
 }
 
+impl From<&PeriodRow> for WirePeriodRow {
+    fn from(row: &PeriodRow) -> Self {
+        Self {
+            account: row.account.clone(),
+            depth: row.depth,
+            values: row.values.iter().map(wire_mixed).collect(),
+        }
+    }
+}
+
 /// Extra result info (currently only unpriced commodities in net worth).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireReportMeta {
     unpriced: Vec<String>,
 }
 
+impl From<&ReportMeta> for WireReportMeta {
+    fn from(meta: &ReportMeta) -> Self {
+        Self {
+            unpriced: meta.unpriced.iter().map(|c| c.0.clone()).collect(),
+        }
+    }
+}
+
 /// Cash flow / net worth: one column per bucket, oldest → newest.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct WirePeriodReport {
     buckets: Vec<String>,
     rows: Vec<WirePeriodRow>,
@@ -160,22 +217,14 @@ pub(crate) struct WirePeriodReport {
     meta: Option<WireReportMeta>,
 }
 
-fn wire_period(report: &PeriodReport) -> WirePeriodReport {
-    WirePeriodReport {
-        buckets: report.buckets.clone(),
-        rows: report
-            .rows
-            .iter()
-            .map(|row| WirePeriodRow {
-                account: row.account.clone(),
-                depth: row.depth,
-                values: row.values.iter().map(wire_mixed).collect(),
-            })
-            .collect(),
-        totals: report.totals.iter().map(wire_mixed).collect(),
-        meta: report.meta.as_ref().map(|meta| WireReportMeta {
-            unpriced: meta.unpriced.iter().map(|c| c.0.clone()).collect(),
-        }),
+impl From<&PeriodReport> for WirePeriodReport {
+    fn from(report: &PeriodReport) -> Self {
+        Self {
+            buckets: report.buckets.clone(),
+            rows: report.rows.iter().map(WirePeriodRow::from).collect(),
+            totals: report.totals.iter().map(wire_mixed).collect(),
+            meta: report.meta.as_ref().map(WireReportMeta::from),
+        }
     }
 }
 
@@ -183,47 +232,56 @@ fn wire_period(report: &PeriodReport) -> WirePeriodReport {
 /// goal (e.g. `<unbudgeted>`); an empty object `{}` is a budgeted account with no
 /// goal in that bucket.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireBudgetCell {
     actual: WireMixed,
     goal: Option<WireMixed>,
 }
 
-fn wire_budget_cell(cell: &BudgetCell) -> WireBudgetCell {
-    WireBudgetCell {
-        actual: wire_mixed(&cell.actual),
-        goal: cell.goal.as_ref().map(wire_mixed),
+impl From<&BudgetCell> for WireBudgetCell {
+    fn from(cell: &BudgetCell) -> Self {
+        Self {
+            actual: wire_mixed(&cell.actual),
+            goal: cell.goal.as_ref().map(wire_mixed),
+        }
     }
 }
 
 /// One budget row: an account and its per-bucket cells.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireBudgetRow {
     account: String,
     depth: usize,
     cells: Vec<WireBudgetCell>,
 }
 
+impl From<&BudgetRow> for WireBudgetRow {
+    fn from(row: &BudgetRow) -> Self {
+        Self {
+            account: row.account.clone(),
+            depth: row.depth,
+            cells: row.cells.iter().map(WireBudgetCell::from).collect(),
+        }
+    }
+}
+
 /// A budget report: bucket keys, rows, and a grand-total row of cells.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct WireBudgetReport {
     buckets: Vec<String>,
     rows: Vec<WireBudgetRow>,
     totals: Vec<WireBudgetCell>,
 }
 
-fn wire_budget(report: &BudgetReport) -> WireBudgetReport {
-    WireBudgetReport {
-        buckets: report.buckets.clone(),
-        rows: report
-            .rows
-            .iter()
-            .map(|row| WireBudgetRow {
-                account: row.account.clone(),
-                depth: row.depth,
-                cells: row.cells.iter().map(wire_budget_cell).collect(),
-            })
-            .collect(),
-        totals: report.totals.iter().map(wire_budget_cell).collect(),
+impl From<&BudgetReport> for WireBudgetReport {
+    fn from(report: &BudgetReport) -> Self {
+        Self {
+            buckets: report.buckets.clone(),
+            rows: report.rows.iter().map(WireBudgetRow::from).collect(),
+            totals: report.totals.iter().map(WireBudgetCell::from).collect(),
+        }
     }
 }
 
@@ -244,8 +302,23 @@ struct WireInsightsPeriod {
     curr_end: String,
 }
 
+impl From<&InsightsPeriod> for WireInsightsPeriod {
+    fn from(period: &InsightsPeriod) -> Self {
+        Self {
+            start: period.start.clone(),
+            mid: period.mid.clone(),
+            end: period.end.clone(),
+            prev_start: period.prev_start.clone(),
+            prev_end: period.prev_end.clone(),
+            curr_start: period.curr_start.clone(),
+            curr_end: period.curr_end.clone(),
+        }
+    }
+}
+
 /// A current/previous metric with its exact change and a base-commodity percent.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireMetricDelta {
     current: WireMixed,
     previous: WireMixed,
@@ -253,12 +326,14 @@ struct WireMetricDelta {
     pct: Option<f64>,
 }
 
-fn wire_metric_delta(metric: &MetricDelta) -> WireMetricDelta {
-    WireMetricDelta {
-        current: wire_mixed(&metric.current),
-        previous: wire_mixed(&metric.previous),
-        delta: wire_mixed(&metric.delta),
-        pct: metric.pct,
+impl From<&MetricDelta> for WireMetricDelta {
+    fn from(metric: &MetricDelta) -> Self {
+        Self {
+            current: wire_mixed(&metric.current),
+            previous: wire_mixed(&metric.previous),
+            delta: wire_mixed(&metric.delta),
+            pct: metric.pct,
+        }
     }
 }
 
@@ -272,12 +347,14 @@ struct WireCostOfLiving {
     months_previous: u32,
 }
 
-fn wire_cost_of_living(col: &CostOfLiving) -> WireCostOfLiving {
-    WireCostOfLiving {
-        current_total: wire_mixed(&col.current_total),
-        previous_total: wire_mixed(&col.previous_total),
-        months_current: col.months_current,
-        months_previous: col.months_previous,
+impl From<&CostOfLiving> for WireCostOfLiving {
+    fn from(col: &CostOfLiving) -> Self {
+        Self {
+            current_total: wire_mixed(&col.current_total),
+            previous_total: wire_mixed(&col.previous_total),
+            months_current: col.months_current,
+            months_previous: col.months_previous,
+        }
     }
 }
 
@@ -289,15 +366,18 @@ struct WirePerfPoint {
     gain_pct: Option<f64>,
 }
 
-fn wire_perf_point(point: &PerfPoint) -> WirePerfPoint {
-    WirePerfPoint {
-        gain: wire_opt_dec(point.gain),
-        gain_pct: point.gain_pct,
+impl From<&PerfPoint> for WirePerfPoint {
+    fn from(point: &PerfPoint) -> Self {
+        Self {
+            gain: point.gain.map(WireDec::from),
+            gain_pct: point.gain_pct,
+        }
     }
 }
 
 /// A leaf-account change row (Boxes 7 & 9). `kind` is `"changed" | "new" | "ended"`.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireChangeRow {
     account: String,
     current: WireDec,
@@ -307,17 +387,19 @@ struct WireChangeRow {
     kind: &'static str,
 }
 
-fn wire_change_row(row: &ChangeRow) -> WireChangeRow {
-    WireChangeRow {
-        account: row.account.clone(),
-        current: wire_dec(row.current),
-        previous: wire_dec(row.previous),
-        delta: wire_dec(row.delta),
-        pct: row.pct,
-        kind: match row.kind {
-            ChangeKind::Changed => "changed",
-            ChangeKind::Ended => "ended",
-        },
+impl From<&ChangeRow> for WireChangeRow {
+    fn from(row: &ChangeRow) -> Self {
+        Self {
+            account: row.account.clone(),
+            current: row.current.into(),
+            previous: row.previous.into(),
+            delta: row.delta.into(),
+            pct: row.pct,
+            kind: match row.kind {
+                ChangeKind::Changed => "changed",
+                ChangeKind::Ended => "ended",
+            },
+        }
     }
 }
 
@@ -334,18 +416,21 @@ struct WireMoverRow {
     start_estimated: bool,
 }
 
-fn wire_mover(row: &MoverRow) -> WireMoverRow {
-    WireMoverRow {
-        symbol: row.symbol.clone(),
-        name: row.name.clone(),
-        gain: wire_opt_dec(row.gain),
-        gain_pct: row.gain_pct,
-        start_estimated: row.start_estimated,
+impl From<&MoverRow> for WireMoverRow {
+    fn from(row: &MoverRow) -> Self {
+        Self {
+            symbol: row.symbol.clone(),
+            name: row.name.clone(),
+            gain: row.gain.map(WireDec::from),
+            gain_pct: row.gain_pct,
+            start_estimated: row.start_estimated,
+        }
     }
 }
 
 /// A top-transaction row (Box 10).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireTopTxn {
     index: u32,
     date: String,
@@ -353,12 +438,14 @@ struct WireTopTxn {
     amount: WireDec,
 }
 
-fn wire_top_txn(txn: &TopTxn) -> WireTopTxn {
-    WireTopTxn {
-        index: txn.index,
-        date: txn.date.clone(),
-        description: txn.description.clone(),
-        amount: wire_dec(txn.amount),
+impl From<&TopTxn> for WireTopTxn {
+    fn from(txn: &TopTxn) -> Self {
+        Self {
+            index: txn.index,
+            date: txn.date.clone(),
+            description: txn.description.clone(),
+            amount: txn.amount.into(),
+        }
     }
 }
 
@@ -381,41 +468,58 @@ pub(crate) struct WireInsightsReport {
     revenue_changes: Vec<WireChangeRow>,
     movers: Vec<WireMoverRow>,
     top_txns: Vec<WireTopTxn>,
+    /// Commodities the valuation had to skip, exactly as `/api/reports/networth`
+    /// reports them. Without it the dashboard showed an UNDERSTATED net worth
+    /// with no indication at all, while the net-worth endpoint warned about the
+    /// same journal (DRY-5). Omitted when nothing is unpriced, so a clean
+    /// journal's payload is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    meta: Option<WireReportMeta>,
 }
 
 /// Investment performance for both periods.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireInvestmentPerf {
     current: WirePerfPoint,
     previous: WirePerfPoint,
 }
 
-fn wire_insights(report: &InsightsReport) -> WireInsightsReport {
-    WireInsightsReport {
-        period: WireInsightsPeriod {
-            start: report.period.start.clone(),
-            mid: report.period.mid.clone(),
-            end: report.period.end.clone(),
-            prev_start: report.period.prev_start.clone(),
-            prev_end: report.period.prev_end.clone(),
-            curr_start: report.period.curr_start.clone(),
-            curr_end: report.period.curr_end.clone(),
-        },
-        base: report.base.clone(),
-        journal_start: report.journal_start.clone(),
-        revenue: wire_metric_delta(&report.revenue),
-        expenses: wire_metric_delta(&report.expenses),
-        net_worth: wire_metric_delta(&report.net_worth),
-        cost_of_living: wire_cost_of_living(&report.cost_of_living),
-        investment: WireInvestmentPerf {
-            current: wire_perf_point(&report.investment.current),
-            previous: wire_perf_point(&report.investment.previous),
-        },
-        cash_balance: wire_metric_delta(&report.cash_balance),
-        expense_changes: report.expense_changes.iter().map(wire_change_row).collect(),
-        revenue_changes: report.revenue_changes.iter().map(wire_change_row).collect(),
-        movers: report.movers.iter().map(wire_mover).collect(),
-        top_txns: report.top_txns.iter().map(wire_top_txn).collect(),
+impl From<&InvestmentPerf> for WireInvestmentPerf {
+    fn from(perf: &InvestmentPerf) -> Self {
+        Self {
+            current: (&perf.current).into(),
+            previous: (&perf.previous).into(),
+        }
+    }
+}
+
+impl From<&InsightsReport> for WireInsightsReport {
+    fn from(report: &InsightsReport) -> Self {
+        Self {
+            period: (&report.period).into(),
+            base: report.base.clone(),
+            journal_start: report.journal_start.clone(),
+            revenue: (&report.revenue).into(),
+            expenses: (&report.expenses).into(),
+            net_worth: (&report.net_worth).into(),
+            cost_of_living: (&report.cost_of_living).into(),
+            investment: (&report.investment).into(),
+            cash_balance: (&report.cash_balance).into(),
+            expense_changes: report
+                .expense_changes
+                .iter()
+                .map(WireChangeRow::from)
+                .collect(),
+            revenue_changes: report
+                .revenue_changes
+                .iter()
+                .map(WireChangeRow::from)
+                .collect(),
+            movers: report.movers.iter().map(WireMoverRow::from).collect(),
+            top_txns: report.top_txns.iter().map(WireTopTxn::from).collect(),
+            meta: report.meta.as_ref().map(WireReportMeta::from),
+        }
     }
 }
 
@@ -440,21 +544,23 @@ struct WireSubscription {
     manual: bool,
 }
 
-fn wire_subscription(subscription: &Subscription) -> WireSubscription {
-    WireSubscription {
-        payee: subscription.payee.clone(),
-        cadence: match subscription.cadence {
-            Cadence::Monthly => "monthly",
-            Cadence::Annual => "annual",
-        },
-        typical_amount: wire_dec(subscription.typical_amount),
-        annualized_cost: wire_dec(subscription.annualized_cost),
-        occurrences: subscription.occurrences,
-        first_seen: subscription.first_seen.clone(),
-        last_seen: subscription.last_seen.clone(),
-        next_expected: subscription.next_expected.clone(),
-        accounts: subscription.accounts.clone(),
-        manual: subscription.manual,
+impl From<&Subscription> for WireSubscription {
+    fn from(subscription: &Subscription) -> Self {
+        Self {
+            payee: subscription.payee.clone(),
+            cadence: match subscription.cadence {
+                Cadence::Monthly => "monthly",
+                Cadence::Annual => "annual",
+            },
+            typical_amount: subscription.typical_amount.into(),
+            annualized_cost: subscription.annualized_cost.into(),
+            occurrences: subscription.occurrences,
+            first_seen: subscription.first_seen.clone(),
+            last_seen: subscription.last_seen.clone(),
+            next_expected: subscription.next_expected.clone(),
+            accounts: subscription.accounts.clone(),
+            manual: subscription.manual,
+        }
     }
 }
 
@@ -468,12 +574,14 @@ pub(crate) struct WireSubscriptionsReport {
     annual: Vec<WireSubscription>,
 }
 
-fn wire_subscriptions(report: &SubscriptionsReport) -> WireSubscriptionsReport {
-    WireSubscriptionsReport {
-        as_of: report.as_of.clone(),
-        lookback_start: report.lookback_start.clone(),
-        monthly: report.monthly.iter().map(wire_subscription).collect(),
-        annual: report.annual.iter().map(wire_subscription).collect(),
+impl From<&SubscriptionsReport> for WireSubscriptionsReport {
+    fn from(report: &SubscriptionsReport) -> Self {
+        Self {
+            as_of: report.as_of.clone(),
+            lookback_start: report.lookback_start.clone(),
+            monthly: report.monthly.iter().map(WireSubscription::from).collect(),
+            annual: report.annual.iter().map(WireSubscription::from).collect(),
+        }
     }
 }
 
@@ -481,24 +589,27 @@ fn wire_subscriptions(report: &SubscriptionsReport) -> WireSubscriptionsReport {
 // Wire representation of the holdings result types
 // ===========================================================================
 
-fn wire_dec(dec: Dec) -> WireDec {
-    WireDec {
-        mantissa: dec.mantissa.to_string(),
-        places: dec.places,
-    }
-}
-
-fn wire_opt_dec(dec: Option<Dec>) -> Option<WireDec> {
-    dec.map(wire_dec)
-}
-
 /// A holding's resolved price → `{qty, date, source}` (`source` kebab-free:
 /// `"directive"` | `"cost"`).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireHoldingPrice {
     qty: WireDec,
     date: String,
     source: &'static str,
+}
+
+impl From<&HoldingPrice> for WireHoldingPrice {
+    fn from(price: &HoldingPrice) -> Self {
+        Self {
+            qty: price.qty.into(),
+            date: price.date.clone(),
+            source: match price.source {
+                PriceSource::Directive => "directive",
+                PriceSource::Cost => "cost",
+            },
+        }
+    }
 }
 
 /// One holding row. Null-valued keys (basis/price/gain/…) are kept (not omitted),
@@ -518,35 +629,45 @@ struct WireHolding {
     gain_pct: Option<f64>,
 }
 
-fn wire_holding(holding: &Holding) -> WireHolding {
-    WireHolding {
-        symbol: holding.symbol.clone(),
-        name: holding.name.clone(),
-        accounts: holding.accounts.clone(),
-        shares: wire_dec(holding.shares),
-        basis: wire_opt_dec(holding.basis),
-        first_basis_date: holding.first_basis_date.clone(),
-        price: holding.price.as_ref().map(|price| WireHoldingPrice {
-            qty: wire_dec(price.qty),
-            date: price.date.clone(),
-            source: match price.source {
-                PriceSource::Directive => "directive",
-                PriceSource::Cost => "cost",
-            },
-        }),
-        market_value: wire_opt_dec(holding.market_value),
-        gain: wire_opt_dec(holding.gain),
-        gain_pct: holding.gain_pct,
+impl From<&Holding> for WireHolding {
+    fn from(holding: &Holding) -> Self {
+        Self {
+            symbol: holding.symbol.clone(),
+            name: holding.name.clone(),
+            accounts: holding.accounts.clone(),
+            shares: holding.shares.into(),
+            basis: holding.basis.map(WireDec::from),
+            first_basis_date: holding.first_basis_date.clone(),
+            price: holding.price.as_ref().map(WireHoldingPrice::from),
+            market_value: holding.market_value.map(WireDec::from),
+            gain: holding.gain.map(WireDec::from),
+            gain_pct: holding.gain_pct,
+        }
     }
 }
 
 /// A scope-local warning → `{symbol, kind, message}` (`kind` kebab-case, matching
 /// the TS union: `"missing-basis"` | `"negative-shares"` | `"unpriced"`).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WireWarning {
     symbol: String,
     kind: &'static str,
     message: String,
+}
+
+impl From<&HoldingsWarning> for WireWarning {
+    fn from(warning: &HoldingsWarning) -> Self {
+        Self {
+            symbol: warning.symbol.clone(),
+            kind: match warning.kind {
+                WarningKind::MissingBasis => "missing-basis",
+                WarningKind::NegativeShares => "negative-shares",
+                WarningKind::Unpriced => "unpriced",
+            },
+            message: warning.message.clone(),
+        }
+    }
 }
 
 /// Portfolio totals: `marketValue` always present; `basis`/`gain`/`gainPct`
@@ -558,6 +679,17 @@ struct WireHoldingsTotals {
     basis: Option<WireDec>,
     gain: Option<WireDec>,
     gain_pct: Option<f64>,
+}
+
+impl From<&HoldingsTotals> for WireHoldingsTotals {
+    fn from(totals: &HoldingsTotals) -> Self {
+        Self {
+            market_value: totals.market_value.into(),
+            basis: totals.basis.map(WireDec::from),
+            gain: totals.gain.map(WireDec::from),
+            gain_pct: totals.gain_pct,
+        }
+    }
 }
 
 /// The full holdings report.
@@ -573,32 +705,17 @@ pub(crate) struct WireHoldingsReport {
     warnings: Vec<WireWarning>,
 }
 
-fn wire_holdings(report: &HoldingsReport) -> WireHoldingsReport {
-    WireHoldingsReport {
-        as_of: report.as_of.clone(),
-        base: report.base.clone(),
-        holdings: report.holdings.iter().map(wire_holding).collect(),
-        totals: WireHoldingsTotals {
-            market_value: wire_dec(report.totals.market_value),
-            basis: wire_opt_dec(report.totals.basis),
-            gain: wire_opt_dec(report.totals.gain),
-            gain_pct: report.totals.gain_pct,
-        },
-        top_gainers: report.top_gainers.iter().map(wire_holding).collect(),
-        top_losers: report.top_losers.iter().map(wire_holding).collect(),
-        warnings: report
-            .warnings
-            .iter()
-            .map(|warning| WireWarning {
-                symbol: warning.symbol.clone(),
-                kind: match warning.kind {
-                    WarningKind::MissingBasis => "missing-basis",
-                    WarningKind::NegativeShares => "negative-shares",
-                    WarningKind::Unpriced => "unpriced",
-                },
-                message: warning.message.clone(),
-            })
-            .collect(),
+impl From<&HoldingsReport> for WireHoldingsReport {
+    fn from(report: &HoldingsReport) -> Self {
+        Self {
+            as_of: report.as_of.clone(),
+            base: report.base.clone(),
+            holdings: report.holdings.iter().map(WireHolding::from).collect(),
+            totals: (&report.totals).into(),
+            top_gainers: report.top_gainers.iter().map(WireHolding::from).collect(),
+            top_losers: report.top_losers.iter().map(WireHolding::from).collect(),
+            warnings: report.warnings.iter().map(WireWarning::from).collect(),
+        }
     }
 }
 
@@ -613,6 +730,18 @@ struct WireHoldingsPoint {
     basis: Option<WireDec>,
 }
 
+impl From<&HoldingsPoint> for WireHoldingsPoint {
+    fn from(point: &HoldingsPoint) -> Self {
+        Self {
+            date: point.date.clone(),
+            bucket: point.bucket.clone(),
+            label: point.label.clone(),
+            market_value: point.market_value.into(),
+            basis: point.basis.map(WireDec::from),
+        }
+    }
+}
+
 /// The holdings-over-time series.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -622,21 +751,13 @@ pub(crate) struct WireHoldingsSeries {
     has_basis: bool,
 }
 
-fn wire_holdings_series(series: &HoldingsSeries) -> WireHoldingsSeries {
-    WireHoldingsSeries {
-        base: series.base.clone(),
-        points: series
-            .points
-            .iter()
-            .map(|point| WireHoldingsPoint {
-                date: point.date.clone(),
-                bucket: point.bucket.clone(),
-                label: point.label.clone(),
-                market_value: wire_dec(point.market_value),
-                basis: wire_opt_dec(point.basis),
-            })
-            .collect(),
-        has_basis: series.has_basis,
+impl From<&HoldingsSeries> for WireHoldingsSeries {
+    fn from(series: &HoldingsSeries) -> Self {
+        Self {
+            base: series.base.clone(),
+            points: series.points.iter().map(WireHoldingsPoint::from).collect(),
+            has_basis: series.has_basis,
+        }
     }
 }
 
@@ -654,29 +775,15 @@ fn today_utc() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| (elapsed.as_secs() / 86_400) as i64)
         .unwrap_or(0);
-    let (year, month, day) = civil_from_days(days);
-    format!("{year:04}-{month:02}-{day:02}")
-}
-
-/// Howard Hinnant's `civil_from_days` (day 0 = 1970-01-01) — a dependency-free
-/// proleptic-Gregorian conversion, used solely for the "today" default.
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe.div_euclid(1_460) + doe.div_euclid(36_524) - doe.div_euclid(146_096))
-        .div_euclid(365);
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe.div_euclid(4) - yoe.div_euclid(100));
-    let mp = (5 * doy + 2).div_euclid(153);
-    let day = doy - (153 * mp + 2).div_euclid(5) + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    (year + i64::from(month <= 2), month, day)
+    // The calendar itself lives in `reports::periods` — this file used to carry a
+    // verbatim copy of Howard Hinnant's `civil_from_days` (DRY-2). The clock read
+    // stays here, because `reports` is deliberately clock-free.
+    periods::iso_from_days(days)
 }
 
 /// Parse a report interval, defaulting to monthly when absent. Returns a `400`
-/// tuple for an unrecognized value.
-fn parse_interval(raw: Option<&str>) -> Result<Interval, ApiError> {
+/// for an unrecognized value.
+fn parse_interval(raw: Option<&str>) -> Result<Interval, AppError> {
     match raw {
         None => Ok(Interval::Monthly),
         Some("daily") => Ok(Interval::Daily),
@@ -684,24 +791,263 @@ fn parse_interval(raw: Option<&str>) -> Result<Interval, ApiError> {
         Some("monthly") => Ok(Interval::Monthly),
         Some("quarterly") => Ok(Interval::Quarterly),
         Some("yearly") => Ok(Interval::Yearly),
-        Some(other) => Err((
-            StatusCode::BAD_REQUEST,
-            format!("unknown interval '{other}' (expected daily|weekly|monthly|quarterly|yearly)"),
-        )),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "unknown interval '{other}' (expected daily|weekly|monthly|quarterly|yearly)"
+        ))),
+    }
+}
+
+/// Validate a bucket count, defaulting to [`DEFAULT_COUNT`] when absent. Returns
+/// a `400` for anything outside `1..=MAX_BUCKETS`.
+///
+/// This REJECTS rather than clamps, deliberately. `count` drives how many
+/// periods a chart plots, so silently turning `count=1000000` into 1200 would
+/// answer a question the caller did not ask with a plausible-looking chart —
+/// exactly the "displays a plausible number instead of an error" failure mode
+/// this review is against. `count=0` is likewise a caller bug, not a request for
+/// an empty chart. A 400 with the accepted range is the honest answer, and it
+/// matches [`parse_interval`]'s established handling of an unrecognized value.
+///
+/// Note `count` deserializes as `usize`, so a negative or non-integer value is
+/// already rejected by serde as a `400` before reaching here; this covers the
+/// in-range-for-`usize`-but-nonsensical values (`0`, `u64::MAX`) that reached
+/// `Vec::with_capacity` and aborted the request with a `capacity overflow`
+/// panic. See SEC-2.
+fn parse_count(raw: Option<usize>) -> Result<usize, AppError> {
+    match raw {
+        None => Ok(DEFAULT_COUNT),
+        Some(count) if (1..=MAX_BUCKETS).contains(&count) => Ok(count),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "count {other} is out of range (expected 1..={MAX_BUCKETS})"
+        ))),
+    }
+}
+
+/// Validate one date and normalize it to ISO `YYYY-MM-DD`, or return the reason
+/// it is not a date. [`parse_date`] wraps the reason in a `400`.
+///
+/// **Why this has to exist (RPT-4).** The whole report engine orders and windows
+/// dates by comparing the strings themselves (`reports::aggregate`,
+/// `reports::periods`), which is only chronological because every date it has
+/// ever seen came out of the journal parser as a fixed-width `YYYY-MM-DD`. A
+/// query param bypassed that parser entirely, so a hand-typed `?end=2026-7-1`
+/// stayed `"2026-7-1"` — a string that sorts ABOVE `"2026-12-31"` and whose
+/// month slice is `"7-"`, i.e. bucket `2026-00`. Nothing errored: the balance
+/// sheet quietly served the all-time total, the period reports grew a garbage
+/// trailing bucket, and `?asOf=` (empty) sorted below everything and served an
+/// empty report with a `200`. Validating the shape here restores the invariant
+/// the engine assumes rather than teaching every comparison to distrust it.
+///
+/// **What is accepted** is exactly what hledger's own `-b`/`-e` accept, verified
+/// against `hledger 1.52`: a four-digit year, `-`, `/` or `.` separators, and
+/// unpadded month/day components. `2026-7-1`, `2026/7/1` and `2026.7.1` all
+/// normalize to `2026-07-01` — the same normalization Ledgeline's journal parser
+/// (`parse::normalize_date`) already applies to journal dates, so a date that is
+/// legal INSIDE a journal is also legal in a URL, and a URL answer agrees with
+/// `hledger -e <same-date>`. hledger rejects `26-07-01`, `2026-13-01`,
+/// `2026-02-30` and `garbage`; so do we.
+fn normalize_iso_date(raw: &str) -> Result<String, String> {
+    const SHAPE: &str = "expected YYYY-MM-DD (a four-digit year, then month and day, \
+                         separated by `-`, `/` or `.`)";
+
+    let parts: Vec<&str> = raw.split(['-', '/', '.']).collect();
+    let [year_src, month_src, day_src] = parts[..] else {
+        return Err(SHAPE.to_string());
+    };
+    // Digits only, and width-checked: a 4-digit year is what keeps the ISO form
+    // fixed-width, which is what makes the engine's lexical ordering correct.
+    let component = |src: &str, widths: std::ops::RangeInclusive<usize>| -> Option<i32> {
+        (widths.contains(&src.len()) && src.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| src.parse().ok())
+            .flatten()
+    };
+    let (Some(year), Some(month), Some(day)) = (
+        component(year_src, 4..=4),
+        component(month_src, 1..=2),
+        component(day_src, 1..=2),
+    ) else {
+        return Err(SHAPE.to_string());
+    };
+    // The day must be valid FOR ITS MONTH: `2026-02-30` and `2023-02-29` are
+    // shaped like dates but are not dates, and hledger rejects both. Mirrors the
+    // PARSE-6 check the journal parser applies (`parse::normalize_date`).
+    if !(1..=12).contains(&month) {
+        return Err(format!("there is no month {month}"));
+    }
+    if !(1..=days_in_month(year, month)).contains(&day) {
+        return Err(format!(
+            "month {month:02} of {year:04} has no day {day} (it has {})",
+            days_in_month(year, month)
+        ));
+    }
+    Ok(format!("{year:04}-{month:02}-{day:02}"))
+}
+
+/// The number of days in `month` (1-12) of `year`.
+///
+/// Duplicated from `ledgeline_core::parse` (and, in `i64`, from
+/// `reports::periods`) only because both copies are private to their modules and
+/// neither crate exports a date validator. Folding all three into one place is
+/// the `IsoDate` newtype of DRY-2; this copy is confined to the HTTP boundary
+/// until then.
+fn days_in_month(year: i32, month: i32) -> i32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// The proleptic Gregorian leap-year rule hledger's `Data.Time` calendar uses.
+fn is_leap_year(year: i32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+/// Validate `raw` as an ISO date, naming `field` in the `400` message.
+fn checked_date(field: &str, raw: &str) -> Result<String, AppError> {
+    normalize_iso_date(raw)
+        .map_err(|reason| AppError::BadRequest(format!("invalid {field} date '{raw}': {reason}")))
+}
+
+/// Validate a date param, falling back to `default` when it is absent.
+///
+/// An EXPLICIT but malformed value — including an explicit empty one, which used
+/// to sort below every real date and produce an empty report — is a `400`,
+/// matching [`parse_interval`] and [`parse_count`]: the caller asked a question
+/// we cannot answer, and a report for some other date is not the answer. (The
+/// SPA's `queryString` omits empty params rather than sending them, so this
+/// costs it nothing.)
+fn parse_date(
+    field: &str,
+    raw: Option<String>,
+    default: impl FnOnce() -> String,
+) -> Result<String, AppError> {
+    match raw {
+        None => Ok(default()),
+        Some(value) => checked_date(field, &value),
+    }
+}
+
+/// Validate an OPTIONAL date param, where absent AND empty both mean `None`.
+///
+/// Only `gainSince` uses this: an empty `gainSince` is its documented sentinel
+/// for "all-time gain" (see [`holdings`]), so unlike the defaulted params above
+/// an empty value here is a real request, not a malformed date.
+fn parse_opt_date(field: &str, raw: Option<String>) -> Result<Option<String>, AppError> {
+    match raw.filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(value) => checked_date(field, &value).map(Some),
+    }
+}
+
+/// The "biggest change" floor used when `changeMin` is absent: $10 in the base
+/// commodity.
+const DEFAULT_CHANGE_MIN: Dec = Dec::new(1000, 2);
+
+/// Validate a `changeMin` magnitude, defaulting to [`DEFAULT_CHANGE_MIN`] when
+/// absent or empty. Returns a `400` for anything [`Dec::parse`] rejects.
+///
+/// This REJECTS rather than falling back, for the same reason as [`parse_count`]:
+/// `changeMin` is the floor that decides which rows appear in the "biggest
+/// change" boxes, so quietly substituting $10 for a value the caller wrote (say
+/// `changeMin=$500`, or a comma-decimal `changeMin=500,00`) answers a different
+/// question with a shorter, plausible-looking list and no way to tell.
+///
+/// Note the decimal mark is `.`, so `,`/`_`/space are digit-group separators —
+/// `changeMin=1,000` is a well-formed 1000 and stays accepted.
+fn parse_change_min(raw: Option<&str>) -> Result<Dec, AppError> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(DEFAULT_CHANGE_MIN),
+        Some(value) => Dec::parse(value, '.')
+            .map_err(|err| AppError::BadRequest(format!("invalid changeMin '{value}': {err}"))),
     }
 }
 
 /// Parse a holdings scope mode, defaulting to `include` when absent. Returns a
-/// `400` tuple for an unrecognized value.
-fn parse_mode(raw: Option<&str>) -> Result<ScopeMode, ApiError> {
+/// `400` for an unrecognized value.
+fn parse_mode(raw: Option<&str>) -> Result<ScopeMode, AppError> {
     match raw {
         None | Some("include") => Ok(ScopeMode::Include),
         Some("exclude") => Ok(ScopeMode::Exclude),
-        Some(other) => Err((
-            StatusCode::BAD_REQUEST,
-            format!("unknown mode '{other}' (expected include|exclude)"),
-        )),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "unknown mode '{other}' (expected include|exclude)"
+        ))),
     }
+}
+
+/// Resolve the commodity a holdings request is valued in, in precedence order:
+/// the explicit `valueIn` param, then the journal's own `D` default-commodity
+/// directive, then `None` — which hands the choice to the engine (see
+/// `holdings::valuation_base`, which picks the candidate that actually prices
+/// the portfolio).
+///
+/// An explicit `valueIn` that prices NONE of the in-scope holdings is a `400`,
+/// matching [`parse_interval`]/[`parse_count`]/[`parse_date`]: a typo, or a real
+/// commodity with no route to the portfolio, would otherwise be answered with an
+/// all-zero total and one `unpriced` warning per row — a plausible-looking
+/// number in place of an error, which is exactly the failure HOLD-3 is about.
+///
+/// The `D` fallback is held to the same test but DEMOTED rather than rejected:
+/// nobody asked for it on this request, so a journal whose declared commodity
+/// happens not to price its securities falls through to the engine's own choice
+/// instead of being refused. `scope` is the request's scope with `value_in` not
+/// yet filled in; only its accounts/mode/`as_of` are read.
+fn resolve_value_in(
+    journal: &Journal,
+    scope: &HoldingsScope,
+    raw: Option<&str>,
+) -> Result<Option<Commodity>, AppError> {
+    let prices_anything = |target: &Commodity| -> Result<bool, AppError> {
+        Ok(prices_any_held(
+            &journal.transactions,
+            &journal.prices,
+            &journal.accounts,
+            scope,
+            target,
+        )?)
+    };
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(symbol) => {
+            let target = Commodity(symbol.to_string());
+            if prices_anything(&target)? {
+                Ok(Some(target))
+            } else {
+                Err(AppError::BadRequest(format!(
+                    "cannot value these holdings in '{symbol}': no price directive or cost \
+                     annotation connects any holding in scope to it"
+                )))
+            }
+        }
+        None => match journal.default_commodity.clone() {
+            Some(declared) if prices_anything(&declared)? => Ok(Some(declared)),
+            _ => Ok(None),
+        },
+    }
+}
+
+/// The scope shared by `/api/holdings` and `/api/holdings/series`: the same
+/// account selection, date and valuation commodity, validated the same way.
+fn holdings_scope(
+    journal: &Journal,
+    accounts: Option<&str>,
+    mode: Option<&str>,
+    as_of: Option<String>,
+    gain_since: Option<String>,
+    value_in: Option<&str>,
+) -> Result<HoldingsScope, AppError> {
+    let scope = HoldingsScope {
+        accounts: parse_accounts(accounts),
+        mode: parse_mode(mode)?,
+        as_of: parse_date("asOf", as_of, today_utc)?,
+        gain_since: parse_opt_date("gainSince", gain_since)?,
+        value_in: None,
+    };
+    Ok(HoldingsScope {
+        value_in: resolve_value_in(journal, &scope, value_in)?,
+        ..scope
+    })
 }
 
 /// Split a comma-separated `accounts` param into a set of subtree roots, trimming
@@ -742,25 +1088,50 @@ fn parse_csv(raw: Option<&str>, defaults: &[&str]) -> Vec<String> {
 /// The default comparison-span start when the request omits `start`: the first
 /// day of the month 24 months before `end` (a trailing two-year "Year-over-
 /// year" window). The SPA normally sends explicit month-aligned dates.
+///
+/// This was a third copy of the month-index arithmetic, with its OWN malformed-
+/// date fallback (`1970`/`1`, where `periods::parts` falls back to `0`). The
+/// fallback is unreachable — `end` has already been through `parse_date` →
+/// `normalize_iso_date`, so a malformed value is a 400 and the default is
+/// `today_utc()` — so unforking it costs nothing and removes the divergence.
 fn default_insights_start(end: &str) -> String {
-    let year: i64 = end.get(0..4).and_then(|s| s.parse().ok()).unwrap_or(1970);
-    let month: i64 = end.get(5..7).and_then(|s| s.parse().ok()).unwrap_or(1);
-    let index = year * 12 + (month - 1) - 24;
-    let start_year = index.div_euclid(12);
-    let start_month = index.rem_euclid(12) + 1;
-    format!("{start_year:04}-{start_month:02}-01")
+    format!("{}-01", &periods::add_months(end, -24)[..7])
 }
 
-/// An HTTP error: a status plus a human-readable message.
-type ApiError = (StatusCode, String);
+/// The `end`/`interval`/`count`/`depth` window shared by the three bucketed
+/// reports (`cashflow`, `networth`, `budget`), resolved and validated once.
+///
+/// The query STRUCTS stay separate and flat on purpose. The obvious collapse —
+/// one `Window` struct `#[serde(flatten)]`ed into each query — does not work
+/// here: `axum::extract::Query` deserializes through `serde_urlencoded`, and
+/// `flatten` forces every value through serde's internal `Content` buffer,
+/// which for urlencoded input is always a string. `?depth=2` then fails with
+/// `invalid type: string "2", expected usize`, turning five working endpoints
+/// into `400`s. (Verified against `serde_urlencoded 0.7.1`; the golden fixtures
+/// pin `depth=`/`count=`, so the suite catches it — but the deduplication has to
+/// happen on THIS side of the extractor, not in the derive.)
+#[derive(Debug)]
+struct Window {
+    end: String,
+    interval: Interval,
+    count: usize,
+    depth: usize,
+}
 
-/// Map a report-engine error onto an HTTP status: a bad bucket key is a client
-/// error (`400`); a decimal overflow is an internal error (`500`). Both are
-/// unreachable for realistic journals, but neither is unwrapped.
-fn report_error(err: &ReportError) -> ApiError {
-    match err {
-        ReportError::InvalidBucketKey(_) => (StatusCode::BAD_REQUEST, err.to_string()),
-        ReportError::Decimal(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+impl Window {
+    /// Validate the four params together, in the order the handlers used to.
+    fn resolve(
+        end: Option<String>,
+        interval: Option<&str>,
+        count: Option<usize>,
+        depth: Option<usize>,
+    ) -> Result<Self, AppError> {
+        Ok(Self {
+            end: parse_date("end", end, today_utc)?,
+            interval: parse_interval(interval)?,
+            count: parse_count(count)?,
+            depth: depth.unwrap_or(DEFAULT_DEPTH),
+        })
     }
 }
 
@@ -845,13 +1216,17 @@ pub(crate) struct SubscriptionsQuery {
     exclude_desc: Option<String>,
 }
 
-/// `?asOf=&accounts=&mode=&gainSince=` — holdings snapshot.
+/// `?asOf=&accounts=&mode=&gainSince=&valueIn=` — holdings snapshot.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HoldingsQuery {
     as_of: Option<String>,
     accounts: Option<String>,
     mode: Option<String>,
+    /// Commodity to value the portfolio in (e.g. `$`, `EUR`), overriding both
+    /// the journal's `D` directive and the engine's own choice. See
+    /// [`resolve_value_in`].
+    value_in: Option<String>,
     /// Gain-measurement window start (`YYYY-MM-DD`). Absent/empty = all-time
     /// average-cost gain (unchanged). When set, `gain`/`gainPct` (and totals +
     /// gainers/losers) become `marketValue(asOf) − valueAtStart`; `basis` stays
@@ -859,7 +1234,7 @@ pub(crate) struct HoldingsQuery {
     gain_since: Option<String>,
 }
 
-/// `?asOf=&accounts=&mode=&interval=&count=` — holdings trend.
+/// `?asOf=&accounts=&mode=&interval=&count=&valueIn=` — holdings trend.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HoldingsSeriesQuery {
@@ -868,42 +1243,101 @@ pub(crate) struct HoldingsSeriesQuery {
     mode: Option<String>,
     interval: Option<String>,
     count: Option<usize>,
+    /// Commodity to value the trend in. Same contract as [`HoldingsQuery`]'s,
+    /// and validated against the same scope, so the chart and the table beside
+    /// it can never end up in different commodities.
+    value_in: Option<String>,
 }
 
 // ===========================================================================
 // Handlers
 // ===========================================================================
 
+/// How many report computations may run at once.
+///
+/// The report engine is synchronous and CPU-bound, so this is really "how many
+/// cores may a pile of open tabs claim". Without a ceiling, N tabs each polling
+/// `/api/holdings/series` spawn N blocking threads, and at 200k transactions
+/// each one wants a core and hundreds of megabytes. The tokio *worker* threads
+/// are protected by `spawn_blocking` alone; this is what keeps the machine
+/// responsive as well.
+fn report_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+        tokio::sync::Semaphore::new(cores)
+    })
+}
+
+/// Run one report on the blocking pool and wrap the result as JSON (PERF-3).
+///
+/// Every handler below calls straight into the synchronous engine, which at 200k
+/// transactions is 0.5–1.6 seconds of solid CPU. Run directly on a tokio worker
+/// that blocks the whole runtime — 20 concurrent `/api/holdings/series` made a
+/// trivial `/version` take 1,051 ms instead of 0.3 ms, and because the desktop
+/// GUI hosts this runtime in-process, it stalls the app rather than merely an
+/// API. `spawn_blocking` moves the work to the blocking pool, where blocking is
+/// what the threads are for.
+///
+/// A panic inside `job` arrives here as a `JoinError` rather than unwinding
+/// through `CatchPanicLayer`, so it is mapped to the same `500` that layer would
+/// have produced (SEC-2: a panic must never drop the connection).
+async fn compute<T, F>(job: F) -> Result<Json<T>, AppError>
+where
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+    T: Send + 'static,
+{
+    let Ok(_permit) = report_slots().acquire().await else {
+        return Err(AppError::Unavailable(
+            "the report scheduler is shutting down".to_string(),
+        ));
+    };
+    match tokio::task::spawn_blocking(job).await {
+        Ok(result) => result.map(Json),
+        Err(error) => Err(AppError::Internal(format!(
+            "the report task failed: {error}"
+        ))),
+    }
+}
+
 /// `GET /api/reports/balancesheet` — assets + liabilities as of a date.
 pub(crate) async fn balancesheet(
     State(state): State<AppState>,
     Query(query): Query<BalanceSheetQuery>,
-) -> Result<Json<WireSectionedReport>, ApiError> {
+) -> Result<Json<WireSectionedReport>, AppError> {
     let snapshot = state.snapshot();
-    let as_of = query.as_of.unwrap_or_else(today_utc);
+    let as_of = parse_date("asOf", query.as_of, today_utc)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
-    let declared = declared_types(&account_decls(&snapshot.journal));
-    let report = balance_sheet(&snapshot.journal.transactions, &as_of, depth, &declared)
-        .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_sectioned(&report)))
+    compute(move || {
+        let declared = declared_types(&account_decls(&snapshot.journal));
+        let report = balance_sheet(&snapshot.journal.transactions, &as_of, depth, &declared)?;
+        Ok(WireSectionedReport::from(&report))
+    })
+    .await
 }
 
 /// `GET /api/reports/incomestatement` — revenues + expenses over a range.
 pub(crate) async fn incomestatement(
     State(state): State<AppState>,
     Query(query): Query<IncomeStatementQuery>,
-) -> Result<Json<WireSectionedReport>, ApiError> {
+) -> Result<Json<WireSectionedReport>, AppError> {
     let snapshot = state.snapshot();
     let today = today_utc();
-    let from = query
-        .from
-        .unwrap_or_else(|| format!("{}-01-01", &today[..4]));
-    let to = query.to.unwrap_or(today);
+    // `bucket_start(bucket_key(today, Yearly))`, not `&today[..4]`: a raw byte
+    // slice of a date string is the shape DRY-2 exists to stop, and it would
+    // panic rather than degrade on a short input.
+    let from = parse_date("from", query.from, || {
+        format!("{}-01-01", periods::bucket_key(&today, Interval::Yearly))
+    })?;
+    let to = parse_date("to", query.to, || today)?;
     let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
-    let declared = declared_types(&account_decls(&snapshot.journal));
-    let report = income_statement(&snapshot.journal.transactions, &from, &to, depth, &declared)
-        .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_sectioned(&report)))
+    compute(move || {
+        let declared = declared_types(&account_decls(&snapshot.journal));
+        let report =
+            income_statement(&snapshot.journal.transactions, &from, &to, depth, &declared)?;
+        Ok(WireSectionedReport::from(&report))
+    })
+    .await
 }
 
 /// `GET /api/reports/cashflow` — per-bucket cash-like-asset changes. The cash
@@ -911,26 +1345,30 @@ pub(crate) async fn incomestatement(
 pub(crate) async fn cashflow(
     State(state): State<AppState>,
     Query(query): Query<CashFlowQuery>,
-) -> Result<Json<WirePeriodReport>, ApiError> {
+) -> Result<Json<WirePeriodReport>, AppError> {
     let snapshot = state.snapshot();
-    let end = query.end.unwrap_or_else(today_utc);
-    let interval = parse_interval(query.interval.as_deref())?;
-    let count = query.count.unwrap_or(DEFAULT_COUNT);
-    let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
+    let window = Window::resolve(
+        query.end,
+        query.interval.as_deref(),
+        query.count,
+        query.depth,
+    )?;
 
-    let decls = account_decls(&snapshot.journal);
-    let predicate = cash_predicate(&decls);
-    let is_cash: &dyn Fn(&str) -> bool = &predicate;
-    let report = cash_flow(
-        &snapshot.journal.transactions,
-        &end,
-        interval,
-        count,
-        depth,
-        Some(is_cash),
-    )
-    .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_period(&report)))
+    compute(move || {
+        let decls = account_decls(&snapshot.journal);
+        let predicate = cash_predicate(&decls);
+        let is_cash: &dyn Fn(&str) -> bool = &predicate;
+        let report = cash_flow(
+            &snapshot.journal.transactions,
+            &window.end,
+            window.interval,
+            window.count,
+            window.depth,
+            Some(is_cash),
+        )?;
+        Ok(WirePeriodReport::from(&report))
+    })
+    .await
 }
 
 /// `GET /api/reports/networth` — market-valued net worth per bucket. Prices come
@@ -940,63 +1378,68 @@ pub(crate) async fn cashflow(
 pub(crate) async fn networth(
     State(state): State<AppState>,
     Query(query): Query<NetWorthQuery>,
-) -> Result<Json<WirePeriodReport>, ApiError> {
+) -> Result<Json<WirePeriodReport>, AppError> {
     let snapshot = state.snapshot();
-    let end = query.end.unwrap_or_else(today_utc);
-    let interval = parse_interval(query.interval.as_deref())?;
-    let count = query.count.unwrap_or(DEFAULT_COUNT);
-    let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
+    let window = Window::resolve(
+        query.end,
+        query.interval.as_deref(),
+        query.count,
+        query.depth,
+    )?;
     let value_in = query
         .value_in
         .filter(|symbol| !symbol.is_empty())
         .map(Commodity);
 
-    let declared = declared_types(&account_decls(&snapshot.journal));
-    let report = net_worth(
-        &snapshot.journal.transactions,
-        &snapshot.journal.prices,
-        &NetWorthOpts {
-            end: &end,
-            interval,
-            count,
-            depth,
-            value_in,
-            declared: &declared,
-        },
-    )
-    .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_period(&report)))
+    compute(move || {
+        let declared = declared_types(&account_decls(&snapshot.journal));
+        let report = net_worth(
+            &snapshot.journal.transactions,
+            &snapshot.journal.prices,
+            &NetWorthOpts {
+                end: &window.end,
+                interval: window.interval,
+                count: window.count,
+                depth: window.depth,
+                value_in,
+                declared: &declared,
+            },
+        )?;
+        Ok(WirePeriodReport::from(&report))
+    })
+    .await
 }
 
 /// `GET /api/budget` — actuals vs. periodic-rule goals per bucket.
 pub(crate) async fn budget(
     State(state): State<AppState>,
     Query(query): Query<BudgetQuery>,
-) -> Result<Json<WireBudgetReport>, ApiError> {
+) -> Result<Json<WireBudgetReport>, AppError> {
     let snapshot = state.snapshot();
-    let end = query.end.unwrap_or_else(today_utc);
-    let interval = parse_interval(query.interval.as_deref())?;
-    let count = query.count.unwrap_or(DEFAULT_COUNT);
-    let depth = query.depth.unwrap_or(DEFAULT_DEPTH);
-    let budget_desc = query
-        .budget_desc
-        .as_deref()
-        .filter(|pattern| !pattern.is_empty());
+    let window = Window::resolve(
+        query.end,
+        query.interval.as_deref(),
+        query.count,
+        query.depth,
+    )?;
+    let budget_desc = query.budget_desc.filter(|pattern| !pattern.is_empty());
 
-    let opts = BudgetOpts {
-        end: &end,
-        interval,
-        count,
-        depth,
-        budget_desc,
-    };
-    let report = budget_report(
-        &snapshot.journal.transactions,
-        &snapshot.journal.periodic_transactions,
-        &opts,
-    )
-    .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_budget(&report)))
+    compute(move || {
+        let opts = BudgetOpts {
+            end: &window.end,
+            interval: window.interval,
+            count: window.count,
+            depth: window.depth,
+            budget_desc: budget_desc.as_deref(),
+        };
+        let report = budget_report(
+            &snapshot.journal.transactions,
+            &snapshot.journal.periodic_transactions,
+            &opts,
+        )?;
+        Ok(WireBudgetReport::from(&report))
+    })
+    .await
 }
 
 /// `GET /api/insights` — the period-over-period dashboard. `start`/`end` bound
@@ -1006,26 +1449,23 @@ pub(crate) async fn budget(
 pub(crate) async fn insights_report(
     State(state): State<AppState>,
     Query(query): Query<InsightsQuery>,
-) -> Result<Json<WireInsightsReport>, ApiError> {
+) -> Result<Json<WireInsightsReport>, AppError> {
     let snapshot = state.snapshot();
-    let end = query.end.unwrap_or_else(today_utc);
-    let start = query.start.unwrap_or_else(|| default_insights_start(&end));
+    let end = parse_date("end", query.end, today_utc)?;
+    let start = parse_date("start", query.start, || default_insights_start(&end))?;
     let cost_exclude = parse_csv(query.exclude.as_deref(), DEFAULT_COST_EXCLUDE);
-    // Default "biggest change" floor: $10 in the base commodity; a malformed
-    // value falls back to the default rather than erroring.
-    let change_min = query
-        .change_min
-        .as_deref()
-        .and_then(|raw| Dec::parse(raw, '.').ok())
-        .unwrap_or_else(|| Dec::new(1000, 2));
-    let opts = InsightsOpts {
-        start: &start,
-        end: &end,
-        cost_exclude: &cost_exclude,
-        change_min,
-    };
-    let report = insights(&snapshot.journal, &opts).map_err(|err| report_error(&err))?;
-    Ok(Json(wire_insights(&report)))
+    let change_min = parse_change_min(query.change_min.as_deref())?;
+    compute(move || {
+        let opts = InsightsOpts {
+            start: &start,
+            end: &end,
+            cost_exclude: &cost_exclude,
+            change_min,
+        };
+        let report = insights(&snapshot.journal, &opts)?;
+        Ok(WireInsightsReport::from(&report))
+    })
+    .await
 }
 
 /// `GET /api/subscriptions` — recurring monthly/annual charges inferred from
@@ -1034,23 +1474,29 @@ pub(crate) async fn insights_report(
 pub(crate) async fn subscriptions(
     State(state): State<AppState>,
     Query(query): Query<SubscriptionsQuery>,
-) -> Result<Json<WireSubscriptionsReport>, ApiError> {
+) -> Result<Json<WireSubscriptionsReport>, AppError> {
     let snapshot = state.snapshot();
-    let as_of = query.as_of.unwrap_or_else(today_utc);
+    let as_of = parse_date("asOf", query.as_of, today_utc)?;
     let defaults = SubscriptionOpts::default();
     let exclude_desc = parse_csv(query.exclude_desc.as_deref(), DEFAULT_EXCLUDE_DESC);
-    let opts = SubscriptionOpts {
-        as_of: &as_of,
-        lookback_months: query.lookback.unwrap_or(defaults.lookback_months).max(1),
-        min_monthly: query.min_monthly.unwrap_or(defaults.min_monthly).max(2),
-        min_annual: query.min_annual.unwrap_or(defaults.min_annual).max(2),
-        stale_months: query.stale_months.unwrap_or(defaults.stale_months).max(1),
-        exclude_desc: &exclude_desc,
-        ..defaults
-    };
-    let report =
-        detect_subscriptions(&snapshot.journal, &opts).map_err(|err| report_error(&err))?;
-    Ok(Json(wire_subscriptions(&report)))
+    let lookback_months = query.lookback.unwrap_or(defaults.lookback_months).max(1);
+    let min_monthly = query.min_monthly.unwrap_or(defaults.min_monthly).max(2);
+    let min_annual = query.min_annual.unwrap_or(defaults.min_annual).max(2);
+    let stale_months = query.stale_months.unwrap_or(defaults.stale_months).max(1);
+    compute(move || {
+        let opts = SubscriptionOpts {
+            as_of: &as_of,
+            lookback_months,
+            min_monthly,
+            min_annual,
+            stale_months,
+            exclude_desc: &exclude_desc,
+            ..SubscriptionOpts::default()
+        };
+        let report = detect_subscriptions(&snapshot.journal, &opts)?;
+        Ok(WireSubscriptionsReport::from(&report))
+    })
+    .await
 }
 
 /// `GET /api/holdings` — average-cost stock positions as of a date. `accounts`
@@ -1066,53 +1512,254 @@ pub(crate) async fn subscriptions(
 /// `totals.gain`/`totals.gainPct` are windowed while `totals.basis` stays all-
 /// time; `topGainers`/`topLosers` rank by the windowed `gainPct`. The JSON keys
 /// are unchanged — only the meaning of `gain`/`gainPct` shifts.
+///
+/// `valueIn=COMMODITY` (optional) fixes the commodity everything is reported in
+/// — the `base` field, every `marketValue`, every `basis`. Absent, the journal's
+/// `D` default-commodity directive is used, and failing that the engine picks
+/// the price target that actually prices the portfolio. A commodity that prices
+/// nothing in scope is a `400`; see [`resolve_value_in`].
 pub(crate) async fn holdings(
     State(state): State<AppState>,
     Query(query): Query<HoldingsQuery>,
-) -> Result<Json<WireHoldingsReport>, ApiError> {
+) -> Result<Json<WireHoldingsReport>, AppError> {
     let snapshot = state.snapshot();
-    let scope = HoldingsScope {
-        accounts: parse_accounts(query.accounts.as_deref()),
-        mode: parse_mode(query.mode.as_deref())?,
-        as_of: query.as_of.unwrap_or_else(today_utc),
-        gain_since: query.gain_since.filter(|start| !start.is_empty()),
-    };
-    let report = compute_holdings(
-        &snapshot.journal.transactions,
-        &snapshot.journal.prices,
-        &snapshot.journal.accounts,
-        &snapshot.journal.commodity_tags,
-        &scope,
-    )
-    .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_holdings(&report)))
+    compute(move || {
+        // `holdings_scope` validates `valueIn` by scanning the whole journal for
+        // a price route, so it belongs on the blocking side with the report.
+        let scope = holdings_scope(
+            &snapshot.journal,
+            query.accounts.as_deref(),
+            query.mode.as_deref(),
+            query.as_of,
+            query.gain_since,
+            query.value_in.as_deref(),
+        )?;
+        let report = compute_holdings(
+            &snapshot.journal.transactions,
+            &snapshot.journal.prices,
+            &snapshot.journal.accounts,
+            &snapshot.journal.commodity_tags,
+            &scope,
+        )?;
+        Ok(WireHoldingsReport::from(&report))
+    })
+    .await
 }
 
 /// `GET /api/holdings/series` — portfolio market value (and basis) at each of the
-/// last `count` period boundaries ending at `asOf`. Same scope as `/api/holdings`.
+/// last `count` period boundaries ending at `asOf`. Same scope — and same
+/// `valueIn` contract — as `/api/holdings`.
 pub(crate) async fn holdings_series_report(
     State(state): State<AppState>,
     Query(query): Query<HoldingsSeriesQuery>,
-) -> Result<Json<WireHoldingsSeries>, ApiError> {
+) -> Result<Json<WireHoldingsSeries>, AppError> {
     let snapshot = state.snapshot();
-    let scope = HoldingsScope {
-        accounts: parse_accounts(query.accounts.as_deref()),
-        mode: parse_mode(query.mode.as_deref())?,
-        as_of: query.as_of.unwrap_or_else(today_utc),
-        // The trend tracks market value/basis only — no per-point gain window.
-        gain_since: None,
-    };
     let interval = parse_interval(query.interval.as_deref())?;
-    let count = query.count.unwrap_or(DEFAULT_COUNT);
-    let series = holdings_series(
-        &snapshot.journal.transactions,
-        &snapshot.journal.prices,
-        &snapshot.journal.accounts,
-        &snapshot.journal.commodity_tags,
-        &scope,
-        interval,
-        count,
-    )
-    .map_err(|err| report_error(&err))?;
-    Ok(Json(wire_holdings_series(&series)))
+    let count = parse_count(query.count)?;
+    compute(move || {
+        let scope = holdings_scope(
+            &snapshot.journal,
+            query.accounts.as_deref(),
+            query.mode.as_deref(),
+            query.as_of,
+            // The trend tracks market value/basis only — no per-point gain window.
+            None,
+            query.value_in.as_deref(),
+        )?;
+        let series = holdings_series(
+            &snapshot.journal.transactions,
+            &snapshot.journal.prices,
+            &snapshot.journal.accounts,
+            &snapshot.journal.commodity_tags,
+            &scope,
+            interval,
+            count,
+        )?;
+        Ok(WireHoldingsSeries::from(&series))
+    })
+    .await
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    /// The forms `hledger 1.52` itself accepts for `-b`/`-e`, all normalizing to
+    /// the same fixed-width ISO date the report engine's lexical ordering needs.
+    #[test]
+    fn accepts_and_normalizes_every_hledger_date_spelling() {
+        for raw in [
+            "2026-07-01",
+            "2026-7-1",
+            "2026/7/1",
+            "2026/07/01",
+            "2026.7.1",
+            "2026-07-1",
+            "2026-7-01",
+        ] {
+            assert_eq!(
+                normalize_iso_date(raw).as_deref(),
+                Ok("2026-07-01"),
+                "{raw} should normalize to 2026-07-01"
+            );
+        }
+    }
+
+    /// Month/day boundaries and the leap-year rule, including the century cases.
+    #[test]
+    fn accepts_real_calendar_boundaries() {
+        for raw in [
+            "2024-02-29", // leap year
+            "2000-02-29", // 400-divisible century IS a leap year
+            "2026-01-31",
+            "2026-12-31",
+            "0001-01-01",
+            "9999-12-31",
+        ] {
+            assert!(
+                normalize_iso_date(raw).is_ok(),
+                "{raw} is a real date and must be accepted"
+            );
+        }
+    }
+
+    /// RPT-4: every one of these used to flow straight into a `&str` comparison.
+    #[test]
+    fn rejects_malformed_dates() {
+        for raw in [
+            "",             // sorted below every real date → an empty report
+            "garbage",      // sorted above every real date → the all-time total
+            "2026",         // too few components
+            "2026-07",      // too few components
+            "2026-07-01-1", // too many components
+            "07-01",        // yearless: needs a `Y` directive, meaningless in a URL
+            "26-07-01",     // two-digit year (hledger rejects it too)
+            "12026-01-01",  // five-digit year would break the fixed-width slices
+            "2026-007-01",  // over-wide month
+            "2026-07-001",  // over-wide day
+            "2026--7-1",    // empty component
+            "2026-x7-01",   // non-digit
+            "2026-+7-01",   // signed component
+            " 2026-07-01",  // untrimmed
+            "2026-07-01 ",  // untrimmed
+            "-2026-07-01",  // leading separator (a negative year)
+        ] {
+            assert!(
+                normalize_iso_date(raw).is_err(),
+                "{raw:?} is not a date and must be rejected"
+            );
+        }
+    }
+
+    /// Shaped like a date, but not a date. hledger rejects all of these.
+    #[test]
+    fn rejects_impossible_calendar_dates() {
+        for raw in [
+            "2026-02-30",
+            "2026-02-29", // 2026 is not a leap year
+            "2023-02-29",
+            "1900-02-29", // century, not 400-divisible → not a leap year
+            "2026-04-31",
+            "2026-13-01",
+            "2026-00-01",
+            "2026-01-00",
+            "2026-01-32",
+        ] {
+            assert!(
+                normalize_iso_date(raw).is_err(),
+                "{raw} is not a real date and must be rejected"
+            );
+        }
+    }
+
+    /// The `400` body names the parameter, echoes the value, and says why —
+    /// enough to fix the request without reading the source.
+    #[test]
+    fn rejection_message_names_the_field_and_the_reason() {
+        let error = checked_date("asOf", "2026-02-30").expect_err("not a date");
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+        let message = error.to_string();
+        assert!(message.contains("asOf"), "{message}");
+        assert!(message.contains("2026-02-30"), "{message}");
+        assert!(message.contains("no day 30"), "{message}");
+
+        let message = checked_date("end", "nope")
+            .expect_err("not a date")
+            .to_string();
+        assert!(message.contains("YYYY-MM-DD"), "{message}");
+    }
+
+    /// The window the three bucketed reports share validates its four params
+    /// exactly as the handlers used to, and rejects each of them.
+    #[test]
+    fn window_resolves_defaults_and_rejects_each_bad_param() {
+        let window = Window::resolve(Some("2026-6-30".to_string()), None, None, None)
+            .expect("a valid window");
+        assert_eq!(window.end, "2026-06-30");
+        assert_eq!(window.interval, Interval::Monthly);
+        assert_eq!(window.count, DEFAULT_COUNT);
+        assert_eq!(window.depth, DEFAULT_DEPTH);
+
+        for (end, interval, count) in [
+            (Some("2026-02-30".to_string()), None, None),
+            (None, Some("hourly"), None),
+            (None, None, Some(0)),
+            (None, None, Some(MAX_BUCKETS + 1)),
+        ] {
+            let error = Window::resolve(end, interval, count, None).expect_err("must be rejected");
+            assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{error}");
+        }
+    }
+
+    /// An absent param keeps its default; an explicit malformed one is a `400`.
+    #[test]
+    fn parse_date_defaults_only_when_absent() {
+        assert_eq!(
+            parse_date("asOf", None, || "2026-06-30".to_string()),
+            Ok("2026-06-30".to_string())
+        );
+        assert_eq!(
+            parse_date("asOf", Some("2026-6-30".to_string()), String::new),
+            Ok("2026-06-30".to_string())
+        );
+        // An explicit empty value is NOT "absent": it used to sort below every
+        // real date and serve an empty report with a 200.
+        assert!(parse_date("asOf", Some(String::new()), String::new).is_err());
+    }
+
+    /// `gainSince` keeps its documented empty-means-all-time sentinel, but a
+    /// non-empty value still has to be a real date.
+    #[test]
+    fn parse_opt_date_keeps_the_empty_sentinel() {
+        assert_eq!(parse_opt_date("gainSince", None), Ok(None));
+        assert_eq!(parse_opt_date("gainSince", Some(String::new())), Ok(None));
+        assert_eq!(
+            parse_opt_date("gainSince", Some("2026-1-2".to_string())),
+            Ok(Some("2026-01-02".to_string()))
+        );
+        assert!(parse_opt_date("gainSince", Some("2026-02-30".to_string())).is_err());
+    }
+
+    /// `changeMin` keeps hledger's digit-group separators but no longer swallows
+    /// a value it cannot read.
+    #[test]
+    fn parse_change_min_rejects_instead_of_defaulting() {
+        assert_eq!(parse_change_min(None), Ok(DEFAULT_CHANGE_MIN));
+        assert_eq!(parse_change_min(Some("")), Ok(DEFAULT_CHANGE_MIN));
+        assert_eq!(parse_change_min(Some("25.50")), Ok(Dec::new(2550, 2)));
+        // `,` is a digit-group separator when the decimal mark is `.`, so this
+        // is a well-formed 1000 — NOT the $10.00 the finding predicted.
+        assert_eq!(parse_change_min(Some("1,000")), Ok(Dec::new(1000, 0)));
+        for raw in ["zzz", "$10", "10%", "1.0.0.x"] {
+            assert!(
+                parse_change_min(Some(raw)).is_err(),
+                "{raw} must be a 400, not a silent $10.00"
+            );
+        }
+    }
 }

@@ -1,0 +1,5 @@
+; PARSE-4: U+00A0 NO-BREAK SPACE is a digit-group separator too, and the
+; non-breaking character is preserved in the commodity display style.
+2017-01-01
+    a    1 000.00 EUR
+    b   -1 000.00 EUR

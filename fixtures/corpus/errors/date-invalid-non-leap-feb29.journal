@@ -1,0 +1,4 @@
+; PARSE-6: 2023 is not a leap year, so 2023-02-29 does not exist.
+2023-02-29 t
+    a   $1.00
+    b

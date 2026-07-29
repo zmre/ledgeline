@@ -8,13 +8,23 @@
      holdings are priced (a single-entry "top 5" is noise, per plans/10). -->
 <script lang="ts">
     import {toNumber, type Dec} from "$lib/domain/money";
+    import {signClass} from "$lib/format/sign";
     import type {Holding, HoldingsReport} from "$lib/holdings/types";
     import {formatGainPct} from "./view";
 
     let {report, format}: {report: HoldingsReport; format: (v: Dec) => string} = $props();
 
-    const pricedCount = $derived(report.holdings.filter((h) => h.marketValue !== null).length);
-    const visible = $derived(pricedCount >= 2 && (report.topGainers.length > 0 || report.topLosers.length > 0));
+    /**
+     * Holdings that could actually be ranked — a gain is what this panel sorts by.
+     *
+     * Not "priced": a net-short row HAS a market value (negative) but its basis is
+     * unknowable, so its gain is null and it can appear in neither list. Counting
+     * it toward the threshold showed a one-name "Top gainers" panel whenever a
+     * short was in scope, which is the degenerate case the threshold exists to
+     * suppress.
+     */
+    const rankableCount = $derived(report.holdings.filter((h) => h.gain !== null).length);
+    const visible = $derived(rankableCount >= 2 && (report.topGainers.length > 0 || report.topLosers.length > 0));
 </script>
 
 {#snippet list(title: string, entries: Holding[], testid: string)}
@@ -22,14 +32,13 @@
         <h3 class="text-base-content/60 mb-1 text-xs font-semibold tracking-wide uppercase">{title}</h3>
         <ul class="flex flex-col gap-1">
             {#each entries as h (h.symbol)}
-                {@const negative = (h.gainPct ?? 0) < 0}
                 <li class="flex items-baseline gap-2 text-sm">
                     <span class="tooltip tooltip-right before:max-w-64 before:whitespace-normal" data-tip={h.name}>
                         <button type="button" class="cursor-help font-medium">{h.symbol}</button>
                     </span>
-                    <span class={negative ? "text-error" : "text-success"}>{formatGainPct(h.gainPct)}</span>
+                    <span class={signClass(h.gainPct)}>{formatGainPct(h.gainPct)}</span>
                     {#if h.gain !== null}
-                        <span class="ml-auto font-mono text-xs tabular-nums {toNumber(h.gain) < 0 ? 'text-error' : 'text-success'}">{format(h.gain)}</span>
+                        <span class="ml-auto font-mono text-xs tabular-nums {signClass(toNumber(h.gain))}">{format(h.gain)}</span>
                     {/if}
                 </li>
             {/each}

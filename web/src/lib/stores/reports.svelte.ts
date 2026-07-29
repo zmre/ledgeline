@@ -7,14 +7,15 @@
 
 import {LedgelineApi} from "$lib/api/native";
 import {decodeBudgetReport, decodePeriodReport, decodeSectionedReport} from "$lib/api/nativeDecode";
+import type {ISODate} from "$lib/domain/types";
 import {monthsBetween} from "$lib/reports/periods";
 import type {BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
 import type {ReportInterval, ReportParams} from "$lib/reports/ui/params";
+import type {LoadStatus} from "./loadState";
+import {createResource} from "./resource.svelte";
 
 /** The union of every report shape the store can hold. */
 export type AnyReport = SectionedReport | PeriodReport | BudgetReport;
-
-export type ReportStatus = "idle" | "loading" | "ready" | "error";
 
 /** The exact query for one tab — only the fields that endpoint honors, so the fetch effect refires minimally. */
 export type ReportQuery =
@@ -27,7 +28,7 @@ export type ReportQuery =
     | {tab: "is"; from: string; to: string; depth: number}
     | {tab: "cf"; end: string; interval: ReportInterval; count: number; depth: number}
     | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number}
-    | {tab: "budget"; end: string; count: number; depth: number};
+    | {tab: "budget"; from: string; end: string; count: number; depth: number};
 
 /** Map ReportParams → the active tab's endpoint query (drives both the fetch and the refetch key). */
 export function buildReportQuery(params: ReportParams): ReportQuery {
@@ -44,10 +45,50 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
             return {tab: "cf", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
         case "nw":
             return {tab: "nw", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
-        case "budget":
+        case "budget": {
             // The budget summary spans the from/to range as monthly buckets, aggregated client-side.
-            return {tab: "budget", end: params.to, count: monthsBetween(params.from, params.to), depth: params.depth};
+            // `from` is redundant for the fetch (end + count already describe the span) but is carried
+            // so `sameReportQuery` can tell one span from another: the export names the file after
+            // params.from, and two different `from` dates can round to the same month count.
+            const span = budgetSpan(params.from, params.to);
+            return {tab: "budget", from: params.from, end: span.to, count: span.count, depth: params.depth};
+        }
     }
+}
+
+/**
+ * The span the budget bars ACTUALLY cover, given the controls' `from`/`to`.
+ *
+ * The engine takes `{end, count}` and walks whole months backwards, so the first
+ * bucket always starts on the 1st — `from`'s day-of-month is discarded. It does
+ * truncate the last bucket at `end`, so only the START drifts. With
+ * `from = 2026-01-15` the bar therefore includes 2026-01-01…01-14, which a
+ * drill-down filtered to the raw controls excludes: measured $720.00 in the bar
+ * against $20.00 in the journal it links to.
+ *
+ * The bars are the thing that cannot move — a monthly goal is a whole-month
+ * figure, so comparing it to a partial month is what the envelope view is for.
+ * So the drill-down is widened to this span instead, and `BudgetSummary` shows
+ * it, rather than silently filtering to a narrower set than it charted.
+ */
+export function budgetSpan(from: ISODate, to: ISODate): {from: ISODate; to: ISODate; count: number} {
+    return {from: `${from.slice(0, 7)}-01`, to, count: monthsBetween(from, to)};
+}
+
+/**
+ * Whether two queries ask for exactly the same report.
+ *
+ * Used to gate the export: `exportInfo` names and titles the workbook from the
+ * CURRENT controls while the workbook itself is built from the report the store
+ * is holding, so those two may only ever be combined when they are the same
+ * request (FE-1). Both are flat records of primitives.
+ */
+export function sameReportQuery(a: ReportQuery, b: ReportQuery): boolean {
+    const left = a as Record<string, unknown>;
+    const right = b as Record<string, unknown>;
+    const keys = Object.keys(left);
+    if (keys.length !== Object.keys(right).length) return false;
+    return keys.every((key) => left[key] === right[key]);
 }
 
 async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyReport> {
@@ -70,36 +111,38 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
     }
 }
 
-let report = $state<AnyReport | null>(null);
-let status = $state<ReportStatus>("idle");
-let error = $state<Error | null>(null);
-let seq = 0;
+/**
+ * The report store: the held report AND the query that produced it, kept as one
+ * value by `createResource` so they can never drift apart.
+ *
+ * `bs`/`is` are both `SectionedReport` and `cf`/`nw` are both `PeriodReport`,
+ * so the report's own shape cannot say which tab it belongs to and no type
+ * error is possible when they are mixed up. The page used to pick a renderer by
+ * shape alone: a balance sheet that was already loaded stayed on screen — and
+ * in the export — when the P&L tab's fetch failed, under the P&L's label
+ * (FE-1). Tagging the payload with its query is what lets the page refuse, and
+ * `reports.query` is how it asks.
+ *
+ * `report` is the historical name for the payload; the underlying resource
+ * calls it `value`.
+ */
+const resource = createResource<ReportQuery, AnyReport>((serverUrl, query) => fetchReport(new LedgelineApi(serverUrl), query));
 
 export const reports = {
     /** The last successfully decoded report, or null before the first load. */
     get report(): AnyReport | null {
-        return report;
+        return resource.value;
     },
-    get status(): ReportStatus {
-        return status;
+    /** The query `report` came from — compare against the live one before rendering or exporting it. */
+    get query(): ReportQuery | null {
+        return resource.query;
+    },
+    get status(): LoadStatus {
+        return resource.status;
     },
     get error(): Error | null {
-        return error;
+        return resource.error;
     },
     /** Fetch + decode the report for `query`; stale responses (superseded by a newer load) are discarded. */
-    async load(serverUrl: string, query: ReportQuery): Promise<void> {
-        const token = ++seq;
-        status = "loading";
-        try {
-            const next = await fetchReport(new LedgelineApi(serverUrl), query);
-            if (token !== seq) return;
-            report = next;
-            status = "ready";
-            error = null;
-        } catch (cause) {
-            if (token !== seq) return;
-            status = "error";
-            error = cause instanceof Error ? cause : new Error(String(cause));
-        }
-    },
+    load: resource.load,
 };

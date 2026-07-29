@@ -2,7 +2,9 @@
 //!
 //! One row per asset/liability account clamped to `depth` (natural signs:
 //! liabilities negative), one column per bucket; `totals[i]` = net worth at the
-//! end of bucket `i` (always the full depth-1 roots, so it is depth-independent).
+//! end of bucket `i` (summed over every asset/liability account, so it is
+//! depth-independent — matching `hledger bal type:AL`, whose total does not move
+//! with `--depth`).
 //! Every commodity is valued to `value_in ?? prices.base_commodity()` via the
 //! latest direct `P` directive ≤ the bucket end — where the price set is the
 //! journal's explicit `P` directives PLUS the prices inferred from `@`/`@@` cost
@@ -19,21 +21,23 @@
 
 use super::ReportError;
 use super::account_types::{AccountType, is_account_type};
-use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
+use super::aggregate::{at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
-use super::periods::{Interval, bucket_end, compare_iso, last_n_buckets};
+use super::periods::{Interval, bucket_as_of, last_n_buckets};
 use super::prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
 use super::types::{PeriodReport, PeriodRow, ReportMeta};
 use crate::model::{Commodity, PriceDirective, Transaction};
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 struct BucketData {
     as_of: String,
     /// Asset/liability accounts clamped to the report depth — the report rows.
     rows: BTreeMap<String, MixedAmount>,
-    /// The depth-1 asset/liability roots — summed and valued for the total.
-    roots: BTreeMap<String, MixedAmount>,
+    /// Sum of every asset/liability account's own balance — the (unvalued) net
+    /// worth. Summed over the accounts themselves rather than over rolled-up
+    /// depth-1 roots, so it is genuinely depth-independent and does not read
+    /// zero when the typed accounts sit below depth 1 (RPT-1).
+    total: MixedAmount,
 }
 
 /// Value `ma` in `target` (identity when `None`), collapsing to a single-target
@@ -79,6 +83,19 @@ pub struct NetWorthOpts<'a> {
     pub declared: &'a BTreeMap<String, AccountType>,
 }
 
+/// Index of the first bucket whose as-of date is on or after `date`, i.e. the
+/// earliest column a posting dated `date` contributes to. `None` when the
+/// posting falls after the last column and so appears in no bucket at all.
+///
+/// `as_ofs` is strictly ascending (see [`net_worth_priced`]) and every date here
+/// is a zero-padded ISO `YYYY-MM-DD`, whose lexical and chronological orders
+/// coincide — the same equivalence `account_totals`' own `date > to` bound
+/// relies on.
+fn first_bucket(as_ofs: &[String], date: &str) -> Option<usize> {
+    let index = as_ofs.partition_point(|as_of| as_of.as_str() < date);
+    (index < as_ofs.len()).then_some(index)
+}
+
 /// Net worth per bucket, valued at market prices, with asset/liability rows
 /// clamped to `depth`. `value_in` overrides the default target
 /// (`base_commodity()` of the combined explicit + inferred prices); when there
@@ -91,6 +108,28 @@ pub fn net_worth(
     explicit_prices: &[PriceDirective],
     opts: &NetWorthOpts,
 ) -> Result<PeriodReport, ReportError> {
+    // Explicit `P` directives PLUS prices inferred from `@`/`@@` costs. Inferred
+    // go first so an explicit price wins a same-date tie (hledger's precedence).
+    let mut all_prices = infer_market_prices(txns)?;
+    all_prices.extend_from_slice(explicit_prices);
+    net_worth_priced(txns, &all_prices, opts)
+}
+
+/// [`net_worth`] over a price set the caller has already combined.
+///
+/// `all_prices` must be exactly what [`net_worth`] builds — the inferred prices
+/// followed by the explicit `P` directives — so the two entry points value a
+/// position identically. It exists because [`super::insights`] already holds
+/// that set and re-deriving it costs a full pass over every posting per call
+/// (PERF-5c).
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or bad bucket math.
+pub(super) fn net_worth_priced(
+    txns: &[Transaction],
+    all_prices: &[PriceDirective],
+    opts: &NetWorthOpts,
+) -> Result<PeriodReport, ReportError> {
     let &NetWorthOpts {
         end,
         interval,
@@ -100,47 +139,95 @@ pub fn net_worth(
         declared,
     } = opts;
     let value_in = value_in.clone();
-    // Explicit `P` directives PLUS prices inferred from `@`/`@@` costs. Inferred
-    // go first so an explicit price wins a same-date tie (hledger's precedence).
-    let mut all_prices = infer_market_prices(txns)?;
-    all_prices.extend_from_slice(explicit_prices);
-    let prices = PriceDb::build(&all_prices);
+    let prices = PriceDb::build(all_prices);
 
     let buckets = last_n_buckets(end, interval, count)?;
     let target: Option<Commodity> = value_in.or_else(|| prices.base_commodity().cloned());
     let mut meta = ValuationMeta::default();
 
-    let mut per_bucket: Vec<BucketData> = Vec::with_capacity(buckets.len());
-    for key in &buckets {
-        let end_of_bucket = bucket_end(key)?;
-        let as_of = if compare_iso(end, &end_of_bucket) == Ordering::Less {
-            end.to_string()
-        } else {
-            end_of_bucket
-        };
-        let rolled = roll_up(&account_totals(
-            txns,
-            &PostingFilter {
-                to: Some(&as_of),
-                ..PostingFilter::default()
-            },
-        )?)?;
-        // Keep asset/liability accounts (by root category); rows are clamped to
-        // `depth`, roots (depth 1) drive the depth-independent total.
-        let asset_liability: BTreeMap<String, MixedAmount> = rolled
-            .into_iter()
-            .filter(|(account, _)| {
-                // By effective TYPE: a liability declared `type: L` under a
-                // non-English root still belongs in net worth, and a `type: C`
-                // cash account still counts as an asset.
+    // Each bucket's inclusive as-of date: the bucket's last day, clamped so the
+    // final column never overshoots `end`. `last_n_buckets` returns contiguous
+    // buckets oldest → newest and `end` lies inside the last one, so this is
+    // STRICTLY ASCENDING — which is what lets a posting be placed by binary
+    // search and the balances be carried forward as a running prefix sum.
+    let as_ofs: Vec<String> = buckets
+        .iter()
+        .map(|key| bucket_as_of(key, end))
+        .collect::<Result<_, ReportError>>()?;
+
+    // ONE pass over every posting, instead of one `account_totals` re-scan per
+    // bucket (PERF-5): each posting is added to the FIRST column it belongs to
+    // and the running total below carries it into every later one.
+    //
+    // This reproduces `account_totals(to: as_of)` bit-for-bit, not merely
+    // numerically. `Dec::add` is exact and its result scale is
+    // `max(self.places, other.places)`, so for a given account+commodity both
+    // the value and the wire `mantissa`/`places` are independent of the order
+    // the addends arrive in — regrouping them by bucket cannot move a number.
+    let mut deltas: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); as_ofs.len()];
+    // Keep asset/liability accounts by effective TYPE — a liability declared
+    // `type: L` under a non-English root still belongs in net worth, and a
+    // `type: C` cash account still counts as an asset.
+    //
+    // Filtered BEFORE the roll-up (RPT-2): rolling up first lets a parent net in
+    // children of a different effective type, so an `assets ; type: A` parent of
+    // an `assets:receivable ; type: L` child produced a row that was neither.
+    // Rolling up the members instead keeps every parent row equal to the sum of
+    // the asset/liability accounts beneath it. Membership is a pure function of
+    // the account name, so it is resolved once per DISTINCT name (~250) rather
+    // than once per posting per bucket (PERF-5e).
+    let mut membership: HashMap<&str, bool> = HashMap::new();
+    for txn in txns {
+        for posting in &txn.postings {
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            let Some(bucket) = first_bucket(&as_ofs, date) else {
+                continue;
+            };
+            let account = posting.account.0.as_str();
+            let member = *membership.entry(account).or_insert_with(|| {
                 is_account_type(account, declared, AccountType::Asset)
                     || is_account_type(account, declared, AccountType::Liability)
+            });
+            if !member {
+                continue;
+            }
+            let entry = deltas[bucket].entry(account).or_default();
+            for amount in &posting.amounts {
+                entry.accumulate(&amount.commodity, amount.quantity)?;
+            }
+        }
+    }
+
+    // Running (cumulative) balances, snapshotted at each bucket end.
+    let mut running: BTreeMap<&str, MixedAmount> = BTreeMap::new();
+    let mut per_bucket: Vec<BucketData> = Vec::with_capacity(as_ofs.len());
+    for (index, as_of) in as_ofs.into_iter().enumerate() {
+        for (account, delta) in &deltas[index] {
+            let entry = running.entry(account).or_default();
+            for (commodity, qty) in delta.iter() {
+                entry.accumulate(commodity, *qty)?;
+            }
+        }
+        // `account_totals` prunes zero commodities in ONE final sweep, so the
+        // running balances must stay unpruned: a commodity that momentarily nets
+        // to zero still carries the scale that later additions align to, and
+        // dropping it would silently renormalize the wire representation. The
+        // prune therefore happens on each bucket's snapshot instead.
+        let members: BTreeMap<String, MixedAmount> = running
+            .iter()
+            .map(|(account, ma)| {
+                let mut snapshot = ma.clone();
+                snapshot.drop_zeros();
+                ((*account).to_string(), snapshot)
             })
             .collect();
+        let total = members
+            .values()
+            .try_fold(MixedAmount::new(), |acc, ma| acc.ma_add(ma))?;
         per_bucket.push(BucketData {
             as_of,
-            rows: at_depth(&asset_liability, depth),
-            roots: at_depth(&asset_liability, 1),
+            rows: at_depth(&roll_up(&members)?, depth),
+            total,
         });
     }
 
@@ -174,16 +261,18 @@ pub fn net_worth(
 
     let mut totals: Vec<MixedAmount> = Vec::with_capacity(per_bucket.len());
     for (i, bucket) in per_bucket.iter().enumerate() {
-        let mut sum = MixedAmount::new();
-        for ma in bucket.roots.values() {
-            sum = sum.ma_add(ma)?;
-        }
         let sink = if i == last_bucket {
             Some(&mut meta)
         } else {
             None
         };
-        totals.push(valued(&sum, target.as_ref(), &prices, &bucket.as_of, sink)?);
+        totals.push(valued(
+            &bucket.total,
+            target.as_ref(),
+            &prices,
+            &bucket.as_of,
+            sink,
+        )?);
     }
 
     let meta_out = if meta.unpriced.is_empty() {
@@ -350,17 +439,18 @@ mod tests {
             Some(c("EUR")),
         )
         .unwrap();
-        // $ has no price in EUR → skipped.
+        // No directive prices $ in EUR, but hledger's price graph reverses the
+        // `P 2026-01-31 EUR $1.10` edge, so $100.00 is worth 1/1.10 × 100 =
+        // 90.90909091 EUR on top of the 50.00 EUR held. Nothing is unpriced.
+        //   $ hledger -f … bal assets --value=end,EUR -e 2026-02-01
+        //     EUR 90.90909091  assets:bank:checking
+        //     EUR 50.00000000  assets:wise
+        //    EUR 140.90909091
         assert_eq!(
             report.rows[0].values,
-            [MixedAmount::single(c("EUR"), Dec::new(5000, 2))]
+            [MixedAmount::single(c("EUR"), Dec::new(14_090_909_091, 8))]
         );
-        assert_eq!(
-            report.meta,
-            Some(ReportMeta {
-                unpriced: vec![c("$")]
-            })
-        );
+        assert_eq!(report.meta, None);
     }
 
     #[test]

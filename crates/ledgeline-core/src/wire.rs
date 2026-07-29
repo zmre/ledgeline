@@ -5,6 +5,7 @@
 //! model in [`crate::model`] can stay serde-free. Field names match hledger
 //! exactly (camelCase ones via `#[serde(rename = ...)]`).
 
+use crate::holdings::{HoldingsScope, ScopeMode, WarningKind, compute_holdings};
 use crate::model::{
     AccountDeclaration, AccountName, Amount, CommoditySide, CostKind, Journal, Posting,
     PostingType, PriceDirective, SourcePos, Status, Transaction,
@@ -324,6 +325,251 @@ fn status_str(status: Status) -> &'static str {
         Status::Pending => "Pending",
         Status::Cleared => "Cleared",
     }
+}
+
+// ===========================================================================
+// /api/diagnostics
+// ===========================================================================
+
+/// A journal-wide diagnostic, shaped to drop straight into the SPA's existing
+/// `Problem` type (`web/src/lib/checks/engine.ts`) so the checks UI needs no new
+/// type to render one.
+///
+/// An unbalanced transaction and a failed balance assertion are DIAGNOSTICS, not
+/// parse errors: the journal always opens, and neither ever blocks opening,
+/// editing or reloading. See [`crate::parse::check_transaction_balances`] and
+/// [`crate::assertions::check_balance_assertions`] for why.
+///
+/// The same shape also carries the three STOCK findings — see
+/// [`journal_to_stock_diagnostics`], which is why `rule` and `severity` are no
+/// longer a two-value and a one-value enum.
+#[derive(Debug, Serialize)]
+pub struct WireDiagnostic {
+    /// 0-based index into the SAME transactions array `/transactions` serves,
+    /// so the UI can flag the row.
+    #[serde(rename = "txnIndex")]
+    txn_index: usize,
+    /// One of [`DIAGNOSTIC_RULES`]. The SPA allow-lists exactly this set
+    /// (`normalizeDiagnostics` in `web/src/lib/api/normalize.ts`) and drops
+    /// anything else, so the two lists must be grown together.
+    rule: &'static str,
+    /// `"error"` or `"warning"`; the SPA's `Severity` is `info|warning|error`.
+    severity: &'static str,
+    /// Human-readable, hledger-style.
+    message: String,
+}
+
+/// Diagnostic severity for the two hledger-level rules: both are errors.
+const DIAGNOSTIC_ERROR: &str = "error";
+
+/// Diagnostic severity for the three stock rules. They describe a journal
+/// hledger itself accepts — an unknown cost basis is a gap in the data, not a
+/// broken entry — so they are warnings, and never promoted to errors.
+const DIAGNOSTIC_WARNING: &str = "warning";
+
+/// Every `rule` value `/api/diagnostics` can emit, in the order the SPA's
+/// drawer groups them. The first two are hledger-level errors; the last three
+/// are the stock findings from the holdings engine.
+///
+/// This is the wire contract the SPA's `DIAGNOSTIC_RULES` allow-list mirrors.
+/// The SPA drops an unrecognized rule SILENTLY, so the two are pinned together
+/// by `web/src/lib/checks/stock-diagnostics.test.ts`, which reads both files —
+/// it lives on that side because `nix build .#tests` builds from
+/// `cleanCargoSource`, which does not contain `web/`.
+pub const DIAGNOSTIC_RULES: [&str; 5] = [
+    "unbalanced",
+    "assertion",
+    "stock-missing-basis",
+    "stock-negative",
+    "stock-unpriced",
+];
+
+/// Every diagnostic in `journal`: the unbalanced transactions first (in file
+/// order), then the failed balance assertions (in hledger's evaluation order,
+/// which is date order and deliberately preserved).
+///
+/// A check whose arithmetic overflows `i128` — unreachable for a real journal,
+/// since a literal that large is already rejected at parse — contributes
+/// nothing rather than aborting the payload. The journal must always open, and
+/// the frozen wire contract has no third `rule` to report the failure under.
+#[must_use]
+pub fn journal_to_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    let unbalanced = crate::parse::check_transaction_balances(journal)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|failure| WireDiagnostic {
+            txn_index: failure.transaction_index,
+            rule: "unbalanced",
+            severity: DIAGNOSTIC_ERROR,
+            message: failure.message(),
+        });
+    let assertions = crate::assertions::check_balance_assertions(journal)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|failure| WireDiagnostic {
+            txn_index: failure.transaction_index,
+            rule: "assertion",
+            severity: DIAGNOSTIC_ERROR,
+            message: failure.message(),
+        });
+    unbalanced.chain(assertions).collect()
+}
+
+/// The as-of date the stock diagnostics are computed at: far enough in the
+/// future to include the whole journal.
+///
+/// The TypeScript check rules this replaces valued at `today()`. A journal-wide
+/// diagnostic must not, for three reasons:
+///
+/// 1. **It is cached.** The payload is built once per snapshot and served under
+///    an `ETag` (see `Snapshot::from_journal`). A clock-dependent body silently
+///    goes stale at midnight with nothing to invalidate it.
+/// 2. **It must be reproducible.** Golden fixtures and the endpoint tests would
+///    otherwise depend on the day they run.
+/// 3. **It is the better answer.** A future-dated purchase with no cost
+///    annotation is a data-entry mistake today, not one that starts mattering on
+///    its settlement date. Hiding it until then is exactly the kind of finding a
+///    checks drawer exists to surface early.
+///
+/// Comparisons against it are lexical on zero-padded ISO dates, the same
+/// convention the rest of the engine uses.
+const STOCK_DIAGNOSTICS_AS_OF: &str = "9999-12-31";
+
+/// Rank a stock rule for report order, so the SPA drawer groups the three in a
+/// stable, meaningful sequence rather than in symbol-major order.
+fn stock_rule_rank(rule: &str) -> usize {
+    DIAGNOSTIC_RULES
+        .iter()
+        .position(|known| *known == rule)
+        .unwrap_or(usize::MAX)
+}
+
+/// The `rule` a holdings warning reports under. 1:1 with [`WarningKind`], which
+/// is the mapping `HoldingsWarning`'s doc has always claimed.
+fn stock_rule_of(kind: WarningKind) -> &'static str {
+    match kind {
+        WarningKind::MissingBasis => "stock-missing-basis",
+        WarningKind::NegativeShares => "stock-negative",
+        WarningKind::Unpriced => "stock-unpriced",
+    }
+}
+
+/// The journal's stock findings — unknown cost basis, net-negative shares, and
+/// unpriced positions — as diagnostics anchored to the transactions that caused
+/// them.
+///
+/// This is the Rust half of DRY-1: the SPA used to recompute all three from its
+/// own copy of the average-cost pools (`web/src/lib/holdings/engine.ts`), which
+/// had drifted from this engine — most visibly on a stock split, where the two
+/// pages reported opposite answers for the same journal. There is now one
+/// engine, and the drawer reads it.
+///
+/// Scope is the WHOLE journal (every account, no `valueIn` override), matching
+/// the unscoped rules this replaces; the as-of date is
+/// [`STOCK_DIAGNOSTICS_AS_OF`]. A warning naming several transactions — a symbol
+/// acquired cost-lessly more than once — becomes one diagnostic per transaction,
+/// so every offending row is flagged. Output is ordered by rule, then symbol,
+/// then transaction.
+///
+/// A holdings computation that overflows `i128` contributes nothing rather than
+/// aborting the payload, exactly as the balance checks do: the journal must
+/// always open.
+#[must_use]
+pub fn journal_to_stock_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    let scope = HoldingsScope {
+        accounts: BTreeSet::new(),
+        mode: ScopeMode::Include, // include + empty set = every account
+        as_of: STOCK_DIAGNOSTICS_AS_OF.to_string(),
+        gain_since: None,
+        value_in: None,
+    };
+    let Ok(report) = compute_holdings(
+        &journal.transactions,
+        &journal.prices,
+        &journal.accounts,
+        &journal.commodity_tags,
+        &scope,
+    ) else {
+        return Vec::new();
+    };
+
+    // `Tindex` is 1-based file order; the wire wants a 0-based POSITION into the
+    // transactions array as served. They differ whenever the journal was built
+    // any way other than a single straight parse, so the map is built rather
+    // than assumed.
+    let positions: HashMap<u32, usize> = journal
+        .transactions
+        .iter()
+        .enumerate()
+        .map(|(position, txn)| (txn.index.0, position))
+        .collect();
+
+    let mut diagnostics: Vec<(usize, &str, WireDiagnostic)> = report
+        .warnings
+        .iter()
+        .flat_map(|warning| {
+            // An unanchored warning would vanish here rather than reach the
+            // drawer, and nothing downstream could tell. `HoldingsWarning.txns`
+            // is documented as never empty; this is what keeps that true.
+            debug_assert!(
+                !warning.txns.is_empty(),
+                "holdings warning with no transaction to anchor to: {warning:?}"
+            );
+            let rule = stock_rule_of(warning.kind);
+            let positions = &positions;
+            warning.txns.iter().filter_map(move |txn| {
+                positions.get(&txn.0).map(|&position| {
+                    (
+                        stock_rule_rank(rule),
+                        warning.symbol.as_str(),
+                        WireDiagnostic {
+                            txn_index: position,
+                            rule,
+                            severity: DIAGNOSTIC_WARNING,
+                            message: warning.message.clone(),
+                        },
+                    )
+                })
+            })
+        })
+        .collect();
+    diagnostics.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(b.1))
+            .then_with(|| a.2.txn_index.cmp(&b.2.txn_index))
+    });
+    diagnostics
+        .into_iter()
+        .map(|(_, _, diagnostic)| diagnostic)
+        .collect()
+}
+
+/// Every diagnostic `/api/diagnostics` serves: the hledger-level errors from
+/// [`journal_to_diagnostics`] first, then the stock warnings from
+/// [`journal_to_stock_diagnostics`].
+///
+/// The errors lead deliberately. The SPA's drawer groups by rule in
+/// FIRST-APPEARANCE order, so a journal that both fails to balance and holds an
+/// unpriced security shows the balance failure at the top.
+#[must_use]
+pub fn journal_to_all_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    let mut all = journal_to_diagnostics(journal);
+    all.extend(journal_to_stock_diagnostics(journal));
+    all
+}
+
+/// [`journal_to_all_diagnostics`] as the `{"diagnostics": [...]}` payload. The
+/// array is always present and is `[]` — never null, never absent — when the
+/// journal is clean.
+///
+/// # Errors
+/// Propagates any `serde_json` error (never expected for these records).
+pub fn journal_to_diagnostics_value(
+    journal: &Journal,
+) -> Result<serde_json::Value, serde_json::Error> {
+    Ok(serde_json::json!({
+        "diagnostics": serde_json::to_value(journal_to_all_diagnostics(journal))?,
+    }))
 }
 
 // ===========================================================================

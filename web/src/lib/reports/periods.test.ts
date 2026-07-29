@@ -1,5 +1,8 @@
-import {describe, expect, it} from "vitest";
-import {bucketEnd, bucketKey, bucketLabel, bucketStart, compareISO, lastNBuckets, today} from "./periods";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
+import {bucketEnd, bucketKey, bucketLabel, bucketStart, compareISO, lastNBuckets, nextBucket, today} from "./periods";
+
+/** The zone vite.config.ts pins the suite to; restored after the `today()` cases retune it. */
+const PINNED_TZ = process.env.TZ;
 
 describe("UNIT reports/periods", () => {
     describe("bucketKey", () => {
@@ -105,6 +108,42 @@ describe("UNIT reports/periods", () => {
         });
     });
 
+    describe("nextBucket", () => {
+        it("steps each interval forward by one bucket", () => {
+            expect(nextBucket("2026-07-08", "daily")).toBe("2026-07-09");
+            expect(nextBucket("2026-07", "monthly")).toBe("2026-08");
+            expect(nextBucket("2026-Q3", "quarterly")).toBe("2026-Q4");
+            expect(nextBucket("2026", "yearly")).toBe("2027");
+            expect(nextBucket("2026-W28", "weekly")).toBe("2026-W29");
+        });
+
+        it("rolls over year, month and week-year boundaries", () => {
+            expect(nextBucket("2026-12", "monthly")).toBe("2027-01");
+            expect(nextBucket("2026-Q4", "quarterly")).toBe("2027-Q1");
+            expect(nextBucket("2024-02-28", "daily")).toBe("2024-02-29"); // leap day
+            expect(nextBucket("2023-02-28", "daily")).toBe("2023-03-01");
+            expect(nextBucket("2024-12", "monthly")).toBe("2025-01");
+            // 2020 is a 53-week ISO year; W53 is real and precedes 2021-W01.
+            expect(nextBucket("2020-W52", "weekly")).toBe("2020-W53");
+            expect(nextBucket("2020-W53", "weekly")).toBe("2021-W01");
+            expect(nextBucket("2025-W52", "weekly")).toBe("2026-W01");
+        });
+
+        it("is the inverse of lastNBuckets' backward walk", () => {
+            for (const interval of ["daily", "weekly", "monthly", "quarterly", "yearly"] as const) {
+                const keys = lastNBuckets("2026-03-15", interval, 8);
+                for (let i = 0; i + 1 < keys.length; i += 1) {
+                    expect(nextBucket(keys[i], interval)).toBe(keys[i + 1]);
+                }
+            }
+        });
+
+        it("throws RangeError for an unrecognized key", () => {
+            expect(() => nextBucket("garbage", "monthly")).toThrow(RangeError);
+            expect(() => nextBucket("2026-Q5", "quarterly")).toThrow(RangeError);
+        });
+    });
+
     describe("compareISO / today", () => {
         it("compares lexically", () => {
             expect(compareISO("2026-01-31", "2026-02-01")).toBe(-1);
@@ -112,8 +151,40 @@ describe("UNIT reports/periods", () => {
             expect(compareISO("2026-02-02", "2026-02-01")).toBe(1);
         });
 
-        it("today() is a well-formed local ISO date", () => {
-            expect(today()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        // `today()` is the only place the codebase reads a real clock, so pin BOTH
+        // halves of the problem: the instant and the zone. Each case deliberately
+        // picks a UTC instant whose calendar day differs from the local one, so
+        // swapping to UTC getters (or to `new Date("YYYY-MM-DD")`) changes the
+        // answer rather than merely the string's shape. The two zones straddle the
+        // date line in opposite directions, so one of them catches either slip.
+        describe("today", () => {
+            beforeEach(() => {
+                vi.useFakeTimers({toFake: ["Date"]});
+            });
+
+            afterEach(() => {
+                vi.useRealTimers();
+                if (PINNED_TZ === undefined) delete process.env.TZ;
+                else process.env.TZ = PINNED_TZ;
+            });
+
+            /** Pin the zone first, then the instant — V8 rereads TZ when process.env.TZ is assigned. */
+            function pin(tz: string, utc: Date): void {
+                process.env.TZ = tz;
+                vi.setSystemTime(utc);
+            }
+
+            it("reads LOCAL parts in a negative-offset zone (Denver, UTC-6)", () => {
+                // 2026-07-09T03:30Z is still 21:30 on the 8th in Denver — UTC says the 9th.
+                pin("America/Denver", new Date(Date.UTC(2026, 6, 9, 3, 30)));
+                expect(today()).toBe("2026-07-08");
+            });
+
+            it("reads LOCAL parts in a positive-offset zone (Kiritimati, UTC+14)", () => {
+                // 2026-07-07T12:00Z is already 02:00 on the 8th in Kiritimati — UTC says the 7th.
+                pin("Pacific/Kiritimati", new Date(Date.UTC(2026, 6, 7, 12, 0)));
+                expect(today()).toBe("2026-07-08");
+            });
         });
     });
 });

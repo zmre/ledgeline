@@ -1,0 +1,2 @@
+; PARSE-6: the calendar check covers a `P` directive's date too.
+P 2024-02-30 AAPL $1.00

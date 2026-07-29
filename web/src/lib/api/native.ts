@@ -3,7 +3,7 @@
 // HledgerApi (the wire client) but distinguishes a server that simply lacks the
 // native routes (a plain hledger-web) from one that is unreachable.
 
-import {ApiUnreachableError} from "./client";
+import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
 /** The configured server answered, but has no /api/* routes (e.g. plain hledger-web). */
 export class NativeApiUnavailableError extends Error {
@@ -75,12 +75,31 @@ export interface WirePostingAmount {
     cost?: WireCost;
 }
 
-/** One posting: an account and an OPTIONAL amount — no `amount` marks the elided/inferred leg. */
+/** Real / unbalanced-virtual `(a)` / balanced-virtual `[a]` on the write wire. */
+export type WirePostingType = "regular" | "virtual" | "balancedVirtual";
+
+/** A `=`/`==`/`=*`/`==*` balance assertion: `total` is `==`, `inclusive` is `=*`. */
+export interface WireBalanceAssertion {
+    amount: {commodity: string; quantity: WireDec};
+    inclusive: boolean;
+    total: boolean;
+}
+
+/**
+ * One posting: an account and an OPTIONAL amount — no `amount` marks the elided/inferred leg.
+ *
+ * `type` and `balanceAssertion` are optional, but omitting them means the
+ * posting HAS neither — the engine writes exactly what it is sent. A
+ * read-modify-write (the edit popup's PUT) must therefore echo both back or it
+ * destroys them, which is what DL-2 was.
+ */
 export interface WirePostingInput {
     account: string;
     status?: WireStatus;
     comment?: string;
     amount?: WirePostingAmount;
+    type?: WirePostingType;
+    balanceAssertion?: WireBalanceAssertion;
 }
 
 /** `POST /api/transactions` (ADD) / `PUT /api/transactions/{index}` (REPLACE) request body. */
@@ -119,7 +138,7 @@ export interface WireTransaction {
     status: WireStatus;
     code: string;
     description: string;
-    postings: {account: string; amounts: WirePostingAmount[]; status: string; type: string}[];
+    postings: {account: string; amounts: WirePostingAmount[]; status: string; type: string; balanceAssertion?: WireBalanceAssertion}[];
 }
 
 /** 201 (ADD) / 200 (REPLACE, PATCH) response: the resulting transaction + its (re)assigned index. */
@@ -212,36 +231,61 @@ export interface HoldingsSeriesQuery extends HoldingsQuery {
     count?: number;
 }
 
+/** Cancellation + deadline for one client's requests; see `REQUEST_TIMEOUT_MS`. */
+export interface LedgelineApiOptions {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+}
+
 export class LedgelineApi {
     readonly baseUrl: string;
+    private readonly signal?: AbortSignal;
+    private readonly timeoutMs: number;
 
-    constructor(baseUrl: string) {
+    constructor(baseUrl: string, options?: LedgelineApiOptions) {
         this.baseUrl = baseUrl.replace(/\/+$/, "");
+        this.signal = options?.signal;
+        this.timeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
     }
 
     /** GET a native route, returning raw unknown JSON; pass through a nativeDecode.* decoder separately. */
     private async getJson(route: string): Promise<unknown> {
         const url = `${this.baseUrl}${route}`;
-        let response: Response;
-        try {
-            // no-store: report data must always come from the live engine, never the HTTP cache
-            response = await fetch(url, {headers: {Accept: "application/json"}, cache: "no-store"});
-        } catch (cause) {
-            throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
-        }
-        // A server without the native routes (plain hledger-web) 404s here.
-        if (response.status === 404) {
-            throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE);
-        }
-        if (!response.ok) {
-            throw new ApiUnreachableError(`GET ${url} responded ${response.status} ${response.statusText}`);
-        }
-        try {
-            return (await response.json()) as unknown;
-        } catch (cause) {
-            // 200 but not JSON (an HTML page from a non-engine server) — same "not the engine" signal.
-            throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE, {cause});
-        }
+        return withDeadline(`GET ${url}`, this.timeoutMs, this.signal, async (signal) => {
+            let response: Response;
+            try {
+                // no-store: report data must always come from the live engine, never the HTTP cache
+                response = await fetch(url, {headers: authHeaders({Accept: "application/json"}), cache: "no-store", signal});
+            } catch (cause) {
+                throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
+            }
+            // A server without the native routes (plain hledger-web) 404s here.
+            if (response.status === 404) {
+                throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE);
+            }
+            if (!response.ok) {
+                throw new ApiUnreachableError(`GET ${url} responded ${response.status} ${response.statusText}`);
+            }
+            try {
+                return (await response.json()) as unknown;
+            } catch (cause) {
+                // 200 but not JSON (an HTML page from a non-engine server) — same "not the engine" signal.
+                throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE, {cause});
+            }
+        });
+    }
+
+    /**
+     * Engine-computed journal diagnostics: `{"diagnostics": [...]}`, every
+     * unbalanced transaction and failed balance assertion.
+     *
+     * Its own route rather than a field on `/transactions` because that endpoint
+     * is a byte-for-byte hledger-web emulation whose parity comparator rejects
+     * any unexpected key. A plain hledger-web 404s here, which the caller reads
+     * as "no diagnostics".
+     */
+    diagnostics(): Promise<unknown> {
+        return this.getJson("/api/diagnostics");
     }
 
     balanceSheet(query: BalanceSheetQuery = {}): Promise<unknown> {
@@ -327,13 +371,15 @@ export class LedgelineApi {
      */
     async probeEditing(): Promise<boolean> {
         const url = `${this.baseUrl}/api/transactions`;
-        let response: Response;
-        try {
-            response = await fetch(url, {method: "GET", headers: {Accept: "application/json"}, cache: "no-store"});
-        } catch (cause) {
-            throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
-        }
-        return response.status !== 404;
+        return withDeadline(`GET ${url}`, this.timeoutMs, this.signal, async (signal) => {
+            let response: Response;
+            try {
+                response = await fetch(url, {method: "GET", headers: authHeaders({Accept: "application/json"}), cache: "no-store", signal});
+            } catch (cause) {
+                throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
+            }
+            return response.status !== 404;
+        });
     }
 
     /**
@@ -343,35 +389,36 @@ export class LedgelineApi {
      */
     private async mutate<T>(method: string, route: string, okStatus: number, body?: unknown): Promise<T> {
         const url = `${this.baseUrl}${route}`;
-        const headers: Record<string, string> = {Accept: "application/json"};
-        if (body !== undefined) headers["Content-Type"] = "application/json";
-        let response: Response;
-        try {
-            response = await fetch(url, {method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store"});
-        } catch (cause) {
-            throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
-        }
-        const text = await response.text();
-        if (response.status === okStatus) {
+        const headers = authHeaders(body === undefined ? {Accept: "application/json"} : {Accept: "application/json", "Content-Type": "application/json"});
+        return withDeadline(`${method} ${url}`, this.timeoutMs, this.signal, async (signal) => {
+            let response: Response;
             try {
-                return JSON.parse(text) as T;
+                response = await fetch(url, {method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store", signal});
             } catch (cause) {
-                // Expected status but an unparseable body — a non-engine server answering the route.
-                throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE, {cause});
+                throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
             }
-        }
-        const message = text.trim();
-        switch (response.status) {
-            case 400:
-                throw new ValidationError(message || "The transaction is invalid.");
-            case 404:
-                throw new NotFoundError(message || "That transaction no longer exists — refresh the journal.");
-            case 409:
-                throw new ConflictError(message || "The journal changed on disk — refresh and try again.");
-            case 501:
-                throw new NativeApiUnavailableError(message || "Editing is not enabled on this server.");
-            default:
-                throw new ApiUnreachableError(`${method} ${url} responded ${response.status} ${response.statusText}`);
-        }
+            const text = await response.text();
+            if (response.status === okStatus) {
+                try {
+                    return JSON.parse(text) as T;
+                } catch (cause) {
+                    // Expected status but an unparseable body — a non-engine server answering the route.
+                    throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE, {cause});
+                }
+            }
+            const message = text.trim();
+            switch (response.status) {
+                case 400:
+                    throw new ValidationError(message || "The transaction is invalid.");
+                case 404:
+                    throw new NotFoundError(message || "That transaction no longer exists — refresh the journal.");
+                case 409:
+                    throw new ConflictError(message || "The journal changed on disk — refresh and try again.");
+                case 501:
+                    throw new NativeApiUnavailableError(message || "Editing is not enabled on this server.");
+                default:
+                    throw new ApiUnreachableError(`${method} ${url} responded ${response.status} ${response.statusText}`);
+            }
+        });
     }
 }

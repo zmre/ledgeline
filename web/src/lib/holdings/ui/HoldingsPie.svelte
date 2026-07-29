@@ -1,29 +1,25 @@
 <!-- Holdings pie (WP-10): slice per symbol by toNumber(marketValue), unpriced
      holdings excluded (the inline warning covers them), tail folded into one
      "(other)" bucket.
-     - colors: the dataviz reference DARK categorical palette, all 8 slots in
-       fixed order (app theme is dark-only) + muted gray for the folded tail.
-       Validated with the dataviz skill validator against the daisyUI dark
-       surface: lightness band PASS, chroma PASS, contrast >=3:1 PASS, worst
-       adjacent CVD dE 10.3 (floor band) — mitigated per the skill by the
-       always-visible legend (symbol + % share, identity never color-alone),
-       pad-angle gaps between slices, and full tooltips.
+     - colors: the shared categorical palette ($lib/format/palette) — all 8
+       slots in fixed order, plus muted gray for the folded tail. The palette
+       module documents the validator run and why the slot ORDER changed.
+       Secondary encoding, which the skill requires at this CVD separation, is
+       the always-visible legend (symbol + % share, identity never color-alone),
+       the pad-angle gaps between slices, and the tooltips.
      - a 9th holding never gets a generated hue: it folds into "(other)"
        (dataviz non-negotiable), which is why the named-slice cap is 8. -->
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
     import type {Dec} from "$lib/domain/money";
+    import {CATEGORICAL, colorAt, OTHER_COLOR} from "$lib/format/palette";
     import type {Holding} from "$lib/holdings/types";
     import {pieSlices, PIE_OTHER, type PieSlice} from "./view";
 
     let {holdings, format}: {holdings: Holding[]; format: (v: Dec) => string} = $props();
 
-    // Dark-mode categorical slots 1..8 from the dataviz reference palette, fixed order, never cycled.
-    const PALETTE = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
-    const OTHER_COLOR = "#898781"; // muted — the folded tail is context, not a series identity
-
-    const slices = $derived(pieSlices(holdings, format, PALETTE.length));
-    const colorOf = (slice: PieSlice, i: number): string => (slice.symbol === PIE_OTHER ? OTHER_COLOR : PALETTE[i]);
+    const slices = $derived(pieSlices(holdings, format, CATEGORICAL.length));
+    const colorOf = (slice: PieSlice, i: number): string => (slice.symbol === PIE_OTHER ? OTHER_COLOR : colorAt(i));
 </script>
 
 {#if slices.length === 0}

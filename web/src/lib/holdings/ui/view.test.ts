@@ -2,7 +2,19 @@ import {describe, expect, it} from "vitest";
 import {dec, formatDec, type Dec} from "$lib/domain/money";
 import type {Holding} from "$lib/holdings/types";
 import {amt, txn, usd} from "$lib/holdings/test-helpers";
-import {EM_DASH, formatGainPct, formatShares, PIE_OTHER, pieSlices, sortHoldings, stockAccounts, untotaledBasisCount, type SortKey} from "./view";
+import {
+    EM_DASH,
+    formatGainPct,
+    formatShares,
+    partitionShortPositions,
+    PIE_OTHER,
+    pieSlices,
+    shortPositionNote,
+    sortHoldings,
+    stockAccounts,
+    untotaledBasisCount,
+    type SortKey,
+} from "./view";
 
 /** Priced holding with marketValue in whole dollars; `overrides` fills whichever other fields a test sorts on. */
 function holding(symbol: string, marketValueDollars: number | null, overrides: Partial<Holding> = {}): Holding {
@@ -79,24 +91,44 @@ describe("UNIT holdings view helpers", () => {
     });
 
     describe("formatShares", () => {
-        it("caps display at 2 decimals and trims trailing zeros", () => {
+        it("keeps the quantity's own precision and trims trailing zeros", () => {
             expect(formatShares(dec(195000n, 4))).toBe("19.5"); // 19.5000
             expect(formatShares(dec(170n, 1))).toBe("17"); // 17.0
             expect(formatShares(dec(45n, 1))).toBe("4.5");
             expect(formatShares(dec(123456n, 2))).toBe("1,234.56");
         });
 
-        it("rounds (half away from zero) rather than truncating", () => {
-            expect(formatShares(dec(19999n, 3))).toBe("20"); // 19.999 → 20.00 → 20
+        // FE-6: a share count is not money. Under the 2-place MONEY cap these
+        // read "0" and "1" next to a real dollar market value.
+        it("does not round fractional units to cents", () => {
+            expect(formatShares(dec(123456n, 8))).toBe("0.00123456"); // 0.00123456 BTC, was "0"
+            expect(formatShares(dec(100123456n, 8))).toBe("1.00123456"); // was "1"
+            expect(formatShares(dec(19999n, 3))).toBe("19.999"); // 19.999 units are not 20 units
+        });
+
+        it("caps at 8 places, rounding half away from zero, and keeps a sub-satoshi dust row readable", () => {
+            expect(formatShares(dec(1999999995n, 10))).toBe("0.2"); // 0.1999999995 → 0.20000000 → trimmed
+            expect(formatShares(dec(123456789n, 10))).toBe("0.01234568"); // 0.0123456789 rounds up at place 8
+            expect(formatShares(dec(1n, 12))).toBe("0"); // below 1e-8: the short zero beats a row of zeros
         });
     });
 
     describe("formatGainPct", () => {
         it("formats with explicit sign and one decimal, em-dash for null", () => {
             expect(formatGainPct(21.256)).toBe("+21.3%");
-            expect(formatGainPct(-3.44)).toBe("-3.4%");
-            expect(formatGainPct(0)).toBe("+0.0%");
             expect(formatGainPct(null)).toBe(EM_DASH);
+        });
+
+        // DRY-6: this was a second implementation of the insights dashboard's
+        // `fmtSignedPct`, and the two disagreed on both of these. It now IS
+        // that function, so these pin the single canonical rendering.
+        it("uses the typographic minus U+2212, not an ASCII hyphen", () => {
+            expect(formatGainPct(-3.44)).toBe("−3.4%");
+            expect(formatGainPct(-3.44)).not.toBe("-3.4%");
+        });
+
+        it("leaves zero unsigned — '+0.0%' claimed a gain that did not happen", () => {
+            expect(formatGainPct(0)).toBe("0.0%");
         });
     });
 
@@ -109,6 +141,64 @@ describe("UNIT holdings view helpers", () => {
             expect(untotaledBasisCount([known, holding("AAPL", 50, {basis: dec(500n, 0)})])).toBe(0);
             expect(untotaledBasisCount([tainted, unpricedTainted])).toBe(2);
             expect(untotaledBasisCount([])).toBe(0);
+        });
+    });
+
+    describe("partitionShortPositions", () => {
+        it("hides only the net-negative rows, preserving engine order in both halves", () => {
+            const vti = holding("VTI", 5282, {shares: dec(17n, 0)});
+            const tsla = holding("TSLA", -630, {shares: dec(-2n, 0)});
+            const gld = holding("GLD", null, {shares: dec(5n, 0)});
+            const {shown, hidden} = partitionShortPositions([vti, tsla, gld]);
+            expect(shown.map((h) => h.symbol)).toEqual(["VTI", "GLD"]);
+            expect(hidden.map((h) => h.symbol)).toEqual(["TSLA"]);
+        });
+
+        it("compares the exact mantissa, so a sub-unit short is still short", () => {
+            // −0.5 sh: a float-free sign test (0.5 rounds to 0 under a 2dp display cap).
+            const {shown, hidden} = partitionShortPositions([holding("FRC", -12, {shares: dec(-5n, 1)})]);
+            expect(shown).toEqual([]);
+            expect(hidden.map((h) => h.symbol)).toEqual(["FRC"]);
+        });
+
+        it("keeps everything when nothing is short", () => {
+            const rows = [holding("VTI", 100, {shares: dec(1n, 0)}), holding("AAPL", 50, {shares: dec(2n, 0)})];
+            expect(partitionShortPositions(rows).shown).toHaveLength(2);
+            expect(partitionShortPositions(rows).hidden).toEqual([]);
+            expect(partitionShortPositions([]).hidden).toEqual([]);
+        });
+    });
+
+    describe("shortPositionNote", () => {
+        it("is null when nothing is hidden, so the note never renders", () => {
+            expect(shortPositionNote([], fmt)).toBeNull();
+        });
+
+        it("names the symbol and the exact value the totals still carry (singular)", () => {
+            const note = shortPositionNote([holding("TSLA", -630, {shares: dec(-2n, 0)})], fmt);
+            expect(note).toBe(
+                "1 short position is hidden (TSLA): net shares are negative, so the opening purchase was likely never recorded. " +
+                    "Its market value ($-630.00) is still counted in the totals above."
+            );
+        });
+
+        it("pluralizes and sums exactly across several shorts", () => {
+            const note = shortPositionNote([holding("TSLA", -630, {shares: dec(-2n, 0)}), holding("SHT", -70, {shares: dec(-1n, 0)})], fmt);
+            expect(note).toContain("2 short positions are hidden (TSLA, SHT)");
+            expect(note).toContain("the opening purchases were likely never recorded");
+            expect(note).toContain("Their market value ($-700.00) is still counted in the totals above.");
+        });
+
+        it("drops the value clause when no hidden row is priced (it contributes nothing either way)", () => {
+            const note = shortPositionNote([holding("SHT", null, {shares: dec(-1n, 0)})], fmt);
+            expect(note).toContain("1 short position is hidden (SHT)");
+            expect(note).toContain("No price is known for it, so it adds nothing to the totals.");
+            expect(note).not.toContain("market value");
+        });
+
+        it("counts only the priced shorts toward the stated value", () => {
+            const note = shortPositionNote([holding("TSLA", -630, {shares: dec(-2n, 0)}), holding("SHT", null, {shares: dec(-1n, 0)})], fmt);
+            expect(note).toContain("Their market value ($-630.00) is still counted in the totals above.");
         });
     });
 

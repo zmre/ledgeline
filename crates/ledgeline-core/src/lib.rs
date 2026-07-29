@@ -15,6 +15,7 @@
 //! - `holdings` — average-cost stock-holdings engine (Phase 3d)
 //! - `edit`    — ropey-based write path (Phase 5)
 
+pub mod assertions;
 pub mod decimal;
 pub mod edit;
 pub mod holdings;

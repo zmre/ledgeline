@@ -1,0 +1,16 @@
+; PARSE-3: with no `commodity` directive and no `decimal-mark`, hledger infers
+; each literal's own decimal mark. A single separator is the decimal point
+; regardless of how many digits follow it, so `1,50` is one-and-a-half and
+; `$1,234` is one-point-two-three-four. A distinct commodity per case keeps
+; each literal's inferred style independent.
+2017-01-01
+    a    1,50 CHF
+    b   -1,50 CHF
+
+2017-01-02
+    a    $1,234
+    b   -$1,234
+
+2017-01-03
+    a    1.234,56 SEK
+    b   -1.234,56 SEK

@@ -7,6 +7,7 @@
 <script lang="ts">
     import {formatAmount, toNumber} from "$lib/domain/money";
     import type {Transaction} from "$lib/domain/types";
+    import {signClass} from "$lib/format/sign";
     import {settings} from "$lib/stores/settings.svelte";
     import BigNumbers from "./BigNumbers.svelte";
     import ChartWidget from "./ChartWidget.svelte";
@@ -40,7 +41,7 @@
         <h2 class="text-sm font-semibold tracking-tight">Insights</h2>
         <span class="text-sm">
             <span class="text-base-content/60 mr-1">Net</span>
-            <span class="font-semibold {toNumber(net) < 0 ? 'text-error' : 'text-success'}">{netFormatted}</span>
+            <span class="font-semibold {signClass(toNumber(net))}">{netFormatted}</span>
         </span>
     </div>
     <div class="collapse-content flex flex-col gap-4">

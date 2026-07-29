@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {dec} from "../domain/money";
-import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from "../domain/types";
+import type {Amount, AmountStyle, ISODate, Posting, PostingType, Transaction, TxnStatus} from "../domain/types";
 import {today} from "../reports/periods";
 import {groupByTxn, maxSeverity, runChecks, ALL_RULES, type Problem} from "./engine";
 
@@ -19,6 +19,8 @@ const aapl = (tenThousandths: number, costCents: number, per: boolean): Amount =
 interface PostingSpec {
     account: string;
     amounts: Amount[];
+    /** hledger's `ptype`; omitted = `"regular"`, exactly as the normalizer emits it. */
+    type?: PostingType;
 }
 
 interface TxnSpec {
@@ -28,7 +30,11 @@ interface TxnSpec {
 }
 
 function txn(index: number, postings: PostingSpec[], spec: TxnSpec = {}): Transaction {
-    const full: Posting[] = postings.map((p) => ({account: p.account, amounts: p.amounts, status: "unmarked", comment: "", tags: []}));
+    const full: Posting[] = postings.map((p) => {
+        const posting: Posting = {account: p.account, amounts: p.amounts, status: "unmarked", comment: "", tags: []};
+        if (p.type !== undefined) posting.type = p.type;
+        return posting;
+    });
     const description = spec.description ?? `txn ${index}`;
     return {
         index,
@@ -46,6 +52,29 @@ function txn(index: number, postings: PostingSpec[], spec: TxnSpec = {}): Transa
 const byRule = (problems: Problem[], rule: string): Problem[] => problems.filter((p) => p.rule === rule);
 const NO_PRICES = {prices: []};
 const run1 = (t: Transaction, rule: string): Problem[] => byRule(runChecks([t], NO_PRICES), rule);
+
+describe("UNIT checks/rules unbalanced defers to the engine", () => {
+    // A transaction this rule WOULD flag, to prove the deferral is what silences
+    // it rather than the transaction happening to balance.
+    const offBy = () =>
+        txn(1, [
+            {account: "a", amounts: [usd(100)]},
+            {account: "b", amounts: [usd(-200)]},
+        ]);
+
+    it("stands down when the engine ran its own balance check", () => {
+        expect(byRule(runChecks([offBy()], {prices: [], engineChecked: true}), "unbalanced")).toEqual([]);
+    });
+
+    it("still runs against a plain hledger-web, which has no diagnostics route", () => {
+        expect(byRule(runChecks([offBy()], {prices: [], engineChecked: false}), "unbalanced")).toHaveLength(1);
+        expect(run1(offBy(), "unbalanced")).toHaveLength(1); // absent flag == not checked
+    });
+
+    it("stands down even when the engine reported zero diagnostics — [] means clean, not unchecked", () => {
+        expect(byRule(runChecks([offBy()], {prices: [], diagnostics: [], engineChecked: true}), "unbalanced")).toEqual([]);
+    });
+});
 
 describe("UNIT checks/rules unbalanced", () => {
     it("accepts a fully amounted transaction that sums to zero per commodity", () => {
@@ -146,6 +175,67 @@ describe("UNIT checks/rules unbalanced", () => {
 
     it("ignores a postingless transaction (nothing to balance)", () => {
         expect(run1(txn(11, []), "unbalanced")).toEqual([]);
+    });
+});
+
+// hledger balances a transaction in two INDEPENDENT groups (verified against
+// hledger 1.52 by running each of these shapes through `hledger -f … print`):
+// the real postings, and the balanced-virtual `[a]` ones. Unbalanced-virtual
+// `(a)` postings are excluded from balancing altogether, and each group carries
+// its own one-posting elision budget.
+describe("UNIT checks/rules unbalanced virtual postings", () => {
+    const virt = (account: string, amounts: Amount[]): PostingSpec => ({account, amounts, type: "virtual"});
+    const bvirt = (account: string, amounts: Amount[]): PostingSpec => ({account, amounts, type: "balancedVirtual"});
+
+    it("excludes an unbalanced-virtual `(a)` posting from the residue", () => {
+        // fixtures/corpus/virtual-postings.journal, as hledger 1.52 prints it.
+        const t = txn(1, [virt("virtual", [usd(10000)]), {account: "a", amounts: [usd(100)]}, {account: "b", amounts: [usd(-100)]}]);
+        expect(run1(t, "unbalanced")).toEqual([]);
+    });
+
+    it("does not let a virtual posting consume the real postings' elision budget", () => {
+        const t = txn(2, [virt("virtual", [usd(50000)]), {account: "a", amounts: [usd(100)]}, {account: "b", amounts: []}]);
+        expect(run1(t, "unbalanced")).toEqual([]);
+    });
+
+    it("balances `[a]` postings in their own group, not against the real ones", () => {
+        // fixtures/corpus/balanced-virtual-postings.journal.
+        const t = txn(3, [bvirt("bv", [usd(1000)]), bvirt("bv", [usd(-1000)]), {account: "a", amounts: [usd(100)]}, {account: "b", amounts: [usd(-100)]}]);
+        expect(run1(t, "unbalanced")).toEqual([]);
+    });
+
+    it("flags a balanced-virtual group that does not sum to zero, naming that group", () => {
+        const t = txn(4, [bvirt("bv", [usd(1000)]), bvirt("bv", [usd(-500)]), {account: "a", amounts: [usd(100)]}, {account: "b", amounts: [usd(-100)]}]);
+        const problems = run1(t, "unbalanced");
+        expect(problems).toHaveLength(1);
+        expect(problems[0]).toMatchObject({txnIndex: 4, severity: "error"});
+        expect(problems[0].message).toBe("balanced virtual postings do not sum to zero: $ 5.00 remaining");
+    });
+
+    it("gives each group its own elision budget — one elided real plus one elided `[a]` is legal", () => {
+        const t = txn(5, [bvirt("bv", [usd(1000)]), bvirt("bv", []), {account: "a", amounts: [usd(100)]}, {account: "b", amounts: []}]);
+        expect(run1(t, "unbalanced")).toEqual([]);
+    });
+
+    it("still flags two elided postings within the SAME group", () => {
+        const t = txn(6, [
+            bvirt("bv", [usd(1000)]),
+            bvirt("bv", []),
+            bvirt("bv", []),
+            {account: "a", amounts: [usd(100)]},
+            {account: "b", amounts: [usd(-100)]},
+        ]);
+        const problems = run1(t, "unbalanced");
+        expect(problems).toHaveLength(1);
+        expect(problems[0].message).toBe("2 balanced virtual postings have no amount — at most one may be elided");
+    });
+
+    it("reports both groups independently when both are broken", () => {
+        const t = txn(7, [bvirt("bv", [usd(1000)]), {account: "a", amounts: [usd(100)]}]);
+        expect(run1(t, "unbalanced").map((p) => p.message)).toEqual([
+            "postings do not sum to zero: $ 1.00 remaining",
+            "balanced virtual postings do not sum to zero: $ 10.00 remaining",
+        ]);
     });
 });
 

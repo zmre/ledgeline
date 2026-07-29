@@ -1,0 +1,5 @@
+﻿; PARSE-9: this file begins with a UTF-8 BOM (U+FEFF). hledger strips it;
+; leaving it attached to the first token failed the WHOLE file.
+2024-01-01 t
+    expenses:x   $1.00
+    assets:bank

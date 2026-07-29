@@ -155,6 +155,20 @@ export function lastNBuckets(end: ISODate, interval: Interval, n: number): strin
     return out.reverse();
 }
 
+/**
+ * The bucket key immediately following `key` for the same `interval` — the
+ * bucket containing the day after `key`'s last day. Companion to `lastNBuckets`,
+ * for forward iteration (zero-filling a chart's bucket range).
+ *
+ * Mirrors `reports::periods::next_bucket` in the Rust engine, which this module
+ * is kept line-by-line identical to. Throws `RangeError` (via `bucketEnd`) for
+ * an unrecognized key, where Rust returns `Err(InvalidBucketKey)`.
+ */
+export function nextBucket(key: string, interval: Interval): string {
+    const [y, m, d] = parts(bucketEnd(key));
+    return bucketKey(toISO(...civilFromDays(daysFromCivil(y, m, d) + 1)), interval);
+}
+
 /** Number of monthly buckets spanning `from`…`to` inclusive (min 1). "2026-01"→"2026-07" = 7. */
 export function monthsBetween(from: ISODate, to: ISODate): number {
     const [fy, fm] = [Number(from.slice(0, 4)), Number(from.slice(5, 7))];

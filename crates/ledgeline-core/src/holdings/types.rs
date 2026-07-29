@@ -6,6 +6,7 @@
 //! but not `Eq`).
 
 use crate::decimal::Dec;
+use crate::model::{Commodity, Tindex};
 use std::collections::BTreeSet;
 
 /// Include vs. exclude semantics for a [`HoldingsScope`].
@@ -37,6 +38,16 @@ pub struct HoldingsScope {
     /// null-propagating when held-but-unpriced at `start`). `basis` is
     /// unaffected — it always stays the all-time average-cost basis.
     pub gain_since: Option<String>,
+    /// The commodity to value the whole report in, overriding the automatic
+    /// choice. Mirrors `NetWorthOpts::value_in` (and hledger's
+    /// `--value=end,COMM`).
+    ///
+    /// `None` (the default) lets the engine choose — see
+    /// `engine::choose_base`, which walks `PriceDb::base_candidates` and takes
+    /// the first that actually prices the in-scope holdings. Set it when the
+    /// caller knows better: the `/api/holdings` `valueIn` query param, or the
+    /// journal's own `D` default-commodity directive.
+    pub value_in: Option<Commodity>,
 }
 
 /// Where a holding's price came from.
@@ -67,12 +78,17 @@ pub struct Holding {
     pub symbol: String,
     /// The `name:` tag if seen, else the symbol.
     pub name: String,
-    /// In-scope accounts currently holding shares (net > 0), sorted.
+    /// In-scope accounts currently holding shares (net > 0), sorted. Empty for a
+    /// net-short position that no account holds any of.
     pub accounts: Vec<String>,
-    /// Net shares held (`> 0` by construction — negative/zero rows are dropped).
+    /// Net shares held. Non-zero by construction (a fully sold-out position is
+    /// dropped), but NOT necessarily positive: a symbol sold without ever being
+    /// bought is reported net-short, because the balance sheet carries and values
+    /// exactly those shares. See [`WarningKind::NegativeShares`].
     pub shares: Dec,
     /// Average-cost basis in the base commodity; `None` = tainted (some lot
-    /// lacked a usable cost).
+    /// lacked a usable cost, or the pool went short so the opening lot is
+    /// missing).
     pub basis: Option<Dec>,
     /// Date the current position was opened (reset on each full sell-out);
     /// `None` only if never bought in scope.
@@ -94,6 +110,12 @@ pub enum WarningKind {
     /// A lot was acquired without a usable cost annotation (basis unknown).
     MissingBasis,
     /// Net shares went negative (an opening position was likely never entered).
+    ///
+    /// The row is still reported, with its (negative) market value counted in
+    /// `totals.market_value` and its `basis`/`gain` left `None`. Consumers that
+    /// present a portfolio table are expected to hide such rows and say so —
+    /// nobody "holds" −2 shares — but the totals must keep the value, or the
+    /// portfolio stops reconciling with the balance sheet.
     NegativeShares,
     /// No market price or usable cost annotation (excluded from totals).
     Unpriced,
@@ -106,8 +128,27 @@ pub struct HoldingsWarning {
     pub symbol: String,
     /// What went wrong.
     pub kind: WarningKind,
-    /// Human-readable detail (matches the TS message strings).
+    /// Human-readable detail.
     pub message: String,
+    /// The transactions this warning is anchored to — 1-based [`Tindex`]es, in
+    /// journal order, deduped. Never empty: a pool only exists because some
+    /// transaction touched it.
+    ///
+    /// This is what lets a consumer flag the offending ROW rather than only
+    /// naming the symbol, which is why `/api/diagnostics` can carry these
+    /// warnings in the SPA's `Problem` shape (`{txnIndex, rule, severity,
+    /// message}`) alongside the unbalanced/assertion findings.
+    ///
+    /// One warning can name several transactions:
+    /// [`WarningKind::MissingBasis`] anchors to EVERY acquisition lot of the
+    /// currently-held position whose cost was unusable, so a symbol bought
+    /// cost-lessly three times flags three rows. The other two kinds anchor to
+    /// exactly one: the transaction that took the running total negative
+    /// ([`WarningKind::NegativeShares`], falling back to the latest touch when
+    /// the pool opened short), and the latest transaction touching the symbol
+    /// ([`WarningKind::Unpriced`] — pricing is a property of the position, not
+    /// of any one lot).
+    pub txns: Vec<Tindex>,
 }
 
 /// Portfolio-level totals. `basis`/`gain`/`gain_pct` are PARTIAL: they sum over
@@ -117,7 +158,9 @@ pub struct HoldingsWarning {
 /// holding excluded (an empty portfolio still reports a real zero).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HoldingsTotals {
-    /// Sum of priced market values (unpriced holdings excluded).
+    /// Sum of priced market values (unpriced holdings excluded; net-short rows
+    /// INCLUDED, negatively). Adding the scope's cash reproduces the valued
+    /// balance sheet exactly.
     pub market_value: Dec,
     /// Sum of basis over priced holdings with a known basis; `None` only when
     /// none qualify (all shown holdings tainted/unpriced).
@@ -135,7 +178,7 @@ pub struct HoldingsReport {
     pub as_of: String,
     /// Base valuation commodity (`PriceDb` base, else `"$"`).
     pub base: String,
-    /// Holdings with `shares > 0`, sorted by market value desc (unpriced last,
+    /// Holdings with `shares != 0`, sorted by market value desc (unpriced last,
     /// then by symbol).
     pub holdings: Vec<Holding>,
     /// Portfolio totals.

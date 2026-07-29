@@ -1,0 +1,89 @@
+; Cross-report invariant fixture (CLEANUP.md RPT-5) — the cases
+; `fixtures/sample.journal` deliberately cannot cover.
+;
+;  1. SINGLE COMMODITY, NO COSTS. No `@`/`@@` annotations and no `P` directives,
+;     so every transaction balances in raw amounts and the textbook accounting
+;     identity `assets + liabilities + equity + revenues + expenses == 0` is
+;     exactly zero at any as-of date. With no prices at all, `net_worth` has no
+;     valuation target and reports raw balances, directly comparable to the
+;     balance sheet's grand total.
+;
+;  2. PARENTS WITH THEIR OWN POSTINGS. `assets:bank`, `expenses:food` and
+;     `liabilities:cc` are each posted to DIRECTLY as well as having children.
+;     The rollup invariant is `inclusive(a) == own(a) + Σ inclusive(children)`;
+;     without a parent that owns postings, the weaker (and wrong) form
+;     `inclusive(a) == Σ inclusive(children)` passes too.
+;
+;  3. ALL FIVE ACCOUNT TYPES, declared explicitly, so section membership is
+;     decided by `type:` rather than by name.
+;
+; Verified against hledger 1.52:
+;   $ hledger -f fixtures/reports/invariants-basic.journal bal -e 2026-12-31
+;     → grand total 0
+;   $ hledger -f fixtures/reports/invariants-basic.journal bal assets:bank -e 2026-12-31
+;     →  $1,000.00  assets:bank            (the parent's OWN petty-cash posting)
+;       $13,600.00  assets:bank:checking
+;        $2,500.00  assets:bank:savings
+;       -----------
+;       $17,100.00                          (= own + both children)
+
+account assets                  ; type: A
+account assets:bank             ; type: A
+account assets:bank:checking    ; type: C
+account assets:bank:savings     ; type: C
+account liabilities             ; type: L
+account liabilities:cc          ; type: L
+account liabilities:cc:visa     ; type: L
+account equity:opening          ; type: E
+account income:salary           ; type: R
+account expenses                ; type: X
+account expenses:food           ; type: X
+account expenses:food:groceries ; type: X
+account expenses:rent           ; type: X
+
+commodity $1,000.00
+
+2026-01-01 * Opening balances
+    assets:bank:checking       $4,000.00
+    assets:bank:savings        $2,000.00
+    assets:bank                $1,000.00   ; petty cash held at the parent
+    liabilities:cc:visa         $-300.00
+    liabilities:cc              $-100.00   ; an unallocated card charge
+    equity:opening
+
+2026-01-15 * Acme Corp | January salary
+    income:salary              $-5,000.00
+    assets:bank:checking        $5,000.00
+
+2026-01-20 * Landlord | rent
+    expenses:rent              $1,500.00
+    assets:bank:checking
+
+2026-01-25 * Safeway | groceries
+    expenses:food:groceries      $220.00
+    expenses:food                 $30.00   ; unitemized, booked at the parent
+    liabilities:cc:visa
+
+2026-02-10 * Acme Corp | February salary
+    income:salary              $-5,000.00
+    assets:bank:checking        $5,000.00
+
+2026-02-14 * Landlord | rent
+    expenses:rent              $1,500.00
+    assets:bank:checking
+
+2026-02-20 * transfer to savings
+    assets:bank:savings          $500.00
+    assets:bank:checking
+
+2026-03-05 * Chase | visa autopay
+    liabilities:cc:visa          $400.00
+    assets:bank:checking
+
+2026-03-18 * Acme Corp | March salary
+    income:salary              $-5,000.00
+    assets:bank:checking        $5,000.00
+
+2026-03-25 * Landlord | rent
+    expenses:rent              $1,500.00
+    assets:bank:checking

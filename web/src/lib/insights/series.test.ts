@@ -8,7 +8,6 @@ import type {AccountType} from "$lib/domain/accountTypes";
 import {
     OTHER,
     bigNumbers,
-    bucketKey,
     categoriesInUse,
     commoditiesInUse,
     formatCompactChartValue,
@@ -46,29 +45,45 @@ function fmt(d: Dec): string {
     return formatDec(d, USD_STYLE);
 }
 
-// ---------- bucketKey (local stand-in for WP-06 periods.ts) ----------
+// ---------- bucket keys come from the canonical periods.ts (DRY-2) ----------
+//
+// This module no longer owns a calendar. `bucketKey` itself is exercised
+// exhaustively in `lib/reports/periods.test.ts`; what matters HERE is that the
+// keys reaching a chart are the canonical ones, so these assert through
+// `lineData` — the only surface `series.ts` still exposes them on.
 
-describe("UNIT bucketKey", () => {
+describe("UNIT lineData bucket keys are the canonical periods.ts keys", () => {
+    const oneTxn = (date: ISODate) => [txn(date, posting("expenses:food", usd(1_00)), posting("assets:bank", usd(-1_00)))];
+    const keysFor = (date: ISODate, interval: "daily" | "weekly" | "monthly") =>
+        lineData(oneTxn(date), {depth: 1, commodity: "$", interval})
+            .find((s) => s.account === "expenses")
+            ?.points.map((p) => p.bucket);
+
     it("daily is the date itself", () => {
-        expect(bucketKey("2025-03-14", "daily")).toBe("2025-03-14");
+        expect(keysFor("2025-03-14", "daily")).toEqual(["2025-03-14"]);
     });
 
     it("monthly is YYYY-MM", () => {
-        expect(bucketKey("2025-12-31", "monthly")).toBe("2025-12");
-        expect(bucketKey("2026-01-01", "monthly")).toBe("2026-01");
+        expect(keysFor("2025-12-31", "monthly")).toEqual(["2025-12"]);
+        expect(keysFor("2026-01-01", "monthly")).toEqual(["2026-01"]);
     });
 
-    it("weekly is the Monday of the week", () => {
-        expect(bucketKey("2024-07-01", "weekly")).toBe("2024-07-01"); // a Monday maps to itself
-        expect(bucketKey("2024-07-03", "weekly")).toBe("2024-07-01"); // Wednesday
-        expect(bucketKey("2024-07-07", "weekly")).toBe("2024-07-01"); // Sunday still belongs to Monday's week
-        expect(bucketKey("2024-07-08", "weekly")).toBe("2024-07-08"); // next Monday starts a new week
+    it("weekly is the ISO-8601 week, NOT the Monday's date", () => {
+        // The local fork returned "2024-07-01" (the week's Monday) here. Every
+        // day of an ISO week shares one key.
+        expect(keysFor("2024-07-01", "weekly")).toEqual(["2024-W27"]);
+        expect(keysFor("2024-07-03", "weekly")).toEqual(["2024-W27"]); // Wednesday
+        expect(keysFor("2024-07-07", "weekly")).toEqual(["2024-W27"]); // Sunday ends the same week
+        expect(keysFor("2024-07-08", "weekly")).toEqual(["2024-W28"]); // next Monday starts a new week
     });
 
-    it("weekly crosses month and year boundaries", () => {
-        expect(bucketKey("2024-03-01", "weekly")).toBe("2024-02-26"); // Friday, week began in February
-        expect(bucketKey("2026-01-01", "weekly")).toBe("2025-12-29"); // Thursday, week began in December
-        expect(bucketKey("2024-02-29", "weekly")).toBe("2024-02-26"); // leap day
+    it("weekly crosses month and year boundaries by ISO week-year", () => {
+        expect(keysFor("2024-03-01", "weekly")).toEqual(["2024-W09"]); // Friday, week began in February
+        // A late-December date belongs to the NEXT year's W01 — the ISO
+        // week-year rule the Monday-date key could not express.
+        expect(keysFor("2026-01-01", "weekly")).toEqual(["2026-W01"]);
+        expect(keysFor("2025-12-29", "weekly")).toEqual(["2026-W01"]);
+        expect(keysFor("2024-02-29", "weekly")).toEqual(["2024-W09"]); // leap day
     });
 });
 
@@ -164,15 +179,31 @@ describe("UNIT lineData interval bucketing", () => {
         expect(food?.points.map((p) => p.value)).toEqual([10, 0, 0, 40]);
     });
 
-    it("weekly buckets are consecutive Mondays across the year boundary", () => {
+    it("weekly buckets are consecutive ISO weeks across the year boundary", () => {
         const weekly = [
-            txn("2025-12-30", posting("expenses:food", usd(5_00)), posting("assets:bank", usd(-5_00))), // Tuesday, week of 2025-12-29
-            txn("2026-01-07", posting("expenses:food", usd(7_00)), posting("assets:bank", usd(-7_00))), // Wednesday, week of 2026-01-05
+            txn("2025-12-30", posting("expenses:food", usd(5_00)), posting("assets:bank", usd(-5_00))), // Tuesday of 2026-W01
+            txn("2026-01-07", posting("expenses:food", usd(7_00)), posting("assets:bank", usd(-7_00))), // Wednesday of 2026-W02
         ];
         const series = lineData(weekly, {depth: 1, commodity: "$", interval: "weekly"});
         const food = series.find((s) => s.account === "expenses");
-        expect(food?.points.map((p) => p.bucket)).toEqual(["2025-12-29", "2026-01-05"]);
+        // Both weeks fall in ISO week-year 2026 even though the first starts in
+        // December 2025 — and the keys still sort lexically in date order, which
+        // is what lets lineData walk the range with `<=`.
+        expect(food?.points.map((p) => p.bucket)).toEqual(["2026-W01", "2026-W02"]);
         expect(food?.points.map((p) => p.value)).toEqual([5, 7]);
+    });
+
+    it("weekly zero-fills a gap and stays ordered across a week-year rollover", () => {
+        // 2020-W53 exists (2020 is a 53-week ISO year); the run must step
+        // 2020-W52 → 2020-W53 → 2021-W01 rather than skipping or reordering.
+        const weekly = [
+            txn("2020-12-21", posting("expenses:food", usd(1_00)), posting("assets:bank", usd(-1_00))), // Mon of 2020-W52
+            txn("2021-01-04", posting("expenses:food", usd(3_00)), posting("assets:bank", usd(-3_00))), // Mon of 2021-W01
+        ];
+        const series = lineData(weekly, {depth: 1, commodity: "$", interval: "weekly"});
+        const food = series.find((s) => s.account === "expenses");
+        expect(food?.points.map((p) => p.bucket)).toEqual(["2020-W52", "2020-W53", "2021-W01"]);
+        expect(food?.points.map((p) => p.value)).toEqual([1, 0, 3]);
     });
 
     it("daily buckets zero-fill across a month boundary", () => {

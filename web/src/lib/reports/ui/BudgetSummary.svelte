@@ -15,11 +15,26 @@
     import {filterToSearch} from "$lib/filters/urlCodec";
     import {formatTotals} from "$lib/journal/rowModel";
     import {bucketLabel} from "$lib/reports/periods";
-    import {barGeometry, budgetLeaves, budgetTotals, magnitudeAmount, primaryValue, summarizeBudget, type BarGeometry, type BudgetLine} from "$lib/reports/budgetSummary";
+    import {
+        barGeometry,
+        budgetLeaves,
+        budgetTotals,
+        magnitudeAmount,
+        primaryValue,
+        summarizeBudget,
+        type BarGeometry,
+        type BudgetLine,
+    } from "$lib/reports/budgetSummary";
     import type {BudgetReport} from "$lib/reports/types";
     import {defaultFilter, filters, type JournalFilter} from "$lib/stores/filters.svelte";
 
-    let {report, styles, declared, from, to}: {
+    let {
+        report,
+        styles,
+        declared,
+        from,
+        to,
+    }: {
         report: BudgetReport;
         styles: ReadonlyMap<string, AmountStyle>;
         /** Declared account types (from journal.accountDecls) → effective-type resolution. */
@@ -95,12 +110,15 @@
         [buildSection("Income", "Earned", "target", income), buildSection("Expenses", "Spent", "budgeted", expenses)].filter((s): s is Section => s !== null)
     );
 
+    // The exact dates, not just the month names: the bars cover whole months, so
+    // when the controls asked for a partial one this is the only thing telling
+    // the user the bar (and the journal link) is wider than what they typed.
     const periodLabel = $derived(
         report.buckets.length === 0
             ? ""
             : report.buckets.length === 1
-              ? bucketLabel(report.buckets[0])
-              : `${bucketLabel(report.buckets[0])} – ${bucketLabel(report.buckets[report.buckets.length - 1])}`
+              ? `${bucketLabel(report.buckets[0])} (${from} – ${to})`
+              : `${bucketLabel(report.buckets[0])} – ${bucketLabel(report.buckets[report.buckets.length - 1])} (${from} – ${to})`
     );
 
     const stateText: Record<BudgetBar["state"], string> = {under: "text-success", over: "text-error", onplan: "text-base-content/60"};

@@ -15,7 +15,17 @@
 
 import type {Dec} from "$lib/domain/money";
 import type {Amount, Posting, Transaction, TxnStatus} from "$lib/domain/types";
-import type {AddTransactionBody, InsertPosition, PatchTransactionBody, WireCost, WireDec, WirePostingAmount, WirePostingInput} from "./native";
+import type {
+    AddTransactionBody,
+    InsertPosition,
+    PatchTransactionBody,
+    WireBalanceAssertion,
+    WireCost,
+    WireDec,
+    WirePostingAmount,
+    WirePostingInput,
+    WirePostingType,
+} from "./native";
 
 // ---------------------------------------------------------------------------
 // Dec ⇆ wire / display string
@@ -74,6 +84,21 @@ export interface PostingForm {
     comment: string;
     /** A cost annotation carried through from an edited transaction (the popup preserves but doesn't edit it). */
     cost: WireCost | null;
+    /**
+     * Real / virtual `(a)` / balanced-virtual `[a]`, carried through from an
+     * edited transaction (preserved, not edited — same contract as `cost`).
+     *
+     * Losing this is not cosmetic: a `[budget:env]` envelope leg rewritten as a
+     * real posting moves money onto the balance sheet that was never there. New
+     * rows start `"regular"`, which is what the popup can express.
+     */
+    type: WirePostingType;
+    /**
+     * A `=`/`==` balance assertion carried through from an edited transaction
+     * (preserved, not edited). It is the account's reconciliation anchor — once
+     * dropped from the file it cannot be recovered.
+     */
+    balanceAssertion: WireBalanceAssertion | null;
 }
 
 /** The whole-transaction popup form (add-blank or edit-prefilled). */
@@ -95,7 +120,7 @@ export interface TxnForm {
 
 /** A blank posting row seeded with the journal's dominant commodity. */
 export function emptyPosting(defaultCommodity: string): PostingForm {
-    return {account: "", amount: "", commodity: defaultCommodity, status: "unmarked", comment: "", cost: null};
+    return {account: "", amount: "", commodity: defaultCommodity, status: "unmarked", comment: "", cost: null, type: "regular", balanceAssertion: null};
 }
 
 /** A blank two-row form for ADD (today's date, unmarked, dominant commodity). */
@@ -115,6 +140,15 @@ function costToWire(cost: NonNullable<Amount["cost"]>): WireCost {
     return {kind: cost.per ? "unit" : "total", amount: {commodity: cost.commodity, quantity: encodeDec(cost.qty)}};
 }
 
+/** Domain assertion → the write wire's shape (the asserted amount never carries a cost). */
+function assertionToWire(assertion: NonNullable<Posting["balanceAssertion"]>): WireBalanceAssertion {
+    return {
+        amount: {commodity: assertion.amount.commodity, quantity: encodeDec(assertion.amount.qty)},
+        inclusive: assertion.inclusive,
+        total: assertion.total,
+    };
+}
+
 function postingToForm(posting: Posting): PostingForm {
     const first = posting.amounts[0];
     return {
@@ -124,6 +158,8 @@ function postingToForm(posting: Posting): PostingForm {
         status: posting.status,
         comment: posting.comment,
         cost: first?.cost !== undefined ? costToWire(first.cost) : null,
+        type: posting.type ?? "regular",
+        balanceAssertion: posting.balanceAssertion !== undefined ? assertionToWire(posting.balanceAssertion) : null,
     };
 }
 
@@ -156,6 +192,14 @@ export function txnToForm(txn: Transaction): TxnForm {
  * reject. Any row with an amount but a cleared commodity falls back to
  * `defaultCommodity` (the journal's dominant commodity, itself defaulting to
  * `$`).
+ *
+ * `type` and `balanceAssertion` are echoed back verbatim. The engine writes a
+ * posting exactly as it is sent, so NOT sending them is what erased balance
+ * assertions and rewrote `[balanced-virtual]` legs as real postings on every
+ * save (DL-2). `type` is omitted when `"regular"` (the engine's default) purely
+ * to keep the body minimal; the assertion rides only a row that still has an
+ * amount, because an assertion cannot be written on the inferred leg —
+ * `validateForm` refuses that combination rather than let it drop silently.
  */
 export function formToBody(form: TxnForm, defaultCommodity: string, position?: InsertPosition): AddTransactionBody {
     const fallbackCommodity = defaultCommodity.trim() || "$";
@@ -166,12 +210,14 @@ export function formToBody(form: TxnForm, defaultCommodity: string, position?: I
         const posting: WirePostingInput = {account};
         if (row.status !== "unmarked") posting.status = row.status;
         if (row.comment.trim() !== "") posting.comment = row.comment.trim();
+        if (row.type !== "regular") posting.type = row.type;
         const qty = parseAmountInput(row.amount);
         if (qty !== null) {
             const commodity = row.commodity.trim() || fallbackCommodity;
             const amount: WirePostingAmount = {commodity, quantity: encodeDec(qty)};
             if (row.cost !== null) amount.cost = row.cost;
             posting.amount = amount;
+            if (row.balanceAssertion !== null) posting.balanceAssertion = row.balanceAssertion;
         }
         postings.push(posting);
     }
@@ -191,6 +237,13 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
  * Minimal client-side gate (the engine does the real balancing/validation and
  * returns a 400 message): a valid date and at least one posting with an
  * account; any non-blank amount must parse. Returns human messages ([] = ok).
+ *
+ * It also refuses to submit a row whose balance assertion would be dropped.
+ * An assertion can only be written next to an amount, so blanking the amount of
+ * an asserted posting would silently discard its reconciliation anchor — the
+ * DL-2 failure, arrived at from the other direction. Destroying an anchor has
+ * to be a deliberate act (the popup's "remove" control), never a side effect of
+ * clearing a number.
  */
 export function validateForm(form: TxnForm): string[] {
     const errors: string[] = [];
@@ -202,6 +255,9 @@ export function validateForm(form: TxnForm): string[] {
     for (const row of withAccount) {
         if (row.amount.trim() !== "" && parseAmountInput(row.amount) === null) {
             errors.push(`"${row.amount}" is not a valid amount.`);
+        }
+        if (row.balanceAssertion !== null && parseAmountInput(row.amount) === null) {
+            errors.push(`"${row.account.trim()}" has a balance assertion, which needs an amount on that posting — give it an amount, or remove the assertion.`);
         }
     }
     return errors;

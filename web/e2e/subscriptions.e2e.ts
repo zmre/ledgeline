@@ -12,15 +12,19 @@
 // are all correctly excluded.
 
 import {expect, test} from "@playwright/test";
+import {API_TOKEN} from "../playwright.config";
 
 const API_URL = "http://127.0.0.1:5099";
 const FIXED_NOW = new Date(2026, 6, 8, 12, 0, 0); // local 2026-07-08
 
 test.beforeEach(async ({page}) => {
     await page.clock.setFixedTime(FIXED_NOW);
-    await page.addInitScript((url) => {
-        localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url}));
-    }, API_URL);
+    await page.addInitScript(
+        ([url, token]) => {
+            localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token}));
+        },
+        [API_URL, API_TOKEN]
+    );
 });
 
 test("subscriptions: has its own tab next to Budget and lists recurring charges", async ({page}) => {

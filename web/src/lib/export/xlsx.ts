@@ -1,13 +1,31 @@
 // xlsx export (WP-07). exceljs is loaded via `await import("exceljs")` ONLY —
 // it must never reach the initial bundle (vite splits it into a lazy chunk).
-// Numbers cross the exact-money display boundary here: `toNumber()` at the
-// export boundary is acceptable per plans/07; the Excel number format keeps
-// the Dec's decimal places.
+//
+// Numbers cross the exact-money display boundary here, but the ROUNDING never
+// does: every cell is rounded on the exact `Dec` (half away from zero, the same
+// `displayPlaces`/`roundTo` pair the screen uses) and only then converted with
+// `toNumber`, so the workbook shows the number the page showed. Handing Excel
+// the unrounded float and letting the number format re-round it made the two
+// disagree, because that second rounding operates on a BINARY approximation:
+// 1005/1e3 is stored as 1.00499999999999989…, which Excel prints as 1.00 while
+// the screen prints 1.01.
 
 import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
-import {maAdd, maNeg, MAX_DISPLAY_DECIMALS, toNumber, type Dec, type MixedAmount} from "$lib/domain/money";
+import {
+    displayPlaces,
+    formatDec,
+    maAdd,
+    maNeg,
+    MAX_DISPLAY_DECIMALS,
+    MAX_QUANTITY_DECIMALS,
+    roundTo,
+    toNumber,
+    type Dec,
+    type MixedAmount,
+} from "$lib/domain/money";
+import type {AmountStyle} from "$lib/domain/types";
 import type {HoldingsReport} from "$lib/holdings/types";
-import {budgetLeaves, magnitudeAmount, primaryValue, summarizeBudget} from "$lib/reports/budgetSummary";
+import {budgetLeaves, budgetTotals, magnitudeAmount, primaryValue, summarizeBudget, type BudgetLine} from "$lib/reports/budgetSummary";
 import {bucketLabel} from "$lib/reports/periods";
 import type {BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
 import {compressPeriodRows, compressSectionRows} from "$lib/reports/ui/displayRows";
@@ -16,11 +34,42 @@ import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build 
 const HEADER_ARGB = "FF1E293B";
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
-/** Excel number format for a quantity: grouping + the Dec's decimal places (display-capped) + commodity affix. */
-export function numberFormat(commodity: string, places: number): string {
-    const shown = Math.min(places, MAX_DISPLAY_DECIMALS);
+/**
+ * Commodity characters safe to embed in an Excel number-format code (SEC-13).
+ *
+ * Deliberately an ALLOWLIST. Commodity strings come from the journal — i.e.
+ * user-controlled text — and are interpolated into `styles.xml`, but Excel's
+ * number-format grammar has a large, poorly-specified metacharacter set:
+ * `;` splits the code into positive/negative/zero/text sections, `\` escapes,
+ * `[...]` denotes colours and conditions, `_` and `*` take a padding/repeat
+ * argument, and `@` is the text placeholder. Enumerating those (a blocklist)
+ * is a losing game; enumerating what a real ticker or currency symbol needs is
+ * not. Empty is excluded by `+`, so it falls through to the bare format too.
+ *
+ * NOTE this is intentionally stricter than strictly necessary. The affix is
+ * always emitted inside a quoted literal, and `"` is itself outside the
+ * allowlist, so nothing can escape the quotes to reach a metacharacter in the
+ * first place. The narrow set is defence in depth against Excel's handling of
+ * odd characters *within* a literal, which we cannot test here.
+ */
+const SAFE_COMMODITY = /^[A-Za-z0-9$€£¥.]+$/u;
+
+/**
+ * Excel number format for a quantity: grouping + the Dec's decimal places
+ * (capped at `maxDecimals`, the money cap by default) + commodity affix.
+ *
+ * A commodity outside `SAFE_COMMODITY` (or empty) yields the bare numeric
+ * format with NO affix. That loses the label — e.g. a quoted hledger commodity
+ * like `"MY FUND"` prints unlabelled — but a wrong-but-readable cell beats a
+ * malformed `styles.xml`, which Excel reports as an unrecoverable-content
+ * repair on the whole workbook.
+ */
+export function numberFormat(commodity: string, places: number, maxDecimals: number = MAX_DISPLAY_DECIMALS): string {
+    const shown = Math.max(0, Math.min(places, maxDecimals));
     const base = shown > 0 ? `#,##0.${"0".repeat(shown)}` : "#,##0";
-    if (commodity === "") return base;
+    if (!SAFE_COMMODITY.test(commodity)) return base;
+    // Redundant given the allowlist rejects `"`, but kept so that widening the
+    // allowlist later cannot silently reintroduce a quote break-out.
     const quoted = `"${commodity.replace(/"/g, '""')}"`;
     // Single-symbol commodities ($ € £ ¥) read best as prefixes; codes (USD, AAPL) as suffixes.
     return commodity.length === 1 ? `${quoted}${base}` : `${base} ${quoted}`;
@@ -28,28 +77,42 @@ export function numberFormat(commodity: string, places: number): string {
 
 type Cell = ReturnType<Worksheet["getCell"]>;
 
+/** Ungrouped fixed-point style for the multi-commodity TEXT fallback; `precision` is filled in per Dec. */
+const TEXT_STYLE: Omit<AmountStyle, "precision"> = {side: "L", spaced: false, decimalPoint: ".", digitGroups: null};
+
+/**
+ * Value + number format for one exact quantity.
+ *
+ * The Dec is rounded to its displayed places FIRST (exactly, half away from
+ * zero) and the format is then pinned to those same places, so Excel has no
+ * rounding left to do and cannot disagree with the screen. `maxDecimals` is the
+ * money cap for money and MAX_QUANTITY_DECIMALS for unit counts.
+ */
+function writeDec(cell: Cell, commodity: string, qty: Dec, maxDecimals: number): void {
+    const places = displayPlaces(qty, qty.p, maxDecimals);
+    cell.value = toNumber(roundTo(qty, places));
+    cell.numFmt = numberFormat(commodity, places, places);
+}
+
 /** Write a MixedAmount: single-commodity → real number + numFmt; multi → text fallback; empty → 0. */
 function setAmount(cell: Cell, ma: MixedAmount): void {
     const entries = [...ma.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     if (entries.length === 1) {
-        const [commodity, qty] = entries[0];
-        cell.value = toNumber(qty);
-        cell.numFmt = numberFormat(commodity, qty.p);
+        writeDec(cell, entries[0][0], entries[0][1], MAX_DISPLAY_DECIMALS);
     } else if (entries.length === 0) {
         cell.value = 0;
         cell.numFmt = "#,##0";
     } else {
-        cell.value = entries
-            .map(([commodity, qty]: [string, Dec]) => `${toNumber(qty).toFixed(Math.min(qty.p, MAX_DISPLAY_DECIMALS))} ${commodity}`)
-            .join(", ");
+        // Formatted from the exact Dec, never `toNumber(...).toFixed(...)` — that
+        // rounds the binary double and drifts a cent off the screen's string.
+        cell.value = entries.map(([commodity, qty]: [string, Dec]) => `${formatDec(qty, {...TEXT_STYLE, precision: qty.p})} ${commodity}`).join(", ");
     }
     cell.alignment = {...cell.alignment, horizontal: "right"};
 }
 
 /** A single Dec quantity as a real number + numFmt, right-aligned (setAmount's single-commodity case, sans MixedAmount). */
-function setDec(cell: Cell, commodity: string, qty: Dec): void {
-    cell.value = toNumber(qty);
-    cell.numFmt = numberFormat(commodity, qty.p);
+function setDec(cell: Cell, commodity: string, qty: Dec, maxDecimals: number = MAX_DISPLAY_DECIMALS): void {
+    writeDec(cell, commodity, qty, maxDecimals);
     cell.alignment = {...cell.alignment, horizontal: "right"};
 }
 
@@ -123,37 +186,50 @@ function setPct(cell: Cell, spent: number | null, budget: number | null, bold = 
     if (bold) cell.font = {bold: true};
 }
 
+/** One Spent/Budget/Remaining/% row from a line's magnitudes (income budgets are negative on the wire). */
+function addBudgetRow(ws: Worksheet, rowIx: number, label: string, actual: MixedAmount, goal: MixedAmount, indent: number, bold = false): void {
+    labelCell(ws, rowIx, label, indent, bold);
+    setAmount(ws.getCell(rowIx, 2), actual);
+    setAmount(ws.getCell(rowIx, 3), goal);
+    setAmount(ws.getCell(rowIx, 4), maAdd(goal, maNeg(actual)));
+    setPct(ws.getCell(rowIx, 5), primaryValue(actual), primaryValue(goal), bold);
+    if (bold) for (const col of [2, 3, 4]) ws.getCell(rowIx, col).font = {bold: true};
+}
+
 /**
  * Budget summary: Spent / Budget / Remaining / % of budget per leaf category,
- * then a bold total. Matches the on-screen view — only revenue & expense
- * accounts, amounts in magnitude (income budgets are negative on the wire).
+ * split into the SAME two sections the page renders (BudgetSummary.svelte:
+ * Income then Expenses), each with its own total.
+ *
+ * There is deliberately no single grand total. Income and expenses are opposite
+ * signs on the wire and are shown here in magnitude, so one sum over both
+ * columns is |income| + |expenses| — a figure that appears nowhere on screen and
+ * means nothing (its "% of budget" even less). Two sections, two totals, exactly
+ * as the page shows them.
+ *
+ * Section totals come from `budgetTotals` and take their magnitude AFTER
+ * summing, matching the page's overall bar rather than re-deriving it.
  */
 function addBudget(ws: Worksheet, report: BudgetReport, declared: ReadonlyMap<string, AccountType>): void {
-    const shown = budgetLeaves(summarizeBudget(report)).filter((l) => {
-        const t = resolveAccountType(l.account, declared);
-        return t === "revenue" || t === "expense";
-    });
+    const leaves = budgetLeaves(summarizeBudget(report));
+    const ofType = (type: AccountType): BudgetLine[] => leaves.filter((l) => resolveAccountType(l.account, declared) === type);
+    const sections = [
+        {title: "Income", lines: ofType("revenue")},
+        {title: "Expenses", lines: ofType("expense")},
+    ].filter((s) => s.lines.length > 0);
+
     let rowIx = 5;
-    let totActual: MixedAmount = new Map();
-    let totGoal: MixedAmount = new Map();
-    for (const line of shown) {
-        const goal = magnitudeAmount(line.goal ?? new Map());
-        const actual = magnitudeAmount(line.actual);
-        labelCell(ws, rowIx, line.account, 0);
-        setAmount(ws.getCell(rowIx, 2), actual);
-        setAmount(ws.getCell(rowIx, 3), goal);
-        setAmount(ws.getCell(rowIx, 4), maAdd(goal, maNeg(actual)));
-        setPct(ws.getCell(rowIx, 5), primaryValue(actual), primaryValue(goal));
-        totActual = maAdd(totActual, actual);
-        totGoal = maAdd(totGoal, goal);
+    for (const section of sections) {
+        labelCell(ws, rowIx, section.title, 0, true);
+        rowIx += 1;
+        for (const line of section.lines) {
+            addBudgetRow(ws, rowIx, line.account, magnitudeAmount(line.actual), magnitudeAmount(line.goal ?? new Map()), 1);
+            rowIx += 1;
+        }
+        const totals = budgetTotals(section.lines);
+        addBudgetRow(ws, rowIx, `Total ${section.title}`, magnitudeAmount(totals.actual), magnitudeAmount(totals.goal), 0, true);
         rowIx += 1;
     }
-    labelCell(ws, rowIx, "Total", 0, true);
-    setAmount(ws.getCell(rowIx, 2), totActual);
-    setAmount(ws.getCell(rowIx, 3), totGoal);
-    setAmount(ws.getCell(rowIx, 4), maAdd(totGoal, maNeg(totActual)));
-    for (const col of [2, 3, 4]) ws.getCell(rowIx, col).font = {bold: true};
-    setPct(ws.getCell(rowIx, 5), primaryValue(totActual), primaryValue(totGoal), true);
 }
 
 /** Build the workbook (exported separately so tests can read it back without a DOM). */
@@ -185,7 +261,8 @@ export async function buildHoldingsWorkbook(report: HoldingsReport, meta: {title
     for (const h of report.holdings) {
         ws.getCell(rowIx, 1).value = h.name;
         ws.getCell(rowIx, 2).value = h.symbol;
-        setDec(ws.getCell(rowIx, 3), "", h.shares);
+        // Shares are a unit count, not money — same non-money cap the table uses.
+        setDec(ws.getCell(rowIx, 3), "", h.shares, MAX_QUANTITY_DECIMALS);
         if (h.basis !== null) setDec(ws.getCell(rowIx, 4), report.base, h.basis);
         if (h.firstBasisDate !== null) ws.getCell(rowIx, 5).value = h.firstBasisDate;
         if (h.price !== null) {

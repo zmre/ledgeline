@@ -41,6 +41,23 @@
 //! A posting `amount` may also carry a `cost`:
 //! `{ "kind": "unit"|"total", "amount": { "commodity": "$", "quantity": <Dec> } }`.
 //!
+//! A posting may also carry `type` and `balanceAssertion`:
+//! ```json
+//! { "account": "assets:cash",
+//!   "type": "regular",                   // regular|virtual|balancedVirtual (default regular)
+//!   "amount": { "commodity": "$", "quantity": { "mantissa": "-100", "places": 2 } },
+//!   "balanceAssertion": {                // the `= AMOUNT` reconciliation anchor
+//!     "amount": { "commodity": "$", "quantity": { "mantissa": "9900", "places": 2 } },
+//!     "total": false,                    // true ⇒ `==` (this commodity ONLY)
+//!     "inclusive": false                 // true ⇒ `=*` (include subaccounts)
+//!   } }
+//! ```
+//! Both are OPTIONAL but NOT defaulted-away on a replace: a `PUT` that omits
+//! them writes a posting that genuinely has neither. That is DL-2 — these
+//! fields did not exist, so every `PUT` erased balance assertions and rewrote
+//! `[balanced-virtual]` and `(virtual)` postings as real ones, with a `200`.
+//! Any client doing a read-modify-write must echo them back, as the SPA does.
+//!
 //! # Amount style inference (correctness-critical)
 //! The editor renders each amount through its [`AmountStyle`] and then re-parses
 //! to validate the round-trip, so a wrong decimal mark (e.g. rendering a EUR
@@ -58,24 +75,24 @@
 //! `Decimal`/`Internal` → `500`. A `409` means the file changed under us; the
 //! client should re-fetch and retry.
 
-use std::sync::{MutexGuard, PoisonError};
+use std::sync::MutexGuard;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::edit::InsertPosition;
 use ledgeline_core::model::{
-    AccountName, Amount, AmountStyle, Commodity, CommoditySide, Cost, CostKind, Journal, Posting,
-    PostingType, SourcePos, Status, Tindex, Transaction,
+    AccountName, Amount, AmountStyle, BalanceAssertion, Commodity, CommoditySide, Cost, CostKind,
+    Journal, Posting, PostingType, SourcePos, Status, Tindex, Transaction,
 };
 use ledgeline_core::{Dec, EditError, JournalEditor};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-
-/// An HTTP error: a status plus a human-readable message (mirrors `reports_api`).
-type ApiError = (StatusCode, String);
+use crate::error::AppError;
+use crate::reports_api::WireDec;
 
 // ===========================================================================
 // Request body
@@ -88,12 +105,55 @@ struct WireDecIn {
     places: u32,
 }
 
-/// The priced side of a cost annotation: a bare commodity + quantity.
+/// A bare commodity + quantity, with no cost of its own: the priced side of a
+/// cost annotation, and the asserted side of a balance assertion.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PricedAmountIn {
     commodity: String,
     quantity: WireDecIn,
+}
+
+/// A `=` / `==` / `=*` / `==*` balance assertion on a posting — the
+/// reconciliation anchor that pins an account's running balance at that point.
+///
+/// The two flags pick the operator, exactly as the model stores them: `total`
+/// asserts the account holds ONLY this commodity (`==`), `inclusive` includes
+/// subaccounts (`=*`). Both default to `false`, i.e. a plain `=`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BalanceAssertionIn {
+    amount: PricedAmountIn,
+    #[serde(default)]
+    inclusive: bool,
+    #[serde(default)]
+    total: bool,
+}
+
+/// Real / unbalanced-virtual / balanced-virtual on the wire (hledger's `ptype`).
+///
+/// The spellings are exactly the ones this module SERIALIZES (see [`ptype_str`]),
+/// so a posting the API handed out round-trips straight back through it. An
+/// unrecognized value is rejected by serde as an unknown variant, which the
+/// handlers surface as a `400` — never a silent fallback to `Regular`, which is
+/// what DL-2 was: a `[budget:env]` envelope posting quietly rewritten as a real
+/// one, moving money onto the balance sheet that was never there.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+enum PostingTypeIn {
+    Regular,
+    Virtual,
+    BalancedVirtual,
+}
+
+impl From<PostingTypeIn> for PostingType {
+    fn from(ptype: PostingTypeIn) -> Self {
+        match ptype {
+            PostingTypeIn::Regular => PostingType::Regular,
+            PostingTypeIn::Virtual => PostingType::Virtual,
+            PostingTypeIn::BalancedVirtual => PostingType::BalancedVirtual,
+        }
+    }
 }
 
 /// A `@`/`@@` cost annotation on a posting amount.
@@ -117,6 +177,12 @@ struct AmountIn {
 /// One posting: an account and an optional amount. No `amount` marks the elided
 /// leg whose value the parser infers from the balance. An optional `comment`
 /// carries a same-line posting comment (so a full replace round-trips it).
+///
+/// `type` and `balanceAssertion` exist so a REPLACE cannot silently destroy
+/// either (DL-2). Both are optional for backwards compatibility, but "absent"
+/// means "this posting has none" — so a client that reads a transaction and
+/// writes it back MUST echo them, exactly as it already echoes `comment`. The
+/// SPA does this in `editMapping.ts`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PostingIn {
@@ -127,6 +193,12 @@ struct PostingIn {
     amount: Option<AmountIn>,
     #[serde(default)]
     comment: Option<String>,
+    /// Real / virtual `(a)` / balanced-virtual `[a]`; absent = `regular`.
+    #[serde(default, rename = "type")]
+    ptype: Option<PostingTypeIn>,
+    /// The `= AMOUNT` reconciliation anchor; absent = no assertion.
+    #[serde(default)]
+    balance_assertion: Option<BalanceAssertionIn>,
 }
 
 /// The `POST /api/transactions` (add) and `PUT /api/transactions/{index}`
@@ -234,19 +306,10 @@ enum PositionIn {
 // Response body
 // ===========================================================================
 
-/// An exact decimal on the wire (string mantissa; see [`WireDecIn`]).
-#[derive(Serialize)]
-struct WireDecOut {
-    mantissa: String,
-    places: u32,
-}
-
-fn wire_dec_out(dec: Dec) -> WireDecOut {
-    WireDecOut {
-        mantissa: dec.mantissa.to_string(),
-        places: dec.places,
-    }
-}
+// The RESPONSE decimal is `reports_api::WireDec` (imported above), not a local
+// copy. This module used to carry a byte-identical `WireDecOut` + `wire_dec_out`
+// pair (DRY-4); sharing the one type is what keeps the read and write wires from
+// ever describing a decimal differently.
 
 /// A serialized cost annotation.
 #[derive(Serialize)]
@@ -261,9 +324,19 @@ struct NativeCost {
 #[serde(rename_all = "camelCase")]
 struct NativeAmount {
     commodity: String,
-    quantity: WireDecOut,
+    quantity: WireDec,
     #[serde(skip_serializing_if = "Option::is_none")]
     cost: Option<Box<NativeCost>>,
+}
+
+/// A serialized balance assertion (the `= AMOUNT` anchor), in the same shape
+/// [`BalanceAssertionIn`] accepts so the response round-trips back as a request.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeBalanceAssertion {
+    amount: NativeAmount,
+    inclusive: bool,
+    total: bool,
 }
 
 /// A serialized posting: account plus its (possibly inferred) amounts.
@@ -275,6 +348,10 @@ struct NativePosting {
     status: &'static str,
     #[serde(rename = "type")]
     ptype: &'static str,
+    /// Absent when the posting has no assertion — so the response says exactly
+    /// what landed in the file, and a client can echo it straight back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    balance_assertion: Option<NativeBalanceAssertion>,
 }
 
 /// A serialized transaction as it landed in the journal after the reparse (its
@@ -312,6 +389,17 @@ pub(crate) struct DeleteResponse {
 // Handlers
 // ===========================================================================
 
+/// Unwrap a JSON request body, turning a malformed/absent one into the `400`
+/// all three body-taking handlers used to spell out identically.
+///
+/// The message text is part of the contract: `native.ts` surfaces it verbatim
+/// as a `ValidationError`, and `tests/error_surface.rs` pins it.
+fn json_body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, AppError> {
+    payload
+        .map(|Json(body)| body)
+        .map_err(|rejection| AppError::BadRequest(format!("invalid request body: {rejection}")))
+}
+
 /// `POST /api/transactions` — add a transaction from a native JSON body.
 ///
 /// Builds a [`Transaction`] (inferring each amount's style from the journal),
@@ -320,13 +408,8 @@ pub(crate) struct DeleteResponse {
 pub(crate) async fn add_transaction(
     State(state): State<AppState>,
     payload: Result<Json<AddRequest>, JsonRejection>,
-) -> Result<(StatusCode, Json<AddResponse>), ApiError> {
-    let Json(request) = payload.map_err(|rejection| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("invalid request body: {rejection}"),
-        )
-    })?;
+) -> Result<(StatusCode, Json<AddResponse>), AppError> {
+    let request = json_body(payload)?;
     // All editing work is synchronous and holds the std mutex only inside this
     // call — never across an `.await` — so the guard never crosses a yield point.
     let response = add_transaction_locked(&state, &request)?;
@@ -338,7 +421,7 @@ pub(crate) async fn add_transaction(
 pub(crate) async fn delete_transaction(
     State(state): State<AppState>,
     Path(index): Path<u32>,
-) -> Result<Json<DeleteResponse>, ApiError> {
+) -> Result<Json<DeleteResponse>, AppError> {
     let response = delete_transaction_locked(&state, index)?;
     Ok(Json(response))
 }
@@ -353,13 +436,8 @@ pub(crate) async fn replace_transaction(
     State(state): State<AppState>,
     Path(index): Path<u32>,
     payload: Result<Json<AddRequest>, JsonRejection>,
-) -> Result<Json<AddResponse>, ApiError> {
-    let Json(request) = payload.map_err(|rejection| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("invalid request body: {rejection}"),
-        )
-    })?;
+) -> Result<Json<AddResponse>, AppError> {
+    let request = json_body(payload)?;
     let response = replace_transaction_locked(&state, index, &request)?;
     Ok(Json(response))
 }
@@ -374,13 +452,8 @@ pub(crate) async fn patch_transaction(
     State(state): State<AppState>,
     Path(index): Path<u32>,
     payload: Result<Json<PatchRequest>, JsonRejection>,
-) -> Result<Json<AddResponse>, ApiError> {
-    let Json(request) = payload.map_err(|rejection| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("invalid request body: {rejection}"),
-        )
-    })?;
+) -> Result<Json<AddResponse>, AppError> {
+    let request = json_body(payload)?;
     let response = patch_transaction_locked(&state, index, &request)?;
     Ok(Json(response))
 }
@@ -389,9 +462,16 @@ pub(crate) async fn patch_transaction(
 // Locked, synchronous edit logic (no `.await` while the mutex is held)
 // ===========================================================================
 
-fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddResponse, ApiError> {
-    let mut guard = lock_editor(state);
-    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
+/// The bound editor inside a held guard, or the `501` that says this server has
+/// none. Every locked operation below starts (and, after `save_and_publish`,
+/// resumes) with this, so the "editing disabled" answer is written once.
+fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEditor, AppError> {
+    slot.as_mut().ok_or_else(editing_disabled)
+}
+
+fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddResponse, AppError> {
+    let mut guard = lock_editor(state)?;
+    let editor = bound(&mut guard)?;
 
     let transaction = build_transaction(editor.journal(), request)?;
     let position = request.insert_position();
@@ -400,20 +480,16 @@ fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddR
     // return the added transaction afterwards.
     let insert_pos = insertion_index(editor.journal(), &transaction, position);
 
-    editor
-        .add_transaction(&transaction, position)
-        .map_err(edit_error)?;
-    save_and_publish(state, editor).map_err(edit_error)?;
+    editor.add_transaction(&transaction, position)?;
+    save_and_publish(state, &mut guard)?;
 
+    let editor = bound(&mut guard)?;
     let added = editor
         .journal()
         .transactions
         .get(insert_pos)
         .ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not locate the added transaction after saving".to_string(),
-            )
+            AppError::Internal("could not locate the added transaction after saving".to_string())
         })?;
     Ok(AddResponse {
         index: added.index.0,
@@ -421,18 +497,14 @@ fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddR
     })
 }
 
-fn delete_transaction_locked(state: &AppState, index: u32) -> Result<DeleteResponse, ApiError> {
-    let mut guard = lock_editor(state);
-    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
-
-    editor
-        .delete_transaction(Tindex(index))
-        .map_err(edit_error)?;
-    save_and_publish(state, editor).map_err(edit_error)?;
+fn delete_transaction_locked(state: &AppState, index: u32) -> Result<DeleteResponse, AppError> {
+    let mut guard = lock_editor(state)?;
+    bound(&mut guard)?.delete_transaction(Tindex(index))?;
+    save_and_publish(state, &mut guard)?;
 
     Ok(DeleteResponse {
         deleted_index: index,
-        remaining: editor.transaction_count(),
+        remaining: bound(&mut guard)?.transaction_count(),
     })
 }
 
@@ -440,29 +512,19 @@ fn replace_transaction_locked(
     state: &AppState,
     index: u32,
     request: &AddRequest,
-) -> Result<AddResponse, ApiError> {
-    let mut guard = lock_editor(state);
-    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
+) -> Result<AddResponse, AppError> {
+    let mut guard = lock_editor(state)?;
+    let editor = bound(&mut guard)?;
 
     let transaction = build_transaction(editor.journal(), request)?;
-    editor
-        .replace_transaction(Tindex(index), &transaction)
-        .map_err(edit_error)?;
-    save_and_publish(state, editor).map_err(edit_error)?;
+    editor.replace_transaction(Tindex(index), &transaction)?;
+    save_and_publish(state, &mut guard)?;
 
     // An in-place replace adds/removes no transactions and reorders none, so the
     // target keeps its `tindex`.
-    let updated = editor
-        .journal()
-        .transactions
-        .iter()
-        .find(|t| t.index == Tindex(index))
-        .ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not locate the replaced transaction after saving".to_string(),
-            )
-        })?;
+    let updated = find_transaction(bound(&mut guard)?, index).ok_or_else(|| {
+        AppError::Internal("could not locate the replaced transaction after saving".to_string())
+    })?;
     Ok(AddResponse {
         index: updated.index.0,
         transaction: native_transaction(updated),
@@ -473,9 +535,9 @@ fn patch_transaction_locked(
     state: &AppState,
     index: u32,
     request: &PatchRequest,
-) -> Result<AddResponse, ApiError> {
-    let mut guard = lock_editor(state);
-    let editor = guard.as_mut().ok_or_else(editing_disabled)?;
+) -> Result<AddResponse, AppError> {
+    let mut guard = lock_editor(state)?;
+    let editor = bound(&mut guard)?;
 
     let changed =
         request.description.is_some() || request.status.is_some() || !request.postings.is_empty();
@@ -484,23 +546,27 @@ fn patch_transaction_locked(
         // after an earlier one committed to memory, re-sync from disk so the
         // in-memory editor and the served snapshot never diverge from the file.
         if let Err(error) = apply_patch(editor, index, request) {
-            resync_from_disk(state, editor);
-            return Err(edit_error(error));
+            resync_from_disk(state, &mut guard)?;
+            return Err(error.into());
         }
-        save_and_publish(state, editor).map_err(edit_error)?;
+        save_and_publish(state, &mut guard)?;
     }
 
-    let updated = editor
-        .journal()
-        .transactions
-        .iter()
-        .find(|t| t.index == Tindex(index))
-        .ok_or(EditError::TransactionNotFound(index))
-        .map_err(edit_error)?;
+    let updated =
+        find_transaction(bound(&mut guard)?, index).ok_or(EditError::TransactionNotFound(index))?;
     Ok(AddResponse {
         index: updated.index.0,
         transaction: native_transaction(updated),
     })
+}
+
+/// The transaction with `tindex` `index` in the editor's current journal.
+fn find_transaction(editor: &JournalEditor, index: u32) -> Option<&Transaction> {
+    editor
+        .journal()
+        .transactions
+        .iter()
+        .find(|txn| txn.index == Tindex(index))
 }
 
 /// Apply a [`PatchRequest`]'s surgical edits to `editor` in order (description
@@ -529,67 +595,130 @@ fn apply_patch(
 /// unpersisted, so we [`resync_from_disk`] — discarding that edit, re-syncing the
 /// rope/fingerprint, and publishing the on-disk state — so the editor and the
 /// served snapshot stay consistent with the file. The original save error is
-/// returned for the caller to map (a `409` tells the client to re-fetch/retry).
-fn save_and_publish(state: &AppState, editor: &mut JournalEditor) -> Result<(), EditError> {
+/// then returned (a `409` tells the client to re-fetch/retry), UNLESS the
+/// re-sync itself failed, in which case its `500` wins: that is the more serious
+/// condition and the one the user has to act on.
+fn save_and_publish(state: &AppState, slot: &mut Option<JournalEditor>) -> Result<(), AppError> {
+    let editor = bound(slot)?;
     match editor.save() {
         Ok(()) => {
             state.replace_journal(editor.journal());
             Ok(())
         }
         Err(error) => {
-            resync_from_disk(state, editor);
-            Err(error)
+            resync_from_disk(state, slot)?;
+            Err(error.into())
         }
     }
 }
 
-/// Discard any un-saved in-memory edit by re-opening the editor from disk (best
-/// effort), then republish the snapshot from whatever is now bound — so the
-/// editor and the served snapshot both track the on-disk file. Used after a save
-/// failure and after a partial (multi-op) edit fails midway.
-fn resync_from_disk(state: &AppState, editor: &mut JournalEditor) {
-    if let Ok(reopened) = JournalEditor::open(editor.path().to_path_buf()) {
-        *editor = reopened;
+/// Discard any un-saved in-memory edit by re-opening the editor from disk, then
+/// republish the snapshot from it — so the editor and the served snapshot both
+/// track the on-disk file. Used after a save failure and after a partial
+/// (multi-op) edit fails midway.
+///
+/// DL-5. The re-open MUST be allowed to fail loudly. This used to swallow the
+/// error and publish `editor.journal()` regardless — which, when the file had
+/// been deleted or made unparseable, published the in-memory journal *still
+/// carrying the edit that had just failed to write*. The user got a `409`,
+/// re-fetched, and saw their change served back as though it had been saved,
+/// while the file on disk had never contained it.
+///
+/// So on failure we publish NOTHING (the last known-good snapshot stays served)
+/// and unbind the editor rather than keep one whose rope holds an unpersisted
+/// edit — a later save against it is how that phantom would reach the file.
+/// This mirrors [`AppState::reopen_editor`], which unbinds on the same failure.
+fn resync_from_disk(state: &AppState, slot: &mut Option<JournalEditor>) -> Result<(), AppError> {
+    let Some(path) = slot.as_ref().map(|editor| editor.path().to_path_buf()) else {
+        // Nothing bound, so there is no un-saved edit to discard and nothing new
+        // to publish; the caller's own error stands.
+        return Ok(());
+    };
+    match JournalEditor::open(path) {
+        Ok(reopened) => {
+            state.replace_journal(reopened.journal());
+            *slot = Some(reopened);
+            Ok(())
+        }
+        Err(error) => {
+            *slot = None;
+            Err(resync_failed(&error))
+        }
     }
-    state.replace_journal(editor.journal());
 }
 
-/// Lock the editor mutex, recovering from poisoning (a prior panic mid-edit) by
-/// taking the inner value rather than propagating the panic across every future
-/// request.
-fn lock_editor(state: &AppState) -> MutexGuard<'_, Option<JournalEditor>> {
-    state
-        .editor()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+/// The `500` for DL-5's failure branch: the edit did not reach the file AND the
+/// file could not be re-read afterwards, so the server can neither apply nor
+/// re-sync. Says both halves plainly, because the dangerous reading of a bare
+/// `409` here is "it saved after all".
+fn resync_failed(error: &EditError) -> AppError {
+    AppError::Internal(format!(
+        "your change was NOT saved, and the journal file could not be re-read afterwards to \
+         re-sync ({error}). The served data is the last state that was successfully read; \
+         editing is disabled until the file is readable again and the journal is re-opened."
+    ))
 }
 
-/// The `501` returned when this state has no editor (built from a parsed journal
-/// with no backing file).
-fn editing_disabled() -> ApiError {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "editing is not enabled: this server was started without a journal file bound to an editor"
+/// Lock the editor mutex, recovering from poisoning by re-reading the file.
+///
+/// SEC-11. A poisoned mutex means some earlier request panicked *while holding
+/// the editor*, so the [`JournalEditor`] behind it may be half-mutated: the
+/// surgical ops in [`apply_patch`] commit to the in-memory rope one at a time, so
+/// a panic between two of them leaves a rope matching no file that ever existed.
+/// Taking the inner value and carrying on — what this used to do — edits the
+/// user's journal from that state.
+///
+/// Recovery is therefore the same one [`resync_from_disk`] already performs after
+/// a failed save: drop the suspect editor and re-open from disk. The poison flag
+/// is cleared only once the editor behind it is trustworthy again, and only while
+/// still holding the guard, so no other thread can observe the un-recovered
+/// state. If the re-open FAILS we unbind the editor rather than hand back a
+/// half-mutated one, and the caller gets a 500 — never a silent edit against
+/// corrupt state.
+fn lock_editor(state: &AppState) -> Result<MutexGuard<'_, Option<JournalEditor>>, AppError> {
+    let mutex = state.editor();
+    let mut guard = match mutex.lock() {
+        Ok(guard) => return Ok(guard),
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let reopened = guard
+        .as_ref()
+        .map(|editor| JournalEditor::open(editor.path().to_path_buf()));
+    match reopened {
+        // No editor was bound, so there is nothing half-mutated to discard; the
+        // caller's own `editing_disabled` 501 remains the right answer.
+        None => {}
+        Some(Ok(editor)) => {
+            state.replace_journal(editor.journal());
+            *guard = Some(editor);
+        }
+        Some(Err(_)) => {
+            *guard = None;
+            mutex.clear_poison();
+            return Err(editor_poisoned());
+        }
+    }
+    mutex.clear_poison();
+    Ok(guard)
+}
+
+/// The `500` returned when a prior panic poisoned the editor and the file could
+/// not be re-read to recover a trustworthy one (SEC-11).
+fn editor_poisoned() -> AppError {
+    AppError::Internal(
+        "the editor was left in an indeterminate state by an earlier failure and the journal file \
+         could not be re-read to recover; no edit was applied"
             .to_string(),
     )
 }
 
-/// Map an [`EditError`] onto its HTTP status + message.
-fn edit_error(error: EditError) -> ApiError {
-    let status = match error {
-        EditError::ExternalChange => StatusCode::CONFLICT,
-        EditError::Unbalanced
-        | EditError::Unsupported(_)
-        | EditError::ParseInvalidAfterEdit(_)
-        | EditError::RoundTripMismatch => StatusCode::BAD_REQUEST,
-        EditError::TransactionNotFound(_) | EditError::PostingNotFound { .. } => {
-            StatusCode::NOT_FOUND
-        }
-        EditError::Io(_) | EditError::Parse(_) | EditError::Decimal(_) | EditError::Internal(_) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-    };
-    (status, error.to_string())
+/// The `501` returned when this state has no editor (built from a parsed journal
+/// with no backing file).
+fn editing_disabled() -> AppError {
+    AppError::EditingDisabled(
+        "editing is not enabled: this server was started without a journal file bound to an editor"
+            .to_string(),
+    )
 }
 
 /// The 0-based file-order position the new transaction will occupy after the
@@ -625,16 +754,14 @@ fn insertion_index(journal: &Journal, txn: &Transaction, position: InsertPositio
 // Build a `core::Transaction` from the request (with inferred styles)
 // ===========================================================================
 
-fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transaction, ApiError> {
+fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transaction, AppError> {
     if request.date.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(AppError::BadRequest(
             "a transaction needs a date".to_string(),
         ));
     }
     if request.postings.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(AppError::BadRequest(
             "a transaction needs at least one posting".to_string(),
         ));
     }
@@ -672,10 +799,9 @@ fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transact
     })
 }
 
-fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, ApiError> {
+fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppError> {
     if input.account.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(AppError::BadRequest(
             "a posting needs an account".to_string(),
         ));
     }
@@ -683,16 +809,63 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, ApiErr
         Some(amount) => vec![build_amount(journal, amount)?],
         None => Vec::new(),
     };
+    let balance_assertion = input
+        .balance_assertion
+        .as_ref()
+        .map(|assertion| build_assertion(journal, assertion, &input.account, amounts.is_empty()))
+        .transpose()?;
     Ok(Posting {
         status: input.status.map_or(Status::Unmarked, Status::from),
-        ptype: PostingType::Regular,
+        ptype: input.ptype.map_or(PostingType::Regular, PostingType::from),
         account: AccountName(input.account.clone()),
         amounts,
-        balance_assertion: None,
+        balance_assertion,
         date: None,
         date2: None,
         comment: comment_string(input.comment.as_deref()),
         tags: Vec::new(),
+    })
+}
+
+/// Build a [`BalanceAssertion`] from the wire, refusing the two shapes the
+/// journal must never be asked to hold (DL-2's "do not let a malformed
+/// assertion reach the core").
+///
+/// * **A blank commodity** would render as a BARE asserted number (`= 99.00`),
+///   which re-reads under a journal `D` default-commodity directive as a
+///   *different* commodity. That is a silent change of which balance is being
+///   anchored, and the round-trip guard cannot see it as one because the text it
+///   wrote is the text it reads back.
+/// * **An assertion with no amount on the same posting.** hledger accepts
+///   `assets:cash  = $99.00`, but this writer cannot produce it: the formatter
+///   emits an assertion only alongside a posting's first amount line, so an
+///   amount-less posting would drop it on the floor — the exact silent loss
+///   DL-2 is about. Refusing is the honest answer; the SPA always sends the
+///   balanced amount, so this is unreachable from the popup.
+fn build_assertion(
+    journal: &Journal,
+    input: &BalanceAssertionIn,
+    account: &str,
+    posting_has_no_amount: bool,
+) -> Result<BalanceAssertion, AppError> {
+    if input.amount.commodity.trim().is_empty() {
+        return Err(AppError::BadRequest(format!(
+            "the balance assertion on '{account}' needs a commodity: a bare asserted number \
+             would re-read as whatever commodity the journal defaults to"
+        )));
+    }
+    if posting_has_no_amount {
+        return Err(AppError::BadRequest(format!(
+            "the balance assertion on '{account}' needs an amount on the same posting: an \
+             assertion cannot be written on the inferred (elided) leg"
+        )));
+    }
+    Ok(BalanceAssertion {
+        amount: build_priced_amount(journal, &input.amount)?,
+        inclusive: input.inclusive,
+        total: input.total,
+        // Placeholder; the reparse recomputes it, like the transaction's own span.
+        position: SourcePos { line: 1, column: 1 },
     })
 }
 
@@ -706,7 +879,7 @@ fn comment_string(raw: Option<&str>) -> String {
     }
 }
 
-fn build_amount(journal: &Journal, input: &AmountIn) -> Result<Amount, ApiError> {
+fn build_amount(journal: &Journal, input: &AmountIn) -> Result<Amount, AppError> {
     let commodity = Commodity(input.commodity.clone());
     let quantity = dec_from_wire(&input.quantity)?;
     let style = infer_style(journal, &commodity, quantity.places);
@@ -722,31 +895,66 @@ fn build_amount(journal: &Journal, input: &AmountIn) -> Result<Amount, ApiError>
     })
 }
 
-fn build_cost(journal: &Journal, input: &CostIn) -> Result<Cost, ApiError> {
-    let commodity = Commodity(input.amount.commodity.clone());
-    let quantity = dec_from_wire(&input.amount.quantity)?;
-    let style = infer_style(journal, &commodity, quantity.places);
+fn build_cost(journal: &Journal, input: &CostIn) -> Result<Cost, AppError> {
     Ok(Cost {
         kind: input.kind.into(),
-        amount: Amount {
-            commodity,
-            quantity,
-            style,
-            cost: None,
-        },
+        amount: build_priced_amount(journal, &input.amount)?,
     })
 }
 
-fn dec_from_wire(dec: &WireDecIn) -> Result<Dec, ApiError> {
+/// A bare (cost-free) [`Amount`] from the wire, with its style inferred from the
+/// journal. Shared by the cost annotation and the balance assertion, which are
+/// the two places an amount can appear without a nested cost of its own.
+fn build_priced_amount(journal: &Journal, input: &PricedAmountIn) -> Result<Amount, AppError> {
+    let commodity = Commodity(input.commodity.clone());
+    let quantity = dec_from_wire(&input.quantity)?;
+    let style = infer_style(journal, &commodity, quantity.places);
+    Ok(Amount {
+        commodity,
+        quantity,
+        style,
+        cost: None,
+    })
+}
+
+/// The largest `|mantissa|` the edit wire accepts: 10^30, i.e. a 31-digit
+/// significand. `Dec` math is `i128` (max ~1.7×10^38), so this leaves eight
+/// decimal orders of headroom for the summing and price-scaling every report
+/// does, while still being astronomically larger than any real financial amount
+/// (a nonillion units, at ten decimal places). A value above this is a
+/// malformed or hostile client, not a transaction someone means to record.
+const MAX_WIRE_MANTISSA: i128 = 10_i128.pow(30);
+
+/// Convert a wire decimal to a [`Dec`], rejecting values the journal must never
+/// be asked to hold.
+///
+/// Both bounds are SEC-5. Neither the reparse-to-validate nor the round-trip
+/// guard downstream catches an absurd-but-self-consistent amount: they check
+/// that the value the client asked for is the value that landed, not that it was
+/// a sane thing to ask for. `places` is bounded by [`MAX_PARSE_PLACES`] — the
+/// precision the PARSER stores — so the wire cannot introduce an amount that
+/// re-reading the journal could never reproduce. Without it,
+/// `{"mantissa":"0","places":65534}` was accepted with a `201` and committed a
+/// multi-hundred-byte all-zeros amount line to the user's books.
+fn dec_from_wire(dec: &WireDecIn) -> Result<Dec, AppError> {
     let mantissa = dec.mantissa.trim().parse::<i128>().map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "invalid amount mantissa '{}': expected a base-10 integer string",
-                dec.mantissa
-            ),
-        )
+        AppError::BadRequest(format!(
+            "invalid amount mantissa '{}': expected a base-10 integer string",
+            dec.mantissa
+        ))
     })?;
+    if dec.places > MAX_PARSE_PLACES {
+        return Err(AppError::BadRequest(format!(
+            "amount places {} is out of range (expected 0..={MAX_PARSE_PLACES})",
+            dec.places
+        )));
+    }
+    if mantissa.unsigned_abs() > MAX_WIRE_MANTISSA.unsigned_abs() {
+        return Err(AppError::BadRequest(format!(
+            "amount mantissa '{}' is out of range (expected |mantissa| <= {MAX_WIRE_MANTISSA})",
+            dec.mantissa
+        )));
+    }
     Ok(Dec::new(mantissa, dec.places))
 }
 
@@ -844,13 +1052,20 @@ fn native_posting(posting: &Posting) -> NativePosting {
         amounts: posting.amounts.iter().map(native_amount).collect(),
         status: status_str(posting.status),
         ptype: ptype_str(posting.ptype),
+        balance_assertion: posting.balance_assertion.as_ref().map(|assertion| {
+            NativeBalanceAssertion {
+                amount: native_amount(&assertion.amount),
+                inclusive: assertion.inclusive,
+                total: assertion.total,
+            }
+        }),
     }
 }
 
 fn native_amount(amount: &Amount) -> NativeAmount {
     NativeAmount {
         commodity: amount.commodity.0.clone(),
-        quantity: wire_dec_out(amount.quantity),
+        quantity: amount.quantity.into(),
         cost: amount.cost.as_ref().map(|cost| {
             Box::new(NativeCost {
                 kind: costkind_str(cost.kind),
@@ -880,5 +1095,84 @@ fn costkind_str(kind: CostKind) -> &'static str {
     match kind {
         CostKind::Unit => "unit",
         CostKind::Total => "total",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::AssertUnwindSafe;
+
+    const ONE_TXN: &str = "\
+2024-01-01 * A
+    expenses:a  $1.00
+    assets:bank
+";
+
+    /// Panic while holding the editor guard, exactly as a mid-edit panic would.
+    fn poison_editor(state: &AppState) {
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = state.editor().lock().expect("not yet poisoned");
+            panic!("simulated mid-edit panic");
+        }));
+        assert!(result.is_err(), "the closure must have panicked");
+        assert!(state.editor().is_poisoned(), "the mutex must be poisoned");
+    }
+
+    /// SEC-11: after a panic left the mutex poisoned, `lock_editor` must NOT hand
+    /// back the possibly half-mutated editor. It re-opens from disk — so the
+    /// editor is once again a faithful view of the file — and clears the poison
+    /// so later requests take the normal path.
+    #[test]
+    fn poisoned_editor_is_recovered_by_reopening_from_disk() {
+        let dir = std::env::temp_dir().join("ledgeline-poison-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!("poison-{}.journal", std::process::id()));
+        std::fs::write(&path, ONE_TXN).expect("write journal");
+
+        let state = AppState::from_journal_path(&path).expect("editor opens");
+        poison_editor(&state);
+
+        // Recovery succeeds, yields a usable editor, and clears the poison.
+        let guard = lock_editor(&state).expect("poisoned lock must recover");
+        assert!(guard.is_some(), "an editor must still be bound");
+        assert_eq!(guard.as_ref().unwrap().journal().transactions.len(), 1);
+        drop(guard);
+        assert!(
+            !state.editor().is_poisoned(),
+            "the poison flag must be cleared once the editor is trustworthy again"
+        );
+
+        // The normal (unpoisoned) path still works afterwards.
+        assert!(lock_editor(&state).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// SEC-11, the failure branch: if the file cannot be re-read there is no
+    /// trustworthy editor to hand back, so the request must fail with a 500 and
+    /// the editor must be UNBOUND rather than left half-mutated.
+    #[test]
+    fn poisoned_editor_that_cannot_reopen_is_unbound_and_errors() {
+        let dir = std::env::temp_dir().join("ledgeline-poison-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!("poison-gone-{}.journal", std::process::id()));
+        std::fs::write(&path, ONE_TXN).expect("write journal");
+
+        let state = AppState::from_journal_path(&path).expect("editor opens");
+        poison_editor(&state);
+        // The file disappears before recovery can re-read it.
+        std::fs::remove_file(&path).expect("remove journal");
+
+        match lock_editor(&state) {
+            Ok(_) => panic!("recovery must fail once the journal file is gone"),
+            Err(error) => assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR),
+        }
+
+        // The suspect editor was dropped rather than served.
+        let guard = lock_editor(&state).expect("no longer poisoned");
+        assert!(
+            guard.is_none(),
+            "the un-recoverable editor must have been unbound, not kept"
+        );
     }
 }

@@ -1,0 +1,83 @@
+; Cross-language holdings parity fixture (FE-2 / DRY-1).
+;
+; The SAME positions are driven through the TypeScript average-cost pools in
+; web/src/lib/holdings/engine.ts (which back the Problems drawer's stock rules)
+; and through the Rust engine in crates/ledgeline-core/src/holdings/engine.rs
+; (which backs the Holdings page). web/src/lib/checks/parity.test.ts asserts
+; where the two agree and pins, case by case, the places they still differ.
+;
+; Account TYPES are declared rather than implied by name — `vesting:grants`
+; funds a grant and `holdings:sep` holds securities, and only the `type:` tag
+; says which is which. Both engines must classify by the declaration.
+
+account assets:brokerage    ; type: A
+account assets:cash         ; type: A
+account holdings:sep        ; type: A
+account income:rsu          ; type: R
+account equity:opening      ; type: E
+account equity:splits       ; type: E
+account vesting:grants      ; type: R
+
+; -- OPEN: opening balance booked against equity, with a cost ----------------
+; The equity leg funds the position; counting it would net the shares to zero.
+2024-01-02 opening balance
+    assets:brokerage           100 OPEN @ $10.00
+    equity:opening
+
+; -- VEST: RSU vest funded from income, no cost annotation -------------------
+2024-02-01 acme rsu vest
+    assets:brokerage            10 VEST
+    income:rsu                 -10 VEST
+
+; -- GRANT: same shape, but the funding account is revenue only by DECLARATION
+2024-02-15 equity grant
+    assets:brokerage             5 GRANT
+    vesting:grants              -5 GRANT
+
+; -- BUY: ordinary purchase, then a partial sale at average cost -------------
+2024-03-01 buy
+    assets:brokerage            20 BUY @ $50.00
+    assets:cash
+
+2024-04-01 sell half
+    assets:brokerage           -10 BUY @ $60.00
+    assets:cash
+
+; -- XFER: moved between two holding accounts; the incoming leg has no cost --
+2024-03-15 buy, to be moved later
+    assets:brokerage            10 XFER @ $25.00
+    assets:cash
+
+2024-05-01 move to the sep-ira
+    assets:brokerage           -10 XFER
+    holdings:sep                10 XFER
+
+; -- ROUND: closed out completely, then re-opened at a known cost ------------
+2024-03-20 gift received
+    assets:brokerage            10 ROUND
+    equity:opening             -10 ROUND
+
+2024-06-01 sell the gift in full
+    assets:brokerage           -10 ROUND @ $90.00
+    assets:cash
+
+2024-06-15 buy back in
+    assets:brokerage             5 ROUND @ $200.00
+    assets:cash
+
+; -- SPLIT: 2-for-1, booked against equity ----------------------------------
+2024-03-25 buy
+    assets:brokerage            10 SPLIT @ $100.00
+    assets:cash
+
+2024-07-01 two-for-one split
+    assets:brokerage            10 SPLIT
+    equity:splits              -10 SPLIT
+
+P 2024-12-31 OPEN  $12.00
+P 2024-12-31 VEST  $30.00
+P 2024-12-31 GRANT  $8.00
+P 2024-12-31 BUY   $65.00
+P 2024-12-31 XFER  $27.00
+P 2024-12-31 ROUND $210.00
+P 2024-12-31 SPLIT $55.00

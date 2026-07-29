@@ -6,13 +6,26 @@
 // Emits frozen domain objects; Dec is built from decimalMantissa/decimalPlaces
 // with a Number.isSafeInteger guard (never a silent float fallback).
 
+import type {Problem, Severity} from "$lib/checks/engine";
 import type {AccountDecl} from "$lib/domain/accountTypes";
 import {parseAccountTypeTag} from "$lib/domain/accountTypes";
 import type {Dec} from "$lib/domain/money";
 import {formatAmount} from "$lib/domain/money";
-import type {Amount, AmountStyle, Posting, PriceDirective, Transaction, TxnStatus} from "$lib/domain/types";
+import type {Amount, AmountStyle, BalanceAssertion, Posting, PostingType, PriceDirective, Transaction, TxnStatus} from "$lib/domain/types";
 import {ApiShapeError} from "./client";
-import type {RawAccount, RawAmount, RawAmountStyle, RawMarketPrice, RawPosting, RawPriceDirective, RawQuantity, RawTransaction} from "./types.raw";
+import type {
+    RawAccount,
+    RawAmount,
+    RawAmountStyle,
+    RawBalanceAssertion,
+    RawDiagnostic,
+    RawJournalPayload,
+    RawMarketPrice,
+    RawPosting,
+    RawPriceDirective,
+    RawQuantity,
+    RawTransaction,
+} from "./types.raw";
 
 /** Shallow-freeze an array without losing its mutable-typed contract. */
 function frozen<T>(items: T[]): T[] {
@@ -94,6 +107,32 @@ function toTags(raw: unknown[] | undefined): [string, string][] {
     return frozen(tags);
 }
 
+/**
+ * hledger's `ptype` → the domain enum. Anything unrecognized (including the
+ * field being absent, as in older wire dumps) reads as `"regular"`, which is
+ * what hledger itself means by an unbracketed account.
+ */
+function toPostingType(raw: string | undefined): PostingType {
+    if (raw === "VirtualPosting") return "virtual";
+    if (raw === "BalancedVirtualPosting") return "balancedVirtual";
+    return "regular";
+}
+
+/**
+ * `pbalanceassertion` → the domain assertion, or undefined when the posting
+ * asserts nothing. A record without a usable `baamount` is dropped rather than
+ * thrown on: a junk assertion must not cost the whole journal load, and the
+ * edit form treats "no assertion" as its safe default anyway.
+ */
+function toBalanceAssertion(raw: RawBalanceAssertion | null | undefined, context: string): BalanceAssertion | undefined {
+    if (raw === null || raw === undefined || raw.baamount === undefined) return undefined;
+    return Object.freeze({
+        amount: toAmount(raw.baamount, `${context} balance assertion`),
+        inclusive: raw.bainclusive === true,
+        total: raw.batotal === true,
+    });
+}
+
 function toPosting(raw: RawPosting, context: string): Posting {
     const account = raw.paccount ?? "";
     const posting: Posting = {
@@ -104,6 +143,12 @@ function toPosting(raw: RawPosting, context: string): Posting {
         tags: toTags(raw.ptags),
     };
     if (typeof raw.pdate === "string") posting.date = raw.pdate;
+    // Both are set only when they carry information, matching `date` above — so
+    // "absent" is the ordinary posting and every consumer defaults the same way.
+    const type = toPostingType(raw.ptype);
+    if (type !== "regular") posting.type = type;
+    const assertion = toBalanceAssertion(raw.pbalanceassertion, `${context} posting "${account}"`);
+    if (assertion !== undefined) posting.balanceAssertion = assertion;
     return Object.freeze(posting);
 }
 
@@ -142,9 +187,100 @@ function toTransaction(raw: RawTransaction): Transaction {
     return Object.freeze(txn);
 }
 
+/**
+ * The transactions array out of either journal payload shape: a bare array
+ * (plain hledger-web / pre-diagnostics engine) or a `{transactions, diagnostics}`
+ * envelope. Returns null when it is neither.
+ */
+function journalTransactions(raw: unknown): RawTransaction[] | null {
+    if (Array.isArray(raw)) return raw as RawTransaction[];
+    if (typeof raw === "object" && raw !== null) {
+        const envelope = (raw as RawJournalPayload).transactions;
+        if (Array.isArray(envelope)) return envelope;
+    }
+    return null;
+}
+
 export function normalizeTransactions(raw: unknown): Transaction[] {
-    if (!Array.isArray(raw)) throw new ApiShapeError("GET /transactions: expected a JSON array");
-    return raw.map((txn) => toTransaction(txn as RawTransaction));
+    const list = journalTransactions(raw);
+    if (list === null) throw new ApiShapeError("GET /transactions: expected a JSON array");
+    return list.map((txn) => toTransaction(txn));
+}
+
+/**
+ * The only `rule` values the engine emits. Adding one = a single entry here.
+ *
+ * Mirrors `DIAGNOSTIC_RULES` in `crates/ledgeline-core/src/wire.rs`; a Rust test
+ * (`diagnostic_rules_match_the_spa_allow_list`) reads this very line and fails
+ * if the two drift, because a rule the engine emits and this set omits is
+ * silently dropped — a finding that vanishes with no error anywhere.
+ *
+ * The three `stock-*` rules arrived when the SPA stopped computing them from its
+ * own copy of the holdings engine (DRY-1) and started reading the engine's.
+ */
+const DIAGNOSTIC_RULES: ReadonlySet<string> = new Set(["unbalanced", "assertion", "stock-missing-basis", "stock-negative", "stock-unpriced"]);
+/** Valid `Severity` values (the domain enum); anything else is junk we refuse to hand the UI. */
+const DIAGNOSTIC_SEVERITIES: ReadonlySet<string> = new Set<Severity>(["error", "warning", "info"]);
+
+/**
+ * One wire diagnostic → a `Problem`, or null when the entry is unusable.
+ *
+ * Deliberately does NOT throw, unlike every other decoder in this file: these
+ * are advisory findings the engine attaches to a journal it opened
+ * successfully, so a junk entry must cost us that ONE finding, never the whole
+ * journal load.
+ *
+ * The index translation is the subtle part. The wire `txnIndex` is a 0-based
+ * position in the served array, but `Problem.txnIndex` is matched against
+ * `Transaction.index` (hledger's 1-based `tindex`) by the row flags, the
+ * drawer's date/description lookup and `problems.requestFocus`. So the position
+ * is resolved through `txns` to the transaction's own index. A position outside
+ * the array cannot be anchored to a row at all, so it is dropped.
+ */
+function toDiagnostic(raw: unknown, txns: readonly Transaction[]): Problem | null {
+    if (typeof raw !== "object" || raw === null) return null;
+    const entry = raw as RawDiagnostic;
+    if (typeof entry.rule !== "string" || !DIAGNOSTIC_RULES.has(entry.rule)) return null;
+    if (typeof entry.severity !== "string" || !DIAGNOSTIC_SEVERITIES.has(entry.severity)) return null;
+    if (typeof entry.message !== "string" || entry.message.trim() === "") return null;
+    const position = entry.txnIndex;
+    if (position === undefined || !Number.isInteger(position) || position < 0 || position >= txns.length) return null;
+    return Object.freeze({
+        txnIndex: txns[position].index,
+        rule: entry.rule,
+        severity: entry.severity as Severity,
+        message: entry.message,
+    });
+}
+
+/**
+ * Engine-computed journal diagnostics off the journal payload → `Problem`s, for
+ * merging into the checks pipeline (see CheckContext.diagnostics).
+ *
+ * Total and non-throwing by contract: a missing/null/non-array `diagnostics`
+ * field, a payload that is a bare transactions array (older engine), or an
+ * entry with a bad rule/severity/message/txnIndex all degrade to "no
+ * diagnostics" or a skipped entry. Exact duplicates are collapsed — the drawer
+ * keys its list by `txnIndex + message`, and Svelte throws on a duplicate key.
+ */
+export function normalizeDiagnostics(raw: unknown, txns: readonly Transaction[]): Problem[] {
+    let list: unknown[];
+    if (Array.isArray(raw)) list = raw;
+    else if (typeof raw === "object" && raw !== null && Array.isArray((raw as RawJournalPayload).diagnostics)) {
+        list = (raw as RawJournalPayload).diagnostics as unknown[];
+    } else return frozen([]);
+
+    const problems: Problem[] = [];
+    const seen = new Set<string>();
+    for (const item of list) {
+        const problem = toDiagnostic(item, txns);
+        if (problem === null) continue;
+        const key = `${problem.txnIndex} ${problem.rule} ${problem.message}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        problems.push(problem);
+    }
+    return frozen(problems);
 }
 
 const marketPriceStyle = (qty: Dec): AmountStyle => Object.freeze({side: "L" as const, spaced: false, precision: qty.p, decimalPoint: ".", digitGroups: null});
@@ -176,19 +312,50 @@ export function normalizePrices(raw: unknown): PriceDirective[] {
     return raw.map(toPriceDirective);
 }
 
+/** How many entries the last `normalizeAccounts` call dropped as unusable. Exported for tests. */
+let skippedAccounts = 0;
+
+/** Entries dropped by the most recent `normalizeAccounts` call (no usable `aname`). */
+export function lastSkippedAccountCount(): number {
+    return skippedAccounts;
+}
+
 /**
  * /accounts → the declared `type:` per account (the only field we read).
  * Accounts inherited into the tree but never declared carry `type: null`; the
  * `type:` tag lives in adeclarationinfo.aditags as ["type", "C"|"Cash"|…].
+ *
+ * A MALFORMED entry (no string `aname`) is still skipped rather than thrown on
+ * — one junk record must not cost the whole journal load — but it is now
+ * COUNTED and reported. Silence was the wrong default here specifically: every
+ * report classifies accounts by their DECLARED type, so a dropped declaration
+ * doesn't degrade gracefully, it re-buckets a whole subtree and makes its
+ * totals read zero, which is indistinguishable from a correct answer.
+ *
+ * `aname: ""` is NOT malformed — it is hledger's tree root, present in every
+ * healthy payload — so it is skipped in silence. Counting it would make the
+ * warning fire on every successful load and mean nothing.
  */
 export function normalizeAccounts(raw: unknown): AccountDecl[] {
     if (!Array.isArray(raw)) throw new ApiShapeError("GET /accounts: expected a JSON array");
     const decls: AccountDecl[] = [];
+    let skipped = 0;
     for (const item of raw) {
         const account = item as RawAccount;
-        if (typeof account.aname !== "string" || account.aname === "") continue;
+        if (typeof account.aname !== "string") {
+            skipped += 1;
+            continue;
+        }
+        if (account.aname === "") continue;
         const typeTag = toTags(account.adeclarationinfo?.aditags).find(([key]) => key === "type");
         decls.push(Object.freeze({name: account.aname, type: typeTag !== undefined ? parseAccountTypeTag(typeTag[1]) : null}));
+    }
+    skippedAccounts = skipped;
+    if (skipped > 0) {
+        console.warn(
+            `GET /accounts: skipped ${skipped} malformed ${skipped === 1 ? "entry" : "entries"} (no usable "aname"). ` +
+                `Any account type they declared is lost, so those subtrees will be classified by name instead and may total zero.`
+        );
     }
     return frozen(decls);
 }

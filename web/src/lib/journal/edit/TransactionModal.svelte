@@ -6,7 +6,8 @@
     // Client-side validation is minimal (date + ≥1 posting); the engine does the
     // real balancing and its 400 message is shown inline. A 409 closes the popup
     // and lets the page's "changed on disk" banner take over.
-    import {dominantCommodity, formToBody, txnToForm, validateForm, blankForm, emptyPosting, type TxnForm} from "$lib/api/editMapping";
+    import {decToInput, dominantCommodity, formToBody, txnToForm, validateForm, blankForm, emptyPosting, type TxnForm} from "$lib/api/editMapping";
+    import type {WireBalanceAssertion, WirePostingType} from "$lib/api/native";
     import {localToday} from "$lib/stores/filters.svelte";
     import {editing} from "$lib/stores/editing.svelte";
     import {journal} from "$lib/stores/journal.svelte";
@@ -81,6 +82,18 @@
     function onKeydown(event: KeyboardEvent): void {
         if (event.key === "Escape" && !submitting) txnModal.close();
     }
+
+    /** Human name for a non-regular posting type (the popup preserves these but doesn't edit them). */
+    function postingTypeLabel(type: WirePostingType): string {
+        return type === "virtual" ? "Unbalanced virtual" : "Balanced virtual";
+    }
+
+    /** The assertion as it appears in the journal, e.g. `== $500.00` or `=* 10 EUR`. */
+    function assertionLabel(assertion: WireBalanceAssertion): string {
+        const op = `${assertion.total ? "==" : "="}${assertion.inclusive ? "*" : ""}`;
+        const qty = decToInput({m: BigInt(assertion.amount.quantity.mantissa), p: assertion.amount.quantity.places});
+        return `${op} ${assertion.amount.commodity}${qty}`;
+    }
 </script>
 
 <div class="modal" class:modal-open={txnModal.open} role="dialog" aria-modal="true" aria-label={title} onkeydown={onKeydown} tabindex="-1">
@@ -132,7 +145,9 @@
                     placeholder="note; key:value adds a tag"
                     aria-label="Comment or tags"
                 />
-                <span class="label-text-alt text-base-content/50 mt-1 text-xs">A <code>key:value</code> pair (e.g. <code>category:food</code>) becomes a tag.</span>
+                <span class="label-text-alt text-base-content/50 mt-1 text-xs"
+                    >A <code>key:value</code> pair (e.g. <code>category:food</code>) becomes a tag.</span
+                >
             </label>
         </div>
 
@@ -146,7 +161,12 @@
                     <div class="flex flex-col gap-1">
                         <div class="flex items-start gap-2">
                             <div class="min-w-0 grow-[3] basis-0">
-                                <AccountInput bind:value={posting.account} accountNames={journal.accountNames} placeholder="account:sub" disabled={submitting} />
+                                <AccountInput
+                                    bind:value={posting.account}
+                                    accountNames={journal.accountNames}
+                                    placeholder="account:sub"
+                                    disabled={submitting}
+                                />
                             </div>
                             <input
                                 type="text"
@@ -188,6 +208,28 @@
                             <div class="text-base-content/50 pl-1 text-xs">
                                 {posting.cost.kind === "unit" ? "@" : "@@"}
                                 {posting.cost.amount.commodity} cost preserved on save
+                            </div>
+                        {/if}
+                        {#if posting.type !== "regular"}
+                            <div class="text-base-content/50 pl-1 text-xs">
+                                {postingTypeLabel(posting.type)} posting — written as
+                                <code>{posting.type === "virtual" ? `(${posting.account || "account"})` : `[${posting.account || "account"}]`}</code>
+                            </div>
+                        {/if}
+                        {#if posting.balanceAssertion !== null}
+                            <div class="text-base-content/50 flex items-center gap-2 pl-1 text-xs">
+                                <span>
+                                    Balance assertion <code>{assertionLabel(posting.balanceAssertion)}</code> preserved on save
+                                </span>
+                                <button
+                                    type="button"
+                                    class="btn btn-ghost btn-xs"
+                                    onclick={() => (posting.balanceAssertion = null)}
+                                    disabled={submitting}
+                                    aria-label="Remove the balance assertion on posting {index + 1}"
+                                >
+                                    Remove
+                                </button>
                             </div>
                         {/if}
                     </div>

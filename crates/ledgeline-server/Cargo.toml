@@ -25,7 +25,21 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
-tower-http = { version = "0.6", features = ["cors"] }
+# `catch-panic` turns a handler panic into a 500 instead of a dropped connection
+# (SEC-2); `set-header` carries the security headers (SEC-7); `cors` is only
+# reachable through the opt-in `--allow-origin` allowlist (SEC-1);
+# `compression-gzip` shrinks the /transactions body ~20:1 on the wire (PERF-2).
+tower-http = { version = "0.6", features = [
+    "catch-panic",
+    "compression-gzip",
+    "cors",
+    "set-header",
+] }
+# Local-access control (SEC-1): `getrandom` is the OS CSPRNG behind the
+# per-process bearer token; `sha2` + `base64` compute the CSP script hashes.
+getrandom = { version = "0.3", features = ["std"] }
+sha2 = "0.10"
+base64 = "0.22"
 # CLI, embedded SPA, live-reload, and hot-swappable journal state — needed in
 # both the GUI and headless builds, so none of these are feature-gated.
 clap = { version = "4", features = ["derive"] }

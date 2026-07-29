@@ -1,0 +1,6 @@
+; PARSE-4: `0x10` is not a number. hledger stops at the `x`; the remainder is
+; not a legal commodity (an unquoted symbol cannot contain a space), so the
+; whole amount is rejected rather than read as 0 of a commodity `x10 XX`.
+2017-01-01
+    a   0x10 XX
+    b

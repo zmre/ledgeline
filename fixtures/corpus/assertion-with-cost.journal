@@ -1,0 +1,5 @@
+; PARSE-9: an asserted amount may carry a cost. hledger records it on
+; baamount.acost and ignores it when evaluating the assertion.
+2024-01-01 t
+    a   10 AAA = 10 AAA @ $5.00
+    b  -10 AAA

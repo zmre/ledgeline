@@ -144,9 +144,11 @@ pub struct SourcePos {
 pub struct BalanceAssertion {
     /// The asserted amount.
     pub amount: Amount,
-    /// Subaccount-inclusive assertion (`=*`). Always `false` here.
+    /// Subaccount-inclusive assertion, written with a trailing `*` (`=*`/`==*`):
+    /// the asserted balance includes the account's subaccounts.
     pub inclusive: bool,
-    /// Total assertion (`==`). Always `false` here.
+    /// Total assertion, written `==`/`==*`: asserts the account holds *only* the
+    /// asserted commodity, i.e. every other commodity's balance is zero.
     pub total: bool,
     /// Position of the `=` sign.
     pub position: SourcePos,
@@ -307,6 +309,16 @@ pub struct Journal {
     pub commodity_tags: Vec<(Commodity, Vec<(String, String)>)>,
     /// Market-price directives.
     pub prices: Vec<PriceDirective>,
+    /// The commodity declared by a `D AMOUNT` default-commodity directive (the
+    /// last one wins), if any.
+    ///
+    /// hledger uses it only to give bare-number amounts a commodity, which the
+    /// parser already does. It is kept here because it is also the one place a
+    /// journal states, in the author's own words, which commodity it is
+    /// denominated in — so a report that has to pick a single valuation
+    /// commodity can prefer it over guessing from price-directive frequency
+    /// (see `holdings::HoldingsScope::value_in`).
+    pub default_commodity: Option<Commodity>,
 }
 
 impl Journal {

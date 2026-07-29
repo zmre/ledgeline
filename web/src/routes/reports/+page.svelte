@@ -8,8 +8,8 @@
     // Display styles come from the journal wire feed (reportStyles), fetched in
     // parallel — the engine returns exact numbers, not commodity display styles.
     import {onMount} from "svelte";
-    import {replaceState} from "$app/navigation";
-    import {NativeApiUnavailableError} from "$lib/api/native";
+    import AsyncSection from "$lib/components/AsyncSection.svelte";
+    import ErrorToast from "$lib/components/ErrorToast.svelte";
     import {declaredTypes} from "$lib/domain/accountTypes";
     import {exportBudgetXlsx, exportXlsx} from "$lib/export/xlsx";
     import InsightsDashboard from "$lib/reports/ui/insights/InsightsDashboard.svelte";
@@ -31,9 +31,12 @@
         type ReportTab,
     } from "$lib/reports/ui/params";
     import {reportStyles} from "$lib/reports/ui/styles";
-    import {buildReportQuery, reports, type AnyReport} from "$lib/stores/reports.svelte";
+    import {dataView} from "$lib/stores/loadState";
+    import {budgetSpan, buildReportQuery, reports, sameReportQuery, type AnyReport} from "$lib/stores/reports.svelte";
     import {journal} from "$lib/stores/journal.svelte";
+    import {loadJournalWhenReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
+    import {searchMirror} from "$lib/url/searchSync";
 
     let params = $state<ReportParams>(defaultReportParams());
     let restored = $state(false);
@@ -44,9 +47,7 @@
         if (window.location.search !== "") Object.assign(params, searchToParams(window.location.search, defaultReportParams()));
         activeTab = params.tab; // the restored/initial tab keeps its (URL or default) interval/count
         restored = true;
-        return () => {
-            if (timer !== null) clearTimeout(timer);
-        };
+        return () => mirror.stop();
     });
 
     // Each tab seeds its own defaults on activation (cash flow wants monthly/12,
@@ -66,61 +67,71 @@
     });
 
     // Mirror params → URL, debounced, replaceState (no history entries, no loops).
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    // Reading `params` before the `restored` guard is deliberate: the effect has
+    // to depend on them even on the run where it declines to write.
+    const mirror = searchMirror();
     $effect(() => {
         const search = paramsToSearch(params);
         if (!restored) return;
-        if (timer !== null) clearTimeout(timer);
-        timer = setTimeout(() => {
-            timer = null;
-            if (window.location.search.replace(/^\?/, "") === search) return;
-            const url = `${window.location.pathname}?${search}`;
-            try {
-                // eslint-disable-next-line svelte/no-navigation-without-resolve -- URL is the CURRENT pathname (from window.location), not a route id to resolve
-                replaceState(url, {});
-            } catch {
-                // Router not initialized (tests, embedding) — degrade to the raw History API.
-                history.replaceState(history.state, "", url);
-            }
-        }, 250);
+        mirror.write(search);
     });
 
     // Load the journal once a server URL is configured (styles + max depth only — the report itself is native).
-    let attemptedUrl: string | null = null;
-    $effect(() => {
-        const url = settings.serverUrl;
-        if (url !== null && url !== attemptedUrl) {
-            attemptedUrl = url;
-            void journal.refresh();
-        }
-    });
+    loadJournalWhenReady();
 
     // Tabs that own their data + controls: they load from their own stores, so the
     // shared reports store, the controls bar, and the export button all sit out.
     const SELF_HOSTED: ReportTab[] = ["insights", "subs"];
     const selfHosted = $derived(SELF_HOSTED.includes(params.tab));
 
-    // Fetch the native report whenever the active tab's query changes (or the server
-    // is first configured).
+    // Fetch the native report whenever the active tab's query changes, the server
+    // is first configured, or the user reconnects. The nonce is in the key
+    // because a reconnect usually leaves the URL identical (the engine restarted
+    // on the same port), and keying on the URL alone meant this page never
+    // retried after one (FE-5d).
     const reportQuery = $derived(buildReportQuery(params));
+    const loadKey = $derived({url: settings.serverUrl, nonce: settings.serverNonce, query: reportQuery});
     $effect(() => {
-        const url = settings.serverUrl;
-        if (url !== null && !selfHosted) void reports.load(url, reportQuery);
+        const {url, query} = loadKey;
+        if (url !== null && !selfHosted) void reports.load(url, query);
     });
 
+    // Display styles are a nicety, never a gate: they come from the SEPARATE
+    // hledger-web feed, so requiring them (`journal.txns.length > 0`) spun
+    // forever whenever the engine answered and that feed did not — and on a
+    // legitimately empty journal, for every new user (FE-5c). `formatTotals`
+    // already falls back per commodity when the map has no entry.
     const styles = $derived(reportStyles(journal.txns));
-    const stylesReady = $derived(journal.txns.length > 0);
     const declared = $derived(declaredTypes(journal.accountDecls));
     const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
 
     const report = $derived(reports.report);
-    const nativeUnavailable = $derived(reports.error instanceof NativeApiUnavailableError);
+
+    // `bs`/`is` are both SectionedReport and `cf`/`nw` are both PeriodReport, so
+    // shape alone cannot say which tab a report belongs to — which is how a
+    // balance sheet came to be rendered, and exported, under the P&L's label
+    // (FE-1). The store tags each report with the query it came from; nothing is
+    // shown unless that tag names the tab now being viewed. This is the one
+    // surface that needs `dataView`'s third argument, so it calls it directly
+    // rather than taking the resource's own `view`.
+    const loadedTab = $derived(reports.query?.tab ?? null);
+    const view = $derived(dataView(reports.status, report !== null, loadedTab === params.tab));
+    const shown = $derived(view === "data" ? report : null);
 
     // Discriminate the report shape: budget (kind:"budget") → BudgetSummary; bs/is/cf/nw → ReportTable.
-    // Guarding on structure (not params.tab) survives the window where the last good report is still
-    // the previous tab's while the new one loads.
-    const budgetReport = $derived(report !== null && "kind" in report ? report : null);
-    const tableReport = $derived(report !== null && !("kind" in report) ? report : null);
+    const tableReport = $derived(shown !== null && !("kind" in shown) ? shown : null);
+
+    /**
+     * The report the export button may act on: the one being shown AND answering
+     * exactly the query the controls currently describe. `exportInfo` builds the
+     * filename and the title from `params`, so anything less lets the user
+     * download `income-statement-….xlsx`, titled "Income Statement", holding
+     * balance-sheet figures.
+     */
+    const exportable = $derived.by(() => {
+        const held = reports.query;
+        return shown !== null && held !== null && sameReportQuery(held, reportQuery) ? shown : null;
+    });
 
     /** Commodities the valuation had to skip (net worth) — surfaced as a warning badge. */
     const unpriced = $derived.by(() => (tableReport !== null && !("sections" in tableReport) ? (tableReport.meta?.unpriced ?? []) : []));
@@ -165,8 +176,8 @@
 <div class="flex flex-col gap-3">
     <div class="flex flex-wrap items-center justify-between gap-2">
         <ReportTabs bind:tab={params.tab} />
-        {#if report !== null && !selfHosted}
-            {@const current = report}
+        {#if exportable !== null && !selfHosted}
+            {@const current = exportable}
             <ExportButton run={() => runExport(current)} />
         {/if}
     </div>
@@ -181,33 +192,43 @@
         </div>
     {/if}
 
+    <!-- The self-hosted tabs render their own <AsyncSection>; everything else
+         shares this one, which puts the error branch BEFORE the data branches
+         and asks only about `status`. Tested after them, and additionally gated
+         on `report === null`, it could never fire once any report had loaded —
+         so a failed refetch just kept serving the previous answer under the new
+         controls' label (FE-5). -->
     {#if params.tab === "insights"}
         <InsightsDashboard bind:params serverUrl={settings.serverUrl} {styles} />
     {:else if params.tab === "subs"}
         <SubscriptionsPanel serverUrl={settings.serverUrl} {styles} />
-    {:else if budgetReport !== null && stylesReady}
-        <BudgetSummary report={budgetReport} {styles} {declared} from={params.from} to={params.to} />
-    {:else if tableReport !== null && stylesReady}
-        <ReportTable report={tableReport} {styles} />
-    {:else if report === null && reports.status === "error"}
-        <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid="reports-error">
-            <span>{nativeUnavailable ? reports.error?.message : `Couldn't load the report: ${reports.error?.message ?? "unknown error"}`}</span>
-            {#if !nativeUnavailable}
-                <button type="button" class="btn btn-sm" onclick={() => void reports.load(settings.serverUrl ?? "", reportQuery)}>Retry</button>
-            {/if}
-        </div>
     {:else}
-        <div class="flex items-center justify-center py-24" aria-label="Loading reports">
-            <span class="loading loading-spinner loading-lg"></span>
-        </div>
+        <AsyncSection
+            {view}
+            value={shown}
+            error={reports.error}
+            testid="reports-error"
+            label="the report"
+            loadingLabel="Loading reports"
+            onRetry={() => void reports.load(settings.serverUrl ?? "", reportQuery)}
+        >
+            {#snippet children(current)}
+                {#if "kind" in current}
+                    <!-- budgetSpan, not params: the bars cover whole months, so the journal
+                         link has to cover the same span or the rows won't add up to the bar. -->
+                    <BudgetSummary
+                        report={current}
+                        {styles}
+                        {declared}
+                        from={budgetSpan(params.from, params.to).from}
+                        to={budgetSpan(params.from, params.to).to}
+                    />
+                {:else}
+                    <ReportTable report={current} {styles} />
+                {/if}
+            {/snippet}
+        </AsyncSection>
     {/if}
 </div>
 
-{#if journal.status === "error" && journal.error !== null}
-    <div class="toast toast-end z-30">
-        <div class="alert alert-error">
-            <span class="max-w-xs truncate" title={journal.error}>{journal.error}</span>
-            <button type="button" class="btn btn-sm" onclick={() => void journal.refresh()}>Retry</button>
-        </div>
-    </div>
-{/if}
+<ErrorToast message={journal.status === "error" ? journal.error : null} onRetry={() => void journal.refresh({force: true})} />

@@ -1,17 +1,17 @@
 <!-- Chart widget (WP-05): LayerChart pie/line for the filtered period.
      - mode toggle (pie | line), interval select (line only), commodity select when >1 in use
      - one commodity at a time; never sums across commodities
-     - colors: dataviz reference dark palette slots 1..6 + muted gray for "(other)",
-       validated with the dataviz skill validator against the daisyUI dark surface
-       (#191e24): lightness band PASS, chroma PASS, contrast >=3:1 PASS, worst adjacent
-       CVD dE 10.3 (floor band) — mitigated per the skill by an always-on legend,
-       pad-angle gaps between pie slices, and full tooltips.
+     - colors: the shared categorical palette ($lib/format/palette) + muted gray for
+       "(other)". That module documents the validator run and the slot order.
+       Secondary encoding, required by the skill at this CVD separation, is the
+       always-on legend, pad-angle gaps between pie slices, and full tooltips.
      - pie and line rank accounts identically (series.rankedAccounts), so an account
        keeps its hue across modes; slices/series are capped at 6 groups incl. "(other)". -->
 <script lang="ts">
     import {LineChart, PieChart, Tooltip} from "layerchart";
     import type {RootCategory} from "$lib/domain/accounts";
     import type {Transaction} from "$lib/domain/types";
+    import {colorAt, OTHER_COLOR} from "$lib/format/palette";
     import {
         categoriesInUse,
         commoditiesInUse,
@@ -35,9 +35,6 @@
         declared,
     }: {txns: Transaction[]; depth: number; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();
 
-    // Dark-mode categorical slots 1..6 from the dataviz reference palette (app theme is dark-only).
-    const PALETTE = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767"];
-    const OTHER_COLOR = "#898781"; // muted — the folded tail is context, not a series identity
     const MAX_GROUPS = 6;
 
     // Human labels for the category scope selector (root account groups).
@@ -71,18 +68,38 @@
     const category = $derived<RootCategory | undefined>(group === "all" ? undefined : group);
 
     const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared}));
+
+    // A pie encodes parts of a whole by AREA, and a negative part has none.
+    // Drawing |value| (the old behaviour) turned a −$500 travel refund into a
+    // positive wedge worth a fifth of a $2,000 rent pie, and inflated the whole
+    // from the true $1,500 net to $2,500 — only the tooltip carried the sign.
+    // Netting is not an option either: pieData already nets per account group,
+    // so a negative datum IS that category's net credit for the period and has
+    // nothing left to net into.
+    //
+    // So the pie draws the positive parts, whose areas do sum to the whole it
+    // claims to partition, and the credits are named underneath with their
+    // signed amounts rather than silently redrawn as spending.
+    const pieSlices = $derived(pie.filter((d) => d.value > 0));
+    const pieCredits = $derived(pie.filter((d) => d.value < 0));
     const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared}));
 
     // Color follows the account, not the mode: both datasets come from the same
     // magnitude ranking, so slot assignment by first appearance stays consistent.
+    //
+    // `colorAt` FOLDS past the last slot; this used to be `PALETTE[slot++ %
+    // PALETTE.length]` over a 6-entry copy of the palette. Each dataset is
+    // capped at MAX_GROUPS, but the pie and the line can rank DIFFERENT
+    // accounts, so `slot` can reach 12 — and the modulo then handed a 7th
+    // account slot 1's blue, making it indistinguishable from the 1st.
     const colorOf: Record<string, string> = $derived.by(() => {
         const colors: Record<string, string> = {[OTHER]: OTHER_COLOR};
         let slot = 0;
         for (const s of line) {
-            colors[s.account] ??= PALETTE[slot++ % PALETTE.length];
+            colors[s.account] ??= colorAt(slot++);
         }
         for (const d of pie) {
-            colors[d.account] ??= PALETTE[slot++ % PALETTE.length];
+            colors[d.account] ??= colorAt(slot++);
         }
         return colors;
     });
@@ -168,16 +185,22 @@
     </div>
 
     {#if mode === "pie"}
-        {#if pie.length === 0}
-            <p class="text-base-content/60 py-10 text-center text-sm">No {commodity} activity in the filtered period.</p>
+        {#if pieSlices.length === 0}
+            <p class="text-base-content/60 py-10 text-center text-sm">
+                {#if pieCredits.length === 0}
+                    No {commodity} activity in the filtered period.
+                {:else}
+                    Every {commodity} category nets to a credit in this period, so there is nothing for a pie to divide.
+                {/if}
+            </p>
         {:else}
             <div class="h-64 w-full sm:h-72" data-testid="insights-pie">
                 <PieChart
-                    data={pie}
+                    data={pieSlices}
                     key="account"
                     label="account"
-                    value={(d) => Math.abs(d.value)}
-                    cRange={pie.map((d) => colorOf[d.account] ?? OTHER_COLOR)}
+                    value={(d) => d.value}
+                    cRange={pieSlices.map((d) => colorOf[d.account] ?? OTHER_COLOR)}
                     padAngle={0.02}
                     legend={{placement: "right", orientation: "vertical", classes: {root: "hidden sm:block"}}}
                 >
@@ -197,13 +220,19 @@
             </div>
             <!-- legend fallback for narrow screens (identity is never color-alone) -->
             <ul class="text-base-content/70 mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs sm:hidden">
-                {#each pie as d (d.account)}
+                {#each pieSlices as d (d.account)}
                     <li class="flex items-center gap-1">
                         <span class="inline-block h-2 w-2 rounded-full" style="background:{colorOf[d.account] ?? OTHER_COLOR}"></span>
                         {d.account}
                     </li>
                 {/each}
             </ul>
+        {/if}
+        <!-- Categories that net to a credit have no area in a pie; name them instead of drawing them positive. -->
+        {#if pieCredits.length > 0}
+            <p class="text-base-content/60 mt-1 px-1 text-xs" data-testid="insights-pie-credits">
+                Not shown (net credit in this period): {pieCredits.map((d) => `${d.account} ${d.formatted}`).join(", ")}.
+            </p>
         {/if}
     {:else if rows.length === 0}
         <p class="text-base-content/60 py-10 text-center text-sm">No {commodity} activity in the filtered period.</p>

@@ -42,6 +42,14 @@ export interface RawAmount {
     acostbasis?: unknown; // 2.0-preview
 }
 
+/** A `=`/`==`/`=*`/`==*` balance assertion; `baposition` is source info we ignore. */
+export interface RawBalanceAssertion {
+    baamount?: RawAmount;
+    bainclusive?: boolean;
+    batotal?: boolean;
+    baposition?: unknown;
+}
+
 export interface RawPosting {
     paccount?: string;
     pamount?: RawAmount[];
@@ -50,8 +58,8 @@ export interface RawPosting {
     ptags?: unknown[];
     pdate?: string | null;
     pdate2?: string | null;
-    pbalanceassertion?: unknown;
-    ptype?: string;
+    pbalanceassertion?: RawBalanceAssertion | null;
+    ptype?: string; // "RegularPosting" | "VirtualPosting" | "BalancedVirtualPosting"
     poriginal?: unknown;
     ptransaction_?: string;
 }
@@ -68,6 +76,30 @@ export interface RawTransaction {
     tpostings?: RawPosting[];
     tprecedingcomment?: string;
     tsourcepos?: unknown;
+}
+
+/**
+ * One engine-computed journal diagnostic (unbalanced transaction / failed
+ * balance assertion). These are ADVISORY: the engine reports them instead of
+ * refusing to open the journal, so the decoder skips malformed entries rather
+ * than throwing — see normalizeDiagnostics.
+ */
+export interface RawDiagnostic {
+    /** 0-based position in the served transactions array (NOT hledger's 1-based tindex). */
+    txnIndex?: number;
+    rule?: string; // "unbalanced" | "assertion"
+    severity?: string; // "error"
+    message?: string; // hledger-style, may be multi-line
+}
+
+/**
+ * The journal payload envelope. A plain hledger-web (and any engine build from
+ * before diagnostics existed) answers /transactions with a BARE ARRAY, so both
+ * shapes have to decode.
+ */
+export interface RawJournalPayload {
+    transactions?: RawTransaction[];
+    diagnostics?: unknown;
 }
 
 /** /prices in 1.52 returns MarketPrice records (no amount style). */

@@ -99,8 +99,12 @@ export function maIsZero(a: MixedAmount): boolean {
     return true;
 }
 
-/** Round half-away-from-zero to `p` decimal places (rescales up exactly when p >= d.p). */
-function roundTo(d: Dec, p: number): Dec {
+/**
+ * Round half-away-from-zero to `p` decimal places (rescales up exactly when
+ * p >= d.p). DISPLAY ONLY — exported so export boundaries (xlsx) can round the
+ * exact Dec themselves instead of letting a consumer re-round a float.
+ */
+export function roundTo(d: Dec, p: number): Dec {
     if (p >= d.p) return rescale(d, p);
     const divisor = pow10(d.p - p);
     const quotient = d.m / divisor;
@@ -132,15 +136,54 @@ function groupDigits(intDigits: string, [separator, sizes]: [string, number[]]):
 }
 
 /**
- * Display cap: never render more than two decimal places, whatever the wire
- * style or Dec precision says. Exact Decs keep full precision internally;
- * only formatting rounds.
+ * Display cap for MONEY: never render more than two decimal places, whatever
+ * the wire style or Dec precision says. Exact Decs keep full precision
+ * internally; only formatting rounds.
+ *
+ * This is a rule about MONEY specifically, whose unit of account is the cent —
+ * a third decimal on a balance is noise. It is NOT a rule about numbers in
+ * general: a unit count (0.00123456 BTC) and a per-unit rate are not amounts of
+ * money, and rounding them to cents is what makes them read as `0`. Callers
+ * that format a non-money quantity pass MAX_QUANTITY_DECIMALS instead.
  */
 export const MAX_DISPLAY_DECIMALS = 2;
 
-/** Format a Dec per style. Rounding (to min(style.precision, 2)) happens HERE only. */
-export function formatDec(d: Dec, style: AmountStyle): string {
-    const rounded = roundTo(d, Math.min(style.precision, MAX_DISPLAY_DECIMALS));
+/**
+ * Display cap for NON-money quantities: unit/share counts and per-unit rates,
+ * whose unit of account is whatever the journal wrote, not the cent.
+ *
+ * 8 places is the finest subdivision in wide use (a satoshi is 1e-8 BTC) and
+ * still bounds a table column's width; below it the journal's own precision is
+ * the real limit, since `displayPlaces` never asks for more places than the
+ * value has.
+ */
+export const MAX_QUANTITY_DECIMALS = 8;
+
+/**
+ * How many decimal places to render `d` at: `min(precision, maxDecimals)`,
+ * with one exception.
+ *
+ * Rounding may COMPRESS a number; it must never DELETE one. When the cap would
+ * round a non-zero value to a string of zeros — a $0.00012345 price rendered
+ * "0.00", a 0.00123456 BTC balance rendered "0" — the places are relaxed to the
+ * value's own precision, bounded by MAX_QUANTITY_DECIMALS. The relaxation only
+ * applies if it actually reveals a digit, so a value below 1e-8 keeps the short
+ * styled zero rather than printing a row of zeros.
+ *
+ * Blast radius is exactly that exception: for every value that already renders
+ * as something other than zero, this returns `min(precision, maxDecimals)` —
+ * the pre-existing behaviour, unchanged.
+ */
+export function displayPlaces(d: Dec, precision: number, maxDecimals: number = MAX_DISPLAY_DECIMALS): number {
+    const places = Math.max(0, Math.min(precision, maxDecimals));
+    if (d.m === 0n || roundTo(d, places).m !== 0n) return places;
+    const relaxed = Math.min(d.p, MAX_QUANTITY_DECIMALS);
+    return relaxed > places && roundTo(d, relaxed).m !== 0n ? relaxed : places;
+}
+
+/** Format a Dec per style. Rounding (see `displayPlaces`) happens HERE only. */
+export function formatDec(d: Dec, style: AmountStyle, maxDecimals: number = MAX_DISPLAY_DECIMALS): string {
+    const rounded = roundTo(d, displayPlaces(d, style.precision, maxDecimals));
     const negative = rounded.m < 0n;
     const digits = (negative ? -rounded.m : rounded.m).toString().padStart(rounded.p + 1, "0");
     const intDigits = digits.slice(0, digits.length - rounded.p);
@@ -150,9 +193,13 @@ export function formatDec(d: Dec, style: AmountStyle): string {
     return (negative ? "-" : "") + intPart + fracPart;
 }
 
-/** Format qty + commodity honoring side/spacing/precision/groups, e.g. "$-1,234.56" or "45,00 EUR". */
-export function formatAmount(a: Amount): string {
-    const num = formatDec(a.qty, a.style);
+/**
+ * Format qty + commodity honoring side/spacing/precision/groups, e.g.
+ * "$-1,234.56" or "45,00 EUR". Money-capped by default; pass
+ * MAX_QUANTITY_DECIMALS for an amount that is a unit count, not money.
+ */
+export function formatAmount(a: Amount, maxDecimals: number = MAX_DISPLAY_DECIMALS): string {
+    const num = formatDec(a.qty, a.style, maxDecimals);
     if (a.commodity === "") return num;
     const space = a.style.spaced ? " " : "";
     return a.style.side === "L" ? a.commodity + space + num : num + space + a.commodity;

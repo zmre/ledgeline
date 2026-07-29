@@ -1,0 +1,5 @@
+; PARSE-6 + PARSE-9: an all-date-characters bracket group must parse, so an
+; impossible date in one is the same hard error hledger raises.
+2024-01-01 t
+    a   $1.00  ; [2024-02-30]
+    b

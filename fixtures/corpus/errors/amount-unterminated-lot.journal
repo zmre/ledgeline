@@ -1,0 +1,5 @@
+; PARSE-5: `{` opens lot-cost notation, so it cannot appear inside a commodity
+; symbol. An unclosed brace is a parse error, not a commodity named `AA{PL`.
+2017-01-01
+    a   10 AA{PL
+    b

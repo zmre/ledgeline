@@ -14,6 +14,9 @@
 
     const RULE_LABELS: Record<string, string> = {
         unbalanced: "Unbalanced",
+        // Engine-computed (see CheckContext.diagnostics). "unbalanced" above is
+        // shared: the engine's finding and the local rule land in one group.
+        assertion: "Balance assertion",
         pending: "Pending",
         uncategorized: "Uncategorized",
         "missing-description": "Missing description",
@@ -80,7 +83,15 @@
                                             {txn === undefined || txn.description === "" ? "(no description)" : txn.description}
                                         </span>
                                     </span>
-                                    <span class="text-base-content/60 block text-xs">{problem.message}</span>
+                                    <!-- Engine diagnostics are hledger-style: several lines whose numbers are
+                                         column-aligned. `whitespace-pre` + mono keeps that alignment (a wrap would
+                                         destroy it) and the narrow drawer scrolls sideways instead of truncating.
+                                         Single-line messages keep the original wrapping treatment. -->
+                                    {#if problem.message.includes("\n")}
+                                        <span class="text-base-content/60 block overflow-x-auto font-mono text-xs whitespace-pre">{problem.message}</span>
+                                    {:else}
+                                        <span class="text-base-content/60 block text-xs">{problem.message}</span>
+                                    {/if}
                                 </button>
                             </li>
                         {/each}

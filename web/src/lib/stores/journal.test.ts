@@ -91,6 +91,50 @@ describe("UNIT journal contentFingerprint", () => {
         expect(contentFingerprint(base, ["expenses"], [price])).not.toBe(contentFingerprint(base, ["expenses"], []));
     });
 
+    it("changes when a price's SCALE changes but its mantissa does not", () => {
+        // FE-4. The old line mixed `Number(BigInt.asIntN(32, qty.m))` — the
+        // mantissa alone, truncated — so `P VTI $1.00` (m=100n, p=2) and
+        // `P VTI $100` (m=100n, p=0) hashed identically. A price correction of
+        // exactly that shape was fetched and then discarded, and because
+        // doRefresh rewrites lastFingerprint even when it skips the swap, it was
+        // discarded permanently: a stale portfolio on screen indefinitely.
+        const style = {side: "L" as const, spaced: false, precision: 2, decimalPoint: ".", digitGroups: null};
+        const priced = (m: bigint, p: number) => [{date: "2026-07-01", commodity: "VTI", price: {commodity: "$", qty: {m, p} as Dec, style}}];
+        expect(contentFingerprint(base, [], priced(100n, 2))).not.toBe(contentFingerprint(base, [], priced(100n, 0)));
+    });
+
+    it("changes when two price mantissas differ by exactly 2^32 (the truncation collision)", () => {
+        const style = {side: "L" as const, spaced: false, precision: 8, decimalPoint: ".", digitGroups: null};
+        const priced = (m: bigint) => [{date: "2026-07-01", commodity: "BTC", price: {commodity: "$", qty: {m, p: 8} as Dec, style}}];
+        // Both truncate to the same int32 under BigInt.asIntN(32, m).
+        expect(contentFingerprint(base, [], priced(100_000_000n))).not.toBe(contentFingerprint(base, [], priced(100_000_000n + 4_294_967_296n)));
+    });
+
+    it("changes when a single POSTING's status changes (marking one leg cleared)", () => {
+        // Posting status is absent from the haystack, so this edit hashed the
+        // same and was fetched-then-discarded by the same mechanism.
+        const withStatus = (s: Posting["status"]): Transaction => ({
+            ...txn(1, "2026-01-05", "groceries"),
+            postings: [{...posting("expenses:food"), status: s}],
+        });
+        expect(contentFingerprint([withStatus("cleared")], [], [])).not.toBe(contentFingerprint([withStatus("unmarked")], [], []));
+    });
+
+    it("changes when a posting date, a posting type or a balance assertion changes", () => {
+        const t = txn(1, "2026-01-05", "groceries");
+        const withPosting = (p: Posting): Transaction => ({...t, postings: [p]});
+        const plain = posting("assets:cash");
+        expect(contentFingerprint([withPosting({...plain, date: "2026-01-07"})], [], [])).not.toBe(contentFingerprint([withPosting(plain)], [], []));
+        expect(contentFingerprint([withPosting({...plain, type: "virtual"})], [], [])).not.toBe(contentFingerprint([withPosting(plain)], [], []));
+        const assertion = {amount: amount("$", 500n, 2), inclusive: false, total: false};
+        expect(contentFingerprint([withPosting({...plain, balanceAssertion: assertion})], [], [])).not.toBe(contentFingerprint([withPosting(plain)], [], []));
+    });
+
+    it("changes when a transaction's SECONDARY date changes", () => {
+        const t = txn(1, "2026-01-05", "groceries");
+        expect(contentFingerprint([{...t, date2: "2026-01-09"}], [], [])).not.toBe(contentFingerprint([t], [], []));
+    });
+
     it("changes when a declared account type changes (cash-flow must recompute)", () => {
         const asAsset = [{name: "assets:bank:checking", type: "asset" as const}];
         const asCash = [{name: "assets:bank:checking", type: "cash" as const}];

@@ -1,0 +1,4 @@
+; SEC-4: an include cycle. hledger rejects this from either entry point:
+;   "This included file forms a cycle: .../include-cycle.journal"
+; Unbounded recursion here overflowed the stack (SIGABRT, uncatchable).
+include include-cycle-partner.journal

@@ -11,6 +11,7 @@
 // percent-encoded before the comma join so names containing commas survive.
 import type {ISODate} from "$lib/domain/types";
 import {localToday, presetRange, type DatePreset, type JournalFilter} from "$lib/stores/filters.svelte";
+import {safeDecode} from "$lib/url/safeDecode";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -52,7 +53,7 @@ export function searchToFilter(search: string, dflt: JournalFilter, today: ISODa
                   acct
                       .split(",")
                       .filter((s) => s !== "")
-                      .map(decodeURIComponent)
+                      .map(safeDecode) // never throws: `?acct=%` must not break the mount (SEC-12)
               );
     const query = params.get("q") ?? dflt.query;
     const rawPreset = params.get("preset");

@@ -20,12 +20,17 @@
      tiles. Only Basis and Market value get totals. -->
 <script lang="ts">
     import {toNumber, type Dec} from "$lib/domain/money";
+    import {signClass} from "$lib/format/sign";
     import type {GainPeriod, Holding, HoldingsReport} from "$lib/holdings/types";
     import {gainWindowSuffix} from "./gainPeriod";
     import {EM_DASH, formatGainPct, formatShares, sortHoldings, type SortKey} from "./view";
 
-    let {holdings, totals, format, gainPeriod = "all"}: {holdings: Holding[]; totals: HoldingsReport["totals"]; format: (v: Dec) => string; gainPeriod?: GainPeriod} =
-        $props();
+    let {
+        holdings,
+        totals,
+        format,
+        gainPeriod = "all",
+    }: {holdings: Holding[]; totals: HoldingsReport["totals"]; format: (v: Dec) => string; gainPeriod?: GainPeriod} = $props();
 
     // Window tag on the Gain header so a YTD/12mo gain number isn't read as all-time.
     const gainHeader = $derived(`Gain${gainWindowSuffix(gainPeriod)}`);
@@ -63,7 +68,7 @@
     {#if v === null}
         <span class="text-base-content/40">{EM_DASH}</span>
     {:else}
-        <span class={toNumber(v) < 0 ? "text-error" : toNumber(v) > 0 ? "text-success" : ""}>{format(v)}</span>
+        <span class={signClass(toNumber(v))}>{format(v)}</span>
     {/if}
 {/snippet}
 
@@ -119,9 +124,7 @@
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render money(h.marketValue)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render gainMoney(h.gain)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">
-                        <span class={h.gainPct === null ? "text-base-content/40" : h.gainPct < 0 ? "text-error" : h.gainPct > 0 ? "text-success" : ""}
-                            >{formatGainPct(h.gainPct)}</span
-                        >
+                        <span class={h.gainPct === null ? "text-base-content/40" : signClass(h.gainPct)}>{formatGainPct(h.gainPct)}</span>
                     </td>
                 </tr>
             {/each}

@@ -1,6 +1,25 @@
 import {describe, expect, it} from "vitest";
 import type {Amount, AmountStyle} from "./types";
-import {add, cmp, dec, formatAmount, formatDec, isZero, maAdd, maIsZero, maNeg, mul, neg, sub, toNumber, type Dec, type MixedAmount} from "./money";
+import {
+    add,
+    cmp,
+    dec,
+    displayPlaces,
+    formatAmount,
+    formatDec,
+    isZero,
+    maAdd,
+    maIsZero,
+    maNeg,
+    MAX_QUANTITY_DECIMALS,
+    mul,
+    neg,
+    roundTo,
+    sub,
+    toNumber,
+    type Dec,
+    type MixedAmount,
+} from "./money";
 
 const style = (overrides: Partial<AmountStyle> = {}): AmountStyle => ({
     side: "L",
@@ -178,6 +197,79 @@ describe("UNIT money", () => {
         it("formats zero and sub-one values with a leading zero", () => {
             expect(formatDec(dec(0, 2), style())).toBe("0.00");
             expect(formatDec(dec(5, 2), style())).toBe("0.05");
+        });
+
+        // FE-6: rounding may COMPRESS a number, never DELETE one. A per-unit
+        // price of $0.00012345 rendered "0.00" — a claim the value does not
+        // exist, not a rounding of it.
+        describe("never renders a non-zero value as zero", () => {
+            it("relaxes past the money cap for a sub-cent value", () => {
+                expect(formatDec(dec(12345n, 8), style({precision: 8}))).toBe("0.00012345"); // was "0.00"
+                expect(formatDec(dec(-12345n, 8), style({precision: 8}))).toBe("-0.00012345");
+                expect(formatDec(dec(123456n, 8), style({precision: 2}))).toBe("0.00123456"); // style precision cannot erase it either
+            });
+
+            it("keeps the styled zero when even 8 places show nothing", () => {
+                expect(formatDec(dec(1n, 12), style())).toBe("0.00"); // 1e-12: a row of zeros helps nobody
+                expect(formatDec(dec(0n, 2), style())).toBe("0.00"); // a real zero is still a real zero
+                expect(formatDec(dec(0n, 8), style({precision: 8}))).toBe("0.00");
+            });
+
+            it("does not relax a value that rounds to a visible cent", () => {
+                expect(formatDec(dec(5n, 3), style())).toBe("0.01"); // 0.005 rounds UP to a cent — nothing was erased
+                expect(formatDec(dec(4n, 3), style())).toBe("0.004"); // 0.004 would have vanished, so it keeps its precision
+            });
+        });
+
+        // formatDec is the single funnel for every money string in the app, so
+        // the cap change has to be provably inert for ordinary amounts.
+        it("BLAST RADIUS: ordinary money strings are byte-identical", () => {
+            const grouped = style({digitGroups: [",", [3]]});
+            expect(formatDec(dec(123456, 2), grouped)).toBe("1,234.56");
+            expect(formatDec(dec(4840256, 2), grouped)).toBe("48,402.56"); // 44-fixture balance sheet
+            expect(formatDec(dec(526988, 2), grouped)).toBe("5,269.88"); // AAPL market value
+            expect(formatDec(dec(992263, 2), grouped)).toBe("9,922.63"); // holdings total market value
+            expect(formatDec(dec(-1152662, 2), grouped)).toBe("-11,526.62");
+            expect(formatDec(dec(3401000, 2), grouped)).toBe("34,010.00");
+            expect(formatDec(dec(27025, 2), grouped)).toBe("270.25"); // AAPL price
+            expect(formatDec(dec(195000, 4), grouped)).toBe("19.50"); // Dec precision above the cap: still capped
+        });
+    });
+
+    describe("displayPlaces", () => {
+        it("is min(precision, cap) whenever the value survives rounding", () => {
+            expect(displayPlaces(dec(123456, 2), 2)).toBe(2);
+            expect(displayPlaces(dec(195000, 4), 4)).toBe(2);
+            expect(displayPlaces(dec(15, 1), 1)).toBe(1);
+            expect(displayPlaces(dec(1499, 3), 0)).toBe(0);
+            expect(displayPlaces(dec(0, 2), 2)).toBe(2); // an exact zero needs no rescue
+        });
+
+        it("relaxes to the value's own precision, bounded by 8, only when the cap would erase it", () => {
+            expect(displayPlaces(dec(12345n, 8), 8)).toBe(8);
+            expect(displayPlaces(dec(1n, 4), 2)).toBe(4); // 0.0001
+            expect(displayPlaces(dec(1n, 12), 12)).toBe(2); // 1e-12 is invisible at 8 places too
+        });
+
+        it("honours a non-money cap without relaxing past it", () => {
+            expect(displayPlaces(dec(123456n, 8), 8, MAX_QUANTITY_DECIMALS)).toBe(8);
+            expect(displayPlaces(dec(1234567890n, 10), 10, MAX_QUANTITY_DECIMALS)).toBe(8); // 0.123456789 → 8 places
+        });
+
+        it("never returns a negative place count", () => {
+            expect(displayPlaces(dec(500, 2), -3)).toBe(0);
+        });
+    });
+
+    describe("roundTo", () => {
+        it("rounds half away from zero on the exact Dec, not on a float", () => {
+            expect(roundTo(dec(1005, 3), 2)).toEqual({m: 101n, p: 2});
+            expect(roundTo(dec(1015, 3), 2)).toEqual({m: 102n, p: 2});
+            expect(roundTo(dec(-1005, 3), 2)).toEqual({m: -101n, p: 2});
+        });
+
+        it("rescales up exactly when asked for more places", () => {
+            expect(roundTo(dec(15, 1), 3)).toEqual({m: 1500n, p: 3});
         });
     });
 

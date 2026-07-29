@@ -7,7 +7,14 @@
 import {groupByTxn, maxSeverity, runChecks, type Problem, type Severity} from "$lib/checks/engine";
 import {journal} from "$lib/stores/journal.svelte";
 
-const all = $derived.by(() => runChecks(journal.txns, {prices: journal.prices, decls: journal.accountDecls}));
+const all = $derived.by(() =>
+    runChecks(journal.txns, {
+        prices: journal.prices,
+        decls: journal.accountDecls,
+        diagnostics: journal.diagnostics,
+        engineChecked: journal.engineChecked,
+    })
+);
 const byTxn = $derived.by(() => groupByTxn(all));
 const worst = $derived.by(() => maxSeverity(all));
 
@@ -23,7 +30,7 @@ let focusRequest = $state<FocusRequest | null>(null);
 let nonce = 0;
 
 export const problems = {
-    /** All problems from ALL_RULES over the current journal, in rule order. */
+    /** Engine diagnostics first, then all problems from ALL_RULES over the current journal in rule order. */
     get all(): Problem[] {
         return all;
     },

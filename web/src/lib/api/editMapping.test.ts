@@ -1,15 +1,17 @@
 import {describe, expect, it} from "vitest";
-import type {Amount, AmountStyle, Posting, Transaction, TxnStatus} from "$lib/domain/types";
+import type {Amount, AmountStyle, BalanceAssertion, Posting, PostingType, Transaction, TxnStatus} from "$lib/domain/types";
 import {
     accountPatch,
     blankForm,
     decToInput,
     descriptionPatch,
     dominantCommodity,
+    emptyPosting,
     encodeDec,
     formToBody,
     parseAmountInput,
     postingIndicesForAccount,
+    type PostingForm,
     statusPatch,
     txnToForm,
     validateForm,
@@ -21,8 +23,29 @@ function amount(commodity: string, m: bigint, p: number, cost?: Amount["cost"]):
     return {commodity, qty: {m, p}, style: STYLE, ...(cost !== undefined ? {cost} : {})};
 }
 
-function posting(account: string, amounts: Amount[], extra: {status?: TxnStatus; comment?: string} = {}): Posting {
-    return {account, amounts, status: extra.status ?? "unmarked", comment: extra.comment ?? "", tags: []};
+function posting(
+    account: string,
+    amounts: Amount[],
+    extra: {status?: TxnStatus; comment?: string; type?: PostingType; balanceAssertion?: BalanceAssertion} = {}
+): Posting {
+    return {
+        account,
+        amounts,
+        status: extra.status ?? "unmarked",
+        comment: extra.comment ?? "",
+        tags: [],
+        ...(extra.type !== undefined ? {type: extra.type} : {}),
+        ...(extra.balanceAssertion !== undefined ? {balanceAssertion: extra.balanceAssertion} : {}),
+    };
+}
+
+/**
+ * A `PostingForm` row. The fields the popup preserves but does not edit (cost,
+ * posting type, balance assertion) default to "none" via `emptyPosting`, so a
+ * test only states what it is actually about.
+ */
+function row(account: string, amount: string, commodity: string, extra: Partial<PostingForm> = {}): PostingForm {
+    return {...emptyPosting(commodity), account, amount, ...extra};
 }
 
 function txn(index: number, description: string, postings: Posting[], extra: {date2?: string; comment?: string} = {}): Transaction {
@@ -109,8 +132,8 @@ describe("UNIT editMapping — form ⇆ body", () => {
         const form = blankForm("2026-07-20", "$");
         form.description = "Safeway";
         form.status = "cleared";
-        form.postings[0] = {account: "expenses:food:groceries", amount: "56.24", commodity: "$", status: "unmarked", comment: "", cost: null};
-        form.postings[1] = {account: "liabilities:cc:visa", amount: "", commodity: "$", status: "unmarked", comment: "", cost: null};
+        form.postings[0] = row("expenses:food:groceries", "56.24", "$");
+        form.postings[1] = row("liabilities:cc:visa", "", "$");
         const body = formToBody(form, "$");
         expect(body).toEqual({
             date: "2026-07-20",
@@ -126,8 +149,8 @@ describe("UNIT editMapping — form ⇆ body", () => {
     it("never emits a blank commodity — a cleared commodity falls back to the default", () => {
         const form = blankForm("2026-07-20", "EUR");
         // A row whose commodity the user cleared, plus a row that keeps a value.
-        form.postings[0] = {account: "expenses:food", amount: "50", commodity: "  ", status: "unmarked", comment: "", cost: null};
-        form.postings[1] = {account: "assets:bank", amount: "-50", commodity: "EUR", status: "unmarked", comment: "", cost: null};
+        form.postings[0] = row("expenses:food", "50", "  ");
+        form.postings[1] = row("assets:bank", "-50", "EUR");
         const body = formToBody(form, "EUR");
         expect(body.postings[0].amount).toEqual({commodity: "EUR", quantity: {mantissa: "50", places: 0}});
         expect(body.postings[1].amount).toEqual({commodity: "EUR", quantity: {mantissa: "-50", places: 0}});
@@ -139,7 +162,7 @@ describe("UNIT editMapping — form ⇆ body", () => {
 
     it("falls back to $ when both the row commodity and the supplied default are blank", () => {
         const form = blankForm("2026-07-20", "$");
-        form.postings[0] = {account: "expenses:x", amount: "1", commodity: "", status: "unmarked", comment: "", cost: null};
+        form.postings[0] = row("expenses:x", "1", "");
         form.postings[1].account = "assets:y";
         const body = formToBody(form, "   ");
         expect(body.postings[0].amount).toEqual({commodity: "$", quantity: {mantissa: "1", places: 0}});
@@ -162,10 +185,7 @@ describe("UNIT editMapping — form ⇆ body", () => {
         const t = txn(
             4,
             "Groceries",
-            [
-                posting("expenses:food", [amount("$", 500n, 2)], {status: "cleared", comment: "on sale"}),
-                posting("assets:cash", [amount("$", -500n, 2)]),
-            ],
+            [posting("expenses:food", [amount("$", 500n, 2)], {status: "cleared", comment: "on sale"}), posting("assets:cash", [amount("$", -500n, 2)])],
             {date2: "2026-07-22", comment: "weekly shop, category:food"}
         );
         const form = txnToForm(t);
@@ -184,8 +204,8 @@ describe("UNIT editMapping — form ⇆ body", () => {
         const form = blankForm("2026-07-20", "$");
         form.date2 = "2026-07-22";
         form.comment = "note, category:food";
-        form.postings[0] = {account: "expenses:food", amount: "5.00", commodity: "$", status: "cleared", comment: "on sale", cost: null};
-        form.postings[1] = {account: "assets:cash", amount: "", commodity: "$", status: "unmarked", comment: "", cost: null};
+        form.postings[0] = row("expenses:food", "5.00", "$", {status: "cleared", comment: "on sale"});
+        form.postings[1] = row("assets:cash", "", "$");
         const body = formToBody(form, "$");
         expect(body.date2).toBe("2026-07-22");
         expect(body.comment).toBe("note, category:food");
@@ -209,6 +229,115 @@ describe("UNIT editMapping — form ⇆ body", () => {
         expect(body.comment).toBeUndefined();
         expect(body.postings[0].status).toBeUndefined();
         expect(body.postings[0].comment).toBeUndefined();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// DL-2 — the popup must not destroy balance assertions or posting types
+// ---------------------------------------------------------------------------
+
+describe("UNIT editMapping — DL-2 balance assertions and posting types round-trip", () => {
+    const cashAssertion: BalanceAssertion = {amount: amount("$", 9900n, 2), inclusive: false, total: false};
+
+    /** CLEANUP's DL-2 example: a plain leg, an asserted leg, and two `[envelope]` legs. */
+    function assertedTxn(): Transaction {
+        return txn(2, "A", [
+            posting("expenses:a", [amount("$", 100n, 2)]),
+            posting("assets:cash", [amount("$", -100n, 2)], {balanceAssertion: cashAssertion}),
+            posting("budget:env", [amount("$", 100n, 2)], {type: "balancedVirtual"}),
+            posting("budget:avail", [amount("$", -100n, 2)], {type: "balancedVirtual"}),
+        ]);
+    }
+
+    it("prefills the popup with each posting's type and balance assertion", () => {
+        const form = txnToForm(assertedTxn());
+        expect(form.postings.map((p) => p.type)).toEqual(["regular", "regular", "balancedVirtual", "balancedVirtual"]);
+        expect(form.postings[0].balanceAssertion).toBeNull();
+        expect(form.postings[1].balanceAssertion).toEqual({
+            amount: {commodity: "$", quantity: {mantissa: "9900", places: 2}},
+            inclusive: false,
+            total: false,
+        });
+    });
+
+    /**
+     * The finding itself: an untouched open-then-save must hand the engine back
+     * exactly what it was given. Before the fix this body carried four plain
+     * postings — the `= $99.00` anchor deleted and both envelope legs promoted
+     * to real postings, with a 200.
+     */
+    it("an untouched edit round-trips both fields back onto the wire body", () => {
+        const body = formToBody(txnToForm(assertedTxn()), "$");
+        expect(body.postings).toEqual([
+            {account: "expenses:a", amount: {commodity: "$", quantity: {mantissa: "100", places: 2}}},
+            {
+                account: "assets:cash",
+                amount: {commodity: "$", quantity: {mantissa: "-100", places: 2}},
+                balanceAssertion: {amount: {commodity: "$", quantity: {mantissa: "9900", places: 2}}, inclusive: false, total: false},
+            },
+            {account: "budget:env", type: "balancedVirtual", amount: {commodity: "$", quantity: {mantissa: "100", places: 2}}},
+            {account: "budget:avail", type: "balancedVirtual", amount: {commodity: "$", quantity: {mantissa: "-100", places: 2}}},
+        ]);
+    });
+
+    it("carries the `==` (total) and `=*` (subaccount-inclusive) flags verbatim", () => {
+        const t = txn(3, "B", [
+            posting("expenses:b", [amount("$", 200n, 2)]),
+            posting("assets:checking", [amount("$", -200n, 2)], {
+                balanceAssertion: {amount: amount("$", 50000n, 2), inclusive: true, total: true},
+            }),
+            posting("tracking:note", [amount("$", 700n, 2)], {type: "virtual"}),
+        ]);
+        const body = formToBody(txnToForm(t), "$");
+        expect(body.postings[1].balanceAssertion).toEqual({
+            amount: {commodity: "$", quantity: {mantissa: "50000", places: 2}},
+            inclusive: true,
+            total: true,
+        });
+        expect(body.postings[2].type).toBe("virtual");
+    });
+
+    it("omits `type` for an ordinary posting and never invents an assertion", () => {
+        const body = formToBody(txnToForm(txn(1, "plain", [posting("a:b", [amount("$", 100n, 2)]), posting("c:d", [])])), "$");
+        expect(body.postings[0].type).toBeUndefined();
+        expect(body.postings[0].balanceAssertion).toBeUndefined();
+        expect(body.postings[1]).toEqual({account: "c:d"});
+    });
+
+    it("a new blank row is a plain regular posting with no assertion", () => {
+        const blank = emptyPosting("$");
+        expect(blank.type).toBe("regular");
+        expect(blank.balanceAssertion).toBeNull();
+    });
+
+    /**
+     * Removing an assertion is only ever deliberate: the popup's "remove"
+     * control nulls it, and only then does the body drop it.
+     */
+    it("drops the assertion only once it is explicitly removed", () => {
+        const form = txnToForm(assertedTxn());
+        form.postings[1].balanceAssertion = null;
+        const body = formToBody(form, "$");
+        expect(body.postings[1].balanceAssertion).toBeUndefined();
+        // The posting type is untouched by removing an assertion.
+        expect(body.postings[2].type).toBe("balancedVirtual");
+    });
+
+    /**
+     * An assertion can only be written next to an amount, so blanking the amount
+     * of an asserted posting would silently discard the anchor. The form refuses
+     * instead, and names the escape hatch.
+     */
+    it("refuses to submit an asserted posting whose amount was blanked", () => {
+        const form = txnToForm(assertedTxn());
+        form.postings[1].amount = "";
+        const errors = validateForm(form);
+        expect(errors.some((m) => m.includes("balance assertion"))).toBe(true);
+        expect(errors.some((m) => m.includes("assets:cash"))).toBe(true);
+
+        // Removing the assertion (the popup's control) clears the objection.
+        form.postings[1].balanceAssertion = null;
+        expect(validateForm(form)).toEqual([]);
     });
 });
 

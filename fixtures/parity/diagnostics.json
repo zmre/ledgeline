@@ -1,0 +1,16 @@
+{
+    "diagnostics": [
+        {
+            "txnIndex": 2,
+            "rule": "stock-missing-basis",
+            "severity": "warning",
+            "message": "GRANT: acquired without a cost annotation — basis unknown"
+        },
+        {
+            "txnIndex": 1,
+            "rule": "stock-missing-basis",
+            "severity": "warning",
+            "message": "VEST: acquired without a cost annotation — basis unknown"
+        }
+    ]
+}

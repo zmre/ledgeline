@@ -35,7 +35,14 @@ const MONTH_DAYS: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 /// `(year, month, day)` from a well-formed ISO date. Malformed slices yield 0
 /// (unreachable in report flow, where dates always come from the journal or
 /// bucket math).
-fn parts(date: &str) -> (i64, i64, i64) {
+///
+/// This is the crate's ONE ISO-date field parser. It is `pub(crate)` rather
+/// than private because being private is precisely what caused four other
+/// modules to re-derive it inline from `date.get(0..4)`/`get(5..7)`/`get(8..10)`
+/// — a fork that had already begun to drift on the malformed-input fallback
+/// (DRY-2). Anything in the crate that needs a year, month or day reaches for
+/// this instead of slicing the string again.
+pub(crate) fn parts(date: &str) -> (i64, i64, i64) {
     let field = |range: std::ops::Range<usize>| -> i64 {
         date.get(range).and_then(|s| s.parse().ok()).unwrap_or(0)
     };
@@ -83,6 +90,25 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 
 fn to_iso(year: i64, month: i64, day: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// The ISO date `days` days after 1970-01-01 (a negative `days` moves earlier).
+///
+/// The single civil-day entry point exposed outside this module. It returns a
+/// STRING like every other public function here, so a caller that needs
+/// "day number → date" gets it without a second copy of the Hinnant algorithm:
+/// `ledgeline-server`'s `today_utc` carried a VERBATIM duplicate of
+/// [`civil_from_days`] plus its own `format!`, purely to turn a Unix day count
+/// into a date (DRY-2). Exposing the composition rather than the raw tuple math
+/// keeps `civil_from_days`/`days_from_civil` private, so the next caller cannot
+/// fork the calendar again.
+///
+/// This is NOT a clock: it takes the day number as an argument, so `reports`
+/// stays free of I/O and of "today" (see the module docs).
+#[must_use]
+pub fn iso_from_days(days: i64) -> String {
+    let (year, month, day) = civil_from_days(days);
+    to_iso(year, month, day)
 }
 
 /// ISO weekday for a `days_from_civil` day number: 1 = Monday … 7 = Sunday.
@@ -228,16 +254,76 @@ pub fn bucket_end(key: &str) -> Result<String, ReportError> {
     }
 }
 
+/// The last day of bucket `key`, clamped so it never runs past a report's
+/// inclusive `end`.
+///
+/// **This truncation is deliberate, and it is a divergence from hledger** (Phase
+/// 4 pinned it with tests): a report whose span ends mid-bucket must cover only
+/// up to `end`, so a cash-flow report through 2026-03-15 shows March's flows
+/// through the 15th and NOT the whole month. hledger reports the whole final
+/// period. Do not "simplify" this to [`bucket_end`].
+///
+/// Every period report needs it, and all three grew their own copy of the same
+/// four lines — cash flow, net worth and budget (DRY-2). Net worth wants only
+/// this clamped date (its columns are as-of snapshots); cash flow and budget
+/// want the whole range and call [`bucket_span`].
+///
+/// # Errors
+/// Returns [`ReportError::InvalidBucketKey`] for an unrecognized key.
+pub fn bucket_as_of(key: &str, end: &str) -> Result<String, ReportError> {
+    let end_of_bucket = bucket_end(key)?;
+    Ok(if compare_iso(end, &end_of_bucket) == Ordering::Less {
+        end.to_string()
+    } else {
+        end_of_bucket
+    })
+}
+
+/// Bucket `key`'s inclusive `[start, to]` date range within a report ending at
+/// `end`, where `to` is truncated by [`bucket_as_of`].
+///
+/// Fed a CONTIGUOUS run of keys from [`last_n_buckets`], the `to` bounds ascend
+/// strictly and the ranges do not overlap — which is what lets the period
+/// reports place a posting by binary search over the spans instead of
+/// re-scanning every posting once per bucket (PERF-5).
+///
+/// # Errors
+/// Returns [`ReportError::InvalidBucketKey`] for an unrecognized key.
+pub fn bucket_span(key: &str, end: &str) -> Result<(String, String), ReportError> {
+    Ok((bucket_start(key)?, bucket_as_of(key, end)?))
+}
+
+/// The largest bucket count any report will produce: 1200 buckets is 100 years
+/// of months, far past any real journal. Callers that take a bucket count from
+/// untrusted input MUST reject anything above this *before* calling in (the HTTP
+/// layer returns a 400); it is also the pre-allocation bound inside
+/// [`last_n_buckets`], so a caller that ignores that contract still cannot
+/// trigger a `capacity overflow` abort.
+pub const MAX_BUCKETS: usize = 1200;
+
 /// The `n` consecutive bucket keys ending with the bucket containing `end`,
-/// oldest → newest. Empty when `n == 0`.
+/// oldest → newest. Empty when `n == 0`; at most [`MAX_BUCKETS`] keys.
+///
+/// `n` is a *count of buckets to produce*, so an absurd `n` asks for absurd
+/// work — but it must never abort the process. It used to:
+/// `Vec::with_capacity(usize::MAX)` panics with `capacity overflow` before the
+/// loop runs at all, which is how `?count=18446744073709551615` killed a request
+/// (SEC-2). Bounding only the capacity hint would trade that fast panic for an
+/// 18-quintillion-iteration hang, so the LOOP is bounded too and this function
+/// is total for every `n`.
+///
+/// The cap is a backstop, not the user-facing control: callers taking a count
+/// from untrusted input reject anything above [`MAX_BUCKETS`] with a 400 first,
+/// so a real request never silently receives fewer buckets than it asked for.
 ///
 /// # Errors
 /// Returns [`ReportError::InvalidBucketKey`] if bucket math ever yields an
 /// unrecognized key (unreachable for the intervals here).
 pub fn last_n_buckets(end: &str, interval: Interval, n: usize) -> Result<Vec<String>, ReportError> {
-    let mut out = Vec::with_capacity(n);
+    let wanted = n.min(MAX_BUCKETS);
+    let mut out = Vec::with_capacity(wanted);
     let mut key = bucket_key(end, interval);
-    for _ in 0..n {
+    for _ in 0..wanted {
         out.push(key.clone());
         let (y, m, d) = parts(&bucket_start(&key)?);
         let (py, pm, pd) = civil_from_days(days_from_civil(y, m, d) - 1);
@@ -419,6 +505,128 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// SEC-2: `Vec::with_capacity(n)` with an unclamped user `usize` aborted the
+    /// request with `capacity overflow`. Every `n` must now return, and must
+    /// never produce more than `MAX_BUCKETS` keys — including the `usize::MAX`
+    /// that the HTTP layer used to pass straight through, which must also not
+    /// hang.
+    #[test]
+    fn absurd_counts_are_bounded_not_panicking() {
+        for n in [usize::MAX, usize::MAX / 2, MAX_BUCKETS + 1] {
+            let buckets = last_n_buckets("2026-07-08", Interval::Monthly, n)
+                .unwrap_or_else(|e| panic!("n={n} must not fail: {e}"));
+            assert_eq!(buckets.len(), MAX_BUCKETS, "n={n} must cap at MAX_BUCKETS");
+            // Still a well-formed contiguous run ending at the `end` bucket.
+            assert_eq!(buckets[MAX_BUCKETS - 1], "2026-07");
+        }
+    }
+
+    /// Counts at and inside the cap are honored exactly.
+    #[test]
+    fn counts_within_the_cap_are_exact() {
+        for n in [1, 12, MAX_BUCKETS] {
+            let buckets = last_n_buckets("2026-07-08", Interval::Monthly, n).unwrap();
+            assert_eq!(buckets.len(), n);
+            assert_eq!(buckets[n - 1], "2026-07");
+        }
+    }
+
+    /// [`iso_from_days`] is the composition the server's `today_utc` used to
+    /// spell out with its own copy of `civil_from_days` + `format!`.
+    #[test]
+    fn iso_from_days_round_trips_the_epoch_and_leap_days() {
+        assert_eq!(iso_from_days(0), "1970-01-01");
+        assert_eq!(iso_from_days(-1), "1969-12-31");
+        assert_eq!(iso_from_days(19_723), "2024-01-01");
+        assert_eq!(iso_from_days(19_782), "2024-02-29"); // leap day
+        assert_eq!(iso_from_days(20_642), "2026-07-08");
+        // Inverse of the private `days_from_civil`, over a long span.
+        for days in (-25_000..25_000).step_by(97) {
+            let iso = iso_from_days(days);
+            let (y, m, d) = parts(&iso);
+            assert_eq!(days_from_civil(y, m, d), days, "round trip at {iso}");
+        }
+    }
+
+    /// The final bucket is truncated at the report end — a deliberate hledger
+    /// divergence, extracted from the three reports that each had their own copy.
+    #[test]
+    fn bucket_as_of_truncates_only_the_bucket_containing_end() {
+        // `end` inside the bucket → the bucket is cut short at `end`.
+        assert_eq!(bucket_as_of("2026-03", "2026-03-15").unwrap(), "2026-03-15");
+        assert_eq!(bucket_as_of("2026-Q1", "2026-02-10").unwrap(), "2026-02-10");
+        assert_eq!(bucket_as_of("2026", "2026-07-08").unwrap(), "2026-07-08");
+        assert_eq!(
+            bucket_as_of("2026-W28", "2026-07-08").unwrap(),
+            "2026-07-08"
+        );
+        // Earlier buckets keep their own (leap-aware) end.
+        assert_eq!(bucket_as_of("2026-01", "2026-03-15").unwrap(), "2026-01-31");
+        assert_eq!(bucket_as_of("2024-02", "2026-03-15").unwrap(), "2024-02-29");
+        // `end` exactly ON the bucket end is not a truncation.
+        assert_eq!(bucket_as_of("2026-03", "2026-03-31").unwrap(), "2026-03-31");
+        // `end` past the bucket leaves it whole.
+        assert_eq!(bucket_as_of("2026-03", "2026-12-31").unwrap(), "2026-03-31");
+    }
+
+    #[test]
+    fn bucket_span_pairs_the_start_with_the_truncated_end() {
+        assert_eq!(
+            bucket_span("2026-03", "2026-03-15").unwrap(),
+            ("2026-03-01".to_string(), "2026-03-15".to_string())
+        );
+        assert_eq!(
+            bucket_span("2026-01", "2026-03-15").unwrap(),
+            ("2026-01-01".to_string(), "2026-01-31".to_string())
+        );
+        assert_eq!(
+            bucket_span("2026-W28", "2026-12-31").unwrap(),
+            ("2026-07-06".to_string(), "2026-07-12".to_string())
+        );
+        assert_eq!(
+            bucket_span("garbage", "2026-03-15"),
+            Err(ReportError::InvalidBucketKey("garbage".into()))
+        );
+        assert_eq!(
+            bucket_as_of("2026-Q5", "2026-03-15"),
+            Err(ReportError::InvalidBucketKey("2026-Q5".into()))
+        );
+    }
+
+    /// The spans of a contiguous bucket run ascend strictly and never overlap —
+    /// the invariant the period reports' binary-search placement rests on.
+    #[test]
+    fn bucket_spans_of_a_contiguous_run_tile_the_report_without_overlap() {
+        for interval in [
+            Interval::Daily,
+            Interval::Weekly,
+            Interval::Monthly,
+            Interval::Quarterly,
+            Interval::Yearly,
+        ] {
+            let end = "2026-03-15";
+            let keys = last_n_buckets(end, interval, 6).unwrap();
+            let spans: Vec<(String, String)> = keys
+                .iter()
+                .map(|key| bucket_span(key, end).unwrap())
+                .collect();
+            for window in spans.windows(2) {
+                let ((_, prev_to), (next_from, _)) = (&window[0], &window[1]);
+                assert!(
+                    prev_to < next_from,
+                    "{interval:?}: {prev_to} !< {next_from}"
+                );
+                assert_eq!(
+                    add_days(prev_to, 1),
+                    *next_from,
+                    "{interval:?}: buckets must be contiguous"
+                );
+            }
+            // The run ends exactly at the report end, never past it.
+            assert_eq!(spans.last().unwrap().1, end, "{interval:?}");
+        }
     }
 
     #[test]

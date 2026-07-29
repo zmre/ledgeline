@@ -8,7 +8,9 @@
 //! - GLD: 5 sh gifted with no cost + no P directive → tainted (basis None), with
 //!   both `unpriced` and `missing-basis` warnings.
 //! - NVDA: 12 bought then all 12 sold → 0 sh, dropped (must NOT appear).
-//! - TSLA: 2 sold, never bought → −2 sh → negative-shares warning, excluded.
+//! - TSLA: 2 sold, never bought → −2 sh, priced $315.00 off its own `@` cost
+//!   annotation → reported at −$630.00 with a negative-shares warning and no
+//!   basis/gain. Only a FULLY sold-out position disappears.
 
 mod common;
 
@@ -31,6 +33,7 @@ fn all_accounts_scope() -> HoldingsScope {
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
         gain_since: None,
+        value_in: None,
     }
 }
 
@@ -58,11 +61,13 @@ fn holding<'a>(report: &'a HoldingsReport, symbol: &str) -> &'a ledgeline_core::
 fn base_is_dollar_and_only_stocks_appear() {
     let report = report();
     assert_eq!(report.base, "$");
-    // Currencies (EUR) never appear; NVDA (fully sold) and TSLA (negative) are
-    // excluded. Only AAPL, VTI, GLD remain.
+    // Currencies (EUR) never appear, and NVDA (fully sold → 0 sh) is dropped.
+    // TSLA is net-NEGATIVE, not zero, so it is reported: the balance sheet
+    // carries those −2 shares and the totals have to agree with it.
     let symbols: Vec<&str> = report.holdings.iter().map(|h| h.symbol.as_str()).collect();
-    // Sorted by market value desc, unpriced (GLD) last.
-    assert_eq!(symbols, ["VTI", "AAPL", "GLD"]);
+    // Sorted by market value desc — TSLA's −$630.00 sorts below the two positive
+    // rows, and unpriced (GLD) stays last.
+    assert_eq!(symbols, ["VTI", "AAPL", "TSLA", "GLD"]);
 }
 
 #[test]
@@ -141,24 +146,49 @@ fn nvda_fully_sold_does_not_appear() {
     );
 }
 
+/// REVISED: TSLA used to be excluded here. Excluding it was what made the
+/// portfolio total and net worth disagree by $630 (see
+/// `report_invariants::holdings_reconcile_even_when_a_short_position_is_open`),
+/// so the row is now reported with its real negative value; the SPA hides it.
 #[test]
-fn tsla_sold_never_bought_warns_and_is_excluded() {
+fn tsla_sold_never_bought_is_reported_short_with_no_basis() {
     let report = report();
-    assert!(
-        report.holdings.iter().all(|h| h.symbol != "TSLA"),
-        "TSLA is net-negative → excluded from holdings"
-    );
-    let tsla = report
+    let tsla = holding(&report, "TSLA");
+    assert_eq!(tsla.shares, Dec::new(-2, 0));
+    // No P directive prices TSLA; the `@ $315.00` on the sale itself does.
+    let price = tsla
+        .price
+        .as_ref()
+        .expect("TSLA priced off its cost annotation");
+    assert_eq!(price.source, PriceSource::Cost);
+    assert_eq!(price.qty, Dec::new(31500, 2)); // $315.00
+    assert_eq!(tsla.market_value, Some(Dec::new(-630, 0))); // −2 × $315.00
+    // The opening lot was never entered, so there is no cost and no gain to
+    // report — the same refusal GLD gets, not an invented zero basis.
+    assert_eq!(tsla.basis, None);
+    assert_eq!(tsla.gain, None);
+    assert_eq!(tsla.gain_pct, None);
+    assert_eq!(tsla.first_basis_date, None);
+    // Nothing is held, so no account is listed as holding it.
+    assert!(tsla.accounts.is_empty());
+
+    let warning = report
         .warnings
         .iter()
         .find(|w| w.symbol == "TSLA")
         .expect("TSLA warning");
-    assert_eq!(tsla.kind, WarningKind::NegativeShares);
-    // The message now states the size of the deficit (fixture: 2 sold, 0 bought).
+    assert_eq!(warning.kind, WarningKind::NegativeShares);
+    // The message states the size of the deficit (fixture: 2 sold, 0 bought)…
     assert!(
-        tsla.message.contains("-2.00 shares"),
+        warning.message.contains("-2.00 shares"),
         "message was: {}",
-        tsla.message
+        warning.message
+    );
+    // …and no longer claims the engine hid the row, because it did not.
+    assert!(
+        !warning.message.contains("hidden"),
+        "message was: {}",
+        warning.message
     );
 }
 
@@ -184,10 +214,14 @@ fn warnings_are_exactly_gld_and_tsla() {
 #[test]
 fn totals_sum_partial_basis_and_gain_when_gld_is_tainted() {
     let report = report();
-    // Priced market value = VTI $5282.75 + AAPL $5269.875 = $10552.625.
-    assert_eq!(report.totals.market_value, Dec::new(10_552_625, 3));
-    // PARTIAL totals: GLD (tainted + unpriced) is excluded, but AAPL + VTI still
-    // count. basis = AAPL $4346.10 + VTI $4693.36 = $9039.46.
+    // Priced market value = VTI $5282.75 + AAPL $5269.875 − TSLA $630.00
+    //                     = $9922.625.
+    // The short subtracts here (it used to be withheld, leaving $10,552.625) —
+    // that is what makes the total reconcile with the valued balance sheet.
+    assert_eq!(report.totals.market_value, Dec::new(9_922_625, 3));
+    // PARTIAL totals: GLD (tainted + unpriced) and TSLA (short, no knowable
+    // cost) are excluded, but AAPL + VTI still count.
+    // basis = AAPL $4346.10 + VTI $4693.36 = $9039.46.
     assert_eq!(
         report.totals.basis,
         Some(Dec::new(903_946, 2)),
@@ -220,6 +254,7 @@ fn scoping_to_a_single_stock_account_isolates_it() {
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
         gain_since: None,
+        value_in: None,
     };
     let report = compute_holdings(
         &journal.transactions,
@@ -240,27 +275,41 @@ fn scoping_to_a_single_stock_account_isolates_it() {
     assert_eq!(report.totals.basis, Some(Dec::new(469_336, 2)));
 }
 
-#[test]
-fn gain_since_windows_the_gain_without_touching_basis() {
-    // At 2026-01-01 the AAPL position was 15 sh (the 4.5-sh buy is 2026-03-10),
-    // priced $255.00 (P 2025-12-31) → value_at_start = $3825.00. So the windowed
-    // gain is $5269.875 − $3825 = $1444.875, distinct from the all-time $923.775,
-    // while `basis` stays the all-time average cost $4346.10.
+/// The scope used by both windowed-gain tests: everything, since 2026-01-01.
+fn windowed_report() -> HoldingsReport {
     let journal = fixture_journal();
     let scope = HoldingsScope {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
         as_of: AS_OF.to_string(),
         gain_since: Some("2026-01-01".to_string()),
+        value_in: None,
     };
-    let report = compute_holdings(
+    compute_holdings(
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
         &journal.commodity_tags,
         &scope,
     )
-    .expect("compute");
+    .expect("compute")
+}
+
+#[test]
+fn gain_since_nets_out_a_mid_window_purchase() {
+    // REVISED for HOLD-2 (was `gain_since_windows_the_gain_without_touching_basis`,
+    // expecting $1444.875). At 2026-01-01 the AAPL position was 15 sh priced
+    // $255.00 (P 2025-12-31) → value_at_start = $3825.00, and the 4.5-sh buy on
+    // 2026-03-10 @ $248.30 falls INSIDE the window: $1117.35 of new money.
+    //
+    // The old expectation, `mv − value_at_start` = $5269.875 − $3825 = $1444.875,
+    // booked that $1117.35 purchase as if the position had earned it. Netting the
+    // contribution out leaves the appreciation that actually happened:
+    //   15.0 sh × ($270.25 − $255.00)  = $228.750
+    //  + 4.5 sh × ($270.25 − $248.30)  =  $98.775
+    //                                   = $327.525
+    // `basis` is untouched by the window and stays the all-time $4346.10.
+    let report = windowed_report();
     let aapl = holding(&report, "AAPL");
     assert_eq!(
         aapl.basis,
@@ -268,7 +317,29 @@ fn gain_since_windows_the_gain_without_touching_basis() {
         "basis stays all-time"
     );
     assert_eq!(aapl.market_value, Some(Dec::new(5_269_875, 3)));
-    assert_eq!(aapl.gain, Some(Dec::new(1_444_875, 3)), "windowed gain");
+    assert_eq!(aapl.gain, Some(Dec::new(327_525, 3)), "windowed gain");
+}
+
+#[test]
+fn gain_since_nets_out_a_mid_window_sale() {
+    // The withdrawal half of HOLD-2, on the same fixture. VTI held 25 sh at
+    // 2026-01-01 priced $298.40 → value_at_start = $7460.00, and the 2026-04-14
+    // partial sell of 8 sh @ $301.55 takes $2412.40 back out inside the window.
+    //
+    // Measuring `mv − value_at_start` alone reported $5282.75 − $7460.00 =
+    // −$2177.25: a 29% "loss" on a position whose price ROSE all window. Netting
+    // the sale out gives the real result:
+    //    8 sh × ($301.55 − $298.40) =  $25.20   (sold on the way up)
+    //  + 17 sh × ($310.75 − $298.40) = $209.95
+    //                                 = $235.15
+    let report = windowed_report();
+    let vti = holding(&report, "VTI");
+    assert_eq!(vti.market_value, Some(Dec::new(528_275, 2)));
+    assert_eq!(vti.gain, Some(Dec::new(23515, 2)), "windowed gain");
+    assert!(
+        vti.gain_pct.is_some_and(|pct| pct > 0.0),
+        "a rising price cannot report a loss"
+    );
 }
 
 #[test]
@@ -320,6 +391,7 @@ fn holding_name(text: &str, symbol: &str) -> String {
         mode: ScopeMode::Include,
         as_of: "2024-12-31".to_string(),
         gain_since: None,
+        value_in: None,
     };
     let report = compute_holdings(
         &journal.transactions,

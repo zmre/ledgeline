@@ -1,0 +1,9 @@
+; comments.test adaptation (PARSE-7): indented comment-only lines inside a
+; transaction body. hledger attaches one to the preceding posting, or to the
+; transaction itself while no posting has been seen — including its tags.
+2024-01-01 t  ; first: 1
+    ; second: 2
+    a   $1.00 ; own: x
+    ; more: y
+    b
+    ; subscription: false
