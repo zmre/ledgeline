@@ -16,15 +16,22 @@ test:
 test-integration port="5055":
     #!/usr/bin/env bash
     set -euo pipefail
+    # PINNED, not the random per-process token: the probe below and the vitest
+    # suite both have to know it. Every wire and /api route is token-gated, so an
+    # unauthenticated probe gets a 401 and `curl -fsS` exits 22.
+    export LEDGELINE_TOKEN=ledgeline-integration-token
     cargo build -p ledgeline-server
     ./target/debug/ledgeline --server fixtures/sample.journal --port {{port}} &
     server=$!
     trap 'kill "$server" 2>/dev/null || true' EXIT
+    auth=(-H "Authorization: Bearer $LEDGELINE_TOKEN")
     for _ in $(seq 1 60); do
-        curl -fsS http://127.0.0.1:{{port}}/version >/dev/null 2>&1 && break
+        curl -fsS "${auth[@]}" http://127.0.0.1:{{port}}/version >/dev/null 2>&1 && break
         sleep 0.5
     done
-    curl -fsS http://127.0.0.1:{{port}}/version
+    # Fails loudly if the engine never came up OR the token is wrong — better
+    # here than as a confusing wall of 401s inside the test suite.
+    curl -fsS "${auth[@]}" http://127.0.0.1:{{port}}/version
     cd web && LEDGELINE_API_URL=http://127.0.0.1:{{port}} bun run test:unit
 
 # playwright.config.ts launches ../target/debug/ledgeline as the fixture API

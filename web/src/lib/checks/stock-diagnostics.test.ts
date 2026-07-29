@@ -155,10 +155,25 @@ const apiUrl = process.env.LEDGELINE_API_URL;
 const apiToken = process.env.LEDGELINE_TOKEN;
 
 describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION stock diagnostics capture vs a live engine", () => {
-    it("still serves the captured /api/diagnostics for the parity journal", async () => {
+    // WHICH journal the server holds is the caller's choice, so the capture to
+    // compare against has to be discovered rather than assumed. CI and
+    // `just test-integration` both serve fixtures/sample.journal; the parity
+    // journal is what a DRY-1 regeneration run serves. Asserting one of them
+    // unconditionally made this fail in CI against a perfectly good engine.
+    const CAPTURES = ["fixtures/api/ledgeline/diagnostics.json", "fixtures/parity/diagnostics.json"];
+
+    it("still serves the capture for whichever journal it is holding", async () => {
         const response = await fetch(`${apiUrl}/api/diagnostics`, {headers: apiToken === undefined ? {} : {Authorization: `Bearer ${apiToken}`}});
         expect(response.ok, `/api/diagnostics → ${response.status}`).toBe(true);
-        expect(await response.json()).toEqual(load("fixtures/parity/diagnostics.json"));
+        const live = await response.json();
+
+        const matched = CAPTURES.filter((path) => JSON.stringify(load(path)) === JSON.stringify(live));
+        // Naming the served journal beats a bare deep-equal diff: the usual
+        // cause of a miss is pointing at the wrong journal, not a stale capture.
+        expect(
+            matched,
+            `live /api/diagnostics matched no committed capture. Serving an unexpected journal, or a capture is stale:\n${JSON.stringify(live, null, 2)}`
+        ).not.toHaveLength(0);
     });
 });
 

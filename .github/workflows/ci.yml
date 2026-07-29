@@ -209,18 +209,27 @@ jobs:
       # readiness and kill the server on any exit path.
       - name: Contract tests vs. a live engine (vitest)
         working-directory: web
+        env:
+          # PINNED, not the random per-process token the engine prints at
+          # startup: the readiness probe and the vitest suite both have to know
+          # it. Every wire and /api route is token-gated, so an unauthenticated
+          # probe gets a 401 and `curl -fsS` exits 22. This server only ever
+          # sees fixtures/sample.journal on loopback inside the runner.
+          LEDGELINE_TOKEN: ledgeline-ci-contract-token
         run: |
           set -euo pipefail
           "$GITHUB_WORKSPACE/result/bin/ledgeline" \
             --server "$GITHUB_WORKSPACE/fixtures/sample.journal" --port 5055 &
           server=$!
           trap 'kill "$server" 2>/dev/null || true' EXIT
+          auth=(-H "Authorization: Bearer $LEDGELINE_TOKEN")
           for _ in $(seq 1 60); do
-            curl -fsS http://127.0.0.1:5055/version >/dev/null 2>&1 && break
+            curl -fsS "${auth[@]}" http://127.0.0.1:5055/version >/dev/null 2>&1 && break
             sleep 0.5
           done
-          # Fails the step (and prints why) if the engine never came up.
-          curl -fsS http://127.0.0.1:5055/version
+          # Fails the step (and prints why) if the engine never came up OR the
+          # token is wrong — better here than as a wall of 401s inside vitest.
+          curl -fsS "${auth[@]}" http://127.0.0.1:5055/version
           LEDGELINE_API_URL=http://127.0.0.1:5055 bun run test:unit
 
       # Playwright starts its own two servers (the engine on :5099 and `bun run
