@@ -1,0 +1,23 @@
+# Checking account CSV import rules.
+# A friendly, realistic file: this is the shape most rules files actually have.
+
+skip 1
+fields date, description, amount
+date-format %m/%d/%Y
+currency $
+
+account1 assets:bank:checking
+account2 expenses:unknown
+
+if ACME PAYROLL
+    account2 income:salary
+
+if
+COFFEE
+STARBUCKS
+PEETS
+    account2 expenses:food:coffee
+
+; Rent is always the same landlord, so match the name and be done.
+if LANDLORD LLC
+    account2 expenses:home:rent

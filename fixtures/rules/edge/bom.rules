@@ -1,0 +1,6 @@
+﻿skip 1
+fields date, description, amount
+
+; A comment line after the byte-order-marked first line.
+if COFFEE
+    account2  expenses:food:coffee

@@ -14,6 +14,7 @@
 //! - `reports` / `budget` — native reports (Phase 3)
 //! - `holdings` — average-cost stock-holdings engine (Phase 3d)
 //! - `edit`    — ropey-based write path (Phase 5)
+//! - `rules`   — format-preserving CSV import-rules (`*.rules`) model (Imports)
 
 pub mod assertions;
 pub mod decimal;
@@ -22,10 +23,11 @@ pub mod holdings;
 pub mod model;
 pub mod parse;
 pub mod reports;
+pub mod rules;
 pub mod wire;
 
 pub use decimal::{Dec, DecError};
-pub use edit::{EditError, InsertPosition, JournalEditor, format_transaction};
+pub use edit::{EditError, Fingerprint, InsertPosition, JournalEditor, format_transaction};
 pub use model::Journal;
 pub use parse::{ParseError, parse_journal};
 pub use reports::ReportError;

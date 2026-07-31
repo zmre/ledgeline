@@ -91,7 +91,9 @@ use ledgeline_core::{Dec, EditError, JournalEditor};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-use crate::error::AppError;
+// `editing_disabled` lives in `error` rather than here because the rules-file
+// `PUT` answers with the identical sentence, and the SPA matches on the words.
+use crate::error::{AppError, editing_disabled};
 use crate::reports_api::WireDec;
 
 // ===========================================================================
@@ -394,7 +396,7 @@ pub(crate) struct DeleteResponse {
 ///
 /// The message text is part of the contract: `native.ts` surfaces it verbatim
 /// as a `ValidationError`, and `tests/error_surface.rs` pins it.
-fn json_body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, AppError> {
+pub(crate) fn json_body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, AppError> {
     payload
         .map(|Json(body)| body)
         .map_err(|rejection| AppError::BadRequest(format!("invalid request body: {rejection}")))
@@ -708,15 +710,6 @@ fn editor_poisoned() -> AppError {
     AppError::Internal(
         "the editor was left in an indeterminate state by an earlier failure and the journal file \
          could not be re-read to recover; no edit was applied"
-            .to_string(),
-    )
-}
-
-/// The `501` returned when this state has no editor (built from a parsed journal
-/// with no backing file).
-fn editing_disabled() -> AppError {
-    AppError::EditingDisabled(
-        "editing is not enabled: this server was started without a journal file bound to an editor"
             .to_string(),
     )
 }

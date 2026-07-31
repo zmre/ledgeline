@@ -7,6 +7,9 @@ import {
     decodeHoldingsSeries,
     decodeInsightsReport,
     decodePeriodReport,
+    decodeRulesDoc,
+    decodeRulesIndex,
+    decodeRulesPreview,
     decodeSectionedReport,
     decodeSubscriptionsReport,
 } from "./nativeDecode";
@@ -30,6 +33,20 @@ const dec = (mantissa: number, places: number) => ({mantissa: String(mantissa), 
 
 function golden(name: string): unknown {
     return JSON.parse(readFileSync(new URL(`../../../../fixtures/native/v1/${name}.json`, import.meta.url), "utf8"));
+}
+
+/**
+ * The import-rules goldens, which live in their OWN directory.
+ *
+ * They cannot join `fixtures/native/v1/`: that manifest is replayed against
+ * `fixtures/sample.journal` and guarded by a rule that every pinned URI must fix
+ * its own dates, and a rules response has no dates in it at all. These are
+ * served over `fixtures/rules/tree/main.journal` and byte-checked by
+ * `crates/ledgeline-server/tests/rules_endpoints.rs`, so a renamed Rust field
+ * fails there and here at once — the same DRY-3 guard, one directory over.
+ */
+function rulesGolden(name: string): unknown {
+    return JSON.parse(readFileSync(new URL(`../../../../fixtures/rules/golden/${name}.json`, import.meta.url), "utf8"));
 }
 
 describe("UNIT nativeDecode — SectionedReport over the balancesheet golden", () => {
@@ -525,6 +542,203 @@ function shape(value: unknown): string {
     return JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? `${item}n` : item instanceof Map ? [...item.entries()] : (item as unknown)));
 }
 
+describe("UNIT nativeDecode — RulesIndex over the rules-index golden", () => {
+    it("decodes the discovery listing, including the fields a summary needs", () => {
+        const index = decodeRulesIndex(rulesGolden("rules-index"));
+        expect(index.rootLabel).toBe("tree");
+        expect(index.editable).toBe(true);
+        expect(index.truncated).toBe(false);
+        expect(index.warnings).toEqual([]);
+        expect(index.files).toHaveLength(1);
+        expect(index.files[0]).toEqual({
+            id: "import/2026/bank.csv.rules",
+            label: "bank",
+            revision: "665-f7dafa70ae699ef1",
+            sizeBytes: 1637,
+            parsed: true,
+            account1: "assets:bank:checking",
+            account2: "expenses:unknown",
+            ifBlockCount: 4,
+            editableBlockCount: 3,
+            opaqueItemCount: 1,
+            warnings: [],
+        });
+    });
+
+    // `account1`/`account2` are `skip_serializing_if = "Option::is_none"`, so an
+    // absent key means "this file declares neither" — a different fact from an
+    // empty string, and one the file list renders differently.
+    it("reads an absent account1/account2 as null rather than as an empty string", () => {
+        const index = decodeRulesIndex({
+            rootLabel: "fixtures",
+            editable: false,
+            truncated: false,
+            files: [{id: "a.rules", label: "a", revision: "0-0", sizeBytes: 0, parsed: false, ifBlockCount: 0, editableBlockCount: 0, opaqueItemCount: 0}],
+            warnings: ["one file was skipped"],
+        });
+        expect(index.files[0]).toMatchObject({account1: null, account2: null, parsed: false, warnings: []});
+        expect(index.warnings).toEqual(["one file was skipped"]);
+    });
+
+    it("throws ApiShapeError when the files array is missing", () => {
+        expect(() => decodeRulesIndex({rootLabel: "x", editable: true})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => {
+    const raw = rulesGolden("rules-doc");
+
+    it("decodes the document header and every settings entry with its item id", () => {
+        const doc = decodeRulesDoc(raw);
+        expect(doc.id).toBe("import/2026/bank.csv.rules");
+        expect(doc.label).toBe("bank");
+        expect(doc.revision).toBe("665-f7dafa70ae699ef1");
+        expect(doc.editable).toBe(true);
+        expect(doc.newline).toBe("lf");
+        expect(doc.warnings).toEqual([]);
+
+        expect(doc.settings.dateFormat).toEqual({value: "%Y-%m-%d", itemId: 3});
+        expect(doc.settings.skip).toEqual({value: 1, itemId: 1});
+        expect(doc.settings.account1).toEqual({value: "assets:bank:checking", itemId: 5});
+        expect(doc.settings.account2).toEqual({value: "expenses:unknown", itemId: 6});
+        expect(doc.settings.currency).toEqual({value: "$", itemId: 4});
+        expect(doc.settings.fields).toEqual({names: ["date", "description", "amount"], itemId: 2});
+        // Absent settings are "the file does not say", which is NOT hledger's
+        // default for them — choosing a default is a rendering decision.
+        expect(doc.settings.separator).toBeNull();
+        expect(doc.settings.source).toBeNull();
+        expect(doc.settings.newestFirst).toBeNull();
+    });
+
+    it("decodes every item kind the wire can carry, in order", () => {
+        const doc = decodeRulesDoc(raw);
+        expect(doc.items.map((item) => item.kind)).toEqual([
+            "trivia",
+            "directive",
+            "fields",
+            "directive",
+            "assignment",
+            "assignment",
+            "assignment",
+            "ifBlock",
+            "ifBlock",
+            "ifBlock",
+            "opaque",
+        ]);
+        expect(doc.items.map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+        const trivia = doc.items[0];
+        expect(trivia).toMatchObject({kind: "trivia", line: 1, lines: 13, truncated: false});
+        expect(trivia?.kind === "trivia" && trivia.text).toContain("discovery MUST find");
+
+        expect(doc.items[1]).toMatchObject({kind: "directive", name: "skip", value: "1"});
+        expect(doc.items[2]).toMatchObject({kind: "fields", names: ["date", "description", "amount"]});
+        expect(doc.items[5]).toMatchObject({kind: "assignment", field: "account1", value: "assets:bank:checking"});
+    });
+
+    it("reads a whole-record matcher's absent `field` as null, and a scoped one by name", () => {
+        const doc = decodeRulesDoc(raw);
+        expect(doc.items[7]).toMatchObject({
+            kind: "ifBlock",
+            layout: "inline",
+            matchers: [{field: null, pattern: "COFFEE"}],
+            assignments: [{field: "account2", value: "expenses:food:coffee"}],
+        });
+        expect(doc.items[9]).toMatchObject({
+            kind: "ifBlock",
+            layout: "stacked",
+            matchers: [
+                {field: "description", pattern: "SUPERMARKET"},
+                {field: "description", pattern: "GROCER"},
+            ],
+            assignments: [
+                {field: "account2", value: "expenses:food:groceries"},
+                {field: "comment", value: "weekly shop"},
+            ],
+        });
+    });
+
+    it("carries an opaque construct's reason, label and raw text", () => {
+        const opaque = decodeRulesDoc(raw).items[10];
+        expect(opaque).toMatchObject({kind: "opaque", reason: "ifTable", label: "if,account2,comment", truncated: false});
+        expect(opaque?.kind === "opaque" && opaque.text).toContain("ATM WITHDRAWAL,assets:cash,cash out");
+    });
+
+    // An item whose shape the decoder invented would be echoed back to the
+    // engine under an id it has no right to claim, so refusing to open the
+    // document is the honest failure.
+    it("throws on an unknown item kind rather than inventing a carry-through", () => {
+        const doc = raw as {items: unknown[]};
+        const mutated = {...doc, items: [...doc.items, {id: 11, line: 50, lines: 1, kind: "somethingNew"}]};
+        expect(() => decodeRulesDoc(mutated)).toThrow(ApiShapeError);
+    });
+
+    it("throws on an unknown opaque reason, layout or newline", () => {
+        expect(() => decodeRulesDoc({...(raw as object), newline: "cr"})).toThrow(ApiShapeError);
+        const items = (raw as {items: Record<string, unknown>[]}).items;
+        expect(() => decodeRulesDoc({...(raw as object), items: [{...items[10], reason: "somethingNew"}]})).toThrow(ApiShapeError);
+        expect(() => decodeRulesDoc({...(raw as object), items: [{...items[7], layout: "table"}]})).toThrow(ApiShapeError);
+    });
+
+    it("decodes an anchored warning, and one about the file as a whole", () => {
+        const doc = decodeRulesDoc({
+            ...(raw as object),
+            warnings: [
+                {itemId: 2, line: 15, message: "hledger requires at least two comma-separated field names"},
+                {line: 0, message: "this file has no date field"},
+            ],
+        });
+        expect(doc.warnings[0]).toEqual({itemId: 2, line: 15, message: "hledger requires at least two comma-separated field names"});
+        expect(doc.warnings[1]).toEqual({itemId: null, line: 0, message: "this file has no date field"});
+    });
+});
+
+describe("UNIT nativeDecode — RulesPreview", () => {
+    // Literal, not a golden: the preview route has no committed body (its rows
+    // come from a CSV, not from the journal). These are the exact bytes the
+    // engine answered for fixtures/rules/tree/import/2026/bank.csv.
+    it("decodes an available preview, header and sample rows included", () => {
+        const preview = decodeRulesPreview({
+            available: true,
+            dataLabel: "bank.csv",
+            separator: ",",
+            header: ["Date", "Description", "Amount"],
+            rows: [["2026-01-03", "COFFEE HOUSE", "-6.45"]],
+            columns: 3,
+            truncated: false,
+        });
+        expect(preview.available).toBe(true);
+        expect(preview.reason).toBeNull();
+        expect(preview.dataLabel).toBe("bank.csv");
+        expect(preview.header).toEqual(["Date", "Description", "Amount"]);
+        expect(preview.rows).toEqual([["2026-01-03", "COFFEE HOUSE", "-6.45"]]);
+        expect(preview.columns).toBe(3);
+    });
+
+    // A refusal is a VALUE, not an error: "your `source` is a shell command we
+    // will not run" is information the mapping panel shows.
+    it("decodes a refusal with its typed reason and no header", () => {
+        const preview = decodeRulesPreview({
+            available: false,
+            reason: "sourceIsCommand",
+            dataLabel: "piped",
+            separator: ",",
+            rows: [],
+            columns: 0,
+            truncated: false,
+        });
+        expect(preview).toMatchObject({available: false, reason: "sourceIsCommand", header: null, rows: [], columns: 0});
+    });
+
+    it("throws on a reason it does not know rather than reporting `no reason`", () => {
+        expect(() => decodeRulesPreview({available: false, reason: "somethingNew", separator: ",", rows: [], columns: 0})).toThrow(ApiShapeError);
+    });
+
+    it("throws when rows is missing", () => {
+        expect(() => decodeRulesPreview({available: true, separator: ","})).toThrow(ApiShapeError);
+    });
+});
+
 describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed", () => {
     const DECODERS: [string, (raw: unknown) => unknown][] = [
         ["balancesheet", decodeSectionedReport],
@@ -567,7 +781,7 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
 
             for (const path of paths) {
                 checked += 1;
-                let absorbed = false;
+                let absorbed: boolean;
                 try {
                     absorbed = shape(decode(renameKeyAt(raw, "$", path))) === baseline;
                 } catch {

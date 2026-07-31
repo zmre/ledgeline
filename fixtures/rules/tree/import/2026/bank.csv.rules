@@ -1,0 +1,42 @@
+# The one rules file discovery MUST find in this tree.
+#
+# It sits two directories below the journal — the `import/YYYY/` layout
+# `MAX_RULES_DEPTH` exists to allow — and it is named `*.csv.rules`, so its
+# label is `bank` rather than `bank.csv`.
+#
+# It is ALSO the document `fixtures/rules/golden/rules-doc.json` is taken over,
+# so it deliberately carries one of each shape that wire has to describe: the
+# top-level settings a preferences panel renders, an editable one-matcher block,
+# an editable multi-matcher OR list, and one advanced construct that must stay
+# `opaque`. Changing it changes that golden — regenerate with
+# `just snapshot-rules-wire` and review the diff.
+
+skip 1
+fields date, description, amount
+date-format %Y-%m-%d
+currency $
+account1 assets:bank:checking
+account2 expenses:unknown
+
+if COFFEE
+    account2 expenses:food:coffee
+
+if LANDLORD
+    account2 expenses:home:rent
+
+# Two matchers, OR-ed. An editable block whose matcher list has more than one
+# entry, so the wire's `matchers` array is exercised as an array rather than as
+# a single element that happens to be in one.
+if
+%description SUPERMARKET
+%description GROCER
+    account2  expenses:food:groceries
+    comment   weekly shop
+
+# A conditional TABLE. hledger reads each row positionally against the header,
+# so an edit to the header would silently re-point every row — which is why
+# Ledgeline never offers one for editing. This is the `opaque` item the golden
+# exercises (OpaqueReason::IfTable); its extent runs to EOF here, and would be
+# terminated by a blank line anywhere else.
+if,account2,comment
+ATM WITHDRAWAL,assets:cash,cash out

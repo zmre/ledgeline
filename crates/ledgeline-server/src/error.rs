@@ -35,6 +35,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use ledgeline_core::EditError;
 use ledgeline_core::reports::ReportError;
+use ledgeline_core::rules::RulesError;
 use thiserror::Error;
 
 /// A failed `/api/*` request: the class of failure plus the sentence the client
@@ -72,6 +73,23 @@ pub(crate) enum AppError {
     /// did. `500`.
     #[error("{0}")]
     Internal(String),
+}
+
+/// The `501` returned when this state has no editor bound (it was built from a
+/// parsed journal with no backing file, or the editor was unbound after a
+/// failure it could not recover from).
+///
+/// It lives here rather than in [`edit_api`](crate::edit_api) because BOTH write
+/// surfaces answer with it — the transaction endpoints and the rules-file `PUT`
+/// — and the SPA matches on the sentence, not the status: `native.ts` turns a
+/// `501` into a `NativeApiUnavailableError` whose `.message` the setup modal
+/// shows verbatim. Two copies of this string is two copies of a user-facing
+/// sentence, and `tests/error_surface.rs` pins it.
+pub(crate) fn editing_disabled() -> AppError {
+    AppError::EditingDisabled(
+        "editing is not enabled: this server was started without a journal file bound to an editor"
+            .to_string(),
+    )
 }
 
 impl AppError {
@@ -134,10 +152,62 @@ impl From<EditError> for AppError {
     }
 }
 
+/// The `RulesError` → HTTP table, mirroring [`From<EditError>`] above.
+///
+/// Every variant but one is the client's fault: a stale item id, a duplicated
+/// or omitted one, a construct the edit policy will not rewrite, a value this
+/// engine will not write, an arrangement in which two constructs would re-parse
+/// as one. The exception is `RoundTripMismatch`, which stays a `500`.
+///
+/// # Why `RoundTripMismatch` is still a `500`
+///
+/// It was ROUTINELY reachable, and that was the bug rather than the mapping.
+/// A conditional table's extent ends at a blank line, so a table written at EOF
+/// carried no terminator; appending a rule after one produced text in which the
+/// new block re-parsed as further table rows, `verify` refused (correctly), and
+/// an ordinary "add a rule" answered `500` with a sentence naming nothing the
+/// user could do. The engine now supplies that blank line the moment the table
+/// stops being last, exactly as it already supplied a missing final newline.
+///
+/// What remains behind `RoundTripMismatch` is genuinely ours: the rendered text
+/// did not match what the plan renders, or the re-parse did not tile.
+/// [`rules_api`](crate::rules_api) verifies [`RulesDoc::apply`]'s own output —
+/// the only supported way to use the pair — so no request body can reach either
+/// without a bug in this codebase. `500` is the honest answer to that.
+///
+/// The caller-caused half moved to `WouldMergeConstructs`, a `400`: some extents
+/// are ended by the KIND of the next line (a bare `if` with no assignments reads
+/// any column-1 line beneath it as another matcher), where there is no
+/// terminator to supply and the arrangement really is the caller's to change.
+/// Its sentence names the offending position and what to do instead.
+///
+/// There is deliberately no `409` row: `RulesError` never observes the
+/// filesystem (it is `Clone`/`PartialEq` precisely because it carries no
+/// [`std::io::Error`]), so optimistic-concurrency conflicts are raised by
+/// [`rules_api`](crate::rules_api), which is the layer that read the bytes.
+///
+/// [`RulesDoc::apply`]: ledgeline_core::rules::RulesDoc::apply
+impl From<RulesError> for AppError {
+    fn from(error: RulesError) -> Self {
+        let message = error.to_string();
+        match error {
+            RulesError::UnknownItem(_)
+            | RulesError::DuplicateItem(_)
+            | RulesError::MissingItems(_)
+            | RulesError::NotEditable { .. }
+            | RulesError::Invalid(_)
+            | RulesError::BomMustLeadDocument
+            | RulesError::WouldMergeConstructs(_) => Self::BadRequest(message),
+            RulesError::RoundTripMismatch => Self::Internal(message),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ledgeline_core::decimal::DecError;
+    use ledgeline_core::rules::ItemId;
 
     /// The status table in full. It used to live in two private functions in
     /// two modules; this is the test neither of them had.
@@ -198,5 +268,49 @@ mod tests {
             AppError::from(EditError::Internal("x".to_string())).status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    /// One row per [`RulesError`] variant, so adding a variant to the engine
+    /// without deciding its status fails here rather than defaulting to a `500`
+    /// in front of a user who typed a bad account name.
+    #[test]
+    fn every_rules_error_variant_maps_to_its_status() {
+        let cases = [
+            (RulesError::UnknownItem(3), StatusCode::BAD_REQUEST),
+            (RulesError::DuplicateItem(3), StatusCode::BAD_REQUEST),
+            (
+                RulesError::MissingItems("2, 5".to_string()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                RulesError::NotEditable {
+                    id: Some(ItemId(4)),
+                    why: "item 4 is an `include`".to_string(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                RulesError::Invalid("a matcher pattern may not be empty".to_string()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (RulesError::BomMustLeadDocument, StatusCode::BAD_REQUEST),
+            // The caller's arrangement, so the caller's error — see the
+            // conversion's docs for what stayed a `500` and why.
+            (RulesError::WouldMergeConstructs(2), StatusCode::BAD_REQUEST),
+            (
+                RulesError::RoundTripMismatch,
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (error, expected) in cases {
+            let message = error.to_string();
+            let converted = AppError::from(error);
+            assert_eq!(converted.status(), expected, "{message}");
+            assert_eq!(
+                converted.to_string(),
+                message,
+                "a converted error must keep the engine's own sentence"
+            );
+        }
     }
 }

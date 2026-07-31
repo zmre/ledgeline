@@ -1,0 +1,17 @@
+; The "open journal" of the import-rules DISCOVERY fixture.
+;
+; What matters about this file is WHERE IT LIVES, not what it says: its own
+; directory is the scan root `rules::discover` confines to, so the tree beside
+; it is the whole fixture. See fixtures/rules/README.md.
+;
+; It is still a real journal, because the fixtures-wide sweeps
+; (`diagnostics.rs`, `balance_assertions.rs`) parse every `*.journal` under
+; `fixtures/` and require it to be clean.
+
+2026-01-03 COFFEE HOUSE
+    expenses:food:coffee                $6.45
+    assets:bank:checking
+
+2026-01-05 LANDLORD LLC
+    expenses:home:rent              $1,850.00
+    assets:bank:checking

@@ -153,6 +153,82 @@ export interface DeleteResult {
     remaining: number;
 }
 
+// ---------------------------------------------------------------------------
+// CSV import rules write path (`PUT /api/rules/{*id}`).
+//
+// The body is the COMPLETE intended shape of the document, and the engine
+// refuses a plan that does not account for every item it handed out — so an
+// omitted item is a 400, never a silent truncation. No variant carries raw text:
+// a client can only name typed content the engine's own renderers produce, or
+// name an id whose bytes were already read from that file. That is why `trivia`,
+// `include`, `opaque` and the `source`/`archive` directives have no variant here
+// at all — `keep` is the only form the engine accepts for them.
+// ---------------------------------------------------------------------------
+
+/** Emit an existing item's bytes unchanged. Moving one is just listing it somewhere else. */
+export interface KeepRulesItem {
+    kind: "keep";
+    id: number;
+}
+
+/** `id` present ⇒ rewrite that item in place; absent ⇒ insert a new one. */
+export interface DirectiveRulesItem {
+    kind: "directive";
+    id?: number;
+    name: string;
+    value: string;
+}
+
+export interface FieldsRulesItem {
+    kind: "fields";
+    id?: number;
+    names: string[];
+}
+
+export interface AssignmentRulesItem {
+    kind: "assignment";
+    id?: number;
+    field: string;
+    value: string;
+}
+
+/** A matcher on the write wire: an absent `field` is a whole-record match. */
+export interface RulesMatcherInput {
+    field?: string;
+    pattern: string;
+}
+
+export interface IfBlockRulesItem {
+    kind: "ifBlock";
+    id?: number;
+    matchers: RulesMatcherInput[];
+    assignments: {field: string; value: string}[];
+}
+
+export type SaveRulesItem = KeepRulesItem | DirectiveRulesItem | FieldsRulesItem | AssignmentRulesItem | IfBlockRulesItem;
+
+/** `PUT /api/rules/{*id}` body. `deny_unknown_fields` server-side: a typo'd key is a 400, not a no-op. */
+export interface SaveRulesBody {
+    /** The revision the document was read with. A mismatch is a 409 and nothing is written. */
+    revision: string;
+    items: SaveRulesItem[];
+    /** Items dropped on purpose. Omitting an item is NEVER an implicit delete. */
+    delete: number[];
+}
+
+/**
+ * Percent-encode a rules id for a URL path, SEGMENT BY SEGMENT.
+ *
+ * The route is a greedy `{*id}` wildcard and a real id contains slashes
+ * (`import/2026/bank.csv.rules`), so the separators must survive as separators —
+ * `encodeURIComponent` over the whole string would turn them into `%2F` and the
+ * server would resolve a name no scan ever produced. Encoding each component
+ * still escapes a space or a `#` inside one file name, which the id may contain.
+ */
+function encodeRulesId(id: string): string {
+    return id.split("/").map(encodeURIComponent).join("/");
+}
+
 type QueryValue = string | number | undefined;
 
 /** Build a `?a=1&b=2` string, dropping undefined and empty-string values (no leading "?" when empty). */
@@ -335,11 +411,37 @@ export class LedgelineApi {
         );
     }
 
+    /** Every `*.rules` file beside the open journal, summarized (the imports file list). */
+    listRules(): Promise<unknown> {
+        return this.getJson("/api/rules");
+    }
+
+    /** One parsed rules document, item by item. */
+    getRules(id: string): Promise<unknown> {
+        return this.getJson(`/api/rules/${encodeRulesId(id)}`);
+    }
+
+    /**
+     * The first few rows of the data file a rules file describes.
+     *
+     * A SIBLING prefix, not `/api/rules/{id}/preview`: axum 0.8 refuses to
+     * register a suffix after a greedy wildcard, and the id genuinely contains
+     * slashes. Same string, same validation, same resolution.
+     */
+    previewRules(id: string): Promise<unknown> {
+        return this.getJson(`/api/rules-preview/${encodeRulesId(id)}`);
+    }
+
     // -----------------------------------------------------------------------
     // Write path (edit endpoints). Success bodies are JSON; error bodies are
     // plain text, so `mutate` reads the body ONCE as text and either JSON-parses
     // it (on the expected status) or maps the status → the edit error taxonomy.
     // -----------------------------------------------------------------------
+
+    /** Save a whole rules document. → 200, the saved document (decode with `decodeRulesDoc`). */
+    saveRules(id: string, body: SaveRulesBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", `/api/rules/${encodeRulesId(id)}`, 200, body);
+    }
 
     /** ADD a whole transaction. → 201 `{index, transaction}`. */
     addTransaction(body: AddTransactionBody): Promise<MutationResult> {
@@ -417,7 +519,14 @@ export class LedgelineApi {
                 case 501:
                     throw new NativeApiUnavailableError(message || "Editing is not enabled on this server.");
                 default:
-                    throw new ApiUnreachableError(`${method} ${url} responded ${response.status} ${response.statusText}`);
+                    // Every unmapped status still carries the engine's own
+                    // plain-text body, and on a 500 that body is the only thing
+                    // that tells a user whether their file was touched (the
+                    // engine's write path is ordered so that every check
+                    // precedes the single atomic write, and says so: "nothing
+                    // was written"). Replacing it with "responded 500 Internal
+                    // Server Error" throws the one actionable half away.
+                    throw new ApiUnreachableError(message || `${method} ${url} responded ${response.status} ${response.statusText}`);
             }
         });
     }

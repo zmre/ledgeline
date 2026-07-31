@@ -1,0 +1,6 @@
+# only-comments.rules — a rules file with no rules at all.
+# Ledgeline must open it, show it, and write it back byte for byte.
+
+; A second comment run, separated from the first by a blank line.
+* hledger treats a leading asterisk as a comment too.
+

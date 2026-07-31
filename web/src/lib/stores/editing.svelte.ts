@@ -6,40 +6,17 @@
 // conflict banner (409 ⇒ the file changed on disk) and a transient toast for
 // inline-edit failures.
 
-import {
-    ConflictError,
-    LedgelineApi,
-    NativeApiUnavailableError,
-    NotFoundError,
-    ValidationError,
-    type AddTransactionBody,
-    type PatchTransactionBody,
-    type ReplaceTransactionBody,
-} from "$lib/api/native";
-import {ApiUnreachableError} from "$lib/api/client";
+import {LedgelineApi, type AddTransactionBody, type PatchTransactionBody, type ReplaceTransactionBody} from "$lib/api/native";
+import {classify, type EditFailure, type EditResult} from "$lib/api/editFailure";
 import {journal} from "./journal.svelte";
 import {settings} from "./settings.svelte";
 
-export type EditFailureKind = "conflict" | "validation" | "notFound" | "unavailable" | "network" | "unknown";
-
-export interface EditFailure {
-    kind: EditFailureKind;
-    message: string;
-}
-
-export type EditResult = {ok: true} | {ok: false; failure: EditFailure};
+// The taxonomy itself lives in `api/editFailure.ts` so the rules editor can
+// share it without dragging the journal feed in behind it; re-exported here
+// because this store is where every caller already looks for it.
+export type {EditFailure, EditFailureKind, EditResult} from "$lib/api/editFailure";
 
 const OK: EditResult = {ok: true};
-
-/** Map any thrown error onto the edit failure taxonomy (message is user-facing). */
-function classify(error: unknown): EditFailure {
-    if (error instanceof ConflictError) return {kind: "conflict", message: error.message};
-    if (error instanceof ValidationError) return {kind: "validation", message: error.message};
-    if (error instanceof NotFoundError) return {kind: "notFound", message: error.message};
-    if (error instanceof NativeApiUnavailableError) return {kind: "unavailable", message: error.message};
-    if (error instanceof ApiUnreachableError) return {kind: "network", message: error.message};
-    return {kind: "unknown", message: error instanceof Error ? error.message : String(error)};
-}
 
 let canEdit = $state(false);
 /** Non-null when the last probe could not REACH the server, so `canEdit` is stale rather than known. */

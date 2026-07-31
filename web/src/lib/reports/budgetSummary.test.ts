@@ -10,11 +10,35 @@ const REPORT: BudgetReport = {
     kind: "budget",
     buckets: ["2026-01", "2026-02"],
     rows: [
-        {account: UNBUDGETED, depth: 1, cells: [{actual: usd(-375), goal: null}, {actual: new Map(), goal: null}]},
-        {account: "expenses:food", depth: 2, cells: [{actual: usd(352), goal: usd(400)}, {actual: usd(390), goal: usd(400)}]},
-        {account: "expenses:fun", depth: 2, cells: [{actual: usd(210), goal: usd(150)}, {actual: usd(95), goal: usd(150)}]},
+        {
+            account: UNBUDGETED,
+            depth: 1,
+            cells: [
+                {actual: usd(-375), goal: null},
+                {actual: new Map(), goal: null},
+            ],
+        },
+        {
+            account: "expenses:food",
+            depth: 2,
+            cells: [
+                {actual: usd(352), goal: usd(400)},
+                {actual: usd(390), goal: usd(400)},
+            ],
+        },
+        {
+            account: "expenses:fun",
+            depth: 2,
+            cells: [
+                {actual: usd(210), goal: usd(150)},
+                {actual: usd(95), goal: usd(150)},
+            ],
+        },
     ],
-    totals: [{actual: usd(-23), goal: usd(550)}, {actual: usd(65), goal: usd(550)}],
+    totals: [
+        {actual: usd(-23), goal: usd(550)},
+        {actual: usd(65), goal: usd(550)},
+    ],
 };
 
 describe("UNIT budgetSummary — summarizeBudget", () => {
@@ -97,7 +121,14 @@ describe("UNIT budgetSummary — primaryValue", () => {
     it("returns the single-commodity magnitude, 0 for empty, null for multi-commodity", () => {
         expect(primaryValue(usd(352))).toBe(352);
         expect(primaryValue(new Map())).toBe(0);
-        expect(primaryValue(new Map([["$", dec(100, 0)], ["EUR", dec(50, 0)]]))).toBeNull();
+        expect(
+            primaryValue(
+                new Map([
+                    ["$", dec(100, 0)],
+                    ["EUR", dec(50, 0)],
+                ])
+            )
+        ).toBeNull();
     });
 });
 

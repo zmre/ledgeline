@@ -28,6 +28,15 @@ ledgeline-core = { path = "crates/ledgeline-core" }
 # so we deliberately stay on 1.6.x.
 ropey = "1.6"
 
+# Imports phase, step 6: the CSV column preview reads the first few rows of the
+# data file a rules file describes, so the mapping UI can label `%3` with what
+# is actually in column 3. Hand-rolling RFC 4180 is the wrong trade — a quoted
+# field containing the separator or an embedded newline is exactly what a bank
+# CSV has — and the later generate-rules-from-CSV and import-execution steps
+# need a real reader anyway. `csv` is BurntSushi's, pure Rust, no unsafe in the
+# parsing path, and is the de-facto standard.
+csv = "1"
+
 # Property-testing (dev-only), per the IronCore Rust skill.
 proptest = "1"
 proptest-derive = "0.8"

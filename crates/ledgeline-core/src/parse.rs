@@ -583,7 +583,7 @@ fn resolve_include(line: &str, source_name: &str) -> Result<(PathBuf, String), P
 /// `t.journal`, or an in-memory placeholder) roots at the current directory,
 /// which is exactly where [`resolve_include`] already resolves its relative
 /// includes.
-fn include_root_for(main_source_name: &str) -> PathBuf {
+pub(crate) fn include_root_for(main_source_name: &str) -> PathBuf {
     let main = canonical_include(Path::new(main_source_name));
     match main.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
@@ -603,7 +603,7 @@ fn include_root_for(main_source_name: &str) -> PathBuf {
 /// the journal directory itself routinely canonicalizes through a symlink
 /// (`/tmp` -> `/private/tmp`), and a purely lexical fallback would then read as
 /// "outside the journal directory" for an ordinary misspelled sibling.
-fn canonical_include(path: &Path) -> PathBuf {
+pub(crate) fn canonical_include(path: &Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }
@@ -655,6 +655,24 @@ fn lexically_normalize(path: &Path) -> PathBuf {
         })
 }
 
+/// The containment test, named once: `path`'s canonical form when it lies inside
+/// `root`, otherwise `None`.
+///
+/// Extracted from [`admit_include`] so the `include` guard (SEC-6) and the
+/// import-rules discovery guard cannot drift apart — a second, hand-rolled
+/// traversal check is exactly the kind of near-duplicate that gets one of its
+/// copies fixed and not the other. Canonicalizing FIRST is the whole point: `..`
+/// components and symlinks are both resolved before the prefix comparison, so a
+/// lexical-only test cannot be walked around.
+///
+/// Callers own the error message, because what may be disclosed differs by
+/// caller: an `include` diagnostic quotes the journal directory (the user named
+/// it), while a rules-file diagnostic quotes neither path.
+pub(crate) fn confine(path: &Path, root: &Path) -> Option<PathBuf> {
+    let path = canonical_include(path);
+    path.starts_with(root).then_some(path)
+}
+
 /// Decide whether an `include` target may be parsed, returning its canonical
 /// path. Rejects, in order:
 ///
@@ -676,14 +694,13 @@ fn admit_include(
     includer: &Path,
     ctx: &mut Ctx,
 ) -> Result<PathBuf, ParseError> {
-    let path = canonical_include(target);
-    if !path.starts_with(&ctx.include_root) {
-        return Err(ParseError::Include(format!(
+    let path = confine(target, &ctx.include_root).ok_or_else(|| {
+        ParseError::Include(format!(
             "'{as_written}' resolves outside the journal directory {}; \
              includes may not escape the main journal's directory",
             ctx.include_root.display()
-        )));
-    }
+        ))
+    })?;
     if path == includer || ctx.include_stack.contains(&path) {
         return Err(ParseError::Include(format!(
             "this included file forms a cycle: {}",

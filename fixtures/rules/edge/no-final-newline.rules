@@ -1,0 +1,5 @@
+skip 1
+fields date, description, amount
+
+if COFFEE
+    account2  expenses:food:coffee

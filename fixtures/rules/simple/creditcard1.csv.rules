@@ -1,0 +1,19 @@
+# Credit card CSV import rules.
+# Values are lined up in a column on purpose: this fixture exists to prove the
+# alignment survives a reorder, a delete, and every later editing step.
+
+skip          1
+fields        date, description, amount-in, amount-out
+date-format   %Y-%m-%d
+currency      $
+balance-type  ==
+
+account1      liabilities:creditcard:visa
+account2      expenses:unknown
+
+if AUTOPAY
+    account2  assets:bank:checking
+    comment   autopay from checking
+
+if ANNUAL FEE
+    account2  expenses:banking:fees

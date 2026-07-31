@@ -1,11 +1,11 @@
 # ![](web/static/ledgeline-icon.png) Ledgeline (hledger GUI)
 
-A fast, local, privacy-centric desktop app for [hledger](https://hledger.org) plain-text accounting. Ledgeline is a **single binary** that opens a native window showing a modern web UI, with a Rust journal engine and API server running in-process. It parses your journal file directly and reproduces hledger's numbers exactly (differential-tested against hledger 1.52).
+A fast, local, privacy-centric desktop app for [hledger](https://hledger.org) plain-text accounting. Ledgeline is a **single binary** that opens a native window showing a modern, fast UI. It parses your journal file directly and reproduces hledger's numbers exactly.
 
-I built this because I was dissatisfied with existing GUIs. They often hard code expectations for where files are and how they link. They rarely handle stocks well. If they allow editing, I found the editing to be problematic and buggy. I love the command line and editing in the terminal, but sometimes I want graphs and something pretty and ledgeline scratches that itch.
+I built this because I was dissatisfied with existing GUIs. They often hard code expectations for where files are and how they link. Or they're old and ugly. They rarely handle stocks well. If they even allow editing, it's problematic and buggy. I love the command line and editing in the terminal, but sometimes I want graphs and something pretty and ledgeline scratches that itch.
 
 > [!WARNING]
-> I built this for myself and based it on patterns I've built by hand in the past (see [mbr](https://github.com/zmre/mbr-markdown-browser/)), but this was built using AI.  It's okay if you don't use it.
+> Disclaimer: I built this for myself and based it on patterns I've built by hand in the past (see [mbr](https://github.com/zmre/mbr-markdown-browser/)), but this project heavily leveraged AI for development.
 
 ## What it does
 
@@ -15,6 +15,11 @@ I built this because I was dissatisfied with existing GUIs. They often hard code
   Computed in Rust with exact decimal math and hledger parity. XLSX exports.
 - **Holdings** — average-cost basis, unrealized gain (all-time / year-to-date / trailing-12-months),
   value-over-time, per-symbol names from `commodity` directives, partial portfolio totals; XLSX export.
+- **Imports** — finds the CSV import rules files (`*.rules`) beside your journal and edits them in a
+  friendly form instead of a text box: date format, the CSV column → field mapping (labelled with your
+  data file's real headers and sample values), the default accounts, and a reorderable list of `if`
+  rules. Anything fancier than a plain OR rule — `if` tables, `&&`/`!` matchers, match groups — is shown
+  read-only rather than rewritten, and saving preserves the rest of the file byte for byte.
 - **In-process, same-origin API** exposing both the hledger-web-compatible wire endpoints
   (`/version`, `/transactions`, `/prices`, …) and native report / holdings / budget JSON (`/api/*`) and
   edit endpoints.
@@ -61,6 +66,8 @@ cd web && bun run build && cd .. && cargo build --release && ./target/release/le
 
 See **[docs/development.md](docs/development.md)** for the Nix + Crane build cache, the
 `nix build .#{ledgeline,clippy,tests,fmt,macApp}` outputs, CI, and how the SPA is built and embedded.
+See **[docs/imports.md](docs/imports.md)** for the CSV rules-file editor — the format-preserving
+model, what it will and won't edit, and the guards on its write path.
 
 ## Architecture
 
@@ -70,13 +77,15 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 - A QuickLook plugin for journal files — render a file's transactions nicely for fast Finder browsing
   (see `mbr-markdown-browser` for the approach).
-- feat: budgeting — month-by-month detail drill-down (per-period `actual [goal]` grid) and a `budgetDesc`
-  periodic-rule filter (the year-to-date envelope-bar summary is done)
+- feat: edit budget
 - feat: preferences?
 - feat: private AI integration?
 - feat: intelligent category suggestions?
-- feat: import rules editing (or at least "remember categorization" functionality)
-- feat: saved report filters
+- feat: remember categorization functionality — write a chosen category back into the rules file as a
+  new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
+- feat: imports, the rest of it — generate a starting rules file from a CSV, and convert PDF invoices /
+  QIF / OFX / XLS to CSV first
+- feat: saved report filters?
 - feat: planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
   - investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
