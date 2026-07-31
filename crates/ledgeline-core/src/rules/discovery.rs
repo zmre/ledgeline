@@ -712,6 +712,14 @@ impl DiscoveredRules {
     /// identity is the check that says "the same file", not "a file with the
     /// same name".
     ///
+    /// It does not say it *perfectly*: ext4 and tmpfs hand a just-freed inode
+    /// number straight back to the next create, so a file removed and recreated
+    /// under this name can present the very same `(dev, ino)`. That gap is why
+    /// this is one half of a pair — the caller re-reads and re-fingerprints the
+    /// bytes immediately before writing, and a recreated file either has
+    /// different content, which that check refuses, or identical content, which
+    /// is nothing to refuse.
+    ///
     /// On a platform with no `(dev, ino)` — where `identity` is `None` — this
     /// degrades to the regular-file check alone, which is weaker, and honestly
     /// so: it can still refuse a name that became a link or a device, but not a

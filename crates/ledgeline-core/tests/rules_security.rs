@@ -226,9 +226,16 @@ fn identity_unchanged_refuses_a_name_that_became_a_different_file() {
     let file = found.resolve("a.rules").expect("found");
     assert!(file.identity_unchanged());
 
-    // Replaced, not edited: same name, new inode.
-    std::fs::remove_file(&path).expect("remove");
-    write(&dir, "a.rules", RULES);
+    // Replaced, not edited: same name, new inode. The replacement is written
+    // BESIDE the original and renamed over it, rather than removed and
+    // recreated: ext4 and tmpfs both hand a just-freed inode number straight
+    // back to the next create, so a remove-then-create can land on the same
+    // `(dev, ino)` and the check would be right to accept it. Two files that
+    // exist at once cannot share an inode, so this is the replacement the
+    // assertion below actually means — and it is also how every atomic save,
+    // including our own `edit::atomic_write`, replaces a file.
+    let replacement = write(&dir, "replacement.rules", RULES);
+    std::fs::rename(&replacement, &path).expect("rename over the original");
     #[cfg(unix)]
     assert!(
         !file.identity_unchanged(),
