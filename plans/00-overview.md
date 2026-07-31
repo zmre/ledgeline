@@ -122,7 +122,7 @@ hledger-web JSON
 
 ## Skills to load (for Claude subagents)
 
-- Always: `ironcore-typescript-javascript`, `nix` (when touching flake/dev-env)
+- Always: `ironcore-rust-language`, `ironcore-typescript-javascript`, `nix` (when touching flake/dev-env)
 - WP-05 (charts) and any chart work: **`dataviz` skill before writing chart code**
 - Anything touching journal files/fixtures or hledger CLI: `hledger` skill
 

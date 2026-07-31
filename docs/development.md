@@ -146,6 +146,40 @@ On Linux the default is the headless `ledgeline` binary.
 
 `just package-mac` wraps `.#macApp` and copies a writable copy to `dist/Ledgeline.app`.
 
+### Opening journals from Finder
+
+`Info.plist.in` registers two exported UTIs so double-clicking a journal launches
+Ledgeline with that file open:
+
+| Extensions            | UTI                                  | Rank        |
+| --------------------- | ------------------------------------ | ----------- |
+| `.journal`, `.hledger` | `com.zmre.ledgeline.journal` | `Owner`     |
+| `.ledger`, `.j`        | `com.zmre.ledgeline.ledger`  | `Alternate` |
+
+`Owner` makes Ledgeline the system default for the hledger-specific extensions.
+`.ledger` and `.j` are shared with Ledger CLI tooling (and `.j` is generic enough
+that other toolchains claim it), so `Alternate` keeps Ledgeline reachable via
+**Open With** without stealing an existing default. Both types conform to
+`public.plain-text`, so Quick Look, Spotlight and text editors still work.
+
+macOS does **not** pass the document in `argv`: it calls
+`application:openURLs:`, which tao surfaces as `Event::Opened { urls }` and
+`gui.rs` handles. That event lands *after* startup has already parsed a journal
+from `$LEDGELINE_FIXTURE`/recents, so the app may briefly show the previous
+journal before switching; re-opening the already-open journal is skipped.
+
+Launch Services caches bundle registrations, so a freshly built bundle in a
+scratch location is often not picked up. Register it explicitly:
+
+```sh
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f dist/Ledgeline.app
+```
+
+For the association to *persist*, the app has to live somewhere stable — move it
+to `/Applications` (or let nix-darwin / home-manager link it there). Launch
+Services records the path it registered, so a default pointing at a `dist/` or
+`result/` copy breaks as soon as that build is replaced or garbage-collected.
+
 Unlike `.#ledgeline` (which embeds the CI placeholder SPA), **`.#macApp` embeds
 the real SvelteKit UI**: the flake builds the SPA inside Nix — a fixed-output
 `bun install` derivation (`spaNodeModules`, its hash pinned from `web/bun.lock`)
@@ -157,9 +191,18 @@ platform's native deps (esbuild/rollup/@tailwindcss/oxide), so it is
 `aarch64-darwin`-specific.
 
 The icon is assembled with `imagemagick` + `png2icns` (libicns) — no macOS
-`iconutil`, so it builds in the pure Nix sandbox. The bundled binary still links
-Nix-store dylibs; producing a signed, relocatable release (`install_name_tool` +
-`codesign`) is a follow-up.
+`iconutil`, so it builds in the pure Nix sandbox. The bundle is self-contained
+apart from macOS system libraries: it links nothing from `/nix/store`, so it runs
+on a Mac that has never had Nix installed. nixpkgs' darwin stdenv adds a phantom
+`-liconv` to every link (the binary imports no iconv symbols), so the build
+retargets that one load command to `/usr/lib/libiconv.2.dylib` and re-signs the
+binary ad-hoc — `install_name_tool` invalidates the linker's signature and arm64
+macOS won't exec a Mach-O with a broken one. Any *other* `/nix/store` dependency
+**fails the build** rather than shipping: it may be a real one, which needs
+vendoring into `Contents/Frameworks`, not a blind rewrite. Note that ad-hoc
+signing is **not** Developer ID signing or notarization — a publicly distributed
+`.dmg` still needs that separate work, and without it Gatekeeper will warn on a
+downloaded copy.
 
 ## Cachix binary cache
 

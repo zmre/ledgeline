@@ -37,11 +37,10 @@ ropey = "1.6"
 # parsing path, and is the de-facto standard.
 csv = "1"
 
-# Property-testing (dev-only), per the IronCore Rust skill.
 proptest = "1"
 proptest-derive = "0.8"
 
-# Aggressive release optimization (per IronCore Rust standards). `panic` is left
+# Aggressive release optimization. `panic` is left
 # at the default "unwind" so the future axum server can catch per-request panics
 # instead of aborting the whole local app.
 [profile.release]

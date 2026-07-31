@@ -15,6 +15,10 @@
 //! Because the SPA is served same-origin and the journal is hot-swapped in place,
 //! File→Open needs NO server restart: the ephemeral port is stable for the whole
 //! session; we just republish the parsed journal and reload the page.
+//!
+//! Double-clicking a `.journal` in Finder arrives as [`Event::Opened`] and takes
+//! the same hot-swap path — see that arm in [`run_event_loop`] for why the
+//! document shows up AFTER startup has already parsed a different journal.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -31,6 +35,7 @@ use tao::{
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
     window::WindowBuilder,
 };
+use url::Url;
 use wry::WebViewBuilder;
 
 use crate::{AppError, Cli};
@@ -339,6 +344,23 @@ fn navigation_allowed(base: &str, candidate: &str) -> bool {
     candidate == base.trim_end_matches('/') || candidate.starts_with(base)
 }
 
+/// Pick the one journal to open from the URLs macOS delivered with a document
+/// launch ([`Event::Opened`]).
+///
+/// Split out as a pure function so it is testable without standing up an event
+/// loop. `Url::to_file_path` is doing the real work: it rejects non-`file://`
+/// URLs (a deeplink scheme we have not implemented — skipped, not fatal, so a
+/// real document later in the same batch still wins) and it undoes the
+/// percent-encoding, which matters because Finder escapes spaces and a journal
+/// under "My Books" would otherwise resolve to a path that does not exist.
+///
+/// Only the FIRST resolvable path is returned: Ledgeline is single-journal,
+/// single-window, so selecting several files in Finder and hitting Open cannot
+/// be honoured in full. The caller logs the ones it drops.
+fn first_journal_path(urls: &[Url]) -> Option<PathBuf> {
+    urls.iter().find_map(|url| url.to_file_path().ok())
+}
+
 /// Build the wry webview for `window`, pointed at `url`.
 fn build_webview(window: &tao::window::Window, url: &str) -> Result<wry::WebView, AppError> {
     let base = url.to_string();
@@ -523,6 +545,63 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
             Event::UserEvent(UserEvent::JournalPicked(path)) => {
                 open_journal(&path);
             }
+            // A document launch: Finder double-click, `open -a Ledgeline x.journal`,
+            // or a drop on the Dock icon. macOS does NOT pass the document in argv
+            // — it sends `application:openURLs:` — so this arm is the ONLY way that
+            // path reaches us.
+            //
+            // Why the event is never missed, and why it still arrives "late": tao
+            // installs this callback before it calls `NSApp run` (see its
+            // `run_return`), and AppKit delivers `application:openURLs:` after
+            // `applicationDidFinishLaunching`, so the ordering guarantees we are
+            // listening by the time the document shows up. But `run()` above has by
+            // then ALREADY resolved a journal from `$LEDGELINE_FIXTURE`/recents and
+            // parsed it, which is why a Finder launch can flash the previous journal
+            // before switching, and why the identity guard below is worth having.
+            //
+            // Not `cfg`-gated: only macOS emits `Opened`, but the variant exists on
+            // every platform, so an unconditional arm compiles everywhere and is
+            // simply dead elsewhere — cheaper than a `cfg` that can rot.
+            Event::Opened { urls } => {
+                // Never drop a requested document silently; say why it was skipped.
+                for url in urls.iter().filter(|url| url.to_file_path().is_err()) {
+                    eprintln!("ledgeline: ignoring {url}: not a file:// URL");
+                }
+                if let Some(path) = first_journal_path(&urls) {
+                    for extra in urls
+                        .iter()
+                        .filter_map(|url| url.to_file_path().ok())
+                        .skip(1)
+                    {
+                        eprintln!(
+                            "ledgeline: ignoring {}: one journal per window",
+                            extra.display()
+                        );
+                    }
+                    // The COMMON case: the document double-clicked is the journal
+                    // startup just parsed (it was the most-recent one), so opening
+                    // it again would redo that work and needlessly reload the page.
+                    // Compare canonically, the same normalization `open_journal`
+                    // and the watcher use. The borrow ends with this block —
+                    // `open_journal` re-borrows `current` and would panic otherwise
+                    // (the Open Recent arm above drops its borrow for the same
+                    // reason). This guard is deliberately ONLY here: File→Open and
+                    // Open Recent are explicit user requests and keep their
+                    // always-reload semantics, which double as a manual refresh.
+                    let already_open = {
+                        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                        canonical == *current.borrow()
+                    };
+                    if already_open {
+                        eprintln!(
+                            "ledgeline: {} is already open; keeping the parsed journal",
+                            path.display()
+                        );
+                    } else {
+                        open_journal(&path);
+                    }
+                }
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
@@ -536,9 +615,17 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::navigation_allowed;
+    use super::{first_journal_path, navigation_allowed};
+    use std::path::PathBuf;
+    use url::Url;
 
     const BASE: &str = "http://127.0.0.1:5000/";
+
+    fn urls(raw: &[&str]) -> Vec<Url> {
+        raw.iter()
+            .map(|raw| Url::parse(raw).expect("test URL parses"))
+            .collect()
+    }
 
     #[test]
     fn navigation_is_confined_to_our_own_origin() {
@@ -564,5 +651,40 @@ mod tests {
             BASE,
             "http://127.0.0.1:5000.evil.example/"
         ));
+    }
+
+    #[test]
+    fn document_launch_resolves_the_first_usable_file_url() {
+        // The ordinary Finder double-click.
+        assert_eq!(
+            first_journal_path(&urls(&["file:///tmp/main.journal"])),
+            Some(PathBuf::from("/tmp/main.journal"))
+        );
+
+        // Finder percent-encodes spaces; `to_file_path` is what decodes them back
+        // into the path that actually exists on disk.
+        assert_eq!(
+            first_journal_path(&urls(&["file:///Users/me/My%20Books/main.journal"])),
+            Some(PathBuf::from("/Users/me/My Books/main.journal"))
+        );
+
+        // A deeplink we do not implement is skipped rather than opened.
+        assert_eq!(
+            first_journal_path(&urls(&["https://example.com/main.journal"])),
+            None
+        );
+
+        // No URLs at all (nothing to open) must not panic.
+        assert_eq!(first_journal_path(&[]), None);
+
+        // A non-file URL must not shadow a real document behind it in the batch.
+        assert_eq!(
+            first_journal_path(&urls(&[
+                "ledgeline://open",
+                "file:///tmp/second.journal",
+                "file:///tmp/third.journal",
+            ])),
+            Some(PathBuf::from("/tmp/second.journal"))
+        );
     }
 }

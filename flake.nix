@@ -224,19 +224,119 @@
         #    therefore yields `result/Applications/Ledgeline.app` — the location
         #    home-manager / nix-darwin's `copyApplications` expects, and a plain
         #    drag-to-/Applications install. Info.plist gets the workspace version
-        #    substituted in and is lint-clean (`plutil -lint`). NOTE: the binary
-        #    still links Nix-store dylibs; a signed, relocatable release
-        #    (makeBinaryWrapper + `codesign --sign -`, as in mbr's darwin bundle)
-        #    is a documented follow-up — this produces the bundle structure with
-        #    the real UI embedded.
-        macApp = pkgs.runCommand "ledgeline-app" { } ''
+        #    substituted in and is lint-clean (`plutil -lint`).
+        #
+        #    DE-NIXING (the `for lib` loop) — the bundle has to launch on a Mac
+        #    with no /nix/store, and dyld refuses to start a binary whose load
+        #    commands name paths that do not exist there. The lone non-system
+        #    dylib in the link is libiconv, and it is PHANTOM: nixpkgs' darwin
+        #    stdenv appends `-liconv` to every link, but this binary imports zero
+        #    iconv symbols — asserted from `nm -u` in the loop below, not assumed,
+        #    since that premise is what makes the rewrite legal. Retargeting it to
+        #    /usr/lib/libiconv.2.dylib is therefore a correction, not a hack —
+        #    and that path needs no file on macOS 11+, it resolves out of the
+        #    dyld shared cache. The store path is read back OUT of the binary
+        #    instead of interpolated from `${pkgs.libiconv}` so it survives every
+        #    nixpkgs bump (the hash changes), and — the real point — so the `*)`
+        #    branch can FAIL the build on any other store dylib. A future one may
+        #    be a genuine dependency that no system path can stand in for;
+        #    shipping it silently would yield a bundle that dies on a user's Mac,
+        #    so it must be vendored into Contents/Frameworks with an @rpath
+        #    install name, never blanket-rewritten. `install_name_tool`
+        #    invalidates the linker's ad-hoc signature and arm64 macOS will not
+        #    exec a Mach-O whose signature is broken, so re-signing is
+        #    load-bearing rather than cosmetic. Ad-hoc signing is still NOT
+        #    Developer ID signing + notarization: a publicly distributed build
+        #    needs that separate work, and until it lands Gatekeeper will still
+        #    complain about a downloaded copy.
+        macApp = pkgs.runCommand "ledgeline-app" {
+          # A bare darwin `runCommand` has NONE of these: cctools supplies
+          # install_name_tool + otool + nm, sigtool supplies codesign.
+          nativeBuildInputs = [ pkgs.darwin.cctools pkgs.darwin.sigtool ];
+        } ''
           app="$out/Applications/Ledgeline.app"
+          bin="$app/Contents/MacOS/ledgeline"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-          cp ${ledgelineWithSpa}/bin/ledgeline "$app/Contents/MacOS/ledgeline"
-          chmod u+w "$app/Contents/MacOS/ledgeline"
+          cp ${ledgelineWithSpa}/bin/ledgeline "$bin"
+          chmod u+w "$bin"
           substitute ${./assets/Info.plist.in} "$app/Contents/Info.plist" \
             --subst-var-by version "${version}"
           cp ${ledgelineIcns} "$app/Contents/Resources/ledgeline.icns"
+
+          # `for`, NOT `otool | while read`: a piped while-loop body runs in a
+          # SUBSHELL, so the `exit 1` below would kill only the subshell and the
+          # build would go green with the offending dylib still linked.
+          # `NR > 1` drops otool's header line — it is the binary's own path,
+          # which is itself under /nix/store while the build runs.
+          for lib in $(otool -L "$bin" | awk 'NR > 1 && index($1, "/nix/store") == 1 { print $1 }'); do
+            case "$lib" in
+              */libiconv*.dylib)
+                # The retarget is sound ONLY because the link is phantom, and the
+                # case pattern above matches a PATH, not that premise — so the
+                # premise is asserted here instead of trusted. A future crate that
+                # genuinely calls iconv lands in this same branch and would be
+                # rewritten just as silently, and whether that breaks depends on
+                # which libiconv nixpkgs happens to ship. Today's pin is APPLE's
+                # libiconv-113, which exports the same unprefixed
+                # `_iconv_open`/`_iconv_close`/`_iconv` as /usr/lib/libiconv.2.dylib,
+                # so real imports would survive the swap by luck. GNU libiconv —
+                # what `pkgs.libiconv` resolves to elsewhere, and what a nixpkgs
+                # bump could put here — exports those entry points as
+                # `_libiconv_open`/`_libiconv_close`/`_libiconv` instead. Send real
+                # GNU-prefixed imports at Apple's dylib and nothing complains at
+                # build time; dyld rejects the bundle for missing symbols at LAUNCH,
+                # on a user's Mac. Nothing in this file would notice the flip, hence
+                # the check. `nm` output goes to a FILE rather than a pipe into grep
+                # so a missing or failing `nm` aborts (set -e) instead of making the
+                # assertion vacuously pass — a pipe would also mask nm's status
+                # under `set -o pipefail` + grep's early exit. The pattern is
+                # CASE-SENSITIVE and anchored on the leading underscore: `grep -i
+                # iconv` matches AppKit's `_NSImageNameIconViewTemplate` and would
+                # fail every build. `(lib)?` is load-bearing — `_iconv` does not
+                # occur as a substring of `_libiconv_open`. Deliberately NOT
+                # anchored with `^`: cctools `nm -u` prints bare symbols, other
+                # toolchains prefix them with whitespace and `U`.
+                nm -u "$bin" > "$TMPDIR/undefined-symbols.txt"
+                iconvSyms=$(grep -E '_(lib)?iconv' "$TMPDIR/undefined-symbols.txt" || true)
+                if [ -n "$iconvSyms" ]; then
+                  echo "ERROR: Ledgeline.app imports real iconv symbols:" >&2
+                  echo "$iconvSyms" | sed 's/^/         /' >&2
+                  echo "  $lib may NOT be retargeted at /usr/lib/libiconv.2.dylib." >&2
+                  echo "  That rewrite is only valid while NOTHING imports iconv." >&2
+                  echo "  It is not an ABI-compatible substitution: if pkgs.libiconv" >&2
+                  echo "  is (or bumps to) GNU libiconv, it exports _libiconv_open/" >&2
+                  echo "  _libiconv_close/_libiconv while Apple's system dylib" >&2
+                  echo "  exports the unprefixed _iconv_open/_iconv_close/_iconv." >&2
+                  echo "  The build would still go green and the app would die in" >&2
+                  echo "  dyld with missing symbols the first time a user opens it." >&2
+                  echo "  Vendor the dylib into Contents/Frameworks with an @rpath" >&2
+                  echo "  install name instead of retargeting it." >&2
+                  exit 1
+                fi
+                install_name_tool -change "$lib" /usr/lib/libiconv.2.dylib "$bin"
+                ;;
+              *)
+                echo "ERROR: Ledgeline.app would ship a Nix-store dependency:" >&2
+                echo "         $lib" >&2
+                echo "  Only the phantom libiconv link may be retargeted at a" >&2
+                echo "  system path. This one may be REAL, and a bundle carrying" >&2
+                echo "  it cannot launch on a Mac without Nix. Vendor it into" >&2
+                echo "  Contents/Frameworks with an @rpath install name, or drop" >&2
+                echo "  the dependency." >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          # install_name_tool just broke the ad-hoc signature the linker gave it.
+          codesign -f -s - "$bin"
+
+          # The guarantee, asserted rather than assumed.
+          if otool -L "$bin" | tail -n +2 | grep -q /nix/store; then
+            echo "ERROR: Nix store paths survived de-nixing:" >&2
+            otool -L "$bin" >&2
+            exit 1
+          fi
         '';
 
         # 6. Combined darwin install: the `Applications/Ledgeline.app` bundle PLUS

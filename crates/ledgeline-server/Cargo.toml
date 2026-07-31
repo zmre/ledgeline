@@ -16,7 +16,7 @@ path = "src/main.rs"
 # builds a headless, server-only binary with no windowing/native-UI stack — the
 # shape CI and Linux servers build.
 default = ["gui"]
-gui = ["dep:wry", "dep:tao", "dep:muda", "dep:rfd"]
+gui = ["dep:wry", "dep:tao", "dep:muda", "dep:rfd", "dep:url"]
 
 [dependencies]
 ledgeline-core = { workspace = true }
@@ -56,6 +56,12 @@ wry = { version = "0.55", optional = true }
 tao = { version = "0.35", optional = true }
 muda = { version = "0.19", optional = true }
 rfd = { version = "0.17", optional = true }
+# macOS hands a double-clicked document to the app as a `file://` URL, which tao
+# surfaces as `Event::Opened { urls: Vec<url::Url> }`. tao does NOT re-export
+# `url`, so we depend on it directly to call `Url::to_file_path()` (which undoes
+# the percent-encoding — journal paths with spaces are common). This is already
+# in the tree as a tao dependency, so cargo unifies it and it costs no new build.
+url = { version = "2", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

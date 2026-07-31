@@ -1,6 +1,9 @@
 # Nix / direnv
 .direnv/
+# `result` plus the named output links our recipes create (`just package-mac`
+# builds `result-macapp`), which a bare `result` pattern would not match.
 result
+result-*
 
 # Rust engine (crates/)
 # Covers the generated performance corpus (target/perf/*.journal, up to 26 MB
