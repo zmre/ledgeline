@@ -191,9 +191,18 @@ platform's native deps (esbuild/rollup/@tailwindcss/oxide), so it is
 `aarch64-darwin`-specific.
 
 The icon is assembled with `imagemagick` + `png2icns` (libicns) — no macOS
-`iconutil`, so it builds in the pure Nix sandbox. The bundled binary still links
-Nix-store dylibs; producing a signed, relocatable release (`install_name_tool` +
-`codesign`) is a follow-up.
+`iconutil`, so it builds in the pure Nix sandbox. The bundle is self-contained
+apart from macOS system libraries: it links nothing from `/nix/store`, so it runs
+on a Mac that has never had Nix installed. nixpkgs' darwin stdenv adds a phantom
+`-liconv` to every link (the binary imports no iconv symbols), so the build
+retargets that one load command to `/usr/lib/libiconv.2.dylib` and re-signs the
+binary ad-hoc — `install_name_tool` invalidates the linker's signature and arm64
+macOS won't exec a Mach-O with a broken one. Any *other* `/nix/store` dependency
+**fails the build** rather than shipping: it may be a real one, which needs
+vendoring into `Contents/Frameworks`, not a blind rewrite. Note that ad-hoc
+signing is **not** Developer ID signing or notarization — a publicly distributed
+`.dmg` still needs that separate work, and without it Gatekeeper will warn on a
+downloaded copy.
 
 ## Cachix binary cache
 
