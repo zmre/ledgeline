@@ -69,6 +69,9 @@
             <ul class="flex flex-col">
                 {#each rows as row (`${row.payee}@${row.typicalAmount.m}`)}
                     <li>
+                        <!-- `journalLink` already builds its path through
+                             `resolve()`; the rule cannot see through the call. -->
+                        <!-- eslint-disable svelte/no-navigation-without-resolve -->
                         <a
                             href={journalLink(row.payee)}
                             class="hover:bg-base-300/60 -mx-2 flex items-center justify-between gap-3 rounded px-2 py-1.5 text-sm transition-colors"
@@ -90,6 +93,7 @@
                                 {/if}
                             </span>
                         </a>
+                        <!-- eslint-enable svelte/no-navigation-without-resolve -->
                     </li>
                 {/each}
             </ul>
