@@ -1,0 +1,10 @@
+# MUST NOT BE DISCOVERED.
+#
+# The scan skips every directory whose name starts with `.`, which is the rule
+# that keeps `.git` out. This fixture is `.hidden/` and not `.git/` for a dull
+# reason: git refuses to track any path with a `.git` component, so a committed
+# `.git/hidden.rules` is not a thing that can exist. The `.git` case itself is
+# built at test time in `tests/rules_security.rs`.
+
+fields date, description, amount
+account1 assets:decoy:hidden

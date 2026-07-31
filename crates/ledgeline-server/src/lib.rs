@@ -39,6 +39,7 @@
 mod edit_api;
 mod error;
 mod reports_api;
+mod rules_api;
 mod security;
 mod spa;
 
@@ -231,6 +232,16 @@ pub struct AppState {
     /// report editing disabled). Held behind an `Arc<Mutex<…>>` so every clone
     /// shares one editor and writers serialize on it.
     editor: Arc<Mutex<Option<JournalEditor>>>,
+    /// Serializes rules-file WRITES. The journal editor mutex above does not
+    /// cover these (they never touch the editor), and without this two `PUT`s
+    /// carrying the same valid revision could both pass their pre-write check
+    /// and one update would be silently lost.
+    ///
+    /// A [`tokio::sync::Mutex`] because it is held across an `.await`: the whole
+    /// scan-read-check-write sequence runs on the blocking pool through
+    /// [`reports_api::compute`], so the guard necessarily crosses a yield point
+    /// — which is exactly what a `std::sync::Mutex` guard may never do.
+    rules_writes: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -254,6 +265,7 @@ impl AppState {
                 journal.clone(),
             )))),
             editor: Arc::new(Mutex::new(None)),
+            rules_writes: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -271,6 +283,7 @@ impl AppState {
         Ok(Self {
             inner: Arc::new(ArcSwap::from_pointee(snapshot)),
             editor: Arc::new(Mutex::new(Some(editor))),
+            rules_writes: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -364,6 +377,26 @@ impl AppState {
     pub(crate) fn editor(&self) -> &Mutex<Option<JournalEditor>> {
         &self.editor
     }
+
+    /// Whether a journal file is bound to an editor — i.e. whether this server
+    /// may write at all. Read WITHOUT holding the guard across anything, so no
+    /// caller is tempted to carry a `std::sync::MutexGuard` into an `.await`.
+    ///
+    /// A poisoned mutex still answers honestly: the flag says an earlier request
+    /// panicked mid-edit, not that the binding went away, and [`edit_api`]'s
+    /// `lock_editor` is what recovers from it (SEC-11).
+    pub(crate) fn editing_enabled(&self) -> bool {
+        self.editor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// The rules-file write mutex, shared by all clones. See the field's own
+    /// docs for why the journal editor's mutex does not cover these writes.
+    pub(crate) fn rules_writes(&self) -> &tokio::sync::Mutex<()> {
+        &self.rules_writes
+    }
 }
 
 /// Build an UNAUTHENTICATED router for a parsed `journal`.
@@ -444,6 +477,26 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
                 .put(edit_api::replace_transaction)
                 .patch(edit_api::patch_transaction),
         )
+        // CSV import rules (Imports, steps 7-8): list, read, preview, save.
+        //
+        // THESE MUST STAY ABOVE the `route_layer` below. `route_layer` covers
+        // exactly the routes registered before it, so a route added *after* it
+        // is reachable with no bearer token at all — and `PUT /api/rules/{id}`
+        // is a write primitive over a file in the user's journal directory.
+        // `rules_endpoints.rs` pins the 401, in the same shape as the SEC-1
+        // tests, so moving these lines fails a test rather than shipping.
+        //
+        // `preview` is on its own PREFIX rather than `/api/rules/{*id}/preview`
+        // because axum 0.8's matcher refuses a catch-all with anything after it
+        // ("Insertion failed due to conflict"), and a greedy `{*id}` would
+        // swallow the suffix even if it did not. The id semantics are identical
+        // on both prefixes: the same string, validated and resolved the same way.
+        .route("/api/rules", get(rules_api::index))
+        .route(
+            "/api/rules/{*id}",
+            get(rules_api::document).put(rules_api::save),
+        )
+        .route("/api/rules-preview/{*id}", get(rules_api::preview))
         // Token-gate exactly the routes registered above. `route_layer` skips
         // the fallback, which is what lets the browser fetch the shell (and the
         // token inside it) before it has any credential to present.

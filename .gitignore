@@ -16,10 +16,25 @@ dist/
 *.tsbuildinfo
 .bun/
 
+# ...except this one, which is a FIXTURE and not a dependency tree. The
+# import-rules discovery scan refuses to descend into `node_modules/`, and
+# fixtures/rules/tree/node_modules/dep.rules is the committed proof of it. The
+# negation has to name the directory: git cannot re-include a file whose parent
+# directory is excluded.
+!fixtures/rules/tree/node_modules/
+
 # Testing
 test-results/
 playwright-report/
 coverage/
+
+# The Imports suites write their own rules files here, drive a SAVE against
+# them, and remove them afterwards. They have to live under fixtures/ because
+# that directory is the discovery scan root for the journal those suites run the
+# engine over — and they have to be scratch, because the alternative is a test
+# that rewrites a committed fixture and leaves the tree dirty. Ignored so a
+# crashed run cannot pollute git status.
+/fixtures/scratch/
 
 # Editor / OS
 .DS_Store

@@ -6,11 +6,23 @@
     import ProblemsBadge from "$lib/checks/ProblemsBadge.svelte";
     import ProblemsDrawer from "$lib/checks/ProblemsDrawer.svelte";
     import ServerSetupModal from "$lib/components/ServerSetupModal.svelte";
+    import {rulesStore} from "$lib/imports/rulesStore.svelte";
     import {journal} from "$lib/stores/journal.svelte";
     import {problems} from "$lib/stores/problems.svelte";
+    import {onServerReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
     let {children} = $props();
+
+    // The Imports nav item is hidden on an engine that has no `/api/rules` route
+    // at all (it 404s, which the client reports as `NativeApiUnavailableError`).
+    // `available` starts TRUE, so the item does not blink out of existence
+    // during every ordinary load — the same reasoning as `editing.probe`'s
+    // refusal to read an unanswered probe as a "no" (FE-5g). The listing this
+    // fetches is also the one the Imports page renders, and `ensureIndex`
+    // dedupes on (server, reconnect), so this is a prefetch and not a second
+    // directory walk.
+    onServerReady((url) => void rulesStore.ensureIndex(url, settings.serverNonce));
 
     // WP-08: connection status dot fed by journal.status (green ready / yellow
     // loading / red error), with a reconnect affordance back to the setup modal.
@@ -64,6 +76,11 @@
                         <li>
                             <a href={resolve("/reports")} class={page.url.pathname.startsWith("/reports") ? "menu-active" : ""}>Reports</a>
                         </li>
+                        {#if rulesStore.available}
+                            <li>
+                                <a href={resolve("/imports")} class={page.url.pathname.startsWith("/imports") ? "menu-active" : ""}>Imports</a>
+                            </li>
+                        {/if}
                     </ul>
                 </nav>
                 <div class="navbar-end gap-1 pr-2">

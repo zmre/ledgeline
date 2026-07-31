@@ -28,6 +28,21 @@ import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
 import type {Holding, HoldingsPoint, HoldingsReport, HoldingsSeries, HoldingsWarning} from "$lib/holdings/types";
 import type {
+    IfLayout,
+    OpaqueReason,
+    PreviewUnavailable,
+    RulesDocument,
+    RulesFieldsPref,
+    RulesIndex,
+    RulesItem,
+    RulesMatcher,
+    RulesPref,
+    RulesPreview,
+    RulesSettings,
+    RulesSourcePref,
+    RulesWarning,
+} from "$lib/imports/types";
+import type {
     Cadence,
     ChangeKind,
     ChangeRow,
@@ -263,6 +278,134 @@ interface RawInsightsReport {
     revenueChanges?: RawChangeRow[];
     movers?: RawMoverRow[];
     topTxns?: RawTopTxn[];
+}
+
+// --- CSV import rules (rules_api.rs) ---------------------------------------
+// Unlike the report bodies above, most keys here are `skip_serializing_if =
+// "Option::is_none"`: an absent setting is a FACT ("the file does not say"), not
+// a missing field, so these decode to null instead of throwing. The strictness
+// lives where the wire is unconditional — a document's id/revision/newline/items
+// and each item's kind tag — which is what the golden decode test leans on.
+
+interface RawRulesPref {
+    value?: unknown;
+    itemId?: number;
+}
+
+interface RawRulesSource {
+    value?: string;
+    executesShellCommand?: boolean;
+    itemId?: number;
+}
+
+interface RawRulesFieldsPref {
+    names?: unknown[];
+    itemId?: number;
+}
+
+interface RawRulesSettings {
+    source?: RawRulesSource;
+    archive?: RawRulesPref;
+    encoding?: RawRulesPref;
+    separator?: RawRulesPref;
+    decimalMark?: RawRulesPref;
+    dateFormat?: RawRulesPref;
+    timezone?: RawRulesPref;
+    newestFirst?: RawRulesPref;
+    intraDayReversed?: RawRulesPref;
+    skip?: RawRulesPref;
+    balanceType?: RawRulesPref;
+    account1?: RawRulesPref;
+    account2?: RawRulesPref;
+    currency?: RawRulesPref;
+    fields?: RawRulesFieldsPref;
+}
+
+interface RawRulesMatcher {
+    field?: string;
+    pattern?: string;
+}
+
+interface RawRulesAssignment {
+    field?: string;
+    value?: string;
+}
+
+/** One item, flattened: `#[serde(flatten)]` puts the `kind` tag beside id/line/lines. */
+interface RawRulesItem {
+    id?: number;
+    line?: number;
+    lines?: number;
+    kind?: string;
+    // trivia / opaque
+    text?: string;
+    truncated?: boolean;
+    // directive
+    name?: string;
+    value?: string;
+    // include
+    target?: string;
+    // fields
+    names?: unknown[];
+    // assignment
+    field?: string;
+    // ifBlock
+    layout?: string;
+    matchers?: RawRulesMatcher[];
+    assignments?: RawRulesAssignment[];
+    // opaque
+    reason?: string;
+    label?: string;
+}
+
+interface RawRulesWarning {
+    itemId?: number;
+    line?: number;
+    message?: string;
+}
+
+interface RawRulesDoc {
+    id?: string;
+    label?: string;
+    revision?: string;
+    editable?: boolean;
+    newline?: string;
+    settings?: RawRulesSettings;
+    items?: RawRulesItem[];
+    warnings?: RawRulesWarning[];
+}
+
+interface RawRulesFile {
+    id?: string;
+    label?: string;
+    revision?: string;
+    sizeBytes?: number;
+    parsed?: boolean;
+    account1?: string;
+    account2?: string;
+    ifBlockCount?: number;
+    editableBlockCount?: number;
+    opaqueItemCount?: number;
+    warnings?: unknown[];
+}
+
+interface RawRulesIndex {
+    rootLabel?: string;
+    editable?: boolean;
+    truncated?: boolean;
+    files?: RawRulesFile[];
+    warnings?: unknown[];
+}
+
+interface RawRulesPreview {
+    available?: boolean;
+    reason?: string;
+    dataLabel?: string;
+    separator?: string;
+    header?: unknown[];
+    rows?: unknown[];
+    columns?: number;
+    truncated?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -718,5 +861,260 @@ export function decodeInsightsReport(raw: unknown): InsightsReport {
         revenueChanges: frozen((report.revenueChanges ?? []).map((row, i) => decodeChangeRow(row, `insights revenueChanges[${i}]`))),
         movers: frozen((report.movers ?? []).map((row, i) => decodeMoverRow(row, `insights movers[${i}]`))),
         topTxns: frozen((report.topTxns ?? []).map((row, i) => decodeTopTxn(row, `insights topTxns[${i}]`))),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// CSV import rules: index, document, preview
+// ---------------------------------------------------------------------------
+
+function str(value: unknown, context: string): string {
+    if (typeof value !== "string") throw new ApiShapeError(`${context}: expected a string`);
+    return value;
+}
+
+function num(value: unknown, context: string): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new ApiShapeError(`${context}: expected a number`);
+    return value;
+}
+
+/** A `{value, itemId}` entry, or null when the file does not say. `read` narrows the value's own type. */
+function decodePref<T>(raw: RawRulesPref | undefined, context: string, read: (value: unknown, context: string) => T): RulesPref<T> | null {
+    if (raw === undefined || raw === null) return null;
+    return Object.freeze({value: read(raw.value, `${context} value`), itemId: num(raw.itemId, `${context} itemId`)});
+}
+
+/** A valueless directive: presence IS the meaning, so the engine sends `true`. */
+function decodeFlagPref(raw: RawRulesPref | undefined, context: string): RulesPref<boolean> | null {
+    return decodePref(raw, context, (value, where) => {
+        if (typeof value !== "boolean") throw new ApiShapeError(`${where}: expected a boolean`);
+        return value;
+    });
+}
+
+function decodeSourcePref(raw: RawRulesSource | undefined, context: string): RulesSourcePref | null {
+    if (raw === undefined || raw === null) return null;
+    return Object.freeze({
+        value: str(raw.value, `${context} value`),
+        // Absent would mean "we do not know whether hledger shells out", and the
+        // safe reading of not-knowing is not `false` — but the field is
+        // unconditional on the wire, so demand it rather than guess.
+        executesShellCommand: typeof raw.executesShellCommand === "boolean" ? raw.executesShellCommand : true,
+        itemId: num(raw.itemId, `${context} itemId`),
+    });
+}
+
+function decodeFieldsPref(raw: RawRulesFieldsPref | undefined, context: string): RulesFieldsPref | null {
+    if (raw === undefined || raw === null) return null;
+    return Object.freeze({names: frozen(decodeStrings(raw.names, `${context} names`)), itemId: num(raw.itemId, `${context} itemId`)});
+}
+
+function decodeRulesSettings(raw: RawRulesSettings | undefined, context: string): RulesSettings {
+    const settings = raw ?? {};
+    return Object.freeze({
+        source: decodeSourcePref(settings.source, `${context} source`),
+        archive: decodeFlagPref(settings.archive, `${context} archive`),
+        encoding: decodePref(settings.encoding, `${context} encoding`, str),
+        separator: decodePref(settings.separator, `${context} separator`, str),
+        decimalMark: decodePref(settings.decimalMark, `${context} decimalMark`, str),
+        dateFormat: decodePref(settings.dateFormat, `${context} dateFormat`, str),
+        timezone: decodePref(settings.timezone, `${context} timezone`, str),
+        newestFirst: decodeFlagPref(settings.newestFirst, `${context} newestFirst`),
+        intraDayReversed: decodeFlagPref(settings.intraDayReversed, `${context} intraDayReversed`),
+        skip: decodePref(settings.skip, `${context} skip`, num),
+        balanceType: decodePref(settings.balanceType, `${context} balanceType`, str),
+        account1: decodePref(settings.account1, `${context} account1`, str),
+        account2: decodePref(settings.account2, `${context} account2`, str),
+        currency: decodePref(settings.currency, `${context} currency`, str),
+        fields: decodeFieldsPref(settings.fields, `${context} fields`),
+    });
+}
+
+const OPAQUE_REASONS: readonly OpaqueReason[] = [
+    "ifTable",
+    "combinedMatcher",
+    "matchGroup",
+    "commentLikeMatcher",
+    "controlFlowInBlock",
+    "unparsedBlockBody",
+    "unparsedDirective",
+    "unclassified",
+];
+
+function decodeOpaqueReason(raw: string | undefined, context: string): OpaqueReason {
+    const found = OPAQUE_REASONS.find((reason) => reason === raw);
+    if (found === undefined) throw new ApiShapeError(`${context}: unknown opaque reason ${JSON.stringify(raw)}`);
+    return found;
+}
+
+function decodeLayout(raw: string | undefined, context: string): IfLayout {
+    if (raw === "inline" || raw === "stacked") return raw;
+    throw new ApiShapeError(`${context}: unknown if-block layout ${JSON.stringify(raw)}`);
+}
+
+function decodeMatcher(raw: RawRulesMatcher | undefined, context: string): RulesMatcher {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing matcher`);
+    // An absent `field` is a WHOLE-RECORD matcher, not a missing one — the
+    // engine omits the key for `MatchScope::WholeRecord`.
+    return Object.freeze({field: raw.field === undefined ? null : str(raw.field, `${context} field`), pattern: str(raw.pattern, `${context} pattern`)});
+}
+
+/**
+ * One item, by its `kind` tag.
+ *
+ * An unknown tag THROWS rather than degrading to a carry-through: the editor's
+ * contract is that every item comes back in the save request, and an item whose
+ * shape this decoder invented would be echoed as an id it has no right to claim.
+ * Refusing to open the document is the honest failure.
+ */
+function decodeRulesItem(raw: RawRulesItem | undefined, context: string): RulesItem {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing item`);
+    const base = {id: num(raw.id, `${context} id`), line: num(raw.line, `${context} line`), lines: num(raw.lines, `${context} lines`)};
+    switch (raw.kind) {
+        case "trivia":
+            return Object.freeze({...base, kind: "trivia" as const, text: str(raw.text, `${context} text`), truncated: raw.truncated === true});
+        case "directive":
+            return Object.freeze({...base, kind: "directive" as const, name: str(raw.name, `${context} name`), value: str(raw.value, `${context} value`)});
+        case "include":
+            return Object.freeze({...base, kind: "include" as const, target: str(raw.target, `${context} target`)});
+        case "fields":
+            return Object.freeze({...base, kind: "fields" as const, names: frozen(decodeStrings(raw.names, `${context} names`))});
+        case "assignment":
+            return Object.freeze({...base, kind: "assignment" as const, field: str(raw.field, `${context} field`), value: str(raw.value, `${context} value`)});
+        case "ifBlock":
+            if (!Array.isArray(raw.matchers) || !Array.isArray(raw.assignments)) {
+                throw new ApiShapeError(`${context}: an ifBlock needs matchers and assignments arrays`);
+            }
+            return Object.freeze({
+                ...base,
+                kind: "ifBlock" as const,
+                layout: decodeLayout(raw.layout, context),
+                matchers: frozen(raw.matchers.map((matcher, i) => decodeMatcher(matcher, `${context} matchers[${i}]`))),
+                assignments: frozen(
+                    raw.assignments.map((assignment, i) =>
+                        Object.freeze({
+                            field: str(assignment?.field, `${context} assignments[${i}] field`),
+                            value: str(assignment?.value, `${context} assignments[${i}] value`),
+                        })
+                    )
+                ),
+            });
+        case "opaque":
+            return Object.freeze({
+                ...base,
+                kind: "opaque" as const,
+                reason: decodeOpaqueReason(raw.reason, context),
+                label: str(raw.label, `${context} label`),
+                text: str(raw.text, `${context} text`),
+                truncated: raw.truncated === true,
+            });
+        default:
+            throw new ApiShapeError(`${context}: unknown item kind ${JSON.stringify(raw.kind)}`);
+    }
+}
+
+function decodeRulesWarning(raw: RawRulesWarning | undefined, context: string): RulesWarning {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing warning`);
+    return Object.freeze({
+        itemId: raw.itemId === undefined ? null : num(raw.itemId, `${context} itemId`),
+        line: num(raw.line, `${context} line`),
+        message: str(raw.message, `${context} message`),
+    });
+}
+
+/** `GET /api/rules` → the discovery listing. */
+export function decodeRulesIndex(raw: unknown): RulesIndex {
+    const index = raw as RawRulesIndex;
+    if (typeof index !== "object" || index === null || !Array.isArray(index.files)) {
+        throw new ApiShapeError("rules index: expected a files array");
+    }
+    return Object.freeze({
+        rootLabel: str(index.rootLabel, "rules index rootLabel"),
+        editable: index.editable === true,
+        truncated: index.truncated === true,
+        files: frozen(
+            index.files.map((file, i) => {
+                const context = `rules file #${i}`;
+                return Object.freeze({
+                    id: str(file?.id, `${context} id`),
+                    label: str(file?.label, `${context} label`),
+                    revision: str(file?.revision, `${context} revision`),
+                    sizeBytes: num(file?.sizeBytes, `${context} sizeBytes`),
+                    parsed: file?.parsed === true,
+                    // account1/account2 are omitted for a file that declares
+                    // neither, which is a different fact from "declares an empty one".
+                    account1: file?.account1 === undefined ? null : str(file.account1, `${context} account1`),
+                    account2: file?.account2 === undefined ? null : str(file.account2, `${context} account2`),
+                    ifBlockCount: num(file?.ifBlockCount, `${context} ifBlockCount`),
+                    editableBlockCount: num(file?.editableBlockCount, `${context} editableBlockCount`),
+                    opaqueItemCount: num(file?.opaqueItemCount, `${context} opaqueItemCount`),
+                    warnings: frozen(decodeStrings(file?.warnings, `${context} warnings`)),
+                });
+            })
+        ),
+        warnings: frozen(decodeStrings(index.warnings, "rules index warnings")),
+    });
+}
+
+/** `GET /api/rules/{*id}` (and the body a save answers with) → one parsed document. */
+export function decodeRulesDoc(raw: unknown): RulesDocument {
+    const doc = raw as RawRulesDoc;
+    if (typeof doc !== "object" || doc === null || !Array.isArray(doc.items)) {
+        throw new ApiShapeError("rules document: expected an items array");
+    }
+    if (doc.newline !== "lf" && doc.newline !== "crlf") {
+        throw new ApiShapeError(`rules document: unknown newline ${JSON.stringify(doc.newline)}`);
+    }
+    return Object.freeze({
+        id: str(doc.id, "rules document id"),
+        label: str(doc.label, "rules document label"),
+        revision: str(doc.revision, "rules document revision"),
+        editable: doc.editable === true,
+        newline: doc.newline,
+        settings: decodeRulesSettings(doc.settings, "rules settings"),
+        items: frozen(doc.items.map((item, i) => decodeRulesItem(item, `rules item #${i}`))),
+        warnings: frozen((doc.warnings ?? []).map((warning, i) => decodeRulesWarning(warning, `rules warning #${i}`))),
+    });
+}
+
+const PREVIEW_REASONS: readonly PreviewUnavailable[] = [
+    "noDataFile",
+    "sourceIsCommand",
+    "sourceOutsideRoot",
+    "notRegularFile",
+    "unreadable",
+    "notUtf8",
+    "empty",
+];
+
+/**
+ * `GET /api/rules-preview/{*id}` → the first few rows of the described data file.
+ *
+ * An unavailable preview is a VALUE, not an error: "your `source` is a shell
+ * command we will not run" is information the mapping panel shows.
+ */
+export function decodeRulesPreview(raw: unknown): RulesPreview {
+    const preview = raw as RawRulesPreview;
+    if (typeof preview !== "object" || preview === null || !Array.isArray(preview.rows)) {
+        throw new ApiShapeError("rules preview: expected a rows array");
+    }
+    const reason = PREVIEW_REASONS.find((candidate) => candidate === preview.reason) ?? null;
+    if (preview.reason !== undefined && reason === null) {
+        throw new ApiShapeError(`rules preview: unknown reason ${JSON.stringify(preview.reason)}`);
+    }
+    return Object.freeze({
+        available: preview.available === true,
+        reason,
+        dataLabel: preview.dataLabel === undefined ? null : str(preview.dataLabel, "rules preview dataLabel"),
+        separator: str(preview.separator, "rules preview separator"),
+        header: preview.header === undefined ? null : frozen(decodeStrings(preview.header, "rules preview header")),
+        rows: frozen(
+            preview.rows.map((row, i) => {
+                if (!Array.isArray(row)) throw new ApiShapeError(`rules preview rows[${i}]: expected an array`);
+                return frozen(decodeStrings(row, `rules preview rows[${i}]`));
+            })
+        ),
+        columns: num(preview.columns, "rules preview columns"),
+        truncated: preview.truncated === true,
     });
 }

@@ -1,0 +1,44 @@
+# Advanced constructs, all in one file. Every item here must stay Opaque in
+# this step; the file exists so the extent rules are exercised together.
+
+separator:,
+skip 1
+fields date, description, amount, note
+
+# A conditional TABLE. Its extent is terminated by the blank line below it, so
+# that blank line travels with the table.
+if,account2,comment
+ACME PAYROLL,income:salary,monthly pay
+%description COFFEE HOUSE,expenses:food:coffee,
+LANDLORD LLC,expenses:home:rent,rent
+
+# Stacked matchers, ANDed with && and negated with !. Tab-indented assignments.
+if
+%description SUPERMARKET
+&& %note GROCERY
+	account2  expenses:food:groceries
+	comment1  weekly groceries
+
+if
+%description ONLINE
+& ! %note REFUND
+	account2  expenses:shopping
+
+if ! %description TRANSFER
+	account2  expenses:unknown
+
+# A match group: capture the YYYY-MM prefix of the description and reuse it.
+if %description (....-..)
+	comment2  period \1
+
+# A matcher that LOOKS like a comment. hledger reads this line as a regex, not
+# as a comment, so the block matches any record containing a ';'. Ledgeline
+# refuses to edit it rather than cement a reading the author probably did not
+# intend — see OpaqueReason::CommentLikeMatcher.
+if
+; not actually a comment
+	account2  expenses:unknown
+
+if SKIP THIS ROW
+	skip 1
+	end

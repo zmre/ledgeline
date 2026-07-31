@@ -1282,7 +1282,14 @@ fn report_slots() -> &'static tokio::sync::Semaphore {
 /// A panic inside `job` arrives here as a `JoinError` rather than unwinding
 /// through `CatchPanicLayer`, so it is mapped to the same `500` that layer would
 /// have produced (SEC-2: a panic must never drop the connection).
-async fn compute<T, F>(job: F) -> Result<Json<T>, AppError>
+///
+/// [`rules_api`](crate::rules_api) shares it for a related but distinct reason:
+/// its work is a DIRECTORY WALK plus file reads, not CPU, and a cold or
+/// network-mounted journal directory is exactly the blocking I/O
+/// `spawn_blocking` exists for. The semaphore bounds concurrent walks for the
+/// same reason it bounds concurrent reports — a pile of open tabs must not be
+/// able to claim every blocking thread.
+pub(crate) async fn compute<T, F>(job: F) -> Result<Json<T>, AppError>
 where
     F: FnOnce() -> Result<T, AppError> + Send + 'static,
     T: Send + 'static,

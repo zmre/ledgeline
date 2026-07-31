@@ -39,6 +39,12 @@ test("navigates between journal and reports", async ({page}) => {
     await expect(page).toHaveTitle("Ledgeline — Reports");
     await expect(page.getByRole("tab", {name: "Balance Sheet"})).toBeVisible();
 
+    // The Imports item is present because this engine HAS `/api/rules`. On an
+    // older engine that route 404s and the item is hidden rather than leading to
+    // a screen that can only apologize.
+    await page.getByRole("link", {name: "Imports"}).click();
+    await expect(page).toHaveTitle("Ledgeline — Imports");
+
     await page.getByRole("link", {name: "Journal", exact: true}).click();
     await expect(page).toHaveTitle("Ledgeline — Journal");
 });

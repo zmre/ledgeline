@@ -50,6 +50,12 @@ check:
 golden:
     ./scripts/gen-golden.sh
 
+# Assert every fixtures/rules/ file is a rules file real hledger accepts. The
+# Rust round-trip tests only prove we don't damage what we didn't touch; this is
+# what keeps the corpus itself honest.
+rules-check:
+    ./scripts/check-rules-fixtures.sh
+
 # Snapshot raw hledger-web JSON API responses into fixtures/api/vVERSION/
 snapshot-api:
     ./scripts/snapshot-api.sh
@@ -90,6 +96,17 @@ snapshot-native port="5078":
         count=$((count + 1))
     done < "$out/requests.tsv"
     echo "snapshotted $count native endpoints into $out"
+
+# The CSV import-rules wire has no schema codegen either: the `Wire*` structs in
+# rules_api.rs are mirrored by hand on the SPA side, so a renamed Rust field
+# compiles and passes on both sides while the imports screen quietly renders
+# nothing (the DRY-3 shape). These committed bodies close that:
+# rules_endpoints.rs replays each URI over fixtures/rules/tree/ and compares
+# BYTES. Regenerate ONLY when the wire contract changed on purpose, and review
+# the diff.
+# Snapshot raw /api/rules JSON responses into fixtures/rules/golden/
+snapshot-rules-wire port="5079":
+    ./scripts/snapshot-rules-wire.sh {{port}}
 
 # Production build (static SPA)
 build:

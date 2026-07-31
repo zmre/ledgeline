@@ -1,0 +1,11 @@
+# CRLF rules file: every terminator is a carriage return + line feed.
+
+skip 1
+fields date, description, amount
+
+if COFFEE
+    account2  expenses:food:coffee
+
+if,account2
+RENT,expenses:home:rent
+
