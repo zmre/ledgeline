@@ -13,7 +13,7 @@
   <key>CFBundleIconFile</key>
   <string>ledgeline</string>
   <key>CFBundleIdentifier</key>
-  <string>com.ironcorelabs.ledgeline</string>
+  <string>com.zmre.ledgeline</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>
@@ -33,7 +33,7 @@
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSHumanReadableCopyright</key>
-  <string>Copyright © 2026 IronCore Labs. All rights reserved.</string>
+  <string>Copyright © 2026 Patrick Walsh. All rights reserved.</string>
   <!-- File associations, split across two types so the handler ranks can differ.
        `.journal`/`.hledger` are hledger-specific, so we claim Owner and become
        the system default for them. `.ledger`/`.j` are shared territory: Ledger
@@ -56,7 +56,7 @@
       <string>ledgeline</string>
       <key>LSItemContentTypes</key>
       <array>
-        <string>com.ironcorelabs.ledgeline.journal</string>
+        <string>com.zmre.ledgeline.journal</string>
       </array>
     </dict>
     <dict>
@@ -70,7 +70,7 @@
       <string>ledgeline</string>
       <key>LSItemContentTypes</key>
       <array>
-        <string>com.ironcorelabs.ledgeline.ledger</string>
+        <string>com.zmre.ledgeline.ledger</string>
       </array>
     </dict>
   </array>
@@ -81,7 +81,7 @@
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>com.ironcorelabs.ledgeline.journal</string>
+      <string>com.zmre.ledgeline.journal</string>
       <key>UTTypeDescription</key>
       <string>hledger journal</string>
       <key>UTTypeIconFile</key>
@@ -101,7 +101,7 @@
     </dict>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>com.ironcorelabs.ledgeline.ledger</string>
+      <string>com.zmre.ledgeline.ledger</string>
       <key>UTTypeDescription</key>
       <string>Ledger journal</string>
       <key>UTTypeIconFile</key>

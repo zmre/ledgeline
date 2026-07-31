@@ -153,8 +153,8 @@ Ledgeline with that file open:
 
 | Extensions            | UTI                                  | Rank        |
 | --------------------- | ------------------------------------ | ----------- |
-| `.journal`, `.hledger` | `com.ironcorelabs.ledgeline.journal` | `Owner`     |
-| `.ledger`, `.j`        | `com.ironcorelabs.ledgeline.ledger`  | `Alternate` |
+| `.journal`, `.hledger` | `com.zmre.ledgeline.journal` | `Owner`     |
+| `.ledger`, `.j`        | `com.zmre.ledgeline.ledger`  | `Alternate` |
 
 `Owner` makes Ledgeline the system default for the hledger-specific extensions.
 `.ledger` and `.j` are shared with Ledger CLI tooling (and `.j` is generic enough
