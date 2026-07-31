@@ -146,6 +146,40 @@ On Linux the default is the headless `ledgeline` binary.
 
 `just package-mac` wraps `.#macApp` and copies a writable copy to `dist/Ledgeline.app`.
 
+### Opening journals from Finder
+
+`Info.plist.in` registers two exported UTIs so double-clicking a journal launches
+Ledgeline with that file open:
+
+| Extensions            | UTI                                  | Rank        |
+| --------------------- | ------------------------------------ | ----------- |
+| `.journal`, `.hledger` | `com.ironcorelabs.ledgeline.journal` | `Owner`     |
+| `.ledger`, `.j`        | `com.ironcorelabs.ledgeline.ledger`  | `Alternate` |
+
+`Owner` makes Ledgeline the system default for the hledger-specific extensions.
+`.ledger` and `.j` are shared with Ledger CLI tooling (and `.j` is generic enough
+that other toolchains claim it), so `Alternate` keeps Ledgeline reachable via
+**Open With** without stealing an existing default. Both types conform to
+`public.plain-text`, so Quick Look, Spotlight and text editors still work.
+
+macOS does **not** pass the document in `argv`: it calls
+`application:openURLs:`, which tao surfaces as `Event::Opened { urls }` and
+`gui.rs` handles. That event lands *after* startup has already parsed a journal
+from `$LEDGELINE_FIXTURE`/recents, so the app may briefly show the previous
+journal before switching; re-opening the already-open journal is skipped.
+
+Launch Services caches bundle registrations, so a freshly built bundle in a
+scratch location is often not picked up. Register it explicitly:
+
+```sh
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f dist/Ledgeline.app
+```
+
+For the association to *persist*, the app has to live somewhere stable — move it
+to `/Applications` (or let nix-darwin / home-manager link it there). Launch
+Services records the path it registered, so a default pointing at a `dist/` or
+`result/` copy breaks as soon as that build is replaced or garbage-collected.
+
 Unlike `.#ledgeline` (which embeds the CI placeholder SPA), **`.#macApp` embeds
 the real SvelteKit UI**: the flake builds the SPA inside Nix — a fixed-output
 `bun install` derivation (`spaNodeModules`, its hash pinned from `web/bun.lock`)

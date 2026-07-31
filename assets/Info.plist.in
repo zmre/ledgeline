@@ -34,5 +34,91 @@
   <true/>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © 2026 IronCore Labs. All rights reserved.</string>
+  <!-- File associations, split across two types so the handler ranks can differ.
+       `.journal`/`.hledger` are hledger-specific, so we claim Owner and become
+       the system default for them. `.ledger`/`.j` are shared territory: Ledger
+       CLI tooling owns the former and `.j` is a very generic extension (other
+       languages and tools use it), so Alternate lets a user pick Ledgeline via
+       Open With without silently stealing the default from whatever already
+       claims them. Both types conform to public.plain-text — journals ARE plain
+       text, and conforming means Quick Look, Spotlight indexing and generic
+       text editors keep working on them. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>hledger journal</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>CFBundleTypeIconFile</key>
+      <string>ledgeline</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.ironcorelabs.ledgeline.journal</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Ledger journal</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeIconFile</key>
+      <string>ledgeline</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.ironcorelabs.ledgeline.ledger</string>
+      </array>
+    </dict>
+  </array>
+  <!-- We EXPORT (rather than import) these UTIs because no system-supplied type
+       covers a plain-text accounting journal; exporting is what tells Launch
+       Services the extension→UTI mapping these document types refer to. -->
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>com.ironcorelabs.ledgeline.journal</string>
+      <key>UTTypeDescription</key>
+      <string>hledger journal</string>
+      <key>UTTypeIconFile</key>
+      <string>ledgeline</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.plain-text</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>journal</string>
+          <string>hledger</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>com.ironcorelabs.ledgeline.ledger</string>
+      <key>UTTypeDescription</key>
+      <string>Ledger journal</string>
+      <key>UTTypeIconFile</key>
+      <string>ledgeline</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.plain-text</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>ledger</string>
+          <string>j</string>
+        </array>
+      </dict>
+    </dict>
+  </array>
 </dict>
 </plist>
