@@ -207,6 +207,31 @@ along in its closure.
 `macDist` never needs them (they get pushed anyway by the cachix-action daemon, which uploads
 everything a job built).
 
+### Pins and `pushFilter` (why the cache kept going empty)
+
+The `zmre` cache is on the free 5 GB plan, which garbage-collects
+**least-recently-used**. That is backwards for us: the crane dependency layer is
+touched by every CI run so it stays warm, while the release artifact nobody has
+downloaded since the last push is evicted first. Two mitigations, both in
+`ci.yml`:
+
+- **Pins.** The `build` job runs `cachix pin` on the consumer-facing outputs
+  (`.#ledgeline` on Linux; `.#macDist` + `.#ledgelineWithSpa` on macOS) with
+  `--keep-revisions 2`. Pinned paths are exempt from GC. The dependency layer is
+  deliberately *not* pinned — it is multi-GB, it churns with every `Cargo.lock`
+  bump, and it is exactly what LRU should be reclaiming.
+- **`pushFilter: '-(source|vendor)$'`** on every `cachix-action` block, so
+  `ledgeline-source` and friends never take up quota. Note the documented
+  caveat: a filtered path can still be uploaded if it is part of another path's
+  closure.
+
+Not a concern: paths already on `cache.nixos.org` (webkitgtk, gtk3, the whole
+GNOME stack) are **filtered out by Cachix automatically** and never counted
+against the 5 GB — that has been the default since 2020.
+
+For the cross-project version of all this, see
+[nix-binary-cache-playbook.md](nix-binary-cache-playbook.md).
+
 ### Verifying a path is actually in the cache
 
 Store paths are content-addressed, so evaluating a revision anywhere reproduces exactly what
