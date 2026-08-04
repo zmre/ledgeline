@@ -88,6 +88,8 @@ jobs:
 
   # Build the single binary — proves the GUI deps resolve (webkitgtk on Linux,
   # system WebKit on macOS). Embeds a placeholder SPA (see docs/development.md).
+  # On macOS this ALSO builds the real distributable (`.#macDist`), because that
+  # — not `.#ledgeline` — is what a Mac user's `nix build` resolves to.
   build:
     name: Build (${{ matrix.os }})
     needs: format-check
@@ -112,6 +114,18 @@ jobs:
       - name: Build ledgeline
         run: nix build -L .#ledgeline
 
+      # `.#ledgeline` is NOT what a Mac user ends up with. On darwin
+      # `packages.default` is `macDist` (Ledgeline.app + a `bin/ledgeline`
+      # symlink into it, with the REAL SvelteKit SPA embedded), reached via
+      # spaNodeModules → spaBuild → ledgelineWithSpa → macApp → macDist. None of
+      # that chain is reachable from `.#ledgeline`, so without this step
+      # `nix build github:zmre/ledgeline` / `nix profile install` on a Mac
+      # recompiles all of it even with our cache configured. `--no-link` leaves
+      # `result` pointing at `.#ledgeline`.
+      - name: Build Ledgeline.app (macOS distributable)
+        if: runner.os == 'macOS'
+        run: nix build -L --no-link .#macDist
+
       # Push the freshly built store paths to our Cachix cache. Only on pushes
       # (not PRs); the in-script guard skips cleanly when the token is absent
       # (forks / before the user sets the secret), so the job never fails.
@@ -124,7 +138,17 @@ jobs:
             echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
             exit 0
           fi
-          nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
+          # The darwin-only attrs are guarded by `lib.optionalAttrs
+          # stdenv.isDarwin` in flake.nix, so only ask for them there.
+          # `ledgelineWithSpa` is listed SEPARATELY from `macDist`: macApp
+          # `cp`s the binary into the bundle rather than symlinking it, so the
+          # binary's own store path is not in macDist's closure — and it is
+          # what `nix run` resolves to on darwin.
+          attrs=(.#ledgeline)
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            attrs+=(.#macDist .#ledgelineWithSpa)
+          fi
+          nix build --json "${attrs[@]}" | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 
   # TypeScript / SvelteKit side: build the SPA and run its unit + type checks.
   # This job deliberately runs vitest with NO live engine, which is what proves

@@ -34,8 +34,11 @@ On Mac, there's a native application bundle.  If there's demand (submit an issue
 **To run it directly in Nix**:
 
 ```sh
-nix run github:zmre/ledgeline -- ~/finance/2026.journal   # opens the desktop window on the specified journal (or don't specify and you can open from inside the app)
+nix run --accept-flake-config github:zmre/ledgeline -- ~/finance/2026.journal   # opens the desktop window on the specified journal (or don't specify and you can open from inside the app)
 ```
+
+`--accept-flake-config` opts you into our [binary cache](#binary-cache-skip-the-build) so this
+downloads rather than compiles. Drop it if you'd rather build everything yourself.
 
 **Install the binary + app** into your Nix profile:
 
@@ -53,6 +56,35 @@ open result/Applications/Ledgeline.app # macOS — real UI embedded
 
 just package-mac                       # macOS: a writable dist/Ledgeline.app to open / drag to /Applications
 ```
+
+### Binary cache (skip the build)
+
+Every push to `main` uploads its build products to
+[`zmre.cachix.org`](https://app.cachix.org/cache/zmre), so the commands above can **download**
+the Rust engine and the wry/tao GUI stack instead of compiling them. `flake.nix` already
+declares the cache and its public key, but Nix ignores substituters coming from a flake it
+doesn't trust — hence `--accept-flake-config` (it will also prompt you to accept
+interactively).
+
+To trust the cache permanently instead, put this in `~/.config/nix/nix.conf`:
+
+```
+extra-substituters = https://zmre.cachix.org
+extra-trusted-public-keys = zmre.cachix.org-1:WIE1U2a16UyaUVr+Wind0JM6pEXBe43PQezdPKoDWLE=
+```
+
+or, on NixOS / nix-darwin, the equivalent `nix.settings.{extra-substituters,extra-trusted-public-keys}`.
+
+> [!NOTE]
+> `substituters` is a trusted setting: on a multi-user Nix install your user has to be in
+> `trusted-users` for either method to take effect. Otherwise Nix prints
+> `ignoring untrusted flake configuration setting 'extra-substituters'` and builds from source
+> — correct, just slow.
+
+CI pushes the Linux and macOS `ledgeline` binaries, the macOS distributable (`.#macDist` →
+`Ledgeline.app`) and the crane dependency layer. Coverage is best-effort — Cachix
+garbage-collects, so an older revision may well have been evicted. None of this is required:
+a cache miss just means you build locally, same as if you'd never configured it.
 
 ## Development (or if you don't have nix)
 

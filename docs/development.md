@@ -189,6 +189,40 @@ Push a build manually:
 nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 ```
 
+### What has to be pushed for a *consumer* to skip the build
+
+`.#ledgeline` alone is not enough, because it is not what everyone resolves to:
+
+| What the user runs | darwin resolves to | linux resolves to |
+| --- | --- | --- |
+| `nix build` / `nix profile install` | `macDist` (→ `macApp` → `ledgelineWithSpa`) | `ledgeline` |
+| `nix run` | `ledgelineWithSpa` | `ledgeline` |
+
+So the `build` job pushes `.#macDist` **and** `.#ledgelineWithSpa` on macOS. They are listed
+separately on purpose: `macApp` `cp`s the binary into `Contents/MacOS/` instead of symlinking
+it, so `ledgelineWithSpa`'s own store path is not a reference of `macDist` and would not ride
+along in its closure.
+
+`spaNodeModules` / `spaBuild` are build-time inputs only — a consumer who substitutes
+`macDist` never needs them (they get pushed anyway by the cachix-action daemon, which uploads
+everything a job built).
+
+### Verifying a path is actually in the cache
+
+Store paths are content-addressed, so evaluating a revision anywhere reproduces exactly what
+CI built — which makes cache coverage checkable without building anything:
+
+```sh
+p=$(nix eval --raw github:zmre/ledgeline/<rev>#packages.x86_64-linux.ledgeline.outPath)
+curl -s -o /dev/null -w '%{http_code}\n' "https://zmre.cachix.org/$(basename "$p" | cut -d- -f1).narinfo"
+# 200 = cached, 404 = a consumer would have to build it
+```
+
+Note that Cachix garbage-collects: a `404` for a path CI demonstrably pushed means it has been
+evicted since, not that the push failed. Check the cache's retention/quota settings at
+[app.cachix.org/cache/zmre](https://app.cachix.org/cache/zmre) before assuming the workflow is
+broken.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push to `main` and on every PR.
@@ -201,7 +235,7 @@ too). Jobs:
 | `format-check` | ubuntu | `nix build -L .#fmt` (runs first) |
 | `clippy` | ubuntu + macos | `nix build -L .#clippy` |
 | `tests` | ubuntu + macos | `nix build -L .#tests` |
-| `build` | ubuntu + macos | `nix build -L .#ledgeline` (+ pushes to Cachix on `main`) |
+| `build` | ubuntu + macos | `nix build -L .#ledgeline`; macOS also builds `.#macDist` (+ pushes to Cachix on `main`) |
 | `spa` | ubuntu | `bun install --frozen-lockfile && bun run build && bun run test:unit && bun run check` |
 
 `clippy`, `tests`, and `build` depend on `format-check` and share the crane
