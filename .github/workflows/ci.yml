@@ -32,6 +32,8 @@ jobs:
           # skipped, but pulls still work. Never fails the job when empty.
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
+          # Don't burn cache quota on source trees (see docs/development.md).
+          pushFilter: '-(source|vendor)$'
 
       - name: cargo fmt --check
         run: nix build -L .#fmt
@@ -57,6 +59,8 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
+          # Don't burn cache quota on source trees (see docs/development.md).
+          pushFilter: '-(source|vendor)$'
 
       - name: Clippy
         run: nix build -L .#clippy
@@ -82,12 +86,16 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
+          # Don't burn cache quota on source trees (see docs/development.md).
+          pushFilter: '-(source|vendor)$'
 
       - name: Tests
         run: nix build -L .#tests
 
   # Build the single binary — proves the GUI deps resolve (webkitgtk on Linux,
   # system WebKit on macOS). Embeds a placeholder SPA (see docs/development.md).
+  # On macOS this ALSO builds the real distributable (`.#macDist`), because that
+  # — not `.#ledgeline` — is what a Mac user's `nix build` resolves to.
   build:
     name: Build (${{ matrix.os }})
     needs: format-check
@@ -108,9 +116,23 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
+          # Don't burn cache quota on source trees (see docs/development.md).
+          pushFilter: '-(source|vendor)$'
 
       - name: Build ledgeline
         run: nix build -L .#ledgeline
+
+      # `.#ledgeline` is NOT what a Mac user ends up with. On darwin
+      # `packages.default` is `macDist` (Ledgeline.app + a `bin/ledgeline`
+      # symlink into it, with the REAL SvelteKit SPA embedded), reached via
+      # spaNodeModules → spaBuild → ledgelineWithSpa → macApp → macDist. None of
+      # that chain is reachable from `.#ledgeline`, so without this step
+      # `nix build github:zmre/ledgeline` / `nix profile install` on a Mac
+      # recompiles all of it even with our cache configured. `--no-link` leaves
+      # `result` pointing at `.#ledgeline`.
+      - name: Build Ledgeline.app (macOS distributable)
+        if: runner.os == 'macOS'
+        run: nix build -L --no-link .#macDist
 
       # Push the freshly built store paths to our Cachix cache. Only on pushes
       # (not PRs); the in-script guard skips cleanly when the token is absent
@@ -124,7 +146,57 @@ jobs:
             echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
             exit 0
           fi
-          nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
+          # The darwin-only attrs are guarded by `lib.optionalAttrs
+          # stdenv.isDarwin` in flake.nix, so only ask for them there.
+          # `ledgelineWithSpa` is listed SEPARATELY from `macDist`: macApp
+          # `cp`s the binary into the bundle rather than symlinking it, so the
+          # binary's own store path is not in macDist's closure — and it is
+          # what `nix run` resolves to on darwin.
+          attrs=(.#ledgeline)
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            attrs+=(.#macDist .#ledgelineWithSpa)
+          fi
+          nix build --json "${attrs[@]}" | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
+
+      # PIN the consumer-facing outputs. The `zmre` cache is on the 5 GB free
+      # plan, which garbage-collects least-recently-USED — and LRU is exactly
+      # backwards for us: the crane dependency layer gets touched by every CI
+      # run so it stays warm, while the release artifact nobody has downloaded
+      # since the last push is first against the wall. That is how a path CI
+      # itself pulled on 2026-07-31 was already a 404 four days later.
+      #
+      # Pinned paths are exempt from GC, so pin the handful of things a USER
+      # resolves to and let everything else be reclaimed. The dependency layer
+      # is deliberately NOT pinned: it is multi-GB, it changes with every
+      # Cargo.lock bump, and it is precisely what LRU *should* be evicting.
+      #
+      # --keep-revisions 2 keeps the previous commit's paths alive alongside the
+      # current ones, so someone who evaluated a moment ago still gets a hit.
+      - name: Pin release artifacts (exempt from Cachix GC)
+        if: github.event_name == 'push'
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping pins."
+            exit 0
+          fi
+          # Derive the system rather than hardcoding it, so this keeps working
+          # if GitHub's runner architectures change under us.
+          sys=$(nix eval --raw --impure --expr builtins.currentSystem)
+          # Pin names are the STABLE identity of "the current release artifact
+          # for this system"; Cachix keeps --keep-revisions of each. They are
+          # prefixed with the project name because this cache is shared with
+          # mbr-markdown-browser.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cachix pin zmre "ledgeline-macdist-$sys" \
+              "$(nix build --no-link --print-out-paths .#macDist)" --keep-revisions 2
+            cachix pin zmre "ledgeline-cli-$sys" \
+              "$(nix build --no-link --print-out-paths .#ledgelineWithSpa)" --keep-revisions 2
+          else
+            cachix pin zmre "ledgeline-$sys" \
+              "$(nix build --no-link --print-out-paths .#ledgeline)" --keep-revisions 2
+          fi
 
   # TypeScript / SvelteKit side: build the SPA and run its unit + type checks.
   # This job deliberately runs vitest with NO live engine, which is what proves
@@ -182,6 +254,8 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
+          # Don't burn cache quota on source trees (see docs/development.md).
+          pushFilter: '-(source|vendor)$'
 
       # Nix, not `cargo build`, so this reuses the same store paths (and Cachix
       # hits) as the `build` job instead of maintaining a second toolchain and
@@ -284,6 +358,8 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
+          # Don't burn cache quota on source trees (see docs/development.md).
+          pushFilter: '-(source|vendor)$'
 
       # --- Ignored advisories ---------------------------------------------
       # RUSTSEC-2026-0194 / RUSTSEC-2026-0195 — quick-xml 0.39.4, two "7.5
