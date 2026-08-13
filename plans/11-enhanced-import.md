@@ -651,6 +651,53 @@ landed on both sides. Each is a contract change, so each is recorded here.
   `Option<String>` and was always a `null`-able field in the code, which the literal above did
   not say.
 
+### Account aliases — a contract addition made after WP-11 landed
+
+Per convention #9, recorded here rather than left as a surprise in the diff. The motivating case
+is a real Morgan Stanley export whose `Account` column says `PW Roth IRA - 3077`; the user's
+workaround was a `source ./x.csv | ./clean.py` line, which this codebase never executes.
+
+Verified against hledger 1.52 (all of it against the binary, none of it from the manual):
+
+- **An `alias` directive in the target journal does not reach the CSV during an import.** The
+  account comes through unmapped. `--alias` does, in both `OLD=NEW` and `/REGEX/=REPL` forms;
+  several compose; `import --dry-run` applies them, so the preview is free.
+- **A plain alias splits at the FIRST `=`** (`alias a = b = c` maps `a` to the account `b = c`);
+  a regex one does not (`alias /a=b/ = c` is a regex containing `=`), and `\/` is an escape
+  inside it, not a terminator.
+- **Neither side is comment-stripped.** `alias a = b ; note` declares the account literally named
+  `b ; note`.
+- **Aliases are positional and file-scoped**: in force from their line to EOF, flowing into
+  anything `include`d after them, never back out, stopped early by `end aliases` (plural only;
+  `end alias` is a parse error). An `end aliases` inside an include kills the parent's aliases for
+  the rest of *that file* and the parent resumes afterwards.
+- **Regex aliases are case-insensitive**, and there is no `/re/i` suffix.
+
+Six contract changes:
+
+- **`Journal` gains `aliases: Vec<AliasDirective>`**, modelled on `AccountDeclaration`, with
+  `regex`, `source_file`, `position` and an `ended` flag. `parse.rs` previously failed the whole
+  journal on an `alias` line, so a user with one could not open Ledgeline at all — and an import
+  cannot write into a journal that will not parse.
+- **They are read, not applied.** Account names stay exactly as written. Reproducing hledger's
+  regex dialect (`regex-tdfa`, POSIX ERE, case-insensitive, `\1` replacements) over every account
+  name in someone's books would be a near-miss silent wrong answer; declining is a visible one.
+  `parse.rs`'s module docs carry the argument, and the Account Aliases tab says so on screen.
+- **`crates/ledgeline-core/src/aliases.rs` (new)** — `forward` (the `--alias` arguments, with a
+  named refusal for every alias that does not get one) and `AliasDoc`, a one-line-wide span
+  editor holding to `rules.rs`'s discipline: splice only the pattern and replacement extents,
+  `verify` or write nothing, present anything unmodelled read-only.
+- **`--alias` goes on every invocation that reads the CSV and no other.** `import_invocation`
+  takes the alias list and `--dry-run` as parameters, so the preview and the write cannot be
+  given different sets. It is deliberately absent from the balance verifications, which read a
+  journal whose accounts are already correct.
+- **`capabilities` gains `aliases`, and `dry-run` gains `aliases: {forwarded, renames} | null`.**
+  The renames are MEASURED — the same import repeated with no `--alias`, diffed — so a silent
+  account rewrite is visible before the commit. Empty renames keep the section hidden.
+- **`GET /api/aliases`, `PUT /api/aliases/{*journalId}` (new)**, with the same
+  revision/409 machinery as the rules editor and one extra guard: the whole journal is re-parsed
+  with the edited text in memory before anything is written.
+
 ## UI behavior
 
 The subnav copies `web/src/lib/reports/ui/ReportTabs.svelte` and the `?tab=` mirroring in

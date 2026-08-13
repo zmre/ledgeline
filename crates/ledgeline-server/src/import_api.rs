@@ -101,6 +101,7 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
+use ledgeline_core::aliases;
 use ledgeline_core::convert::{
     self, ConvertError, ConvertNote, SourceFormat, StatementMeta, Tabular,
 };
@@ -115,6 +116,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::AppState;
+use crate::alias_api::WireAlias;
 use crate::edit_api::json_body;
 use crate::error::AppError;
 use crate::git::{GitStatus, Repo};
@@ -197,6 +199,14 @@ struct WireCapabilities {
     formats: Vec<&'static str>,
     journals: Vec<WireJournal>,
     git: WireGit,
+    /// Every `alias` directive the journal declares, in file order, each saying
+    /// whether it will be forwarded to this import and why not.
+    ///
+    /// Here rather than only on the dry-run because "what is in force" is a
+    /// property of the journal, not of one upload — and because an alias the
+    /// user wrote and Ledgeline refused needs somewhere to be visible even when
+    /// nothing has been dropped on the screen yet.
+    aliases: Vec<WireAlias>,
     /// `false` means no journal is bound to an editor, so nothing here can be
     /// written; the UI renders read-only and says why.
     editable: bool,
@@ -477,8 +487,43 @@ struct WireProposal {
     /// dedup state to drop anything.
     skipped: Option<WireSkipped>,
     balance: Option<WireBalance>,
+    /// What the journal's `alias` directives did to *these* entries, or `null`
+    /// when none is in force. See [`alias_effect`].
+    aliases: Option<WireAliasEffect>,
     /// Targets git reports as modified. Non-empty means `commit` will refuse.
     blocked_by_git: Vec<String>,
+}
+
+/// The account rewrites the forwarded aliases performed on this import.
+///
+/// **Measured, not inferred.** The same dry-run is repeated with no `--alias` at
+/// all and the two proposals are compared posting by posting, so the renames are
+/// hledger's own answer rather than our reimplementation of its regex engine —
+/// which the parser explicitly declines to attempt (see `parse.rs`). It is the
+/// technique [`skipped_by_dedup`] already uses, for the same reason: the only
+/// way to be sure what a subprocess did is to ask it twice.
+///
+/// It costs one extra `import --dry-run`, and only when the journal actually
+/// declares an alias, which almost none do.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireAliasEffect {
+    /// How many aliases were handed to hledger for this import.
+    forwarded: usize,
+    /// The distinct account renames they caused here, in first-seen order.
+    /// **Empty means the aliases matched nothing in this statement**, which is
+    /// the UI's cue to stay quiet.
+    renames: Vec<WireRename>,
+}
+
+/// One account rewrite an alias performed.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireRename {
+    /// The account the rules file produced.
+    from: String,
+    /// The account the import will actually write.
+    to: String,
 }
 
 /// A dry-run hledger refused. `stderr` is rendered verbatim in a `<pre>` — it
@@ -1097,7 +1142,7 @@ fn run(invocation: Invocation, what: &str) -> Result<Output, AppError> {
         .map_err(|error| AppError::Internal(format!("could not {what}: {error}")))
 }
 
-/// `hledger -f JOURNAL import [--dry-run] --rules RULES CSV`.
+/// `hledger [--alias=…]… -f JOURNAL import [--dry-run] --rules RULES CSV`.
 ///
 /// Every path is absolute, which is also what makes them safe as positional
 /// arguments: an absolute path begins with `/` and can never be read as an
@@ -1105,15 +1150,28 @@ fn run(invocation: Invocation, what: &str) -> Result<Output, AppError> {
 ///
 /// `--rules`, not `--rules-file`: the flag was renamed in hledger 1.40, which is
 /// why [`MIN_HLEDGER`](crate::hledger::MIN_HLEDGER) is 1.40.
+///
+/// # `--dry-run` is a parameter, and that is the point
+///
+/// The preview and the write share **one** argv builder, so there is no way for
+/// them to be given different aliases. That matters more than it reads: a
+/// preview that showed `assets:morganstanley:pw-roth-ira` while the commit wrote
+/// `PW Roth IRA - 3077` would be a lie told immediately before the only
+/// irreversible step on the screen. Making the two agree by construction is
+/// stronger than a test asserting that they do — though
+/// `import_endpoints.rs::a_dry_run_and_a_commit_agree_on_aliased_accounts` also
+/// asserts it, against the real binary.
 fn import_invocation(
     hledger: &Hledger,
     journal: &Path,
     rules: &Path,
     csv: &Path,
+    aliases: &[String],
     dry_run: bool,
 ) -> Invocation {
     let invocation = hledger
-        .invoke(["-f".as_ref(), journal.as_os_str()])
+        .invoke(alias_flags(aliases))
+        .args(["-f".as_ref(), journal.as_os_str()])
         .arg("import");
     let invocation = if dry_run {
         invocation.arg("--dry-run")
@@ -1125,6 +1183,27 @@ fn import_invocation(
         .arg(rules)
         .arg(csv)
         .timeout(IMPORT_TIMEOUT)
+}
+
+/// The journal's aliases as hledger options, one `OsString` each.
+///
+/// # Why the joined `--alias=VALUE` spelling
+///
+/// The two-token form works — verified, even for a value beginning with `-` —
+/// but one token cannot be misread as a flag boundary by any option parser,
+/// present or future. It is the same instinct as the absolute-path rule above:
+/// prefer the spelling that has no ambiguity to resolve.
+///
+/// The values are user text on their way to `argv`, so they are `OsString`s
+/// handed to `Command::args` and **never** a shell string; there is no shell
+/// anywhere in this codebase to quote for. `ledgeline_core::aliases::forward`
+/// has already refused any alias carrying a control character or exceeding its
+/// length caps, and bounded how many there may be.
+fn alias_flags(aliases: &[String]) -> Vec<std::ffi::OsString> {
+    aliases
+        .iter()
+        .map(|alias| std::ffi::OsString::from(format!("--alias={alias}")))
+        .collect()
 }
 
 /// How many transactions `text` holds, as our own parser reads it.
@@ -1584,6 +1663,7 @@ pub(crate) async fn capabilities(State(state): State<AppState>) -> Result<Respon
     // Through `compute`: resolving hledger spawns a process and probing git
     // spawns another, which is exactly the blocking work the semaphore and the
     // blocking pool exist for.
+    let aliases = state.clone();
     let Json(body) = compute(move || {
         let prefs = prefs::load();
         let resolved = Hledger::resolve(&prefs);
@@ -1598,6 +1678,10 @@ pub(crate) async fn capabilities(State(state): State<AppState>) -> Result<Respon
                 available: crate::git::git_available(),
                 autocommit: autocommit_enabled(&prefs),
             },
+            // The same builder the alias editor uses, so the two screens cannot
+            // disagree about what is in force — which would make the whole
+            // point of showing it moot.
+            aliases: crate::alias_api::capability_aliases(&aliases),
             editable,
         })
     })
@@ -1662,8 +1746,9 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
     // files. Without a journal there is nothing to score against — which is not
     // an error, just an empty list and a default derived from the upload's name.
     let main = state.source_files().into_iter().next();
+    let aliases = aliases::arguments(&state.snapshot().journal);
     let candidates = match (&main, resolve_hledger()) {
-        (Some(main), Ok(hledger)) => rank_candidates(&hledger, main, &staged, &tabular),
+        (Some(main), Ok(hledger)) => rank_candidates(&hledger, main, &staged, &tabular, &aliases),
         _ => Vec::new(),
     };
 
@@ -1751,6 +1836,7 @@ fn rank_candidates(
     main: &Path,
     staged: &Stage,
     data: &Tabular,
+    aliases: &[String],
 ) -> Vec<WireCandidate> {
     let discovery = rules::discover(main);
     let mut survivors: Vec<(usize, matching::PrefilterPass)> = discovery
@@ -1781,7 +1867,7 @@ fn rank_candidates(
         .take(matching::MAX_SCORED_CANDIDATES)
         .filter_map(|(at, pass)| {
             let found = &discovery.files[at];
-            let json = print_json(hledger, &staged.data(), found.path().as_path())?;
+            let json = print_json(hledger, &staged.data(), found.path().as_path(), aliases)?;
             let expected = pass
                 .expected_commodity
                 .clone()
@@ -1851,15 +1937,32 @@ fn score_value(score: Score) -> f32 {
     score.value()
 }
 
-/// `hledger print -f DATA --rules RULES -O json`, parsed.
+/// `hledger [--alias=…]… print -f DATA --rules RULES -O json`, parsed.
 ///
 /// `None` on any failure — a rules file hledger refuses simply does not become a
 /// candidate, which is the correct outcome and not something to report: the user
 /// asked which of their rules files fits, not for a list of the ones that do not
 /// parse.
-fn print_json(hledger: &Hledger, data: &Path, rules: &Path) -> Option<Value> {
+///
+/// The aliases go on here too, and the rule that puts them here is worth stating
+/// once: **`--alias` goes on every invocation that reads the CSV, and on no
+/// other.** This one reads the CSV, so a candidate's sample accounts are the
+/// accounts the dry-run will propose. Without that the card would advertise
+/// `PW Roth IRA - 3077` and the preview two sections below it would say
+/// `assets:morganstanley:pw-roth-ira`, and the user would have to work out which
+/// of the two was lying.
+///
+/// The invocations that do *not* get them are the balance ones
+/// ([`verify_balance`], [`preflight_assertion`]). Those read a journal, and a
+/// journal's accounts are already the names it was written with — hledger
+/// applies the journal's own `alias` directives when it reads them, exactly as
+/// it always has. Adding `--alias` there would apply the mapping a second time,
+/// and a regex alias broad enough to match its own output would then rewrite an
+/// account that was already correct.
+fn print_json(hledger: &Hledger, data: &Path, rules: &Path, aliases: &[String]) -> Option<Value> {
     let output = hledger
-        .invoke(["print".as_ref(), "-f".as_ref(), data.as_os_str()])
+        .invoke(alias_flags(aliases))
+        .args(["print".as_ref(), "-f".as_ref(), data.as_os_str()])
         .arg("--rules")
         .arg(rules)
         .args(["-O", "json"])
@@ -1965,6 +2068,11 @@ struct Plan {
     /// The destination's bare file name — what the staged copy is named, and what
     /// `.latest.NAME` is keyed to.
     csv_name: String,
+    /// The `--alias` arguments this journal's own `alias` directives become.
+    ///
+    /// Resolved once, here, so the dry-run and the commit cannot be handed
+    /// different sets — see [`import_invocation`].
+    aliases: Vec<String>,
     redactor: Redactor,
 }
 
@@ -1981,6 +2089,7 @@ impl Plan {
         let csv_name = file_name(&destination)
             .ok_or_else(|| unresolved("CSV destination", &request.csv_path))?;
         let hledger = resolve_hledger()?;
+        let aliases = aliases::arguments(&state.snapshot().journal);
 
         let redactor = Redactor::default()
             // hledger echoes its own argv[0] in a usage dump — which is what an
@@ -1998,6 +2107,7 @@ impl Plan {
             rules,
             destination,
             csv_name,
+            aliases,
             redactor,
         })
     }
@@ -2029,7 +2139,14 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
         .map_err(stage_failed)?;
 
     let output = run(
-        import_invocation(&plan.hledger, &plan.journal, &plan.rules, &staged, true),
+        import_invocation(
+            &plan.hledger,
+            &plan.journal,
+            &plan.rules,
+            &staged,
+            &plan.aliases,
+            true,
+        ),
         "run the import preview",
     )?;
     if !output.success() {
@@ -2072,6 +2189,7 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
         status: plan.redactor.apply(&status),
         skipped: skipped_by_dedup(&plan, count)?,
         balance,
+        aliases: alias_effect(&plan, &staged, &entries)?,
         blocked_by_git: if autocommit_enabled(&prefs::load()) {
             blocked_by_git(&plan.targets(request))
         } else {
@@ -2100,7 +2218,14 @@ fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, Ap
         .materialize(RUN_BARE, &plan.csv_name, None)
         .map_err(stage_failed)?;
     let output = run(
-        import_invocation(&plan.hledger, &plan.journal, &plan.rules, &bare, true),
+        import_invocation(
+            &plan.hledger,
+            &plan.journal,
+            &plan.rules,
+            &bare,
+            &plan.aliases,
+            true,
+        ),
         "measure what import de-duplication would skip",
     )?;
     if !output.success() {
@@ -2116,6 +2241,77 @@ fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, Ap
             older_than: marker,
             count: dropped,
         }))
+}
+
+/// Which accounts the forwarded aliases rewrote, measured against a second
+/// dry-run with none.
+///
+/// A silent account rewrite immediately before an irreversible write is exactly
+/// the thing that has to be on the screen, so this answers with hledger's own
+/// before-and-after rather than with our idea of what its regexes do.
+///
+/// The two runs see the same file, the same rules and the same `.latest`, so
+/// their proposals are the same transactions in the same order and the postings
+/// line up index for index. A shape mismatch (which would mean the aliases
+/// changed how many entries there are — they cannot) answers with no renames
+/// rather than with a guess.
+///
+/// `None` when no alias is in force: there is nothing to say, and no subprocess
+/// is spawned to say it.
+fn alias_effect(
+    plan: &Plan,
+    staged: &Path,
+    entries: &str,
+) -> Result<Option<WireAliasEffect>, AppError> {
+    if plan.aliases.is_empty() {
+        return Ok(None);
+    }
+    let output = run(
+        import_invocation(&plan.hledger, &plan.journal, &plan.rules, staged, &[], true),
+        "measure what the journal's aliases rewrite",
+    )?;
+    let renames = if output.success() {
+        renames_between(&output.stdout_lossy(), entries)
+    } else {
+        Vec::new()
+    };
+    Ok(Some(WireAliasEffect {
+        forwarded: plan.aliases.len(),
+        renames: renames
+            .into_iter()
+            .map(|(from, to)| WireRename {
+                from: plan.redactor.apply(&from),
+                to: plan.redactor.apply(&to),
+            })
+            .collect(),
+    }))
+}
+
+/// The distinct `(before, after)` account pairs between two proposals of the
+/// same import, in first-seen order.
+///
+/// Our own parser reads both, so this never scrapes hledger's layout — the same
+/// decision [`count_transactions`] makes. A text that will not parse yields
+/// nothing, because a rename list derived from half a parse is worse than none.
+fn renames_between(before: &str, after: &str) -> Vec<(String, String)> {
+    /// Enough to see what is happening, few enough to render. A statement with
+    /// more distinct accounts than this has a rules file problem, not an alias
+    /// one.
+    const MAX_RENAMES: usize = 50;
+    let read = |text: &str| ledgeline_core::parse_journal(text, "proposed").ok();
+    let (Some(before), Some(after)) = (read(before), read(after)) else {
+        return Vec::new();
+    };
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for (plain, aliased) in before.transactions.iter().zip(after.transactions.iter()) {
+        for (plain, aliased) in plain.postings.iter().zip(aliased.postings.iter()) {
+            let pair = (plain.account.0.clone(), aliased.account.0.clone());
+            if pair.0 != pair.1 && !seen.contains(&pair) && seen.len() < MAX_RENAMES {
+                seen.push(pair);
+            }
+        }
+    }
+    seen
 }
 
 /// A `500` for a staging-area I/O failure. Only the [`std::io::ErrorKind`] is
@@ -2196,6 +2392,7 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
             &plan.journal,
             &plan.rules,
             &plan.destination,
+            &plan.aliases,
             false,
         ),
         "run the import",
@@ -2550,7 +2747,14 @@ fn preflight_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), A
         )
         .map_err(stage_failed)?;
     let output = run(
-        import_invocation(&plan.hledger, &plan.journal, &plan.rules, &staged, true),
+        import_invocation(
+            &plan.hledger,
+            &plan.journal,
+            &plan.rules,
+            &staged,
+            &plan.aliases,
+            true,
+        ),
         "preview the import",
     )?;
     // A dry-run hledger refuses means the real import is about to refuse for the

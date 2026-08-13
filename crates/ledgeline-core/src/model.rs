@@ -230,6 +230,48 @@ pub struct AccountDeclaration {
     pub position: SourcePos,
 }
 
+/// An `alias OLD = NEW` / `alias /REGEX/ = REPLACEMENT` directive.
+///
+/// Recorded exactly like [`AccountDeclaration`] — read, modeled and carried, but
+/// **not applied**. Ledgeline does not rewrite account names when it reads a
+/// journal; hledger does. See [`crate::aliases`] for that decision in full, and
+/// for the format-preserving editor over these lines.
+///
+/// The one thing this type is *for* is the import pipeline: hledger's `alias`
+/// directive does not reach a CSV during `hledger import` (verified against
+/// 1.52 — the account came through unmapped), but `--alias` does, so the server
+/// forwards these on every invocation that reads a statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasDirective {
+    /// The left-hand side, whitespace-trimmed. For [`regex`](Self::regex) this is
+    /// the pattern **without** its surrounding slashes.
+    pub pattern: String,
+    /// The right-hand side, whitespace-trimmed and otherwise verbatim to end of
+    /// line.
+    ///
+    /// There is deliberately no comment stripping. `alias a = b ; note` declares
+    /// the account literally named `b ; note` — verified against hledger 1.52 —
+    /// so treating the `;` as a comment would record a mapping the file does not
+    /// contain.
+    pub replacement: String,
+    /// Whether the left-hand side was written `/REGEX/`.
+    pub regex: bool,
+    /// The resolved file this was declared in, like [`Transaction::source_file`].
+    pub source_file: PathBuf,
+    /// Position of the `alias` keyword (column is always 1: a directive is
+    /// top-level).
+    pub position: SourcePos,
+    /// A later `end aliases` **in the same file** closed this alias's scope.
+    ///
+    /// hledger's aliases are positional and file-scoped: they apply from their
+    /// line to the end of their file (flowing into anything `include`d after
+    /// them, never back out), and `end aliases` stops them early. An ended alias
+    /// is still parsed, listed and editable — it is simply never forwarded to
+    /// `--alias`, because `--alias` is global and the user wrote down where this
+    /// one stops. See [`Journal::aliases_in_force`].
+    pub ended: bool,
+}
+
 /// The period of a `~` periodic transaction rule.
 ///
 /// Only hledger's standard fixed intervals are modeled. Richer period
@@ -300,6 +342,9 @@ pub struct Journal {
     pub periodic_transactions: Vec<PeriodicTransaction>,
     /// Account declarations in file order.
     pub accounts: Vec<AccountDeclaration>,
+    /// `alias` directives in file order. Recorded, never applied — see
+    /// [`AliasDirective`].
+    pub aliases: Vec<AliasDirective>,
     /// Canonical display style per commodity (from `commodity` directives or
     /// first occurrence).
     pub commodity_styles: Vec<(Commodity, AmountStyle)>,
@@ -329,5 +374,22 @@ impl Journal {
             .iter()
             .find(|decl| decl.name.0 == account)
             .map(|decl| decl.tags.as_slice())
+    }
+
+    /// The aliases still in force where a new entry would be appended, in file
+    /// order — i.e. every one whose scope was not closed by an `end aliases`.
+    ///
+    /// This is the set the import pipeline forwards as `--alias`, and the rule
+    /// is chosen to match what the user would get by *typing* the transaction
+    /// instead of importing it: `hledger import` appends, and an alias in force
+    /// at the append point is one that would have applied to it.
+    ///
+    /// Scope is honoured per file only as far as `end aliases`. Ledgeline does
+    /// **not** work out whether an alias declared in one file would reach the
+    /// particular file an import writes to, because `--alias` has no per-file
+    /// form to express that with — so the set is journal-wide, and the UI shows
+    /// it rather than applying it invisibly.
+    pub fn aliases_in_force(&self) -> impl Iterator<Item = &AliasDirective> {
+        self.aliases.iter().filter(|alias| !alias.ended)
     }
 }

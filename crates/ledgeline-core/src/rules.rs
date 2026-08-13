@@ -426,7 +426,7 @@ impl Newline {
     /// Only the first is consulted: a mixed file has no single right answer, and
     /// picking the majority would make the choice depend on content that a later
     /// edit can change.
-    fn detect(text: &str) -> Self {
+    pub(crate) fn detect(text: &str) -> Self {
         match text.find('\n') {
             Some(index) if text[..index].ends_with('\r') => Self::CrLf,
             _ => Self::Lf,

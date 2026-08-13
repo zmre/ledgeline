@@ -1212,6 +1212,205 @@ async fn a_commit_writes_one_csv_one_journal_and_nothing_else() {
     assert!(journal.contains("2026-01-20 LANDLORD LLC"), "{journal}");
 }
 
+// ---------------------------------------------------------------------------
+// Aliases — the preview and the write must agree
+// ---------------------------------------------------------------------------
+
+/// The alias corpus: a statement whose `Account` column holds bank-speak, and a
+/// journal that declares the mapping for it.
+///
+/// `%account:cash` in the rules file is the point of the fixture — a PREFIX
+/// alias has to rewrite the base and leave the `:cash` leaf alone, or every
+/// account would need one alias per subaccount.
+const ALIAS_STATEMENT: &str = "Date,Account,Description,Amount\n\
+                               01/15/2026,PW Roth IRA - 3077,DIVIDEND REINVEST,120.00\n\
+                               01/16/2026,PW Roth IRA - 3077,ADVISORY FEE,-18.75\n";
+
+/// The account a bare import would produce, before any alias touches it.
+const BANK_SPEAK: &str = "PW Roth IRA - 3077:cash";
+
+/// The account the alias maps it to.
+const MAPPED: &str = "assets:morganstanley:pw-roth-ira:cash";
+
+/// A tree whose journal declares the alias, with the statement-account rules
+/// file beside it.
+fn alias_tree() -> Tree {
+    let tree = Tree::bare();
+    std::fs::write(
+        tree.path("main.journal"),
+        format!("alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\n\n{OPENING}"),
+    )
+    .expect("write journal");
+    std::fs::copy(
+        fixtures_dir().join("import/match/statement-account.csv.rules"),
+        tree.path("import/bank.csv.rules"),
+    )
+    .expect("copy the rules fixture");
+    let state =
+        AppState::from_journal_path(tree.path("main.journal")).expect("the scratch journal opens");
+    Tree {
+        dir: tree.dir,
+        state,
+    }
+}
+
+/// **The one that matters.** A journal `alias` is forwarded as `--alias`, and
+/// the DRY RUN and the COMMIT produce the same account names.
+///
+/// A preview that disagreed with the write would be a lie told immediately
+/// before the only irreversible step on this screen, and it is the exact failure
+/// this whole feature could plausibly have: the two are separate hledger
+/// invocations, so nothing but care keeps their arguments identical. (Care, and
+/// the fact that `import_invocation` is one function with a `dry_run` flag —
+/// but this asserts the behaviour rather than the implementation.)
+///
+/// It also pins the two hledger facts the design rests on, in one run: an alias
+/// directive in the target journal does **not** reach the CSV by itself, and a
+/// prefix alias leaves the `:cash` leaf intact.
+#[tokio::test]
+async fn a_dry_run_and_a_commit_agree_on_aliased_accounts() {
+    require_hledger!();
+    let tree = alias_tree();
+
+    // The alias is advertised as in force before anything is dropped.
+    let (_, capabilities) = get(&tree, "/api/import/capabilities").await;
+    assert_eq!(capabilities["aliases"][0]["forwarded"], json!(true));
+    assert_eq!(
+        capabilities["aliases"][0]["replacement"],
+        json!("assets:morganstanley:pw-roth-ira")
+    );
+
+    let (status, staged) = upload(&tree, "bank.csv", ALIAS_STATEMENT.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+
+    // The candidate sample already shows the MAPPED name, because `print` reads
+    // the CSV and so gets the aliases too. A card advertising the bank's words
+    // beside a preview showing ours would make the user guess which was true.
+    let sample = staged["candidates"][0]["sample"].to_string();
+    assert!(sample.contains(MAPPED), "{sample}");
+    assert!(!sample.contains(BANK_SPEAK), "{sample}");
+
+    // The dry run.
+    let (status, preview) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    let entries = preview["entries"].as_str().expect("entries").to_string();
+    assert!(entries.contains(MAPPED), "{entries}");
+    assert!(
+        !entries.contains(BANK_SPEAK),
+        "the alias must have been applied: {entries}"
+    );
+
+    // …and it says so, measured rather than asserted: the same import run with
+    // no `--alias` at all, diffed against this one.
+    assert_eq!(preview["aliases"]["forwarded"], json!(1));
+    assert_eq!(
+        preview["aliases"]["renames"],
+        json!([{"from": BANK_SPEAK, "to": MAPPED}]),
+        "the rewrite must be visible BEFORE the user commits"
+    );
+
+    // The commit.
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["imported"], json!(2));
+
+    // The proof: what was written is what was previewed.
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    let written: Vec<&str> = journal
+        .lines()
+        .filter(|line| line.contains("PW Roth") || line.contains("morganstanley"))
+        .collect();
+    assert!(
+        written.iter().any(|line| line.contains(MAPPED)),
+        "the commit must write the MAPPED name: {journal}"
+    );
+    assert!(
+        !journal.contains(&format!("    {BANK_SPEAK}")),
+        "the commit must not write the bank's own words as an account: {journal}"
+    );
+    for line in entries.lines().filter(|line| line.contains(MAPPED)) {
+        assert!(
+            journal.contains(line.trim()),
+            "the preview line {line:?} is not in the journal:\n{journal}"
+        );
+    }
+    // And the prefix alias left the leaf alone, rather than swallowing it.
+    assert!(journal.contains(":pw-roth-ira:cash"), "{journal}");
+}
+
+/// Without the forwarding this feature adds, the alias does nothing: hledger's
+/// own `import` never applies a target journal's `alias` to the CSV it is
+/// reading. Pinned directly, because the entire design rests on it and it is the
+/// sort of thing a future hledger could change.
+#[tokio::test]
+async fn an_alias_directive_alone_does_not_reach_the_csv() {
+    require_hledger!();
+    let tree = alias_tree();
+    let hledger = resolve_hledger();
+    let output = hledger
+        .invoke(["-f".as_ref(), tree.path("main.journal").as_os_str()])
+        .args(["import", "--dry-run", "--rules"])
+        .arg(tree.path("import/bank.csv.rules"))
+        .arg({
+            let csv = tree.path("import/bank.csv");
+            std::fs::write(&csv, ALIAS_STATEMENT).expect("write csv");
+            csv
+        })
+        .run()
+        .expect("hledger runs");
+    let proposed = output.stdout_lossy();
+    assert!(
+        proposed.contains(BANK_SPEAK),
+        "hledger must still propose the UNMAPPED account, or this feature is unnecessary:\n\
+         {proposed}"
+    );
+    assert!(!proposed.contains(MAPPED), "{proposed}");
+}
+
+/// An `end aliases` is a written instruction about where a mapping stops, and
+/// `--alias` is global — so the alias is listed, and deliberately not used.
+#[tokio::test]
+async fn a_scoped_alias_is_not_forwarded_to_the_import() {
+    require_hledger!();
+    let tree = alias_tree();
+    std::fs::write(
+        tree.path("main.journal"),
+        format!(
+            "alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\nend aliases\n\n{OPENING}"
+        ),
+    )
+    .expect("write journal");
+    let tree = Tree {
+        state: AppState::from_journal_path(tree.path("main.journal")).expect("journal opens"),
+        dir: tree.dir,
+    };
+
+    let (_, staged) = upload(&tree, "bank.csv", ALIAS_STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let (status, preview) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    let entries = preview["entries"].as_str().expect("entries");
+    assert!(entries.contains(BANK_SPEAK), "{entries}");
+    assert_eq!(
+        preview["aliases"],
+        json!(null),
+        "no alias is in force, so there is nothing to report and no second run to make it with"
+    );
+}
+
 /// A statement balance, when asked for, is written in the `hledger close
 /// --assert` shape — and only after hledger itself has agreed it holds. A
 /// balance that does not reconcile is refused rather than cemented into the

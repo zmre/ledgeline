@@ -36,6 +36,7 @@
 //! router WITHOUT any of it, for the in-process test harnesses only — read the
 //! threat model on [`security`] before putting either on a real socket.
 
+mod alias_api;
 mod edit_api;
 mod error;
 mod git;
@@ -566,6 +567,16 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             "/api/prefs",
             get(import_api::prefs_get).put(import_api::prefs_put),
         )
+        // Account aliases (enhanced imports): the mapping table an import
+        // forwards to `hledger --alias`, listed and edited in place.
+        //
+        // THE SAME PLACEMENT TRAP, and the worst instance of it in the file:
+        // `PUT /api/aliases/{*id}` rewrites a line of the user's JOURNAL, which
+        // is the most valuable file this application touches. Below the
+        // `route_layer` it would do that unauthenticated.
+        // `alias_endpoints.rs::every_alias_route_requires_the_token` pins the 401.
+        .route("/api/aliases", get(alias_api::index))
+        .route("/api/aliases/{*id}", axum::routing::put(alias_api::save))
         // Token-gate exactly the routes registered above. `route_layer` skips
         // the fallback, which is what lets the browser fetch the shell (and the
         // token inside it) before it has any credential to present.

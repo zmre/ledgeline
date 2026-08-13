@@ -1,10 +1,12 @@
 # Imports
 
-Two surfaces behind one nav item, each with its own tab:
+Three surfaces behind one nav item, each with its own tab:
 
 - **New Transactions** — drop a statement file, convert it to CSV, match it against your rules
   files, run `hledger import`, and check the result before anything is written.
 - **Edit Rules** — find, read, present and edit hledger CSV import rules files (`*.rules`).
+- **Account Aliases** — the `alias` directives in your journal, and the mapping table an import
+  hands to `hledger --alias`. See § Account aliases.
 
 Rules-file scope: **discover, present, edit, save.** Still not in scope: generating a rules file
 from a CSV, and writing a chosen category back as a new `if` rule. The model below is shaped so
@@ -28,7 +30,9 @@ why.
 | `crates/ledgeline-core/src/convert/` | Statement preprocessors: `ofx`, `spreadsheet`, `delimited`, shared `encoding` |
 | `crates/ledgeline-core/src/sort.rs` | Format-preserving date sort of a journal file |
 | `crates/ledgeline-core/src/journals.rs` | Ranking candidate target journals, by content only |
+| `crates/ledgeline-core/src/aliases.rs` | `alias` directives: forwarding them to `--alias`, and the one-line-wide span editor |
 | `crates/ledgeline-server/src/rules_api.rs` | `/api/rules`, `/api/rules/{*id}`, `/api/rules-preview/{*id}` |
+| `crates/ledgeline-server/src/alias_api.rs` | `/api/aliases`, `/api/aliases/{*journalId}` |
 | `crates/ledgeline-server/src/{hledger,git,prefs}.rs` | Subprocess invocation, the git safety net, the preferences store |
 | `web/src/lib/imports/` | Pure form model, reorder, date-format catalogue, store, UI |
 | `fixtures/rules/`, `fixtures/import/` | The corpora. See each `README.md` — they explain what every fixture is *for* |
@@ -110,6 +114,103 @@ Verified against hledger 1.52's `RulesReader.hs`, not just the manual:
 An `if` **table**'s extent is terminated by a blank line, so when something is placed after a table
 that ran to EOF, the renderer supplies that blank line. Without it the new rule would be read back as
 another table row.
+
+## Account aliases
+
+A statement's account column is frequently the bank's own words. A real Morgan Stanley export
+says `PW Roth IRA - 3077` where the journal says `assets:morganstanley:pw-roth-ira`, and a rules
+file that interpolates the column (`account1 %acct`) writes the bank's words straight into the
+ledger. The usual workaround is a `source ./x.csv | ./clean.py` line adding a mapped column —
+which this codebase **will never run** (see § Security). So the mapping is done natively instead.
+
+### The finding this rests on
+
+Verified against hledger 1.52, in both directions:
+
+- An `alias` directive sitting in the target journal **does not reach the CSV** during
+  `hledger import`. The account comes through unmapped.
+- `--alias` **does**, in both `OLD=NEW` and `/REGEX/=REPL` forms; several compose; and
+  `import --dry-run` applies them too, so the preview shows the final names for free.
+
+So Ledgeline reads the journal's own `alias` directives and hands them to hledger as `--alias`.
+The mapping is one the user already wrote down; the only thing added is delivery.
+
+Column interpolation composes with it, which is what keeps the rules file small: with
+`account1 %acct:cash`, a **prefix** alias rewrites the base and leaves `:cash` intact, so one
+alias covers every subaccount rather than needing one per account × type.
+
+### Where the flags go, and where they do not
+
+> **`--alias` goes on every invocation that reads the CSV, and on no other.**
+
+That is `import` (dry-run, the dedup measurement, and the real commit — all one argv builder,
+`import_invocation`, with `--dry-run` as a parameter so the preview and the write **cannot** be
+given different aliases) and the candidate-scoring `print`, so a rules card's sample accounts are
+the accounts the dry-run will propose.
+
+It is deliberately **not** on the balance verifications. Those read a journal, and a journal's
+accounts are already the names it was written with — hledger applies the journal's own `alias`
+directives when reading, as it always has. Adding `--alias` there would apply the mapping twice,
+and a regex alias broad enough to match its own output would rewrite an account that was correct.
+
+### Scope
+
+hledger's aliases are positional and file-scoped: in force from their line to the end of their
+file, flowing into anything `include`d after them, never back out, and stopped early by
+`end aliases`. All three were checked against the binary.
+
+`--alias` is global and has no way to express any of that, so Ledgeline forwards **every alias
+not closed by an `end aliases` in its own file** — the set in force where an import appends. An
+alias the user explicitly bounded is listed, is editable, and is never forwarded, with the reason
+on screen. Which file an alias is in does not change whether it is forwarded; that is a
+simplification, and the mitigation is that the whole set is shown rather than applied invisibly.
+
+### Ledgeline reads aliases; it does not apply them
+
+`Journal.aliases` is populated and `Journal` account names are left exactly as written. This is a
+deliberate narrowing of `parse.rs`'s "reject rather than misparse" rule and it is argued at
+length in that module's docs. In short: until now an `alias` line failed the **whole** journal,
+so a user who has one could not open their books here at all — and an import cannot write into a
+journal that will not parse. Applying the `/REGEX/` form would mean reproducing hledger's regex
+dialect (Haskell `regex-tdfa`, POSIX ERE, case-insensitive, `\1` in the replacement) over every
+account name in someone's books, and Rust's `regex` crate is a different dialect. A near-miss
+would be a silent wrong answer; declining is a visible one. The Account Aliases tab says so in as
+many words, and a test pins the sentence.
+
+### What the editor refuses to model
+
+Same discipline as the rules editor, one line wide. `AliasDoc` splices **only** the pattern and
+replacement extents of the line being changed, so the `alias` keyword, the `=`, and every space
+between them are re-emitted verbatim and a column-aligned block stays aligned with no alignment
+code. `verify` then re-renders, re-parses, and requires every unedited alias line back
+byte-identical; the server adds a whole-journal re-parse with the edited text in memory, and only
+then writes.
+
+A line it cannot promise to rewrite is presented **read-only** with the reason, exactly as an
+unclassified rules construct is:
+
+| Lock | Why |
+| --- | --- |
+| `commentLike` | A `;` or `#` on the line. `alias a = b ; note` declares the account **literally named** `b ; note` — hledger does not treat it as a comment (verified). Rewriting would cement a reading its author almost certainly did not intend. |
+| `empty` | An empty pattern or replacement: no separator to re-emit, and no mapping. |
+| `delimiter` | `=` inside a plain pattern (hledger splits at the first one, so the line does not say what it appears to) or `\/` inside a regex one. Re-escaping is a guess. |
+| `control` / `tooLong` | A byte this module will not write, or too many of them. |
+
+Reordering is not offered at all: aliases are positional, so a reorder is a semantic change
+wearing a cosmetic's clothes. An inserted alias goes immediately after the file's last alias
+line — the furthest-forward position that is provably still in force where an import appends and
+provably unable to change what anything already in the file means — or at EOF when there is none,
+or when an `end aliases` would otherwise swallow it.
+
+### What the user sees before committing
+
+A silent account rewrite immediately before an irreversible write is exactly what must not
+happen, so the dry run reports the renames — **measured**, not inferred. The engine repeats the
+same import with no `--alias` at all and diffs the two proposals, so the before/after pairs are
+hledger's own answer rather than our reimplementation of its regexes. It is the technique
+`skipped_by_dedup` already uses, and it costs one extra subprocess only when the journal declares
+an alias. An empty rename list means the aliases matched nothing in this statement, and the
+section stays hidden.
 
 ## Security
 

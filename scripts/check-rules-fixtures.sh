@@ -86,8 +86,11 @@ check() {
     fi
 }
 
-# The two correct pairs, driven from their own CSV.
-for csv in "$MATCH"/checking.csv "$MATCH"/creditcard.csv; do
+# The correct pairs, driven from their own CSV. `statement-account.csv` is the
+# alias corpus: its `account1` interpolates a column of bank-speak, which is a
+# valid rules file producing a deliberately unusable account name until an
+# `--alias` maps it.
+for csv in "$MATCH"/checking.csv "$MATCH"/creditcard.csv "$MATCH"/statement-account.csv; do
     check "$csv" "$csv.rules" "$csv"
 done
 

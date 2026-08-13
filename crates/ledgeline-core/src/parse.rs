@@ -24,9 +24,29 @@
 //! `Y` sets the default year for yearless dates; every transaction/`P` date is
 //! normalized to ISO `YYYY-MM-DD` (accepting `-`/`/`/`.` separators) and
 //! validated against the calendar, leap years included. Directives that would
-//! silently change results if ignored (`alias`, `apply account`, and `D`
-//! default-commodity) are still rejected with a clear error rather than
-//! misparsed.
+//! silently change results if ignored (`apply account`, and anything else
+//! unrecognized) are still rejected with a clear error rather than misparsed.
+//!
+//! # `alias` is read but NOT applied
+//!
+//! `alias`/`end aliases` are parsed into [`model::AliasDirective`]s on
+//! `Journal.aliases`, in file order, with their scope resolved — and that is
+//! all. Ledgeline does not rewrite account names when it reads a journal.
+//!
+//! This is a narrowing of the rule above, made deliberately and for two reasons.
+//! The first is that until now an `alias` line failed the WHOLE journal, so a
+//! user who has one could not open their books here at all — and the import
+//! pipeline, which is the thing that needs these directives, cannot import into
+//! a journal that will not parse. The second is that applying the `/REGEX/` form
+//! means reproducing hledger's regex dialect (Haskell `regex-tdfa`, POSIX ERE,
+//! case-insensitive, `\1` backreferences in the replacement) over every account
+//! name in someone's books. Rust's `regex` crate is a different dialect with
+//! different replacement syntax and no backtracking, so a near-miss
+//! reimplementation would be exactly the silent wrong answer this parser refuses
+//! elsewhere. Declining to apply is visible — the account tree shows the names
+//! as written — where a subtly different regex engine would not be.
+//!
+//! See [`crate::aliases`] for what is done with them instead.
 //!
 //! # What is an error, and what is a diagnostic
 //!
@@ -47,9 +67,10 @@
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{
-    AccountDeclaration, AccountName, Amount, AmountStyle, BalanceAssertion, Commodity,
-    CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr, PeriodicTransaction, Posting,
-    PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
+    AccountDeclaration, AccountName, AliasDirective, Amount, AmountStyle, BalanceAssertion,
+    Commodity, CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr,
+    PeriodicTransaction, Posting, PostingType, PriceDirective, SourcePos, Status, Tindex,
+    Transaction,
 };
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
@@ -140,6 +161,15 @@ struct Ctx {
     commodity_styles: Vec<(Commodity, AmountStyle)>,
     commodity_tags: Vec<(Commodity, Vec<(String, String)>)>,
     accounts: Vec<AccountDeclaration>,
+    aliases: Vec<AliasDirective>,
+    /// Indices into [`Self::aliases`] of the aliases in force **right here**.
+    ///
+    /// hledger's aliases are positional and file-scoped, so this is a stack
+    /// discipline rather than a set: an `include` inherits the current scope
+    /// (aliases flow inward), and the scope is restored when that file returns
+    /// (they never flow back out). `end aliases` clears it. Verified against
+    /// hledger 1.52 in all three directions.
+    alias_scope: Vec<usize>,
     prices: Vec<PriceDirective>,
     transactions: Vec<Transaction>,
     periodic_transactions: Vec<PeriodicTransaction>,
@@ -171,6 +201,8 @@ impl Ctx {
             commodity_styles: Vec::new(),
             commodity_tags: Vec::new(),
             accounts: Vec::new(),
+            aliases: Vec::new(),
+            alias_scope: Vec::new(),
             prices: Vec::new(),
             transactions: Vec::new(),
             periodic_transactions: Vec::new(),
@@ -189,6 +221,7 @@ impl Ctx {
             transactions: self.transactions,
             periodic_transactions: self.periodic_transactions,
             accounts: self.accounts,
+            aliases: self.aliases,
             commodity_styles: self.commodity_styles,
             commodity_tags: self.commodity_tags,
             prices: self.prices,
@@ -394,9 +427,29 @@ fn parse_source(
                 // ancestor chain; pop unconditionally to keep the stack accurate
                 // if the caller ever recovers from the error.
                 ctx.include_stack.push(source_file.clone());
+                // Aliases flow INTO an include and never back out (verified
+                // against hledger 1.52), so the nested parse inherits this
+                // scope and the parent's is restored whatever it did with it —
+                // including an `end aliases`, which kills the parent's aliases
+                // only within the child.
+                let outer_scope = ctx.alias_scope.clone();
                 let nested = parse_source(&included, &path.to_string_lossy(), ctx, overrides);
+                ctx.alias_scope = outer_scope;
                 ctx.include_stack.pop();
                 nested?;
+            }
+            "alias" => {
+                let alias = parse_alias_directive(trimmed, line_no, &source_file)
+                    .map_err(|e| locate(source_name, line_no, line, e))?;
+                ctx.alias_scope.push(ctx.aliases.len());
+                ctx.aliases.push(alias);
+            }
+            // `end aliases` — and nothing else. `end apply account` and any
+            // other `end` form stays an unsupported directive, so a construct
+            // whose effect we do not model still fails loudly.
+            "end" => {
+                end_aliases_keyword(trimmed).map_err(|e| locate(source_name, line_no, line, e))?;
+                close_alias_scope(ctx, &source_file);
             }
             // Declarations with no effect on transaction parsing.
             "payee" | "tag" => {}
@@ -489,6 +542,112 @@ fn parse_account_directive(line: &str, line_no: u32) -> Result<AccountDeclaratio
             column: 1,
         },
     })
+}
+
+/// Parse an `alias OLD = NEW` or `alias /REGEX/ = REPLACEMENT` directive.
+///
+/// Both forms are hledger's, and the split rules below are the binary's, checked
+/// against hledger 1.52 rather than read off the manual:
+///
+/// - **The plain form splits at the FIRST `=`.** `alias a = b = c` maps `a` to
+///   the account literally named `b = c`.
+/// - **The regex form does NOT.** `alias /a=b/ = c` is a regex containing an
+///   equals sign; the closing delimiter is the first unescaped `/`, and only
+///   after it does the `=` separate the replacement. `alias /a\/b/ = c` really
+///   does match the account `a/b`, so `\/` is an escape, not a terminator.
+/// - **Both sides are whitespace-trimmed, and NEITHER is comment-stripped.**
+///   `alias a = b ; note` declares the account `b ; note`.
+/// - **A line with no `=` is a hard error in hledger**, so it is one here.
+///   Accepting it would let a journal hledger refuses open here and report
+///   numbers hledger never would.
+///
+/// An empty pattern or replacement is *not* rejected: hledger takes them, and
+/// `parse` refusing a file hledger reads is the failure this parser cares most
+/// about. Such an alias is simply never forwarded — see
+/// [`crate::aliases::forward`].
+fn parse_alias_directive(
+    line: &str,
+    line_no: u32,
+    source_file: &Path,
+) -> Result<AliasDirective, ParseError> {
+    let malformed = || ParseError::MalformedDirective(line.to_string());
+    let after = line
+        .strip_prefix("alias")
+        .ok_or_else(malformed)?
+        .trim_start();
+    let (pattern, replacement, regex) = match after.strip_prefix('/') {
+        Some(rest) => {
+            let close = unescaped_slash(rest).ok_or_else(malformed)?;
+            let value = rest[close + 1..]
+                .trim_start()
+                .strip_prefix('=')
+                .ok_or_else(malformed)?;
+            (&rest[..close], value, true)
+        }
+        None => {
+            let (name, value) = after.split_once('=').ok_or_else(malformed)?;
+            (name, value, false)
+        }
+    };
+    Ok(AliasDirective {
+        pattern: pattern.trim().to_string(),
+        replacement: replacement.trim().to_string(),
+        regex,
+        source_file: source_file.to_path_buf(),
+        position: SourcePos {
+            line: line_no,
+            column: 1,
+        },
+        ended: false,
+    })
+}
+
+/// The byte offset of the first `/` in `text` that is not preceded by a
+/// backslash — a regex alias's closing delimiter.
+pub(crate) fn unescaped_slash(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            // Skip the escaped character whatever it is, so `\\/` closes and
+            // `\/` does not.
+            b'\\' => i += 2,
+            b'/' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Accept exactly `end aliases`, with an optional trailing comment.
+///
+/// hledger 1.52 rejects the singular `end alias` and accepts `end aliases ; x`;
+/// both were checked against the binary.
+fn end_aliases_keyword(line: &str) -> Result<(), ParseError> {
+    let (main, _comment) = split_comment(line);
+    let mut tokens = main.split_whitespace();
+    match (tokens.next(), tokens.next(), tokens.next()) {
+        (Some("end"), Some("aliases"), None) => Ok(()),
+        // Anything else beginning `end` is a directive we do not model, and it
+        // is reported as one rather than silently ignored.
+        _ => Err(ParseError::UnsupportedDirective("end".to_string())),
+    }
+}
+
+/// Apply an `end aliases`: every alias in force is out of scope from here.
+///
+/// Only the ones declared in **this** file are marked
+/// [`ended`](AliasDirective::ended). An inherited alias from an including file
+/// is merely out of scope for the rest of this file — it resumes in its own file
+/// after the `include` returns, which the caller restores.
+fn close_alias_scope(ctx: &mut Ctx, source_file: &Path) {
+    for index in ctx.alias_scope.drain(..) {
+        if let Some(alias) = ctx.aliases.get_mut(index)
+            && alias.source_file == source_file
+        {
+            alias.ended = true;
+        }
+    }
 }
 
 /// Parse a `commodity` directive into its commodity, optional style (absent for
@@ -2792,6 +2951,139 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("t.journal:1"), "{msg}");
         assert!(msg.contains("unsupported directive: 'apply'"), "{msg}");
+    }
+
+    #[test]
+    fn alias_directives_parse_in_both_forms_and_keep_their_order() {
+        // Every split rule here was checked against hledger 1.52, including the
+        // two that look wrong: a plain alias splits at the FIRST `=`, and a
+        // regex one does not split at an `=` inside its slashes.
+        let text = concat!(
+            "alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\n",
+            "alias /^CC (.+)$/ = liabilities:\\1\n",
+            "alias a = b = c\n",
+            "alias /a=b/ = c\n",
+            "alias /a\\/b/ = c\n",
+            "alias trailing = b ; not a comment\n",
+            "\n",
+            "2026-01-01 t\n",
+            "    a   $1\n",
+            "    b\n",
+        );
+        let journal = parse_journal(text, "t.journal").unwrap();
+        let seen: Vec<(&str, &str, bool, u32)> = journal
+            .aliases
+            .iter()
+            .map(|alias| {
+                (
+                    alias.pattern.as_str(),
+                    alias.replacement.as_str(),
+                    alias.regex,
+                    alias.position.line,
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    "PW Roth IRA - 3077",
+                    "assets:morganstanley:pw-roth-ira",
+                    false,
+                    1
+                ),
+                ("^CC (.+)$", "liabilities:\\1", true, 2),
+                ("a", "b = c", false, 3),
+                ("a=b", "c", true, 4),
+                ("a\\/b", "c", true, 5),
+                // NOT comment-stripped: hledger declares the account literally
+                // named `b ; not a comment`.
+                ("trailing", "b ; not a comment", false, 6),
+            ]
+        );
+        assert!(journal.aliases.iter().all(|alias| !alias.ended));
+        // Recorded, never applied: the transaction's accounts are as written.
+        assert_eq!(
+            journal.transactions[0].postings[0].account,
+            AccountName("a".into())
+        );
+    }
+
+    #[test]
+    fn end_aliases_closes_the_scope_and_a_later_alias_reopens_it() {
+        let text = concat!(
+            "alias one = a:one\n",
+            "alias two = a:two\n",
+            "end aliases ; done\n",
+            "alias three = a:three\n",
+        );
+        let journal = parse_journal(text, "t.journal").unwrap();
+        let ended: Vec<bool> = journal.aliases.iter().map(|alias| alias.ended).collect();
+        assert_eq!(ended, vec![true, true, false]);
+        let in_force: Vec<&str> = journal
+            .aliases_in_force()
+            .map(|alias| alias.pattern.as_str())
+            .collect();
+        assert_eq!(in_force, vec!["three"]);
+    }
+
+    #[test]
+    fn malformed_alias_and_end_forms_are_refused() {
+        // hledger errors on each of these, so accepting them would let a journal
+        // hledger will not read open here and report numbers hledger never would.
+        for (src, needle) in [
+            ("alias foo\n", "malformed directive"),
+            ("alias /abc = d\n", "malformed directive"),
+            ("end alias\n", "unsupported directive: 'end'"),
+            ("end apply account\n", "unsupported directive: 'end'"),
+        ] {
+            let err = parse_journal(src, "t.journal").unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains(needle), "{src:?}: {msg}");
+            assert!(msg.contains("t.journal:1"), "{src:?}: {msg}");
+        }
+    }
+
+    #[test]
+    fn alias_scope_flows_into_an_include_and_never_back_out() {
+        // All three directions verified against hledger 1.52: an alias reaches a
+        // file included after it; an alias declared inside an include does not
+        // escape it; and an `end aliases` inside the include kills the parent's
+        // alias only for the rest of that file.
+        let dir = std::env::temp_dir().join("ledgeline_parse_alias_scope_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sub = dir.join("sub.journal");
+        let main = dir.join("main.journal");
+        std::fs::write(&sub, "alias inner = a:inner\nend aliases\n").unwrap();
+        std::fs::write(
+            &main,
+            "alias outer = a:outer\ninclude sub.journal\nalias tail = a:tail\n",
+        )
+        .unwrap();
+
+        let text = std::fs::read_to_string(&main).unwrap();
+        let journal = parse_journal(&text, &main.to_string_lossy()).unwrap();
+        let seen: Vec<(&str, bool)> = journal
+            .aliases
+            .iter()
+            .map(|alias| (alias.pattern.as_str(), alias.ended))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                // The include's `end aliases` took `outer` out of scope for the
+                // rest of the INCLUDED file, and the parent resumed afterwards —
+                // so `outer` is still in force where an import would append.
+                ("outer", false),
+                ("inner", true),
+                ("tail", false),
+            ]
+        );
+        assert_eq!(
+            journal.aliases[1].source_file,
+            resolve_source_file(&sub),
+            "an alias records the file it was declared in"
+        );
     }
 
     #[test]
