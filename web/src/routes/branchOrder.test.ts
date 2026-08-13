@@ -43,6 +43,10 @@ const SURFACES = [
     {name: "holdings route", file: "routes/holdings/+page.svelte", testid: "holdings-error"},
     {name: "insights dashboard", file: "lib/reports/ui/insights/InsightsDashboard.svelte", testid: "insights-error"},
     {name: "subscriptions panel", file: "lib/reports/ui/subscriptions/SubscriptionsPanel.svelte", testid: "subscriptions-error"},
+    // The rules editor moved out of `routes/imports/+page.svelte` when that
+    // became a tab host (WP-11); it is registered HERE, at the file that now
+    // owns the async surface, so the move cannot quietly lose the guarantee.
+    {name: "edit rules panel", file: "lib/imports/ui/EditRulesPanel.svelte", testid: "imports-error"},
 ] as const;
 
 describe("UNIT data surfaces keep the error branch reachable (FE-1 / FE-5)", () => {
