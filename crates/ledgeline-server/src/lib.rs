@@ -38,6 +38,8 @@
 
 mod edit_api;
 mod error;
+mod hledger;
+mod prefs;
 mod reports_api;
 mod rules_api;
 mod security;
