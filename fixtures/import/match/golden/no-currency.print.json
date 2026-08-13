@@ -1,0 +1,447 @@
+[
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2024-01-15",
+    "tdate2": null,
+    "tdescription": "ACME PAYROLL",
+    "tindex": 1,
+    "tpostings": [
+      {
+        "paccount": "assets:bank:checking",
+        "pamount": [
+          {
+            "acommodity": "",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 300000,
+              "decimalPlaces": 2,
+              "floatingPoint": 3000
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "income:salary",
+        "pamount": [
+          {
+            "acommodity": "",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -300000,
+              "decimalPlaces": 2,
+              "floatingPoint": -3000
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "1",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 1,
+        "sourceName": "fixtures/import/match/checking.csv"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 1,
+        "sourceName": "fixtures/import/match/checking.csv"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  },
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2024-01-16",
+    "tdate2": null,
+    "tdescription": "STARBUCKS #4417",
+    "tindex": 2,
+    "tpostings": [
+      {
+        "paccount": "assets:bank:checking",
+        "pamount": [
+          {
+            "acommodity": "",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -645,
+              "decimalPlaces": 2,
+              "floatingPoint": -6.45
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "2",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "expenses:food:coffee",
+        "pamount": [
+          {
+            "acommodity": "",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 645,
+              "decimalPlaces": 2,
+              "floatingPoint": 6.45
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "2",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 2,
+        "sourceName": "fixtures/import/match/checking.csv"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 2,
+        "sourceName": "fixtures/import/match/checking.csv"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  },
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2024-01-17",
+    "tdate2": null,
+    "tdescription": "LANDLORD LLC",
+    "tindex": 3,
+    "tpostings": [
+      {
+        "paccount": "assets:bank:checking",
+        "pamount": [
+          {
+            "acommodity": "",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -185000,
+              "decimalPlaces": 2,
+              "floatingPoint": -1850
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "3",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "expenses:home:rent",
+        "pamount": [
+          {
+            "acommodity": "",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 185000,
+              "decimalPlaces": 2,
+              "floatingPoint": 1850
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "3",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 3,
+        "sourceName": "fixtures/import/match/checking.csv"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 3,
+        "sourceName": "fixtures/import/match/checking.csv"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  },
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2024-01-18",
+    "tdate2": null,
+    "tdescription": "PEETS COFFEE",
+    "tindex": 4,
+    "tpostings": [
+      {
+        "paccount": "assets:bank:checking",
+        "pamount": [
+          {
+            "acommodity": "",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -420,
+              "decimalPlaces": 2,
+              "floatingPoint": -4.2
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "4",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "expenses:food:coffee",
+        "pamount": [
+          {
+            "acommodity": "",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 420,
+              "decimalPlaces": 2,
+              "floatingPoint": 4.2
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "4",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 4,
+        "sourceName": "fixtures/import/match/checking.csv"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 4,
+        "sourceName": "fixtures/import/match/checking.csv"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  },
+  {
+    "tcode": "",
+    "tcomment": "",
+    "tdate": "2024-01-19",
+    "tdate2": null,
+    "tdescription": "HARDWARE STORE",
+    "tindex": 5,
+    "tpostings": [
+      {
+        "paccount": "assets:bank:checking",
+        "pamount": [
+          {
+            "acommodity": "",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": -6213,
+              "decimalPlaces": 2,
+              "floatingPoint": -62.13
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "5",
+        "ptype": "RegularPosting"
+      },
+      {
+        "paccount": "expenses:home:supplies",
+        "pamount": [
+          {
+            "acommodity": "",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 6213,
+              "decimalPlaces": 2,
+              "floatingPoint": 62.13
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": null,
+              "asprecision": 2,
+              "asrounding": "NoRounding"
+            }
+          }
+        ],
+        "pbalanceassertion": null,
+        "pcomment": "",
+        "pdate": null,
+        "pdate2": null,
+        "poriginal": null,
+        "pstatus": "Unmarked",
+        "ptags": [],
+        "ptransaction_": "5",
+        "ptype": "RegularPosting"
+      }
+    ],
+    "tprecedingcomment": "",
+    "tsourcepos": [
+      {
+        "sourceColumn": 1,
+        "sourceLine": 5,
+        "sourceName": "fixtures/import/match/checking.csv"
+      },
+      {
+        "sourceColumn": 1,
+        "sourceLine": 5,
+        "sourceName": "fixtures/import/match/checking.csv"
+      }
+    ],
+    "tstatus": "Unmarked",
+    "ttags": []
+  }
+]

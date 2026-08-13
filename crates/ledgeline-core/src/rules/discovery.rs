@@ -246,6 +246,28 @@ pub struct DiscoveredRules {
     pub label: String,
     /// The file's size as of the scan's `stat`.
     pub size_bytes: u64,
+    /// The file's mtime as of the scan's `stat` — **used ONLY to rank candidate
+    /// rules files, and NEVER to detect change.**
+    ///
+    /// That distinction is the whole reason this comment exists. [`Fingerprint`]
+    /// deliberately stopped recording an mtime (see `edit.rs` DL-3): every
+    /// mtime-preserving copy tool breaks the inference from "timestamp unchanged"
+    /// to "bytes unchanged", so a timestamp was removed rather than left lying
+    /// around as a tempting shortcut. Nothing here reverses that. Change
+    /// detection is [`DiscoveredRules::revision`], over the raw bytes, and it
+    /// stays that way.
+    ///
+    /// Ranking is a different question with a different failure mode. A user has
+    /// rules files going back years, several of which score identically against a
+    /// dropped statement, and the one they touched most recently is the one they
+    /// are still importing into — which naturally prefers the current year's
+    /// without any filename ever being parsed for a year. Being wrong here costs
+    /// a candidate list in a slightly worse order. Being wrong about change
+    /// detection costs the user's edits. See
+    /// [`crate::rules::matching::rank`], which is the only consumer.
+    ///
+    /// `None` on a platform or filesystem that does not report one.
+    pub modified: Option<std::time::SystemTime>,
     /// [`Fingerprint::token`] over the file's **raw bytes** — the value a later
     /// write path uses as an `If-Match`, so a save cannot land on top of an edit
     /// made elsewhere. [`UNREAD_REVISION`] when the bytes were never read.
@@ -946,6 +968,8 @@ fn describe(id: String, path: PathBuf, meta: &std::fs::Metadata) -> DiscoveredRu
     let mut file = DiscoveredRules {
         label: label_for(&id),
         size_bytes: meta.len(),
+        // Ranking only. See the field.
+        modified: meta.modified().ok(),
         revision: UNREAD_REVISION.to_string(),
         parsed: false,
         account1: None,

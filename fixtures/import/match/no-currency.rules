@@ -1,0 +1,33 @@
+# FACT 4, the commodity trap. checking.csv.rules with ONE line deleted.
+#
+# Byte-for-byte the correct rules file except that `currency $` is gone. Every
+# amount is therefore written without a commodity, forming a separate BARE
+# commodity of its own. hledger exits 0, the transactions look right in `print`,
+# the accounts are all correctly categorised — and the user's $ balance never
+# moves, because none of this money is in $.
+#
+# Keeping it a one-line delta from the correct file is deliberate: it is the
+# control for the experiment. Any score difference between the two is caused by
+# the missing currency and by nothing else.
+
+skip 1
+fields date, description, amount-out, amount-in
+date-format %m/%d/%Y
+
+account1 assets:bank:checking
+account2 expenses:unknown
+
+if ACME PAYROLL
+    account2 income:salary
+
+if
+COFFEE
+STARBUCKS
+PEETS
+    account2 expenses:food:coffee
+
+if LANDLORD LLC
+    account2 expenses:home:rent
+
+if HARDWARE STORE
+    account2 expenses:home:supplies
