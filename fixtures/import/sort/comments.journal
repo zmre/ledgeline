@@ -1,0 +1,20 @@
+; fixtures/import/sort/comments.journal
+;
+; A file-header comment, separated from everything below by a blank line. It
+; attaches to no transaction and must never move.
+
+account assets:bank:checking
+account expenses:coffee
+account expenses:rent
+commodity $1,000.00
+
+; Rent goes out on the first of the month.
+2026-03-01 Landlord
+    expenses:rent            $1,450.00
+    assets:bank:checking
+
+; Filed late: an import appended this row after the rent above.
+; Both of these comment lines must travel with it.
+2026-02-14 Cafe Rio
+    expenses:coffee              $6.25
+    assets:bank:checking

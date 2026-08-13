@@ -1,0 +1,36 @@
+; fixtures/import/sort/interleaved.journal
+;
+; An import appended three rows to the end of this file, two of which are
+; back-dated, so it no longer passes `hledger check ordereddates`.
+;
+; This header comment is separated from what follows by a blank line, so it
+; belongs to no transaction and must stay exactly where it is.
+
+account assets:bank:checking
+account expenses:groceries
+account expenses:utilities
+account income:salary
+commodity $1,000.00
+commodity 1,000.00 AAPL
+
+include interleaved-include.journal
+
+2026-02-10 Grocery store
+    expenses:groceries         $52.10
+    assets:bank:checking
+
+2026-02-03 Electric bill
+    expenses:utilities         $88.40
+    assets:bank:checking
+
+; A price directive sitting between transactions. It must not move, and the
+; transactions must still sort around it.
+P 2026-02-01 AAPL $190.00
+
+2026-01-28 Paycheck
+    assets:bank:checking    $2,400.00
+    income:salary
+
+2026-02-07 Grocery store
+    expenses:groceries         $18.75
+    assets:bank:checking

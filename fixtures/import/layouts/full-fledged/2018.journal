@@ -1,0 +1,7 @@
+2018-01-01 Rent
+    expenses:rent           $1,200.00
+    assets:bank:checking
+
+2018-03-30 Paycheck
+    assets:bank:checking    $2,150.00
+    income:salary

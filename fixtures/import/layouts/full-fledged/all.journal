@@ -1,0 +1,14 @@
+; layouts/full-fledged — the "full-fledged hledger" convention: an all.journal
+; that declares everything and includes one file per year.
+;
+; The root is called `all.journal` rather than `main.journal`, which is the
+; whole point of having this tree: nothing may recognise a root by its name.
+
+account assets:bank:checking
+account equity:opening balances
+account expenses:rent
+account income:salary
+commodity $1,000.00
+
+include 2017.journal
+include 2018.journal

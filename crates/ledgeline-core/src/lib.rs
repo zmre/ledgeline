@@ -23,10 +23,12 @@ pub mod convert;
 pub mod decimal;
 pub mod edit;
 pub mod holdings;
+pub mod journals;
 pub mod model;
 pub mod parse;
 pub mod reports;
 pub mod rules;
+pub mod sort;
 pub mod wire;
 
 pub use decimal::{Dec, DecError};

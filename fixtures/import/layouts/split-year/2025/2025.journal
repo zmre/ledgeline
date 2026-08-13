@@ -1,0 +1,11 @@
+2025-01-02 Opening balance
+    assets:bank:checking    $1,000.00
+    equity:opening balances
+
+2025-11-28 Paycheck
+    assets:bank:checking    $2,400.00
+    income:salary
+
+2025-12-19 Grocery store
+    expenses:groceries         $73.20
+    assets:bank:checking

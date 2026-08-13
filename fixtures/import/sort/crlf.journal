@@ -1,0 +1,16 @@
+; fixtures/import/sort/crlf.journal
+;
+; Every terminator in this file is CRLF, including the blank lines. A sort that
+; normalises one line ending shows the whole file as changed in the user's diff.
+
+account assets:bank:checking
+account expenses:groceries
+commodity $1,000.00
+
+2026-02-10 Grocery store
+    expenses:groceries         $52.10
+    assets:bank:checking
+
+2026-02-03 Grocery store
+    expenses:groceries         $88.40
+    assets:bank:checking
