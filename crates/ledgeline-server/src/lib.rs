@@ -38,6 +38,7 @@
 
 mod edit_api;
 mod error;
+mod git;
 mod hledger;
 mod prefs;
 mod reports_api;
