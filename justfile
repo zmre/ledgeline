@@ -56,6 +56,21 @@ golden:
 rules-check:
     ./scripts/check-rules-fixtures.sh
 
+# Regenerate the rules-matching goldens in fixtures/import/match/golden/ from
+# real `hledger print -O json` runs. Run this ONLY when a match fixture or the
+# scoring signals changed on purpose — the committed goldens are what keep
+# `cargo test` hermetic (no hledger required to run the scoring tests).
+match-golden:
+    ./scripts/gen-match-golden.sh
+
+# The hledger-backed checks, all opt-in so `cargo test` stays hermetic. These
+# are the only things that prove our output is syntax hledger actually accepts,
+# rather than syntax we did not damage. See docs/imports.md.
+hledger-checks:
+    LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
+    LEDGELINE_HLEDGER_MATCH_CHECK=1 cargo test -p ledgeline-core --test matching
+    LEDGELINE_HLEDGER_SORT_CHECK=1 cargo test -p ledgeline-core --test sort
+
 # Snapshot raw hledger-web JSON API responses into fixtures/api/vVERSION/
 snapshot-api:
     ./scripts/snapshot-api.sh

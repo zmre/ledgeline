@@ -1,13 +1,22 @@
-# Imports: the CSV rules-file editor
+# Imports
 
-How Ledgeline finds, reads, presents and edits hledger CSV import rules files (`*.rules`).
+Two surfaces behind one nav item, each with its own tab:
 
-Scope today: **discover, present, edit, save.** Not in scope yet: running an import, generating a
-rules file from a CSV, writing a chosen category back as a new rule, or converting PDF / QIF / OFX /
-XLS to CSV. The model below is shaped so each of those slots in additively.
+- **New Transactions** — drop a statement file, convert it to CSV, match it against your rules
+  files, run `hledger import`, and check the result before anything is written.
+- **Edit Rules** — find, read, present and edit hledger CSV import rules files (`*.rules`).
+
+Rules-file scope: **discover, present, edit, save.** Still not in scope: generating a rules file
+from a CSV, and writing a chosen category back as a new `if` rule. The model below is shaped so
+each of those slots in additively.
 
 Raw text editing is deliberately *not* offered — that is what a terminal is for. The GUI covers
 preferences, the row mapping, the two default accounts, and an ordered list of `if` rules.
+
+Statement-conversion scope: CSV/TSV/SSV, OFX/QFX, and xls/xlsx/xlsm/xlsb/ods. **PDF is refused by
+name** — see `docs/pdf-extraction.md` for the survey and the route back in. QuickBooks IIF/CSV
+exports need an account-mapping store and do not belong in this pipeline at all; that doc explains
+why.
 
 ## Where the code is
 
@@ -15,9 +24,39 @@ preferences, the row mapping, the two default accounts, and an ordered list of `
 | --- | --- |
 | `crates/ledgeline-core/src/rules.rs` | The format-preserving document model: parse, classify, render, `EditPlan`/`apply`/`verify` |
 | `crates/ledgeline-core/src/rules/discovery.rs` | The directory scan, `RulesPath`, `Discovery::resolve`, the CSV preview |
+| `crates/ledgeline-core/src/rules/matching.rs` | Scoring a rules file against dropped data — the two-stage matcher |
+| `crates/ledgeline-core/src/convert/` | Statement preprocessors: `ofx`, `spreadsheet`, `delimited`, shared `encoding` |
+| `crates/ledgeline-core/src/sort.rs` | Format-preserving date sort of a journal file |
+| `crates/ledgeline-core/src/journals.rs` | Ranking candidate target journals, by content only |
 | `crates/ledgeline-server/src/rules_api.rs` | `/api/rules`, `/api/rules/{*id}`, `/api/rules-preview/{*id}` |
+| `crates/ledgeline-server/src/{hledger,git,prefs}.rs` | Subprocess invocation, the git safety net, the preferences store |
 | `web/src/lib/imports/` | Pure form model, reorder, date-format catalogue, store, UI |
-| `fixtures/rules/` | The corpus. See its `README.md` — it explains what each fixture is *for* |
+| `fixtures/rules/`, `fixtures/import/` | The corpora. See each `README.md` — they explain what every fixture is *for* |
+
+## Subprocesses: exactly two modules, no shell, ever
+
+`crates/ledgeline-server/src/hledger.rs` and `crates/ledgeline-server/src/git.rs` are the **only**
+places in production code where `Command::new` may appear. That is a deliberate, enforceable
+boundary, and it exists because this codebase already refuses to execute a rules file's
+`source ... | CMD` directive (see § Security). Having won that argument, we do not then scatter
+process spawning across the server.
+
+The rules those two modules hold to:
+
+- **Arguments as a `Vec<OsString>`, never a shell string.** No `sh -c`. `--` terminates every
+  pathspec list, so a statement named `-f` is a file. git additionally gets `--literal-pathspecs`,
+  because `statement[2026].csv` is otherwise a *glob*.
+- **Every invocation has a wall-clock timeout.** A GPG passphrase prompt or a hung `hledger` must
+  not hang the desktop window. Note the non-obvious part: on timeout the pipe-draining threads are
+  *dropped, not joined*. `kill` reaches the child but not a grandchild still holding the same
+  pipes, so joining would block for exactly as long as the timeout existed to prevent.
+- **stdout and stderr are captured separately.** This is load-bearing, not tidiness:
+  `hledger import --dry-run` writes the proposed transactions to stdout and its
+  `would import N new transactions` status line to stderr, and the entire preview feature is that
+  split.
+- **git stages explicit pathspecs only.** Never `add -A`, never `add .`, never `commit -a`. A user
+  with unrelated work in progress must find it untouched — asserted by a test that leaves an
+  unrelated file dirty and proves it is still dirty afterwards.
 
 ## The one invariant everything rests on
 
@@ -119,9 +158,31 @@ cargo test -p ledgeline-core --test rules_security   # the scan's guards
 cargo test -p ledgeline-server --test rules_endpoints
 just snapshot-rules-wire   # ONLY when the wire contract changed on purpose
 
-LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
+# New Transactions
+cargo test -p ledgeline-core --test convert_ofx      # OFX/QFX, incl. the entity matrix
+cargo test -p ledgeline-core --test convert_tabular  # delimited + spreadsheet
+cargo test -p ledgeline-core --test matching         # rules-file scoring
+cargo test -p ledgeline-core --test sort             # format-preserving date sort
+cargo test -p ledgeline-core --test journals         # target ranking, by content only
+cargo test -p ledgeline-server --test prefs          # prefs store + hledger resolution
+cargo test -p ledgeline-server --test git_commit     # the git safety net
 ```
 
-That last one is the only check that proves **our renderer emits syntax hledger accepts** — the
-round-trip tests only prove we do not damage what we did not touch. It is opt-in so `cargo test`
-stays hermetic.
+Four opt-in checks shell out to a real binary and are therefore **not** part of `cargo test`,
+which stays hermetic:
+
+```sh
+LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
+LEDGELINE_HLEDGER_MATCH_CHECK=1  cargo test -p ledgeline-core --test matching
+LEDGELINE_HLEDGER_SORT_CHECK=1   cargo test -p ledgeline-core --test sort
+```
+
+`rules_hledger_render` is the only check that proves **our renderer emits syntax hledger
+accepts** — the round-trip tests only prove we do not damage what we did not touch. `sort`'s
+variant proves every sorted output still passes `hledger check --strict ordereddates`, and
+`matching`'s compares our scoring against real `hledger print -O json` output.
+
+`git_commit` is gated differently — **skip-if-absent, not opt-in.** git is present on every
+machine that can clone this repo, and the property it protects (*an import never touches your
+unrelated work*) is too important to sit behind an environment variable nobody exports. A test
+that silently never runs is worse than no test.
