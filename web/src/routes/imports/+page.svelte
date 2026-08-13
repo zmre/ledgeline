@@ -15,10 +15,12 @@
     // directory: this codebase has none, and Reports does not use one either.
     import {onMount} from "svelte";
     import ErrorToast from "$lib/components/ErrorToast.svelte";
+    import {importStore} from "$lib/imports/importStore.svelte";
     import {defaultImportParams, paramsToSearch, searchToParams, type ImportParams} from "$lib/imports/params";
     import {rulesStore} from "$lib/imports/rulesStore.svelte";
     import EditRulesPanel from "$lib/imports/ui/EditRulesPanel.svelte";
     import ImportTabs from "$lib/imports/ui/ImportTabs.svelte";
+    import NewTransactionsPanel from "$lib/imports/ui/NewTransactionsPanel.svelte";
     import {journal} from "$lib/stores/journal.svelte";
     import {loadJournalWhenReady, onServerReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
@@ -31,7 +33,18 @@
     // journal refetch — `refresh()` only dedupes calls while a round is still in
     // flight, and a remounted panel would ask again every time.
     loadJournalWhenReady();
-    onServerReady((url) => void rulesStore.ensureIndex(url, settings.serverNonce));
+    onServerReady((url) => {
+        // The rules index serves BOTH tabs: Edit Rules lists it, and New
+        // Transactions joins it against each candidate's id to default the
+        // balance-assertion account (the candidate wire shape carries no
+        // `account1`). One walk, on the host, for the same reason the journal
+        // load lives here — switching tabs must not refetch either.
+        void rulesStore.ensureIndex(url, settings.serverNonce);
+        void importStore.ensureCapabilities(url, settings.serverNonce);
+        // The hledger path the banner prefills. Cheap, and it has to be in hand
+        // before the banner renders or the field starts empty on a reload.
+        void importStore.loadPrefs();
+    });
 
     let params = $state<ImportParams>(defaultImportParams());
     let restored = $state(false);
@@ -60,21 +73,7 @@
     <ImportTabs bind:tab={params.tab} />
 
     {#if params.tab === "new"}
-        <!-- Placeholder. The real drop target, preview, candidate ranking and
-             dry-run land in the next WP-11 lane; this exists so the subnav is
-             navigable and its default tab is not a blank page. -->
-        <div class="card bg-base-200" data-testid="imports-new-placeholder">
-            <div class="card-body items-center py-16 text-center">
-                <h2 class="card-title">Importing statements is coming</h2>
-                <p class="text-base-content/60 max-w-lg">
-                    This is where you will drop a statement — CSV, TSV, OFX/QFX or a spreadsheet — and Ledgeline will offer the rules file that fits it, show
-                    the transactions it proposes, and reconcile them against your statement balance before anything is written.
-                </p>
-                <p class="text-base-content/50 max-w-lg text-xs">
-                    Until then, <strong>Edit Rules</strong> maintains the <code>*.rules</code> files an import reads a CSV through.
-                </p>
-            </div>
-        </div>
+        <NewTransactionsPanel />
     {:else}
         <EditRulesPanel />
     {/if}

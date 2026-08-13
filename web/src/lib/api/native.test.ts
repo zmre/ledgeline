@@ -3,6 +3,7 @@ import {ApiUnreachableError} from "./client";
 import {
     ConflictError,
     LedgelineApi,
+    MAX_UPLOAD_BYTES,
     NATIVE_UNAVAILABLE_MESSAGE,
     NativeApiUnavailableError,
     NotFoundError,
@@ -265,5 +266,125 @@ describe("UNIT LedgelineApi — editing probe", () => {
     it("rejects (unreachable) so the caller can degrade to read-only", async () => {
         vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
         await expect(new LedgelineApi("http://127.0.0.1:5000").probeEditing()).rejects.toBeInstanceOf(ApiUnreachableError);
+    });
+});
+
+describe("UNIT LedgelineApi — the import upload path", () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    const bytes = (size: number): Uint8Array => new Uint8Array(size);
+
+    it("POSTs raw bytes with the filename in a header, not a JSON body", async () => {
+        // `mutate` sends `JSON.stringify(body)`; a workbook is not JSON, and
+        // base64-ing 16 MiB through one would cost a third again in transfer.
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({stageId: "t"}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").stageImport("bank.csv", bytes(8));
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/import/stage");
+        const init = lastInit(fetchMock);
+        expect(init.method).toBe("POST");
+        expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/octet-stream");
+        expect((init.headers as Record<string, string>)["X-Ledgeline-Filename"]).toBe("bank.csv");
+        expect(init.body).toBeInstanceOf(Uint8Array);
+    });
+
+    it("refuses an over-size file locally rather than uploading it to be refused", async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal("fetch", fetchMock);
+        await expect(new LedgelineApi("http://127.0.0.1:5000").stageImport("big.xlsx", bytes(MAX_UPLOAD_BYTES + 1))).rejects.toBeInstanceOf(ValidationError);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("refuses an empty file without a round trip", async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal("fetch", fetchMock);
+        await expect(new LedgelineApi("http://127.0.0.1:5000").stageImport("empty.csv", bytes(0))).rejects.toBeInstanceOf(ValidationError);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("maps the engine's 413 to a ValidationError carrying its own sentence", async () => {
+        // The local size check is courtesy; `DefaultBodyLimit` is the enforcement.
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(textResponse("body too large", 413)));
+        await expect(new LedgelineApi("http://127.0.0.1:5000").stageImport("bank.csv", bytes(8))).rejects.toThrow("body too large");
+    });
+
+    it("maps a 400 from stage onto the same taxonomy every other write uses", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(textResponse("PDF conversion is not supported yet", 400)));
+        await expect(new LedgelineApi("http://127.0.0.1:5000").stageImport("s.pdf", bytes(8))).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it("maps an unreachable engine on the upload path to ApiUnreachableError", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+        await expect(new LedgelineApi("http://127.0.0.1:5000").stageImport("bank.csv", bytes(8))).rejects.toBeInstanceOf(ApiUnreachableError);
+    });
+});
+
+describe("UNIT LedgelineApi — the rest of the import routes", () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    const RUN_BODY = {stageId: "t", rulesId: "bank.csv.rules", csvPath: "import/bank.csv", journalId: "2026.journal", balance: null, balanceAccount: null};
+
+    it("GETs the capabilities probe", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({journals: []}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").importCapabilities();
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/import/capabilities");
+    });
+
+    it("treats a 404 on capabilities as 'this server is not the engine'", async () => {
+        // An older engine has no /api/import/* at all, and the whole tab has to
+        // say so rather than spin.
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", {status: 404})));
+        await expect(new LedgelineApi("http://127.0.0.1:5000").importCapabilities()).rejects.toBeInstanceOf(NativeApiUnavailableError);
+    });
+
+    it("POSTs the dry run and the commit as JSON", async () => {
+        // A fresh Response per call: a body can only be read once.
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ok: true})));
+        vi.stubGlobal("fetch", fetchMock);
+        const api = new LedgelineApi("http://127.0.0.1:5000");
+        await api.importDryRun(RUN_BODY);
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/import/dry-run");
+        expect(JSON.parse(lastInit(fetchMock).body as string)).toEqual(RUN_BODY);
+        await api.importCommit({...RUN_BODY, writeAssertion: true});
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/import/commit");
+        expect(JSON.parse(lastInit(fetchMock).body as string).writeAssertion).toBe(true);
+    });
+
+    it("POSTs the save-csv path with a two-field body and no rules file at all", async () => {
+        // The no-rules-file path is its OWN route: a dry-run with no rules file
+        // has nothing to propose, so `ImportRunBody`'s handles are not nullable
+        // and this request cannot be expressed as a commit.
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({csvWritten: "import/bank.csv", git: null}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").importSaveCsv({stageId: "t", csvPath: "import/bank.csv"});
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/import/save-csv");
+        expect(JSON.parse(lastInit(fetchMock).body as string)).toEqual({stageId: "t", csvPath: "import/bank.csv"});
+    });
+
+    it("POSTs the confirmed re-sort with just the journal id", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({moved: 3}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").importSort("2026/2026.journal");
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/import/sort");
+        expect(JSON.parse(lastInit(fetchMock).body as string)).toEqual({journalId: "2026/2026.journal"});
+    });
+
+    it("reads and writes the preferences blob, keeping nulls as nulls", async () => {
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({hledgerPath: null, gitAutocommit: null})));
+        vi.stubGlobal("fetch", fetchMock);
+        const api = new LedgelineApi("http://127.0.0.1:5000");
+        await api.getPrefs();
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/prefs");
+        await api.putPrefs({hledgerPath: "/usr/bin/hledger", gitAutocommit: null});
+        expect(lastInit(fetchMock).method).toBe("PUT");
+        expect(JSON.parse(lastInit(fetchMock).body as string)).toEqual({hledgerPath: "/usr/bin/hledger", gitAutocommit: null});
+    });
+
+    it("surfaces the engine's 400 when it rejects a stored hledger path", async () => {
+        // Validated at store time, so a bad value is a refusal here rather than
+        // a persisted value that fails on the next import.
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(textResponse("/nope is not an executable file", 400)));
+        await expect(new LedgelineApi("http://127.0.0.1:5000").putPrefs({hledgerPath: "/nope", gitAutocommit: null})).rejects.toThrow("not an executable");
     });
 });

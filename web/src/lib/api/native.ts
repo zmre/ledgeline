@@ -229,6 +229,69 @@ function encodeRulesId(id: string): string {
     return id.split("/").map(encodeURIComponent).join("/");
 }
 
+// ---------------------------------------------------------------------------
+// New Transactions import flow (`/api/import/*`, `/api/prefs`).
+//
+// `stage` is the SPA's first upload: raw bytes, not JSON. Everything else on
+// this route family is an ordinary JSON mutation and goes through `mutate`.
+// ---------------------------------------------------------------------------
+
+/**
+ * The engine's `MAX_UPLOAD_BYTES`, enforced by a `DefaultBodyLimit` on the stage
+ * route alone.
+ *
+ * Duplicated here on purpose: refusing a 40 MiB workbook before spending a
+ * minute uploading it is worth one constant, and the server still enforces it —
+ * this is a courtesy, never the check.
+ */
+export const MAX_UPLOAD_BYTES = 16 * 1024 * 1024;
+
+/**
+ * The dry-run request body, and the base of the commit body.
+ *
+ * **`rulesId` and `journalId` are NOT nullable.** The Save-CSV-only path — no
+ * rules file fits, keep the converted CSV anyway — is `ImportSaveCsvBody` on its
+ * own route, because a dry-run with no rules file has nothing to propose and
+ * nothing to reconcile. Nullable handles here would encode a request the engine
+ * cannot answer and put a null check in front of every use of either field; the
+ * engine's `WireDryRunRequest` says the same in Rust.
+ *
+ * `balance`/`balanceAccount` are decimal TEXT and an account name — never
+ * numbers (convention #1).
+ */
+export interface ImportRunBody {
+    stageId: string;
+    rulesId: string;
+    csvPath: string;
+    journalId: string;
+    balance: string | null;
+    balanceAccount: string | null;
+}
+
+/** `POST /api/import/commit` — the dry-run body plus whether to write the balance assertion. */
+export interface ImportCommitBody extends ImportRunBody {
+    writeAssertion: boolean;
+}
+
+/**
+ * `POST /api/import/save-csv` — keep the converted CSV, import nothing.
+ *
+ * Two fields, and that is the whole request: there is no rules file, so there is
+ * no journal, no balance and no assertion. The response is
+ * `{csvWritten, git}` and decodes through `decodeCommitResult`, whose absent
+ * `journalWritten` already means "no journal was touched".
+ */
+export interface ImportSaveCsvBody {
+    stageId: string;
+    csvPath: string;
+}
+
+/** `PUT /api/prefs`. Both fields are tri-state: null means "unset", not "off". */
+export interface PrefsBody {
+    hledgerPath: string | null;
+    gitAutocommit: boolean | null;
+}
+
 type QueryValue = string | number | undefined;
 
 /** Build a `?a=1&b=2` string, dropping undefined and empty-string values (no leading "?" when empty). */
@@ -484,18 +547,129 @@ export class LedgelineApi {
         });
     }
 
+    // -----------------------------------------------------------------------
+    // New Transactions import flow. Every route here is registered ABOVE the
+    // bearer-token layer's sibling routes and answers `Cache-Control: no-store`;
+    // none of it derives from the journal snapshot, so none of it is ETagged.
+    // -----------------------------------------------------------------------
+
+    /** What the screen may offer at all: hledger's version, the formats, the journal targets, git. */
+    importCapabilities(): Promise<unknown> {
+        return this.getJson("/api/import/capabilities");
+    }
+
+    /**
+     * Upload one statement file for conversion, preview and candidate scoring.
+     *
+     * `filename` must already be a BARE name — `importModel.headerFilename` is
+     * what makes it one. The engine sanitises it again (it has to; a client is
+     * not a check), and uses it only for format detection and the destination
+     * default.
+     */
+    stageImport(filename: string, bytes: ArrayBuffer | Uint8Array): Promise<unknown> {
+        return this.upload("/api/import/stage", filename, bytes);
+    }
+
+    /** Proposed transactions + balance reconciliation. `ok:false` is a 200 with hledger's stderr. */
+    importDryRun(body: ImportRunBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/import/dry-run", 200, body);
+    }
+
+    /** Write the CSV, run the real import, report ordering and git. */
+    importCommit(body: ImportCommitBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/import/commit", 200, body);
+    }
+
+    /**
+     * Write the converted CSV and nothing else — the path taken when no rules
+     * file fits the statement.
+     *
+     * Its own route rather than a commit with null handles: converting a file
+     * nobody has rules for is still worth keeping, and none of the import
+     * machinery (rules file, journal, dry-run, assertion) applies to it.
+     */
+    importSaveCsv(body: ImportSaveCsvBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/import/save-csv", 200, body);
+    }
+
+    /** The confirmed format-preserving re-sort, offered only after a commit reported `inOrder:false`. */
+    importSort(journalId: string): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/import/sort", 200, {journalId});
+    }
+
+    /** The preferences store (the resolved hledger path, the git-autocommit opt-out). */
+    getPrefs(): Promise<unknown> {
+        return this.getJson("/api/prefs");
+    }
+
+    /** Replace the whole preferences blob. A bad `hledgerPath` is a 400, not a stored-and-fails-later. */
+    putPrefs(body: PrefsBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", "/api/prefs", 200, body);
+    }
+
     /**
      * Issue a write request and map the response: JSON-decode the body on
      * `okStatus`, else translate the HTTP status into the edit error taxonomy
      * carrying the server's plain-text message.
      */
     private async mutate<T>(method: string, route: string, okStatus: number, body?: unknown): Promise<T> {
-        const url = `${this.baseUrl}${route}`;
         const headers = authHeaders(body === undefined ? {Accept: "application/json"} : {Accept: "application/json", "Content-Type": "application/json"});
+        return this.send<T>(method, route, okStatus, headers, body === undefined ? undefined : JSON.stringify(body));
+    }
+
+    /**
+     * POST raw bytes with the source filename in a header — the ONE upload
+     * primitive, and the reason it cannot go through `mutate`.
+     *
+     * `mutate` sends `JSON.stringify(body)`; a workbook is not JSON and
+     * base64-ing 16 MiB through one would cost a third again in transfer and a
+     * decode step on both sides. So this is its own path, sharing `send`'s
+     * status → error-taxonomy mapping so the two cannot drift.
+     *
+     * The size check is local courtesy only: the engine's `DefaultBodyLimit`
+     * answers 413 and that is the actual enforcement, mapped below.
+     */
+    private async upload<T>(route: string, filename: string, bytes: ArrayBuffer | Uint8Array): Promise<T> {
+        const size = bytes.byteLength;
+        if (size > MAX_UPLOAD_BYTES) {
+            throw new ValidationError(`That file is ${Math.round(size / (1024 * 1024))} MB; Ledgeline accepts up to ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.`);
+        }
+        if (size === 0) throw new ValidationError("That file is empty.");
+        const headers = authHeaders({
+            Accept: "application/json",
+            "Content-Type": "application/octet-stream",
+            "X-Ledgeline-Filename": filename,
+        });
+        // A Uint8Array view is passed through as-is: BodyInit accepts it, and
+        // copying to an ArrayBuffer would double the peak memory for a 16 MiB file.
+        return this.send<T>("POST", route, 200, headers, bytes as BodyInit, {
+            // 413 only reaches this route, and "your file is too big" is a
+            // refusal the user can act on — the generic branch would report it
+            // as an unreachable engine.
+            413: (message) => new ValidationError(message || `That file is larger than the ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB Ledgeline accepts.`),
+        });
+    }
+
+    /**
+     * The one fetch + status-mapping path both `mutate` and `upload` use.
+     *
+     * `extraStatuses` lets a caller name a status only its own route can produce
+     * (413 for the upload) without every other caller inheriting a message that
+     * makes no sense for it.
+     */
+    private async send<T>(
+        method: string,
+        route: string,
+        okStatus: number,
+        headers: Record<string, string>,
+        body: BodyInit | undefined,
+        extraStatuses: Record<number, (message: string) => Error> = {}
+    ): Promise<T> {
+        const url = `${this.baseUrl}${route}`;
         return withDeadline(`${method} ${url}`, this.timeoutMs, this.signal, async (signal) => {
             let response: Response;
             try {
-                response = await fetch(url, {method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store", signal});
+                response = await fetch(url, {method, headers, body, cache: "no-store", signal});
             } catch (cause) {
                 throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
             }
@@ -509,6 +683,8 @@ export class LedgelineApi {
                 }
             }
             const message = text.trim();
+            const extra = extraStatuses[response.status];
+            if (extra !== undefined) throw extra(message);
             switch (response.status) {
                 case 400:
                     throw new ValidationError(message || "The transaction is invalid.");

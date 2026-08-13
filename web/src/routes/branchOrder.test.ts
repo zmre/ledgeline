@@ -47,6 +47,16 @@ const SURFACES = [
     // became a tab host (WP-11); it is registered HERE, at the file that now
     // owns the async surface, so the move cannot quietly lose the guarantee.
     {name: "edit rules panel", file: "lib/imports/ui/EditRulesPanel.svelte", testid: "imports-error"},
+    // The New Transactions flow (WP-11 lane E) is four async surfaces, not one,
+    // and every one of them can hold a payload that a later request supersedes —
+    // which is exactly the FE-1/FE-5 pair this file exists for. The dry run and
+    // the commit are the dangerous ones: neither payload carries any field
+    // naming the file, rules file or destination it was computed for, so a stale
+    // one CANNOT be spotted by its own shape (see `sameRunRequest`).
+    {name: "new transactions capabilities", file: "lib/imports/ui/NewTransactionsPanel.svelte", testid: "imports-capabilities-error"},
+    {name: "staged file panel", file: "lib/imports/ui/StagedPanel.svelte", testid: "imports-stage-error"},
+    {name: "dry run panel", file: "lib/imports/ui/DryRunPanel.svelte", testid: "imports-dry-run-error"},
+    {name: "import result panel", file: "lib/imports/ui/ResultPanel.svelte", testid: "imports-commit-error"},
 ] as const;
 
 describe("UNIT data surfaces keep the error branch reachable (FE-1 / FE-5)", () => {
