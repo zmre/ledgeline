@@ -98,6 +98,31 @@
           preBuild = spaPlaceholder;
         };
 
+        # Imports shell out to `hledger`, which must therefore be findable at
+        # RUN time. `hledger::resolve` tries, in order: the user's preference,
+        # $LEDGELINE_HLEDGER, this baked path, then $PATH.
+        #
+        # Baking it is what makes a Nix install zero-config, and the case it
+        # really exists for is macOS: an app bundle launched from Finder does
+        # NOT inherit the shell's PATH, so a user with hledger installed and
+        # working in their terminal would still get "hledger was not found" from
+        # Ledgeline.app. The preference exists for everyone else.
+        #
+        # The cost is honest and worth knowing: this puts hledger's ~158 MiB
+        # closure into the binary's runtime closure. To opt out, set this to
+        # `null` — resolution then falls through to $PATH and the preference,
+        # and the UI's "set hledger path" banner covers the rest.
+        hledgerPath = "${pkgs.hledger}/bin/hledger";
+
+        # Applied ONLY to the two outputs that produce a runnable binary. It is
+        # deliberately kept out of `commonArgs`: `cargoArtifacts` is the cached
+        # third-party dependency layer, and threading a store path through it
+        # would invalidate that cache on every hledger bump for no benefit —
+        # nothing in the dependency layer reads this.
+        hledgerEnv = lib.optionalAttrs (hledgerPath != null) {
+          LEDGELINE_HLEDGER_PATH = hledgerPath;
+        };
+
         # THE CACHING WIN: build only the workspace's third-party dependencies
         # (incl. the whole wry/tao GUI stack) from a dummy source. Source-only
         # changes reuse this layer verbatim, so rebuilds/retests skip recompiling
@@ -108,7 +133,7 @@
 
         # The workspace binary (`ledgeline` = axum server + wry/tao GUI). Tests run
         # in the `tests` check, so skip them here.
-        ledgeline = craneLib.buildPackage (commonArgs // {
+        ledgeline = craneLib.buildPackage (commonArgs // hledgerEnv // {
           inherit cargoArtifacts;
           doCheck = false;
           meta = {
@@ -194,7 +219,7 @@
         # 3. The `ledgeline` binary with the REAL SPA baked in (rust-embed reads
         #    web/build at compile time). Reuses the cached dependency layer, so
         #    only the workspace crates recompile — now against the real UI.
-        ledgelineWithSpa = craneLib.buildPackage (commonArgs // {
+        ledgelineWithSpa = craneLib.buildPackage (commonArgs // hledgerEnv // {
           inherit cargoArtifacts;
           doCheck = false;
           preBuild = ''

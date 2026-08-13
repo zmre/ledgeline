@@ -426,6 +426,7 @@ Registered beside the existing rules routes and, critically, **above** the beare
 | `POST` | `/api/import/stage` | raw bytes + `X-Ledgeline-Filename`; converts, returns preview + candidates |
 | `POST` | `/api/import/dry-run` | proposed transactions + balance reconciliation |
 | `POST` | `/api/import/commit` | writes CSV, runs the real import, reports ordering |
+| `POST` | `/api/import/save-csv` | writes the converted CSV and nothing else |
 | `POST` | `/api/import/sort` | the confirmed format-preserving re-sort |
 | `GET`/`PUT` | `/api/prefs` | the preferences store |
 
@@ -479,6 +480,103 @@ A **yearless date refuses the whole file** with `SortError::UnreadableDate`. `Y 
 `01/15` is legal hledger, but the sort key then depends on which `Y` is in scope; declining to
 offer a sort is better than a subtly wrong one.
 
+### The lane E wire contract
+
+Written before either half of lane E starts, so the Rust and SPA sides can be built against it
+concurrently. Every response is `camelCase`, `Cache-Control: no-store`, no ETag — same posture
+as the rules routes, and for the same reason: none of this is derived from the journal snapshot.
+**No field anywhere carries an absolute path.** A `journalId` and a `csvPath` are both relative
+to the include root, exactly as a rules `id` is.
+
+```jsonc
+// GET /api/import/capabilities  — what the screen may offer at all
+{
+  "hledger": {"available": true, "version": "1.52"},
+  //  or:    {"available": false, "reason": "notFound"|"tooOld"|"unrunnable", "message": "…"}
+  "formats": ["csv","tsv","ssv","ofx","qfx","xls","xlsx","xlsm","xlsb","ods"],
+  "journals": [{"id":"2026/2026.journal","label":"2026.journal","txnCount":412,
+                "lastTxnDate":"2026-08-01","isRoot":false,"writable":true}],
+  "git": {"available": true, "autocommit": true},
+  "editable": true          // false ⇒ no journal bound; render read-only and say why
+}
+
+// POST /api/import/stage  — body: raw bytes; header: X-Ledgeline-Filename (bare name)
+{
+  "stageId": "opaque-token",          // NOT a path, and never resolvable to one by arithmetic
+  "format": "ofx",
+  "preview": {"header": ["date","amount","…"], "rows": [["…"]], "rowCount": 26, "truncated": false},
+  "statement": {"accountHint":"7777","currency":"USD",
+                "ledgerBalance":"-3238.65","balanceAsOf":"2026-08-12"},   // or null
+  "notes": [{"kind":"preambleSkipped","lines":4}],   // ConvertNote, tagged by `kind`
+  "candidates": [{"id":"import/2026/bank.csv.rules","label":"bank","score":0.98,
+                  "signals":{"txns":26,"postings":52,"amountlessPostings":0,
+                             "bareCommodityAmounts":0,"unknownAccounts":0},
+                  "sample":[{"date":"2026-06-24","description":"…","postings":["…"]}],
+                  // the rules file's own top-level accounts, omitted when it declares none.
+                  // `account1` is where every imported posting lands, so it is what the
+                  // balance-assertion account defaults to.
+                  "account1":"assets:bank:checking","account2":"expenses:unknown"}],
+  "defaults": {"csvPath":"import/2026/bank.csv","journalId":"2026/2026.journal"}
+}
+
+// POST /api/import/dry-run
+// → {"stageId","rulesId","csvPath","journalId","balance":"2945.05"|null,"balanceAccount":"…"|null}
+//   `rulesId` and `journalId` are REQUIRED and never null. A dry-run with no rules file has
+//   nothing to propose and nothing to reconcile; that state is `save-csv` below.
+{
+  "ok": true,
+  "entries": "2026-02-01 GROCERY STORE\n    …",   // hledger's stdout, verbatim, re-parseable
+  "count": 3,
+  "status": "would import 3 new transactions from bank.csv:",   // hledger's stderr, verbatim
+  "skipped": {"olderThan":"2026-02-05","count":1},              // .latest dropped rows — or null
+  // ONE representation for all three amounts: the commodity hledger computed the balance in,
+  // both numerals at the same scale. The user types `2945.05` and hledger answers `$2945.05`;
+  // rendered unchanged they read as a mismatch beside a badge that says "match".
+  // `difference` is null when either side is not one amount (a multi-commodity balance), and
+  // `computed` is "" when hledger could not compute one at all — an absence, not a zero.
+  "balance": {"statement":"$2945.05","computed":"$2945.05","matches":true,"difference":"$0.00"},
+  "blockedByGit": ["2026/2026.journal"]            // modified targets; [] when clear
+}
+// on failure: {"ok": false, "stderr": "…"}  — rendered verbatim in a <pre>, never paraphrased
+
+// POST /api/import/commit   — dry-run body + {"writeAssertion": true}
+{
+  "csvWritten": "import/2026/bank.csv",
+  "journalWritten": "2026/2026.journal",
+  "imported": 3,
+  "ordering": {"inOrder": false, "moves": [{"date":"2026-01-20","description":"…",
+                                            "fromLine":812,"toLine":540}]},
+  "git": {"committed": true, "paths": ["…"], "skipped": []}    // or null when no repo
+}
+
+// POST /api/import/save-csv — {"stageId","csvPath"}   (no rules file fits; keep the CSV)
+{
+  "csvWritten": "import/2026/bank.csv",
+  "git": {"committed": true, "paths": ["…"], "skipped": []}    // or null when no repo
+}
+
+// POST /api/import/sort     — {"journalId": "…"}   (only after commit reported inOrder:false)
+{"moved": 3}
+
+// GET/PUT /api/prefs
+{"hledgerPath": null, "gitAutocommit": null}
+```
+
+Sequencing rules the server owns, not the SPA:
+
+- `stage` writes the converted CSV to a per-session temp dir **named as the chosen destination
+  will be**, and copies any existing `.latest.<name>` in beside it, so the dry-run sees the real
+  dedup state. That is the only way `skipped` can be truthful before anything is written.
+- `commit` writes the CSV to its final destination **first**, then runs the real import there, so
+  hledger writes `.latest` next to the file it will look for next time.
+- A `blockedByGit` non-empty from `dry-run` makes `commit` refuse. The UI must not be the only
+  thing enforcing that. `save-csv` refuses on the same terms: overwriting an uncommitted edit
+  is the one thing `git diff` could not have undone.
+- The balance is verified by **concatenation** (`cat journal proposed | hledger -f- check`), never
+  two `-f` flags — see fact 3.
+- A statement balance written as an assertion **carries its commodity**, and a `commit` that
+  asks for one verifies it *before* applying the import — see the amendments below.
+
 ### Contract amendments made during implementation
 
 Per convention #9 in `plans/00-overview.md`, every contract change made while building is
@@ -512,6 +610,46 @@ recorded here rather than left as a surprise in the diff.
 - **A yearless date (`Y 2026` + `01/15`) refuses the whole file.** Legal hledger, but the sort
   key would depend on which `Y` is in scope, and `sort::plan` takes `&str` with no parse
   context.
+
+The next four were found by driving the real HTTP API against a live server, after lane E had
+landed on both sides. Each is a contract change, so each is recorded here.
+
+- **A balance assertion carries its commodity — fact 4, in our own output.** `writeAssertion`
+  rendered the user's number verbatim, so a journal kept in `$` and a balance typed as
+  `2949.80` produced `assets:bank:checking  0 = 2949.80`. That does not assert 2949.80
+  dollars: an amount with no commodity is an amount in the **empty** commodity, so hledger
+  computes 0 for it and the assertion fails — on the import that wrote it and on every
+  `hledger check` afterwards. The balance field's own placeholder is `2945.05` and an OFX
+  `LEDGERBAL` is a bare decimal, so this was the *normal* input. The commodity is now resolved
+  as: what the user typed, if they typed one; else the commodity hledger computed for that
+  account over the journal plus the proposed entries (a *bare* computed balance being an
+  answer too — a journal with no commodity gets a bare assertion); else the assertion is
+  **refused**, because a silently-wrong assertion is worse than none. The shape is
+  `hledger close --assert`'s: `assets:bank:checking    $0 = $2949.80`.
+- **A failing assertion refuses the commit *before* the import is applied.** It used to apply
+  the import and then return `400`, so the journal had changed and the client had an error.
+  `commit` now runs the dry-run's own preview first and puts journal + proposed + assertion to
+  `hledger check`; a balance that does not hold writes nothing at all — not the CSV, not the
+  journal. The post-import check stays, because what makes it safe to append those bytes is
+  that hledger agreed to *those bytes*.
+- **`POST /api/import/save-csv`, a new route, is the no-rules-file path.** The spec requires
+  the screen to offer "even if no rules file applies, they can store the csv", and the SPA was
+  sending `{"rulesId": null, "journalId": null}` to `dry-run`/`commit`, which
+  `deny_unknown_fields` and non-nullable handles refused with a `400`. Nullable handles would
+  encode a state that cannot happen — a dry-run with no rules file has nothing to propose —
+  so the path is its own route with a two-field body, `{stageId, csvPath}` →
+  `{csvWritten, git}`. `rulesId`/`journalId` on the dry-run body stay required, on both sides.
+- **A candidate carries `account1` and `account2`.** Both `Option<String>`, projected from
+  `DiscoveredRules`, which already had them. The SPA defaults the balance-assertion account to
+  the chosen rules file's `account1`; without these it had to fetch the whole of `/api/rules`
+  and join it onto the candidate list by `id`, a join whose failure mode was a silently empty
+  field (the two listings come from two separate scans).
+- **The reconciliation's three amounts are in one representation.** `statement` was the user's
+  string verbatim and `computed` was hledger's, so `2949.80` sat beside `$2949.80` and a UI
+  showing both read as a mismatch when it was a match. All three are now rendered in the
+  commodity hledger reported for the account, at a shared scale; `difference` is
+  `Option<String>` and was always a `null`-able field in the code, which the literal above did
+  not say.
 
 ## UI behavior
 
@@ -674,7 +812,11 @@ same commit and says so.
 - Out-of-order dates are detected and the offered re-sort preserves directives, includes and
   comments byte-for-byte outside the moved transactions.
 - A statement balance, when given, is written as an assertion transaction in the
-  `hledger close --assert` shape.
+  `hledger close --assert` shape, **carrying the journal's commodity for that account**
+  (`assets:bank:checking    $0 = $2949.80`) — and `hledger check` over the resulting journal
+  passes. A balance that does not hold refuses the whole commit before anything is written.
+- When no rules file fits, the converted CSV can still be saved on its own, without a journal
+  and without hledger.
 - With git present: a modified target blocks the import until committed; a successful import
   commits exactly the CSV and journal it wrote and nothing else — asserted by staging
   unrelated dirty files in a test repo and proving they are still dirty afterwards.

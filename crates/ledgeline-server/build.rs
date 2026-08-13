@@ -46,4 +46,11 @@ fn main() {
     // Re-run (and, for release, re-embed) when the SPA build output changes.
     println!("cargo:rerun-if-changed=../../web/build");
     println!("cargo:rerun-if-changed=../../web/build/index.html");
+
+    // `hledger::resolve` reads this through `option_env!`, which cargo does NOT
+    // track on its own: without this line, flipping the variable leaves a stale
+    // binary that still points at the previous hledger and gives no hint why.
+    // Unset is the normal case (a plain `cargo build`), and resolution then
+    // falls through to `$PATH`.
+    println!("cargo:rerun-if-env-changed=LEDGELINE_HLEDGER_PATH");
 }
