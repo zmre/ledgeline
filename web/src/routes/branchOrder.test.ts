@@ -57,6 +57,11 @@ const SURFACES = [
     {name: "staged file panel", file: "lib/imports/ui/StagedPanel.svelte", testid: "imports-stage-error"},
     {name: "dry run panel", file: "lib/imports/ui/DryRunPanel.svelte", testid: "imports-dry-run-error"},
     {name: "import result panel", file: "lib/imports/ui/ResultPanel.svelte", testid: "imports-commit-error"},
+    // The account-alias editor reads a listing whose failure must be reachable
+    // for the same reason as the rest: a screen that silently shows an empty
+    // alias list when the request failed tells the user their journal declares
+    // none, which is a different fact entirely.
+    {name: "alias panel", file: "lib/imports/ui/AliasPanel.svelte", testid: "imports-aliases-error"},
 ] as const;
 
 describe("UNIT data surfaces keep the error branch reachable (FE-1 / FE-5)", () => {

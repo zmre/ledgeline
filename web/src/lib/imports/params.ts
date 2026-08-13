@@ -4,20 +4,24 @@
 // is untested by construction. The imports route owns the replaceState glue,
 // exactly as the reports route does over `lib/reports/ui/params.ts`.
 //
-// Scheme: `?tab=new|rules`, and nothing else. Which rules FILE is open is
-// deliberately NOT in the URL: it is picked from a listing the page must fetch
-// before it can honour a name, the id is the engine's own opaque handle rather
-// than something a user would type, and today's screen has never restored it.
-// Adding it later is additive — a new key here and a fallback in the panel.
+// Scheme: `?tab=new|rules|aliases`, and nothing else. Which rules FILE is open
+// is deliberately NOT in the URL: it is picked from a listing the page must
+// fetch before it can honour a name, the id is the engine's own opaque handle
+// rather than something a user would type, and today's screen has never restored
+// it. Adding it later is additive — a new key here and a fallback in the panel.
 
-export type ImportTab = "new" | "rules";
+export type ImportTab = "new" | "rules" | "aliases";
 
 /** "New Transactions" is the first (default) tab — the screen Imports opens on. */
-export const TAB_ORDER: ImportTab[] = ["new", "rules"];
+export const TAB_ORDER: ImportTab[] = ["new", "rules", "aliases"];
 
 export const TAB_LABELS: Record<ImportTab, string> = {
     new: "New Transactions",
     rules: "Edit Rules",
+    // "Account Aliases" rather than "Aliases": the word alone means nothing to
+    // someone who has not read hledger's manual, and this tab is the one place
+    // in the app where the reader might not have.
+    aliases: "Account Aliases",
 };
 
 /** Everything the Imports screen restores from the URL. */

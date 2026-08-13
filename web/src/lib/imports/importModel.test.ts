@@ -15,6 +15,7 @@
 import {describe, expect, it} from "vitest";
 import {ApiShapeError} from "$lib/api/client";
 import {decodeCommitResult, decodeDryRun, decodeImportCapabilities, decodePrefs, decodeSortResult, decodeStagedFile} from "$lib/api/nativeDecode";
+import {dataView} from "$lib/stores/loadState";
 import {
     acceptAttribute,
     actionBlocker,
@@ -31,10 +32,12 @@ import {
     fileExtension,
     formatList,
     formatScore,
+    formIsBusy,
     gitBlockMessage,
     headerFilename,
     hledgerBannerCopy,
     importAction,
+    isInFlight,
     journalOptionLabel,
     noCandidates,
     noteIsWarning,
@@ -689,6 +692,64 @@ describe("UNIT actions", () => {
         expect(actionBlocker("saveAndImport", {...draft, balanceAccount: "assets:bank"})).toBeNull();
         // A blank balance needs no account.
         expect(actionBlocker("saveAndImport", {...draft, balance: "   "})).toBeNull();
+    });
+
+    it("does not fire the balance blocker once the account has been seeded from the rules file", () => {
+        // The ordinary path: an OFX volunteers its closing balance and the
+        // chosen candidate's `account1` fills the account in. Nothing is
+        // missing, so nothing may be in the way of the button.
+        const seeded = {
+            csvPath: "import/2026/bank.csv",
+            journalId: "2026/2026.journal",
+            balance: "-3238.65",
+            balanceAccount: defaultBalanceAccount(candidateById(decodeStagedFile(STAGE_JSON), "import/2026/bank.csv.rules")),
+        };
+        expect(seeded.balanceAccount).toBe("assets:bank:checking");
+        expect(actionBlocker("saveAndImport", seeded)).toBeNull();
+    });
+
+    it("never blocks Save CSV over a balance its request cannot carry", () => {
+        // `Save CSV` is the no-rules-file path, so there is no `account1` to
+        // seed the account from — and its route takes `{stageId, csvPath}` and
+        // nothing else. Blocking it over the prefilled balance dead-ended the
+        // only button that path has.
+        const prefilled = {csvPath: "import/2026/bank.csv", journalId: null, balance: "-3238.65", balanceAccount: ""};
+        expect(actionBlocker("saveCsv", prefilled)).toBeNull();
+        // The CSV path is the one thing that request DOES carry, so it still speaks up.
+        expect(actionBlocker("saveCsv", {...prefilled, csvPath: "  "})).toMatch(/name/);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Busy, which is not the question `dataView` answers
+// ---------------------------------------------------------------------------
+
+describe("UNIT isInFlight / formIsBusy", () => {
+    it("does not call an unrequested resource busy, where `dataView` calls it loading", () => {
+        // The whole class of bug, in two lines. `dataView("idle", false)` is
+        // "loading" ON PURPOSE — every other surface in this app fetches on
+        // mount, so idle is the gap before the first response and a spinner
+        // belongs in it. This screen's three resources wait for a drop or a
+        // button press and may sit idle forever, so the same reading froze the
+        // form, span the drop target and disabled the action button at rest.
+        expect(dataView("idle", false)).toBe("loading");
+        expect(isInFlight("idle")).toBe(false);
+        expect(formIsBusy("idle", "idle")).toBe(false);
+    });
+
+    it("is true only while a request is genuinely running", () => {
+        expect(isInFlight("loading")).toBe(true);
+        expect(isInFlight("ready")).toBe(false);
+        expect(isInFlight("error")).toBe(false);
+    });
+
+    it("freezes the form for either write, and unfreezes when both have settled", () => {
+        expect(formIsBusy("loading", "idle")).toBe(true);
+        expect(formIsBusy("idle", "loading")).toBe(true);
+        expect(formIsBusy("ready", "ready")).toBe(false);
+        // A failed dry run leaves the form editable: fixing a destination is
+        // the only way out of one.
+        expect(formIsBusy("error", "idle")).toBe(false);
     });
 });
 

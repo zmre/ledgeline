@@ -32,7 +32,9 @@ import {
     defaultBalanceAccount,
     defaultJournalId,
     deriveCsvPath,
+    formIsBusy,
     headerFilename,
+    isInFlight,
     refuseFile,
     sameRunRequest,
     sameWriteRequest,
@@ -92,7 +94,25 @@ let csvPathTouched = $state(false);
 let journalId = $state<string | null>(null);
 let balance = $state("");
 let balanceAccount = $state("");
-let balanceTouched = $state(false);
+/**
+ * The user has aimed the assertion themselves, so choosing a different rules
+ * file must not re-aim it.
+ *
+ * ONE field's latch, and named for it. It used to be `balanceTouched` and both
+ * setters set it, which made the amount and the account inseparable: typing the
+ * closing balance off a paper statement — the ordinary thing to do, and the
+ * field the eye lands on first — permanently blocked the account from ever
+ * being seeded, and the form then refused to submit because the account it had
+ * just stopped filling in was empty.
+ *
+ * There is deliberately no `balanceTouched` twin. The amount has exactly one
+ * seeding moment, `seedFrom`, which runs for a newly staged file and resets
+ * every other field in the same breath, so nothing exists that could overwrite
+ * what the user typed. A latch with no seeding path to guard would be a flag
+ * that is written and never read. If the amount ever gains a second source,
+ * that source needs its own latch — not this one.
+ */
+let balanceAccountTouched = $state(false);
 let writeAssertion = $state(true);
 
 /** A file refused before it was uploaded (a `.pdf`, an extension the engine does not read). */
@@ -112,6 +132,12 @@ let sortError = $state<string | null>(null);
 
 let capabilitiesKey: string | null = null;
 let stageAttempt = 0;
+/**
+ * The file the user last offered, so Retry can re-upload one whose FIRST upload
+ * failed. `staged.query` is written on success only, so it is null exactly when
+ * a retry is most wanted.
+ */
+let offeredFile: File | null = null;
 
 /** The engine, or null when no server is configured yet. */
 function api(): LedgelineApi | null {
@@ -131,7 +157,7 @@ function resetFlow(): void {
     csvPathTouched = false;
     balance = "";
     balanceAccount = "";
-    balanceTouched = false;
+    balanceAccountTouched = false;
     writeAssertion = true;
     dryRunRequested = false;
     writeRequested = false;
@@ -153,7 +179,7 @@ function seedFrom(file: StagedFile, journals: readonly JournalTarget[]): void {
     csvPathTouched = false;
     journalId = defaultJournalId(file.defaults, journals);
     balance = file.statement?.ledgerBalance ?? "";
-    balanceTouched = false;
+    balanceAccountTouched = false;
     seedBalanceAccount();
 }
 
@@ -161,10 +187,11 @@ function seedFrom(file: StagedFile, journals: readonly JournalTarget[]): void {
  * Default the assertion's account to the chosen rules file's `account1`.
  *
  * Read straight off the chosen candidate, which carries it. Skipped once the
- * user has typed: an assertion is theirs to aim.
+ * user has typed AN ACCOUNT: an assertion is theirs to aim. Editing the amount
+ * is not aiming it and does not stop this.
  */
 function seedBalanceAccount(): void {
-    if (balanceTouched) return;
+    if (balanceAccountTouched) return;
     balanceAccount = defaultBalanceAccount(candidateById(staged.value, selectedRulesId));
 }
 
@@ -232,17 +259,37 @@ export const importStore = {
         return staged.error;
     },
     /**
-     * Whether a file has been offered at all. The staged section is gated on
-     * THIS rather than on the payload, so the drop target's spinner appears
-     * while the first upload is in flight and no section claims "no rules file
-     * fits" before the answer exists.
+     * An upload is running right now.
+     *
+     * The drop target's spinner, and NOTHING else, hangs off this. It was
+     * `stagedView === "loading"`, which is true at rest as well — so the panel
+     * said "Reading the file…" to a user who had not dropped anything yet, and
+     * then, once a file finally landed, went back to "Drop a statement here"
+     * exactly when there was something to show. Backwards, both halves.
      */
-    get hasStageRequest(): boolean {
-        return staged.query !== null;
+    get stagingInFlight(): boolean {
+        return isInFlight(staged.status);
+    },
+    /**
+     * Whether the staged section has anything to say: a converted file, or a
+     * failure to report.
+     *
+     * NOT "a file has been offered". While the FIRST upload is in flight there
+     * is neither, and the drop target's own spinner is the feedback — a second
+     * one below it would be the same news twice. It stays true once anything has
+     * settled, which is what makes a failed first upload visible at all: the
+     * payload is still null there, so gating on `staged.value` (or on
+     * `staged.query`, which is written on success only) silently stopped the
+     * spinner and showed nothing.
+     */
+    get hasStagedOutcome(): boolean {
+        return staged.query !== null || staged.error !== null;
     },
     get stagedView(): DataView {
         // Matched on the request, not just the status: a second drop must not
         // render the FIRST file's preview while its own upload is in flight.
+        // Only ever read once `hasStagedOutcome`, so its idle reading — which
+        // `dataView` reports as "loading" — is never on screen.
         return dataView(staged.status, staged.value !== null, staged.query?.attempt === stageAttempt);
     },
     /** A file refused locally (a `.pdf`, an unread extension) — never uploaded. */
@@ -261,6 +308,7 @@ export const importStore = {
         rejection = refusal;
         if (refusal !== null) return;
         resetFlow();
+        offeredFile = file;
         stageAttempt += 1;
         const attempt = stageAttempt;
         await staged.load(url, {file, attempt});
@@ -269,10 +317,16 @@ export const importStore = {
         seedFrom(result, capabilities.value?.journals ?? []);
     },
 
-    /** Re-upload the file already offered (the staged section's Retry). */
+    /**
+     * Re-upload the file already offered (the staged section's Retry).
+     *
+     * Reads the file the USER offered, not `staged.query.file`: the query is
+     * written on success, so a Retry offered after the only interesting failure
+     * — the first one — had nothing to retry with and did nothing at all.
+     */
     async retryStage(): Promise<void> {
-        const query = staged.query;
-        if (query !== null) await this.offerFile(query.file);
+        const file = offeredFile;
+        if (file !== null) await this.offerFile(file);
     },
 
     // --- the form ---------------------------------------------------------
@@ -312,14 +366,14 @@ export const importStore = {
         journalId = value;
         this.invalidateRun();
     },
+    /** Type the closing balance. Deliberately latches nothing — see `balanceAccountTouched`. */
     setBalance(value: string): void {
         balance = value;
-        balanceTouched = true;
         this.invalidateRun();
     },
     setBalanceAccount(value: string): void {
         balanceAccount = value;
-        balanceTouched = true;
+        balanceAccountTouched = true;
         this.invalidateRun();
     },
     setWriteAssertion(value: boolean): void {
@@ -346,6 +400,17 @@ export const importStore = {
     get dryRunError(): Error | null {
         return dryRun.error;
     },
+    /** The dry run is running right now. Never `dryRunView === "loading"` — see `isInFlight`. */
+    get dryRunInFlight(): boolean {
+        return isInFlight(dryRun.status);
+    },
+    /**
+     * Which branch the dry-run panel renders.
+     *
+     * Only read under `dryRunRequested`, i.e. once a dry run has been asked for.
+     * Asked before that it answers "loading" — `dataView` has no idle branch to
+     * give — which is why nothing here decides whether a control is BUSY.
+     */
     get dryRunView(): DataView {
         return dataView(dryRun.status, dryRun.value !== null, sameRunRequest(dryRun.query, runBody()));
     },
@@ -370,8 +435,27 @@ export const importStore = {
     get committedError(): Error | null {
         return committed.error;
     },
+    /** The write is running right now: the one thing `Write changes` must not be pressed twice during. */
+    get writeInFlight(): boolean {
+        return isInFlight(committed.status);
+    },
+    /** Which branch the result panel renders. Only read under `writeRequested` — see `dryRunView`. */
     get committedView(): DataView {
         return dataView(committed.status, committed.value !== null, sameWriteRequest(committed.query, writeRequest()));
+    },
+
+    /**
+     * The destinations, the balance and the action button are frozen.
+     *
+     * Lives here rather than in the panel so it is a tested expression: it was
+     * `dryRunView === "loading" || committedView === "loading"` in a `.svelte`
+     * file, which was true from mount — nothing had been requested, so neither
+     * view had a payload, so both read "loading" — and froze the whole form
+     * before the user had done anything. A `.svelte` file is the one place in
+     * this repo where that could not have a test on it.
+     */
+    get formBusy(): boolean {
+        return formIsBusy(dryRun.status, committed.status);
     },
 
     /**

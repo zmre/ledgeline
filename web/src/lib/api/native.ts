@@ -286,6 +286,31 @@ export interface ImportSaveCsvBody {
     csvPath: string;
 }
 
+/**
+ * One change to one `alias` line, tagged by `kind`.
+ *
+ * There is no `move`: aliases are POSITIONAL, so reordering them is a semantic
+ * change dressed as a cosmetic one, and the engine does not offer it either.
+ * `append` carries no position because the end of the file is the only place an
+ * alias can be inserted without changing what anything above it means.
+ */
+export type SaveAliasEdit =
+    | {kind: "replace"; index: number; pattern: string; replacement: string; regex: boolean}
+    | {kind: "delete"; index: number}
+    | {kind: "append"; pattern: string; replacement: string; regex: boolean};
+
+/**
+ * `PUT /api/aliases/{*journalId}`.
+ *
+ * Unlike a rules-file save, omitting a line is NOT a delete: this request cannot
+ * reorder and cannot delete by omission, so naming one line changes one line and
+ * an empty `edits` writes nothing at all.
+ */
+export interface SaveAliasesBody {
+    revision: string;
+    edits: SaveAliasEdit[];
+}
+
 /** `PUT /api/prefs`. Both fields are tri-state: null means "unset", not "off". */
 export interface PrefsBody {
     hledgerPath: string | null;
@@ -504,6 +529,24 @@ export class LedgelineApi {
     /** Save a whole rules document. → 200, the saved document (decode with `decodeRulesDoc`). */
     saveRules(id: string, body: SaveRulesBody): Promise<unknown> {
         return this.mutate<unknown>("PUT", `/api/rules/${encodeRulesId(id)}`, 200, body);
+    }
+
+    /** Every `alias` the journal declares (decode with `decodeAliasListing`). */
+    listAliases(): Promise<unknown> {
+        return this.getJson("/api/aliases");
+    }
+
+    /**
+     * Rewrite one journal file's alias lines. → 200, that file at its new
+     * revision (decode with `decodeAliasFileResponse`); 409 when the file moved
+     * underneath the editor.
+     *
+     * The id is encoded segment by segment for the same reason a rules id is:
+     * it genuinely contains slashes (`2026/2026.journal`) and they must survive
+     * as path separators rather than as `%2F`.
+     */
+    saveAliases(journalId: string, body: SaveAliasesBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", `/api/aliases/${encodeRulesId(journalId)}`, 200, body);
     }
 
     /** ADD a whole transaction. → 201 `{index, transaction}`. */

@@ -21,13 +21,15 @@
     // The proposed entries are hledger's stdout — valid, re-parseable journal
     // text, not scraped human-readable output — so they are shown as they are.
     import AsyncSection from "$lib/components/AsyncSection.svelte";
+    import {aliasNotice, aliasText, relevantAliases, renameText} from "../aliasModel";
     import {balanceVerdict, canWrite, gitBlockMessage, skippedWarning} from "../importModel";
-    import type {DryRunResult} from "../importTypes";
+    import type {AliasEntry, DryRunResult} from "../importTypes";
 
     let {
         view,
         result,
         error,
+        aliases,
         writing,
         onRetry,
         onWrite,
@@ -35,6 +37,8 @@
         view: import("$lib/stores/loadState").DataView;
         result: DryRunResult | null;
         error: Error | null;
+        /** The journal's aliases, so a rename can be shown beside the line that caused it. */
+        aliases: readonly AliasEntry[];
         /** The real import is running, so `Write changes` must not be pressable twice. */
         writing: boolean;
         onRetry: () => void;
@@ -59,6 +63,34 @@
                 {#if skippedWarning(run.skipped) !== null}
                     <div class="alert alert-warning rounded-box items-start py-2 text-sm" role="alert" data-testid="imports-skipped">
                         <span>{skippedWarning(run.skipped)}</span>
+                    </div>
+                {/if}
+
+                <!--
+                    An account rewrite happening silently, immediately before the
+                    only irreversible step on this screen, is exactly what must
+                    not happen. The renames are the ENGINE's measurement — the
+                    same import run again with no aliases, diffed — so this is
+                    what hledger will do rather than what we think it will.
+                    `aliasNotice` returns null when the aliases matched nothing
+                    here, which is what keeps the section quiet on the ordinary
+                    import.
+                -->
+                {#if aliasNotice(run.aliases) !== null}
+                    <div class="alert alert-info rounded-box flex-col items-start gap-2 py-2 text-sm" role="status" data-testid="imports-alias-effect">
+                        <span class="font-semibold">{aliasNotice(run.aliases)}</span>
+                        <ul class="list-inside list-disc font-mono text-xs">
+                            {#each run.aliases?.renames ?? [] as rename (rename.from)}
+                                <li>{renameText(rename)}</li>
+                            {/each}
+                        </ul>
+                        {#each relevantAliases(aliases, run.aliases) as relevance (relevance.alias.journalId + relevance.alias.index)}
+                            <span class="text-xs">
+                                {relevance.attributable ? "From" : "Possibly from"}
+                                <code>{aliasText(relevance.alias)}</code>
+                                in {relevance.alias.journalId}, line {relevance.alias.line}.
+                            </span>
+                        {/each}
                     </div>
                 {/if}
 

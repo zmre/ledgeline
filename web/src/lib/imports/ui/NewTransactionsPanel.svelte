@@ -31,14 +31,11 @@
             capabilitiesLoaded: importStore.capabilities !== null,
             hledgerAvailable: importStore.capabilities?.hledger.available === true,
             editable: importStore.capabilities?.editable === true,
-            staged: importStore.hasStageRequest,
+            staged: importStore.hasStagedOutcome,
             dryRunRequested: importStore.dryRunRequested,
             committed: importStore.writeRequested,
         })
     );
-
-    /** A dry run or a write is in flight — the form is frozen while either is. */
-    const busy = $derived(importStore.dryRunView === "loading" || importStore.committedView === "loading");
 
     function retryCapabilities(): void {
         const url = settings.serverUrl;
@@ -62,7 +59,13 @@
     onRetry={retryCapabilities}
 >
     {#snippet children(capabilities)}
-        <div class="flex flex-col gap-3">
+        <!-- `imports-new` anchors "the New Transactions panel is what rendered",
+             which is a different claim from any one section being visible. Every
+             section below is conditional — a machine without hledger sees only
+             the banner, a server with no journal bound sees only the read-only
+             notice — so a test that asserted on the drop target would be
+             asserting on the test machine's hledger installation. -->
+        <div class="flex flex-col gap-3" data-testid="imports-new">
             {#if shows(sections, "hledgerBanner")}
                 <HledgerBanner
                     {capabilities}
@@ -84,15 +87,18 @@
             {/if}
 
             {#if shows(sections, "drop")}
+                <!-- `stagingInFlight`, never `stagedView === "loading"`: the
+                     view collapses "nothing has been asked for" into "loading",
+                     so the drop target span before a file existed. -->
                 <DropTarget
                     formats={capabilities.formats}
-                    busy={importStore.stagedView === "loading"}
+                    busy={importStore.stagingInFlight}
                     rejection={importStore.rejection}
                     onFile={(file) => void importStore.offerFile(file)}
                 />
             {/if}
 
-            {#if importStore.hasStageRequest}
+            {#if importStore.hasStagedOutcome}
                 <StagedPanel
                     {sections}
                     view={importStore.stagedView}
@@ -106,7 +112,7 @@
                     balance={importStore.balance}
                     balanceAccount={importStore.balanceAccount}
                     writeAssertion={importStore.writeAssertion}
-                    {busy}
+                    busy={importStore.formBusy}
                     onRetry={() => void importStore.retryStage()}
                     onSelect={(id) => importStore.selectCandidate(id)}
                     onCsvPath={(value) => importStore.setCsvPath(value)}
@@ -123,7 +129,8 @@
                     view={importStore.dryRunView}
                     result={importStore.dryRun}
                     error={importStore.dryRunError}
-                    writing={importStore.committedView === "loading"}
+                    aliases={capabilities.aliases}
+                    writing={importStore.writeInFlight}
                     onRetry={() => void importStore.runDryRun()}
                     onWrite={() => void importStore.writeChanges()}
                 />

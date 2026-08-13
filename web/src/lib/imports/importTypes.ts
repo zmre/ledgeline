@@ -54,6 +54,58 @@ export interface GitCapability {
     readonly autocommit: boolean;
 }
 
+/** Why an alias is not handed to hledger for an import. */
+export type AliasRefusal = "scoped" | "empty" | "control" | "tooLong" | "limit" | "stale";
+
+/** Why an alias line is presented read-only. */
+export type AliasLock = "commentLike" | "empty" | "delimiter" | "control" | "tooLong";
+
+/**
+ * One `alias` directive in the journal.
+ *
+ * Two verdicts, and they are genuinely independent — which is why they are two
+ * pairs of fields rather than one. `forwarded` is "will an import use this";
+ * `editable` is "will the GUI rewrite this line". An alias with a `;` in it is
+ * forwarded but not editable (hledger reads the `;` as part of the account name,
+ * so we show the line rather than cement that reading); one closed by
+ * `end aliases` is editable but not forwarded.
+ */
+export interface AliasEntry {
+    /** The file it is declared in, relative to the include root. */
+    readonly journalId: string;
+    /** 0-based position among that FILE's alias lines — the handle a save names. */
+    readonly index: number;
+    /** 1-based line number in that file. */
+    readonly line: number;
+    /** The pattern as written, without a regex's slashes. */
+    readonly pattern: string;
+    readonly replacement: string;
+    /** Whether the pattern is the `/REGEX/` form. */
+    readonly regex: boolean;
+    readonly forwarded: boolean;
+    readonly refusal: AliasRefusal | null;
+    readonly refusalMessage: string | null;
+    readonly editable: boolean;
+    readonly lock: AliasLock | null;
+    readonly lockMessage: string | null;
+}
+
+/** One journal file's alias lines, and the revision a save must echo. */
+export interface AliasFile {
+    readonly journalId: string;
+    readonly label: string;
+    /** Echo this back in a save to prove the edit is against these bytes. */
+    readonly revision: string;
+    readonly writable: boolean;
+    readonly aliases: readonly AliasEntry[];
+}
+
+/** `GET /api/aliases` — every alias the open journal declares. */
+export interface AliasListing {
+    readonly editable: boolean;
+    readonly files: readonly AliasFile[];
+}
+
 /** `GET /api/import/capabilities` — what this screen may offer at all. */
 export interface ImportCapabilities {
     readonly hledger: HledgerStatus;
@@ -61,6 +113,8 @@ export interface ImportCapabilities {
     readonly formats: readonly string[];
     readonly journals: readonly JournalTarget[];
     readonly git: GitCapability;
+    /** Every `alias` the journal declares, in file order. Empty for most journals. */
+    readonly aliases: readonly AliasEntry[];
     /** False ⇒ no journal is bound to an editor, so nothing here can be written. */
     readonly editable: boolean;
 }
@@ -220,8 +274,36 @@ export interface DryRunOk {
     readonly status: string;
     readonly skipped: SkippedRows | null;
     readonly balance: BalanceCheck | null;
+    /**
+     * What the journal's aliases did to THESE entries, or null when none is in
+     * force. See {@link AliasEffect}.
+     */
+    readonly aliases: AliasEffect | null;
     /** Modified targets that make `commit` refuse. Empty when clear. */
     readonly blockedByGit: readonly string[];
+}
+
+/** One account rewrite an alias performed on this import. */
+export interface AliasRename {
+    /** The account the rules file produced. */
+    readonly from: string;
+    /** The account the import will actually write. */
+    readonly to: string;
+}
+
+/**
+ * The account rewrites the forwarded aliases performed on this import.
+ *
+ * MEASURED by the engine, not inferred: it repeats the same dry run with no
+ * `--alias` and diffs the two proposals, so these are hledger's own answer
+ * rather than anyone's reimplementation of its regex engine.
+ *
+ * `renames` empty means the aliases matched nothing in this statement, which is
+ * the screen's cue to stay quiet.
+ */
+export interface AliasEffect {
+    readonly forwarded: number;
+    readonly renames: readonly AliasRename[];
 }
 
 /** A failed dry run. `stderr` is rendered verbatim in a `<pre>` and NEVER paraphrased. */

@@ -14,6 +14,7 @@
 
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {settings} from "$lib/stores/settings.svelte";
+import {actionBlocker, importAction} from "./importModel";
 import {importStore} from "./importStore.svelte";
 
 const CAPABILITIES = {
@@ -38,6 +39,9 @@ const STAGE = {
             id: "import/2026/bank.csv.rules",
             label: "bank",
             score: 0.98,
+            // The account every posting this rules file makes lands in, and so
+            // the only account its statement balance could be asserted against.
+            account1: "assets:bank:checking",
             signals: {txns: 1, postings: 2, amountlessPostings: 0, bareCommodityAmounts: 0, unknownAccounts: 0},
             sample: [],
         },
@@ -45,6 +49,7 @@ const STAGE = {
             id: "import/2026/card.csv.rules",
             label: "card",
             score: 0.4,
+            account1: "liabilities:card:visa",
             signals: {txns: 1, postings: 2, amountlessPostings: 0, bareCommodityAmounts: 0, unknownAccounts: 0},
             sample: [],
         },
@@ -80,6 +85,25 @@ function routes(table: Record<string, unknown>): ReturnType<typeof vi.fn> {
 
 const BASE_ROUTES = {"/version": "1.52", "/api/import/capabilities": CAPABILITIES};
 
+/** A response the test releases by hand, so a request can be observed mid-flight. */
+function deferred(): {promise: Promise<Response>; release: (response: Response) => void} {
+    let release!: (response: Response) => void;
+    const promise = new Promise<Response>((resolve) => {
+        release = resolve;
+    });
+    return {promise, release};
+}
+
+/** The action button's disabled-reason, computed exactly as `StagedPanel` computes it. */
+function blockerNow(): string | null {
+    return actionBlocker(importAction(importStore.selectedRulesId), {
+        csvPath: importStore.csvPath,
+        journalId: importStore.journalId,
+        balance: importStore.balance,
+        balanceAccount: importStore.balanceAccount,
+    });
+}
+
 /** The (url, init) pairs a stubbed fetch saw, for asserting on bodies and headers. */
 function calls(mock: ReturnType<typeof vi.fn>): FetchCall[] {
     return mock.mock.calls as FetchCall[];
@@ -110,6 +134,29 @@ describe("UNIT importStore — capabilities", () => {
         await importStore.reloadCapabilities("http://engine.test");
         expect(importStore.capabilitiesView).toBe("error");
         expect(importStore.capabilitiesError).not.toBeNull();
+    });
+});
+
+describe("UNIT importStore — nothing has been asked for yet", () => {
+    // THE regression test for the whole class. All three of this screen's
+    // resources sit idle until the user acts, and `dataView` reports idle as
+    // "loading" — correctly, for the mount-fetching surfaces it was written for.
+    // Reading those views as "busy" is what made the screen open with a spinner
+    // in the drop zone, a frozen destination form, and a Save button wearing a
+    // spinner nobody had pressed. A fresh module is the only honest way to ask:
+    // this file's other tests share one module-level store.
+    it("is not loading and not busy before a file has been offered", async () => {
+        vi.resetModules();
+        const {importStore: fresh} = await import("./importStore.svelte");
+
+        expect(fresh.stagingInFlight).toBe(false);
+        expect(fresh.dryRunInFlight).toBe(false);
+        expect(fresh.writeInFlight).toBe(false);
+        expect(fresh.formBusy).toBe(false);
+        // And no section claims a staged file, so nothing consults `stagedView`.
+        expect(fresh.hasStagedOutcome).toBe(false);
+        expect(fresh.dryRunRequested).toBe(false);
+        expect(fresh.writeRequested).toBe(false);
     });
 });
 
@@ -193,6 +240,157 @@ describe("UNIT importStore — a stale answer can never render", () => {
         await second;
         expect(importStore.staged?.stageId).toBe("stage-2");
         expect(importStore.stagedView).toBe("data");
+    });
+});
+
+describe("UNIT importStore — busy is in flight, and only in flight", () => {
+    beforeEach(() => {
+        vi.stubGlobal("fetch", routes({...BASE_ROUTES, "/api/import/stage": STAGE}));
+    });
+
+    it("spins the drop target only while the upload is running", async () => {
+        const gate = deferred();
+        vi.stubGlobal(
+            "fetch",
+            vi.fn((url: string) => (url.endsWith("/stage") ? gate.promise : Promise.resolve(json(CAPABILITIES))))
+        );
+        const offering = importStore.offerFile(upload("bank.csv"));
+        expect(importStore.stagingInFlight).toBe(true);
+        gate.release(json(STAGE));
+        await offering;
+        // The file is on screen now, so the drop zone goes back to inviting the
+        // next one instead of claiming to still be reading this one.
+        expect(importStore.stagingInFlight).toBe(false);
+        expect(importStore.hasStagedOutcome).toBe(true);
+    });
+
+    it("freezes the form for the length of a dry run and no longer", async () => {
+        await importStore.offerFile(upload("bank.csv"));
+        expect(importStore.formBusy).toBe(false);
+
+        const gate = deferred();
+        vi.stubGlobal(
+            "fetch",
+            vi.fn((url: string) => (url.endsWith("/dry-run") ? gate.promise : Promise.resolve(json(CAPABILITIES))))
+        );
+        const running = importStore.runDryRun();
+        expect(importStore.dryRunInFlight).toBe(true);
+        expect(importStore.formBusy).toBe(true);
+        gate.release(json(DRY_RUN));
+        await running;
+        // Unfrozen the moment it settles: the dry run is a thing to react to,
+        // and reacting means editing a destination.
+        expect(importStore.dryRunInFlight).toBe(false);
+        expect(importStore.formBusy).toBe(false);
+    });
+
+    it("freezes the form for the length of a write and no longer", async () => {
+        await importStore.offerFile(upload("bank.csv"));
+        const gate = deferred();
+        vi.stubGlobal(
+            "fetch",
+            vi.fn((url: string) => (url.endsWith("/commit") ? gate.promise : Promise.resolve(json(CAPABILITIES))))
+        );
+        const writing = importStore.writeChanges();
+        expect(importStore.writeInFlight).toBe(true);
+        expect(importStore.formBusy).toBe(true);
+        gate.release(json(COMMIT));
+        await writing;
+        expect(importStore.writeInFlight).toBe(false);
+        expect(importStore.formBusy).toBe(false);
+    });
+
+    it("leaves the form editable after a dry run fails — fixing it is the only way out", async () => {
+        await importStore.offerFile(upload("bank.csv"));
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("boom", {status: 500})));
+        await importStore.runDryRun();
+        expect(importStore.dryRunView).toBe("error");
+        expect(importStore.formBusy).toBe(false);
+    });
+});
+
+describe("UNIT importStore — the balance and the account it is a balance of", () => {
+    beforeEach(() => {
+        vi.stubGlobal("fetch", routes({...BASE_ROUTES, "/api/import/stage": STAGE}));
+    });
+
+    it("seeds the account from the chosen candidate, so nothing blocks the button", async () => {
+        await importStore.offerFile(upload("bank.csv"));
+        expect(importStore.balance).toBe("-3238.65");
+        expect(importStore.balanceAccount).toBe("assets:bank:checking");
+        expect(blockerNow()).toBeNull();
+    });
+
+    it("keeps seeding the account after the amount has been edited", async () => {
+        // One `balanceTouched` served both fields, so typing the closing balance
+        // off a paper statement permanently stopped the account from ever being
+        // filled in — and the form then refused to submit because the account it
+        // had just stopped filling in was empty.
+        await importStore.offerFile(upload("bank.csv"));
+        importStore.setBalance("-3238.66");
+        importStore.selectCandidate("import/2026/card.csv.rules");
+        expect(importStore.balanceAccount).toBe("liabilities:card:visa");
+        expect(blockerNow()).toBeNull();
+    });
+
+    it("never re-aims an account the user aimed themselves", async () => {
+        await importStore.offerFile(upload("bank.csv"));
+        importStore.setBalanceAccount("assets:bank:savings");
+        importStore.selectCandidate("import/2026/card.csv.rules");
+        expect(importStore.balanceAccount).toBe("assets:bank:savings");
+        // Editing the amount is not aiming it, and must not re-latch it either.
+        importStore.setBalance("12.00");
+        importStore.selectCandidate("import/2026/bank.csv.rules");
+        expect(importStore.balanceAccount).toBe("assets:bank:savings");
+    });
+
+    it("forgets both when a new file is staged", async () => {
+        await importStore.offerFile(upload("bank.csv"));
+        importStore.setBalanceAccount("assets:bank:savings");
+        await importStore.offerFile(upload("card.csv"));
+        expect(importStore.balanceAccount).toBe("assets:bank:checking");
+    });
+
+    it("does not block Save CSV over a balance that route cannot carry", async () => {
+        // The reported case: an OFX volunteers its closing balance, NO rules
+        // file matches (so the action is Save CSV and there is no `account1` to
+        // seed from), and the save-csv body is `{stageId, csvPath}` — it carries
+        // neither field. The only button that path has must be pressable.
+        vi.stubGlobal("fetch", routes({...BASE_ROUTES, "/api/import/stage": {...STAGE, candidates: []}}));
+        await importStore.offerFile(upload("bank.csv"));
+        expect(importStore.selectedRulesId).toBeNull();
+        expect(importStore.balance).toBe("-3238.65");
+        expect(importStore.balanceAccount).toBe("");
+        expect(blockerNow()).toBeNull();
+    });
+});
+
+describe("UNIT importStore — a first upload that fails", () => {
+    it("says so, and retries the file the user offered", async () => {
+        // A FRESH module, for the same reason as the test above: by now the
+        // shared store holds a payload AND a query from an earlier success, and
+        // it is precisely their absence that used to make this failure silent.
+        vi.resetModules();
+        vi.stubGlobal("fetch", routes({...BASE_ROUTES, "/api/import/stage": new Response("boom", {status: 500})}));
+        const [{importStore: fresh}, {settings: freshSettings}] = await Promise.all([import("./importStore.svelte"), import("$lib/stores/settings.svelte")]);
+        await freshSettings.setServerUrl("http://engine.test");
+        await fresh.reloadCapabilities("http://engine.test");
+
+        await fresh.offerFile(upload("bank.csv"));
+        expect(fresh.rejection).toBeNull();
+        expect(fresh.stagingInFlight).toBe(false);
+        expect(fresh.staged).toBeNull();
+        // `staged.query` is written on SUCCESS only, so a section gated on it
+        // showed nothing at all here: the drop target's spinner just stopped.
+        expect(fresh.hasStagedOutcome).toBe(true);
+        expect(fresh.stagedView).toBe("error");
+
+        vi.stubGlobal("fetch", routes({...BASE_ROUTES, "/api/import/stage": STAGE}));
+        // And Retry has a file to retry WITH — it used to read `staged.query`,
+        // which is null exactly here, so the button did nothing.
+        await fresh.retryStage();
+        expect(fresh.staged?.stageId).toBe("stage-1");
+        expect(fresh.stagedView).toBe("data");
     });
 });
 

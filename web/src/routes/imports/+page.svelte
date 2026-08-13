@@ -18,6 +18,7 @@
     import {importStore} from "$lib/imports/importStore.svelte";
     import {defaultImportParams, paramsToSearch, searchToParams, type ImportParams} from "$lib/imports/params";
     import {rulesStore} from "$lib/imports/rulesStore.svelte";
+    import AliasPanel from "$lib/imports/ui/AliasPanel.svelte";
     import EditRulesPanel from "$lib/imports/ui/EditRulesPanel.svelte";
     import ImportTabs from "$lib/imports/ui/ImportTabs.svelte";
     import NewTransactionsPanel from "$lib/imports/ui/NewTransactionsPanel.svelte";
@@ -74,6 +75,8 @@
 
     {#if params.tab === "new"}
         <NewTransactionsPanel />
+    {:else if params.tab === "aliases"}
+        <AliasPanel />
     {:else}
         <EditRulesPanel />
     {/if}

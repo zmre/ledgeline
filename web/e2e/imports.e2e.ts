@@ -101,7 +101,10 @@ test("navigates to Imports and lists the rules files beside the journal", async 
     // Asserted rather than clicked past: which tab is the landing one is a
     // decision, and a silent flip back to the editor would go unnoticed.
     await expect(page.getByRole("tab", {name: "New Transactions"})).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByTestId("imports-new-placeholder")).toBeVisible();
+    // The panel root, not any section inside it. Which sections render depends
+    // on whether the test machine has hledger and whether a journal is bound,
+    // and neither is what this test is about.
+    await expect(page.getByTestId("imports-new")).toBeVisible();
 
     await page.getByRole("tab", {name: "Edit Rules"}).click();
     await expect(page.getByRole("tab", {name: "Edit Rules"})).toHaveAttribute("aria-selected", "true");

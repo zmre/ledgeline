@@ -18,9 +18,9 @@ describe("UNIT imports/params", () => {
 
     describe("TAB_ORDER", () => {
         it("puts New Transactions first and labels every tab", () => {
-            expect(TAB_ORDER).toEqual(["new", "rules"]);
+            expect(TAB_ORDER).toEqual(["new", "rules", "aliases"]);
             expect(TAB_ORDER[0]).toBe(DFLT.tab);
-            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["New Transactions", "Edit Rules"]);
+            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["New Transactions", "Edit Rules", "Account Aliases"]);
         });
     });
 

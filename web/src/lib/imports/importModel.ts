@@ -16,6 +16,7 @@
 // No Svelte, no DOM, no `fetch` — `importStore.svelte.ts` owns all three.
 
 import type {ImportCommitBody, ImportRunBody, ImportSaveCsvBody} from "$lib/api/native";
+import type {LoadStatus} from "$lib/stores/loadState";
 import type {
     BalanceCheck,
     CandidateSignals,
@@ -46,7 +47,12 @@ export interface ImportFlowState {
     readonly hledgerAvailable: boolean;
     /** `capabilities.editable` — false means no journal is bound, so nothing can be written. */
     readonly editable: boolean;
-    /** A file has been staged (or is being staged). */
+    /**
+     * A staged file has landed, or an attempt to stage one failed — either way
+     * the staged section has something to render. NOT "an upload is running":
+     * the drop target owns that, and every section this unlocks sits inside a
+     * branch that needs the payload anyway.
+     */
     readonly staged: boolean;
     /** `Save and Import` was pressed, so a dry run exists or is running. */
     readonly dryRunRequested: boolean;
@@ -85,6 +91,47 @@ export function visibleSections(state: ImportFlowState): ImportSection[] {
 /** Convenience for a template: `{#if shows(sections, "preview")}`. */
 export function shows(sections: readonly ImportSection[], section: ImportSection): boolean {
     return sections.includes(section);
+}
+
+// ---------------------------------------------------------------------------
+// In flight — a DIFFERENT question from the one `dataView` answers
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a request is genuinely running right now.
+ *
+ * This exists because `dataView` cannot answer it and must never be asked. That
+ * function maps `idle` — nothing requested, nothing to wait for — onto
+ * "loading", which is CORRECT everywhere else in the app: every other surface
+ * fetches on mount, so idle is a sub-frame gap before the first request and a
+ * spinner is what belongs in it. All three of this screen's resources are the
+ * other kind. `staged` waits for a file to be dropped, `dryRun` and `committed`
+ * wait for a button, and each may sit idle forever.
+ *
+ * Reading `view === "loading"` as "busy" is what shipped: the drop target span
+ * "Reading the file…" before any file existed, the destination and balance
+ * fields were disabled from mount, and the action button wore a spinner nobody
+ * had earned and could not be pressed. All four were one expression.
+ *
+ * So: `dataView` decides which BRANCH to render for a request that exists.
+ * `isInFlight` decides whether a request exists and has not answered yet. A
+ * surface that disables, freezes or spins asks this one.
+ */
+export function isInFlight(status: LoadStatus): boolean {
+    return status === "loading";
+}
+
+/**
+ * Whether the destinations, the balance and the action button are frozen.
+ *
+ * The dry run and the write are the only two things that freeze them, and only
+ * while they are actually running: both write to disk on the user's behalf, and
+ * a field edited mid-flight would describe a request other than the one being
+ * answered. Neither `dryRunRequested` nor a held payload freezes anything — the
+ * form is how you change your mind after seeing a dry run.
+ */
+export function formIsBusy(dryRunStatus: LoadStatus, writeStatus: LoadStatus): boolean {
+    return isInFlight(dryRunStatus) || isInFlight(writeStatus);
 }
 
 // ---------------------------------------------------------------------------
@@ -421,11 +468,22 @@ export interface DestinationDraft {
  * A sentence rather than a boolean: a disabled button with no explanation is the
  * single most common way a form dead-ends, and every one of these is fixable in
  * the field right above it.
+ *
+ * Every blocker must describe the request the button ACTUALLY sends. `Save CSV`
+ * goes to its own route with a two-field body — `{stageId, csvPath}` — carrying
+ * neither the journal nor the balance nor the account, so only the CSV path can
+ * stop it. Refusing to press it over a balance it will not send was a dead end
+ * with no way out of it: an OFX volunteers its closing balance, so the field is
+ * prefilled, and the Save-CSV path is by definition the one where NO rules file
+ * matched, so there is no `account1` to default the account from either. The
+ * user's only exits were to delete a balance they had not typed or to type an
+ * account that would be thrown away.
  */
 export function actionBlocker(action: ImportAction, draft: DestinationDraft): string | null {
     const csvProblems = validateCsvPath(draft.csvPath);
     if (csvProblems.length > 0) return csvProblems[0]!;
-    if (action === "saveAndImport" && draft.journalId === null) return "Choose the journal to import into.";
+    if (action === "saveCsv") return null;
+    if (draft.journalId === null) return "Choose the journal to import into.";
     if (draft.balance.trim() !== "" && draft.balanceAccount.trim() === "") {
         return "A statement balance needs the account it is a balance of.";
     }

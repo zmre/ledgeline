@@ -28,6 +28,12 @@ import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
 import type {Holding, HoldingsPoint, HoldingsReport, HoldingsSeries, HoldingsWarning} from "$lib/holdings/types";
 import type {
+    AliasEffect,
+    AliasEntry,
+    AliasFile,
+    AliasListing,
+    AliasLock,
+    AliasRefusal,
     BalanceCheck,
     CandidateSignals,
     CommitResult,
@@ -462,7 +468,41 @@ interface RawImportCapabilities {
     formats?: unknown[];
     journals?: RawJournalTarget[];
     git?: RawGitCapability;
+    aliases?: RawAlias[];
     editable?: boolean;
+}
+
+interface RawAlias {
+    journalId?: string;
+    index?: number;
+    line?: number;
+    pattern?: string;
+    replacement?: string;
+    regex?: boolean;
+    forwarded?: boolean;
+    refusal?: string;
+    refusalMessage?: string;
+    editable?: boolean;
+    lock?: string;
+    lockMessage?: string;
+}
+
+interface RawAliasFile {
+    journalId?: string;
+    label?: string;
+    revision?: string;
+    writable?: boolean;
+    aliases?: RawAlias[];
+}
+
+interface RawAliasListing {
+    editable?: boolean;
+    files?: RawAliasFile[];
+}
+
+interface RawAliasEffect {
+    forwarded?: number;
+    renames?: {from?: string; to?: string}[];
 }
 
 /** One `ConvertNote`, flattened: the `kind` tag sits beside that variant's own fields. */
@@ -553,6 +593,7 @@ interface RawDryRun {
     status?: string;
     skipped?: RawSkippedRows | null;
     balance?: RawBalanceCheck | null;
+    aliases?: RawAliasEffect | null;
     blockedByGit?: unknown[];
     stderr?: string;
 }
@@ -1379,7 +1420,84 @@ export function decodeImportCapabilities(raw: unknown): ImportCapabilities {
         formats: frozen(decodeStrings(caps.formats, "import capabilities formats")),
         journals: frozen(caps.journals.map((target, i) => decodeJournalTarget(target, `import capabilities journals[${i}]`))),
         git: Object.freeze({available: caps.git?.available === true, autocommit: caps.git?.autocommit === true}),
+        // Absent reads as "this journal declares none", which is true of almost
+        // every journal and is exactly what an older engine meant by omitting it.
+        aliases: frozen((caps.aliases ?? []).map((alias, i) => decodeAlias(alias, `import capabilities aliases[${i}]`))),
         editable: caps.editable === true,
+    });
+}
+
+/** Values the engine may send; anything else reads as "no reason given". */
+const ALIAS_REFUSALS: readonly AliasRefusal[] = ["scoped", "empty", "control", "tooLong", "limit", "stale"];
+const ALIAS_LOCKS: readonly AliasLock[] = ["commentLike", "empty", "delimiter", "control", "tooLong"];
+
+function decodeAlias(raw: RawAlias | undefined, context: string): AliasEntry {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing alias`);
+    return Object.freeze({
+        journalId: str(raw.journalId, `${context} journalId`),
+        index: num(raw.index, `${context} index`),
+        line: num(raw.line, `${context} line`),
+        pattern: str(raw.pattern, `${context} pattern`),
+        replacement: str(raw.replacement, `${context} replacement`),
+        regex: raw.regex === true,
+        // Absent must NOT read as forwarded: claiming hledger saw a mapping it
+        // did not is the one wrong answer this whole surface exists to prevent.
+        forwarded: raw.forwarded === true,
+        refusal: ALIAS_REFUSALS.find((candidate) => candidate === raw.refusal) ?? null,
+        refusalMessage: optStr(raw.refusalMessage, `${context} refusalMessage`),
+        // Same argument, the other way: absent reads as NOT editable, so an
+        // engine that stops modelling a shape cannot have it rewritten anyway.
+        editable: raw.editable === true,
+        lock: ALIAS_LOCKS.find((candidate) => candidate === raw.lock) ?? null,
+        lockMessage: optStr(raw.lockMessage, `${context} lockMessage`),
+    });
+}
+
+function decodeAliasFile(raw: RawAliasFile | undefined, context: string): AliasFile {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing file`);
+    return Object.freeze({
+        journalId: str(raw.journalId, `${context} journalId`),
+        label: str(raw.label, `${context} label`),
+        revision: str(raw.revision, `${context} revision`),
+        writable: raw.writable === true,
+        aliases: frozen((raw.aliases ?? []).map((alias, i) => decodeAlias(alias, `${context} aliases[${i}]`))),
+    });
+}
+
+/** `GET /api/aliases` → every alias the open journal declares. */
+export function decodeAliasListing(raw: unknown): AliasListing {
+    const listing = raw as RawAliasListing;
+    if (typeof listing !== "object" || listing === null || !Array.isArray(listing.files)) {
+        throw new ApiShapeError("alias listing: expected a files array");
+    }
+    return Object.freeze({
+        editable: listing.editable === true,
+        files: frozen(listing.files.map((file, i) => decodeAliasFile(file, `alias listing files[${i}]`))),
+    });
+}
+
+/** `PUT /api/aliases/{*id}` → the file it just wrote, at its new revision. */
+export function decodeAliasFileResponse(raw: unknown): AliasFile {
+    return decodeAliasFile(raw as RawAliasFile, "alias save");
+}
+
+/**
+ * What the journal's aliases did to a dry run, or null when none is in force.
+ *
+ * Null and `{forwarded: 0, renames: []}` are different facts — "no alias
+ * applies to this journal" versus "aliases applied and changed nothing here" —
+ * and the screen says different things about them, so the absence is preserved
+ * rather than normalised into an empty object.
+ */
+function decodeAliasEffect(raw: RawAliasEffect | null | undefined, context: string): AliasEffect | null {
+    if (raw === undefined || raw === null) return null;
+    return Object.freeze({
+        forwarded: num(raw.forwarded, `${context} forwarded`),
+        renames: frozen(
+            (raw.renames ?? []).map((rename, i) =>
+                Object.freeze({from: str(rename?.from, `${context} renames[${i}] from`), to: str(rename?.to, `${context} renames[${i}] to`)})
+            )
+        ),
     });
 }
 
@@ -1544,6 +1662,7 @@ export function decodeDryRun(raw: unknown): DryRunResult {
                 ? null
                 : Object.freeze({olderThan: str(run.skipped.olderThan, "dry run skipped olderThan"), count: num(run.skipped.count, "dry run skipped count")}),
         balance: decodeBalanceCheck(run.balance, "dry run balance"),
+        aliases: decodeAliasEffect(run.aliases, "dry run aliases"),
         blockedByGit: frozen(decodeStrings(run.blockedByGit, "dry run blockedByGit")),
     });
 }
