@@ -15,8 +15,11 @@
 //! - `holdings` — average-cost stock-holdings engine (Phase 3d)
 //! - `edit`    — ropey-based write path (Phase 5)
 //! - `rules`   — format-preserving CSV import-rules (`*.rules`) model (Imports)
+//! - `convert` — normalize OFX/QFX/spreadsheet/delimited statements to one
+//!   tabular extract (Enhanced imports; see `plans/11-enhanced-import.md`)
 
 pub mod assertions;
+pub mod convert;
 pub mod decimal;
 pub mod edit;
 pub mod holdings;
