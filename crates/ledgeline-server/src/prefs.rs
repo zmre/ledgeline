@@ -54,13 +54,6 @@
 //! WP-11 contract does not specify — and it is tolerable only because this store
 //! is written solely in response to an explicit user action.
 
-// This module is complete but not yet CONSUMED: `import_api.rs` — the
-// `GET`/`PUT /api/prefs` routes and the capabilities endpoint — is a later WP-11
-// lane, and until it lands every item here is unreachable from the crate root.
-// `expect` rather than `allow` on purpose: once the routes exist and use these,
-// the expectation goes unfulfilled and the compiler asks for this line back.
-#![expect(dead_code, reason = "consumed by import_api.rs; see WP-11 lane E")]
-
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;

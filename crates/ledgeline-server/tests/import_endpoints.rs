@@ -1,0 +1,1851 @@
+//! The `/api/import/*` and `/api/prefs` HTTP surface (WP-11 lane E).
+//!
+//! # What is hermetic and what is not
+//!
+//! Three tiers, and the split is deliberate:
+//!
+//! * **Hermetic** — the token guard, every refusal `stage` makes, handle
+//!   resolution, and the no-absolute-path rule. These run in a plain
+//!   `cargo test` on a machine with nothing installed. The scratch tree they use
+//!   deliberately contains **no rules files**, so candidate scoring finds nothing
+//!   to score and the responses do not depend on whether hledger happens to be
+//!   on `PATH`.
+//! * **Stub-driven** — `capabilities` reporting a missing or too-old hledger.
+//!   Also hermetic: a shell script that prints a version banner is enough, and
+//!   the environment is handed to a re-executed child rather than mutated in this
+//!   process (see [`run_child`], the pattern `tests/prefs.rs` established —
+//!   `std::env::set_var` is `unsafe` in edition 2024 precisely because it races
+//!   the other test threads).
+//! * **hledger-backed** — the dry-run, the commit, and the balance proof. Gated
+//!   behind `LEDGELINE_HLEDGER_IMPORT_CHECK=1`, exactly like
+//!   `LEDGELINE_HLEDGER_RENDER_CHECK` in `rules_hledger_render.rs`, and run by
+//!   `just hledger-checks`. Nothing about `hledger import`'s behaviour can be
+//!   proved without hledger, and pretending otherwise with a stub would only test
+//!   the stub.
+//!
+//! git-dependent tests **skip if absent** rather than opting in, matching
+//! `tests/git_commit.rs`: git is on every machine that can clone this repository,
+//! and "an import never touches your unrelated work" is too important to sit
+//! behind a variable nobody exports.
+//!
+//! # The one that matters most
+//!
+//! [`concatenation_and_two_f_flags_disagree_and_two_f_is_wrong`] is the
+//! regression test for fact 3 in `plans/11-enhanced-import.md`. Everything else
+//! here guards a refusal; that one guards a **wrong answer that exits zero**,
+//! which is the only class of bug in this feature a user would never notice.
+
+mod common;
+
+// `prefs.rs` and `hledger.rs` are private modules of the library, so an
+// integration test cannot reach them through the public API; compiling the
+// sources into this binary is the standard way out and is what `tests/prefs.rs`
+// already does. `crate::prefs` inside `hledger.rs` resolves to the module below,
+// because this file is the root of the test crate.
+//
+// `allow(dead_code)` because this file uses a different subset of them than
+// `tests/prefs.rs` does — the modules themselves carry no blanket allow any
+// more, now that `import_api.rs` consumes them.
+#[path = "../src/prefs.rs"]
+#[allow(dead_code)]
+mod prefs;
+
+#[path = "../src/hledger.rs"]
+#[allow(dead_code)]
+mod hledger;
+
+use axum::body::Body;
+use axum::http::{HeaderName, HeaderValue, Request, StatusCode, header};
+use common::fixtures_dir;
+use hledger::Hledger;
+use http_body_util::BodyExt;
+use ledgeline_server::{AccessToken, AppState, Security, router_with_security, router_with_state};
+use prefs::Prefs;
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use tempfile::TempDir;
+use tower::ServiceExt;
+
+/// Opts in to the checks that shell out to a real `hledger`. Set by
+/// `just hledger-checks`.
+const IMPORT_CHECK: &str = "LEDGELINE_HLEDGER_IMPORT_CHECK";
+
+/// Hands a re-executed child its scratch directory, since a child cannot be
+/// given a `TempDir` handle.
+const CHILD_DIR_ENV: &str = "LEDGELINE_TEST_CHILD_DIR";
+
+/// The upload header carrying the dropped file's name.
+const FILENAME: &str = "x-ledgeline-filename";
+
+/// Skip, loudly, unless the opt-in variable is set.
+macro_rules! require_hledger {
+    () => {
+        if std::env::var_os(IMPORT_CHECK).is_none() {
+            eprintln!("skipping: set {IMPORT_CHECK}=1 (or run `just hledger-checks`)");
+            return;
+        }
+    };
+}
+
+/// Skip, loudly, on a machine with no git. See the module docs for why this is
+/// skip-if-absent rather than opt-in.
+macro_rules! require_git {
+    () => {
+        if Command::new("git").arg("--version").output().is_err() {
+            eprintln!("skipping: no `git` on PATH");
+            return;
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// The scratch tree
+// ---------------------------------------------------------------------------
+
+/// A throwaway journal directory plus the [`AppState`] bound to it.
+///
+/// Every test that writes gets its own, so nothing here can be order-dependent
+/// and nothing outlives the test that made it.
+struct Tree {
+    dir: TempDir,
+    state: AppState,
+}
+
+/// The statement every hledger-backed test imports: three rows, one deposit and
+/// two withdrawals, in the shape `fixtures/import/match/checking.csv.rules`
+/// reads.
+const STATEMENT: &str = "Date,Description,Withdrawal,Deposit\n\
+                         01/15/2026,ACME PAYROLL,,3000.00\n\
+                         01/16/2026,STARBUCKS,6.45,\n\
+                         01/20/2026,LANDLORD LLC,1850.00,\n";
+
+/// The opening balance the statement is imported on top of. Flat — **no
+/// `include`** — because the fact-3 proof compares the literal `cat` spelling of
+/// the concatenation against ours, and a relative `include` in a journal read
+/// from stdin resolves against the process's working directory rather than the
+/// journal's own (verified; it fails with `No files were matched by`).
+const OPENING: &str = "2026-01-01 opening balances\n\
+                       \x20   assets:bank:checking   $1000.00\n\
+                       \x20   equity:opening\n";
+
+impl Tree {
+    /// A journal, an `import/` directory, and nothing else. No rules file, so
+    /// candidate scoring has nothing to score and every response below is the
+    /// same whether or not hledger is installed.
+    fn bare() -> Self {
+        let dir = TempDir::new().expect("temp dir");
+        std::fs::write(dir.path().join("main.journal"), OPENING).expect("write journal");
+        std::fs::create_dir(dir.path().join("import")).expect("import dir");
+        let state = AppState::from_journal_path(dir.path().join("main.journal"))
+            .expect("the scratch journal opens");
+        Self { dir, state }
+    }
+
+    /// [`Tree::bare`] plus a correct rules file and two files that must never be
+    /// touched, so a commit's blast radius is measurable.
+    fn with_rules() -> Self {
+        let tree = Self::bare();
+        std::fs::copy(
+            fixtures_dir().join("import/match/checking.csv.rules"),
+            tree.dir.path().join("import/bank.csv.rules"),
+        )
+        .expect("copy the rules fixture");
+        // Bystanders. A commit that changes either of these has swept up
+        // something it was not asked to.
+        std::fs::write(tree.dir.path().join("notes.txt"), "do not touch me\n")
+            .expect("write bystander");
+        std::fs::write(
+            tree.dir.path().join("import/older.csv"),
+            "Date,Description\n01/01/2020,OLD\n",
+        )
+        .expect("write bystander");
+        tree
+    }
+
+    fn path(&self, relative: &str) -> PathBuf {
+        self.dir.path().join(relative)
+    }
+
+    fn router(&self) -> axum::Router {
+        router_with_state(self.state.clone())
+    }
+
+    /// Every file in the tree, keyed by its relative path. The before/after
+    /// comparison that proves a commit's blast radius.
+    fn snapshot(&self) -> BTreeMap<String, Vec<u8>> {
+        let mut files = BTreeMap::new();
+        walk(self.dir.path(), self.dir.path(), &mut files);
+        files
+    }
+}
+
+/// Collect every regular file under `dir`, keyed relative to `root`.
+fn walk(root: &Path, dir: &Path, into: &mut BTreeMap<String, Vec<u8>>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk(root, &path, into);
+        } else if let Ok(bytes) = std::fs::read(&path)
+            && let Ok(relative) = path.strip_prefix(root)
+        {
+            into.insert(relative.to_string_lossy().into_owned(), bytes);
+        }
+    }
+}
+
+/// The relative paths whose content differs between two tree snapshots — added,
+/// removed or modified.
+fn changed(before: &BTreeMap<String, Vec<u8>>, after: &BTreeMap<String, Vec<u8>>) -> Vec<String> {
+    before
+        .keys()
+        .chain(after.keys())
+        .filter(|name| before.get(*name) != after.get(*name))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// HTTP helpers
+// ---------------------------------------------------------------------------
+
+/// Send a request and return the status plus the body as text.
+async fn send(router: axum::Router, request: Request<Body>) -> (StatusCode, String) {
+    let response = router.oneshot(request).await.expect("router responds");
+    let status = response.status();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collects")
+        .to_bytes();
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+async fn get(tree: &Tree, uri: &str) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .expect("request builds");
+    let (status, body) = send(tree.router(), request).await;
+    (status, json_or_text(&body))
+}
+
+async fn post(tree: &Tree, uri: &str, body: Value) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&body).expect("serialize")))
+        .expect("request builds");
+    let (status, text) = send(tree.router(), request).await;
+    (status, json_or_text(&text))
+}
+
+async fn put(tree: &Tree, uri: &str, body: Value) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&body).expect("serialize")))
+        .expect("request builds");
+    let (status, text) = send(tree.router(), request).await;
+    (status, json_or_text(&text))
+}
+
+/// Upload `bytes` as `name` through the raw-body stage route.
+async fn upload(tree: &Tree, name: &str, bytes: Vec<u8>) -> (StatusCode, Value) {
+    upload_to(&tree.router(), name, bytes).await
+}
+
+async fn upload_to(router: &axum::Router, name: &str, bytes: Vec<u8>) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/import/stage")
+        .header(HeaderName::from_static(FILENAME), name)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from(bytes))
+        .expect("request builds");
+    let (status, text) = send(router.clone(), request).await;
+    (status, json_or_text(&text))
+}
+
+/// A JSON body as a `Value`, or a plain-text error body as a JSON string — so
+/// one helper covers both and every assertion below reads the same way.
+fn json_or_text(body: &str) -> Value {
+    serde_json::from_str(body).unwrap_or_else(|_| Value::String(body.to_string()))
+}
+
+/// The body as plain text, whatever shape it arrived in.
+fn as_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_string)
+}
+
+// ===========================================================================
+// The token guard
+// ===========================================================================
+
+/// SEC-1, for the newest — and by some distance the most dangerous — write
+/// primitive in the API. `POST /api/import/commit` writes a CSV into the user's
+/// journal directory and appends to a journal file.
+///
+/// These routes are registered ABOVE the `route_layer` token guard in
+/// `router_with_security`; below it, every one of them would be reachable with
+/// no credential at all. Moving them must fail here rather than ship.
+#[tokio::test]
+async fn every_import_route_requires_the_token() {
+    const PORT: u16 = 5098;
+    const HOST: &str = "127.0.0.1:5098";
+    let tree = Tree::bare();
+    let token = AccessToken::parse("integration-test-token").expect("well-formed token");
+
+    let probe = |method: &'static str, uri: &'static str, auth: Option<&'static str>| {
+        let state = tree.state.clone();
+        let security = Security::local(token.clone(), PORT);
+        async move {
+            let mut builder = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(HeaderName::from_static("host"), HOST)
+                .header(HeaderName::from_static(FILENAME), "bank.csv");
+            if let Some(value) = auth {
+                builder = builder.header(header::AUTHORIZATION, value);
+            }
+            let request = builder
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .expect("request builds");
+            router_with_security(state, security)
+                .oneshot(request)
+                .await
+                .expect("router responds")
+                .status()
+        }
+    };
+
+    for (method, uri) in [
+        ("GET", "/api/import/capabilities"),
+        ("POST", "/api/import/stage"),
+        ("POST", "/api/import/dry-run"),
+        ("POST", "/api/import/commit"),
+        ("POST", "/api/import/save-csv"),
+        ("POST", "/api/import/sort"),
+        ("GET", "/api/prefs"),
+        ("PUT", "/api/prefs"),
+    ] {
+        assert_eq!(
+            probe(method, uri, None).await,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} without a token must be 401"
+        );
+        assert_eq!(
+            probe(method, uri, Some("Bearer wrong-token-entirely")).await,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} with a wrong token must be 401"
+        );
+        assert_ne!(
+            probe(method, uri, Some("Bearer integration-test-token")).await,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} with the token must get past the guard"
+        );
+    }
+}
+
+// ===========================================================================
+// stage — every refusal
+// ===========================================================================
+
+/// The upload limit is a `DefaultBodyLimit` on this route ALONE. A body past it
+/// is refused by the transport before a byte of it reaches the converter.
+#[tokio::test]
+async fn an_oversize_upload_is_refused() {
+    let tree = Tree::bare();
+    // One byte past 16 MiB. `Content-Length` is known, so axum refuses without
+    // buffering it.
+    let (status, _) = upload(&tree, "huge.csv", vec![b'a'; 16 * 1024 * 1024 + 1]).await;
+    assert!(
+        status == StatusCode::PAYLOAD_TOO_LARGE || status == StatusCode::BAD_REQUEST,
+        "an over-size upload must be refused, got {status}"
+    );
+
+    // And the limit really is local to this route: an ordinary JSON body is
+    // still bounded by the global default, which is far smaller.
+    let (status, _) = upload(&tree, "fine.csv", b"a,b\n1,2\n".to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "an ordinary upload still works");
+}
+
+/// The filename header is REFUSED when it is not a bare name, never silently
+/// stripped down to one. It is used for format detection and for the destination
+/// default, so it is validated before it is used for anything.
+#[tokio::test]
+async fn a_path_shaped_upload_filename_is_refused() {
+    let tree = Tree::bare();
+    for name in [
+        "../../.bashrc",
+        "../escape.csv",
+        "/etc/passwd",
+        "sub/bank.csv",
+        "..",
+    ] {
+        let (status, body) = upload(&tree, name, b"a,b\n1,2\n".to_vec()).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{name:?} must be refused, got {body}"
+        );
+        let text = as_text(&body);
+        assert!(
+            text.contains("single plain file name"),
+            "the refusal must say what a usable name is: {text}"
+        );
+    }
+
+    // No header at all is its own refusal rather than a guess.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/import/stage")
+        .body(Body::from("a,b\n1,2\n"))
+        .expect("request builds");
+    let (status, _) = send(tree.router(), request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// PDF is out of scope for WP-11 and is refused **by name** — the whole reason
+/// `convert::detect` returns a `Result` rather than an `Option`. A generic
+/// "unsupported file type" would send the user looking for a setting.
+#[tokio::test]
+async fn a_pdf_is_refused_with_its_own_message() {
+    let tree = Tree::bare();
+    let (status, body) = upload(
+        &tree,
+        "statement.pdf",
+        b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(as_text(&body), "PDF statements are not supported yet");
+
+    // And the content wins over the name, so a PDF renamed `.csv` gets the same
+    // sentence rather than a confusing delimited-parse failure.
+    let (status, body) = upload(&tree, "statement.csv", b"%PDF-1.7\n".to_vec()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(as_text(&body), "PDF statements are not supported yet");
+}
+
+/// A `stageId` is only ever resolved by exact match against the map the session
+/// that minted it holds. A perfectly well-formed id from a DIFFERENT server
+/// session is a stranger — which is what keeps one window's staged bank
+/// statement out of another's.
+#[tokio::test]
+async fn a_stage_from_another_session_is_unreadable() {
+    let theirs = Tree::with_rules();
+    let mine = Tree::with_rules();
+
+    let (status, staged) = upload(&theirs, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    assert_eq!(id.len(), 32, "an id is 32 hex characters: {id}");
+
+    // The other session holds it.
+    let (status, _) = post(
+        &theirs,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the session that minted the id must recognise it"
+    );
+
+    // This one does not, and says so without saying anything else.
+    let (status, body) = post(
+        &mine,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        as_text(&body).contains("not a staged upload"),
+        "{}",
+        as_text(&body)
+    );
+}
+
+/// A handle that is not the shape the minter produces never reaches the map.
+#[tokio::test]
+async fn a_malformed_stage_id_never_reaches_a_lookup() {
+    let tree = Tree::with_rules();
+    for id in [
+        "",
+        "../../etc/passwd",
+        "0123456789abcdef0123456789abcde",
+        "0123456789ABCDEF0123456789abcdef",
+        "not-a-stage-id-at-all-nope-nope-x",
+    ] {
+        let (status, _) = post(
+            &tree,
+            "/api/import/dry-run",
+            dry_run_body(id, "import/bank.csv.rules"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{id:?} must not resolve");
+    }
+}
+
+/// Every handle a write path takes is validated on shape before anything touches
+/// the filesystem, and none of them can be walked out of the journal directory.
+#[tokio::test]
+async fn no_handle_can_name_a_file_outside_the_journal_directory() {
+    let tree = Tree::with_rules();
+    let (status, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let cases = [
+        ("csvPath", "../escape.csv"),
+        ("csvPath", "/etc/passwd.csv"),
+        ("csvPath", "import/../../escape.csv"),
+        // Not a CSV at all: the destination suffix is required, so an import
+        // cannot be pointed at a rules file or a journal.
+        ("csvPath", "import/bank.csv.rules"),
+        ("csvPath", "main.journal"),
+        ("journalId", "../escape.journal"),
+        ("journalId", "/etc/passwd"),
+        ("rulesId", "../escape.rules"),
+        ("rulesId", "import/bank.csv"),
+    ];
+    for (field, value) in cases {
+        let mut body = dry_run_body(id, "import/bank.csv.rules");
+        body[field] = json!(value);
+        let (status, response) = post(&tree, "/api/import/dry-run", body).await;
+        assert!(
+            status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
+            "{field}={value:?} must be refused, got {status} {response}"
+        );
+        // Whatever the refusal, it may not disclose where the journal lives.
+        assert_no_absolute_path(&tree, &as_text(&response), &format!("{field}={value}"));
+    }
+}
+
+/// The body every dry-run and commit test starts from.
+fn dry_run_body(stage_id: &str, rules_id: &str) -> Value {
+    json!({
+        "stageId": stage_id,
+        "rulesId": rules_id,
+        "csvPath": "import/bank.csv",
+        "journalId": "main.journal",
+    })
+}
+
+// ===========================================================================
+// capabilities and prefs
+// ===========================================================================
+
+/// The screen's whole gating surface, in one response.
+#[tokio::test]
+async fn capabilities_describes_what_the_screen_may_offer() {
+    let tree = Tree::bare();
+    let (status, body) = get(&tree, "/api/import/capabilities").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    assert_eq!(
+        body["formats"],
+        json!([
+            "csv", "tsv", "ssv", "ofx", "qfx", "xls", "xlsx", "xlsm", "xlsb", "ods"
+        ]),
+        "the accepted formats are the contract's list, in order"
+    );
+    assert_eq!(body["editable"], json!(true), "a bound journal is editable");
+    assert!(body["git"]["available"].is_boolean());
+    assert!(body["git"]["autocommit"].is_boolean());
+
+    // The journal projection: one file, holding one transaction, and it is the
+    // root. No filename was inspected to work any of that out.
+    let journals = body["journals"].as_array().expect("journals is an array");
+    assert_eq!(journals.len(), 1, "{journals:?}");
+    assert_eq!(journals[0]["id"], json!("main.journal"));
+    assert_eq!(journals[0]["txnCount"], json!(1));
+    assert_eq!(journals[0]["lastTxnDate"], json!("2026-01-01"));
+    assert_eq!(journals[0]["isRoot"], json!(true));
+    assert_eq!(journals[0]["writable"], json!(true));
+
+    // None of this is derived from the journal snapshot, so it is never cached.
+    let request = Request::builder()
+        .uri("/api/import/capabilities")
+        .body(Body::empty())
+        .expect("request builds");
+    let response = tree.router().oneshot(request).await.expect("responds");
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL),
+        Some(&HeaderValue::from_static("no-store"))
+    );
+    assert!(response.headers().get(header::ETAG).is_none());
+}
+
+/// A server with no journal bound still renders the screen — read-only, and
+/// saying so — rather than erroring.
+#[tokio::test]
+async fn capabilities_reports_a_read_only_server() {
+    let journal = ledgeline_core::parse_journal(OPENING, "memory.journal").expect("parses");
+    let router = ledgeline_server::app(&journal);
+    let request = Request::builder()
+        .uri("/api/import/capabilities")
+        .body(Body::empty())
+        .expect("request builds");
+    let (status, body) = send(router, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json_or_text(&body)["editable"], json!(false));
+}
+
+/// The preferences round-trip, and the rejection that keeps a bad path from
+/// being persisted and failing several screens later as "could not run hledger".
+#[tokio::test]
+async fn prefs_round_trip_and_reject_an_unusable_hledger_path() {
+    let dir = TempDir::new().expect("temp dir");
+    run_child(
+        "prefs_round_trip_child",
+        &[("LEDGELINE_CONFIG_DIR", dir.path())],
+    );
+}
+
+/// See [`prefs_round_trip_and_reject_an_unusable_hledger_path`]. Runs only as a
+/// child, with `$LEDGELINE_CONFIG_DIR` pointed at a scratch directory so it can
+/// never touch the developer's own settings.
+#[tokio::test]
+#[ignore = "driven by prefs_round_trip_and_reject_an_unusable_hledger_path"]
+async fn prefs_round_trip_child() {
+    let tree = Tree::bare();
+    let dir = child_dir();
+
+    let (status, body) = get(&tree, "/api/prefs").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({"hledgerPath": null, "gitAutocommit": null}));
+
+    // A stored value comes back verbatim: it is the caller's own input, which is
+    // the one thing an `/api/*` body may legitimately echo.
+    let stub = write_stub(&dir, "hledger", "hledger 1.52, test");
+    let (status, body) = put(
+        &tree,
+        "/api/prefs",
+        json!({"hledgerPath": stub.to_string_lossy(), "gitAutocommit": false}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["gitAutocommit"], json!(false));
+    let (_, reloaded) = get(&tree, "/api/prefs").await;
+    assert_eq!(reloaded, body);
+
+    // A path that is not a runnable binary is a 400 that names no path.
+    let missing = dir.join("definitely-not-here");
+    let (status, body) = put(
+        &tree,
+        "/api/prefs",
+        json!({"hledgerPath": missing.to_string_lossy()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(as_text(&body), "the hledger path does not exist");
+
+    // …and the rejected write left the good settings alone.
+    let (_, after) = get(&tree, "/api/prefs").await;
+    assert_eq!(after["gitAutocommit"], json!(false));
+}
+
+/// A too-old hledger is reported with a reason code and an actionable sentence,
+/// never a stack trace and never a silent failure — the WP-11 definition of done
+/// for the banner.
+#[tokio::test]
+async fn capabilities_reports_a_too_old_hledger() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = write_stub(dir.path(), "hledger", "hledger 1.30, ancient");
+    run_child(
+        "capabilities_too_old_child",
+        &[
+            ("LEDGELINE_HLEDGER", &stub),
+            ("LEDGELINE_CONFIG_DIR", dir.path()),
+            (CHILD_DIR_ENV, dir.path()),
+        ],
+    );
+}
+
+/// See [`capabilities_reports_a_too_old_hledger`].
+#[tokio::test]
+#[ignore = "driven by capabilities_reports_a_too_old_hledger"]
+async fn capabilities_too_old_child() {
+    let tree = Tree::bare();
+    let (status, body) = get(&tree, "/api/import/capabilities").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["hledger"]["available"], json!(false));
+    assert_eq!(body["hledger"]["reason"], json!("tooOld"));
+    assert_eq!(
+        body["hledger"]["message"],
+        json!("hledger 1.30 is older than 1.40")
+    );
+    assert!(body["hledger"]["version"].is_null());
+
+    // Nothing that needs hledger may proceed, and the refusal is a 501 with the
+    // banner's sentence rather than a 500.
+    let (status, body) = post(
+        &tree,
+        "/api/import/commit",
+        json!({
+            "stageId": "0123456789abcdef0123456789abcdef",
+            "rulesId": "import/bank.csv.rules",
+            "csvPath": "import/bank.csv",
+            "journalId": "main.journal",
+            "writeAssertion": false,
+        }),
+    )
+    .await;
+    // The stage handle is checked first and this one was never minted, so the
+    // 404 comes before the hledger gate; what matters is that it is refused.
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+/// A binary that runs but does not answer like hledger is `unrunnable`, and is
+/// terminal — we do not quietly use a different one, because "I set the path and
+/// it still used the wrong binary" is a worse failure than being told.
+#[tokio::test]
+async fn capabilities_reports_an_unrecognised_hledger() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = write_stub(dir.path(), "hledger", "this is not hledger");
+    run_child(
+        "capabilities_unrunnable_child",
+        &[
+            ("LEDGELINE_HLEDGER", &stub),
+            ("LEDGELINE_CONFIG_DIR", dir.path()),
+            (CHILD_DIR_ENV, dir.path()),
+        ],
+    );
+}
+
+/// See [`capabilities_reports_an_unrecognised_hledger`].
+#[tokio::test]
+#[ignore = "driven by capabilities_reports_an_unrecognised_hledger"]
+async fn capabilities_unrunnable_child() {
+    let tree = Tree::bare();
+    let (_, body) = get(&tree, "/api/import/capabilities").await;
+    assert_eq!(body["hledger"]["available"], json!(false));
+    assert_eq!(body["hledger"]["reason"], json!("unrunnable"));
+}
+
+// ===========================================================================
+// FACT 3 — the proof
+// ===========================================================================
+
+/// **Balance assertions do not aggregate across two `-f` flags, and it is a
+/// silent wrong answer.**
+///
+/// This is the regression test for fact 3 in `plans/11-enhanced-import.md`, and
+/// it is the most important test in this file: every other failure in this
+/// feature is loud, and this one exits zero with a plausible number.
+///
+/// The same two inputs — a journal holding an opening balance, and a proposed
+/// transaction carrying a balance assertion that is correct **given** that
+/// opening balance — are put to hledger three ways:
+///
+/// | form | what it means |
+/// | --- | --- |
+/// | `-f A -f B` | two journals. B's assertions never see A's balances |
+/// | `cat A B \| -f-` | one journal, the plan's literal spelling |
+/// | `include A` + B via stdin | one journal, what `verify_balance` actually sends |
+///
+/// The two concatenations agree with each other and with the truth; the two-`-f`
+/// form does not. Both halves are asserted, because "they differ" alone would
+/// still pass if concatenation were the broken one.
+#[test]
+fn concatenation_and_two_f_flags_disagree_and_two_f_is_wrong() {
+    require_hledger!();
+    let hledger = resolve_hledger();
+    let dir = TempDir::new().expect("temp dir");
+
+    let journal = dir.path().join("main.journal");
+    std::fs::write(&journal, OPENING).expect("write journal");
+
+    // Correct ONLY in combination: $1000.00 opening less $69.95 is $930.05.
+    let proposed = "2026-02-01 GROCERY\n    \
+                    expenses:food            $69.95\n    \
+                    assets:bank:checking    $-69.95 = $930.05\n";
+    let proposed_file = dir.path().join("proposed.journal");
+    std::fs::write(&proposed_file, proposed).expect("write proposed");
+
+    const ACCOUNT: &str = "assets:bank:checking";
+    const TRUTH: &str = "$930.05";
+    /// What the second file computes on its own, with no opening balance in
+    /// scope. This exact number appearing in hledger's diagnostic is the proof
+    /// that the first file's balances were never consulted.
+    const ALONE: &str = "$-69.95";
+
+    // --- form 1: two `-f` flags -------------------------------------------
+    let two_f = hledger
+        .invoke(["-f".as_ref(), journal.as_os_str()])
+        .arg("-f")
+        .arg(&proposed_file)
+        .args(["balance", ACCOUNT, "--no-total", "--flat", "-O", "csv"])
+        .run()
+        .expect("hledger runs");
+
+    // --- form 2: the literal `cat A B` concatenation -----------------------
+    let concatenated = format!("{OPENING}\n{proposed}");
+    let cat = hledger
+        .invoke([
+            "-f",
+            "-",
+            "balance",
+            ACCOUNT,
+            "--no-total",
+            "--flat",
+            "-O",
+            "csv",
+        ])
+        .stdin(concatenated.into_bytes())
+        .run()
+        .expect("hledger runs");
+
+    // --- form 3: what `import_api::verify_balance` actually sends ----------
+    let included = format!("include {}\n\n{proposed}\n", journal.display());
+    let wrapped = hledger
+        .invoke([
+            "-f",
+            "-",
+            "balance",
+            ACCOUNT,
+            "--no-total",
+            "--flat",
+            "-O",
+            "csv",
+        ])
+        .stdin(included.clone().into_bytes())
+        .run()
+        .expect("hledger runs");
+
+    // Both concatenations are RIGHT, and agree with each other.
+    assert!(cat.success(), "cat concatenation: {}", cat.stderr_lossy());
+    assert!(
+        wrapped.success(),
+        "include wrapper: {}",
+        wrapped.stderr_lossy()
+    );
+    assert_eq!(
+        balance_of(&cat.stdout_lossy()).as_deref(),
+        Some(TRUTH),
+        "cat A B | hledger -f- must see the opening balance"
+    );
+    assert_eq!(
+        balance_of(&wrapped.stdout_lossy()),
+        balance_of(&cat.stdout_lossy()),
+        "the include wrapper and the literal cat must agree; they are the same journal"
+    );
+
+    // Two `-f` flags are WRONG, and specifically wrong by having computed the
+    // second file's balance in isolation.
+    assert_ne!(
+        balance_of(&two_f.stdout_lossy()).as_deref(),
+        Some(TRUTH),
+        "two -f flags must NOT report the combined balance — if this ever passes, \
+         hledger changed and `verify_balance` can be simplified"
+    );
+    let diagnostic = format!("{}{}", two_f.stdout_lossy(), two_f.stderr_lossy());
+    assert!(
+        diagnostic.contains(ALONE),
+        "two -f flags must compute the second file ALONE ({ALONE}); hledger said: {diagnostic}"
+    );
+
+    // And the same split with `check`, which is the spelling the plan quotes.
+    let checked =
+        |invocation: hledger::Invocation| invocation.run().expect("hledger runs").success();
+    assert!(
+        checked(
+            hledger
+                .invoke(["-f", "-", "check"])
+                .stdin(included.into_bytes())
+        ),
+        "concatenated, the assertion holds"
+    );
+    assert!(
+        !checked(
+            hledger
+                .invoke(["-f".as_ref(), journal.as_os_str()])
+                .arg("-f")
+                .arg(&proposed_file)
+                .arg("check")
+        ),
+        "with two -f flags the same assertion FAILS — the silent wrong answer"
+    );
+}
+
+/// The balance out of `hledger balance -O csv`, the way `import_api` reads it.
+fn balance_of(csv: &str) -> Option<String> {
+    csv.lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .last()
+        .and_then(|line| line.rsplit_once(','))
+        .map(|(_, balance)| balance.trim().trim_matches('"').to_string())
+}
+
+/// Candidate scoring, end to end: the correct rules file ranks first with a
+/// perfect score, and the two files that FACT 4 is about — the ones hledger
+/// accepts and exits zero on while producing unusable output — rank below it
+/// with the evidence that says why.
+///
+/// Parse success is not a matching signal, and this is the test that says so at
+/// the HTTP layer.
+#[tokio::test]
+async fn candidates_are_ranked_by_what_hledger_actually_produced() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    for fixture in ["garbage-success.rules", "no-currency.rules"] {
+        std::fs::copy(
+            fixtures_dir().join("import/match").join(fixture),
+            tree.path("import").join(fixture),
+        )
+        .expect("copy a fact-4 fixture");
+    }
+
+    let (status, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let candidates = staged["candidates"].as_array().expect("candidates");
+    assert_eq!(candidates.len(), 3, "{staged}");
+
+    // The correct file wins outright.
+    assert_eq!(candidates[0]["id"], json!("import/bank.csv.rules"));
+    assert_eq!(candidates[0]["score"], json!(1.0));
+    assert_eq!(candidates[0]["signals"]["txns"], json!(3));
+    assert_eq!(candidates[0]["signals"]["amountlessPostings"], json!(0));
+    assert_eq!(candidates[0]["signals"]["bareCommodityAmounts"], json!(0));
+    assert_eq!(candidates[0]["signals"]["unknownAccounts"], json!(0));
+    // …and shows the user their own data rather than only a number.
+    assert_eq!(candidates[0]["sample"][0]["date"], json!("2026-01-15"));
+    assert_eq!(
+        candidates[0]["sample"][0]["description"],
+        json!("ACME PAYROLL")
+    );
+    // A candidate carries its own default accounts. `account1` is the account
+    // every imported posting lands in, so it is what a statement balance is a
+    // balance OF — and the screen defaults the assertion's account to it. Without
+    // these the SPA had to fetch the whole of `/api/rules` and join it onto this
+    // list by id to fill in one text box.
+    assert_eq!(
+        candidates[0]["account1"],
+        json!("assets:bank:checking"),
+        "{staged}"
+    );
+    assert_eq!(candidates[0]["account2"], json!("expenses:unknown"));
+
+    // Both fact-4 files parse, exit zero, and score far below it — each carrying
+    // the specific signal that condemned it.
+    let by_id = |name: &str| {
+        candidates
+            .iter()
+            .find(|candidate| candidate["id"] == json!(name))
+            .unwrap_or_else(|| panic!("{name} should be a candidate: {candidates:?}"))
+    };
+    for name in ["import/garbage-success.rules", "import/no-currency.rules"] {
+        let scored = by_id(name);
+        let score = scored["score"].as_f64().expect("a score");
+        assert!(
+            score < 1.0,
+            "{name} must not tie the correct file: {scored}"
+        );
+    }
+    assert!(
+        by_id("import/no-currency.rules")["signals"]["bareCommodityAmounts"]
+            .as_u64()
+            .expect("a count")
+            > 0,
+        "the missing `currency` must show up as bare amounts — the commodity trap"
+    );
+
+    // The destination defaults follow the winner rather than the upload's name.
+    assert_eq!(staged["defaults"]["csvPath"], json!("import/bank.csv"));
+    assert_eq!(staged["defaults"]["journalId"], json!("main.journal"));
+
+    // And the preview is the converted CSV, bounded but faithful.
+    assert_eq!(
+        staged["preview"]["header"],
+        json!(["Date", "Description", "Withdrawal", "Deposit"])
+    );
+    assert_eq!(staged["preview"]["rowCount"], json!(3));
+    assert_eq!(staged["format"], json!("csv"));
+}
+
+// ===========================================================================
+// dry-run
+// ===========================================================================
+
+/// The preview mechanism in full: the proposed transactions come from **stdout**
+/// as re-parseable journal text, and the `would import N` status line comes from
+/// **stderr**. Merging the two streams would put a status line in the middle of
+/// the journal text and force us to regex it back out.
+#[tokio::test]
+async fn a_dry_run_takes_entries_from_stdout_and_status_from_stderr() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let before = tree.snapshot();
+
+    let (status, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ok"], json!(true));
+
+    // stdout: journal text, and nothing else.
+    let entries = body["entries"].as_str().expect("entries is a string");
+    assert!(entries.contains("2026-01-15 ACME PAYROLL"), "{entries}");
+    assert!(entries.contains("assets:bank:checking"), "{entries}");
+    assert!(
+        !entries.contains("would import"),
+        "the status line must NOT be in the entries: {entries}"
+    );
+    assert!(
+        ledgeline_core::parse_journal(entries, "proposed").is_ok(),
+        "the entries must be re-parseable journal text: {entries}"
+    );
+
+    // stderr: the status line, verbatim.
+    let reported = body["status"].as_str().expect("status is a string");
+    assert!(
+        reported.contains("would import 3 new transactions"),
+        "{reported}"
+    );
+    assert_eq!(body["count"], json!(3));
+
+    // Nothing was staged into the user's tree, and no `.latest` was written:
+    // a dry-run writes no state at all.
+    assert_eq!(changed(&before, &tree.snapshot()), Vec::<String>::new());
+}
+
+/// A dry-run hledger refuses is a `200` carrying `ok: false` and hledger's own
+/// stderr verbatim — it is genuinely good output, and paraphrasing it would lose
+/// the `record:` echo that says which row broke. And it writes nothing.
+#[tokio::test]
+async fn a_failing_dry_run_surfaces_stderr_and_writes_nothing() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    // A real rules file for a German bank export: right about everything a pure
+    // check can see, and unable to read this statement's dates.
+    std::fs::copy(
+        fixtures_dir().join("import/match/wrong-dateformat.rules"),
+        tree.path("import/bank.csv.rules"),
+    )
+    .expect("copy the mismatched rules fixture");
+    let before = tree.snapshot();
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a refusal is a value, not an error");
+    assert_eq!(body["ok"], json!(false));
+    let stderr = body["stderr"].as_str().expect("stderr is a string");
+    assert!(
+        !stderr.trim().is_empty(),
+        "hledger's diagnostic must survive"
+    );
+    assert!(body["entries"].is_null(), "a failure carries no entries");
+    assert_no_absolute_path(&tree, stderr, "a failing dry-run's stderr");
+
+    assert_eq!(changed(&before, &tree.snapshot()), Vec::<String>::new());
+}
+
+/// `.latest.NAME` dedup silently drops back-dated rows. It is measured — the
+/// same dry-run is repeated with no dedup state beside the CSV and the counts
+/// are differenced — so nothing here has to know which column holds the date.
+#[tokio::test]
+async fn a_row_dropped_by_dedup_is_reported_rather_than_vanishing() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    // hledger has already imported everything up to the 16th from a file of this
+    // name, so the first two rows will be dropped without a word.
+    std::fs::write(tree.path("import/.latest.bank.csv"), "2026-01-17\n").expect("write marker");
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["count"], json!(1), "only the 20th survives dedup");
+    assert_eq!(
+        body["skipped"],
+        json!({"olderThan": "2026-01-17", "count": 2}),
+        "the two dropped rows must be reported, not silently lost"
+    );
+
+    // With no dedup state there is nothing that could have been dropped.
+    std::fs::remove_file(tree.path("import/.latest.bank.csv")).expect("remove marker");
+    let (_, body) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(body["count"], json!(3));
+    assert_eq!(body["skipped"], json!(null));
+}
+
+/// The reconciliation, computed by concatenation. A matching balance and a
+/// mismatched one, so the difference is exercised in both directions.
+#[tokio::test]
+async fn the_statement_balance_is_reconciled_by_concatenation() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    // $1000.00 + $3000.00 - $6.45 - $1850.00
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["balance"] = json!("2143.55");
+    body["balanceAccount"] = json!("assets:bank:checking");
+    let (status, response) = post(&tree, "/api/import/dry-run", body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["balance"]["computed"], json!("$2143.55"));
+    assert_eq!(response["balance"]["matches"], json!(true));
+    // ONE representation: the user typed `2143.55` and the reconciliation
+    // reports all three amounts in the commodity hledger answered in, because
+    // the two are shown side by side and `2143.55` beside `$2143.55` reads as a
+    // mismatch when it is a match.
+    assert_eq!(response["balance"]["statement"], json!("$2143.55"));
+    assert_eq!(response["balance"]["difference"], json!("$0.00"));
+
+    body["balance"] = json!("2000.00");
+    let (_, response) = post(&tree, "/api/import/dry-run", body).await;
+    assert_eq!(response["balance"]["matches"], json!(false));
+    assert_eq!(response["balance"]["statement"], json!("$2000.00"));
+    assert_eq!(response["balance"]["difference"], json!("$-143.55"));
+}
+
+// ===========================================================================
+// commit
+// ===========================================================================
+
+/// **The headline acceptance criterion.** A commit writes the CSV and the
+/// journal it was asked to, plus hledger's own dedup marker, and touches nothing
+/// else on disk — proved by comparing the whole tree before and after.
+#[tokio::test]
+async fn a_commit_writes_one_csv_one_journal_and_nothing_else() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let before = tree.snapshot();
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["csvWritten"], json!("import/bank.csv"));
+    assert_eq!(response["journalWritten"], json!("main.journal"));
+    assert_eq!(response["imported"], json!(3));
+    assert_eq!(
+        response["ordering"]["inOrder"],
+        json!(true),
+        "three ascending rows appended to a January opening are in order"
+    );
+
+    // Exactly three paths differ, and the third is hledger's dedup state — which
+    // is the whole reason the CSV is written to its FINAL destination before the
+    // import runs, so `.latest` lands next to the file hledger will consult next
+    // time rather than in a temp directory about to be deleted.
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        vec![
+            "import/.latest.bank.csv".to_string(),
+            "import/bank.csv".to_string(),
+            "main.journal".to_string(),
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.path("import/.latest.bank.csv"))
+            .expect("marker")
+            .trim(),
+        "2026-01-20",
+        "the marker must sit beside the FINAL csv, keyed to its name"
+    );
+
+    // The bystanders are byte-identical, and the CSV is the converted statement.
+    let after = tree.snapshot();
+    assert_eq!(after["notes.txt"], before["notes.txt"]);
+    assert_eq!(after["import/older.csv"], before["import/older.csv"]);
+    assert_eq!(
+        after["import/bank.csv.rules"],
+        before["import/bank.csv.rules"]
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&after["import/bank.csv"]),
+        STATEMENT
+    );
+
+    // The journal GREW; nothing that was in it was rewritten.
+    let journal = String::from_utf8_lossy(&after["main.journal"]).into_owned();
+    assert!(journal.starts_with(OPENING), "{journal}");
+    assert!(journal.contains("2026-01-20 LANDLORD LLC"), "{journal}");
+}
+
+/// A statement balance, when asked for, is written in the `hledger close
+/// --assert` shape — and only after hledger itself has agreed it holds. A
+/// balance that does not reconcile is refused rather than cemented into the
+/// journal as a line every later `hledger check` would fail on.
+#[tokio::test]
+async fn a_requested_assertion_is_verified_before_it_is_written() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(true);
+    body["balance"] = json!("$2143.55");
+    body["balanceAccount"] = json!("assets:bank:checking");
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert!(
+        journal.contains("assert balances  ; assert:"),
+        "the assertion must be in `hledger close --assert` shape: {journal}"
+    );
+    assert!(
+        journal.contains("assets:bank:checking    $0 = $2143.55"),
+        "{journal}"
+    );
+    assert_checks(&tree, "an asserted journal");
+
+    // A second import with a wrong balance is refused, and — because the
+    // assertion is verified BEFORE the import is applied — nothing at all was
+    // written, not even the CSV.
+    let tree = Tree::with_rules();
+    let before = tree.snapshot();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(true);
+    body["balance"] = json!("$9999.99");
+    body["balanceAccount"] = json!("assets:bank:checking");
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    let text = as_text(&response);
+    assert!(text.contains("does not match"), "{text}");
+    assert_no_absolute_path(&tree, &text, "a refused assertion");
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        Vec::<String>::new(),
+        "a balance that does not hold refuses the WHOLE commit: no CSV, no import, no assertion"
+    );
+}
+
+/// **The regression for fact 4 arriving in our own output.**
+///
+/// The balance field's placeholder is `2945.05` and an OFX `LEDGERBAL` is a bare
+/// decimal, so a statement balance with no currency symbol is the *normal* input,
+/// not the exotic one. Written through verbatim it produces:
+///
+/// ```text
+///     assets:bank:checking               0 = 2143.55
+/// ```
+///
+/// which does not assert 2143.55 dollars. An amount with no commodity is an
+/// amount in the **empty** commodity, so hledger computes 0 for it and the
+/// assertion fails — first on the import that wrote it, and then on every
+/// `hledger check` the user runs afterwards, in a file they did not write that
+/// line into.
+///
+/// So the commodity is taken from the balance hledger itself computed for that
+/// account, and this test asserts both halves: the written text carries it, and
+/// `hledger check` over the resulting journal **passes**. The second half is the
+/// one that cannot be faked — it is hledger's own verdict on our output.
+#[tokio::test]
+async fn a_bare_statement_balance_is_asserted_in_the_journals_own_commodity() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    // No `$`, exactly as a user types it and exactly as OFX volunteers it.
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["balance"] = json!("2143.55");
+    body["balanceAccount"] = json!("assets:bank:checking");
+
+    // The reconciliation reports ONE representation, so the number the screen
+    // shows beside hledger's is comparable with it — and is the number that
+    // ends up in the file.
+    let (_, response) = post(&tree, "/api/import/dry-run", body.clone()).await;
+    let balance = &response["balance"];
+    assert_eq!(balance["statement"], json!("$2143.55"), "{balance}");
+    assert_eq!(balance["computed"], json!("$2143.55"), "{balance}");
+    assert_eq!(balance["matches"], json!(true), "{balance}");
+    assert_eq!(balance["difference"], json!("$0.00"), "{balance}");
+
+    body["writeAssertion"] = json!(true);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a bare balance is the ordinary case and must not fail: {response}"
+    );
+
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert!(
+        journal.contains("assets:bank:checking    $0 = $2143.55"),
+        "the assertion must carry the journal's commodity on BOTH amounts, in the \
+         `hledger close --assert` shape: {journal}"
+    );
+    assert!(
+        !journal.contains("= 2143.55"),
+        "a bare asserted amount is the bug: {journal}"
+    );
+
+    // hledger's own verdict on what we wrote. Before the fix this failed with
+    // `In commodity "" ... the asserted balance is: 2143.55 but the calculated
+    // balance is: 0`.
+    assert_checks(&tree, "a journal asserted from a bare balance");
+}
+
+/// `hledger -f JOURNAL check` over the scratch tree, asserting it passes.
+fn assert_checks(tree: &Tree, what: &str) {
+    let hledger = resolve_hledger();
+    let journal = tree.path("main.journal");
+    let output = hledger
+        .invoke(["-f".as_ref(), journal.as_os_str()])
+        .arg("check")
+        .run()
+        .expect("hledger runs");
+    assert!(
+        output.success(),
+        "{what} must pass `hledger check`; hledger said:\n{}",
+        output.stderr_lossy()
+    );
+}
+
+/// Out-of-order dates are detected, and the offered re-sort preserves everything
+/// outside the transactions it moves.
+#[tokio::test]
+async fn a_back_dated_import_is_detected_and_can_be_re_sorted() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    // An opening entry dated AFTER everything in the statement, so appending the
+    // statement puts the file out of order.
+    std::fs::write(
+        tree.path("main.journal"),
+        "2026-06-01 later than the statement\n    \
+         assets:bank:checking   $1000.00\n    equity:opening\n",
+    )
+    .expect("rewrite the journal");
+    let tree = Tree {
+        state: AppState::from_journal_path(tree.path("main.journal")).expect("reopens"),
+        dir: tree.dir,
+    };
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["ordering"]["inOrder"], json!(false));
+    let moves = response["ordering"]["moves"]
+        .as_array()
+        .expect("moves is an array");
+    assert!(!moves.is_empty(), "{response}");
+    assert!(moves[0]["date"].is_string() && moves[0]["fromLine"].is_number());
+
+    let before_sort = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    let (status, response) = post(
+        &tree,
+        "/api/import/sort",
+        json!({"journalId": "main.journal"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["moved"], json!(moves.len()));
+
+    let sorted = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert!(sorted.starts_with("2026-01-15 ACME PAYROLL"), "{sorted}");
+    // A permutation: every byte of every transaction survives, only the order
+    // changed.
+    assert_eq!(
+        sorted.len(),
+        before_sort.len(),
+        "a sort moves bytes, it does not add or drop them"
+    );
+    // And it is now genuinely in order, so a second sort is a no-op.
+    let (_, response) = post(
+        &tree,
+        "/api/import/sort",
+        json!({"journalId": "main.journal"}),
+    )
+    .await;
+    assert_eq!(response["moved"], json!(0));
+}
+
+/// A dry-run reports modified targets; a commit **refuses** them. The refusal is
+/// re-checked server-side rather than trusted from the dry-run's response,
+/// because the whole value of the safety net is that the pre-import state was
+/// committed and a client that skips the check must not be able to skip the
+/// guarantee.
+#[tokio::test]
+async fn a_commit_refuses_while_a_target_is_modified() {
+    require_hledger!();
+    require_git!();
+    let tree = Tree::with_rules();
+    init_repo(tree.dir.path());
+
+    // Somebody's work in progress, in the journal we are about to import into.
+    std::fs::write(
+        tree.path("main.journal"),
+        format!("{OPENING}\n; a note I have not committed yet\n"),
+    )
+    .expect("dirty the journal");
+    // …and something unrelated, which must be left exactly as it is.
+    std::fs::write(tree.path("notes.txt"), "edited, and not ours to touch\n")
+        .expect("dirty a bystander");
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let (status, response) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(
+        response["blockedByGit"],
+        json!(["main.journal"]),
+        "a modified journal blocks; an untracked CSV does not"
+    );
+
+    let before = tree.snapshot();
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert!(as_text(&response).contains("main.journal"), "{response}");
+    assert_no_absolute_path(&tree, &as_text(&response), "a git-blocked commit");
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        Vec::<String>::new(),
+        "a refused commit writes nothing at all"
+    );
+}
+
+/// With a clean tree, the import commits exactly the two files it wrote — and
+/// somebody's unrelated dirty file is still dirty afterwards.
+#[tokio::test]
+async fn a_successful_import_commits_only_what_it_wrote() {
+    require_hledger!();
+    require_git!();
+    let tree = Tree::with_rules();
+    init_repo(tree.dir.path());
+    // Unrelated work in progress, in a file this import never touches.
+    std::fs::write(tree.path("notes.txt"), "work in progress\n").expect("dirty a bystander");
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["git"]["committed"], json!(true), "{response}");
+    assert_eq!(
+        response["git"]["paths"],
+        json!(["import/bank.csv", "main.journal"])
+    );
+
+    // The bystander is STILL DIRTY: nothing swept it up.
+    let porcelain = git(
+        tree.dir.path(),
+        &["status", "--porcelain", "--", "notes.txt"],
+    );
+    assert!(
+        porcelain.contains("notes.txt"),
+        "unrelated work must be left exactly as it was: {porcelain:?}"
+    );
+    // …and the commit really did carry the two files.
+    let committed = git(
+        tree.dir.path(),
+        &["show", "--name-only", "--format=%s", "HEAD"],
+    );
+    assert!(
+        committed.contains("import 3 transactions from bank.csv"),
+        "{committed}"
+    );
+    assert!(committed.contains("main.journal"), "{committed}");
+    assert!(committed.contains("import/bank.csv"), "{committed}");
+    assert!(!committed.contains("notes.txt"), "{committed}");
+}
+
+// ===========================================================================
+// save-csv — the no-rules-file path
+// ===========================================================================
+
+/// **"Even if no rules file applies, they can store the csv."** The converted
+/// CSV is written, no journal is touched, and the response says so.
+///
+/// Hermetic: nothing on this path runs hledger, which is the point — a statement
+/// no rules file fits is still worth keeping, and a user with no hledger at all
+/// can still get the conversion out.
+#[tokio::test]
+async fn save_csv_writes_the_converted_file_and_nothing_else() {
+    let tree = Tree::bare();
+    let before = tree.snapshot();
+    let (status, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let id = staged["stageId"].as_str().expect("a stageId");
+    // No rules file exists in this tree, so this is the state the route is FOR.
+    assert_eq!(staged["candidates"], json!([]), "{staged}");
+
+    let (status, response) = post(
+        &tree,
+        "/api/import/save-csv",
+        json!({"stageId": id, "csvPath": "import/bank.csv"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["csvWritten"], json!("import/bank.csv"));
+    // No journal was touched, so the response does not pretend one was.
+    assert!(response.get("journalWritten").is_none(), "{response}");
+    assert!(response.get("imported").is_none(), "{response}");
+
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        vec!["import/bank.csv".to_string()],
+        "exactly one file may appear, and it is the CSV"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.path("import/bank.csv")).expect("the csv"),
+        STATEMENT,
+        "the bytes written are the CONVERTED csv"
+    );
+    assert_no_absolute_path(&tree, &response.to_string(), "save-csv");
+}
+
+/// The same three handle rules a commit obeys: shape first, then confinement,
+/// and a destination that is not a plain `.csv` inside the journal's directory
+/// is refused without saying why in a way that could be probed.
+#[tokio::test]
+async fn save_csv_refuses_a_destination_outside_the_journal_directory() {
+    let tree = Tree::bare();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    for csv_path in [
+        "../escape.csv",
+        "/etc/passwd.csv",
+        "import/../../escape.csv",
+        "main.journal",
+        "import/bank.csv.rules",
+    ] {
+        let (status, response) = post(
+            &tree,
+            "/api/import/save-csv",
+            json!({"stageId": id, "csvPath": csv_path}),
+        )
+        .await;
+        assert!(
+            status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
+            "{csv_path:?} must be refused, got {status} {response}"
+        );
+        assert_no_absolute_path(&tree, &as_text(&response), csv_path);
+    }
+
+    // An unknown stage is the same 404 every other route gives it.
+    let (status, _) = post(
+        &tree,
+        "/api/import/save-csv",
+        json!({"stageId": "0123456789abcdef0123456789abcdef", "csvPath": "import/bank.csv"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // And the body is closed: a `rulesId` here is a client that thinks this
+    // route imports something.
+    let (status, _) = post(
+        &tree,
+        "/api/import/save-csv",
+        json!({"stageId": id, "csvPath": "import/bank.csv", "rulesId": "import/bank.csv.rules"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// A CSV destination with uncommitted changes blocks, for the reason a commit's
+/// targets block: overwriting somebody's edit is the one thing `git diff` could
+/// not have undone.
+#[tokio::test]
+async fn save_csv_refuses_to_overwrite_an_uncommitted_change() {
+    require_git!();
+    let tree = Tree::with_rules();
+    std::fs::write(tree.path("import/bank.csv"), "Date,Description\n").expect("seed the csv");
+    init_repo(tree.dir.path());
+    std::fs::write(tree.path("import/bank.csv"), "edited, not committed\n").expect("dirty it");
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+    let before = tree.snapshot();
+    let (status, response) = post(
+        &tree,
+        "/api/import/save-csv",
+        json!({"stageId": id, "csvPath": "import/bank.csv"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        Vec::<String>::new(),
+        "a refused save writes nothing"
+    );
+}
+
+// ===========================================================================
+// Layer 5 — no absolute path in any response
+// ===========================================================================
+
+/// The rule the whole no-disclosure posture rests on, applied to every route
+/// this module added. hledger and git both put absolute paths in their output;
+/// the responses that carry that output must not.
+#[tokio::test]
+async fn no_import_response_body_contains_an_absolute_path() {
+    let tree = Tree::with_rules();
+    let mut bodies: Vec<(String, String)> = Vec::new();
+
+    let (_, capabilities) = get(&tree, "/api/import/capabilities").await;
+    bodies.push(("capabilities".to_string(), capabilities.to_string()));
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    bodies.push(("stage".to_string(), staged.to_string()));
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+
+    for (name, response) in [
+        (
+            "stage/pdf",
+            upload(&tree, "s.pdf", b"%PDF-1.7\n".to_vec()).await,
+        ),
+        (
+            "dry-run",
+            post(
+                &tree,
+                "/api/import/dry-run",
+                dry_run_body(&id, "import/bank.csv.rules"),
+            )
+            .await,
+        ),
+        (
+            "dry-run/unknown-rules",
+            post(
+                &tree,
+                "/api/import/dry-run",
+                dry_run_body(&id, "nope.rules"),
+            )
+            .await,
+        ),
+        (
+            "save-csv",
+            post(
+                &tree,
+                "/api/import/save-csv",
+                json!({"stageId": &id, "csvPath": "import/saved.csv"}),
+            )
+            .await,
+        ),
+        (
+            "save-csv/outside",
+            post(
+                &tree,
+                "/api/import/save-csv",
+                json!({"stageId": &id, "csvPath": "../escape.csv"}),
+            )
+            .await,
+        ),
+        (
+            "sort",
+            post(
+                &tree,
+                "/api/import/sort",
+                json!({"journalId": "main.journal"}),
+            )
+            .await,
+        ),
+        (
+            "sort/unknown",
+            post(
+                &tree,
+                "/api/import/sort",
+                json!({"journalId": "../escape.journal"}),
+            )
+            .await,
+        ),
+    ] {
+        bodies.push((name.to_string(), response.1.to_string()));
+    }
+
+    if std::env::var_os(IMPORT_CHECK).is_some() {
+        let mut body = dry_run_body(&id, "import/bank.csv.rules");
+        body["writeAssertion"] = json!(false);
+        let (_, committed) = post(&tree, "/api/import/commit", body).await;
+        bodies.push(("commit".to_string(), committed.to_string()));
+    }
+
+    for (name, body) in bodies {
+        assert_no_absolute_path(&tree, &body, &name);
+    }
+}
+
+/// Assert `body` discloses neither the scratch tree nor the staging area.
+///
+/// Both spellings of each, because on macOS the temp directory canonicalizes
+/// through a symlink (`/var/folders/…` vs `/private/var/folders/…`) and a
+/// subprocess may report either.
+fn assert_no_absolute_path(tree: &Tree, body: &str, what: &str) {
+    let mut secrets = vec![
+        tree.dir.path().to_path_buf(),
+        std::env::temp_dir(),
+        fixtures_dir(),
+    ];
+    let canonical: Vec<PathBuf> = secrets
+        .iter()
+        .filter_map(|p| p.canonicalize().ok())
+        .collect();
+    secrets.extend(canonical);
+    for secret in secrets {
+        let rendered = secret.to_string_lossy().into_owned();
+        // A JSON body is escaped, so check the escaped spelling too.
+        for spelling in [rendered.clone(), rendered.replace('/', "\\/")] {
+            assert!(
+                !body.contains(&spelling),
+                "{what} discloses {spelling}:\n{body}"
+            );
+        }
+    }
+}
+
+// ===========================================================================
+// Test-process plumbing
+// ===========================================================================
+
+/// A resolved real hledger, for the tests that need one. Only ever called behind
+/// [`require_hledger`].
+fn resolve_hledger() -> Hledger {
+    Hledger::resolve(&Prefs::default()).unwrap_or_else(|error| {
+        panic!("{IMPORT_CHECK} is set but no usable hledger was found: {error}")
+    })
+}
+
+/// Write an executable `hledger` stub that prints `banner` on stdout.
+fn write_stub(dir: &Path, name: &str, banner: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{banner}'\n")).expect("write stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    path
+}
+
+/// The scratch directory a parent handed this child.
+fn child_dir() -> PathBuf {
+    std::env::var_os(CHILD_DIR_ENV)
+        .or_else(|| std::env::var_os("LEDGELINE_CONFIG_DIR"))
+        .map(PathBuf::from)
+        .expect("a child test must be given its scratch directory")
+}
+
+/// Re-execute this test binary, running exactly the `#[ignore]`d test named
+/// `test_name` with `env` applied to the child alone.
+///
+/// The environment variables this suite drives — `$LEDGELINE_HLEDGER`,
+/// `$LEDGELINE_CONFIG_DIR` — are process-global, and libtest runs tests on
+/// threads of ONE process. `std::env::set_var` is `unsafe` in edition 2024
+/// precisely because it is not thread-safe, and this codebase does not use
+/// `unsafe`. A child gets a pristine, private environment and exercises the real
+/// `std::env::var_os` path rather than a test-only seam around it. The same
+/// mechanism, and the same reasoning, as `tests/prefs.rs`.
+fn run_child(test_name: &str, env: &[(&str, &Path)]) {
+    let exe = std::env::current_exe().expect("locate this test binary");
+    let mut command = Command::new(exe);
+    command.args([test_name, "--exact", "--ignored", "--test-threads=1"]);
+    command.env_remove("LEDGELINE_CONFIG_DIR");
+    command.env_remove("LEDGELINE_HLEDGER");
+    command.env_remove(CHILD_DIR_ENV);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command
+        .output()
+        .expect("re-run this test binary as a child");
+    assert!(
+        output.status.success(),
+        "child test `{test_name}` failed\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// Initialise a repository over the scratch tree and commit everything in it, so
+/// the import starts from a clean state.
+///
+/// Every developer-machine setting is pinned in the repository's OWN config,
+/// which beats the global one: signing would demand a passphrase nobody can
+/// type, a global `core.hooksPath` would hide nothing useful here, and a global
+/// `core.excludesFile` would make files ignored that these tests expect to be
+/// committable. The same neutralisation `tests/git_commit.rs` performs, and for
+/// the same reason.
+fn init_repo(dir: &Path) {
+    git(dir, &["init", "--quiet"]);
+    for setting in [
+        ["user.name", "Ledgeline Test"],
+        ["user.email", "test@ledgeline.invalid"],
+        ["commit.gpgsign", "false"],
+        ["core.excludesFile", ""],
+    ] {
+        git(dir, &["config", setting[0], setting[1]]);
+    }
+    git(dir, &["add", "--all"]);
+    git(dir, &["commit", "--quiet", "--message", "initial"]);
+}
+
+/// Run git in `dir` and return its combined output.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap_or_else(|error| panic!("git {args:?}: {error}"));
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}

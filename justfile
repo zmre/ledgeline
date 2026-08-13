@@ -70,6 +70,7 @@ hledger-checks:
     LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
     LEDGELINE_HLEDGER_MATCH_CHECK=1 cargo test -p ledgeline-core --test matching
     LEDGELINE_HLEDGER_SORT_CHECK=1 cargo test -p ledgeline-core --test sort
+    LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline-server --test import_endpoints
 
 # Snapshot raw hledger-web JSON API responses into fixtures/api/vVERSION/
 snapshot-api:

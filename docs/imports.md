@@ -166,6 +166,7 @@ cargo test -p ledgeline-core --test sort             # format-preserving date so
 cargo test -p ledgeline-core --test journals         # target ranking, by content only
 cargo test -p ledgeline-server --test prefs          # prefs store + hledger resolution
 cargo test -p ledgeline-server --test git_commit     # the git safety net
+cargo test -p ledgeline-server --test import_endpoints  # the /api/import/* routes
 ```
 
 Four opt-in checks shell out to a real binary and are therefore **not** part of `cargo test`,
@@ -175,7 +176,15 @@ which stays hermetic:
 LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
 LEDGELINE_HLEDGER_MATCH_CHECK=1  cargo test -p ledgeline-core --test matching
 LEDGELINE_HLEDGER_SORT_CHECK=1   cargo test -p ledgeline-core --test sort
+LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline-server --test import_endpoints
 ```
+
+`import_endpoints`' gated half is where the whole import *sequence* is proved: that the
+proposed entries come from stdout and the status line from stderr, that a row `.latest` would
+silently drop is reported, that a commit writes exactly one CSV and one journal, and — the one
+that matters most — that **balance assertions do not aggregate across two `-f` flags** while the
+concatenation does. That last one is a silent wrong answer rather than an error, so it is the
+only bug in this feature a user would never notice.
 
 `rules_hledger_render` is the only check that proves **our renderer emits syntax hledger
 accepts** — the round-trip tests only prove we do not damage what we did not touch. `sort`'s

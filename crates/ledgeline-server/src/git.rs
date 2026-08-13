@@ -83,12 +83,6 @@
 //!   error built from stderr alone would be blank. [`Repo::check`] falls back to
 //!   stdout.
 
-// This module lands ahead of its only consumer (the WP-11 import routes, a
-// different lane), so every item here is legitimately unreferenced in the
-// library build until those routes are wired. `tests/git_commit.rs` does
-// exercise all of it. Remove this once `import_api` calls in.
-#![allow(dead_code)]
-
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};

@@ -57,10 +57,6 @@
 //! dump, so the version is checked once, up front, and reported as
 //! [`HledgerError::TooOld`] with a number the user can act on.
 
-// Complete but not yet CONSUMED — see the same note in `prefs.rs`. The import
-// pipeline (`import_api.rs`, WP-11 lane E) is what calls `resolve` and `invoke`.
-#![expect(dead_code, reason = "consumed by import_api.rs; see WP-11 lane E")]
-
 use crate::prefs::{self, Prefs};
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
