@@ -10,7 +10,7 @@
 // The English here is the English the user reads. It is in this file rather than
 // in a template for the same reason the logic is.
 
-import type {AliasEffect, AliasEntry, AliasFile, AliasRename} from "$lib/imports/importTypes";
+import type {AliasEffect, AliasEntry, AliasFile, AliasRename, CliParity} from "$lib/imports/importTypes";
 import type {SaveAliasEdit, SaveAliasesBody} from "$lib/api/native";
 
 // ---------------------------------------------------------------------------
@@ -312,3 +312,95 @@ export const ALIAS_EXPLAINER =
     "An alias maps a name your bank uses onto one of your accounts. Ledgeline hands these to hledger when it imports a statement, " +
     "which is the only way an alias can reach a CSV. It does not rewrite the account names shown elsewhere in Ledgeline — " +
     "hledger applies these itself when it reads your journal.";
+
+// ---------------------------------------------------------------------------
+// Command-line parity: the same import, run in a terminal
+// ---------------------------------------------------------------------------
+
+/**
+ * What the divergence notice says, or null when there is nothing to say.
+ *
+ * Null is the ordinary case and covers three genuinely different situations that
+ * all mean "be quiet": no alias is in force at all, aliases are in force and a
+ * config file already supplies them, and aliases are in force but matched nothing
+ * in this statement. The engine measures the middle one — it repeats the import
+ * with exactly the aliases a config file gives and diffs — so this function never
+ * has to reason about what a regex matches.
+ */
+export function parityNotice(effect: AliasEffect | null): string | null {
+    if (effect === null || effect.cli.matches) return null;
+    const count = effect.cli.differences.length;
+    const names = count === 1 ? "one account" : `${count} accounts`;
+    return `Run from the command line, this same import would file ${names} differently.`;
+}
+
+/**
+ * The explanation under the headline: why the two disagree, in the user's terms.
+ *
+ * The reason is always the same one and it is worth stating plainly every time,
+ * because it is genuinely surprising: an `alias` line in a journal does not reach
+ * an imported CSV. Ledgeline works around that; a terminal has no way to.
+ */
+export const PARITY_EXPLAINER =
+    "An alias in your journal is not applied to a statement being imported — that is hledger's behaviour, not Ledgeline's. " +
+    "Ledgeline passes your aliases to hledger explicitly, so this screen maps them; a plain `hledger import` in a terminal does not. " +
+    "An hledger.conf beside your journal fixes that, because it applies to every hledger command.";
+
+/**
+ * The sentence on the button that installs the fix.
+ *
+ * Names the file so it is never a mystery what is about to be written, and
+ * distinguishes creating one from adding to one — the two have different
+ * consequences for a user who keeps their config under version control.
+ */
+export function parityFixLabel(parity: CliParity): string {
+    const where = parity.confPath === null || parity.confOutside ? "hledger.conf" : parity.confPath;
+    return parity.confPath === null || parity.confOutside ? `Create ${where} beside your journal` : `Add these to ${where}`;
+}
+
+/**
+ * A warning to show beside the fix, or null when there is none.
+ *
+ * Three distinct situations, each worth its own sentence rather than a generic
+ * "something is unusual":
+ *
+ * - a config file is in force from ABOVE the journal's directory, so creating one
+ *   beside the journal will shadow it. hledger uses the nearest file only, so the
+ *   other one's settings stop applying — a real consequence, and not one to
+ *   discover afterwards;
+ * - the config in force replaces the command hledger runs, which breaks every
+ *   hledger command the user types until they fix it;
+ * - the journal's directory holds something at `hledger.conf` that is not a
+ *   regular file, so nothing will be written there.
+ */
+export function parityWarning(parity: CliParity): string | null {
+    if (parity.confHijackedBy !== null) {
+        return (
+            `Your config file starts with \`${parity.confHijackedBy}\`, which hledger reads as the command to run — ` +
+            "it overrides whatever command you type, so every hledger command is currently affected. Ledgeline's own imports are unaffected " +
+            "(it always passes --no-conf), but you will want to fix that line."
+        );
+    }
+    if (parity.confPath !== null && parity.confOutside) {
+        return (
+            `The config file in force is ${parity.confPath}, above your journal's directory. Ledgeline will not write outside that directory, ` +
+            "so this creates a new hledger.conf beside your journal — and because hledger uses the nearest file only, the one above will stop applying."
+        );
+    }
+    if (!parity.writable) {
+        return "There is something at hledger.conf beside your journal that is not an ordinary file, so Ledgeline will not write there.";
+    }
+    return null;
+}
+
+/**
+ * May the fix be offered at all?
+ *
+ * There has to be something to add: an alias set that is entirely unwritable
+ * (every one of them carries a space in the account NAME, say) produces refusals
+ * and no additions, and a button that would write nothing is a button that should
+ * not be there.
+ */
+export function canInstallParityFix(parity: CliParity, editable: boolean): boolean {
+    return editable && parity.writable && parity.additions.length > 0;
+}

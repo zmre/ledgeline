@@ -339,6 +339,7 @@ async fn every_import_route_requires_the_token() {
         ("POST", "/api/import/commit"),
         ("POST", "/api/import/save-csv"),
         ("POST", "/api/import/sort"),
+        ("POST", "/api/import/hledger-conf"),
         ("GET", "/api/prefs"),
         ("PUT", "/api/prefs"),
     ] {
@@ -2047,4 +2048,434 @@ fn git(dir: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+// ---------------------------------------------------------------------------
+// hledger.conf — the second home an alias can live in, and command-line parity
+// ---------------------------------------------------------------------------
+
+/// The `--alias` line a config file needs for [`ALIAS_STATEMENT`].
+///
+/// Note the shape: a regular expression with `.` where the bank's name has
+/// spaces, because **hledger's config parser splits on whitespace and ignores
+/// quotes** — both `--alias="…"` and `--alias='…'` are parse errors, verified.
+/// `.` matches a space, so this is the only spelling that survives the file and
+/// still matches. `hledger_conf::conf_argument` is what produces it.
+const CONF_ALIAS: &str = "/^PW.Roth.IRA.-.3077($|:)/=assets:morganstanley:pw-roth-ira\\1";
+
+/// `Tree::bare` plus the statement-account rules file, and no journal alias —
+/// the baseline the config-file tests add to.
+fn conf_tree(journal: &str) -> Tree {
+    let tree = Tree::bare();
+    std::fs::write(tree.path("main.journal"), journal).expect("write journal");
+    std::fs::copy(
+        fixtures_dir().join("import/match/statement-account.csv.rules"),
+        tree.path("import/bank.csv.rules"),
+    )
+    .expect("copy the rules fixture");
+    let state =
+        AppState::from_journal_path(tree.path("main.journal")).expect("the scratch journal opens");
+    Tree {
+        dir: tree.dir,
+        state,
+    }
+}
+
+/// Stage [`ALIAS_STATEMENT`] and dry-run it, returning the preview.
+async fn alias_preview(tree: &Tree) -> Value {
+    let (status, staged) = upload(tree, "bank.csv", ALIAS_STATEMENT.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let (status, preview) = post(
+        tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    preview
+}
+
+/// **The divergence notice.** A journal alias reaches this import; nothing would
+/// reach a command-line one; the dry run says so before anything is written.
+///
+/// The verdict is MEASURED — the engine repeats the import with exactly the
+/// aliases a config file supplies (here, none) and diffs — so this asserts
+/// hledger's own answer rather than a string comparison of alias spellings.
+#[tokio::test]
+async fn a_journal_only_alias_raises_the_command_line_divergence() {
+    require_hledger!();
+    let tree = alias_tree();
+    let preview = alias_preview(&tree).await;
+
+    let cli = &preview["aliases"]["cli"];
+    assert_eq!(cli["matches"], json!(false), "{preview}");
+    assert_eq!(
+        cli["differences"],
+        json!([{"from": BANK_SPEAK, "to": MAPPED}]),
+        "the notice must name the accounts that would differ: {preview}"
+    );
+    // No config file at all, so nothing to report and everything to offer.
+    assert_eq!(cli["confPath"], json!(null));
+    assert_eq!(cli["writable"], json!(true));
+    assert_eq!(
+        cli["revision"],
+        json!(""),
+        "no file yet is the empty revision"
+    );
+    // The exact line the fix would write, shown BEFORE it is pressed: the
+    // conversion widens what the pattern matches (a `.` matches any character,
+    // and a regex alias is case-insensitive where a plain one is not).
+    assert_eq!(cli["additions"], json!([CONF_ALIAS]), "{preview}");
+    assert_eq!(cli["refusals"], json!([]));
+}
+
+/// A config file that already supplies the mapping makes the notice disappear —
+/// and the alias reaches the import through the config rather than the journal.
+#[tokio::test]
+async fn a_config_declared_alias_is_forwarded_and_parity_holds() {
+    require_hledger!();
+    // No `alias` directive in the journal at all. Everything below comes from
+    // the config file.
+    let tree = conf_tree(OPENING);
+    std::fs::write(tree.path("hledger.conf"), format!("--alias={CONF_ALIAS}\n"))
+        .expect("write hledger.conf");
+
+    let preview = alias_preview(&tree).await;
+    let entries = preview["entries"].as_str().expect("entries");
+    assert!(
+        entries.contains(MAPPED) && !entries.contains(BANK_SPEAK),
+        "the config's alias must reach the import: {entries}"
+    );
+    // Ledgeline applies exactly what a terminal would, so there is nothing to
+    // warn about.
+    assert_eq!(
+        preview["aliases"]["cli"]["matches"],
+        json!(true),
+        "{preview}"
+    );
+    assert_eq!(preview["aliases"]["cli"]["confPath"], json!("hledger.conf"));
+    assert_eq!(preview["aliases"]["cli"]["differences"], json!([]));
+}
+
+/// A config file whose `--alias` and a journal `alias` describe the same account
+/// leaves the CONFIG's answer standing, because that is the answer a terminal
+/// gives. Ledgeline agreeing with the command line is the whole point; agreeing
+/// with it in the opposite direction would be a second divergence.
+#[tokio::test]
+async fn the_config_wins_where_it_and_the_journal_disagree() {
+    require_hledger!();
+    let tree = conf_tree(&format!(
+        "alias PW Roth IRA - 3077 = assets:from:journal\n\n{OPENING}"
+    ));
+    std::fs::write(
+        tree.path("hledger.conf"),
+        "--alias=/^PW.Roth.IRA.-.3077($|:)/=assets:from:config\\1\n",
+    )
+    .expect("write hledger.conf");
+
+    let preview = alias_preview(&tree).await;
+    let entries = preview["entries"].as_str().expect("entries");
+    assert!(entries.contains("assets:from:config"), "{entries}");
+    assert!(!entries.contains("assets:from:journal"), "{entries}");
+    assert_eq!(
+        preview["aliases"]["cli"]["matches"],
+        json!(true),
+        "{preview}"
+    );
+}
+
+/// A config file in force from ABOVE the journal's directory is read and
+/// reported by a relative handle — never an absolute path, and never written to.
+#[tokio::test]
+async fn a_config_above_the_journal_directory_is_read_and_reported_relatively() {
+    require_hledger!();
+    let outer = TempDir::new().expect("temp dir");
+    let books = outer.path().join("books");
+    std::fs::create_dir(&books).expect("books dir");
+    std::fs::write(books.join("main.journal"), OPENING).expect("journal");
+    std::fs::create_dir(books.join("import")).expect("import dir");
+    std::fs::copy(
+        fixtures_dir().join("import/match/statement-account.csv.rules"),
+        books.join("import/bank.csv.rules"),
+    )
+    .expect("copy the rules fixture");
+    // One level up from the journal — exactly where hledger would find it.
+    std::fs::write(
+        outer.path().join("hledger.conf"),
+        format!("--alias={CONF_ALIAS}\n"),
+    )
+    .expect("write hledger.conf");
+
+    let state = AppState::from_journal_path(books.join("main.journal")).expect("opens");
+    let tree = Tree { dir: outer, state };
+
+    let preview = alias_preview(&tree).await;
+    let cli = &preview["aliases"]["cli"];
+    assert_eq!(cli["confPath"], json!("../hledger.conf"), "{preview}");
+    assert_eq!(cli["confOutside"], json!(true));
+    // Read, so the mapping applies and there is no divergence to report.
+    assert_eq!(cli["matches"], json!(true), "{preview}");
+    let body = preview.to_string();
+    assert!(
+        !body.contains(tree.dir.path().to_str().expect("utf-8")),
+        "no absolute path may appear anywhere in a response: {body}"
+    );
+}
+
+/// **The whole point, end to end.** The one-click fix writes a config file that
+/// a REAL command-line `hledger import` then honours.
+///
+/// The last step deliberately uses `std::process::Command` with a working
+/// directory rather than this crate's `Invocation`, because `Invocation` always
+/// passes `--no-conf` and sets no working directory — which is correct for
+/// Ledgeline and exactly wrong for simulating a person in a terminal. This is
+/// the user typing `hledger import` in their books directory.
+#[tokio::test]
+async fn the_one_click_fix_writes_a_config_a_real_cli_import_honours() {
+    require_hledger!();
+    let tree = alias_tree();
+
+    // 1. The divergence is reported.
+    let preview = alias_preview(&tree).await;
+    let cli = &preview["aliases"]["cli"];
+    assert_eq!(cli["matches"], json!(false), "{preview}");
+    let revision = cli["revision"].as_str().expect("a revision").to_string();
+
+    // 2. The fix is applied. The body carries the revision and NOTHING else —
+    //    what to write is recomputed by the engine from the journal's own alias
+    //    directives, so this route is not a write-arbitrary-text primitive.
+    let (status, written) = post(
+        &tree,
+        "/api/import/hledger-conf",
+        json!({"revision": revision}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{written}");
+    assert_eq!(written["confPath"], json!("hledger.conf"));
+    assert_eq!(written["created"], json!(true));
+    assert_eq!(written["added"], json!([CONF_ALIAS]));
+
+    // 3. It landed beside the journal, and nowhere else.
+    let conf = std::fs::read_to_string(tree.path("hledger.conf")).expect("hledger.conf");
+    assert!(conf.contains(&format!("--alias={CONF_ALIAS}")), "{conf}");
+
+    // 4. A REAL command-line import now maps the account. Run from the books
+    //    directory with no flags of ours — hledger finds the config itself.
+    std::fs::write(tree.path("import/bank.csv"), ALIAS_STATEMENT).expect("write csv");
+    let output = Command::new(resolve_hledger().path())
+        .current_dir(tree.dir.path())
+        .args([
+            "import",
+            "--dry-run",
+            "-f",
+            "main.journal",
+            "--rules",
+            "import/bank.csv.rules",
+            "import/bank.csv",
+        ])
+        .output()
+        .expect("a command-line hledger runs");
+    let proposed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        proposed.contains(MAPPED),
+        "a command-line import must now produce the MAPPED account:\n{proposed}\n\
+         stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!proposed.contains(BANK_SPEAK), "{proposed}");
+
+    // 5. And the notice is gone, measured the same way it appeared.
+    let preview = alias_preview(&tree).await;
+    assert_eq!(
+        preview["aliases"]["cli"]["matches"],
+        json!(true),
+        "{preview}"
+    );
+    assert_eq!(
+        preview["aliases"]["cli"]["confPath"],
+        json!("hledger.conf"),
+        "{preview}"
+    );
+}
+
+/// Pressing the button twice adds the alias once.
+///
+/// Idempotence is not cosmetic here: the comparison is made in the CONFIG file's
+/// form (`/^PW.Roth…($|:)/=…\1`) rather than the command line's
+/// (`PW Roth IRA - 3077=…`), and comparing the two spellings would append a
+/// duplicate on every press.
+#[tokio::test]
+async fn installing_the_same_alias_twice_writes_it_once() {
+    require_hledger!();
+    let tree = alias_tree();
+    let revision = alias_preview(&tree).await["aliases"]["cli"]["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_string();
+
+    let (status, first) = post(
+        &tree,
+        "/api/import/hledger-conf",
+        json!({"revision": revision}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let before = std::fs::read_to_string(tree.path("hledger.conf")).expect("conf");
+
+    let (status, second) = post(
+        &tree,
+        "/api/import/hledger-conf",
+        json!({"revision": first["revision"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["added"], json!([]), "nothing left to add");
+    assert_eq!(
+        std::fs::read_to_string(tree.path("hledger.conf")).expect("conf"),
+        before,
+        "a second press must not rewrite the file at all"
+    );
+}
+
+/// A stale revision is a `409`, not a silent clobber — the same model the rules
+/// and alias editors hold to. Hermetic: no hledger needed to prove a conflict.
+#[tokio::test]
+async fn a_stale_config_revision_is_a_conflict() {
+    let tree = conf_tree(&format!(
+        "alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\n\n{OPENING}"
+    ));
+    std::fs::write(tree.path("hledger.conf"), "--depth 3\n").expect("write conf");
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/hledger-conf",
+        json!({"revision": "not-the-revision"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        std::fs::read_to_string(tree.path("hledger.conf")).expect("conf"),
+        "--depth 3\n",
+        "a refused write must change nothing"
+    );
+    // The message names the caller's own handle and no path of ours.
+    let text = as_text(&body);
+    assert!(text.contains("hledger.conf"), "{text}");
+    assert!(
+        !text.contains(tree.dir.path().to_str().expect("utf-8")),
+        "{text}"
+    );
+}
+
+/// A file that exists cannot be written with the empty revision, which is the
+/// revision of "there was nothing here". Without this, a client that read the
+/// screen before somebody created a config would silently overwrite it.
+#[tokio::test]
+async fn the_empty_revision_does_not_authorise_overwriting_a_file_that_appeared() {
+    let tree = conf_tree(&format!(
+        "alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\n\n{OPENING}"
+    ));
+    std::fs::write(tree.path("hledger.conf"), "--depth 3\n").expect("write conf");
+    let (status, body) = post(&tree, "/api/import/hledger-conf", json!({"revision": ""})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
+/// A symlink at `hledger.conf` is refused outright rather than followed.
+///
+/// The write target is the one thing about this route that is fixed rather than
+/// client-supplied, so the interesting attack is on the file system rather than
+/// on the request: a symlink pointing at `~/.bashrc` would otherwise turn "add
+/// an alias" into "append to an arbitrary file".
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_config_is_refused_rather_than_followed() {
+    let tree = conf_tree(&format!(
+        "alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\n\n{OPENING}"
+    ));
+    let elsewhere = tree.path("notes.txt");
+    std::fs::write(&elsewhere, "do not touch me\n").expect("write bystander");
+    std::os::unix::fs::symlink(&elsewhere, tree.path("hledger.conf")).expect("symlink");
+
+    let (status, body) = post(&tree, "/api/import/hledger-conf", json!({"revision": ""})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        std::fs::read_to_string(&elsewhere).expect("bystander"),
+        "do not touch me\n",
+        "the symlink's target must be untouched"
+    );
+}
+
+/// The config write's blast radius is exactly one file.
+#[tokio::test]
+async fn installing_aliases_writes_one_file_and_nothing_else() {
+    require_hledger!();
+    let tree = alias_tree();
+    std::fs::write(tree.path("notes.txt"), "do not touch me\n").expect("bystander");
+    let revision = alias_preview(&tree).await["aliases"]["cli"]["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_string();
+
+    let before = tree.snapshot();
+    let (status, body) = post(
+        &tree,
+        "/api/import/hledger-conf",
+        json!({"revision": revision}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        vec!["hledger.conf".to_string()],
+        "installing an alias must touch the config file and nothing else"
+    );
+}
+
+/// A config file whose first word replaces the command breaks every hledger the
+/// user runs — and does not touch ours, because every invocation passes
+/// `--no-conf`.
+///
+/// This is the hostile-config case as a test: the same file that rewrites a
+/// terminal's `hledger import` into `balance import …` is sitting beside the
+/// journal while Ledgeline imports through it successfully.
+#[tokio::test]
+async fn a_hijacking_config_breaks_the_terminal_and_not_this_engine() {
+    require_hledger!();
+    let tree = alias_tree();
+    // Verified against hledger 1.52: a first word that does not begin with a
+    // dash is taken as the command, overriding the one on the command line.
+    std::fs::write(tree.path("hledger.conf"), "balance\n").expect("write conf");
+
+    // A real command line is broken by it.
+    std::fs::write(tree.path("import/bank.csv"), ALIAS_STATEMENT).expect("write csv");
+    let output = Command::new(resolve_hledger().path())
+        .current_dir(tree.dir.path())
+        .args([
+            "import",
+            "--dry-run",
+            "-f",
+            "main.journal",
+            "--rules",
+            "import/bank.csv.rules",
+            "import/bank.csv",
+        ])
+        .output()
+        .expect("hledger runs");
+    assert!(
+        !output.status.success(),
+        "the hostile config must break a plain command line, or this test proves nothing"
+    );
+
+    // Ours is not.
+    let preview = alias_preview(&tree).await;
+    let entries = preview["entries"].as_str().expect("entries");
+    assert!(entries.contains(MAPPED), "{preview}");
+    // And the screen says why the terminal is broken, rather than leaving the
+    // user to discover it.
+    assert_eq!(
+        preview["aliases"]["cli"]["confHijackedBy"],
+        json!("balance"),
+        "{preview}"
+    );
 }

@@ -131,8 +131,13 @@
                     error={importStore.dryRunError}
                     aliases={capabilities.aliases}
                     writing={importStore.writeInFlight}
+                    editable={capabilities.editable}
+                    confWriting={importStore.confWriting}
+                    confWritten={importStore.confWritten}
+                    confError={importStore.confError}
                     onRetry={() => void importStore.runDryRun()}
                     onWrite={() => void importStore.writeChanges()}
+                    onInstallConf={(revision) => void importStore.installConfAliases(revision)}
                 />
             {/if}
 

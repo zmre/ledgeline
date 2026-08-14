@@ -28,6 +28,50 @@
 //! 4. **The child never inherits our stdin.** It is `/dev/null` unless the
 //!    caller supplies bytes, so nothing can block reading a terminal that a
 //!    windowed app does not have.
+//! 5. **No hledger we run reads a config file.** Every argv starts with
+//!    [`NO_CONF`]. See below — this is the one invariant that defends against a
+//!    file nobody in this process chose.
+//!
+//! # Why every invocation passes `--no-conf`
+//!
+//! hledger 1.40 introduced automatic config files, and the search is not opt-in:
+//! it reads `hledger.conf` from the **current directory or any directory above
+//! it**, then `$HOME/.hledger.conf`, then the XDG config dir. [`Invocation`]
+//! deliberately sets no working directory, so without this flag we would inherit
+//! whatever config happens to sit above wherever Ledgeline was launched from —
+//! a file this application never chose, never read and cannot see.
+//!
+//! That is not untidiness. A config file can **replace the command**. Verified
+//! against hledger 1.52, with a `hledger.conf` whose entire content is the bare
+//! word `balance`:
+//!
+//! ```text
+//! $ hledger import --dry-run -f rt.journal --rules ms.csv.rules ms.csv
+//! hledger: Error: Unknown flag: --dry-run
+//! * while parsing the following args, final command line:
+//! *  balance import --dry-run -f rt.journal --rules ms.csv.rules ms.csv
+//! ```
+//!
+//! Our command was demoted to an argument of somebody else's. hledger's own
+//! manual states the rule: a first word in the config's general section that does
+//! not begin with a dash is taken as the command, overriding the command line.
+//! That example errors, but the shape generalises: a config could inject
+//! `--auto`, `--forecast`, `-b`/`-e`, `--depth` or `--alias` into invocations
+//! whose output this crate **parses** and whose results it **appends to the
+//! user's journal**. Explicit flags do beat config ones (`-O json` on our command
+//! line was verified to beat `-O csv` in a config), so the danger is not only
+//! breakage — it is that our subprocesses stop being determined by this process.
+//!
+//! So the flag is added in [`Invocation::argv`], which is the single point every
+//! invocation's arguments pass through on the way to `Command::args`, rather than
+//! at the call sites — a call site is a thing that can be added without it.
+//! `import_api`'s own tests lint the built argv of every invocation the import
+//! path makes, because a behavioural test would need a hostile config file
+//! planted on the machine running it.
+//!
+//! Reading a config file is a separate concern, deliberately kept separate:
+//! [`ledgeline_core::hledger_conf`] parses one *itself* for the `--alias` options
+//! it declares. We never delegate to a config by passing `--conf`.
 //!
 //! # Resolution order
 //!
@@ -82,6 +126,15 @@ const BAKED_HLEDGER: Option<&str> = option_env!("LEDGELINE_HLEDGER_PATH");
 
 /// Bare name looked up on `$PATH` (resolution step 4).
 const PATH_LOOKUP: &str = "hledger";
+
+/// The flag that stops hledger reading a config file nobody in this process
+/// chose. Prepended to **every** argv by [`Invocation::argv`]; see the module
+/// docs for what a config file can otherwise do to a command.
+///
+/// The long spelling rather than `-n`: when hledger echoes an argv back in a
+/// usage dump, `--no-conf` says what it is, and there is no short option to
+/// confuse it with.
+pub(crate) const NO_CONF: &str = "--no-conf";
 
 /// Wall-clock budget for the `--version` probe. Short: this runs during startup
 /// / the capabilities request, and the answer is a single line of output.
@@ -255,6 +308,27 @@ impl Hledger {
             .chain(std::iter::once(PathBuf::from(PATH_LOOKUP)))
     }
 
+    /// A resolved-looking `Hledger` for tests that only BUILD invocations.
+    ///
+    /// The private fields and the single `resolve` constructor exist so that
+    /// holding one of these is proof a runnable binary was found. This bypasses
+    /// that proof, which is why it is `#[cfg(test)]`: the argv lints in
+    /// `import_api` assert on arguments and must not spawn a process to do it,
+    /// and requiring a real hledger on the machine would make an
+    /// argument-level assertion depend on the test host's installation.
+    ///
+    /// `allow(dead_code)` because `tests/prefs.rs` compiles this module in too
+    /// (via `#[path]`) and resolves a real stub instead, so it has no use for
+    /// this — and that file deliberately carries no blanket allow of its own.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn for_tests(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            version: MIN_HLEDGER,
+        }
+    }
+
     /// The version this binary reported at [`resolve`](Self::resolve) time.
     pub(crate) fn version(&self) -> Version {
         self.version
@@ -295,6 +369,7 @@ impl Hledger {
                 .collect(),
             timeout: DEFAULT_TIMEOUT,
             stdin: None,
+            read_config: false,
         }
     }
 }
@@ -314,18 +389,51 @@ impl Hledger {
 /// * `run` pipes stdout and stderr **separately** — see invariant 3 in the
 ///   module docs, which the whole dry-run preview depends on.
 /// * stdin is `/dev/null` unless [`stdin`](Self::stdin) supplied bytes.
+/// * [`argv`](Self::argv) prepends [`NO_CONF`], so no invocation this type can
+///   build reads a config file. Invariant 5, and the only exception in the
+///   crate is [`probe_version`]'s fallback, which is argued at its call site.
 ///
 /// [`run`](Self::run) BLOCKS. Call it inside `tokio::task::spawn_blocking`
 /// (under the existing `reports_api::compute` semaphore), never on the async
 /// runtime's threads.
 pub(crate) struct Invocation {
     program: PathBuf,
+    /// The caller's arguments, **without** [`NO_CONF`]. See [`argv`](Self::argv).
     args: Vec<OsString>,
     timeout: Duration,
     stdin: Option<Vec<u8>>,
+    /// Let hledger read a config file. `false` everywhere but the legacy
+    /// version probe; there is no public setter.
+    read_config: bool,
 }
 
 impl Invocation {
+    /// The complete argument vector, exactly as `Command::args` will receive it.
+    ///
+    /// **This is the choke point for [`NO_CONF`]**, and the reason the flag is
+    /// here rather than at any call site: every invocation in this crate is
+    /// eventually run by [`run`](Self::run), `run` builds its `Command` from
+    /// this method, and this method is the only thing that constructs the final
+    /// vector. A new call site therefore inherits the flag by construction —
+    /// there is nothing for it to forget.
+    ///
+    /// The flag goes **first**, before the subcommand, because it is a general
+    /// option and a config file's own injected command word would otherwise sit
+    /// ahead of it.
+    ///
+    /// `pub(crate)` so `import_api`'s tests can lint it. A behavioural test
+    /// would have to plant a hostile `hledger.conf` above the test runner's
+    /// working directory — which is the repository — so the argument-level
+    /// assertion is the one that can actually run in CI.
+    pub(crate) fn argv(&self) -> Vec<OsString> {
+        if self.read_config {
+            return self.args.clone();
+        }
+        std::iter::once(OsString::from(NO_CONF))
+            .chain(self.args.iter().cloned())
+            .collect()
+    }
+
     /// Append one more argument.
     pub(crate) fn arg(mut self, arg: impl AsRef<OsStr>) -> Self {
         self.args.push(arg.as_ref().to_os_string());
@@ -399,7 +507,8 @@ impl Invocation {
         // against the caller's budget rather than extending it.
         let deadline = Instant::now() + self.timeout;
         let mut child = Command::new(&self.program)
-            .args(&self.args)
+            // Invariant 5 lands here: `argv`, never `self.args`.
+            .args(self.argv())
             .stdin(if self.stdin.is_some() {
                 Stdio::piped()
             } else {
@@ -562,17 +671,44 @@ impl Output {
 /// A spawn failure or a timeout is [`Probe::Absent`] — "not here, try the next"
 /// — because both are what a stale preference or a broken symlink look like.
 /// Output that does not parse is [`Probe::Unrecognised`], which is terminal.
+///
+/// # The one invocation that may fall back to reading a config
+///
+/// [`NO_CONF`] did not exist before hledger 1.40 — the same release that
+/// introduced config files, and the same release [`MIN_HLEDGER`] is set to. So
+/// against a 1.39 the flag is an unrecognised option: hledger prints a usage
+/// dump, nothing parses as a version, and this would answer
+/// [`Probe::Unrecognised`], which resolves to [`HledgerError::Unrunnable`] —
+/// "could not run hledger" — for a binary sitting right there that we could have
+/// named a version for.
+///
+/// Losing [`HledgerError::TooOld`] would be losing the one message that tells
+/// that user what to do. So an unrecognised answer is retried **once** without
+/// the flag, and only that retry may read a config. It is safe to make the
+/// exception exactly here and nowhere else:
+///
+/// * it is only ever reached on a binary that has just rejected `--no-conf`,
+///   i.e. one too old to read a config file at all;
+/// * the sole thing done with the result is compare it against [`MIN_HLEDGER`],
+///   which the retry can only make *more* conservative — a config cannot invent
+///   a version banner, and anything unparseable stays `Unrecognised`;
+/// * nothing it produces is parsed as a journal or written anywhere.
 fn probe_version(program: &Path) -> Probe {
-    let invocation = Invocation {
-        program: program.to_path_buf(),
-        args: vec![OsString::from("--version")],
-        timeout: VERSION_TIMEOUT,
-        stdin: None,
-    };
-    match invocation.run() {
-        Ok(output) => {
-            Version::parse(&output.stdout_lossy()).map_or(Probe::Unrecognised, Probe::Reported)
+    let ask = |read_config: bool| {
+        Invocation {
+            program: program.to_path_buf(),
+            args: vec![OsString::from("--version")],
+            timeout: VERSION_TIMEOUT,
+            stdin: None,
+            read_config,
         }
-        Err(_) => Probe::Absent,
+        .run()
+        .map_or(Probe::Absent, |output| {
+            Version::parse(&output.stdout_lossy()).map_or(Probe::Unrecognised, Probe::Reported)
+        })
+    };
+    match ask(false) {
+        Probe::Unrecognised => ask(true),
+        answered => answered,
     }
 }

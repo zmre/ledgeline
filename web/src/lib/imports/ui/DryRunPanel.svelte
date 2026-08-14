@@ -21,9 +21,19 @@
     // The proposed entries are hledger's stdout — valid, re-parseable journal
     // text, not scraped human-readable output — so they are shown as they are.
     import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {aliasNotice, aliasText, relevantAliases, renameText} from "../aliasModel";
+    import {
+        aliasNotice,
+        aliasText,
+        canInstallParityFix,
+        PARITY_EXPLAINER,
+        parityFixLabel,
+        parityNotice,
+        parityWarning,
+        relevantAliases,
+        renameText,
+    } from "../aliasModel";
     import {balanceVerdict, canWrite, gitBlockMessage, skippedWarning} from "../importModel";
-    import type {AliasEntry, DryRunResult} from "../importTypes";
+    import type {AliasEntry, ConfWritten, DryRunResult} from "../importTypes";
 
     let {
         view,
@@ -31,8 +41,13 @@
         error,
         aliases,
         writing,
+        editable,
+        confWriting,
+        confWritten,
+        confError,
         onRetry,
         onWrite,
+        onInstallConf,
     }: {
         view: import("$lib/stores/loadState").DataView;
         result: DryRunResult | null;
@@ -41,8 +56,15 @@
         aliases: readonly AliasEntry[];
         /** The real import is running, so `Write changes` must not be pressable twice. */
         writing: boolean;
+        /** A journal is bound to an editor, so the engine will accept a write at all. */
+        editable: boolean;
+        /** The config-file fix is being written. */
+        confWriting: boolean;
+        confWritten: ConfWritten | null;
+        confError: string | null;
         onRetry: () => void;
         onWrite: () => void;
+        onInstallConf: (revision: string) => void;
     } = $props();
 </script>
 
@@ -91,6 +113,81 @@
                                 in {relevance.alias.journalId}, line {relevance.alias.line}.
                             </span>
                         {/each}
+                    </div>
+                {/if}
+
+                <!--
+                    Command-line parity. An `alias` line in a journal is not
+                    applied to an imported CSV — hledger's behaviour, not ours —
+                    so Ledgeline forwards it explicitly and a plain
+                    `hledger import` in a terminal does not. That means the same
+                    statement, the same rules file and the same journal produce
+                    two different sets of account names depending on which tool
+                    was reached for, silently.
+
+                    `parityNotice` is null whenever the engine MEASURED the two
+                    as agreeing, which is every ordinary import, so this section
+                    is invisible until it is the answer to a real question.
+                -->
+                {#if run.aliases !== null && parityNotice(run.aliases) !== null}
+                    {@const parity = run.aliases.cli}
+                    <div class="alert alert-warning rounded-box flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-cli-parity">
+                        <span class="font-semibold">{parityNotice(run.aliases)}</span>
+                        <p class="text-xs">{PARITY_EXPLAINER}</p>
+
+                        <ul class="list-inside list-disc font-mono text-xs" data-testid="imports-cli-parity-differences">
+                            {#each parity.differences as difference (difference.from)}
+                                <li>from a terminal: {renameText(difference)}</li>
+                            {/each}
+                        </ul>
+
+                        {#if parityWarning(parity) !== null}
+                            <p class="text-xs" data-testid="imports-cli-parity-warning">{parityWarning(parity)}</p>
+                        {/if}
+
+                        {#if parity.additions.length > 0}
+                            <!-- Shown BEFORE the button is pressed, because the
+                                 conversion is not lossless: a space becomes `.`,
+                                 which matches any character, and a plain alias
+                                 written as a regex becomes case-insensitive.
+                                 Both are widenings, and a user is entitled to
+                                 see the exact line before it is written. -->
+                            <span class="text-xs">These lines would be added:</span>
+                            <ul class="list-inside font-mono text-xs" data-testid="imports-cli-parity-additions">
+                                {#each parity.additions as addition (addition)}
+                                    <li>--alias={addition}</li>
+                                {/each}
+                            </ul>
+                        {/if}
+
+                        {#each parity.refusals as refusal (refusal.pattern + refusal.replacement)}
+                            <span class="text-xs" data-testid="imports-cli-parity-refusal">
+                                <code>{refusal.pattern} → {refusal.replacement}</code> cannot be added because {refusal.message}.
+                            </span>
+                        {/each}
+
+                        {#if canInstallParityFix(parity, editable)}
+                            <button
+                                type="button"
+                                class="btn btn-sm"
+                                disabled={confWriting}
+                                onclick={() => onInstallConf(parity.revision)}
+                                data-testid="imports-cli-parity-fix"
+                            >
+                                {#if confWriting}<span class="loading loading-spinner loading-xs"></span>{/if}
+                                {parityFixLabel(parity)}
+                            </button>
+                        {/if}
+
+                        {#if confWritten !== null}
+                            <span class="text-xs" data-testid="imports-cli-parity-written">
+                                {confWritten.created ? "Created" : "Updated"}
+                                {confWritten.confPath} with {confWritten.added.length} alias{confWritten.added.length === 1 ? "" : "es"}.
+                            </span>
+                        {/if}
+                        {#if confError !== null}
+                            <span class="text-error text-xs" data-testid="imports-cli-parity-error">{confError}</span>
+                        {/if}
                     </div>
                 {/if}
 

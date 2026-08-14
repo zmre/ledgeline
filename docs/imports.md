@@ -6,7 +6,8 @@ Three surfaces behind one nav item, each with its own tab:
   files, run `hledger import`, and check the result before anything is written.
 - **Edit Rules** — find, read, present and edit hledger CSV import rules files (`*.rules`).
 - **Account Aliases** — the `alias` directives in your journal, and the mapping table an import
-  hands to `hledger --alias`. See § Account aliases.
+  hands to `hledger --alias`. See § Account aliases, and § The two homes an alias can live in for
+  why the same mapping in an `hledger.conf` is a different thing.
 
 Rules-file scope: **discover, present, edit, save.** Still not in scope: generating a rules file
 from a CSV, and writing a chosen category back as a new `if` rule. The model below is shaped so
@@ -31,6 +32,7 @@ why.
 | `crates/ledgeline-core/src/sort.rs` | Format-preserving date sort of a journal file |
 | `crates/ledgeline-core/src/journals.rs` | Ranking candidate target journals, by content only |
 | `crates/ledgeline-core/src/aliases.rs` | `alias` directives: forwarding them to `--alias`, and the one-line-wide span editor |
+| `crates/ledgeline-core/src/hledger_conf.rs` | `hledger.conf`: reading its `--alias` options, and the escaping rule for writing one |
 | `crates/ledgeline-server/src/rules_api.rs` | `/api/rules`, `/api/rules/{*id}`, `/api/rules-preview/{*id}` |
 | `crates/ledgeline-server/src/alias_api.rs` | `/api/aliases`, `/api/aliases/{*journalId}` |
 | `crates/ledgeline-server/src/{hledger,git,prefs}.rs` | Subprocess invocation, the git safety net, the preferences store |
@@ -47,6 +49,8 @@ process spawning across the server.
 
 The rules those two modules hold to:
 
+- **Every hledger invocation passes `--no-conf`.** See § No hledger we run reads a config file —
+  this one is a security property, not a tidiness one.
 - **Arguments as a `Vec<OsString>`, never a shell string.** No `sh -c`. `--` terminates every
   pathspec list, so a statement named `-f` is a file. git additionally gets `--literal-pathspecs`,
   because `statement[2026].csv` is otherwise a *glob*.
@@ -61,6 +65,52 @@ The rules those two modules hold to:
 - **git stages explicit pathspecs only.** Never `add -A`, never `add .`, never `commit -a`. A user
   with unrelated work in progress must find it untouched — asserted by a test that leaves an
   unrelated file dirty and proves it is still dirty afterwards.
+
+## No hledger we run reads a config file
+
+> **Every invocation starts with `--no-conf`**, added in `Invocation::argv` — the single point
+> every argument vector passes through on its way to `Command::args`.
+
+hledger 1.40 introduced automatic config files, and the search is not opt-in: `hledger.conf` in the
+working directory **or any directory above it**, then `$HOME/.hledger.conf`, then the XDG config
+dir. `Invocation` deliberately sets no working directory, so without the flag we would inherit
+whatever config happened to sit above wherever Ledgeline was launched — a file this application
+never chose and cannot see.
+
+That is not untidiness. **A config file can replace the command.** Verified against hledger 1.52,
+with a `hledger.conf` whose entire content is the bare word `balance`:
+
+```console
+$ hledger import --dry-run -f rt.journal --rules ms.csv.rules ms.csv
+hledger: Error: Unknown flag: --dry-run
+* while parsing the following args, final command line:
+*  balance import --dry-run -f rt.journal --rules ms.csv.rules ms.csv
+```
+
+Our command was demoted to an argument of somebody else's. hledger's manual states the rule: a first
+word in the general section that does not begin with a dash is taken as the command, overriding the
+command line. That example errors, but the shape generalises — a config could inject `--auto`,
+`--forecast`, `-b`/`-e`, `--depth` or `--alias` into invocations whose output we *parse* and whose
+results we *append to the user's journal*. Explicit flags do beat config ones (`-O json` on our
+command line beats `-O csv` in a config, verified), so the danger is not only breakage: it is that
+our subprocesses stop being determined by this process.
+
+Two consequences worth stating:
+
+- **The flag goes first, ahead of the subcommand**, because a config's injected command word is
+  prepended to the argument list.
+- **The version probe is the one exception, and only on retry.** `--no-conf` did not exist before
+  1.40, so against a 1.39 it is an unrecognised flag and the probe would learn nothing — costing the
+  user the actionable "hledger 1.39 is older than 1.40" banner. So an unparseable answer is retried
+  once without the flag. Safe exactly there: it is only reached on a binary that has just rejected
+  the flag (i.e. one too old to read a config at all), and the only use of the result is a
+  comparison against the minimum version.
+
+Tested as an **argument-level lint** (`import_api::tests::every_import_invocation_disables_config_files`)
+plus a companion that counts `.invoke(` call sites, so a new invocation cannot be added without one.
+A behavioural test would need a hostile `hledger.conf` planted above the test runner's working
+directory — which is this repository — and would break every other test in the run. The flag is also
+observed arriving at a real process in `tests/prefs.rs`.
 
 ## The one invariant everything rests on
 
@@ -134,6 +184,106 @@ Verified against hledger 1.52, in both directions:
 
 So Ledgeline reads the journal's own `alias` directives and hands them to hledger as `--alias`.
 The mapping is one the user already wrote down; the only thing added is delivery.
+
+### The two homes an alias can live in, and what each affects
+
+This is the distinction the whole command-line-parity feature turns on. The two look like the same
+thing and are not:
+
+| | applies when hledger READS the journal | applies to an `import`'s CSV |
+| --- | --- | --- |
+| `alias` directive in the journal | yes | **no** |
+| `--alias` in `hledger.conf` | yes | **yes** |
+
+The consequence is a silent divergence between the GUI and the terminal. Same statement, same rules
+file, same journal, two different sets of account names depending on which tool the user reached
+for — verified: a plain `hledger import` writes `PW Roth IRA - 3077:cash` where Ledgeline writes
+`assets:morganstanley:pw-roth-ira:cash`.
+
+So Ledgeline **reads `hledger.conf` itself** and merges its `--alias` values into the ones it
+forwards. Note *reads*, not *delegates*: we never pass `--conf`. § No hledger we run reads a config
+file exists precisely so no external file steers our subprocess, and a config may hold `--depth` or
+`-b`/`-e`, which would change output we parse. Taking only the `--alias` values we understand is the
+narrow version of the same benefit.
+
+Where we look, and where we deliberately do not:
+
+- **Upward from the journal's own directory**, nearest first — because that is where a user runs
+  hledger for these books, whereas a server process's working directory is an accident of how it
+  was launched.
+- **Not `$HOME/.hledger.conf`, and not the XDG config dir**, though hledger falls back to both.
+  Those are outside the tree the user pointed us at. The cost is stated where it is felt: the
+  divergence notice names the file it found, or says there was none.
+
+**Order: the config's aliases go first.** `--alias` options compose left to right and the first to
+match an account wins, so config-first means that wherever the two disagree the config's answer
+stands — and the config's answer is the terminal's. Journal-first would make Ledgeline disagree with
+the command line in a second, opposite direction.
+
+### The whitespace trap, and the escaping rule
+
+> **hledger's config parser splits on whitespace and IGNORES QUOTES.** There is no escape for a
+> space.
+
+This is undocumented upstream as far as we could find, and it costs real time. All three of these
+fail with a parse error:
+
+```
+--alias="/^PW Roth IRA - 3077/=assets:morganstanley:pw-roth-ira"
+--alias='/^PW Roth IRA - 3077/=assets:morganstanley:pw-roth-ira'
+--alias=/^PW Roth IRA - 3077/=assets:morganstanley:pw-roth-ira
+```
+
+The workaround is that the pattern is a **regex**, and `.` matches a literal space:
+
+```
+--alias=/^PW.Roth.IRA.-.3077($|:)/=assets:morganstanley:pw-roth-ira\1
+```
+
+`hledger_conf::conf_argument` is the whole of our answer, in order:
+
+1. **No whitespace anywhere ⇒ write it verbatim**, in whichever form the user declared. Provably
+   identical to what we forward, because it is the same string.
+2. **Whitespace in the replacement ⇒ refuse.** An account name is matched literally; there is no
+   wildcard to stand in for its space, and a mapping that looks installed but never matches is
+   worse than a visibly missing one.
+3. **Whitespace in a regex pattern ⇒ substitute**, one `.` per whitespace character (never one per
+   run — `.` matches exactly one character). Refused when the pattern also holds `[`, where a `.`
+   is an ordinary dot, or `\`, where substituting beside somebody else's escape is a guess.
+4. **Whitespace in a plain pattern ⇒ convert to a regex.** A plain alias matches the whole account
+   name or a prefix ending at a `:` (verified: it rewrites `a` and `a:sub` and leaves `abc` alone),
+   which is exactly `/^PATTERN($|:)/` with `\1` carrying the boundary into the replacement. **Regex
+   metacharacters are escaped first, then whitespace becomes `.`** — in that order, or a literal `.`
+   in the bank's name silently becomes a wildcard.
+
+**Two widenings, both deliberate.** A `.` matches any character, not only a space; and hledger's
+regex aliases are case-insensitive where plain ones are not (both verified). A converted alias
+therefore matches everything the original did and can match a little more. That is the price of
+being expressible at all, which is why the resulting line is **shown on screen before it is
+written** rather than after.
+
+### Writing a config file
+
+A new write target, and it gets the same discipline as every other one here:
+
+- **The location is fixed**: `hledger.conf` in the journal's own directory. No component of the path
+  comes from the client, so there is no handle to validate.
+- **`$HOME` and the XDG config dir are never written**, though hledger reads both. They are outside
+  the tree the user pointed us at, they affect every set of books on the machine rather than these
+  ones, and a GUI quietly editing a home-directory dotfile is not a thing to do. A config in force
+  *above* the journal's directory is reported and left alone; the fix creates one beside the journal
+  instead, and says on screen that hledger uses the nearest file only, so the outer one will stop
+  applying.
+- **`parse::confine`** (the containment `include` and the rules scan share), then
+  `symlink_metadata`: absent or a regular file. A symlink is refused, not followed.
+- **Content provenance**: the request body carries a revision and *nothing else*. What to write is
+  recomputed server-side from the journal's own `alias` directives, so the route cannot be used to
+  put arbitrary text into a file hledger reads options out of.
+- **Revision / 409**, re-checked immediately before the write, with the empty string as the revision
+  of "there was no file". `edit::atomic_write` does the write.
+- **A new option lands in the general section, not at EOF.** Everything after the first `[heading]`
+  belongs to that command's section, so a line appended to a file ending in `[balance]` would be a
+  balance-only option: present, plausible, and never applied to an import.
 
 Column interpolation composes with it, which is what keeps the rules file small: with
 `account1 %acct:cash`, a **prefix** alias rewrites the base and leaves `:cash` intact, so one
@@ -211,6 +361,20 @@ hledger's own answer rather than our reimplementation of its regexes. It is the 
 `skipped_by_dedup` already uses, and it costs one extra subprocess only when the journal declares
 an alias. An empty rename list means the aliases matched nothing in this statement, and the
 section stays hidden.
+
+The same panel carries the **command-line divergence notice**, and it is measured the same way: the
+engine repeats the import with exactly the aliases a config file supplies — which is exactly what a
+terminal would apply — and diffs that proposal against the one on screen. With no config file the
+two baselines are the same command line, so the second measurement is free; with one it costs a
+third `--dry-run`, and only then.
+
+Measuring it rather than comparing alias *strings* matters: a user who hand-wrote an equivalent
+mapping into their config in a spelling of their own gets silence, which is the correct answer for a
+config that already works. When they do diverge, the notice names the accounts that would differ,
+shows the exact `--alias` lines the fix would write, lists any alias that cannot be expressed in a
+config file with the reason, and offers the one-click fix. `web/src/lib/imports/aliasModel.ts` holds
+every sentence and every decision (`parityNotice`, `parityWarning`, `parityFixLabel`,
+`canInstallParityFix`); `ui/DryRunPanel.svelte` only renders them.
 
 ## Security
 

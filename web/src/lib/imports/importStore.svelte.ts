@@ -23,7 +23,15 @@
 
 import {classify, type EditFailure} from "$lib/api/editFailure";
 import {LedgelineApi, type ImportRunBody} from "$lib/api/native";
-import {decodeCommitResult, decodeDryRun, decodeImportCapabilities, decodePrefs, decodeSortResult, decodeStagedFile} from "$lib/api/nativeDecode";
+import {
+    decodeCommitResult,
+    decodeConfWritten,
+    decodeDryRun,
+    decodeImportCapabilities,
+    decodePrefs,
+    decodeSortResult,
+    decodeStagedFile,
+} from "$lib/api/nativeDecode";
 import {dataView, type DataView} from "$lib/stores/loadState";
 import {createResource} from "$lib/stores/resource.svelte";
 import {settings} from "$lib/stores/settings.svelte";
@@ -40,7 +48,7 @@ import {
     sameWriteRequest,
     type WriteRequest,
 } from "./importModel";
-import type {CommitResult, DryRunResult, ImportCapabilities, JournalTarget, Prefs, StagedFile} from "./importTypes";
+import type {CommitResult, ConfWritten, DryRunResult, ImportCapabilities, JournalTarget, Prefs, StagedFile} from "./importTypes";
 
 /** What `staged` is loaded FOR: the file itself, plus a nonce so re-dropping the same file refetches. */
 export interface StageQuery {
@@ -130,6 +138,11 @@ let sorting = $state(false);
 let sortMoved = $state<number | null>(null);
 let sortError = $state<string | null>(null);
 
+/** The command-line-parity fix: a pressed action with a one-line outcome. */
+let confWriting = $state(false);
+let confWritten = $state<ConfWritten | null>(null);
+let confError = $state<string | null>(null);
+
 let capabilitiesKey: string | null = null;
 let stageAttempt = 0;
 /**
@@ -163,6 +176,8 @@ function resetFlow(): void {
     writeRequested = false;
     sortMoved = null;
     sortError = null;
+    confWritten = null;
+    confError = null;
 }
 
 /**
@@ -388,6 +403,12 @@ export const importStore = {
         writeRequested = false;
         sortMoved = null;
         sortError = null;
+        // The config-write outcome is reported inside the dry-run panel and
+        // carries that run's revision, so it goes stale with the run it belongs
+        // to. Leaving it up would show "added 2 aliases" beside a measurement
+        // taken before they existed.
+        confWritten = null;
+        confError = null;
     },
 
     // --- dry run ----------------------------------------------------------
@@ -502,6 +523,41 @@ export const importStore = {
             sortError = failureMessage(error);
         } finally {
             sorting = false;
+        }
+    },
+
+    // --- the command-line-parity fix --------------------------------------
+    get confWriting(): boolean {
+        return confWriting;
+    },
+    get confWritten(): ConfWritten | null {
+        return confWritten;
+    },
+    get confError(): string | null {
+        return confError;
+    },
+
+    /**
+     * Install the journal's aliases into an `hledger.conf` beside it.
+     *
+     * The revision is the one the dry run reported, so a config file edited in a
+     * terminal since this page loaded produces a 409 rather than a silent
+     * clobber. Re-runs the dry run afterwards, because the whole point is that
+     * the notice should now be gone — and a notice that stays up after its own
+     * fix worked teaches the user to ignore it.
+     */
+    async installConfAliases(revision: string): Promise<void> {
+        const url = settings.serverUrl;
+        if (url === null) return;
+        confWriting = true;
+        confError = null;
+        try {
+            confWritten = decodeConfWritten(await new LedgelineApi(url).writeHledgerConf(revision));
+            await this.runDryRun();
+        } catch (error) {
+            confError = failureMessage(error);
+        } finally {
+            confWriting = false;
         }
     },
 

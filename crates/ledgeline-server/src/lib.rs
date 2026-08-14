@@ -563,6 +563,15 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // directory, so it belongs above the `route_layer` with the rest.
         .route("/api/import/save-csv", post(import_api::save_csv))
         .route("/api/import/sort", post(import_api::sort_journal))
+        // The command-line-parity fix: install the journal's aliases into an
+        // `hledger.conf` beside it. A THIRD write target, and the only one that
+        // is not a journal or a CSV, so it belongs above the `route_layer` for
+        // the same reason as everything else here. It never writes outside the
+        // journal's own directory — see `import_api::resolve_conf`.
+        .route(
+            "/api/import/hledger-conf",
+            post(import_api::write_hledger_conf),
+        )
         .route(
             "/api/prefs",
             get(import_api::prefs_get).put(import_api::prefs_put),

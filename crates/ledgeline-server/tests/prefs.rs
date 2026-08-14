@@ -40,7 +40,7 @@ mod prefs;
 #[path = "../src/hledger.rs"]
 mod hledger;
 
-use hledger::{Hledger, HledgerError, MIN_HLEDGER, Version};
+use hledger::{Hledger, HledgerError, MIN_HLEDGER, NO_CONF, Version};
 use prefs::{Prefs, PrefsError};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -969,8 +969,8 @@ fn stdout_and_stderr_are_captured_separately() {
     std::fs::write(
         &script,
         "#!/bin/sh\n\
-         case \"$1\" in\n\
-         --version) printf 'hledger 1.52, mac-aarch64\\n' ;;\n\
+         case \"$*\" in\n\
+         *--version*) printf 'hledger 1.52, mac-aarch64\\n' ;;\n\
          *) printf '2026-01-01 Opening\\n    assets:bank  $1.00\\n'\n\
             printf 'would import 1 new transactions from data.csv:\\n' >&2\n\
             exit 0 ;;\n\
@@ -1009,8 +1009,8 @@ fn arguments_are_passed_verbatim_with_no_shell() {
     std::fs::write(
         &script,
         "#!/bin/sh\n\
-         case \"$1\" in\n\
-         --version) printf 'hledger 1.52, x\\n' ;;\n\
+         case \"$*\" in\n\
+         *--version*) printf 'hledger 1.52, x\\n' ;;\n\
          *) for a in \"$@\"; do printf '%s\\n' \"$a\"; done ;;\n\
          esac\n",
     )
@@ -1030,10 +1030,62 @@ fn arguments_are_passed_verbatim_with_no_shell() {
     ];
     let output = hledger.invoke(hostile).run().expect("the stub runs");
 
+    // `--no-conf` first, then the caller's arguments byte for byte. This is the
+    // BEHAVIOURAL half of the config-file guard — the flag is observed arriving
+    // at a real process, where `import_api`'s lint only inspects the vector —
+    // and it belongs in this test because "the flag is added" and "nothing else
+    // is touched" are the same assertion made once.
+    let expected: Vec<&str> = std::iter::once(NO_CONF).chain(hostile).collect();
     assert_eq!(
         output.stdout_lossy().lines().collect::<Vec<_>>(),
-        hostile,
-        "every argument must arrive byte-for-byte as it was passed"
+        expected,
+        "every argument must arrive byte-for-byte as it was passed, behind --no-conf"
+    );
+}
+
+/// A binary too old to know `--no-conf` is still reported as **too old**, not as
+/// unrunnable.
+///
+/// `--no-conf` arrived in hledger 1.40 — the same release that introduced config
+/// files and the same release [`MIN_HLEDGER`] is set to — so against a 1.39 the
+/// flag is an unrecognised option and the version probe would learn nothing. The
+/// probe therefore retries once without it, and this pins that: the user of an
+/// ancient hledger gets a number to act on instead of "could not run hledger"
+/// about a binary that is sitting right there.
+#[test]
+fn a_binary_that_predates_the_flag_still_reports_its_version() {
+    let dir = TempDir::new().expect("temp dir");
+    let script = dir.path().join("hledger");
+    // Exactly how a pre-1.40 hledger behaves: an unknown flag is a usage error
+    // on stderr and a non-zero exit, with nothing version-shaped on stdout.
+    std::fs::write(
+        &script,
+        "#!/bin/sh\n\
+         case \"$*\" in\n\
+         *--no-conf*) printf 'hledger: Unknown flag: --no-conf\\n' >&2; exit 1 ;;\n\
+         *--version*) printf 'hledger 1.39\\n' ;;\n\
+         esac\n",
+    )
+    .expect("write the ancient stub");
+    make_executable(&script);
+
+    let error = Hledger::resolve(&Prefs {
+        hledger_path: Some(script.clone()),
+        git_autocommit: None,
+    })
+    .expect_err("1.39 is below the floor");
+    assert!(
+        matches!(
+            error,
+            HledgerError::TooOld {
+                found: Version {
+                    major: 1,
+                    minor: 39
+                },
+                ..
+            }
+        ),
+        "{error}"
     );
 }
 
@@ -1046,8 +1098,8 @@ fn arg_and_args_append_in_order() {
     std::fs::write(
         &script,
         "#!/bin/sh\n\
-         case \"$1\" in\n\
-         --version) printf 'hledger 1.52, x\\n' ;;\n\
+         case \"$*\" in\n\
+         *--version*) printf 'hledger 1.52, x\\n' ;;\n\
          *) for a in \"$@\"; do printf '%s\\n' \"$a\"; done ;;\n\
          esac\n",
     )
@@ -1066,6 +1118,10 @@ fn arg_and_args_append_in_order() {
     assert_eq!(
         output.stdout_lossy().lines().collect::<Vec<_>>(),
         [
+            // Prepended by `Invocation::argv`, ahead of the subcommand — a
+            // config file's own injected command word would otherwise sit in
+            // front of it.
+            NO_CONF,
             "import",
             "--dry-run",
             "--rules",
@@ -1085,8 +1141,8 @@ fn stdin_is_delivered_to_the_child() {
     std::fs::write(
         &script,
         "#!/bin/sh\n\
-         case \"$1\" in\n\
-         --version) printf 'hledger 1.52, x\\n' ;;\n\
+         case \"$*\" in\n\
+         *--version*) printf 'hledger 1.52, x\\n' ;;\n\
          *) cat ;;\n\
          esac\n",
     )
@@ -1115,8 +1171,8 @@ fn a_payload_larger_than_a_pipe_buffer_does_not_deadlock() {
     std::fs::write(
         &script,
         "#!/bin/sh\n\
-         case \"$1\" in\n\
-         --version) printf 'hledger 1.52, x\\n' ;;\n\
+         case \"$*\" in\n\
+         *--version*) printf 'hledger 1.52, x\\n' ;;\n\
          *) cat; printf 'done\\n' >&2 ;;\n\
          esac\n",
     )
@@ -1146,8 +1202,8 @@ fn a_hung_child_is_killed_at_the_timeout() {
     std::fs::write(
         &script,
         "#!/bin/sh\n\
-         case \"$1\" in\n\
-         --version) printf 'hledger 1.52, x\\n' ;;\n\
+         case \"$*\" in\n\
+         *--version*) printf 'hledger 1.52, x\\n' ;;\n\
          *) sleep 120 ;;\n\
          esac\n",
     )
@@ -1182,8 +1238,8 @@ fn a_non_zero_exit_is_reported_with_its_output() {
     std::fs::write(
         &script,
         "#!/bin/sh\n\
-         case \"$1\" in\n\
-         --version) printf 'hledger 1.52, x\\n' ;;\n\
+         case \"$*\" in\n\
+         *--version*) printf 'hledger 1.52, x\\n' ;;\n\
          *) printf 'hledger: Error: balance assertion failed\\n' >&2; exit 1 ;;\n\
          esac\n",
     )
@@ -1211,8 +1267,8 @@ fn the_child_never_inherits_our_stdin() {
     std::fs::write(
         &script,
         "#!/bin/sh\n\
-         case \"$1\" in\n\
-         --version) printf 'hledger 1.52, x\\n' ;;\n\
+         case \"$*\" in\n\
+         *--version*) printf 'hledger 1.52, x\\n' ;;\n\
          *) cat; printf 'eof\\n' ;;\n\
          esac\n",
     )

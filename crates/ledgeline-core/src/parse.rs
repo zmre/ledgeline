@@ -827,7 +827,14 @@ fn lexically_normalize(path: &Path) -> PathBuf {
 /// Callers own the error message, because what may be disclosed differs by
 /// caller: an `include` diagnostic quotes the journal directory (the user named
 /// it), while a rules-file diagnostic quotes neither path.
-pub(crate) fn confine(path: &Path, root: &Path) -> Option<PathBuf> {
+///
+/// `pub` rather than `pub(crate)` since the enhanced-import work: writing an
+/// `hledger.conf` is a new write target in `ledgeline-server`, and a second
+/// hand-rolled traversal check there is exactly the near-duplicate this function
+/// was extracted to prevent. It answers usefully for a path that does not exist
+/// yet — [`canonical_include`] canonicalizes the deepest existing ancestor and
+/// re-joins the rest — which is what a not-yet-created config file needs.
+pub fn confine(path: &Path, root: &Path) -> Option<PathBuf> {
     let path = canonical_include(path);
     path.starts_with(root).then_some(path)
 }

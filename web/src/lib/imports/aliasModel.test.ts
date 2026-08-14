@@ -11,13 +11,18 @@ import {
     relevantAliases,
     renameText,
     toEdits,
+    canInstallParityFix,
+    PARITY_EXPLAINER,
+    parityFixLabel,
+    parityNotice,
+    parityWarning,
     toForm,
     toSaveRequest,
     validateForm,
     validateRow,
 } from "./aliasModel";
 import type {AliasDraft, AliasForm} from "./aliasModel";
-import type {AliasEffect, AliasEntry, AliasFile} from "./importTypes";
+import type {AliasEffect, AliasEntry, AliasFile, CliParity} from "./importTypes";
 
 // The fixtures below are literal wire shapes, written out rather than built by
 // the app's own encoder — the same rule `importModel.test.ts` follows, so a test
@@ -41,8 +46,41 @@ function alias(over: Partial<AliasEntry> = {}): AliasEntry {
     };
 }
 
+/** The agreeing case: a command-line import would produce the same accounts. */
+function parity(over: Partial<CliParity> = {}): CliParity {
+    return {
+        matches: true,
+        differences: [],
+        confPath: null,
+        confOutside: false,
+        confHijackedBy: null,
+        additions: [],
+        refusals: [],
+        revision: "",
+        writable: true,
+        ...over,
+    };
+}
+
 function effect(over: Partial<AliasEffect> = {}): AliasEffect {
-    return {forwarded: 1, renames: [{from: "PW Roth IRA - 3077:cash", to: "assets:morganstanley:pw-roth-ira:cash"}], ...over};
+    return {
+        forwarded: 1,
+        renames: [{from: "PW Roth IRA - 3077:cash", to: "assets:morganstanley:pw-roth-ira:cash"}],
+        cli: parity(),
+        ...over,
+    };
+}
+
+/** The diverging case: the journal's aliases reach this import and nothing else does. */
+function diverged(over: Partial<CliParity> = {}): AliasEffect {
+    return effect({
+        cli: parity({
+            matches: false,
+            differences: [{from: "PW Roth IRA - 3077:cash", to: "assets:morganstanley:pw-roth-ira:cash"}],
+            additions: ["/^PW.Roth.IRA.-.3077($|:)/=assets:morganstanley:pw-roth-ira\\1"],
+            ...over,
+        }),
+    });
 }
 
 describe("UNIT aliasModel — hledger's plain-alias matching rule", () => {
@@ -281,5 +319,79 @@ describe("UNIT aliasModel — validation mirrors the engine's refusals", () => {
     it("numbers the row a problem is in", () => {
         const form: AliasForm = {journalId: "main.journal", label: "m", revision: "r", writable: true, rows: [row(), row({replacement: ""})]};
         expect(validateForm(form)).toEqual(["Alias 2: The replacement cannot be empty."]);
+    });
+});
+
+describe("UNIT aliasModel — command-line parity", () => {
+    // The ordinary import: aliases are in force, they rewrote accounts, and a
+    // terminal would rewrite them the same way because a config file supplies
+    // them. Nothing to say, so nothing is said.
+    it("says nothing when the engine measured the two as agreeing", () => {
+        expect(parityNotice(effect())).toBeNull();
+        expect(parityNotice(null)).toBeNull();
+    });
+
+    it("names how many accounts would differ, singular and plural", () => {
+        expect(parityNotice(diverged())).toBe("Run from the command line, this same import would file one account differently.");
+        expect(
+            parityNotice(
+                diverged({
+                    differences: [
+                        {from: "a", to: "x"},
+                        {from: "b", to: "y"},
+                    ],
+                })
+            )
+        ).toBe("Run from the command line, this same import would file 2 accounts differently.");
+    });
+
+    // The explanation is the same every time and is worth stating every time:
+    // that a journal alias does not reach an imported CSV is hledger's
+    // behaviour and is genuinely surprising.
+    it("explains that a journal alias does not reach an imported CSV", () => {
+        expect(PARITY_EXPLAINER).toContain("not applied to a statement being imported");
+        expect(PARITY_EXPLAINER).toContain("hledger.conf");
+    });
+
+    it("distinguishes creating a config file from adding to one", () => {
+        expect(parityFixLabel(parity())).toBe("Create hledger.conf beside your journal");
+        expect(parityFixLabel(parity({confPath: "hledger.conf"}))).toBe("Add these to hledger.conf");
+        // In force from ABOVE the journal's directory: we create a new one
+        // beside the journal rather than reaching out of the tree.
+        expect(parityFixLabel(parity({confPath: "../hledger.conf", confOutside: true}))).toBe("Create hledger.conf beside your journal");
+    });
+
+    it("warns that a new config file shadows one above the journal's directory", () => {
+        const warning = parityWarning(parity({confPath: "../hledger.conf", confOutside: true}));
+        expect(warning).toContain("../hledger.conf");
+        expect(warning).toContain("nearest file only");
+    });
+
+    // A config whose first word is not a flag REPLACES the command hledger
+    // runs, which breaks every hledger command the user types. Ledgeline's own
+    // imports pass --no-conf and are unaffected, and saying both halves is what
+    // stops this reading as "Ledgeline is broken".
+    it("warns when the config in force replaces the command hledger runs", () => {
+        const warning = parityWarning(parity({confPath: "hledger.conf", confHijackedBy: "balance"}));
+        expect(warning).toContain("`balance`");
+        expect(warning).toContain("--no-conf");
+    });
+
+    it("says so when the journal's directory holds something that is not a file", () => {
+        expect(parityWarning(parity({writable: false}))).toContain("not an ordinary file");
+    });
+
+    it("is quiet when there is nothing unusual", () => {
+        expect(parityWarning(parity({confPath: "hledger.conf"}))).toBeNull();
+    });
+
+    // A button that would write nothing must not be on the screen. Every alias
+    // being inexpressible (each maps to an account name containing a space, say)
+    // produces refusals and no additions, and that is a real state.
+    it("offers the fix only when there is a line to add and somewhere to put it", () => {
+        expect(canInstallParityFix(parity({additions: ["a=b"]}), true)).toBe(true);
+        expect(canInstallParityFix(parity({additions: []}), true)).toBe(false);
+        expect(canInstallParityFix(parity({additions: ["a=b"], writable: false}), true)).toBe(false);
+        expect(canInstallParityFix(parity({additions: ["a=b"]}), false)).toBe(false);
     });
 });

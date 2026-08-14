@@ -34,9 +34,13 @@ import type {
     AliasListing,
     AliasLock,
     AliasRefusal,
+    AliasRename,
     BalanceCheck,
     CandidateSignals,
+    CliParity,
     CommitResult,
+    ConfRefusalReason,
+    ConfWritten,
     ConvertNote,
     DryRunResult,
     GitReport,
@@ -503,6 +507,33 @@ interface RawAliasListing {
 interface RawAliasEffect {
     forwarded?: number;
     renames?: {from?: string; to?: string}[];
+    cli?: RawCliParity;
+}
+
+interface RawCliParity {
+    matches?: boolean;
+    differences?: {from?: string; to?: string}[];
+    confPath?: string | null;
+    confOutside?: boolean;
+    confHijackedBy?: string | null;
+    additions?: unknown[];
+    refusals?: RawConfRefusal[];
+    revision?: string;
+    writable?: boolean;
+}
+
+interface RawConfRefusal {
+    pattern?: string;
+    replacement?: string;
+    reason?: string;
+    message?: string;
+}
+
+interface RawConfWritten {
+    confPath?: string;
+    created?: boolean;
+    added?: unknown[];
+    revision?: string;
 }
 
 /** One `ConvertNote`, flattened: the `kind` tag sits beside that variant's own fields. */
@@ -1493,11 +1524,87 @@ function decodeAliasEffect(raw: RawAliasEffect | null | undefined, context: stri
     if (raw === undefined || raw === null) return null;
     return Object.freeze({
         forwarded: num(raw.forwarded, `${context} forwarded`),
-        renames: frozen(
-            (raw.renames ?? []).map((rename, i) =>
-                Object.freeze({from: str(rename?.from, `${context} renames[${i}] from`), to: str(rename?.to, `${context} renames[${i}] to`)})
+        renames: decodeRenames(raw.renames, `${context} renames`),
+        cli: decodeCliParity(raw.cli, `${context} cli`),
+    });
+}
+
+function decodeRenames(raw: {from?: string; to?: string}[] | undefined, context: string): readonly AliasRename[] {
+    return frozen(
+        (raw ?? []).map((rename, i) => Object.freeze({from: str(rename?.from, `${context}[${i}] from`), to: str(rename?.to, `${context}[${i}] to`)}))
+    );
+}
+
+/**
+ * Whether a command-line `hledger import` would agree with this one.
+ *
+ * An ABSENT `cli` decodes to "it matches", not to a thrown shape error. This is
+ * an advisory section — the same call {@link decodeConvertNote} makes — and an
+ * engine older than this build genuinely has nothing to say about parity, so the
+ * quiet reading is the honest one. Claiming a divergence because a field was
+ * missing would put a scary notice on a correct import.
+ */
+function decodeCliParity(raw: RawCliParity | null | undefined, context: string): CliParity {
+    if (raw === undefined || raw === null) {
+        return Object.freeze({
+            matches: true,
+            differences: frozen([]),
+            confPath: null,
+            confOutside: false,
+            confHijackedBy: null,
+            additions: frozen([]),
+            refusals: frozen([]),
+            revision: "",
+            writable: false,
+        });
+    }
+    return Object.freeze({
+        matches: raw.matches === true,
+        differences: decodeRenames(raw.differences, `${context} differences`),
+        confPath: raw.confPath ?? null,
+        confOutside: raw.confOutside === true,
+        confHijackedBy: raw.confHijackedBy ?? null,
+        additions: frozen(decodeStrings(raw.additions, `${context} additions`)),
+        refusals: frozen(
+            (raw.refusals ?? []).map((refusal, i) =>
+                Object.freeze({
+                    pattern: str(refusal?.pattern, `${context} refusals[${i}] pattern`),
+                    replacement: str(refusal?.replacement, `${context} refusals[${i}] replacement`),
+                    // An unknown reason decodes to null rather than throwing: the
+                    // MESSAGE is the engine's own sentence and is what the screen
+                    // shows, so a newer engine's new reason code must not cost the
+                    // user the explanation that came with it.
+                    reason: confRefusalReason(refusal?.reason),
+                    message: str(refusal?.message, `${context} refusals[${i}] message`),
+                })
             )
         ),
+        revision: raw.revision ?? "",
+        writable: raw.writable === true,
+    });
+}
+
+const CONF_REFUSAL_REASONS: readonly string[] = [
+    "comment",
+    "replacementWhitespace",
+    "replacementBackslash",
+    "patternBracket",
+    "patternBackslash",
+    "patternSlash",
+];
+
+function confRefusalReason(raw: string | undefined): ConfRefusalReason | null {
+    return raw !== undefined && CONF_REFUSAL_REASONS.includes(raw) ? (raw as ConfRefusalReason) : null;
+}
+
+/** `POST /api/import/hledger-conf` — what the one-click command-line-parity fix wrote. */
+export function decodeConfWritten(raw: unknown): ConfWritten {
+    const written = raw as RawConfWritten;
+    return Object.freeze({
+        confPath: str(written?.confPath, "hledger.conf confPath"),
+        created: written?.created === true,
+        added: frozen(decodeStrings(written?.added, "hledger.conf added")),
+        revision: str(written?.revision, "hledger.conf revision"),
     });
 }
 

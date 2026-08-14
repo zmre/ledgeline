@@ -640,6 +640,20 @@ export class LedgelineApi {
         return this.mutate<unknown>("POST", "/api/import/sort", 200, {journalId});
     }
 
+    /**
+     * Install the journal's aliases into an `hledger.conf` beside it, so a
+     * terminal `hledger import` maps the same accounts this screen does.
+     *
+     * **The body carries a revision and nothing else.** WHAT to write is
+     * recomputed by the engine from the journal's own `alias` directives; a body
+     * carrying the lines would make this a write-arbitrary-text primitive aimed
+     * at a file hledger reads options out of. 409 when the config changed
+     * underneath the page.
+     */
+    writeHledgerConf(revision: string): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/import/hledger-conf", 200, {revision});
+    }
+
     /** The preferences store (the resolved hledger path, the git-autocommit opt-out). */
     getPrefs(): Promise<unknown> {
         return this.getJson("/api/prefs");

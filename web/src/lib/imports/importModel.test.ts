@@ -14,7 +14,15 @@
 
 import {describe, expect, it} from "vitest";
 import {ApiShapeError} from "$lib/api/client";
-import {decodeCommitResult, decodeDryRun, decodeImportCapabilities, decodePrefs, decodeSortResult, decodeStagedFile} from "$lib/api/nativeDecode";
+import {
+    decodeCommitResult,
+    decodeConfWritten,
+    decodeDryRun,
+    decodeImportCapabilities,
+    decodePrefs,
+    decodeSortResult,
+    decodeStagedFile,
+} from "$lib/api/nativeDecode";
 import {dataView} from "$lib/stores/loadState";
 import {
     acceptAttribute,
@@ -288,6 +296,73 @@ describe("UNIT import wire decoders", () => {
 
     it("throws when a dry run carries no ok flag", () => {
         expect(() => decodeDryRun({entries: "", count: 0})).toThrow(ApiShapeError);
+    });
+
+    // An engine older than this build has nothing to say about command-line
+    // parity, and "nothing to say" must decode as agreement. Claiming a
+    // divergence because a field was absent would put a warning on a correct
+    // import — the same call the ConvertNote decoder makes, for the same reason.
+    it("reads an absent cli-parity section as 'they agree'", () => {
+        const run = decodeDryRun({...DRY_RUN_JSON, aliases: {forwarded: 1, renames: []}});
+        if (!run.ok) throw new Error("unreachable");
+        expect(run.aliases?.cli.matches).toBe(true);
+        expect(run.aliases?.cli.additions).toEqual([]);
+        expect(run.aliases?.cli.writable).toBe(false);
+    });
+
+    it("decodes a measured command-line divergence with the lines that would fix it", () => {
+        const run = decodeDryRun({
+            ...DRY_RUN_JSON,
+            aliases: {
+                forwarded: 1,
+                renames: [{from: "PW Roth IRA - 3077:cash", to: "assets:ms:roth:cash"}],
+                cli: {
+                    matches: false,
+                    differences: [{from: "PW Roth IRA - 3077:cash", to: "assets:ms:roth:cash"}],
+                    confPath: null,
+                    confOutside: false,
+                    confHijackedBy: null,
+                    additions: ["/^PW.Roth.IRA.-.3077($|:)/=assets:ms:roth\\1"],
+                    refusals: [{pattern: "A B", replacement: "x y", reason: "replacementWhitespace", message: "the account it maps to contains a space"}],
+                    revision: "rev-1",
+                    writable: true,
+                },
+            },
+        });
+        if (!run.ok) throw new Error("unreachable");
+        expect(run.aliases?.cli.matches).toBe(false);
+        expect(run.aliases?.cli.differences).toEqual([{from: "PW Roth IRA - 3077:cash", to: "assets:ms:roth:cash"}]);
+        expect(run.aliases?.cli.additions).toEqual(["/^PW.Roth.IRA.-.3077($|:)/=assets:ms:roth\\1"]);
+        expect(run.aliases?.cli.refusals[0]).toMatchObject({reason: "replacementWhitespace"});
+        expect(run.aliases?.cli.revision).toBe("rev-1");
+    });
+
+    // The MESSAGE is the engine's own sentence and is what the screen shows, so
+    // a reason code this build does not know must not cost the user the
+    // explanation that came with it.
+    it("keeps a refusal's message when its reason code is unknown to this build", () => {
+        const run = decodeDryRun({
+            ...DRY_RUN_JSON,
+            aliases: {
+                forwarded: 1,
+                renames: [],
+                cli: {
+                    matches: false,
+                    differences: [],
+                    additions: [],
+                    refusals: [{pattern: "a", replacement: "b", reason: "fromTheFuture", message: "because"}],
+                    revision: "",
+                },
+            },
+        });
+        if (!run.ok) throw new Error("unreachable");
+        expect(run.aliases?.cli.refusals[0]!.reason).toBeNull();
+        expect(run.aliases?.cli.refusals[0]!.message).toBe("because");
+    });
+
+    it("decodes what the one-click config fix wrote", () => {
+        const written = decodeConfWritten({confPath: "hledger.conf", created: true, added: ["a=b"], revision: "rev-2"});
+        expect(written).toEqual({confPath: "hledger.conf", created: true, added: ["a=b"], revision: "rev-2"});
     });
 
     it("decodes the contract's commit body", () => {

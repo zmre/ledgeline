@@ -19,12 +19,15 @@
 //!   the one-line-wide span editor over them (Enhanced imports)
 //! - `convert` — normalize OFX/QFX/spreadsheet/delimited statements to one
 //!   tabular extract (Enhanced imports; see `plans/11-enhanced-import.md`)
+//! - `hledger_conf` — the `--alias` options an `hledger.conf` declares, and
+//!   writing one into it (Enhanced imports)
 
 pub mod aliases;
 pub mod assertions;
 pub mod convert;
 pub mod decimal;
 pub mod edit;
+pub mod hledger_conf;
 pub mod holdings;
 pub mod journals;
 pub mod model;

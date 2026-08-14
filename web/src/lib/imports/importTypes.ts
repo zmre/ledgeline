@@ -304,6 +304,60 @@ export interface AliasRename {
 export interface AliasEffect {
     readonly forwarded: number;
     readonly renames: readonly AliasRename[];
+    /** Whether this same import, run from a terminal, would come out the same. */
+    readonly cli: CliParity;
+}
+
+/** Why an alias cannot be written into a config file. */
+export type ConfRefusalReason = "comment" | "replacementWhitespace" | "replacementBackslash" | "patternBracket" | "patternBackslash" | "patternSlash";
+
+/** One alias that cannot be expressed in a config file, with the engine's reason. */
+export interface ConfRefusal {
+    readonly pattern: string;
+    readonly replacement: string;
+    readonly reason: ConfRefusalReason | null;
+    readonly message: string;
+}
+
+/**
+ * Would a plain command-line `hledger import` produce these accounts too?
+ *
+ * The question is real, not rhetorical. An `alias` directive in a journal is NOT
+ * applied to an imported CSV — Ledgeline forwards it as `--alias`, which is the
+ * only way it can reach one — so the same statement, the same rules file and the
+ * same journal give a terminal `hledger import` different account names. An
+ * `hledger.conf` closes that, because it applies to every hledger command.
+ *
+ * `matches` is the ENGINE's measurement, on the same principle as
+ * {@link AliasEffect}'s renames: it repeats the import with exactly the aliases a
+ * config file supplies and diffs the two proposals. Nothing compares alias
+ * strings to decide it, so a user who hand-wrote an equivalent mapping in a
+ * spelling of their own gets silence rather than a lecture.
+ */
+export interface CliParity {
+    readonly matches: boolean;
+    /** Command-line answer → Ledgeline's. Empty when `matches`. */
+    readonly differences: readonly AliasRename[];
+    /** The config in force, relative to the journal's directory (`hledger.conf`, `../hledger.conf`). Never absolute. */
+    readonly confPath: string | null;
+    /** It sits above the journal's directory, so the engine reads it and will not write it. */
+    readonly confOutside: boolean;
+    /** A command word the config forces on every hledger run, which breaks all of them. Null normally. */
+    readonly confHijackedBy: string | null;
+    /** The `--alias` lines the fix would add, shown before it is pressed — the conversion widens what matches. */
+    readonly additions: readonly string[];
+    readonly refusals: readonly ConfRefusal[];
+    /** Echo this when installing the fix. Empty string is the revision of "no file yet". */
+    readonly revision: string;
+    readonly writable: boolean;
+}
+
+/** `POST /api/import/hledger-conf` — what the one-click fix wrote. */
+export interface ConfWritten {
+    readonly confPath: string;
+    readonly created: boolean;
+    readonly added: readonly string[];
+    readonly revision: string;
 }
 
 /** A failed dry run. `stderr` is rendered verbatim in a `<pre>` and NEVER paraphrased. */

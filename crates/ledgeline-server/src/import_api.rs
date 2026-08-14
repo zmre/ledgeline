@@ -106,6 +106,8 @@ use ledgeline_core::convert::{
     self, ConvertError, ConvertNote, SourceFormat, StatementMeta, Tabular,
 };
 use ledgeline_core::decimal::Dec;
+use ledgeline_core::edit::Fingerprint;
+use ledgeline_core::hledger_conf;
 use ledgeline_core::journals::{self, JournalTarget};
 use ledgeline_core::rules::matching::{self, Candidate, Ranking, Score, Signals};
 use ledgeline_core::rules::{self, Discovery, RulesDoc};
@@ -514,6 +516,87 @@ struct WireAliasEffect {
     /// **Empty means the aliases matched nothing in this statement**, which is
     /// the UI's cue to stay quiet.
     renames: Vec<WireRename>,
+    /// Whether this same import, run from a terminal, would come out the same.
+    cli: WireCliParity,
+}
+
+/// Would a plain command-line `hledger import` produce these accounts too?
+///
+/// The question is not rhetorical. An `alias` directive in a journal is **not**
+/// applied to an imported CSV — Ledgeline forwards it as `--alias`, which is the
+/// only way it can reach one — so the same statement, the same rules file and the
+/// same journal give a terminal `hledger import` different account names. Two
+/// journals, silently, depending on which tool the user reached for.
+///
+/// An `hledger.conf` closes the gap because it applies to every hledger command.
+/// So this reports whether one does, and offers to write one.
+///
+/// **`matches` is MEASURED**, on the same principle as [`WireAliasEffect`]'s
+/// renames: the import is repeated with exactly the aliases a config file
+/// supplies — which is exactly what a terminal would apply — and the two
+/// proposals are diffed. Nothing here compares alias *strings* to decide it, so a
+/// user who hand-wrote an equivalent mapping in a spelling of their own gets
+/// silence rather than a lecture.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCliParity {
+    /// True when a command-line import would write the same accounts.
+    matches: bool,
+    /// The accounts that would differ, command-line answer → Ledgeline's.
+    /// Empty when `matches`.
+    differences: Vec<WireRename>,
+    /// The config file in force, relative to the journal's directory — or, when
+    /// it sits above that directory, `../hledger.conf` repeated per level. Never
+    /// an absolute path, and `null` when there is none.
+    conf_path: Option<String>,
+    /// The config in force is outside the journal's own directory, so Ledgeline
+    /// will **report** rather than write there. See [`resolve_conf`].
+    conf_outside: bool,
+    /// A command word the config forces on every hledger invocation, which makes
+    /// it break every command the user runs. `null` in the ordinary case.
+    conf_hijacked_by: Option<String>,
+    /// The `--alias` lines the one-click fix would add, shown before it is
+    /// pressed because the conversion widens what the pattern matches.
+    additions: Vec<String>,
+    /// Aliases that cannot be expressed in a config file at all, each with the
+    /// reason. Reported, never silently dropped.
+    refusals: Vec<WireConfRefusal>,
+    /// Echo this in `POST /api/import/hledger-conf`. Empty string when the file
+    /// does not exist yet, which is itself the revision of "no file".
+    revision: String,
+    /// May the fix be offered? False when the config in force is outside the
+    /// journal's directory, when the journal's own directory holds something
+    /// that is not a regular file, or when editing is disabled.
+    writable: bool,
+}
+
+/// One alias that cannot be written into a config file, and why.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireConfRefusal {
+    /// The alias as it reads in the journal.
+    pattern: String,
+    /// Its replacement.
+    replacement: String,
+    /// A closed set the UI may switch on.
+    reason: &'static str,
+    /// The sentence to show.
+    message: &'static str,
+}
+
+/// `POST /api/import/hledger-conf` — what was written.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireConfWritten {
+    /// The file, relative to the journal's own directory. Always
+    /// `hledger.conf`; carried so the UI never has to spell a path itself.
+    conf_path: String,
+    /// The file did not exist and was created.
+    created: bool,
+    /// The `--alias` lines added. Empty when the config already supplied them.
+    added: Vec<String>,
+    /// The new revision, for a subsequent write.
+    revision: String,
 }
 
 /// One account rewrite an alias performed.
@@ -731,6 +814,21 @@ pub(crate) struct WireSaveCsvRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct WireSortRequest {
     journal_id: String,
+}
+
+/// The `hledger-conf` body — **one field, and it is not the content**.
+///
+/// The client says only *which bytes it planned against*; what to write is
+/// recomputed here from the journal's own `alias` directives. That is security
+/// layer 4 (content provenance) applied to a new write target: a body carrying
+/// the lines to write would make this route a write-arbitrary-text primitive
+/// aimed at a file hledger executes options out of, which is a considerably worse
+/// thing to own than the rules editor's.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WireConfRequest {
+    /// The revision the caller read. The empty string means "there was no file".
+    revision: String,
 }
 
 // ===========================================================================
@@ -1033,6 +1131,183 @@ fn resolve_stage(state: &AppState, raw: &str) -> Result<std::sync::Arc<Stage>, A
                 quoted(raw)
             ))
         })
+}
+
+// ===========================================================================
+// hledger.conf — the second home an account alias can live in
+// ===========================================================================
+
+/// The `hledger.conf` in force for this journal, if there is one.
+///
+/// "In force" is hledger's own answer, narrowed: it searches the working
+/// directory and every directory above it, and Ledgeline searches upward from the
+/// **journal's** directory instead, because a server process's working directory
+/// is an accident of how it was launched while the journal's directory is where a
+/// user runs hledger for these books. `$HOME/.hledger.conf` and the XDG config
+/// dir, which hledger falls back to, are deliberately not consulted — see
+/// [`hledger_conf::locate`].
+struct ConfInForce {
+    /// A relative handle for the wire: `hledger.conf`, or `../hledger.conf`
+    /// repeated per level when it sits above the journal's directory.
+    id: String,
+    /// It is above the journal's own directory, so Ledgeline reads it and will
+    /// not write it.
+    outside: bool,
+    /// The `--alias` values it gives an import, general section then `[import]`.
+    aliases: Vec<String>,
+    /// A command word it forces on every hledger invocation, if it forces one.
+    hijacked_by: Option<String>,
+}
+
+/// Find and read the config file in force, if any. Never an error: a config file
+/// that cannot be read is a config file we do not have.
+fn conf_in_force(root: &Path) -> Option<ConfInForce> {
+    let path = hledger_conf::locate(root)?;
+    let text = hledger_conf::read(&path).ok()?;
+    let directory = path.parent()?;
+    let outside = directory != root;
+    Some(ConfInForce {
+        id: conf_id(root, directory),
+        outside,
+        aliases: hledger_conf::alias_arguments(&text, hledger_conf::IMPORT_COMMAND),
+        hijacked_by: hledger_conf::hijacks_command(&text),
+    })
+}
+
+/// A relative handle for a config file's location, from the journal's directory.
+///
+/// Security layer 5: the client is told `../hledger.conf`, never
+/// `/Users/someone/hledger.conf`. The number of `../` levels is real information
+/// — it is how the user finds the file — and it discloses nothing a relative
+/// rules id does not.
+fn conf_id(root: &Path, directory: &Path) -> String {
+    let levels = root
+        .strip_prefix(directory)
+        .map_or(1, |rest| rest.components().count());
+    format!("{}{}", "../".repeat(levels), hledger_conf::CONF_NAME)
+}
+
+/// The config file this server may write: `hledger.conf` in the journal's **own**
+/// directory, and nowhere else.
+///
+/// # Why the location is not negotiable
+///
+/// This is a new write target and it gets the same discipline as every other one
+/// here, which for a location means: the journal's directory is the tree the user
+/// pointed us at, so it is the whole of the tree we write in.
+///
+/// **`$HOME/.hledger.conf` and the XDG config dir are never written**, though
+/// hledger would read either. They are outside that tree, they affect every set
+/// of books on the machine rather than these ones, and a desktop application
+/// quietly editing a home-directory dotfile is not a thing to do. A config in
+/// force above the journal's directory is likewise reported and not touched.
+///
+/// # The guards, in order
+///
+/// 1. The path is built from the include root and one fixed file name — there is
+///    no client-supplied component anywhere in it, so layers 1 and 2 have nothing
+///    to check.
+/// 2. [`parse::confine`], the same containment `include` and the rules scan use,
+///    applied to the parent. It canonicalizes first, so a journal directory that
+///    is itself reached through a symlink is resolved before the comparison.
+/// 3. [`std::fs::symlink_metadata`], which does not follow links: the target must
+///    be absent or a **regular file**. A symlinked `hledger.conf` pointing at
+///    `~/.bashrc` is refused, and so is a FIFO, which would otherwise hang the
+///    request forever on `read`.
+struct ConfTarget {
+    path: PathBuf,
+    /// The wire handle. Always `hledger.conf`.
+    id: String,
+    text: String,
+    exists: bool,
+    /// A fingerprint of the bytes, or `""` for a file that does not exist. The
+    /// empty string is a real revision — "there was nothing here" — and a write
+    /// that echoes it is refused if a file has appeared since.
+    revision: String,
+    writable: bool,
+}
+
+fn resolve_conf(root: &Path) -> ConfTarget {
+    let absent = |writable: bool| ConfTarget {
+        path: root.join(hledger_conf::CONF_NAME),
+        id: hledger_conf::CONF_NAME.to_string(),
+        text: String::new(),
+        exists: false,
+        revision: String::new(),
+        writable,
+    };
+    // Guard 2. The parent is the root itself, so this is cheap — and it is here
+    // because "cheap and obviously true today" is how a containment check stops
+    // being performed at all.
+    let Some(directory) = ledgeline_core::parse::confine(root, root) else {
+        return absent(false);
+    };
+    let path = directory.join(hledger_conf::CONF_NAME);
+    // Guard 3.
+    match std::fs::symlink_metadata(&path) {
+        Err(_) => absent(true),
+        Ok(meta) if meta.file_type().is_file() => match hledger_conf::read(&path) {
+            Ok(text) => ConfTarget {
+                revision: Fingerprint::of_bytes(text.as_bytes()).token(),
+                id: hledger_conf::CONF_NAME.to_string(),
+                exists: true,
+                writable: true,
+                text,
+                path,
+            },
+            Err(_) => absent(false),
+        },
+        // A symlink, a directory, a FIFO: present, and not something to write.
+        Ok(_) => ConfTarget {
+            writable: false,
+            exists: true,
+            ..absent(false)
+        },
+    }
+}
+
+/// Where every `--alias` on an import's command line came from.
+///
+/// Two lists rather than one because the divergence notice needs to tell them
+/// apart: `conf` is what a terminal would apply, and `merged` is what this import
+/// is given. The difference between them is the divergence.
+#[derive(Debug, Default, Clone)]
+struct AliasArguments {
+    /// From `hledger.conf`. Exactly what a plain command-line hledger applies.
+    conf: Vec<String>,
+    /// What this import is given: `conf`, then the journal's own aliases.
+    merged: Vec<String>,
+}
+
+impl AliasArguments {
+    /// Merge the two sources.
+    ///
+    /// **The config's aliases go first, and the order is the point.** `--alias`
+    /// options compose left to right and the first one to match an account is the
+    /// one that rewrites it, so putting the config first means that wherever the
+    /// two disagree about an account, the config wins — and the config is what a
+    /// terminal `hledger import` would have applied. Journal-first would make
+    /// Ledgeline disagree with the command line in a *second*, opposite way,
+    /// which is precisely the thing this feature exists to remove.
+    fn merge(journal: Vec<String>, conf: Vec<String>) -> Self {
+        let merged = conf
+            .iter()
+            .cloned()
+            .chain(
+                journal
+                    .iter()
+                    .filter(|argument| !conf.contains(argument))
+                    .cloned(),
+            )
+            .collect();
+        Self { conf, merged }
+    }
+
+    /// Is what a terminal would apply already everything this import applies?
+    /// When so, no measurement is needed: the two command lines are equal.
+    fn identical_to_conf(&self) -> bool {
+        self.merged == self.conf
+    }
 }
 
 // ===========================================================================
@@ -1746,7 +2021,23 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
     // files. Without a journal there is nothing to score against — which is not
     // an error, just an empty list and a default derived from the upload's name.
     let main = state.source_files().into_iter().next();
-    let aliases = aliases::arguments(&state.snapshot().journal);
+    // The same merged set the dry-run will use — both homes, config first — so a
+    // candidate card's sample accounts are the accounts the import proposes. Two
+    // different alias sets between the card and the preview would make the card
+    // a lie about the very thing this feature exists to make visible.
+    let aliases = main
+        .as_deref()
+        .and_then(|main| include_root(main).ok())
+        .map(|root| {
+            AliasArguments::merge(
+                aliases::arguments(&state.snapshot().journal),
+                conf_in_force(&root)
+                    .map(|conf| conf.aliases)
+                    .unwrap_or_default(),
+            )
+            .merged
+        })
+        .unwrap_or_default();
     let candidates = match (&main, resolve_hledger()) {
         (Some(main), Ok(hledger)) => rank_candidates(&hledger, main, &staged, &tabular, &aliases),
         _ => Vec::new(),
@@ -2068,11 +2359,19 @@ struct Plan {
     /// The destination's bare file name — what the staged copy is named, and what
     /// `.latest.NAME` is keyed to.
     csv_name: String,
-    /// The `--alias` arguments this journal's own `alias` directives become.
+    /// Every `--alias` this import gets, and where each came from.
     ///
     /// Resolved once, here, so the dry-run and the commit cannot be handed
     /// different sets — see [`import_invocation`].
-    aliases: Vec<String>,
+    aliases: AliasArguments,
+    /// Every `alias` the journal declares, forwarded or refused — the input the
+    /// one-click config fix is computed from. Kept beside the arguments because
+    /// writing a config line needs the pattern and replacement apart, which an
+    /// assembled `OLD=NEW` argument has already joined.
+    declared: Vec<aliases::Forwarded>,
+    /// The journal's directory, and the `hledger.conf` in force at or above it.
+    root: PathBuf,
+    conf: Option<ConfInForce>,
     redactor: Redactor,
 }
 
@@ -2089,7 +2388,19 @@ impl Plan {
         let csv_name = file_name(&destination)
             .ok_or_else(|| unresolved("CSV destination", &request.csv_path))?;
         let hledger = resolve_hledger()?;
-        let aliases = aliases::arguments(&state.snapshot().journal);
+        // Both homes an account alias can live in — see `AliasArguments::merge`
+        // for why the config's come first.
+        let conf = conf_in_force(&root);
+        let declared = aliases::forward(&state.snapshot().journal);
+        let aliases = AliasArguments::merge(
+            declared
+                .iter()
+                .filter_map(|alias| alias.argument().map(str::to_string))
+                .collect(),
+            conf.as_ref()
+                .map(|conf| conf.aliases.clone())
+                .unwrap_or_default(),
+        );
 
         let redactor = Redactor::default()
             // hledger echoes its own argv[0] in a usage dump — which is what an
@@ -2108,6 +2419,9 @@ impl Plan {
             destination,
             csv_name,
             aliases,
+            declared,
+            root,
+            conf,
             redactor,
         })
     }
@@ -2144,7 +2458,7 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
             &plan.journal,
             &plan.rules,
             &staged,
-            &plan.aliases,
+            &plan.aliases.merged,
             true,
         ),
         "run the import preview",
@@ -2223,7 +2537,7 @@ fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, Ap
             &plan.journal,
             &plan.rules,
             &bare,
-            &plan.aliases,
+            &plan.aliases.merged,
             true,
         ),
         "measure what import de-duplication would skip",
@@ -2258,33 +2572,150 @@ fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, Ap
 ///
 /// `None` when no alias is in force: there is nothing to say, and no subprocess
 /// is spawned to say it.
+///
+/// # It also answers the command-line-parity question, and shares a run to do it
+///
+/// Two baselines are wanted, and the second is nearly free:
+///
+/// * **no aliases at all** → what the rules file alone produces, which is what
+///   `renames` is measured against;
+/// * **exactly the aliases a config file supplies** → what a terminal
+///   `hledger import` would produce, which is what [`WireCliParity`] is measured
+///   against.
+///
+/// With no config file the two baselines are the same command line, so the second
+/// costs nothing. With one they differ and it costs a third `--dry-run`, and only
+/// then. When the merged set is *equal* to the config's, the two command lines
+/// are identical and parity holds by construction with no run at all.
 fn alias_effect(
     plan: &Plan,
     staged: &Path,
     entries: &str,
 ) -> Result<Option<WireAliasEffect>, AppError> {
-    if plan.aliases.is_empty() {
+    if plan.aliases.merged.is_empty() {
         return Ok(None);
     }
-    let output = run(
-        import_invocation(&plan.hledger, &plan.journal, &plan.rules, staged, &[], true),
-        "measure what the journal's aliases rewrite",
-    )?;
-    let renames = if output.success() {
-        renames_between(&output.stdout_lossy(), entries)
+    let propose = |aliases: &[String], what: &str| -> Result<Option<String>, AppError> {
+        let output = run(
+            import_invocation(
+                &plan.hledger,
+                &plan.journal,
+                &plan.rules,
+                staged,
+                aliases,
+                true,
+            ),
+            what,
+        )?;
+        Ok(output.success().then(|| output.stdout_lossy()))
+    };
+
+    let bare = propose(&[], "measure what the journal's aliases rewrite")?;
+    let renames = bare
+        .as_deref()
+        .map(|bare| renames_between(bare, entries))
+        .unwrap_or_default();
+
+    // What a plain command-line `hledger import` would propose.
+    let cli = if plan.aliases.identical_to_conf() {
+        None
+    } else if plan.aliases.conf.is_empty() {
+        bare
     } else {
-        Vec::new()
+        propose(
+            &plan.aliases.conf,
+            "measure what a command-line import would produce",
+        )?
+    };
+    let differences = cli
+        .as_deref()
+        .map(|cli| renames_between(cli, entries))
+        .unwrap_or_default();
+
+    let rename = |(from, to): (String, String)| WireRename {
+        from: plan.redactor.apply(&from),
+        to: plan.redactor.apply(&to),
     };
     Ok(Some(WireAliasEffect {
-        forwarded: plan.aliases.len(),
-        renames: renames
-            .into_iter()
-            .map(|(from, to)| WireRename {
-                from: plan.redactor.apply(&from),
-                to: plan.redactor.apply(&to),
-            })
-            .collect(),
+        forwarded: plan.aliases.merged.len(),
+        renames: renames.into_iter().map(rename).collect(),
+        cli: cli_parity(plan, differences.into_iter().map(rename).collect()),
     }))
+}
+
+/// The divergence notice, and the fix it offers.
+///
+/// `differences` is the measurement and is the only thing that decides whether
+/// there is anything to say. Nothing here compares alias strings to reach that
+/// verdict — a user who wrote an equivalent mapping into their config in a
+/// spelling of their own gets silence, which is the correct response to a config
+/// that already works.
+///
+/// The additions are computed only when there IS a divergence, and each is
+/// [`hledger_conf::conf_argument`]'s output for one of the journal's aliases: the
+/// same bytes the write route will produce, so what the screen shows is what the
+/// file gets. An alias that cannot be expressed in a config file at all is listed
+/// with its reason rather than dropped.
+fn cli_parity(plan: &Plan, differences: Vec<WireRename>) -> WireCliParity {
+    let matches = differences.is_empty();
+    let target = resolve_conf(&plan.root);
+    let outside = plan.conf.as_ref().is_some_and(|conf| conf.outside);
+    let (additions, refusals) = if matches {
+        (Vec::new(), Vec::new())
+    } else {
+        conf_additions(&plan.declared, &plan.aliases.conf)
+    };
+    WireCliParity {
+        matches,
+        differences,
+        conf_path: plan.conf.as_ref().map(|conf| conf.id.clone()),
+        conf_outside: outside,
+        conf_hijacked_by: plan.conf.as_ref().and_then(|conf| conf.hijacked_by.clone()),
+        additions,
+        refusals,
+        revision: target.revision,
+        // A config in force ABOVE the journal's directory is reported, never
+        // written — but creating one beside the journal is still allowed, and it
+        // is what fixes the import, because hledger uses the NEAREST file. The
+        // UI says that shadowing will happen; it is not something to do silently.
+        writable: target.writable,
+    }
+}
+
+/// The `--alias` lines a config file is missing, and the aliases that cannot
+/// become one.
+///
+/// "Missing" is compared in the **config file's** form, not the command line's:
+/// a plain `PW Roth IRA - 3077=X` is written as `/^PW.Roth.IRA.-.3077($|:)/=X\1`,
+/// so comparing the two spellings would offer to add a line that is already
+/// there. Compared this way the operation is idempotent — press the button twice
+/// and the second press adds nothing — which is the property that matters.
+fn conf_additions(
+    declared: &[aliases::Forwarded],
+    present: &[String],
+) -> (Vec<String>, Vec<WireConfRefusal>) {
+    let mut additions: Vec<String> = Vec::new();
+    let mut refusals: Vec<WireConfRefusal> = Vec::new();
+    for alias in declared {
+        // Only aliases that reach an import at all. One refused by
+        // `ledgeline_core::aliases` (an `end aliases` closed it, it is empty)
+        // already has its own reason on the Account Aliases screen; repeating it
+        // here as a config problem would name the wrong cause.
+        if alias.argument().is_none() {
+            continue;
+        }
+        match hledger_conf::conf_argument(&alias.pattern, &alias.replacement, alias.regex) {
+            Ok(argument) if present.contains(&argument) || additions.contains(&argument) => {}
+            Ok(argument) => additions.push(argument),
+            Err(refusal) => refusals.push(WireConfRefusal {
+                pattern: alias.pattern.clone(),
+                replacement: alias.replacement.clone(),
+                reason: refusal.code(),
+                message: refusal.message(),
+            }),
+        }
+    }
+    (additions, refusals)
 }
 
 /// The distinct `(before, after)` account pairs between two proposals of the
@@ -2392,7 +2823,7 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
             &plan.journal,
             &plan.rules,
             &plan.destination,
-            &plan.aliases,
+            &plan.aliases.merged,
             false,
         ),
         "run the import",
@@ -2752,7 +3183,7 @@ fn preflight_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), A
             &plan.journal,
             &plan.rules,
             &staged,
-            &plan.aliases,
+            &plan.aliases.merged,
             true,
         ),
         "preview the import",
@@ -2854,6 +3285,123 @@ fn run_sort(state: &AppState, request: &WireSortRequest) -> Result<WireSorted, A
     }
     Ok(WireSorted {
         moved: plan.moves.len(),
+    })
+}
+
+/// `POST /api/import/hledger-conf` — install the journal's aliases into an
+/// `hledger.conf` beside it, so a terminal `hledger import` maps the same
+/// accounts this screen does.
+///
+/// A **new write target**, and so it gets the same discipline as every other one
+/// in this crate rather than a lighter one because the file is small:
+///
+/// 1. **Editing must be enabled**, exactly as for a journal or a rules file.
+/// 2. **The location is fixed** — `hledger.conf` in the journal's own directory.
+///    No component comes from the client, so there is no handle to validate and
+///    no path arithmetic to get wrong; `$HOME` and the XDG config dir are never
+///    written. See [`resolve_conf`].
+/// 3. **Confinement, file type, symlinks** — [`parse::confine`], then
+///    `symlink_metadata`: absent or a regular file. See [`resolve_conf`].
+/// 4. **Content provenance** — the request carries a revision and nothing else.
+///    Every byte written is either a byte read from that file moments ago or
+///    [`hledger_conf`]'s own rendering of an `alias` directive the journal
+///    already declares.
+/// 5. **Revision / 409** — the same model as the rules and alias editors, with
+///    the empty string as the revision of a file that does not exist, re-checked
+///    immediately before the write.
+pub(crate) async fn write_hledger_conf(
+    State(state): State<AppState>,
+    payload: Result<Json<WireConfRequest>, JsonRejection>,
+) -> Result<Response, AppError> {
+    let request = json_body(payload)?;
+    if !state.editing_enabled() {
+        return Err(crate::error::editing_disabled());
+    }
+    // The same mutex the import and alias writes take. A config file is read by
+    // every hledger invocation an import makes, so rewriting one while an import
+    // is in flight would change that import's rules underneath it.
+    let guard = state.clone();
+    let _write = guard.import_writes().lock().await;
+    let Json(body) = compute(move || run_write_conf(&state, &request)).await?;
+    Ok(no_store(body))
+}
+
+/// The whole of the config write, synchronously. Every `?` is a decision to
+/// write nothing.
+fn run_write_conf(
+    state: &AppState,
+    request: &WireConfRequest,
+) -> Result<WireConfWritten, AppError> {
+    let main = main_journal(state, "journal", hledger_conf::CONF_NAME)?;
+    let root = include_root(&main)?;
+    let target = resolve_conf(&root);
+    if !target.writable {
+        return Err(AppError::BadRequest(format!(
+            "{} cannot be written: a config file must be a regular file in your journal's own \
+             directory, not a symlink or a directory",
+            quoted(&target.id)
+        )));
+    }
+    if target.revision != request.revision {
+        return Err(AppError::Conflict(format!(
+            "{} changed on disk since this page read it, so nothing was written. Reload and try \
+             again.",
+            quoted(&target.id)
+        )));
+    }
+
+    // Layer 4: recomputed here, never taken from the request.
+    let declared = aliases::forward(&state.snapshot().journal);
+    let present = hledger_conf::alias_arguments(&target.text, hledger_conf::IMPORT_COMMAND);
+    let (additions, _) = conf_additions(&declared, &present);
+    if additions.is_empty() {
+        // Nothing to add writes NOTHING — not even byte-identical content, which
+        // would still bump mtime and wake somebody's watch loop. The same lesson
+        // `rules_api` and `alias_api` both record.
+        return Ok(WireConfWritten {
+            conf_path: target.id,
+            created: false,
+            added: Vec::new(),
+            revision: target.revision,
+        });
+    }
+
+    let base = if target.exists {
+        target.text.clone()
+    } else {
+        hledger_conf::new_file_header()
+    };
+    let new_text = hledger_conf::with_aliases(&base, &additions);
+
+    // Narrow the TOCTOU window from "the whole request" to "read → rename", the
+    // same last-moment re-check `alias_api` makes.
+    let before = resolve_conf(&root);
+    if before.revision != request.revision || !before.writable {
+        return Err(AppError::Conflict(format!(
+            "{} changed on disk since this page read it, so nothing was written. Reload and try \
+             again.",
+            quoted(&target.id)
+        )));
+    }
+
+    ledgeline_core::edit::atomic_write(&target.path, new_text.as_bytes()).map_err(|error| {
+        // Only the `ErrorKind`: `atomic_write` builds a temp path from the
+        // target, so its io errors can carry one.
+        AppError::Internal(format!(
+            "{} could not be written: {}. Nothing else was changed.",
+            quoted(&target.id),
+            error.kind()
+        ))
+    })?;
+
+    Ok(WireConfWritten {
+        conf_path: target.id,
+        created: !target.exists,
+        added: additions,
+        // From what we WROTE, never from a re-read: a re-read could pick up
+        // somebody else's write and hand this client a token for bytes it has
+        // never seen, which is how the next write clobbers that person silently.
+        revision: Fingerprint::of_bytes(new_text.as_bytes()).token(),
     })
 }
 
@@ -3384,5 +3932,141 @@ mod tests {
         );
         assert!(argument_field("-f", "account").is_err());
         assert!(argument_field("--depth", "account").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // The `--no-conf` lint
+    // -----------------------------------------------------------------------
+
+    /// A stand-in `Hledger` for building argv without running anything.
+    ///
+    /// `resolve` is the only public constructor and it spawns a process, so this
+    /// reaches for the private fields directly — which is exactly what a
+    /// same-crate test may do and an outside caller may not. Nothing here runs.
+    fn argv_of(invocation: &Invocation) -> Vec<String> {
+        invocation
+            .argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// **Every hledger invocation the import path builds passes `--no-conf`.**
+    ///
+    /// An argument-level lint rather than a behavioural test, deliberately. The
+    /// behaviour it stands for is "a `hledger.conf` sitting above our working
+    /// directory does not steer our subprocess", and proving *that* needs a
+    /// hostile config file planted above the test runner's working directory —
+    /// which is this repository, on a developer's machine and in CI. A test that
+    /// writes `hledger.conf` into a parent of the checkout to prove a point is a
+    /// test that breaks every other test in the run.
+    ///
+    /// So the property is enforced at the choke point
+    /// ([`Invocation::argv`](crate::hledger::Invocation::argv)) and asserted
+    /// here over the real builders. A new invocation added to this module fails
+    /// this test only if it is also added to the list — which is the honest
+    /// limit of an argument-level lint, and why the flag is prepended by
+    /// construction rather than by anyone remembering to.
+    ///
+    /// The manual verification is in `docs/imports.md`: a `hledger.conf` whose
+    /// entire content is the word `balance` rewrites an unprotected
+    /// `hledger import` into `balance import …`.
+    #[test]
+    fn every_import_invocation_disables_config_files() {
+        let hledger = Hledger::for_tests(Path::new("/nonexistent/hledger"));
+        let journal = Path::new("/j/main.journal");
+        let rules = Path::new("/j/bank.csv.rules");
+        let csv = Path::new("/j/bank.csv");
+        let aliases = vec!["a=b".to_string()];
+
+        // One entry per `.invoke(` in this module's production half, mirroring
+        // each builder's own shape. `the_lint_covers_every_builder` below is what
+        // keeps this list from silently falling behind.
+        let built = vec![
+            // `import_invocation` — shared by the preview, the dedup
+            // measurement, the alias measurements and the real write.
+            import_invocation(&hledger, journal, rules, csv, &aliases, true),
+            import_invocation(&hledger, journal, rules, csv, &aliases, false),
+            // `print_json` — candidate scoring.
+            hledger
+                .invoke(alias_flags(&aliases))
+                .args(["print".as_ref(), "-f".as_ref(), csv.as_os_str()])
+                .arg("--rules")
+                .arg(rules)
+                .args(["-O", "json"]),
+            // `verify_balance` — the journal and the proposal, through a pipe.
+            hledger
+                .invoke(["-f", "-", "balance"])
+                .arg("assets:bank")
+                .args(["--no-total", "--flat", "-O", "csv"]),
+            // `check_assertion` — the same pipe, one commodity later.
+            hledger.invoke(["-f", "-", "check"]),
+        ];
+
+        for invocation in &built {
+            let argv = argv_of(invocation);
+            assert_eq!(
+                argv.first().map(String::as_str),
+                Some(crate::hledger::NO_CONF),
+                "{argv:?} must begin with {} — a config file can otherwise replace the command",
+                crate::hledger::NO_CONF
+            );
+            assert_eq!(
+                argv.iter()
+                    .filter(|arg| *arg == crate::hledger::NO_CONF)
+                    .count(),
+                1,
+                "{argv:?} should carry the flag exactly once"
+            );
+        }
+    }
+
+    /// The lint above mirrors each builder by hand, so this counts the builders
+    /// and fails when a new one appears without a mirror.
+    ///
+    /// Reading this module's own source is unusual and is the point: the
+    /// alternative is a list that is correct on the day it is written and quietly
+    /// incomplete a month later, which for a security property is worse than no
+    /// list. `Hledger::invoke` is the only way to construct an [`Invocation`]
+    /// outside `hledger.rs`, so counting its call sites counts the builders.
+    #[test]
+    fn the_lint_covers_every_builder() {
+        /// How many `.invoke(` call sites `every_import_invocation_disables_config_files`
+        /// mirrors. Bump this **and add the builder to that test** together.
+        const MIRRORED: usize = 4;
+
+        let source = include_str!("import_api.rs");
+        let production = source
+            .split_once("\n#[cfg(test)]\n")
+            .map_or(source, |(before, _)| before);
+        assert_eq!(
+            production.matches(".invoke(").count(),
+            MIRRORED,
+            "a new hledger invocation was added to import_api.rs; mirror it in \
+             `every_import_invocation_disables_config_files` so its argv is linted too"
+        );
+    }
+
+    /// The flag goes in front of the SUBCOMMAND, not merely somewhere in the
+    /// vector. A config file's own injected command word is prepended to the
+    /// argument list, so a `--no-conf` sitting after `import` would be parsed
+    /// only once the damage was already done.
+    #[test]
+    fn the_flag_precedes_the_subcommand() {
+        let hledger = Hledger::for_tests(Path::new("/nonexistent/hledger"));
+        let argv = argv_of(&import_invocation(
+            &hledger,
+            Path::new("/j/main.journal"),
+            Path::new("/j/b.csv.rules"),
+            Path::new("/j/b.csv"),
+            &[],
+            true,
+        ));
+        let flag = argv
+            .iter()
+            .position(|arg| arg == crate::hledger::NO_CONF)
+            .expect("the flag");
+        let import = argv.iter().position(|arg| arg == "import").expect("import");
+        assert!(flag < import, "{argv:?}");
     }
 }
