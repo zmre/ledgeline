@@ -889,28 +889,72 @@ fn the_first_failure_for_a_posting_is_the_one_hledger_reports() {
 // The fixture sweep — the primary correctness signal
 // ---------------------------------------------------------------------------
 
-/// Every fixture outside `fixtures/corpus/errors/` passes real
+/// Every fixture ROOT outside `fixtures/corpus/errors/` passes real
 /// `hledger -f FILE check assertions`, so this pass must flag none of them. If
 /// it flags one, the pass is wrong.
 ///
 /// `fixtures/corpus/assertions.journal` and `assertions-total.journal` make this
 /// more than a smoke test: they are the corpus' own assertion coverage.
+///
+/// # Roots only, and why that is not a loophole
+///
+/// A file that is only ever `include`d is checked **through its parent** and not
+/// on its own, which is what [`collect_journals`] has always said and what the
+/// sweep now does. The distinction used to be invisible because no included
+/// fragment carried an assertion; `fixtures/import/layouts/split-year-assert/`
+/// exists precisely because one does.
+///
+/// Its `2026/2026.journal` opens with a start-of-year assertion holding the
+/// prior year's closing balance. Read from its root that balance is `$900.00`
+/// and the assertion holds; read alone the running balance is `$0` and it fails
+/// — in hledger exactly as here. Flagging it would be flagging hledger's own
+/// answer to a question nobody asks, and it would mean this sweep could never
+/// contain a split journal that asserts anything.
+///
+/// The tree is still covered, in full: its root includes both year files, so
+/// every assertion in it is evaluated here, in the context it was written for.
 #[test]
 fn no_shipped_fixture_has_a_failing_assertion() {
     let fixtures = common::fixtures_dir();
     let mut journals = Vec::new();
     collect_journals(&fixtures, &mut journals);
     journals.sort();
+
+    let parsed: Vec<(&PathBuf, Journal)> = journals
+        .iter()
+        .map(|path| (path, journal_at(path)))
+        .collect();
+    // Every file reached through somebody else's `include`. `source_files` is
+    // the parse's own record of what it read, so this needs no second opinion
+    // about how an include resolves.
+    let included: std::collections::BTreeSet<&Path> = parsed
+        .iter()
+        .flat_map(|(path, journal)| {
+            journal
+                .source_files
+                .iter()
+                .map(PathBuf::as_path)
+                .filter(move |source| source != &path.as_path())
+        })
+        .collect();
+    let roots: Vec<&(&PathBuf, Journal)> = parsed
+        .iter()
+        .filter(|(path, _)| !included.contains(path.as_path()))
+        .collect();
     assert!(
-        journals.len() >= 40,
-        "expected the full fixture set, found {}",
-        journals.len()
+        roots.len() >= 40,
+        "expected the full fixture set, found {} roots of {}",
+        roots.len(),
+        parsed.len()
+    );
+    assert!(
+        !included.is_empty(),
+        "no fixture is included by another — the filter below is not being exercised"
     );
 
     let mut problems = Vec::new();
     let mut asserting = 0usize;
-    for path in &journals {
-        let journal = journal_at(path);
+    for (path, journal) in &roots {
         let count = journal
             .transactions
             .iter()
@@ -918,15 +962,18 @@ fn no_shipped_fixture_has_a_failing_assertion() {
             .filter(|posting| posting.balance_assertion.is_some())
             .count();
         asserting += count;
-        match check_balance_assertions(&journal) {
+        match check_balance_assertions(journal) {
             Ok(found) if found.is_empty() => {}
             Ok(found) => problems.push(format!("{}:\n{}", path.display(), rendered(&found))),
             Err(error) => problems.push(format!("{}: {error}", path.display())),
         }
     }
     println!(
-        "assertion sweep: {} fixtures checked, {asserting} assertions evaluated, {} flagged",
-        journals.len(),
+        "assertion sweep: {} roots checked ({} files, {} included), {asserting} assertions \
+         evaluated, {} flagged",
+        roots.len(),
+        parsed.len(),
+        included.len(),
         problems.len()
     );
     assert!(
@@ -937,6 +984,34 @@ fn no_shipped_fixture_has_a_failing_assertion() {
     assert!(
         asserting > 0,
         "the sweep evaluated no assertions at all — it is not testing anything"
+    );
+}
+
+/// The complement of the sweep: the one committed fragment that **fails** on its
+/// own, and passes through its root.
+///
+/// Without this, "roots only" would be indistinguishable from "skip the
+/// inconvenient file". Both halves are asserted, because either alone proves
+/// nothing — and this is our engine agreeing with hledger, which
+/// `ledgeline-core/tests/journals.rs` checks against the binary itself.
+#[test]
+fn an_included_fragment_may_fail_alone_while_its_root_passes() {
+    let tree = common::fixtures_dir().join("import/layouts/split-year-assert");
+
+    let fragment = journal_at(&tree.join("2026/2026.journal"));
+    let found = check_balance_assertions(&fragment).expect("the fragment evaluates");
+    assert_eq!(
+        found.len(),
+        1,
+        "the start-of-year assertion cannot hold without the prior year: {}",
+        rendered(&found)
+    );
+
+    let root = journal_at(&tree.join("main.journal"));
+    assert_eq!(
+        check_balance_assertions(&root).expect("the root evaluates"),
+        Vec::new(),
+        "and through the root, where the prior year is in scope, it holds"
     );
 }
 

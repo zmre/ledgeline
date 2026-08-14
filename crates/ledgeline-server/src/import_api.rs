@@ -189,6 +189,15 @@ const IMPORT_TIMEOUT: Duration = Duration::from_secs(120);
 /// through a pipe and compute one account's running total.
 const BALANCE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// hledger's `-I`, spelled out.
+///
+/// It goes on **exactly one** invocation — [`import_invocation`], the only one
+/// that reads a target file in isolation — and the argument for it is at that
+/// function, at length, because the next reader's instinct will be to delete it.
+/// The long spelling is used so the argv says what it does; `-I` is the same
+/// flag and hledger accepts both.
+const IGNORE_ASSERTIONS: &str = "--ignore-assertions";
+
 // ===========================================================================
 // Response wire types (native, camelCase)
 // ===========================================================================
@@ -1421,7 +1430,7 @@ fn run(invocation: Invocation, what: &str) -> Result<Output, AppError> {
         .map_err(|error| AppError::Internal(format!("could not {what}: {error}")))
 }
 
-/// `hledger [--alias=…]… -f JOURNAL import [--dry-run] --rules RULES CSV`.
+/// `hledger [--alias=…]… -I -f JOURNAL import [--dry-run] --rules RULES CSV`.
 ///
 /// Every path is absolute, which is also what makes them safe as positional
 /// arguments: an absolute path begins with `/` and can never be read as an
@@ -1429,6 +1438,52 @@ fn run(invocation: Invocation, what: &str) -> Result<Output, AppError> {
 ///
 /// `--rules`, not `--rules-file`: the flag was renamed in hledger 1.40, which is
 /// why [`MIN_HLEDGER`](crate::hledger::MIN_HLEDGER) is 1.40.
+///
+/// # Why `--ignore-assertions` is here, and must stay
+///
+/// **DO NOT REMOVE THIS FLAG TO "RESTORE SAFETY". It restores nothing.**
+///
+/// `import` is the one invocation that reads the *target file on its own*: one
+/// `-f`, naming the fragment the new entries are appended to. A balance
+/// assertion inside an included fragment is not a safety check we are choosing
+/// to switch off — it is a check that is **structurally incapable of being
+/// correct in that context**, because the balance it asserts accumulates
+/// through files hledger was never asked to read. Evaluating it there produces
+/// a false failure, not safety.
+///
+/// The split-year layout is the ordinary case, not an exotic one. `main.journal`
+/// includes `2025/2025.journal` then `2026/2026.journal`, and the 2026 file opens
+/// with a start-of-year assertion carrying 2025's closing balance. Verified
+/// against hledger 1.52:
+///
+/// ```text
+/// $ hledger -f main.journal check                      # the tree is fine
+/// $ hledger -f 2026/2026.journal import --rules … bank.csv
+/// hledger: Error: …/2026/2026.journal:3:31:
+///   3 |     assets:bank:checking              $0 = $900.00
+/// Balance assertion failed in assets:bank:checking
+///   the asserted balance is:   $900.00
+///   but the calculated balance is:   $0
+/// ```
+///
+/// The import aborts on a journal that is correct. The place that assertion is
+/// meaningful is the root, where it is still evaluated and still protects the
+/// user — by `hledger check`, by every report Ledgeline renders, and by
+/// [`verify_balance`] and [`check_assertion`], both of which read the **root**
+/// for exactly this reason.
+///
+/// Two things the flag does *not* cost, both verified against 1.52 rather than
+/// assumed:
+///
+/// * **Assertions a rules file GENERATES are still written, and still checked.**
+///   A `balance` field emits `assets:bank:checking  $-20.00 = $880.00` into the
+///   proposed entries, `-I` leaves that text exactly as it is, and it lands in
+///   the journal to be checked at the root from then on. Deferred, not lost.
+/// * **Nothing is being skipped that this invocation ever checked.** hledger does
+///   not evaluate CSV-derived assertions during an import at all: importing a
+///   `balance`-field CSV asserting `$880.00` into a journal holding `$100.00`
+///   exits zero. The only assertions `-I` suppresses are the target fragment's
+///   own — the ones that cannot hold when read in isolation.
 ///
 /// # `--dry-run` is a parameter, and that is the point
 ///
@@ -1450,6 +1505,9 @@ fn import_invocation(
 ) -> Invocation {
     let invocation = hledger
         .invoke(alias_flags(aliases))
+        // Before the subcommand, for the same reason `--no-conf` is: this is a
+        // general option, and hledger's own parser reads them in order.
+        .arg(IGNORE_ASSERTIONS)
         .args(["-f".as_ref(), journal.as_os_str()])
         .arg("import");
     let invocation = if dry_run {
@@ -1510,8 +1568,34 @@ fn reported_count(stderr: &str, verb: &str) -> Option<usize> {
         .and_then(|token| token.parse().ok())
 }
 
-/// Verify a statement balance over **journal + proposed entries**, as one
-/// journal.
+/// Verify a statement balance over **the whole journal tree + the proposed
+/// entries**, as one journal.
+///
+/// # Why the ROOT and not the file being written
+///
+/// `root` is the journal Ledgeline was opened with — the one that `include`s
+/// everything — and it is deliberately **not** the import's target. The two are
+/// different journals and only one of them can answer this question.
+///
+/// A statement balance is a claim about an account, and an account's balance
+/// accumulates across every file in the tree. In the split-year layout, with
+/// `main.journal` including `2025/2025.journal` and `2026/2026.journal`, the
+/// checking balance after a $5 coffee is $895.00 at the root and $-5.00 in the
+/// 2026 fragment alone. Reading the target gave the user the second number and
+/// told them their statement did not match — a silent wrong answer, and one
+/// that also refused correct balances through [`check_assertion`].
+///
+/// `include <root>` + the proposed entries is exactly *what the tree will look
+/// like once this import lands*, with no double counting: the proposed entries
+/// are hledger's dry-run stdout, which by definition is not in the target yet,
+/// and the target is reached through the root's own `include`. After the import
+/// has been applied [`write_assertion`] passes an empty `proposed` for the same
+/// reason — the entries are in the target by then, and the root sees them there.
+///
+/// **No `-I` here, and that is the point.** At the root an assertion is
+/// evaluated in the context it was written for, so it is meaningful: a failure
+/// is real information and answers `None` ("not known") below. Only
+/// [`import_invocation`], which reads a fragment on its own, may disable them.
 ///
 /// # Why this is not two `-f` flags
 ///
@@ -1552,7 +1636,7 @@ fn reported_count(stderr: &str, verb: &str) -> Option<usize> {
 /// hledger reads the journal normally.
 fn verify_balance(
     hledger: &Hledger,
-    journal: &Path,
+    root: &Path,
     proposed: &str,
     account: &str,
 ) -> Result<Option<String>, AppError> {
@@ -1561,7 +1645,7 @@ fn verify_balance(
             .invoke(["-f", "-", "balance"])
             .arg(account)
             .args(["--no-total", "--flat", "-O", "csv"])
-            .stdin(concatenated(journal, proposed).into_bytes())
+            .stdin(concatenated(root, proposed).into_bytes())
             .timeout(BALANCE_TIMEOUT),
         "compute the combined balance",
     )?;
@@ -1576,10 +1660,10 @@ fn verify_balance(
         .then(|| balance_from_csv(&output.stdout_lossy()).unwrap_or_else(|| "0".to_string())))
 }
 
-/// The single journal handed to hledger on stdin: the real journal by absolute
-/// `include`, then the proposed entries. See [`verify_balance`].
-fn concatenated(journal: &Path, proposed: &str) -> String {
-    format!("include {}\n\n{proposed}\n", journal.display())
+/// The single journal handed to hledger on stdin: the **root** journal by
+/// absolute `include`, then the proposed entries. See [`verify_balance`].
+fn concatenated(root: &Path, proposed: &str) -> String {
+    format!("include {}\n\n{proposed}\n", root.display())
 }
 
 /// The balance out of `hledger balance -O csv` output.
@@ -2254,6 +2338,17 @@ fn score_value(score: Score) -> f32 {
 /// it always has. Adding `--alias` there would apply the mapping a second time,
 /// and a regex alias broad enough to match its own output would then rewrite an
 /// account that was already correct.
+///
+/// # And no `--ignore-assertions`, unlike [`import_invocation`]
+///
+/// This reads the CSV and no journal at all, so there is no fragment here whose
+/// assertions could be evaluated out of context. The only assertions in reach
+/// would be ones the *rules file* generates from a `balance` field — and
+/// hledger does not evaluate those when reading a CSV. Verified against 1.52: a
+/// rules file whose `balance` column asserts `$880.00` prints
+/// `assets:bank:checking  $-20.00 = $880.00` and exits **zero** from a running
+/// total of `$-20.00`. There is nothing here for the flag to suppress, so it is
+/// not passed; a candidate is never lost to an assertion.
 fn print_json(hledger: &Hledger, data: &Path, rules: &Path, aliases: &[String]) -> Option<Value> {
     let output = hledger
         .invoke(alias_flags(aliases))
@@ -2354,10 +2449,35 @@ pub(crate) async fn dry_run(
 }
 
 /// Everything a dry-run and a commit both have to resolve, resolved once.
+///
+/// # Two journals, and neither may be called `journal`
+///
+/// This type used to hold one field named `journal`, meaning the file being
+/// written to, while most of what read it wanted the *other* journal — and that
+/// single overloaded name is precisely how the balance verification came to
+/// reckon against a fragment. So the two are named for the jobs they do and
+/// neither gets the bare word:
+///
+/// * [`target`](Self::target) — the file this import WRITES to. Appending is the
+///   only thing it is for.
+/// * [`root_journal`](Self::root_journal) — the file the tree is RECKONED
+///   AGAINST: the journal Ledgeline was opened with, which `include`s the target
+///   and everything else. Every balance question goes here.
+///
+/// A field named `journal` would be a question ("which one?") answered by
+/// whoever typed the next line fastest. There is no such field on purpose;
+/// resist adding one back.
 struct Plan {
     hledger: Hledger,
     staged: std::sync::Arc<Stage>,
-    journal: PathBuf,
+    /// The file this import appends to — the WRITE destination, and nothing
+    /// else. It is a fragment of a larger journal in every layout but the
+    /// single-file one, so it is never the thing to compute a balance over.
+    target: PathBuf,
+    /// The journal Ledgeline was opened with: the root of the `include` tree the
+    /// target is part of. This is what balances and assertions are reckoned
+    /// against — see [`verify_balance`].
+    root_journal: PathBuf,
     rules: PathBuf,
     destination: PathBuf,
     /// The destination's bare file name — what the staged copy is named, and what
@@ -2373,8 +2493,11 @@ struct Plan {
     /// writing a config line needs the pattern and replacement apart, which an
     /// assembled `OLD=NEW` argument has already joined.
     declared: Vec<aliases::Forwarded>,
-    /// The journal's directory, and the `hledger.conf` in force at or above it.
-    root: PathBuf,
+    /// The journal's own DIRECTORY — the include root every handle is confined
+    /// to. Named for the thing it is, because a `root` beside a `root_journal`
+    /// is the ambiguity this type's docs are about.
+    root_dir: PathBuf,
+    /// The `hledger.conf` in force at or above [`root_dir`](Self::root_dir).
     conf: Option<ConfInForce>,
     redactor: Redactor,
 }
@@ -2384,17 +2507,21 @@ impl Plan {
     /// refusals first.
     fn resolve(state: &AppState, request: &WireDryRunRequest) -> Result<Self, AppError> {
         let staged = resolve_stage(state, &request.stage_id)?;
-        let main = main_journal(state, "rules file", &request.rules_id)?;
-        let root = include_root(&main)?;
-        let (journal, _) = resolve_journal(state, &root, &request.journal_id)?;
-        let rules = resolve_rules(&rules::discover(&main), &request.rules_id)?;
-        let destination = resolve_destination(&root, &request.csv_path)?;
+        // The journal this server was opened with. It is the root of the
+        // `include` tree — `journals::targets` flags it `is_root` — so it is
+        // both the directory anchor and, as a file, the thing every balance is
+        // reckoned against. Two different uses, two named fields below.
+        let root_journal = main_journal(state, "rules file", &request.rules_id)?;
+        let root_dir = include_root(&root_journal)?;
+        let (target, _) = resolve_journal(state, &root_dir, &request.journal_id)?;
+        let rules = resolve_rules(&rules::discover(&root_journal), &request.rules_id)?;
+        let destination = resolve_destination(&root_dir, &request.csv_path)?;
         let csv_name = file_name(&destination)
             .ok_or_else(|| unresolved("CSV destination", &request.csv_path))?;
         let hledger = resolve_hledger()?;
         // Both homes an account alias can live in — see `AliasArguments::merge`
         // for why the config's come first.
-        let conf = conf_in_force(&root);
+        let conf = conf_in_force(&root_dir);
         let declared = aliases::forward(&state.snapshot().journal);
         let aliases = AliasArguments::merge(
             declared
@@ -2410,21 +2537,25 @@ impl Plan {
             // hledger echoes its own argv[0] in a usage dump — which is what an
             // unrecognised flag produces — and under Nix that is a store path.
             .hide(hledger.path(), "hledger")
-            .hide(&journal, &request.journal_id)
+            .hide(&target, &request.journal_id)
             .hide(&rules, &request.rules_id)
             .hide(&destination, &request.csv_path)
-            .hide_prefix(&root)
+            // Covers `root_journal` too: it lives in this directory, and the
+            // balance verifications put its absolute path into hledger's stdin,
+            // so hledger's own diagnostics quote it back.
+            .hide_prefix(&root_dir)
             .hide_prefix(&std::env::temp_dir());
         Ok(Self {
             hledger,
             staged,
-            journal,
+            target,
+            root_journal,
             rules,
             destination,
             csv_name,
             aliases,
             declared,
-            root,
+            root_dir,
             conf,
             redactor,
         })
@@ -2439,7 +2570,7 @@ impl Plan {
     fn targets<'a>(&'a self, request: &'a WireDryRunRequest) -> Vec<(&'a Path, &'a str)> {
         vec![
             (self.destination.as_path(), request.csv_path.as_str()),
-            (self.journal.as_path(), request.journal_id.as_str()),
+            (self.target.as_path(), request.journal_id.as_str()),
         ]
     }
 }
@@ -2459,7 +2590,7 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
     let output = run(
         import_invocation(
             &plan.hledger,
-            &plan.journal,
+            &plan.target,
             &plan.rules,
             &staged,
             &plan.aliases.merged,
@@ -2495,7 +2626,10 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
                         "a statement balance needs the account it is a balance OF".to_string(),
                     )
                 })?;
-            let computed = verify_balance(&plan.hledger, &plan.journal, &entries, &account)?;
+            // The ROOT, not the file being written: the balance the user is
+            // reconciling against their statement is the tree's, and in a split
+            // layout the target holds only part of it. See `verify_balance`.
+            let computed = verify_balance(&plan.hledger, &plan.root_journal, &entries, &account)?;
             Ok::<_, AppError>(reconcile(&statement, computed))
         })
         .transpose()?;
@@ -2538,7 +2672,7 @@ fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, Ap
     let output = run(
         import_invocation(
             &plan.hledger,
-            &plan.journal,
+            &plan.target,
             &plan.rules,
             &bare,
             &plan.aliases.merged,
@@ -2603,7 +2737,7 @@ fn alias_effect(
         let output = run(
             import_invocation(
                 &plan.hledger,
-                &plan.journal,
+                &plan.target,
                 &plan.rules,
                 staged,
                 aliases,
@@ -2662,7 +2796,7 @@ fn alias_effect(
 /// with its reason rather than dropped.
 fn cli_parity(plan: &Plan, differences: Vec<WireRename>) -> WireCliParity {
     let matches = differences.is_empty();
-    let target = resolve_conf(&plan.root);
+    let target = resolve_conf(&plan.root_dir);
     let outside = plan.conf.as_ref().is_some_and(|conf| conf.outside);
     let (additions, refusals) = if matches {
         (Vec::new(), Vec::new())
@@ -2820,11 +2954,11 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
         ))
     })?;
 
-    let before = std::fs::read(&plan.journal).map_err(journal_unreadable)?;
+    let before = std::fs::read(&plan.target).map_err(journal_unreadable)?;
     let output = run(
         import_invocation(
             &plan.hledger,
-            &plan.journal,
+            &plan.target,
             &plan.rules,
             &plan.destination,
             &plan.aliases.merged,
@@ -2839,7 +2973,7 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
             plan.redactor.apply(&output.stderr_lossy())
         )));
     }
-    let after = std::fs::read(&plan.journal).map_err(journal_unreadable)?;
+    let after = std::fs::read(&plan.target).map_err(journal_unreadable)?;
     let imported = appended_count(&before, &after)
         .or_else(|| reported_count(&output.stderr_lossy(), "imported"))
         .unwrap_or(0);
@@ -2848,7 +2982,13 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
         write_assertion(&plan, &request.plan)?;
     }
 
-    let text = std::fs::read_to_string(&plan.journal).map_err(journal_unreadable)?;
+    // The ordering check reads the TARGET, and correctly so: date order is a
+    // per-file property (`hledger check ordereddates` is per-file too, and a
+    // sort that moved a transaction between files would be a different feature
+    // entirely). It also cannot fail for an assertion reason, because it never
+    // runs hledger — `sort::plan` is our own pure pass over the file's text, so
+    // there is no third journal-reading invocation hiding here.
+    let text = std::fs::read_to_string(&plan.target).map_err(journal_unreadable)?;
     let ordering = match sort::plan(&text) {
         Ok(plan) => WireOrdering {
             in_order: plan.unchanged,
@@ -3110,6 +3250,17 @@ fn assertion_lines(
 /// The date is the newest transaction date rather than today's: the assertion is
 /// a statement about the balance *after everything in this file*, and taking it
 /// from the data makes the write deterministic and the test for it stable.
+///
+/// # The one place the TARGET is read on purpose
+///
+/// The date comes from `plan.target`, not from the root, and that is not the
+/// oversight the rest of this module was. The assertion is appended to the
+/// target, so it is dated after the target's own last entry; and the root of a
+/// split layout holds no transactions at all, so asking it for a newest date
+/// would refuse every assertion in exactly the layouts this fix is about. The
+/// *commodity* and the check still come from the root, via [`verify_balance`]
+/// and [`check_assertion`], because those are balance questions and the date is
+/// not.
 fn plan_assertion(
     plan: &Plan,
     request: &WireDryRunRequest,
@@ -3118,7 +3269,7 @@ fn plan_assertion(
     let Some((statement, account)) = assertion_fields(request)? else {
         return Ok(None);
     };
-    let text = std::fs::read_to_string(&plan.journal).map_err(journal_unreadable)?;
+    let text = std::fs::read_to_string(&plan.target).map_err(journal_unreadable)?;
     let date = newest_date(&format!("{text}\n{proposed}")).ok_or_else(|| {
         AppError::BadRequest(
             "a balance assertion needs at least one transaction to be dated after".to_string(),
@@ -3131,15 +3282,26 @@ fn plan_assertion(
             quoted(&statement)
         ))
     })?;
-    let computed = verify_balance(&plan.hledger, &plan.journal, proposed, &account)?
+    let computed = verify_balance(&plan.hledger, &plan.root_journal, proposed, &account)?
         .as_deref()
         .and_then(split_amount);
     assertion_lines(&date, &account, &typed, computed.as_ref()).map(Some)
 }
 
-/// Put `assertion` to `hledger check` as ONE journal — the file, the entries not
-/// yet in it, and the assertion — by the same one-`-f` mechanism
+/// Put `assertion` to `hledger check` as ONE journal — the **root**, the entries
+/// not yet in it, and the assertion — by the same one-`-f` mechanism
 /// [`verify_balance`] uses, never two `-f` flags (fact 3).
+///
+/// The root for the same reason `verify_balance` uses it: an assertion is a
+/// claim about a balance, and a balance is a property of the tree. Checking it
+/// against the target alone refused correct statement balances outright in any
+/// split layout — the fragment's own start-of-year assertion fails there first,
+/// and the user is told their number is wrong when hledger never got as far as
+/// looking at it.
+///
+/// No `--ignore-assertions` here, obviously: evaluating an assertion is the
+/// entire job. That it can be evaluated *truthfully* is what reading the root
+/// buys.
 ///
 /// `Ok(None)` means it holds. `Ok(Some(stderr))` means hledger refused it and
 /// carries its own words, redacted; the caller phrases what that cost.
@@ -3151,7 +3313,9 @@ fn check_assertion(
     let output = run(
         plan.hledger
             .invoke(["-f", "-", "check"])
-            .stdin(concatenated(&plan.journal, &format!("{proposed}\n{assertion}")).into_bytes())
+            .stdin(
+                concatenated(&plan.root_journal, &format!("{proposed}\n{assertion}")).into_bytes(),
+            )
             .timeout(BALANCE_TIMEOUT),
         "check the statement balance",
     )?;
@@ -3184,7 +3348,7 @@ fn preflight_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), A
     let output = run(
         import_invocation(
             &plan.hledger,
-            &plan.journal,
+            &plan.target,
             &plan.rules,
             &staged,
             &plan.aliases.merged,
@@ -3230,10 +3394,10 @@ fn write_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), AppEr
         )));
     }
 
-    let text = std::fs::read_to_string(&plan.journal).map_err(journal_unreadable)?;
+    let text = std::fs::read_to_string(&plan.target).map_err(journal_unreadable)?;
     let separator = if text.ends_with('\n') { "\n" } else { "\n\n" };
     ledgeline_core::edit::atomic_write(
-        &plan.journal,
+        &plan.target,
         format!("{text}{separator}{assertion}").as_bytes(),
     )
     .map_err(|error| {
@@ -4072,5 +4236,77 @@ mod tests {
             .expect("the flag");
         let import = argv.iter().position(|arg| arg == "import").expect("import");
         assert!(flag < import, "{argv:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // `--ignore-assertions`: on the import, and on nothing else
+    // -----------------------------------------------------------------------
+
+    /// The import — preview AND write — disables assertion checking, and the
+    /// flag precedes the subcommand because it is a general option.
+    ///
+    /// The behavioural half of this is
+    /// `import_endpoints.rs::an_import_into_a_year_file_succeeds_despite_its_start_of_year_assertion`,
+    /// which needs a real hledger. This is the argument-level half, and it is
+    /// what a reader tempted to delete the flag will trip over first.
+    #[test]
+    fn the_import_ignores_assertions_and_the_flag_precedes_the_subcommand() {
+        let hledger = Hledger::for_tests(Path::new("/nonexistent/hledger"));
+        for dry_run in [true, false] {
+            let argv = argv_of(&import_invocation(
+                &hledger,
+                Path::new("/j/2026/2026.journal"),
+                Path::new("/j/b.csv.rules"),
+                Path::new("/j/b.csv"),
+                &[],
+                dry_run,
+            ));
+            let flag = argv
+                .iter()
+                .position(|arg| arg == IGNORE_ASSERTIONS)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{argv:?} must carry {IGNORE_ASSERTIONS}: a target file's own assertions \
+                         cannot be evaluated when it is read alone. See `import_invocation`."
+                    )
+                });
+            let import = argv.iter().position(|arg| arg == "import").expect("import");
+            assert!(flag < import, "{argv:?}: it is a general option");
+        }
+    }
+
+    /// **Nothing that reads a journal for a balance disables assertions.**
+    ///
+    /// The complement of the test above, and the one that keeps the flag from
+    /// spreading. `verify_balance` and `check_assertion` read the ROOT, where an
+    /// assertion is in the context it was written for and is therefore
+    /// meaningful — a failure there is real information, and silencing it would
+    /// turn "this journal does not hold together" into a confident number.
+    #[test]
+    fn no_balance_invocation_ignores_assertions() {
+        let hledger = Hledger::for_tests(Path::new("/nonexistent/hledger"));
+        let built = [
+            // `verify_balance`
+            hledger
+                .invoke(["-f", "-", "balance"])
+                .arg("assets:bank")
+                .args(["--no-total", "--flat", "-O", "csv"]),
+            // `check_assertion`
+            hledger.invoke(["-f", "-", "check"]),
+            // `print_json` — reads the CSV, never a journal.
+            hledger
+                .invoke(Vec::<&str>::new())
+                .args(["print", "-f", "/j/b.csv", "--rules", "/j/b.csv.rules"])
+                .args(["-O", "json"]),
+        ];
+        for invocation in &built {
+            let argv = argv_of(invocation);
+            assert!(
+                !argv
+                    .iter()
+                    .any(|arg| arg == IGNORE_ASSERTIONS || arg == "-I"),
+                "{argv:?} must NOT disable assertions"
+            );
+        }
     }
 }

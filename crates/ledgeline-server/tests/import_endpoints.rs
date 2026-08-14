@@ -164,6 +164,29 @@ impl Tree {
         tree
     }
 
+    /// The `fixtures/import/layouts/split-year-assert/` tree, copied so it can
+    /// be written to, with the checking rules file beside it.
+    ///
+    /// The one layout in the corpus whose target file does **not** pass
+    /// `hledger check` on its own — see that tree's README. Everything in
+    /// § Split layouts below runs against this.
+    fn split_year_assert() -> Self {
+        let dir = TempDir::new().expect("temp dir");
+        copy_tree(
+            &fixtures_dir().join("import/layouts/split-year-assert"),
+            dir.path(),
+        );
+        std::fs::create_dir(dir.path().join("import")).expect("import dir");
+        std::fs::copy(
+            fixtures_dir().join("import/match/checking.csv.rules"),
+            dir.path().join("import/bank.csv.rules"),
+        )
+        .expect("copy the rules fixture");
+        let state = AppState::from_journal_path(dir.path().join("main.journal"))
+            .expect("the scratch journal opens");
+        Self { dir, state }
+    }
+
     fn path(&self, relative: &str) -> PathBuf {
         self.dir.path().join(relative)
     }
@@ -178,6 +201,24 @@ impl Tree {
         let mut files = BTreeMap::new();
         walk(self.dir.path(), self.dir.path(), &mut files);
         files
+    }
+}
+
+/// Copy a committed fixture tree into a scratch directory, subdirectories and
+/// all. The fixtures are read-only corpus; a test that writes needs its own.
+fn copy_tree(from: &Path, to: &Path) {
+    for entry in std::fs::read_dir(from)
+        .expect("fixture tree readable")
+        .flatten()
+    {
+        let source = entry.path();
+        let destination = to.join(entry.file_name());
+        if source.is_dir() {
+            std::fs::create_dir_all(&destination).expect("create scratch subdir");
+            copy_tree(&source, &destination);
+        } else {
+            std::fs::copy(&source, &destination).expect("copy fixture file");
+        }
     }
 }
 
@@ -1545,6 +1586,316 @@ fn assert_checks(tree: &Tree, what: &str) {
         "{what} must pass `hledger check`; hledger said:\n{}",
         output.stderr_lossy()
     );
+}
+
+// ===========================================================================
+// Split layouts — the file we WRITE is not the file we RECKON AGAINST
+// ===========================================================================
+//
+// `fixtures/import/layouts/split-year-assert/` is `main.journal` including
+// `2025/2025.journal` and then `2026/2026.journal`, where the 2026 file opens
+// with a start-of-year assertion carrying 2025's closing balance. The tree
+// passes `hledger check`; the 2026 file, read alone, cannot — the balance it
+// asserts accumulates through a file hledger was never asked to open.
+//
+// Two bugs lived there, and the second is the worse one:
+//
+//  1. `hledger import -f 2026/2026.journal` aborted on that assertion, so the
+//     import failed outright on a correct journal.
+//  2. the balance verification reckoned against the TARGET, so it answered with
+//     the fragment's balance and told a user whose statement was right that it
+//     was wrong — a silent wrong answer, and one that also refused a correct
+//     statement balance through the assertion pre-flight.
+
+/// The checking balance of the committed tree, through the root.
+/// `$1,000.00 - $100.00 - $5.00`.
+const TREE_BALANCE: &str = "$895.00";
+
+/// The same account in `2026/2026.journal` read **alone**: the start-of-year
+/// assertion contributes `$0` and the coffee `$-5.00`. This is the number the
+/// engine used to report, and every assertion below that names it is checking
+/// that it does not any more.
+const FRAGMENT_BALANCE: &str = "$-5.00";
+
+/// [`TREE_BALANCE`] plus the statement (`+$3000.00 -$6.45 -$1850.00`).
+const TREE_AFTER_IMPORT: &str = "$2038.55";
+
+/// [`FRAGMENT_BALANCE`] plus the same statement — the wrong answer, spelled out
+/// so a test can assert we did not produce it. Equality with THIS is the bug.
+const FRAGMENT_AFTER_IMPORT: &str = "$1138.55";
+
+/// The same statement reckoned against `2025/2025.journal` alone: `$900.00`
+/// closing plus `$1143.55`.
+///
+/// This is the **silent** form of the same bug and the reason it is worse than
+/// the aborted import. The 2025 fragment holds no assertion, so reading it alone
+/// exits zero and answers a plausible number that is $5.00 off — nothing
+/// anywhere says a file was missing. The 2026 fragment at least fails loudly.
+const PRIOR_YEAR_AFTER_IMPORT: &str = "$2043.55";
+
+/// The two figures above are hledger's, not ours.
+///
+/// Pinning literals in the tests below is what makes them readable, and this is
+/// what keeps the literals honest: it asks hledger for the same two balances by
+/// the same two spellings the engine could use, and fails if either constant has
+/// drifted. Without it a fixture edit could quietly make the right number and
+/// the wrong number equal, and every assertion downstream would still pass while
+/// proving nothing.
+#[test]
+fn the_two_balances_this_layout_produces_really_do_differ() {
+    require_hledger!();
+    let tree = Tree::split_year_assert();
+    let hledger = resolve_hledger();
+    let balance = |journal: PathBuf| {
+        let output = hledger
+            .invoke(["-f".as_ref(), journal.as_os_str()])
+            .args(["balance", "assets:bank:checking", "--no-total", "--flat"])
+            .args(["-O", "csv"])
+            .run()
+            .expect("hledger runs");
+        assert!(output.success(), "hledger said:\n{}", output.stderr_lossy());
+        balance_of(&output.stdout_lossy())
+    };
+
+    assert_eq!(
+        balance(tree.path("main.journal")).as_deref(),
+        Some(TREE_BALANCE)
+    );
+    // The fragment needs -I to be readable at all, which is the first bug in one
+    // line: without it hledger refuses to compute anything for this file.
+    let fragment = hledger
+        .invoke([
+            "-I".as_ref(),
+            "-f".as_ref(),
+            tree.path("2026/2026.journal").as_os_str(),
+        ])
+        .args(["balance", "assets:bank:checking", "--no-total", "--flat"])
+        .args(["-O", "csv"])
+        .run()
+        .expect("hledger runs");
+    assert_eq!(
+        balance_of(&fragment.stdout_lossy()).as_deref(),
+        Some(FRAGMENT_BALANCE)
+    );
+    assert_ne!(
+        TREE_BALANCE, FRAGMENT_BALANCE,
+        "if these are ever equal the fixture has stopped proving anything"
+    );
+
+    // And the silent pair: the prior-year fragment reads cleanly on its own and
+    // answers a different, entirely plausible number. Exit zero both ways.
+    assert_eq!(
+        balance(tree.path("2025/2025.journal")).as_deref(),
+        Some("$900.00"),
+        "the 2025 fragment needs no -I and reports a well-formed balance — which \
+         is exactly what makes reckoning against it dangerous"
+    );
+}
+
+/// **Bug 1: the import must not abort on the target's own start-of-year
+/// assertion.**
+///
+/// `hledger import -f 2026/2026.journal …` reads only that file, so the
+/// assertion is evaluated with 2025 out of scope and fails. The tree is fine;
+/// only the fragment is not, and `import_invocation` passes
+/// `--ignore-assertions` for exactly that reason.
+#[tokio::test]
+async fn an_import_into_a_year_file_succeeds_despite_its_start_of_year_assertion() {
+    require_hledger!();
+    let tree = Tree::split_year_assert();
+    assert_checks(&tree, "the committed fixture tree");
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["journalId"] = json!("2026/2026.journal");
+
+    let (status, response) = post(&tree, "/api/import/dry-run", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(
+        response["ok"],
+        json!(true),
+        "the dry-run must not fail on an assertion the ROOT satisfies: {response}"
+    );
+    assert_eq!(response["count"], json!(3), "{response}");
+    assert!(
+        as_text(&response["entries"]).contains("ACME PAYROLL"),
+        "{response}"
+    );
+}
+
+/// **Bug 2: the reconciliation reports the TREE's balance, not the fragment's.**
+///
+/// Both numbers are pinned, in both directions: the tree's figure must be
+/// reported *and* must be accepted as a match, and the fragment's figure must be
+/// reported as a mismatch. Asserting only the first would pass if the two ever
+/// coincided; asserting only the second would pass if we reported neither.
+#[tokio::test]
+async fn a_split_layout_reconciles_against_the_root_and_not_the_target() {
+    require_hledger!();
+    let tree = Tree::split_year_assert();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["journalId"] = json!("2026/2026.journal");
+    body["balance"] = json!(TREE_AFTER_IMPORT);
+    body["balanceAccount"] = json!("assets:bank:checking");
+
+    let (status, response) = post(&tree, "/api/import/dry-run", body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let balance = &response["balance"];
+    assert_eq!(
+        balance["computed"],
+        json!(TREE_AFTER_IMPORT),
+        "the computed balance must be the ROOT's answer: {response}"
+    );
+    assert_ne!(
+        balance["computed"],
+        json!(FRAGMENT_AFTER_IMPORT),
+        "reading the target alone is the bug; that answer is {FRAGMENT_AFTER_IMPORT}"
+    );
+    assert_eq!(balance["matches"], json!(true), "{balance}");
+    assert_eq!(balance["difference"], json!("$0.00"), "{balance}");
+
+    // And the fragment's own figure — which a user reading the old output would
+    // have been driven to type — is correctly reported as NOT matching.
+    body["balance"] = json!(FRAGMENT_AFTER_IMPORT);
+    let (_, response) = post(&tree, "/api/import/dry-run", body).await;
+    assert_eq!(response["balance"]["matches"], json!(false), "{response}");
+    assert_eq!(
+        response["balance"]["computed"],
+        json!(TREE_AFTER_IMPORT),
+        "{response}"
+    );
+}
+
+/// **The silent half of bug 2: a fragment with no assertion answers a plausible
+/// wrong number, exit zero.**
+///
+/// Importing into the prior year is an ordinary thing to do — catching up a year
+/// you fell behind on — and `2025/2025.journal` holds no balance assertion, so
+/// nothing fails and nothing is logged. Read alone it answers
+/// [`PRIOR_YEAR_AFTER_IMPORT`]; read through the root it answers
+/// [`TREE_AFTER_IMPORT`]. Both are well-formed dollar amounts and they differ by
+/// the $5.00 that lives in the other file.
+///
+/// This is the case that would never have been noticed, so it gets its own test
+/// rather than sharing one with the loud case above.
+#[tokio::test]
+async fn a_target_with_no_assertion_still_reconciles_against_the_root() {
+    require_hledger!();
+    let tree = Tree::split_year_assert();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["journalId"] = json!("2025/2025.journal");
+    body["balance"] = json!(TREE_AFTER_IMPORT);
+    body["balanceAccount"] = json!("assets:bank:checking");
+
+    let (status, response) = post(&tree, "/api/import/dry-run", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let balance = &response["balance"];
+    assert_eq!(
+        balance["computed"],
+        json!(TREE_AFTER_IMPORT),
+        "the whole tree, not the file being appended to: {response}"
+    );
+    assert_ne!(
+        balance["computed"],
+        json!(PRIOR_YEAR_AFTER_IMPORT),
+        "{PRIOR_YEAR_AFTER_IMPORT} is what the target alone computes — a number with \
+         no error beside it, which is why this bug outlived the loud one"
+    );
+    assert_eq!(balance["matches"], json!(true), "{balance}");
+}
+
+/// **A statement balance that matches the tree is written, not refused.**
+///
+/// The pre-flight put journal + proposed + assertion to `hledger check` with the
+/// *target* as the journal, so the fragment's start-of-year assertion failed
+/// first and a correct statement balance was refused with hledger's complaint
+/// about a line the user never typed. Reading the root makes the check mean what
+/// it says.
+///
+/// The last assertion is hledger's own verdict on the bytes we wrote, over the
+/// whole tree — which is the only place the question was ever answerable.
+#[tokio::test]
+async fn a_correct_statement_balance_is_accepted_in_a_split_layout() {
+    require_hledger!();
+    let tree = Tree::split_year_assert();
+    let before = tree.snapshot();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["journalId"] = json!("2026/2026.journal");
+    body["balance"] = json!(TREE_AFTER_IMPORT);
+    body["balanceAccount"] = json!("assets:bank:checking");
+    body["writeAssertion"] = json!(true);
+
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a balance that matches the tree must be accepted: {response}"
+    );
+    assert_eq!(response["journalWritten"], json!("2026/2026.journal"));
+    assert_eq!(response["imported"], json!(3), "{response}");
+    assert_eq!(response["ordering"]["inOrder"], json!(true), "{response}");
+
+    // Exactly the two files this import names, plus hledger's dedup marker.
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        vec![
+            "2026/2026.journal".to_string(),
+            "import/.latest.bank.csv".to_string(),
+            "import/bank.csv".to_string(),
+        ]
+    );
+
+    let year = std::fs::read_to_string(tree.path("2026/2026.journal")).expect("the year file");
+    assert!(
+        year.contains("assets:bank:checking          $0 = $900.00"),
+        "the start-of-year assertion must be untouched: {year}"
+    );
+    assert!(
+        year.contains(&format!("assets:bank:checking    $0 = {TREE_AFTER_IMPORT}")),
+        "the new assertion must carry the TREE's balance: {year}"
+    );
+    assert!(
+        !year.contains(FRAGMENT_AFTER_IMPORT),
+        "the fragment's balance must never be written as an assertion: {year}"
+    );
+    assert_checks(&tree, "a split tree imported into and asserted");
+}
+
+/// Reading the root puts a **second** journal's absolute path into hledger's
+/// stdin, so security layer 5 has to cover it too.
+///
+/// `concatenated` writes `include /abs/main.journal`, and hledger's diagnostics
+/// then quote whichever file in that tree it tripped over — `2025/2025.journal`,
+/// a file the request never named. A refused balance is the loudest way to make
+/// it say so, so that is what this asks for.
+#[tokio::test]
+async fn a_refusal_in_a_split_layout_names_no_absolute_path() {
+    require_hledger!();
+    let tree = Tree::split_year_assert();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["journalId"] = json!("2026/2026.journal");
+    body["balance"] = json!("$9999.99");
+    body["balanceAccount"] = json!("assets:bank:checking");
+    body["writeAssertion"] = json!(true);
+
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    let text = as_text(&response);
+    assert!(text.contains("does not match"), "{text}");
+    assert_no_absolute_path(&tree, &text, "a refused split-layout assertion");
 }
 
 /// Out-of-order dates are detected, and the offered re-sort preserves everything

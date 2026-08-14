@@ -1,0 +1,10 @@
+; The prior year. It closes at $900.00 and never says so — the number is
+; written down next door, in the file that opens with it.
+
+2025-01-02 Opening balance
+    assets:bank:checking    $1,000.00
+    equity:opening balances
+
+2025-03-14 Grocery store
+    expenses:groceries        $100.00
+    assets:bank:checking

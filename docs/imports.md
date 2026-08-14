@@ -112,6 +112,84 @@ A behavioural test would need a hostile `hledger.conf` planted above the test ru
 directory — which is this repository — and would break every other test in the run. The flag is also
 observed arriving at a real process in `tests/prefs.rs`.
 
+## Two journals: the one we write, and the one we reckon against
+
+> **The file an import is written TO is not the file its balances are computed FROM.**
+
+An import appends to one file — `2026/2026.journal`, say. A balance is a property of the whole
+tree, so it is computed from the **root**, the journal Ledgeline was opened with. In a
+single-file journal the two are the same file and nothing here matters. In every split layout
+they are not, and treating them as one produced both of the bugs below.
+
+`import_api::Plan` therefore has no field called `journal`. It has `target` (the write
+destination) and `root_journal` (what everything is reckoned against), because one field named
+for neither job is exactly how they got confused.
+
+### Why the import disables balance assertions
+
+> **`hledger import` runs with `--ignore-assertions`. Removing it does not restore safety.**
+
+`import` is the only invocation that reads the target file *alone*: one `-f`, naming a fragment.
+A balance assertion inside an included fragment is not a check we are choosing to switch off — it
+is a check that is **structurally incapable of being correct in that context**, because the
+balance it asserts accumulates through files hledger was never asked to read. Verified against
+1.52 on the layout in `fixtures/import/layouts/split-year-assert/`:
+
+```console
+$ hledger -f main.journal check                 # the tree is fine
+$ hledger -f 2026/2026.journal import --rules bank.csv.rules bank.csv
+hledger: Error: …/2026/2026.journal:13:38:
+  13 |     assets:bank:checking              $0 = $900.00
+Balance assertion failed in assets:bank:checking
+```
+
+The start-of-year assertion carrying the prior year's closing balance is the `hledger close
+--assert` shape and a very common way to keep books, so this aborted the import for a whole class
+of ordinary journals. The place that assertion is meaningful is the root, where it is still
+evaluated and still protects the user.
+
+Two things the flag does not cost, both checked against the binary:
+
+- **Assertions a rules file generates are deferred, not lost.** A `balance` field still emits
+  `assets:bank:checking  $-20.00 = $880.00` into the proposed entries, `-I` leaves that text
+  alone, and it is checked at the root from then on.
+- **Nothing that was ever checked stops being checked.** hledger does not evaluate CSV-derived
+  assertions during an import at all — importing a `balance`-field CSV asserting `$880.00` into a
+  journal holding `$100.00` exits zero. The only assertions suppressed are the target fragment's
+  own.
+
+The flag goes on **that one invocation and no other**, the same discipline `--alias` follows, and
+two unit tests hold the line in both directions: one asserts the import carries it ahead of the
+subcommand, the other asserts no balance invocation does.
+
+### Why the balance verifications read the root
+
+`verify_balance` and `check_assertion` send `include <ROOT>` plus the proposed entries down one
+pipe — never two `-f` flags (fact 3), and never the target. `include <root>` + proposed is
+precisely *what the tree will look like once this import lands*: the proposed entries are hledger's
+own dry-run stdout, which by definition is not in the target yet, and the target is reached through
+the root's own `include`, so nothing is counted twice.
+
+Reading the target instead produced two failures, and the second is the worse one:
+
+| | what the user saw |
+| --- | --- |
+| target holds an assertion | `computed: ""` and a **refused commit**, quoting hledger's complaint about a start-of-year line the user never typed |
+| target holds none | a plausible balance that is silently wrong by whatever the other files hold — `$2043.55` where the truth is `$2038.55`, `matches: false`, and no error anywhere |
+
+Both are pinned in `import_endpoints.rs` against the committed
+`fixtures/import/layouts/split-year-assert/` tree, with the right number *and* the wrong number
+asserted — equality with the wrong one is the bug, so a test that only checked the right one
+would pass whenever they coincided.
+
+Two reads deliberately stay on the target, and they are not oversights:
+
+- **The assertion's date.** It is appended to the target, so it is dated after the target's own
+  last entry; the root of a split layout holds no transactions at all and could not supply one.
+- **The post-import ordering check.** Date order is a per-file property and `sort::plan` is our
+  own pure pass over the file's text — it runs no subprocess, so it cannot fail for an assertion
+  reason.
+
 ## The one invariant everything rests on
 
 > **Item spans partition the file exactly.** `items[0].span.start == 0`, each item ends where the
@@ -434,13 +512,14 @@ cargo test -p ledgeline-server --test git_commit     # the git safety net
 cargo test -p ledgeline-server --test import_endpoints  # the /api/import/* routes
 ```
 
-Four opt-in checks shell out to a real binary and are therefore **not** part of `cargo test`,
+Five opt-in checks shell out to a real binary and are therefore **not** part of `cargo test`,
 which stays hermetic:
 
 ```sh
 LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
 LEDGELINE_HLEDGER_MATCH_CHECK=1  cargo test -p ledgeline-core --test matching
 LEDGELINE_HLEDGER_SORT_CHECK=1   cargo test -p ledgeline-core --test sort
+LEDGELINE_HLEDGER_LAYOUT_CHECK=1 cargo test -p ledgeline-core --test journals
 LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline-server --test import_endpoints
 ```
 
@@ -455,6 +534,14 @@ only bug in this feature a user would never notice.
 accepts** — the round-trip tests only prove we do not damage what we did not touch. `sort`'s
 variant proves every sorted output still passes `hledger check --strict ordereddates`, and
 `matching`'s compares our scoring against real `hledger print -O json` output.
+
+`journals`' variant is the corpus check: every root under `fixtures/import/layouts/` passes
+`hledger check --strict` as committed, and — separately — `split-year-assert/`'s target file
+*fails* on its own, for the assertion reason, while its root passes. Those two are asserted as a
+pair on purpose. "The fragment fails" alone could mean the fixture is broken; "the root passes"
+alone could mean the fragment was harmless. Together they are the premise
+`--ignore-assertions` rests on, and if hledger ever stops behaving that way this is where it
+surfaces rather than in someone's books.
 
 `git_commit` is gated differently — **skip-if-absent, not opt-in.** git is present on every
 machine that can clone this repo, and the property it protects (*an import never touches your

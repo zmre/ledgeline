@@ -81,6 +81,7 @@ hledger-checks:
     LEDGELINE_HLEDGER_CONVERT_CHECK=1 cargo test -p ledgeline-core --test convert_tabular
     LEDGELINE_HLEDGER_MATCH_CHECK=1 cargo test -p ledgeline-core --test matching
     LEDGELINE_HLEDGER_SORT_CHECK=1 cargo test -p ledgeline-core --test sort
+    LEDGELINE_HLEDGER_LAYOUT_CHECK=1 cargo test -p ledgeline-core --test journals
     LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline-server --test import_endpoints
 
 # Snapshot raw hledger-web JSON API responses into fixtures/api/vVERSION/

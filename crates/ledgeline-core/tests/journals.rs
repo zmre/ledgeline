@@ -1,7 +1,7 @@
-//! Ranking the journal files an import could be written to, over the four
+//! Ranking the journal files an import could be written to, over the
 //! `fixtures/import/layouts/` trees.
 //!
-//! The trees are the anti-assumption fixtures. Between them they use
+//! The first four are the anti-assumption fixtures. Between them they use
 //! `main.journal` and `all.journal` as roots, split by year and by month, spell
 //! months as words so that alphabetical order is *not* date order, and include a
 //! `prices.journal` whose newest date is later than any transaction in the tree.
@@ -12,6 +12,13 @@
 //! last two cases exist for exactly that: they build a tree at run time in which
 //! every name lies about what the file holds, and assert the ranking follows the
 //! transactions.
+//!
+//! The fifth tree, `split-year-assert/`, is not about ranking at all: its target
+//! file cannot be checked on its own, which is what
+//! `ledgeline-server/tests/import_endpoints.rs` is about. It appears here
+//! because the invariants below hold for every committed tree, and because the
+//! opt-in check at the bottom is what makes this corpus' central claim — every
+//! root is a journal real hledger accepts — a fact rather than a comment.
 
 mod common;
 
@@ -46,8 +53,19 @@ fn find<'a>(targets: &'a [JournalTarget], id: &str) -> &'a JournalTarget {
         .unwrap_or_else(|| panic!("{id} should be listed; got {:?}", ids(targets)))
 }
 
+/// Every committed layout tree, by its root file. One list, so a tree added to
+/// `fixtures/import/layouts/` is covered by the invariants below without anyone
+/// remembering to extend three loops.
+const LAYOUT_ROOTS: [&str; 5] = [
+    "single/main.journal",
+    "split-year/main.journal",
+    "full-fledged/all.journal",
+    "monthly/main.journal",
+    "split-year-assert/main.journal",
+];
+
 // ---------------------------------------------------------------------------
-// The four layouts
+// The layouts
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -100,6 +118,24 @@ fn the_full_fledged_layout_ranks_by_content_not_by_the_root_being_called_all() {
     assert_eq!(root.txn_count, 0, "it declares accounts and includes files");
 }
 
+/// The fifth tree, whose 2026 file opens with a start-of-year balance assertion
+/// carrying 2025's closing balance.
+///
+/// Ranking is not what it is for — that lives in
+/// `ledgeline-server/tests/import_endpoints.rs` — but the ranking is *why* it is
+/// the tree the bug was found in: the newest year ranks first, so it is the
+/// pre-selected import target, so it is the file `hledger import -f` was pointed
+/// at and aborted on. See `fixtures/import/layouts/README.md`.
+#[test]
+fn the_assertion_layout_offers_the_year_holding_the_assertion_first() {
+    let targets = layout("split-year-assert/main.journal");
+    assert_eq!(
+        ids(&targets),
+        ["2026/2026.journal", "2025/2025.journal", "main.journal"]
+    );
+    assert!(find(&targets, "2026/2026.journal").writable);
+}
+
 #[test]
 fn a_monthly_layout_ranks_by_date_where_alphabetical_order_disagrees() {
     let targets = layout("monthly/main.journal");
@@ -124,12 +160,7 @@ fn directive_only_files_rank_below_every_file_that_holds_a_transaction() {
     // The assertion the plan calls for, stated over content and not over names:
     // in every layout, no file holding zero transactions may outrank one that
     // holds any.
-    for root in [
-        "single/main.journal",
-        "split-year/main.journal",
-        "full-fledged/all.journal",
-        "monthly/main.journal",
-    ] {
+    for root in LAYOUT_ROOTS {
         let targets = layout(root);
         let first_empty = targets.iter().position(|t| t.txn_count == 0);
         let last_bearing = targets.iter().rposition(|t| t.txn_count > 0);
@@ -176,6 +207,7 @@ fn the_root_is_always_listed_however_it_ranks() {
         ("split-year/main.journal", "main.journal"),
         ("full-fledged/all.journal", "all.journal"),
         ("monthly/main.journal", "main.journal"),
+        ("split-year-assert/main.journal", "main.journal"),
     ] {
         let targets = layout(root);
         assert!(find(&targets, id).is_root);
@@ -189,12 +221,7 @@ fn the_root_is_always_listed_however_it_ranks() {
 
 #[test]
 fn every_id_is_a_relative_forward_slash_path_and_never_a_location() {
-    for root in [
-        "single/main.journal",
-        "split-year/main.journal",
-        "full-fledged/all.journal",
-        "monthly/main.journal",
-    ] {
+    for root in LAYOUT_ROOTS {
         for target in layout(root) {
             assert!(!target.id.starts_with('/'), "{}: absolute id", target.id);
             assert!(!target.id.contains('\\'), "{}: backslash in id", target.id);
@@ -331,4 +358,90 @@ fn the_root_is_whichever_file_was_opened_not_whichever_is_named_like_one() {
     let rerooted = scratch.ranked("2026.journal");
     assert_eq!(ids(&rerooted), ["2026.journal"]);
     assert!(find(&rerooted, "2026.journal").is_root);
+}
+
+// ---------------------------------------------------------------------------
+// Opt-in: are the committed trees journals real hledger accepts?
+// ---------------------------------------------------------------------------
+
+/// The environment variable that opts in to running the hledger binary.
+const OPT_IN: &str = "LEDGELINE_HLEDGER_LAYOUT_CHECK";
+
+/// **Every layout root passes `hledger check --strict` as committed.**
+///
+/// `fixtures/import/layouts/README.md` has claimed this since the trees were
+/// written and nothing enforced it, so a fixture could drift into being a
+/// journal only *our* parser accepts — which for an anti-assumption corpus is
+/// the assumption. The house rule from `fixtures/rules/README.md` applies here
+/// too: a fixture hledger rejects is a bug in the fixture.
+///
+/// Default-skipped so `cargo test` stays hermetic, and run against the committed
+/// fixtures only — never a user's file.
+///
+/// Note what is deliberately **not** checked: the individual files. In
+/// `split-year-assert/` the 2026 fragment fails on its own by design, and that
+/// failure is the whole reason `import_invocation` passes
+/// `--ignore-assertions`. The root is the unit of correctness; the fragment is
+/// not.
+#[test]
+fn every_layout_root_is_a_journal_hledger_accepts() {
+    if std::env::var_os(OPT_IN).is_none() {
+        eprintln!("skipped; set {OPT_IN}=1 to run it");
+        return;
+    }
+    for root in LAYOUT_ROOTS {
+        let path = common::fixtures_dir().join("import/layouts").join(root);
+        let output = std::process::Command::new("hledger")
+            .args(["--no-conf".as_ref(), "-f".as_ref(), path.as_os_str()])
+            .args(["check", "--strict"])
+            .output()
+            .expect("hledger runs");
+        assert!(
+            output.status.success(),
+            "{root}:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// The fragment `split-year-assert/2026/2026.journal` **fails on its own**, and
+/// the root it belongs to passes.
+///
+/// Pinned as a pair, because either half alone proves nothing: "the fragment
+/// fails" could mean the fixture is broken, and "the root passes" could mean the
+/// fragment was harmless. Together they are the claim the import path rests on —
+/// that a correct journal can contain a file which is not itself checkable — and
+/// if hledger ever changes so that the first assertion stops failing, this is
+/// where we find out, not in a user's books.
+#[test]
+fn the_assertion_fragment_cannot_be_checked_alone_but_its_root_can() {
+    if std::env::var_os(OPT_IN).is_none() {
+        eprintln!("skipped; set {OPT_IN}=1 to run it");
+        return;
+    }
+    let tree = common::fixtures_dir().join("import/layouts/split-year-assert");
+    let check = |file: &str| {
+        std::process::Command::new("hledger")
+            .args([
+                "--no-conf".as_ref(),
+                "-f".as_ref(),
+                tree.join(file).as_os_str(),
+            ])
+            .arg("check")
+            .output()
+            .expect("hledger runs")
+    };
+    assert!(check("main.journal").status.success(), "the tree is fine");
+
+    let fragment = check("2026/2026.journal");
+    assert!(
+        !fragment.status.success(),
+        "the fragment must NOT check out alone — that is the premise of \
+         `--ignore-assertions` on the import"
+    );
+    assert!(
+        String::from_utf8_lossy(&fragment.stderr).contains("Balance assertion failed"),
+        "and it must fail for the ASSERTION reason, not some other breakage: {}",
+        String::from_utf8_lossy(&fragment.stderr)
+    );
 }

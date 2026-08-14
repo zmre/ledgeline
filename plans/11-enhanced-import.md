@@ -651,6 +651,52 @@ landed on both sides. Each is a contract change, so each is recorded here.
   `Option<String>` and was always a `null`-able field in the code, which the literal above did
   not say.
 
+### Split layouts — an amendment made after WP-11 landed
+
+Per convention #9, recorded here rather than left as a surprise in the diff. No wire *field*
+changes; what changes is what one of them **means**, which is a contract change of the kind this
+section exists for. The motivating case is a real user's books:
+
+```
+main.journal        include 2025/2025.journal
+                    include 2026/2026.journal
+2026/2026.journal   opens with a start-of-year assertion carrying 2025's closing balance
+```
+
+Verified against hledger 1.52, all of it against the binary:
+
+- **`hledger import -f 2026/2026.journal` aborts on that assertion**, while
+  `hledger -f main.journal check` passes. Reading a fragment alone evaluates assertions whose
+  balances accumulate through files hledger was never asked to open, so the check is not merely
+  disabled-or-not — it is *incapable* of being right there.
+- **`import` does not evaluate CSV-derived assertions at all.** A `balance`-field rules file
+  asserting `$880.00`, imported into a journal holding `$100.00`, exits zero. So the only
+  assertions in reach of that invocation are the target fragment's own.
+- **`-I` does not alter the proposed text.** Assertions a rules file generates are still written
+  into the journal and still checked at the root; they are deferred, not lost.
+
+Four changes:
+
+- **`import_invocation` passes `--ignore-assertions`**, and is the only invocation that may. Two
+  unit tests hold both directions of that: the import carries it ahead of the subcommand, and no
+  balance invocation carries it at all.
+- **`dry-run`'s `balance.computed` is now the balance of the whole TREE**, not of the target file.
+  Same field, same type, different — and correct — meaning. On the layout above the two differ by
+  the prior year's closing balance, and the old answer was silently wrong (`$2043.55` for a truth
+  of `$2038.55`, `matches: false`, exit 200) whenever the target held no assertion of its own, and
+  an empty string plus a refused `commit` whenever it did.
+- **The assertion pre-flight reads the root too.** It used to put the *target* plus the proposal to
+  `hledger check`, so the fragment's own start-of-year assertion failed first and a correct
+  statement balance was refused, quoting hledger about a line the user never typed.
+- **`import_api::Plan` has no field named `journal`.** It has `target` (the write destination) and
+  `root_journal` (what balances are reckoned against), plus `root_dir` for the include root. One
+  field named for neither job is how the two were conflated in the first place.
+
+`fixtures/import/layouts/split-year-assert/` is the committed corpus, and it is the one tree whose
+target file deliberately does not pass `hledger check` alone. `LEDGELINE_HLEDGER_LAYOUT_CHECK`
+(new, in `just hledger-checks`) asserts that every layout root does, and that this one's fragment
+does not — as a pair, since either half alone proves nothing.
+
 ### Account aliases — a contract addition made after WP-11 landed
 
 Per convention #9, recorded here rather than left as a surprise in the diff. The motivating case
@@ -761,6 +807,7 @@ New fixtures under `fixtures/import/`:
 | `layouts/split-year/` | `main.journal` + `accounts.journal` + `prices.journal` + `2025/2025.journal` + `2026/2026.journal` |
 | `layouts/full-fledged/` | the `all.journal` → `2017.journal`/`2018.journal` convention |
 | `layouts/monthly/` | one file per month |
+| `layouts/split-year-assert/` | a root whose 2026 file opens with a start-of-year assertion — the tree passes `hledger check`, the fragment cannot. See § Split layouts |
 
 The four `layouts/` trees are the anti-assumption fixtures: `journals::targets` is asserted
 against each, and the assertion is specifically that `accounts.journal` and `prices.journal`
