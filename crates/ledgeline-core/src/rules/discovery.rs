@@ -900,8 +900,25 @@ impl Scan {
             return;
         }
 
+        // A leading dot, on a directory OR on a file. A hidden entry is one the
+        // user's own file browser does not show them, so offering `.hidden.rules`
+        // for editing is offering something they cannot see — and a dot-file in a
+        // journal directory is much more often a tool's leftover than a rules
+        // file someone wants listed. For directories this is what keeps `.git/`
+        // and `.direnv/` out. Silent, like [`SKIP_DIRS`]: a policy skip is not a
+        // problem to report.
+        //
+        // Nothing legitimate is lost at the file end. A bare `.rules` is already
+        // refused by [`is_rules_name`] — it would strip to an empty label — so
+        // this only removes names the user deliberately hid. [`Discovery::preview`]
+        // has held a dot entry to the same rule from the start; this makes the
+        // scan agree with it.
+        if name.starts_with('.') {
+            return;
+        }
+
         if kind.is_dir() {
-            if name.starts_with('.') || SKIP_DIRS.contains(&name) {
+            if SKIP_DIRS.contains(&name) {
                 return;
             }
             if depth + 1 > MAX_RULES_DEPTH {

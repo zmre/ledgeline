@@ -25,19 +25,44 @@
 //! what separates `;`-with-decimal-commas (three consistent fields) from reading
 //! the same file on `,` (two consistent fields).
 //!
-//! # Preamble: leading rows that are not the table
+//! # Margins: the rows at each end that are not the table
 //!
 //! Bank exports routinely open with an account line, a date range and a blank
-//! line before the header. Those rows have a different field count from the
-//! body, which is exactly how [`preamble_rows`] finds them — no pattern
-//! matching, no keyword list, nothing that is language-specific.
+//! line before the header, and close with a disclaimer block below the last
+//! transaction. Both are found by [`margins`] — no pattern matching, no keyword
+//! list, nothing that is language-specific — and the two ends are found by two
+//! different rules, because they are two different questions:
 //!
-//! [`preamble_rows`] is deliberately written against a sequence of *widths*
+//! - A **preamble** row is one whose width differs from the width the file
+//!   settles on. That is a heuristic: the row could in principle be a record we
+//!   are throwing away, which is why it is bounded by [`MAX_PREAMBLE_ROWS`] and
+//!   always reported.
+//! - A **trailer** row is one that could not be a record *at all* — it holds
+//!   nothing, or it is narrower than [`MIN_TABLE_FIELDS`], and a transaction
+//!   needs at least a date and an amount. That is a statement rather than a
+//!   guess, so it needs no bound; and because the test is on the row's own
+//!   extent rather than on how it compares to the header, a last row whose final
+//!   column happens to be empty is still a record and is still kept.
+//!
+//! Trimming the trailer is not a nicety. hledger aborts the **entire** read on
+//! the first record it cannot parse — one blank line at the bottom of a file
+//! costs the user every transaction above it, and the error names the row rather
+//! than the file, so it reads as a broken rules file.
+//!
+//! [`margins`] is deliberately written against a sequence of [`RowShape`]s
 //! rather than against records, because a workbook has the same problem and the
 //! answer must not drift between the two lanes: [`super::spreadsheet`] hands it
-//! how far each row of a sheet extends and gets the same rule applied to it. See
+//! how far each row of a sheet extends and gets the same rules applied to it. See
 //! that module for why a sheet's row width is a column position rather than a
 //! count of populated cells.
+//!
+//! # Blank rows, wherever they sit
+//!
+//! A row holding nothing at all is never a transaction — not at the end of a
+//! file and not in the middle of one — so [`parse`] drops them from the body too
+//! and reports how many. "Blank" here means *no populated cell*, which is a
+//! different test from "narrower than the header": `2026-01-09,CORNER MARKET,`
+//! is a real transaction whose last column is empty, and it is kept.
 //!
 //! # What this module does not do
 //!
@@ -89,14 +114,18 @@ const SNIFF_ROWS: usize = 200;
 /// ragged row, and would win outright on files that are plainly commas.
 const CANDIDATES: [char; 4] = [',', ';', '\t', '|'];
 
-/// The narrowest table [`sniff_delimiter`] and [`preamble_rows`] will believe in.
+/// The narrowest table [`sniff_delimiter`] and [`margins`] will believe in.
 ///
 /// A "table" of one column is what *every* candidate delimiter reports for a
 /// file that contains none of them, so it carries no signal, and acting on it
 /// would let a plain text file be reshaped by whichever candidate was tried
-/// first. The same threshold is what stops [`preamble_rows`] eating a genuinely
+/// first. The same threshold is what stops [`margins`] eating a genuinely
 /// one-column sheet, where *every* row is one field wide and "narrower than the
 /// body" is therefore true of nothing.
+///
+/// It is also what a **trailer** row is measured against, and there it carries a
+/// second meaning: every rules file needs at least a date and an amount, so a
+/// row that reaches one field cannot be a transaction whatever it says.
 const MIN_TABLE_FIELDS: usize = 2;
 
 /// How many leading records may be discarded as preamble.
@@ -151,13 +180,20 @@ pub fn parse(bytes: &[u8], format: SourceFormat) -> Result<Tabular, ConvertError
     };
 
     let (records, truncated) = records(&decoded.text, delimiter.character());
-    let preamble = preamble_rows(records.iter().map(Vec::len));
+    let margins = margins(&shapes(&records));
 
-    let mut body = records.into_iter().skip(preamble);
+    // `take` before `skip`, and both saturating: `margins` counts its trailer
+    // from *after* the preamble, so the two runs cannot overlap and the middle
+    // is never negative.
+    let last = records.len().saturating_sub(margins.trailer);
+    let mut body = records.into_iter().take(last).skip(margins.preamble);
     let Some(header) = body.next() else {
         return Err(ConvertError::Empty);
     };
-    let rows: Vec<Vec<String>> = body.collect();
+    // A row holding nothing at all is never a transaction, so it goes wherever
+    // it sits — but it is a row the user can see, so it is counted and reported.
+    let (blank, rows): (Vec<Vec<String>>, Vec<Vec<String>>) =
+        body.partition(|record| is_blank(record));
     let ragged = rows.iter().filter(|row| row.len() != header.len()).count();
 
     Ok(Tabular {
@@ -165,7 +201,7 @@ pub fn parse(bytes: &[u8], format: SourceFormat) -> Result<Tabular, ConvertError
         rows,
         truncated,
         statement: None,
-        notes: notes(&decoded, delimiter, preamble, ragged),
+        notes: notes(&decoded, delimiter, margins, blank.len(), ragged),
     })
 }
 
@@ -391,37 +427,112 @@ fn modal_width(widths: impl Iterator<Item = usize>) -> Option<usize> {
         .map(|(fields, _)| fields)
 }
 
-/// How many leading rows are preamble rather than table, given how wide each row
-/// is.
+/// How one row looks to [`margins`].
 ///
-/// A row is preamble exactly when its width differs from the one the file
-/// settles on, which is why this needs no keyword list, no row index and no
-/// notion of what a title looks like — and so works the same in every language.
+/// A *shape* rather than the row itself because both input lanes have this
+/// problem and their answers must not drift apart. A delimited record's width is
+/// its field count; a sheet row's is one past its last populated cell, which
+/// [`super::spreadsheet`] computes and explains. `blank` is deliberately its own
+/// field rather than `width == 0`: a record of fifteen empty fields is fifteen
+/// fields wide and holds nothing, and `,,,,,,,,,,,,,,` is exactly what a
+/// statement's trailer looks like once a spreadsheet has been saved as CSV.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RowShape {
+    pub width: usize,
+    pub blank: bool,
+}
+
+/// How many rows at each end of a region are not part of the table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct Margins {
+    /// Leading rows that are not the table. Reported as
+    /// [`ConvertNote::PreambleSkipped`].
+    pub preamble: usize,
+    /// Trailing rows that are not the table. Reported as
+    /// [`ConvertNote::TrailerSkipped`].
+    pub trailer: usize,
+}
+
+/// The rows at each end of `rows` that are not records.
 ///
-/// `widths` is a *sequence of widths* rather than the rows themselves because
-/// both input lanes have this problem and their answers must not drift apart. A
-/// delimited record's width is its field count; a sheet row's is one past its
-/// last populated cell, which [`super::spreadsheet`] computes and explains.
+/// The two ends are found by two different rules because they are two different
+/// questions; the module docs argue why. In short:
 ///
-/// Nothing is skipped when the file has no table shape to begin with
-/// ([`MIN_TABLE_FIELDS`]) or when the run of odd rows is longer than any real
-/// preamble ([`MAX_PREAMBLE_ROWS`]) — in the second case the file is not what we
-/// think it is, and saying so through [`ConvertNote::RaggedRows`] beats
-/// discarding most of it.
-pub(super) fn preamble_rows(widths: impl Iterator<Item = usize> + Clone) -> usize {
-    let modal = modal_width(widths.clone()).unwrap_or(0);
+/// - **Preamble**: a leading run of rows whose width differs from the one the
+///   file settles on. A guess, so it is bounded by [`MAX_PREAMBLE_ROWS`] — past
+///   that the file is not a statement with a header on it, and saying so through
+///   [`ConvertNote::RaggedRows`] beats discarding most of it.
+/// - **Trailer**: a trailing run of rows that could not be records at all —
+///   blank, or narrower than [`MIN_TABLE_FIELDS`]. Not a guess, so not bounded:
+///   there is no file in which a row holding nothing, or holding one field, is
+///   the transaction we should have kept.
+///
+/// Nothing is trimmed at either end when the region has no table shape to begin
+/// with ([`MIN_TABLE_FIELDS`]) — in a genuinely one-column file *every* row is
+/// one field wide, so "too narrow to be a record" is true of all of them and
+/// acting on it would eat the file.
+///
+/// **Blank rows do not vote on the modal width.** They are not records, so they
+/// have nothing to say about what a record looks like, and letting them vote is
+/// self-defeating: a file with more blank rows than transactions would elect a
+/// modal width of zero and then refuse to trim the blank rows, which is the one
+/// case where trimming them matters most.
+pub(super) fn margins(rows: &[RowShape]) -> Margins {
+    let modal = modal_width(rows.iter().filter(|row| !row.blank).map(|row| row.width)).unwrap_or(0);
     if modal < MIN_TABLE_FIELDS {
-        return 0;
+        return Margins::default();
     }
-    let leading = widths
+    let leading = rows
+        .iter()
         .take(MAX_PREAMBLE_ROWS + 1)
-        .take_while(|width| *width != modal)
+        .take_while(|row| row.width != modal)
         .count();
-    if leading > MAX_PREAMBLE_ROWS {
+    let preamble = if leading > MAX_PREAMBLE_ROWS {
         0
     } else {
         leading
-    }
+    };
+    // Counted from after the preamble so the two runs can never overlap on a
+    // file that is nothing but margins.
+    let trailer = rows
+        .get(preamble..)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .take_while(|row| !could_be_a_record(row))
+        .count();
+    Margins { preamble, trailer }
+}
+
+/// Whether a row could carry a transaction at all.
+///
+/// Deliberately **not** "as wide as the header": a row whose last column is
+/// empty reaches one short of the header and is a perfectly ordinary
+/// transaction. What disqualifies a row is holding nothing, or not reaching far
+/// enough to hold both of the two fields every rules file needs.
+fn could_be_a_record(row: &RowShape) -> bool {
+    !row.blank && row.width >= MIN_TABLE_FIELDS
+}
+
+/// Every record's shape, in order.
+fn shapes(records: &[Vec<String>]) -> Vec<RowShape> {
+    records
+        .iter()
+        .map(|record| RowShape {
+            width: record.len(),
+            blank: is_blank(record),
+        })
+        .collect()
+}
+
+/// Whether a record holds nothing at all.
+///
+/// Whitespace does not count as content, matching
+/// [`super::spreadsheet`]'s cell test: a lone space is what a spreadsheet leaves
+/// behind when someone "clears" a cell, and hledger cannot read one as a date
+/// either.
+fn is_blank(record: &[String]) -> bool {
+    record.iter().all(|field| field.trim().is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +544,8 @@ pub(super) fn preamble_rows(widths: impl Iterator<Item = usize> + Clone) -> usiz
 fn notes(
     decoded: &Decoded,
     delimiter: Delimiter,
-    preamble: usize,
+    margins: Margins,
+    blanks: usize,
     ragged: usize,
 ) -> Vec<ConvertNote> {
     let encoding = decoded
@@ -446,9 +558,15 @@ fn notes(
             delimiter: character,
         }),
     };
-    let skipped = (preamble > 0).then_some(ConvertNote::PreambleSkipped { lines: preamble });
+    let above = (margins.preamble > 0).then_some(ConvertNote::PreambleSkipped {
+        lines: margins.preamble,
+    });
+    let below = (margins.trailer > 0).then_some(ConvertNote::TrailerSkipped {
+        lines: margins.trailer,
+    });
+    let empty = (blanks > 0).then_some(ConvertNote::BlankRowsDropped { count: blanks });
     let uneven = (ragged > 0).then_some(ConvertNote::RaggedRows { count: ragged });
-    [encoding, sniffed, skipped, uneven]
+    [encoding, sniffed, above, below, empty, uneven]
         .into_iter()
         .flatten()
         .collect()
@@ -504,27 +622,95 @@ mod tests {
         assert_eq!(quote("Date\u{feff}"), "Date\u{feff}");
     }
 
+    /// A row of `width` populated fields.
+    fn wide(width: usize) -> RowShape {
+        RowShape {
+            width,
+            blank: false,
+        }
+    }
+
+    /// A row holding nothing, `width` fields across.
+    fn empty(width: usize) -> RowShape {
+        RowShape { width, blank: true }
+    }
+
     /// The body has to outnumber the odd rows for the modal width to be the
     /// table's, so it is one longer than the run in front of it in both halves.
-    fn odd_then_table(odd: usize) -> impl Iterator<Item = usize> + Clone {
-        std::iter::repeat_n(1, odd).chain(std::iter::repeat_n(2, MAX_PREAMBLE_ROWS + 2))
+    fn odd_then_table(odd: usize) -> Vec<RowShape> {
+        std::iter::repeat_n(wide(1), odd)
+            .chain(std::iter::repeat_n(wide(2), MAX_PREAMBLE_ROWS + 2))
+            .collect()
     }
 
     #[test]
     fn preamble_is_bounded() {
         assert_eq!(
-            preamble_rows(odd_then_table(MAX_PREAMBLE_ROWS)),
+            margins(&odd_then_table(MAX_PREAMBLE_ROWS)).preamble,
             MAX_PREAMBLE_ROWS
         );
         // One past the bound the file is not a statement with a header on it,
         // and reporting the rows as ragged beats discarding twenty-one of them.
-        assert_eq!(preamble_rows(odd_then_table(MAX_PREAMBLE_ROWS + 1)), 0);
+        assert_eq!(margins(&odd_then_table(MAX_PREAMBLE_ROWS + 1)).preamble, 0);
     }
 
     #[test]
-    fn a_one_field_file_has_no_preamble_to_find() {
+    fn a_one_field_file_has_no_margins_to_find() {
         // Every row is one field wide, so "narrower than the body" is true of
-        // nothing and there is no signal to act on.
-        assert_eq!(preamble_rows(std::iter::repeat_n(1, 8)), 0);
+        // nothing — and so is "too narrow to be a record", which would otherwise
+        // trim the whole file away from the bottom.
+        let one_wide: Vec<RowShape> = std::iter::repeat_n(wide(1), 8).collect();
+        assert_eq!(margins(&one_wide), Margins::default());
+    }
+
+    #[test]
+    fn a_trailer_is_trimmed_however_wide_its_blank_rows_are() {
+        // The shape a statement has once a spreadsheet has been saved as CSV:
+        // the disclaimer paragraphs are one field, and the blank rows between
+        // them are as wide as the table because they are all its commas.
+        let rows = [
+            wide(4),
+            wide(4),
+            wide(4),
+            empty(4),
+            wide(1),
+            empty(4),
+            wide(1),
+        ];
+        assert_eq!(
+            margins(&rows),
+            Margins {
+                preamble: 0,
+                trailer: 4
+            }
+        );
+    }
+
+    #[test]
+    fn a_last_row_with_an_empty_final_column_is_not_a_trailer() {
+        // `2026-01-09,CORNER MARKET,-31.18,` — a real transaction that reaches
+        // one short of the header. A rule spelled "narrower than the table"
+        // eats it; the rule is "too narrow to hold a date and an amount".
+        let rows = [wide(4), wide(4), wide(3)];
+        assert_eq!(margins(&rows), Margins::default());
+    }
+
+    #[test]
+    fn a_trailer_is_not_bounded_the_way_a_preamble_is() {
+        // Unlike a preamble, a trailing run of unusable rows is not a heuristic
+        // that might be discarding records — so a long one is trimmed rather
+        // than abandoned.
+        let rows: Vec<RowShape> = std::iter::repeat_n(wide(3), 3)
+            .chain(std::iter::repeat_n(empty(0), MAX_PREAMBLE_ROWS * 5))
+            .collect();
+        assert_eq!(margins(&rows).trailer, MAX_PREAMBLE_ROWS * 5);
+    }
+
+    #[test]
+    fn a_blank_record_is_blank_however_it_is_spelled() {
+        assert!(is_blank(&[]));
+        assert!(is_blank(&[String::new(), String::new()]));
+        assert!(is_blank(&[" ".to_string(), "\t".to_string()]));
+        assert!(!is_blank(&[String::new(), "0".to_string()]));
     }
 }

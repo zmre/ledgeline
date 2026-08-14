@@ -68,11 +68,11 @@
 //! and the whole statement as its body.
 //!
 //! The delimited lane already solved this by row consistency, and this module
-//! calls the same code — [`super::delimited::preamble_rows`] — rather than
-//! growing a second rule that could answer differently. Nothing here looks at
-//! what a cell *says*: no string matching, no row index, no "a title is a row
-//! with one cell in it". That last one is the tempting wrong answer, and it
-//! turns a genuine one-column sheet into a preamble with nothing after it.
+//! calls the same code — [`super::delimited::margins`] — rather than growing a
+//! second rule that could answer differently. Nothing here looks at what a cell
+//! *says*: no string matching, no row index, no "a title is a row with one cell
+//! in it". That last one is the tempting wrong answer, and it turns a genuine
+//! one-column sheet into a preamble with nothing after it.
 //!
 //! What is handed to that rule is [`row_width`] — **one past the row's last
 //! populated cell**, not a count of the populated ones. The distinction is the
@@ -84,8 +84,24 @@
 //! and the titles end at column one, which is exactly the split we want — and it
 //! is also the honest analogue of a delimited record's field count, since
 //! `a,b,,,` is five fields and not two.
+//!
+//! # The trailer: the disclaimer under the transactions
+//!
+//! The same export closes with twenty-six rows below the last transaction —
+//! fourteen entirely blank, twelve holding one paragraph of legal text in column
+//! one. Those are not a cosmetic problem. Rendered to CSV they become records
+//! hledger cannot read, and hledger abandons the **whole file** on the first
+//! one, so a user whose rules file is perfectly correct is told their data will
+//! not parse. [`super::delimited::margins`] finds them by the same row-width
+//! rule, from the other end: the transaction rows reach column fifteen and every
+//! one of the trailer rows reaches column one or column zero.
+//!
+//! Blank rows are dropped from the *middle* of the table too, for the same
+//! reason and with the same guarantee that a real row cannot be caught by it: a
+//! transaction has a date in it, and a row with no populated cell at all has
+//! nothing.
 
-use super::delimited::{MAX_ROWS, preamble_rows};
+use super::delimited::{MAX_ROWS, Margins, RowShape, margins};
 use super::{ConvertError, ConvertNote, MAX_INPUT_BYTES, SourceFormat, Tabular};
 use calamine::{Data, ExcelDateTime, Ods, Range, Reader, Xls, Xlsb, Xlsx, open_workbook_from_rs};
 use std::io::{Cursor, Read, Seek};
@@ -207,7 +223,7 @@ where
         rows: rows.collect(),
         truncated,
         statement: None,
-        notes: notes(&name, names.len(), candidates, table.preamble, serial_dates),
+        notes: notes(&name, names.len(), candidates, &table.dropped, serial_dates),
     })
 }
 
@@ -222,40 +238,62 @@ fn malformed(format: SourceFormat) -> ConvertError {
 /// Everything the conversion decided, in a fixed order so two runs over the same
 /// bytes produce the same list.
 ///
-/// `preamble` counts rows of the sheet's *data region* — the rectangle left once
-/// the blank edges are gone — so it is the same quantity the delimited lane
-/// reports: rows that were there, that we dropped, and that the user would
-/// otherwise wonder about. Blank leading rows are not in it, because trimming
-/// those is not a judgement call and never was.
+/// The counts in `dropped` are rows of the sheet's *data region* — the rectangle
+/// left once the blank edges are gone — so they are the same quantities the
+/// delimited lane reports: rows that were there, that we dropped, and that the
+/// user would otherwise wonder about. Blank rows at the very top and the very
+/// bottom of the *sheet* are not in them, because trimming those is not a
+/// judgement call and never was; they are outside the region entirely.
 fn notes(
     name: &str,
     sheets: usize,
     candidates: usize,
-    preamble: usize,
+    dropped: &Dropped,
     serial_dates: usize,
 ) -> Vec<ConvertNote> {
     let chosen = (candidates > 1).then(|| ConvertNote::SheetChosen {
         name: name.to_string(),
         of: sheets,
     });
-    let skipped = (preamble > 0).then_some(ConvertNote::PreambleSkipped { lines: preamble });
+    let above = (dropped.margins.preamble > 0).then_some(ConvertNote::PreambleSkipped {
+        lines: dropped.margins.preamble,
+    });
+    let below = (dropped.margins.trailer > 0).then_some(ConvertNote::TrailerSkipped {
+        lines: dropped.margins.trailer,
+    });
+    let empty = (dropped.blanks > 0).then_some(ConvertNote::BlankRowsDropped {
+        count: dropped.blanks,
+    });
     let dates = (serial_dates > 0).then_some(ConvertNote::DatesFromSerial {
         count: serial_dates,
     });
-    [chosen, skipped, dates].into_iter().flatten().collect()
+    [chosen, above, below, empty, dates]
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
 // Finding the table on a sheet
 // ---------------------------------------------------------------------------
 
-/// The rectangle of real data on one sheet, and how many rows had to be dropped
-/// off the top of it to get there.
+/// The rectangle of real data on one sheet, and what had to be dropped to get
+/// there.
 struct Table {
     rows: Vec<Vec<Data>>,
-    /// Rows of the data region that were preamble rather than table. Reported as
-    /// [`ConvertNote::PreambleSkipped`].
-    preamble: usize,
+    dropped: Dropped,
+}
+
+/// Rows of the data region that were not part of the table. Every one of these
+/// is a row the user can see in their spreadsheet, so every one of them is
+/// reported.
+struct Dropped {
+    /// Found by [`margins`]: title rows above the header, disclaimer rows below
+    /// the last transaction.
+    margins: Margins,
+    /// Rows inside the table holding nothing at all. Reported as
+    /// [`ConvertNote::BlankRowsDropped`].
+    blanks: usize,
 }
 
 /// The rectangle of real data on one sheet, or `None` if there is not enough of
@@ -270,33 +308,48 @@ struct Table {
 ///    and every surviving row is padded to the full width, which is what turns a
 ///    merged range's trail of `Empty` cells into ordinary empty fields. This is
 ///    not a judgement call and is not reported.
-/// 2. What is left can still open with a **populated** preamble: a floating
-///    title, a date range, an account line. Those are found by row consistency
-///    ([`preamble_rows`]) and *are* reported, because dropping a row the user can
-///    see is a judgement call.
+/// 2. What is left can still open with a **populated** preamble — a floating
+///    title, a date range, an account line — and close with a populated
+///    **trailer**, which on a real export is a disclaimer block twenty-six rows
+///    deep. Both are found by row consistency ([`margins`]) and both *are*
+///    reported, because dropping a row the user can see is a judgement call.
+/// 3. Whatever survives can still have blank rows scattered through it, which
+///    are dropped and counted. They are not a judgement call about *what* the
+///    row is — a row with no populated cell holds nothing — but they are still
+///    rows the user can see, so they are still reported.
 ///
-/// The order matters and is the one thing here worth stating twice. The preamble
-/// is found before the columns are trimmed, so a title sitting in column A of a
-/// sheet whose table starts at column C cannot drag column A into the table; and
-/// it is found after the blank rows are trimmed, so those never count against
-/// [`MAX_PREAMBLE_ROWS`] and never get reported as something we skipped. Row
-/// widths are unaffected by the column trim either way — it subtracts the same
-/// offset from every row — so nothing is lost by doing it in this order.
+/// The order matters and is the one thing here worth stating twice. The margins
+/// are found before the columns are trimmed, so a title in column A of a sheet
+/// whose table starts at column C cannot drag column A into the table — and
+/// neither can a disclaimer paragraph under it, which is the same trap from the
+/// other end. They are found after the blank edges are trimmed, so those never
+/// count against [`MAX_PREAMBLE_ROWS`] and never get reported as something we
+/// skipped. Row widths are unaffected by the column trim either way — it
+/// subtracts the same offset from every row — so nothing is lost by this order.
 fn table_of(range: &Range<Data>) -> Option<Table> {
     let rows: Vec<&[Data]> = range.rows().collect();
     let (first_row, last_row) = extent(rows.iter().map(|row| row.iter().any(is_populated)))?;
     let region = rows.get(first_row..=last_row)?;
 
-    let preamble = preamble_rows(region.iter().copied().map(row_width));
-    let body = region.get(preamble..)?;
+    let shapes: Vec<RowShape> = region.iter().copied().map(shape_of).collect();
+    let margins = margins(&shapes);
+    // `margins` counts its trailer from after the preamble, so this range is
+    // always well-ordered; `get` states that rather than trusting it.
+    let body = region.get(margins.preamble..region.len().checked_sub(margins.trailer)?)?;
 
-    let width = body.iter().map(|row| row.len()).max().unwrap_or(0);
+    // The header cannot be caught by this. It is the first row whose width is
+    // the modal one, and the modal width is at least `MIN_TABLE_FIELDS`, so it
+    // has a populated cell in it.
+    let (blank, kept): (Vec<&[Data]>, Vec<&[Data]>) =
+        body.iter().copied().partition(|row| row_width(row) == 0);
+
+    let width = kept.iter().map(|row| row.len()).max().unwrap_or(0);
     let (first_column, last_column) = extent((0..width).map(|column| {
-        body.iter()
+        kept.iter()
             .any(|row| row.get(column).is_some_and(is_populated))
     }))?;
 
-    let table: Vec<Vec<Data>> = body
+    let table: Vec<Vec<Data>> = kept
         .iter()
         .map(|row| {
             (first_column..=last_column)
@@ -308,8 +361,24 @@ fn table_of(range: &Range<Data>) -> Option<Table> {
     let columns = last_column.checked_sub(first_column)? + 1;
     (table.len() >= MIN_TABLE_ROWS && columns >= MIN_TABLE_COLUMNS).then_some(Table {
         rows: table,
-        preamble,
+        dropped: Dropped {
+            margins,
+            blanks: blank.len(),
+        },
     })
+}
+
+/// How one sheet row looks to [`margins`].
+///
+/// A sheet row is blank exactly when it has no populated cell, which is exactly
+/// when its extent is zero — so unlike a delimited record, where
+/// `,,,,,,,,,,,,,,` is fifteen fields of nothing, the two facts coincide here.
+fn shape_of(row: &[Data]) -> RowShape {
+    let width = row_width(row);
+    RowShape {
+        width,
+        blank: width == 0,
+    }
 }
 
 /// How far a row extends: one past its last populated cell, and zero for a row
@@ -489,8 +558,13 @@ mod tests {
             .collect()
     }
 
+    fn margins_of(rows: &[Vec<Data>]) -> Margins {
+        let shapes: Vec<RowShape> = rows.iter().map(Vec::as_slice).map(shape_of).collect();
+        margins(&shapes)
+    }
+
     fn preamble_of(rows: &[Vec<Data>]) -> usize {
-        preamble_rows(rows.iter().map(Vec::as_slice).map(row_width))
+        margins_of(rows).preamble
     }
 
     #[test]
@@ -549,6 +623,43 @@ mod tests {
             "2026-01-07 | -20.00",
         ]);
         assert_eq!(preamble_of(&rows), 0);
+    }
+
+    #[test]
+    fn a_disclaimer_block_under_the_transactions_is_trailer() {
+        // The real export's other end: blank rows and one-cell paragraphs, all
+        // of them below the last transaction. Scored by extent the body reaches
+        // column four and every one of these reaches column one or zero.
+        let rows = sheet(&[
+            "Date | Description | Memo | Amount",
+            "2026-01-05 | GROCERY STORE | . | -54.20",
+            "2026-01-06 | ATM WITHDRAWAL | . | -100.00",
+            ". | . | . | .",
+            ". | . | . | .",
+            "Balances shown are as of the statement date. | . | . | .",
+            ". | . | . | .",
+            "Big Brokerage is a member SIPC. | . | . | .",
+        ]);
+        assert_eq!(
+            margins_of(&rows),
+            Margins {
+                preamble: 0,
+                trailer: 5
+            }
+        );
+    }
+
+    #[test]
+    fn a_last_transaction_with_an_empty_final_column_survives() {
+        // The row reaches column three of four because `Amount` is blank on it.
+        // A rule spelled "narrower than the header" trims it and the user
+        // silently loses a transaction; the rule is "too narrow to be one".
+        let rows = sheet(&[
+            "Date | Description | Memo | Amount",
+            "2026-01-05 | GROCERY STORE | . | -54.20",
+            "2026-01-06 | PENDING CHARGE | seen | .",
+        ]);
+        assert_eq!(margins_of(&rows), Margins::default());
     }
 
     #[test]

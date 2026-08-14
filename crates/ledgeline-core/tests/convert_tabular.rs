@@ -179,6 +179,70 @@ fn ragged_rows_are_kept_and_counted() {
     );
 }
 
+#[test]
+fn a_trailer_is_dropped_and_reported() {
+    let table = parse_delimited("delimited/trailer.csv", SourceFormat::Csv);
+
+    assert_eq!(header(&table), ["Date", "Description", "Amount", "Balance"]);
+    assert_eq!(table.rows.len(), 4);
+    assert!(
+        table
+            .notes
+            .contains(&ConvertNote::TrailerSkipped { lines: 4 }),
+        "{:?}",
+        table.notes
+    );
+    // The delimited half of the trailer is the case a width rule alone misses:
+    // saved out of a spreadsheet, a blank row is `,,,` — as many fields as the
+    // table and not one of them populated.
+    assert!(
+        !rows(&table)
+            .iter()
+            .any(|row| row.iter().all(|cell| cell.trim().is_empty())),
+        "a row of empty commas is not a transaction: {:?}",
+        rows(&table)
+    );
+    // Nothing was left over to report as ragged, because nothing short was kept.
+    assert!(
+        !table
+            .notes
+            .iter()
+            .any(|note| matches!(note, ConvertNote::RaggedRows { .. })),
+        "{:?}",
+        table.notes
+    );
+}
+
+#[test]
+fn a_blank_row_between_the_transactions_is_dropped_and_reported() {
+    let table = parse_delimited("delimited/trailer.csv", SourceFormat::Csv);
+
+    // hledger abandons the whole read on the first record it cannot parse, so a
+    // blank row in the middle costs every transaction after it just as surely as
+    // one at the end costs every transaction before it.
+    assert!(
+        table
+            .notes
+            .contains(&ConvertNote::BlankRowsDropped { count: 1 }),
+        "{:?}",
+        table.notes
+    );
+    assert_eq!(rows(&table)[2][1], "EMPLOYER PAYROLL");
+}
+
+#[test]
+fn a_last_record_with_an_empty_final_field_is_not_trimmed() {
+    // The negative case. `2026-01-09,CORNER MARKET,-31.18,` is four fields, one
+    // of which is empty — a transaction whose running balance the bank did not
+    // print. It is the row the trailer trim has to stop at.
+    let table = parse_delimited("delimited/trailer.csv", SourceFormat::Csv);
+
+    assert_eq!(
+        rows(&table)[3],
+        ["2026-01-09", "CORNER MARKET", "-31.18", ""]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Delimited: encoding
 // ---------------------------------------------------------------------------
@@ -484,6 +548,52 @@ fn a_workbook_preamble_is_skipped_and_reported() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Spreadsheets: the trailer
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_workbook_trailer_is_dropped_and_reported() {
+    let table = parse_spreadsheet("spreadsheet/trailer.xlsx", SourceFormat::Xlsx);
+    let plain = parse_spreadsheet("spreadsheet/simple.xlsx", SourceFormat::Xlsx);
+
+    assert_eq!(header(&table), ["Date", "Description", "Amount", "Balance"]);
+    // The same four transactions as `simple.xlsx`, with the last one's Balance
+    // cleared — the row the trim has to stop at.
+    assert_eq!(table.rows.len(), 4);
+    assert_eq!(table.rows[..3], plain.rows[..3]);
+
+    assert!(
+        table
+            .notes
+            .contains(&ConvertNote::TrailerSkipped { lines: 4 }),
+        "two blank rows and two disclaimer paragraphs: {:?}",
+        table.notes
+    );
+    assert!(
+        table
+            .notes
+            .contains(&ConvertNote::BlankRowsDropped { count: 1 }),
+        "the blank row between the transactions is owed a note too: {:?}",
+        table.notes
+    );
+}
+
+#[test]
+fn a_workbook_last_row_with_an_empty_final_column_is_not_trimmed() {
+    // The negative case, and the reason the rule is "too narrow to hold a date
+    // and an amount" rather than "narrower than the header". This row reaches
+    // column three of four, exactly like the disclaimer rows reach column one —
+    // and it is a transaction.
+    let table = parse_spreadsheet("spreadsheet/trailer.xlsx", SourceFormat::Xlsx);
+    let plain = parse_spreadsheet("spreadsheet/simple.xlsx", SourceFormat::Xlsx);
+
+    let last = table.rows.last().expect("the table has rows");
+    let expected = plain.rows.last().expect("the table has rows");
+    assert_eq!(last[..3], expected[..3], "the transaction itself is intact");
+    assert_eq!(last[3], "", "its Balance is what was blank");
+}
+
 #[test]
 fn a_single_column_sheet_is_refused_rather_than_reshaped() {
     // A title over a one-column list of balances. Every row holds exactly one
@@ -501,10 +611,10 @@ fn a_single_column_sheet_is_refused_rather_than_reshaped() {
 
 /// The column labels a real brokerage "All Activity" export puts on row 7.
 ///
-/// Everything this test and the next one assert is a fact about the file's
-/// *shape* — these labels, the column count, the presence of a note, roughly how
-/// many rows survive. Nothing is asserted about a payee, an amount or an account,
-/// so re-scrubbing the fixture for privacy cannot invalidate any of it.
+/// Everything these tests assert is a fact about the file's *shape* — these
+/// labels, the column count, the presence of a note, how many rows survive.
+/// Nothing is asserted about a payee, an amount or an account, so re-scrubbing
+/// the fixture for privacy cannot invalidate any of it.
 const ACTIVITY_LABELS: [&str; 15] = [
     "Activity Date",
     "Transaction Date",
@@ -546,16 +656,10 @@ fn a_real_brokerage_export_finds_the_header_under_its_title_block() {
             .all(|row| row.len() == ACTIVITY_LABELS.len()),
         "a sheet is a rectangle; every row is as wide as the header"
     );
-    // Roughly right rather than exact: the sheet carries a long disclaimer block
-    // under the transactions, which is trailer rather than preamble and is left
-    // where it is. A count anywhere near this proves the preamble skip took the
-    // title rows and nothing else — losing the body would show up as single
-    // digits, and skipping nothing would show up as one row more.
-    assert!(
-        (20..=80).contains(&table.rows.len()),
-        "unexpected row count: {}",
-        table.rows.len()
-    );
+    // Exact, because the disclaimer block below the transactions is now trimmed
+    // as well. 34 is every transaction row and nothing else; leaving the trailer
+    // in gives 60, and losing the body would show up as single digits.
+    assert_eq!(table.rows.len(), REAL_BROKERAGE_TXNS);
 
     let skipped = table
         .notes
@@ -566,6 +670,78 @@ fn a_real_brokerage_export_finds_the_header_under_its_title_block() {
         })
         .unwrap_or_else(|| panic!("the skipped title rows are owed a note: {:?}", table.notes));
     assert!(skipped > 0);
+}
+
+/// How many transaction rows the real export holds. A property of the file, not
+/// of any row in it, so re-scrubbing cannot change it without the scrubber
+/// deliberately adding or removing a transaction.
+const REAL_BROKERAGE_TXNS: usize = 34;
+
+/// How many rows sit below the last transaction: fourteen entirely blank and
+/// twelve holding one paragraph of legal text in column one.
+const REAL_BROKERAGE_TRAILER: usize = 26;
+
+#[test]
+fn a_real_brokerage_export_drops_the_disclaimer_block_under_its_transactions() {
+    // The bug this fixture caught. `hledger` abandons the whole read on the
+    // first record it cannot parse, so the blank row immediately after the last
+    // transaction cost the user all 34 of them:
+    //
+    //     could not parse "" as a date using date format "%m/%d/%Y"
+    //     record: ,,,,,,,,,,,,,,
+    //
+    // and the candidate scorer, seeing a hard failure, ranked their perfectly
+    // good rules file at zero.
+    let table = parse_spreadsheet(
+        "spreadsheet/real-brokerage-preamble.xlsx",
+        SourceFormat::Xlsx,
+    );
+
+    assert_eq!(table.rows.len(), REAL_BROKERAGE_TXNS);
+    assert!(
+        table.notes.contains(&ConvertNote::TrailerSkipped {
+            lines: REAL_BROKERAGE_TRAILER
+        }),
+        "ignoring the last {REAL_BROKERAGE_TRAILER} rows of someone's file is owed a note: {:?}",
+        table.notes
+    );
+
+    // Structural, so a re-scrub cannot invalidate it. Every surviving row is a
+    // full-width record, and not one of them opens with prose — a disclaimer
+    // paragraph left in the table would be a single populated cell in column
+    // one, padded out to fifteen.
+    assert!(
+        table
+            .rows
+            .iter()
+            .all(|row| row.len() == ACTIVITY_LABELS.len()),
+        "a sheet is a rectangle; every row is as wide as the header"
+    );
+    for row in &table.rows {
+        let populated = row.iter().filter(|cell| !cell.trim().is_empty()).count();
+        assert!(
+            populated > 1,
+            "a row with one populated cell is a paragraph, not a transaction: {row:?}"
+        );
+        assert!(
+            !row.is_empty() && !row[0].trim().is_empty(),
+            "every record's first column is populated: {row:?}"
+        );
+        // A date is short. Prose is not, and it is what the trailer is made of.
+        assert!(
+            row[0].trim().chars().count() <= 32,
+            "the first cell of a record is a date, not a sentence: {:?}",
+            row[0]
+        );
+    }
+    // No row is blank, at either end or in the middle.
+    assert!(
+        !table
+            .rows
+            .iter()
+            .any(|row| row.iter().all(|cell| cell.trim().is_empty())),
+        "a blank row is never a transaction"
+    );
 }
 
 #[test]
@@ -602,6 +778,72 @@ fn a_newline_inside_a_cell_survives_the_whole_pipeline() {
         "{:?}",
         back.notes
     );
+}
+
+// ---------------------------------------------------------------------------
+// The whole point, through real hledger
+// ---------------------------------------------------------------------------
+
+/// Opts in to running the converted CSV through a real hledger. Default-skipped
+/// so `cargo test` stays hermetic, exactly like `LEDGELINE_HLEDGER_MATCH_CHECK`
+/// in `matching.rs`. Run by `just hledger-checks`.
+const HLEDGER_OPT_IN: &str = "LEDGELINE_HLEDGER_CONVERT_CHECK";
+
+#[test]
+fn the_real_export_imports_through_real_hledger() {
+    // The end-to-end statement of the bug. Everything above asserts our own
+    // shape; this asserts hledger's opinion of it, which is the only opinion
+    // that decides whether the user's import works.
+    //
+    // With the trailer left in, this run exits non-zero with
+    //
+    //     could not parse "" as a date using date format "%m/%d/%Y"
+    //     record: ,,,,,,,,,,,,,,
+    //
+    // and produces ZERO transactions — not 34 with one skipped. One unparseable
+    // record abandons the entire read.
+    if std::env::var_os(HLEDGER_OPT_IN).is_none_or(|value| value.is_empty()) {
+        eprintln!("skipping: set {HLEDGER_OPT_IN}=1 to run the converted CSV through hledger");
+        return;
+    }
+
+    let table = parse_spreadsheet(
+        "spreadsheet/real-brokerage-preamble.xlsx",
+        SourceFormat::Xlsx,
+    );
+    let dir =
+        std::env::temp_dir().join(format!("ledgeline_convert_hledger_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    let csv = dir.join("activity.csv");
+    std::fs::write(&csv, delimited::to_csv(&table)).expect("write the converted CSV");
+
+    let rules = common::fixtures_dir().join("import/spreadsheet/brokerage-activity.rules");
+    let output = std::process::Command::new("hledger")
+        .arg("print")
+        .arg("-f")
+        .arg(&csv)
+        .arg("--rules")
+        .arg(&rules)
+        .args(["-O", "json"])
+        .output()
+        .unwrap_or_else(|error| panic!("could not run hledger: {error}"));
+
+    assert!(
+        output.status.success(),
+        "hledger exited {} over the converted CSV:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let entries: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("hledger's output is JSON");
+    let count = entries.as_array().map_or(0, Vec::len);
+    assert_eq!(
+        count, REAL_BROKERAGE_TXNS,
+        "every transaction row must become a transaction, and nothing else may"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------

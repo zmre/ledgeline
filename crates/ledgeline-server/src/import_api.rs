@@ -357,6 +357,8 @@ enum WireNote {
     EncodingGuessed { label: String },
     DelimiterSniffed { delimiter: String },
     PreambleSkipped { lines: usize },
+    TrailerSkipped { lines: usize },
+    BlankRowsDropped { count: usize },
     RaggedRows { count: usize },
     BalanceMismatch { expected: String, computed: String },
 }
@@ -376,6 +378,8 @@ impl From<&ConvertNote> for WireNote {
                 delimiter: delimiter.to_string(),
             },
             ConvertNote::PreambleSkipped { lines } => Self::PreambleSkipped { lines: *lines },
+            ConvertNote::TrailerSkipped { lines } => Self::TrailerSkipped { lines: *lines },
+            ConvertNote::BlankRowsDropped { count } => Self::BlankRowsDropped { count: *count },
             ConvertNote::RaggedRows { count } => Self::RaggedRows { count: *count },
             ConvertNote::BalanceMismatch { expected, computed } => Self::BalanceMismatch {
                 expected: expected.clone(),

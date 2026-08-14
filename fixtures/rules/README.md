@@ -49,6 +49,15 @@ test:
 | `tree/import/2026/bank.csv`       | No — not a rules file. It is what `just rules-check` drives hledger from |
 | `tree/node_modules/dep.rules`     | **No** — `node_modules` is in the scan's skip list                      |
 | `tree/.hidden/hidden.rules`       | **No** — the scan skips every directory whose name starts with `.`       |
+| `tree/.hidden.rules`              | **No** — and every *file* whose name starts with `.` as well             |
+
+`.hidden.rules` is the newer of the two decoys. The dot check used to sit inside the scan's
+`is_dir()` branch, so a hidden **file** was listed and offered for editing while a hidden
+*directory* was not. A hidden entry is one the user's own file browser does not show them, and a
+dot-file in a journal directory is far more often a tool's leftover than a rules file someone
+wants listed. It is valid hledger syntax on purpose: it must be refused for being hidden, not for
+being unparseable. (`just rules-check` deliberately does not drive it — the whole point is that
+nothing reaches it.)
 
 `.hidden/` stands in for `.git/` for a dull reason: git refuses to track any path with a `.git`
 component, so a committed `.git/hidden.rules` cannot exist. The real `.git/` case is built at test
@@ -57,7 +66,9 @@ be committed at all live — symlinks, FIFOs, unreadable directories and a 20,00
 
 `tree/node_modules/` needs a `!fixtures/rules/tree/node_modules/` negation in the repo `.gitignore`
 to be tracked at all. That is deliberate: the fixture would be worthless if the tool it exists to
-test could never see it.
+test could never see it. `.hidden/` and `.hidden.rules` need no such negation — nothing in this
+repo's ignore rules excludes a dot entry — but check with `git check-ignore -v` before adding the
+next decoy, because a fixture git silently refuses to track is a test that silently passes.
 
 `tree/import/2026/bank.csv.rules` does double duty: it is the file discovery must find, **and** it
 is the document `golden/rules-doc.json` describes. That is why it carries more than the discovery

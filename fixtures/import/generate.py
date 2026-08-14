@@ -122,6 +122,53 @@ def preamble_xlsx() -> None:
     book.save(SPREADSHEET / "preamble.xlsx")
 
 
+def trailer_xlsx() -> None:
+    """A disclaimer block BELOW the transactions, which is what a real export ships.
+
+    The synthetic twin of `real-brokerage-preamble.xlsx`'s other end, and it
+    carries three traps in one sheet on purpose:
+
+    1. A **trailer** of blank rows and one-cell paragraphs under the last
+       transaction. Left in place, `to_csv` renders each of them as a record of
+       empty fields, and hledger abandons the *entire* file on the first one —
+       so a correct rules file reports that the data will not parse.
+    2. A **blank row inside** the transactions. Same failure, different place, so
+       trimming only the end is not enough.
+    3. The last transaction has an **empty final column**, so it reaches column
+       three of four. A rule spelled "narrower than the header" trims it and the
+       user silently loses a transaction; the rule has to be "too narrow to hold
+       a date and an amount". This is the row the trim must stop at.
+
+    The four surviving rows are the shared STATEMENT's, so the conversion must
+    produce `simple.xlsx`'s table with its last Balance blanked, plus
+    `TrailerSkipped {lines: 4}` and `BlankRowsDropped {count: 1}`.
+    """
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "Statement"
+
+    # Row 4 is left empty on purpose: the blank row inside the transactions.
+    layout = [(1, STATEMENT[0]), (2, STATEMENT[1]), (3, STATEMENT[2]), (5, STATEMENT[3])]
+    # The last transaction, with its Balance cleared.
+    layout.append((6, STATEMENT[4][:3] + [None]))
+    for at, row in layout:
+        for column, value in enumerate(row, start=1):
+            if value is not None:
+                sheet.cell(row=at, column=column, value=value)
+    for at in (2, 3, 5, 6):
+        sheet.cell(row=at, column=1).number_format = "yyyy-mm-dd"
+        for column in (3, 4):
+            sheet.cell(row=at, column=column).number_format = CURRENCY
+
+    # Rows 7 and 9 are blank; 8 and 10 are the disclaimer paragraphs. The block
+    # has to END on a populated row, or trimming the sheet's blank edges would
+    # dispose of it before the rule under test ever sees it.
+    sheet["A8"] = "*Balances shown are as of the statement date and may not reflect pending activity."
+    sheet["A10"] = "Acme Bank is a member FDIC. Please retain this statement for your records."
+
+    book.save(SPREADSHEET / "trailer.xlsx")
+
+
 def single_column_xlsx() -> None:
     """A genuine one-column sheet, under a title of its own.
 
@@ -244,6 +291,7 @@ def main() -> None:
         simple_xlsx,
         multi_sheet_xlsx,
         preamble_xlsx,
+        trailer_xlsx,
         single_column_xlsx,
         no_table_xlsx,
         legacy_xls,

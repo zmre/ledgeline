@@ -74,6 +74,20 @@ pub enum ConvertNote {
     DelimiterSniffed { delimiter: char },
     /// Leading non-tabular lines were skipped to reach the header.
     PreambleSkipped { lines: usize },
+    /// Trailing non-tabular lines below the last record were dropped — the
+    /// disclaimer block a bank or brokerage puts under the transactions.
+    ///
+    /// As loud as [`Self::PreambleSkipped`] on purpose. "We ignored the last 26
+    /// rows of your file" is exactly the kind of silent helpfulness that loses
+    /// data, and the rows are ones the user can see in their own spreadsheet.
+    TrailerSkipped { lines: usize },
+    /// Rows holding nothing at all were dropped from the body.
+    ///
+    /// Distinct from [`Self::TrailerSkipped`] because it says something
+    /// different: a blank row *inside* the transactions is usually a section
+    /// break, and knowing one was there can explain a row count that looks
+    /// short.
+    BlankRowsDropped { count: usize },
     /// Rows did not all have the same field count.
     RaggedRows { count: usize },
     /// A running-balance or opening/closing check did not add up. This is the

@@ -1,0 +1,33 @@
+# A realistic rules file for `real-brokerage-preamble.xlsx`, once converted.
+#
+# It exists to prove one thing end to end: that the converted CSV is something
+# REAL hledger reads. Before the trailer was trimmed this file produced
+#
+#     could not parse "" as a date using date format "%m/%d/%Y"
+#     record: ,,,,,,,,,,,,,,
+#
+# and hledger abandoned the whole read — all 34 transactions — on that one
+# record. The user reasonably concluded their rules file was broken. It was not,
+# and this is that rules file.
+#
+# Driven by `crates/ledgeline-core/tests/convert_tabular.rs`, env-gated behind
+# LEDGELINE_HLEDGER_CONVERT_CHECK, which converts the workbook, writes the CSV
+# to a scratch directory and runs hledger over it.
+
+skip 1
+
+# All fifteen columns the export writes, in order. The ones with no meaning to
+# hledger still have to be named, or `amount` would land on the wrong column.
+fields date, txndate, statementaccount, institution, activity, checknumber, cardnumber, description, symbol, cusip, memo, tags, quantity, price, amount
+
+date-format %m/%d/%Y
+currency $
+
+account1 assets:brokerage:cash
+account2 expenses:unknown
+
+if FEE
+    account2 expenses:fees:bank
+
+if DIVIDEND
+    account2 income:dividends

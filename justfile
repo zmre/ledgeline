@@ -5,9 +5,19 @@
 dev:
     cd web && bun run dev
 
-# Run unit tests (vitest)
+# Run the front-end suite: BOTH vitest projects, `unit` (node) and `components`
+# (jsdom, mounted .svelte files). See web/README.md for which to write.
+# Run unit + component tests (vitest)
 test:
     cd web && bun run test:unit
+
+# Run only the pure-function tests (vitest --project=unit)
+test-node:
+    cd web && bun run test:node
+
+# Run only the mounted-component tests (vitest --project=components)
+test-components:
+    cd web && bun run test:components
 
 # Without LEDGELINE_API_URL the *.integration.test.ts suites report as SKIPPED, so
 # plain `just test` never exercises the fixture→engine→JSON→decode→rendered-string
@@ -68,6 +78,7 @@ match-golden:
 # rather than syntax we did not damage. See docs/imports.md.
 hledger-checks:
     LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
+    LEDGELINE_HLEDGER_CONVERT_CHECK=1 cargo test -p ledgeline-core --test convert_tabular
     LEDGELINE_HLEDGER_MATCH_CHECK=1 cargo test -p ledgeline-core --test matching
     LEDGELINE_HLEDGER_SORT_CHECK=1 cargo test -p ledgeline-core --test sort
     LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline-server --test import_endpoints

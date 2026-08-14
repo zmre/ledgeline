@@ -28,6 +28,7 @@ its own section here rather than starting a second README.
 | `semicolon.ssv` | Same, for `;` — and the amounts use **decimal commas**, so splitting on `,` would double the column count. Re-read as `.csv` this is also the delimiter-sniffing fixture |
 | `preamble.csv` | Two leading non-table lines, the second of which **contains commas** — so "the first record is the header" yields a two-column table. Must produce `PreambleSkipped { lines: 2 }` |
 | `ragged.csv` | Rows of 4, 3, 5 and 4 fields. Nothing may be dropped; the count must be reported as `RaggedRows { count: 2 }` |
+| `trailer.csv` | Three traps in ten lines. A **trailer** of disclaimer paragraphs below the last transaction; a **blank row inside** the transactions; and a last transaction whose **final field is empty**, which is the row the trim must stop at. Both blank rows are spelled `,,,` — as many fields as the table and not one of them populated — so a rule keyed on width alone misses them. Must produce `TrailerSkipped { lines: 4 }` and `BlankRowsDropped { count: 1 }`, four rows, and no `RaggedRows` |
 | `quoted.csv` | An embedded delimiter, an embedded newline and a doubled quote, all inside quoted fields. The embedded newline must not become an extra record |
 | `latin1.csv` | Windows-1252. Carries `0x92`, `0x93`, `0x94` and `0x80` — the four bytes where Windows-1252 and ISO-8859-1 disagree, and where every smart quote and currency sign lives. None is valid UTF-8, so `chardetng` is the only thing that can read it, and only one of its two plausible answers is right |
 | `utf16le-bom.csv` | **The ordering fixture.** UTF-16LE with a BOM and CRLF — what Excel's "Unicode Text" export writes — saved under a `.csv` name, as users do |
@@ -48,6 +49,8 @@ the guard removed on a machine where the detector happened to guess differently.
 | `simple.xlsx` | Header row plus date cells stored as **serial numbers** with a date number format, and an Amount column carrying a **currency** number format. The dates must come out `YYYY-MM-DD` via `as_datetime`; the amounts must come out `-54.2` and never `($54.20)` |
 | `multi-sheet.xlsx` | Three sheets. `Cover` holds one populated cell, so selection must walk past it; `Transactions` starts at **C4**, so blank leading rows and columns must be trimmed before it is a table at all; `Summary` is a second genuine candidate, which is what makes `SheetChosen { name: "Transactions", of: 3 }` owed to the user |
 | `preamble.xlsx` | A **floating title block** above the header — two blank rows, a one-cell title, a blank row, a second one-cell title, a blank row, then the labels on row 7. Trimming the blank edges is not enough; the title rows are inside the trimmed rectangle. Must produce the same `Tabular` as `simple.xlsx` plus `PreambleSkipped { lines: 4 }` |
+| `trailer.xlsx` | The *other* end of `preamble.xlsx`, and the synthetic twin of what a real export ships below its transactions: two blank rows and two one-cell disclaimer paragraphs. Left in place, `to_csv` renders each as `,,,` and **hledger abandons the whole file** on the first one. The sheet also carries a blank row *between* the transactions, and a last transaction whose **Balance is empty** — the row the trim must stop at. Must produce `simple.xlsx`'s table with that one cell blanked, plus `TrailerSkipped { lines: 4 }` and `BlankRowsDropped { count: 1 }` |
+| `brokerage-activity.rules` | Not a workbook: the realistic rules file the env-gated end-to-end check drives `real-brokerage-preamble.xlsx` through, once converted. Its oracle is real hledger, not `just rules-check` — see below |
 | `single-column.xlsx` | The counter-example to that rule. A title over a genuine one-column list, so **every** row holds exactly one populated cell. A rule spelled "a row with one cell in it is a title" eats the sheet a row at a time; a one-wide table carries no signal, so nothing may be skipped and the answer is `NoTable` |
 | `no-table.xlsx` | A valid workbook holding no table. This is `ConvertError::NoTable` — a specific answer about a fine file — and never `Malformed` |
 | `legacy.xls` | The BIFF path, which is a completely different reader inside `calamine`. Asserted to produce a `Tabular` **equal** to `simple.xlsx`'s, so the two readers cannot drift apart |
@@ -56,11 +59,11 @@ the guard removed on a machine where the detector happened to guess differently.
 ### The one file here that is not synthetic
 
 `real-brokerage-preamble.xlsx` is a **real** brokerage "All Activity" export, scrubbed. It is the file the
-preamble rule was written against and it earns its place by being messier than anything anyone
-would invent: a title block above the header, a long disclaimer block *below* the transactions,
-and a `Description` column with **embedded newlines** in it. Two of its properties are worth
-naming because they are why the rule is scored on a row's extent and not on how many cells it
-has populated:
+preamble *and* trailer rules were written against, and it earns its place by being messier than
+anything anyone would invent: a title block above the header, 34 transactions, a 26-row disclaimer
+block *below* them, and a `Description` column with **embedded newlines** in it. Two of its
+properties are worth naming because they are why the rule is scored on a row's extent and not on
+how many cells it has populated:
 
 - The header row has 15 populated cells; the transaction rows have 9, 10 or 11, because
   `Check Number`, `Cusip` and `Memo` are blank on most of them. Score by population and the body
@@ -69,9 +72,28 @@ has populated:
   column 15 while the titles end at column 1. That is the split we want, and it is the honest
   analogue of a delimited record's field count, since `a,b,,,` is five fields and not two.
 
+Its trailer is the other half of the story, and it is the bug a real user hit. Fourteen of those
+26 rows are entirely blank and twelve hold one paragraph of legal text in column one. Converted
+with the trailer left in, hledger says
+
+```
+could not parse "" as a date using date format "%m/%d/%Y"
+record: ,,,,,,,,,,,,,,
+```
+
+and **abandons the entire read** — not 34 transactions with one skipped, but zero — so the
+candidate scorer saw a hard failure and ranked a perfectly good rules file at zero. The user
+reasonably concluded their rules file was broken.
+
 Because it may be re-scrubbed, `convert_tabular.rs` asserts only on its **shape**: the column
-labels, the column count, that a `PreambleSkipped` note is present, and that the row count is
-roughly right. Nothing is asserted about a payee, an amount or an account.
+labels, the column count, the notes, the exact row count (34, a property of the file rather than
+of any row in it), that every surviving row is as wide as the header, and that no surviving row's
+first cell is prose. Nothing is asserted about a payee, an amount or an account.
+
+`brokerage-activity.rules` closes the loop: `LEDGELINE_HLEDGER_CONVERT_CHECK=1` converts the
+workbook, writes the CSV to a scratch directory and runs real hledger over it, asserting 34
+transactions come back. That check — not `just rules-check`, which has no data file to drive this
+pair from — is what keeps that rules file honest. It runs as part of `just hledger-checks`.
 
 ### The two calamine traps these pin
 
@@ -88,7 +110,7 @@ arrives as `Float(45678.0)` with nothing attached. Two consequences the fixtures
 
 ## Regenerating the binaries
 
-The text fixtures under `delimited/` are edited by hand. The synthetic binaries — six workbooks
+The text fixtures under `delimited/` are edited by hand. The synthetic binaries — seven workbooks
 and the two non-UTF-8 CSVs — cannot be, so they are built by `generate.py` and committed.
 `real-brokerage-preamble.xlsx` is not among them: it is a real export and is committed as received (scrubbed).
 

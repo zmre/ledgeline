@@ -309,3 +309,7 @@ too). Jobs:
 `clippy`, `tests`, and `build` depend on `format-check` and share the crane
 dependency layer (populated once, then pulled from Cachix on later runs).
 Playwright e2e is not part of this workflow yet.
+
+`bun run test:unit` runs BOTH of the SPA's vitest projects — `unit` (node, pure
+functions) and `components` (jsdom, mounted `*.svelte.test.ts`). Neither needs an
+engine or a browser. See `web/README.md` for which to write and why.
