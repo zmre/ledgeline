@@ -2058,6 +2058,434 @@ async fn a_successful_import_commits_only_what_it_wrote() {
 }
 
 // ===========================================================================
+// Commodity style — the journal's own spelling, on entries hledger wrote
+// ===========================================================================
+//
+// `hledger import` writes a CSV's amounts with the declared digit-group
+// separator and WITHOUT the declared decimal places, and no flag changes it
+// (`-c` does nothing to an import; `--round` is `Unknown flag` there). A user
+// whose books declare `commodity $1,000.00` therefore received `$165.2` and
+// `$-405` where every other line in their journal reads `$165.20` and
+// `$-405.00`.
+//
+// So Ledgeline runs the preview, re-prints it through `print --round=soft` with
+// the tree's own directives in scope, appends that itself, and asks hledger to
+// record `.latest` with `--catchup`. Four properties have to hold, and each has
+// a test below:
+//
+//   1. the declared style is adopted, from a file the target does not include;
+//   2. the preview IS the bytes that land;
+//   3. `.latest` is still hledger's, so a second import finds nothing new;
+//   4. a journal declaring no style imports byte-for-byte as it did before.
+
+/// A statement whose amounts are written the way a bank writes them — one with
+/// no decimals at all, one with a single decimal place. These are the two
+/// spellings the bug was reported for.
+const RAGGED_STATEMENT: &str = "Date,Description,Withdrawal,Deposit\n\
+                                03/01/2026,GROCERY STORE,405,\n\
+                                03/03/2026,ACME PAYROLL,,165.2\n";
+
+/// The `fixtures/import/layouts/split-year/` tree, copied so it can be written
+/// to, with the checking rules file beside it.
+///
+/// **The user's own shape**: `main.journal` includes an `accounts.journal` that
+/// holds every `account` and `commodity` declaration, and the transactions live
+/// in per-year files. The import target — `2026/2026.journal` — therefore
+/// declares nothing at all, which is precisely why the styling has to be taken
+/// from the root's parse rather than from the file being written.
+fn split_year() -> Tree {
+    let dir = TempDir::new().expect("temp dir");
+    copy_tree(
+        &fixtures_dir().join("import/layouts/split-year"),
+        dir.path(),
+    );
+    std::fs::create_dir(dir.path().join("import")).expect("import dir");
+    std::fs::copy(
+        fixtures_dir().join("import/match/checking.csv.rules"),
+        dir.path().join("import/bank.csv.rules"),
+    )
+    .expect("copy the rules fixture");
+    let state =
+        AppState::from_journal_path(dir.path().join("main.journal")).expect("the journal opens");
+    Tree { dir, state }
+}
+
+/// A dry-run body for the split-year tree's newest year file.
+fn split_year_body(stage_id: &str) -> Value {
+    let mut body = dry_run_body(stage_id, "import/bank.csv.rules");
+    body["journalId"] = json!("2026/2026.journal");
+    body
+}
+
+/// The same, plus the one field `commit` takes and `dry-run` refuses.
+fn split_year_commit_body(stage_id: &str) -> Value {
+    let mut body = split_year_body(stage_id);
+    body["writeAssertion"] = json!(false);
+    body
+}
+
+/// **The regression.** A root that declares `commodity $1,000.00` in an
+/// INCLUDED accounts file; a statement holding `405` and `165.2`; and the
+/// journal must end up holding `$-405.00` and `$165.20`.
+///
+/// The strings are pinned deliberately. "The amounts look right" is what a
+/// reviewer says about `$165.2`, which is why this bug survived: it is not
+/// wrong, it is merely spelled in a way the rest of the file never is.
+#[tokio::test]
+async fn an_import_adopts_a_commodity_style_declared_in_an_included_file() {
+    require_hledger!();
+    let tree = split_year();
+    assert_checks(&tree, "the committed fixture tree");
+
+    // The declaration is where the bug lives: in a file the TARGET does not
+    // include. If this ever moves into the year file the test stops proving
+    // anything.
+    let declarations = std::fs::read_to_string(tree.path("accounts.journal")).expect("accounts");
+    assert!(
+        declarations.contains("commodity $1,000.00"),
+        "{declarations}"
+    );
+    let target_before = std::fs::read_to_string(tree.path("2026/2026.journal")).expect("target");
+    assert!(
+        !target_before.contains("commodity"),
+        "the target must declare nothing: {target_before}"
+    );
+
+    let (_, staged) = upload(&tree, "bank.csv", RAGGED_STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    // The PREVIEW already carries the journal's spelling — the user approves the
+    // bytes, not an approximation of them.
+    let (status, preview) = post(&tree, "/api/import/dry-run", split_year_body(id)).await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    let entries = as_text(&preview["entries"]);
+    assert!(entries.contains("$-405.00"), "{entries}");
+    assert!(entries.contains("$165.20"), "{entries}");
+
+    let (status, response) = post(&tree, "/api/import/commit", split_year_commit_body(id)).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["imported"], json!(2), "{response}");
+
+    let written = std::fs::read_to_string(tree.path("2026/2026.journal")).expect("target");
+    assert!(
+        written.contains("$-405.00"),
+        "a withdrawal of `405` must be written in the declared style: {written}"
+    );
+    assert!(
+        written.contains("$165.20"),
+        "a deposit of `165.2` must be written in the declared style: {written}"
+    );
+    assert!(
+        !written.contains("$165.2\n") && !written.contains("$-405\n"),
+        "no amount may keep the CSV's own spelling: {written}"
+    );
+    // And the journal is still a journal hledger accepts, with the entries
+    // meaning what the statement said.
+    assert_checks(&tree, "the tree after a re-styled import");
+}
+
+/// **The preview is the bytes.** The dry-run's `entries` and the region the
+/// commit appended are the same text — not merely equivalent, the same.
+///
+/// This is the property the re-styling buys beyond the fix. Before it, the
+/// preview was hledger's dry-run and the write was a second, separate hledger
+/// invocation; the two agreed because they were given the same arguments, which
+/// is an argument rather than a guarantee. Now the commit re-prints exactly what
+/// the dry-run route returned and appends *that*.
+///
+/// The separator is pinned too, because it is the one thing that is ours rather
+/// than hledger's: a leading newline, then the entries with hledger's own
+/// trailing blank line removed.
+#[tokio::test]
+async fn the_preview_is_the_bytes_that_are_appended() {
+    require_hledger!();
+    let tree = split_year();
+    let (_, staged) = upload(&tree, "bank.csv", RAGGED_STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let (status, preview) = post(&tree, "/api/import/dry-run", split_year_body(id)).await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    let entries = as_text(&preview["entries"]);
+
+    let before = std::fs::read_to_string(tree.path("2026/2026.journal")).expect("target");
+    let (status, response) = post(&tree, "/api/import/commit", split_year_commit_body(id)).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let after = std::fs::read_to_string(tree.path("2026/2026.journal")).expect("target");
+
+    assert!(
+        after.starts_with(&before),
+        "the journal must have grown and not been rewritten"
+    );
+    let appended = &after[before.len()..];
+    assert_eq!(
+        appended,
+        format!("\n{}\n", entries.trim_end_matches('\n')),
+        "the appended region must be the previewed text, with hledger's own separator"
+    );
+}
+
+/// `.latest` is still hledger's, written by hledger, and it still de-duplicates.
+///
+/// The one thing giving up `hledger import`'s write could plausibly have cost.
+/// `--catchup` records the state file without appending anything — verified
+/// byte-identical to a writing import's, repeated same-date lines included — so
+/// a second import of the same statement has nothing to propose.
+#[tokio::test]
+async fn a_second_import_of_the_same_statement_finds_nothing_new() {
+    require_hledger!();
+    let tree = split_year();
+    let (_, staged) = upload(&tree, "bank.csv", RAGGED_STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let (status, response) = post(&tree, "/api/import/commit", split_year_commit_body(id)).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["imported"], json!(2), "{response}");
+    assert_eq!(
+        std::fs::read_to_string(tree.path("import/.latest.bank.csv"))
+            .expect("hledger must have written the dedup marker")
+            .trim(),
+        "2026-03-03",
+        "the marker must hold the newest imported date"
+    );
+
+    // A second run of the whole flow proposes nothing, and a second commit adds
+    // nothing to the journal.
+    let after_first = std::fs::read_to_string(tree.path("2026/2026.journal")).expect("target");
+    let (_, staged) = upload(&tree, "bank.csv", RAGGED_STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+    let (status, second) = post(&tree, "/api/import/dry-run", split_year_body(id)).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["count"], json!(0), "{second}");
+    assert_eq!(as_text(&second["entries"]).trim(), "", "{second}");
+
+    let (status, response) = post(&tree, "/api/import/commit", split_year_commit_body(id)).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["imported"], json!(0), "{response}");
+    assert_eq!(
+        std::fs::read_to_string(tree.path("2026/2026.journal")).expect("target"),
+        after_first,
+        "an import with nothing to import must append nothing at all"
+    );
+}
+
+/// **A journal that declares no commodity style imports exactly as it did.**
+///
+/// The re-styling is skipped outright there, and it has to be: `print --round`
+/// over a journal with no declaration invents a canonical precision out of
+/// whatever is in this batch, so a single row ending `.2` would pad the others
+/// to one decimal place. Asserted against the real thing — the same statement
+/// imported into a copy of the same journal by `hledger import` itself, with the
+/// two files compared byte for byte.
+#[tokio::test]
+async fn a_journal_declaring_no_style_gets_hledgers_own_bytes() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let (_, staged) = upload(&tree, "bank.csv", RAGGED_STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+
+    let before = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let ours = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+
+    // The oracle: a pristine copy of the same journal, imported into by hledger
+    // itself, from a copy of the same CSV in a directory of its own so the two
+    // runs cannot share a `.latest`.
+    let oracle = TempDir::new().expect("temp dir");
+    std::fs::write(oracle.path().join("main.journal"), &before).expect("write");
+    std::fs::copy(tree.path("import/bank.csv"), oracle.path().join("bank.csv"))
+        .expect("copy the written csv");
+    std::fs::copy(
+        tree.path("import/bank.csv.rules"),
+        oracle.path().join("bank.csv.rules"),
+    )
+    .expect("copy the rules file");
+    let hledger = resolve_hledger();
+    let output = hledger
+        .invoke([
+            "-I".as_ref(),
+            "-f".as_ref(),
+            oracle.path().join("main.journal").as_os_str(),
+        ])
+        .arg("import")
+        .arg("--rules")
+        .arg(oracle.path().join("bank.csv.rules"))
+        .arg(oracle.path().join("bank.csv"))
+        .run()
+        .expect("hledger runs");
+    assert!(output.success(), "{}", output.stderr_lossy());
+    let theirs = std::fs::read_to_string(oracle.path().join("main.journal")).expect("journal");
+
+    assert_eq!(
+        ours, theirs,
+        "with nothing declared, our append must be hledger's append, byte for byte"
+    );
+    // And specifically: the CSV's own spelling survives, unpadded.
+    assert!(ours.contains("$-405\n"), "{ours}");
+    assert!(ours.contains("$165.2\n"), "{ours}");
+}
+
+/// **The one that would have been a ten-times-the-money bug.**
+///
+/// Prepending a `commodity` directive changes how the entries **parse**, not
+/// only how they print. With `commodity 1.000,00 EUR` in scope, hledger re-reads
+/// its own `EUR165.2` as `1.652,00 EUR` and exits zero:
+///
+/// ```text
+/// $ hledger -f 2026/2026.journal import --dry-run …
+///     assets:bank:checking        EUR165.2
+/// $ printf 'commodity 1.000,00 EUR\n\n…' | hledger -I -f- print --round=soft
+///     assets:bank:checking     1.652,00 EUR
+/// ```
+///
+/// It is reachable exactly here and nowhere else: the import reads the target
+/// **fragment**, which in a split layout is the file that does not carry the
+/// declaration, so hledger writes the CSV's own `.` while the tree declares `,`.
+///
+/// So `restyle::preserves_entries` compares the two by value and the whole
+/// re-styling is dropped when they disagree. What must happen — and what this
+/// asserts — is that the import still lands, carrying hledger's own text. An
+/// amount spelled less prettily than the journal's others is a far better
+/// outcome than a blocked import, and an incomparably better one than a
+/// thousand-fold silent corruption.
+#[tokio::test]
+async fn a_restyling_that_would_change_a_value_is_dropped_and_the_import_still_lands() {
+    require_hledger!();
+    let dir = TempDir::new().expect("temp dir");
+    std::fs::create_dir_all(dir.path().join("2026")).expect("year dir");
+    std::fs::create_dir(dir.path().join("import")).expect("import dir");
+    // The declaration is European; the fragment being written to holds only `$`,
+    // so hledger has no EUR style in scope when it proposes.
+    std::fs::write(
+        dir.path().join("accounts.journal"),
+        "account assets:bank:checking\naccount expenses:unknown\n\ncommodity 1.000,00 EUR\n",
+    )
+    .expect("write accounts");
+    std::fs::write(
+        dir.path().join("2026/2026.journal"),
+        "2026-01-30 Paycheck\n    assets:bank:checking    $2,400.00\n    income:salary\n",
+    )
+    .expect("write the year file");
+    std::fs::write(
+        dir.path().join("main.journal"),
+        "include accounts.journal\ninclude 2026/2026.journal\n",
+    )
+    .expect("write the root");
+    std::fs::write(
+        dir.path().join("import/bank.csv.rules"),
+        "skip 1\nfields date, description, amount-out, amount-in\ndate-format %m/%d/%Y\n\
+         currency EUR\n\naccount1 assets:bank:checking\naccount2 expenses:unknown\n",
+    )
+    .expect("write the rules file");
+    let state =
+        AppState::from_journal_path(dir.path().join("main.journal")).expect("the journal opens");
+    let tree = Tree { dir, state };
+
+    let (_, staged) = upload(&tree, "bank.csv", RAGGED_STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+    let (status, response) = post(&tree, "/api/import/commit", split_year_commit_body(id)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the import must still land: {response}"
+    );
+    assert_eq!(response["imported"], json!(2), "{response}");
+
+    let written = std::fs::read_to_string(tree.path("2026/2026.journal")).expect("target");
+    assert!(
+        written.contains("EUR165.2"),
+        "hledger's own spelling must survive intact: {written}"
+    );
+    assert!(
+        !written.contains("1.652"),
+        "a re-styling that multiplies the money by a thousand must be dropped: {written}"
+    );
+}
+
+/// **A failed catch-up undoes the import rather than leaving a duplicate
+/// waiting to happen.**
+///
+/// The one new failure the append-it-ourselves shape introduces, and the reason
+/// it is worth a stub: if `--catchup` fails after the append, the entries are in
+/// the journal while `.latest` still points at the previous import — so the next
+/// import of that statement proposes the same rows again, and three extra
+/// transactions dated last month are exactly the kind of thing nobody notices.
+///
+/// A real hledger cannot be made to fail there on demand, so the binary is a
+/// four-line shell script that proposes happily and refuses to catch up. What is
+/// under test is entirely ours: the roll-back, and the error that names what
+/// happened.
+#[tokio::test]
+async fn a_failed_catch_up_rolls_the_import_back() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = dir.path().join("hledger");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\ncase \"$*\" in\n\
+         *--version*) echo 'hledger 1.52, stub' ;;\n\
+         *--catchup*) echo 'stub: the state file could not be written' >&2; exit 1 ;;\n\
+         *--dry-run*) printf '2026-02-01 STUB\\n    assets:bank:checking  $-1.00\\n\
+         \x20   expenses:unknown       $1.00\\n\\n'; \
+         echo 'would import 1 new transactions from bank.csv:' >&2 ;;\n\
+         esac\nexit 0\n",
+    )
+    .expect("write stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    run_child(
+        "catch_up_rollback_child",
+        &[
+            ("LEDGELINE_HLEDGER", &stub),
+            ("LEDGELINE_CONFIG_DIR", dir.path()),
+            (CHILD_DIR_ENV, dir.path()),
+        ],
+    );
+}
+
+/// See [`a_failed_catch_up_rolls_the_import_back`].
+#[tokio::test]
+#[ignore = "driven by a_failed_catch_up_rolls_the_import_back"]
+async fn catch_up_rollback_child() {
+    let tree = Tree::with_rules();
+    let before = std::fs::read(tree.path("main.journal")).expect("journal");
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a commit that could not record its dedup state must not report success: {response}"
+    );
+    let message = as_text(&response);
+    assert!(
+        message.contains("undone") && message.contains("main.journal"),
+        "the error must say the import was undone, and name the file: {message}"
+    );
+    assert!(
+        message.contains("the state file could not be written"),
+        "hledger's own words must reach the user: {message}"
+    );
+
+    assert_eq!(
+        std::fs::read(tree.path("main.journal")).expect("journal"),
+        before,
+        "the journal must be byte-identical to what it was before the commit"
+    );
+    // The CSV stays where it was written — the same thing a failed import has
+    // always left behind, and the file the user asked to keep.
+    assert!(tree.path("import/bank.csv").is_file());
+}
+
+// ===========================================================================
 // save-csv — the no-rules-file path
 // ===========================================================================
 

@@ -109,6 +109,7 @@ use ledgeline_core::decimal::Dec;
 use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
 use ledgeline_core::journals::{self, JournalTarget};
+use ledgeline_core::restyle;
 use ledgeline_core::rules::matching::{self, Candidate, Ranking, Score, Signals};
 use ledgeline_core::rules::{self, Discovery, RulesDoc};
 use ledgeline_core::sort;
@@ -191,12 +192,32 @@ const BALANCE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// hledger's `-I`, spelled out.
 ///
-/// It goes on **exactly one** invocation — [`import_invocation`], the only one
-/// that reads a target file in isolation — and the argument for it is at that
-/// function, at length, because the next reader's instinct will be to delete it.
+/// It goes on exactly the two invocations that read journal text **out of the
+/// tree it belongs to**, and on nothing that reads a balance:
+///
+/// * [`import_invocation`], which reads the target file in isolation — the
+///   argument is at that function, at length, because the next reader's instinct
+///   will be to delete it;
+/// * [`restyle_invocation`], which reads the *proposed entries* on their own. A
+///   rules file's `balance` field writes an assertion into them, and an
+///   assertion carrying an account's whole running balance cannot hold in three
+///   transactions read by themselves. Verified: `print` over such a proposal
+///   exits non-zero and prints nothing at all, which would turn every import
+///   from a `balance`-field rules file into a silent fall-back.
+///
+/// [`verify_balance`] and [`check_assertion`] deliberately carry neither, and
+/// `no_balance_invocation_ignores_assertions` pins that.
+///
 /// The long spelling is used so the argv says what it does; `-I` is the same
 /// flag and hledger accepts both.
 const IGNORE_ASSERTIONS: &str = "--ignore-assertions";
+
+/// hledger's `--round=soft`: pad or trim decimal **zeros** to the declared
+/// display precision, and change nothing else.
+///
+/// The whole of the re-styling — see [`restyle_invocation`] for the pipeline and
+/// [`ledgeline_core::restyle`] for why `soft` rather than `hard`.
+const ROUND_SOFT: &str = "--round=soft";
 
 // ===========================================================================
 // Response wire types (native, camelCase)
@@ -1430,7 +1451,37 @@ fn run(invocation: Invocation, what: &str) -> Result<Output, AppError> {
         .map_err(|error| AppError::Internal(format!("could not {what}: {error}")))
 }
 
-/// `hledger [--alias=…]… -I -f JOURNAL import [--dry-run] --rules RULES CSV`.
+/// What one `hledger import` run is for.
+///
+/// **There is no variant that writes**, and that is the point of the type. Since
+/// the re-styling landed, hledger never appends to a user's journal: it proposes
+/// (`--dry-run`), Ledgeline re-prints the proposal in the journal's own commodity
+/// style and appends it through [`edit::atomic_write`](ledgeline_core::edit::atomic_write),
+/// and then hledger is asked to record its own dedup state (`--catchup`). A
+/// third variant spelling "and now actually write it" would put back the split
+/// between what the preview showed and what landed — see [`run_commit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportRun {
+    /// `--dry-run`: the proposed entries on stdout, nothing on disk.
+    Preview,
+    /// `--catchup`: `.latest.NAME` recorded, nothing appended. Verified against
+    /// hledger 1.52 — the journal is byte-identical afterwards, the state file
+    /// is byte-identical to the one a real import writes (repeated same-date
+    /// lines and all), and a following dry-run reports no new transactions.
+    Catchup,
+}
+
+impl ImportRun {
+    /// The one flag that distinguishes them.
+    const fn flag(self) -> &'static str {
+        match self {
+            Self::Preview => "--dry-run",
+            Self::Catchup => "--catchup",
+        }
+    }
+}
+
+/// `hledger [--alias=…]… -I -f JOURNAL import (--dry-run|--catchup) --rules RULES CSV`.
 ///
 /// Every path is absolute, which is also what makes them safe as positional
 /// arguments: an absolute path begins with `/` and can never be read as an
@@ -1485,41 +1536,156 @@ fn run(invocation: Invocation, what: &str) -> Result<Output, AppError> {
 ///   exits zero. The only assertions `-I` suppresses are the target fragment's
 ///   own — the ones that cannot hold when read in isolation.
 ///
-/// # `--dry-run` is a parameter, and that is the point
+/// # The run kind is a parameter, and that is the point
 ///
-/// The preview and the write share **one** argv builder, so there is no way for
-/// them to be given different aliases. That matters more than it reads: a
-/// preview that showed `assets:morganstanley:pw-roth-ira` while the commit wrote
+/// The preview, the dedup measurement, the alias measurements and the catch-up
+/// share **one** argv builder, so there is no way for them to be given different
+/// aliases or a different target. That matters more than it reads: a preview
+/// that showed `assets:morganstanley:pw-roth-ira` while the commit wrote
 /// `PW Roth IRA - 3077` would be a lie told immediately before the only
-/// irreversible step on the screen. Making the two agree by construction is
+/// irreversible step on the screen. Making them agree by construction is
 /// stronger than a test asserting that they do — though
 /// `import_endpoints.rs::a_dry_run_and_a_commit_agree_on_aliased_accounts` also
 /// asserts it, against the real binary.
+///
+/// It matters twice over now that the commit runs a **preview** and appends the
+/// result itself: the bytes the user approved and the bytes that land come from
+/// the same command line, differing only in the `--dry-run`/`--catchup` word.
 fn import_invocation(
     hledger: &Hledger,
     journal: &Path,
     rules: &Path,
     csv: &Path,
     aliases: &[String],
-    dry_run: bool,
+    run: ImportRun,
 ) -> Invocation {
-    let invocation = hledger
+    hledger
         .invoke(alias_flags(aliases))
         // Before the subcommand, for the same reason `--no-conf` is: this is a
         // general option, and hledger's own parser reads them in order.
         .arg(IGNORE_ASSERTIONS)
         .args(["-f".as_ref(), journal.as_os_str()])
-        .arg("import");
-    let invocation = if dry_run {
-        invocation.arg("--dry-run")
-    } else {
-        invocation
-    };
-    invocation
+        .arg("import")
+        .arg(run.flag())
         .arg("--rules")
         .arg(rules)
         .arg(csv)
         .timeout(IMPORT_TIMEOUT)
+}
+
+/// `hledger -I -f - print --round=soft`, fed one journal on stdin: the target
+/// tree's `commodity` directives, then the proposed entries.
+///
+/// # Why this exists at all
+///
+/// `hledger import` writes a CSV's amounts with the declared **separators** but
+/// not the declared **decimal places**, and there is no flag that changes it:
+/// `-c/--commodity-style` does nothing to an import's output and `--round` is
+/// rejected outright (`Unknown flag`) by `import`. So a journal declaring
+/// `commodity $1,000.00` receives `$165.2` and `$-405` where its author writes
+/// `$165.20` and `$-405.00`. All of it verified against hledger 1.52; the long
+/// version is in [`ledgeline_core::restyle`].
+///
+/// `print` does apply it, which is why the write moved here.
+///
+/// # Why the directives are prepended rather than the journal `include`d
+///
+/// [`verify_balance`]'s trick — `include <ROOT>` on the first line — would make
+/// `print` emit the **whole journal**, not the handful of entries being styled.
+/// What is wanted is the styles alone, and hledger drops directives from
+/// `print` output, so prepending them costs nothing on the way out.
+///
+/// It is also the reason [`ledgeline_core::restyle::preserves_entries`] exists:
+/// a directive in scope changes how the entries **parse**, and a European one
+/// re-reads `1234.5 EUR` as `12.345,00 EUR` with exit zero.
+fn restyle_invocation(hledger: &Hledger, journal: String) -> Invocation {
+    hledger
+        .invoke([IGNORE_ASSERTIONS])
+        .args(["-f", "-", "print", ROUND_SOFT])
+        .stdin(journal.into_bytes())
+        .timeout(IMPORT_TIMEOUT)
+}
+
+/// The proposed entries, re-printed in the journal tree's own commodity styles —
+/// or hledger's own text, unchanged, when anything at all is off.
+///
+/// This is the function whose output becomes both the preview and the bytes
+/// appended to the journal, so every way it can decline ends in the same place:
+/// **hledger's original entries**. A slightly ugly amount is a far better outcome
+/// than a blocked import, and every fall-back is logged rather than swallowed.
+///
+/// It declines when:
+///
+/// * the tree declares no commodity style — then there is nothing to restyle
+///   *by*, and `print --round` would invent a canonical precision out of
+///   whatever happens to be in this batch (one row ending `.678` would pad the
+///   other two to three places). This is what keeps a journal with no
+///   `commodity` directive importing exactly as it did before;
+/// * there is nothing to restyle;
+/// * hledger could not be run, or refused;
+/// * the result does not describe the same transactions, by value
+///   ([`restyle::preserves_entries`]). That is the guard against the directives
+///   changing how the entries *parse*, which is a 10× silent wrong answer rather
+///   than an error.
+fn restyled(plan: &Plan, entries: &str) -> String {
+    if plan.commodity_directives.is_empty() || entries.trim().is_empty() {
+        return entries.to_string();
+    }
+    let decline = |why: &str| {
+        // Not a wire field: the preview and the bytes still agree, so nothing on
+        // screen is wrong — the amounts merely keep hledger's own spelling. The
+        // operator's log is where "why does this journal not match my others"
+        // gets answered.
+        eprintln!(
+            "ledgeline: imported entries kept hledger's own number formatting ({why}); the \
+             amounts are correct, they simply do not carry the journal's declared decimal places"
+        );
+        entries.to_string()
+    };
+    let source = format!("{}\n{entries}", plan.commodity_directives);
+    match restyle_invocation(&plan.hledger, source).run() {
+        Err(error) => decline(&error.to_string()),
+        Ok(output) if !output.success() => decline(&plan.redactor.apply(&output.stderr_lossy())),
+        Ok(output) => {
+            let styled = output.stdout_lossy();
+            if restyle::preserves_entries(entries, &styled) {
+                styled
+            } else {
+                decline("re-printing them did not round-trip to the same transactions")
+            }
+        }
+    }
+}
+
+/// The bytes to append to a journal for `entries`, exactly as `hledger import`
+/// would have appended them.
+///
+/// **Compared against the real thing, byte for byte** (hledger 1.52). A dry-run
+/// writes its proposal to stdout as the transactions followed by a **blank
+/// line**; a real import appends a leading `\n` and the same text with that
+/// blank line removed:
+///
+/// ```text
+/// stdout   "2026-02-01 A\n    …$-405\n\n2026-02-03 B\n    …$165.2\n\n"
+/// appended "\n2026-02-01 A\n    …$-405\n\n2026-02-03 B\n    …$165.2\n"
+/// ```
+///
+/// Note what hledger does *not* do: it does not check whether the file already
+/// ends in a newline. A journal saved without a trailing newline gets the first
+/// imported transaction on the line straight after the last posting — verified,
+/// and still valid hledger, since a transaction begins at column 1. Reproducing
+/// that exactly is deliberate: matching hledger's own output was the cheapest
+/// way to be sure this change moved no bytes it was not asked to.
+///
+/// An empty proposal appends **nothing at all**, which is also what hledger does
+/// with a statement holding no new rows.
+fn appended_text(entries: &str) -> String {
+    let body = entries.trim_end_matches('\n');
+    if body.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n{body}\n")
+    }
 }
 
 /// The journal's aliases as hledger options, one `OsString` each.
@@ -2493,6 +2659,16 @@ struct Plan {
     /// writing a config line needs the pattern and replacement apart, which an
     /// assembled `OLD=NEW` argument has already joined.
     declared: Vec<aliases::Forwarded>,
+    /// The `commodity` directives of the whole TREE, spelled back out, ready to
+    /// prepend to a proposal — see [`restyle_invocation`]. Empty when the tree
+    /// declares none, which is the signal to leave hledger's output alone.
+    ///
+    /// From [`root_journal`](Self::root_journal)'s parse and never the target's,
+    /// for the reason this whole type is split in two: the motivating layout
+    /// keeps every declaration in an `accounts.journal` that the target file
+    /// neither is nor includes. Resolved once, here, so the preview and the
+    /// write cannot be styled differently.
+    commodity_directives: String,
     /// The journal's own DIRECTORY — the include root every handle is confined
     /// to. Named for the thing it is, because a `root` beside a `root_journal`
     /// is the ambiguity this type's docs are about.
@@ -2522,7 +2698,11 @@ impl Plan {
         // Both homes an account alias can live in — see `AliasArguments::merge`
         // for why the config's come first.
         let conf = conf_in_force(&root_dir);
-        let declared = aliases::forward(&state.snapshot().journal);
+        let snapshot = state.snapshot();
+        let declared = aliases::forward(&snapshot.journal);
+        // The whole tree's declared styles, which in a split layout live in a
+        // file the target does not include. See `restyle_invocation`.
+        let commodity_directives = restyle::commodity_directives(&snapshot.journal);
         let aliases = AliasArguments::merge(
             declared
                 .iter()
@@ -2555,6 +2735,7 @@ impl Plan {
             csv_name,
             aliases,
             declared,
+            commodity_directives,
             root_dir,
             conf,
             redactor,
@@ -2594,7 +2775,7 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
             &plan.rules,
             &staged,
             &plan.aliases.merged,
-            true,
+            ImportRun::Preview,
         ),
         "run the import preview",
     )?;
@@ -2605,7 +2786,12 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
         }));
     }
 
-    let entries = output.stdout_lossy();
+    // hledger's own proposal, and then the same thing in the journal's own
+    // commodity style. `proposed` stays in reach because `alias_effect` measures
+    // account rewrites by diffing two proposals, and both of its sides have to
+    // come off the same pipeline.
+    let proposed = output.stdout_lossy();
+    let entries = restyled(&plan, &proposed);
     let status = output.stderr_lossy();
     let count = count_transactions(&entries)
         .or_else(|| reported_count(&status, "would import"))
@@ -2641,7 +2827,7 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
         status: plan.redactor.apply(&status),
         skipped: skipped_by_dedup(&plan, count)?,
         balance,
-        aliases: alias_effect(&plan, &staged, &entries)?,
+        aliases: alias_effect(&plan, &staged, &proposed)?,
         blocked_by_git: if autocommit_enabled(&prefs::load()) {
             blocked_by_git(&plan.targets(request))
         } else {
@@ -2676,7 +2862,7 @@ fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, Ap
             &plan.rules,
             &bare,
             &plan.aliases.merged,
-            true,
+            ImportRun::Preview,
         ),
         "measure what import de-duplication would skip",
     )?;
@@ -2741,7 +2927,7 @@ fn alias_effect(
                 &plan.rules,
                 staged,
                 aliases,
-                true,
+                ImportRun::Preview,
             ),
             what,
         )?;
@@ -2916,6 +3102,40 @@ pub(crate) async fn commit(
 
 /// The whole of `commit`, synchronously. Every `?` above the CSV write is a
 /// decision not to write anything at all.
+///
+/// # Ledgeline appends; hledger only ever proposes and remembers
+///
+/// The obvious shape — hand the CSV to `hledger import` and let it append — is
+/// not what happens, and the reason is [`restyle_invocation`]: `import` writes a
+/// CSV's amounts without the declared decimal places, and there is no flag that
+/// changes it. So the write is split into three steps that hledger cannot do in
+/// one:
+///
+/// 1. `import --dry-run` → the deduped proposal, on stdout;
+/// 2. re-print it through `print --round=soft` in the tree's own commodity style
+///    ([`restyled`]), which is also **exactly what the dry-run route returned**;
+/// 3. append it with [`edit::atomic_write`](ledgeline_core::edit::atomic_write),
+///    byte-compatibly with hledger's own append ([`appended_text`]);
+/// 4. `import --catchup` → hledger records `.latest.NAME` itself, so the dedup
+///    state stays the thing hledger maintains rather than something Ledgeline
+///    now has an opinion about.
+///
+/// The property that buys, beyond the fix: **the preview is the bytes**. There
+/// is no second rendering that could drift from the one the user approved.
+///
+/// # What happens if the catch-up fails
+///
+/// It is the one genuinely new failure this shape introduces. The entries would
+/// be in the journal while `.latest` still pointed at the previous import — and
+/// the next import of the same statement would propose them **again** and
+/// silently duplicate them.
+///
+/// So a failed catch-up **rolls the journal back** to the bytes read a moment
+/// earlier under the write mutex, and reports. The commit becomes all-or-nothing
+/// for that failure, which is the property [`preflight_assertion`] already
+/// established for a mistyped balance. If the roll-back itself fails, the error
+/// says so in as many words and names the duplication risk, because that is a
+/// state a person has to be told about rather than one to paper over.
 fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommit, AppError> {
     let plan = Plan::resolve(state, &request.plan)?;
     let targets = plan.targets(&request.plan);
@@ -2962,7 +3182,7 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
             &plan.rules,
             &plan.destination,
             &plan.aliases.merged,
-            false,
+            ImportRun::Preview,
         ),
         "run the import",
     )?;
@@ -2973,10 +3193,45 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
             plan.redactor.apply(&output.stderr_lossy())
         )));
     }
-    let after = std::fs::read(&plan.target).map_err(journal_unreadable)?;
-    let imported = appended_count(&before, &after)
-        .or_else(|| reported_count(&output.stderr_lossy(), "imported"))
+    // The same two steps the dry-run route ran, in the same order, from the same
+    // `Plan` — which is what makes the preview the bytes.
+    let entries = restyled(&plan, &output.stdout_lossy());
+    let imported = count_transactions(&entries)
+        .or_else(|| reported_count(&output.stderr_lossy(), "would import"))
         .unwrap_or(0);
+
+    let appended = appended_text(&entries);
+    if !appended.is_empty() {
+        let combined = [before.as_slice(), appended.as_bytes()].concat();
+        ledgeline_core::edit::atomic_write(&plan.target, &combined).map_err(|error| {
+            AppError::Internal(format!(
+                "{} could not be written: {}. The CSV was saved and the journal is unchanged.",
+                quoted(&request.plan.journal_id),
+                error.kind()
+            ))
+        })?;
+    }
+
+    // hledger's own dedup state, recorded by hledger. Verified byte-identical to
+    // what a writing import leaves behind, repeated same-date lines included.
+    let complaint = match run(
+        import_invocation(
+            &plan.hledger,
+            &plan.target,
+            &plan.rules,
+            &plan.destination,
+            &plan.aliases.merged,
+            ImportRun::Catchup,
+        ),
+        "record which rows have been imported",
+    ) {
+        Ok(output) if output.success() => None,
+        Ok(output) => Some(plan.redactor.apply(&output.stderr_lossy())),
+        Err(error) => Some(error.to_string()),
+    };
+    if let Some(complaint) = complaint {
+        return Err(catchup_failed(&plan, &request.plan, &before, &complaint));
+    }
 
     if request.write_assertion {
         write_assertion(&plan, &request.plan)?;
@@ -3122,20 +3377,47 @@ fn run_save_csv(state: &AppState, request: &WireSaveCsvRequest) -> Result<WireSa
     })
 }
 
-/// How many transactions `hledger import` appended, counted from the bytes it
-/// added.
+/// The error a failed `hledger import --catchup` produces — **after putting the
+/// journal back**.
 ///
-/// Exact, and derived from our own parser rather than from hledger's prose. The
-/// prefix check is what makes it safe: if the file did not simply grow — which
-/// would mean something other than this import rewrote it — this declines and the
-/// caller falls back to the status line.
-fn appended_count(before: &[u8], after: &[u8]) -> Option<usize> {
-    let appended = after
-        .len()
-        .checked_sub(before.len())
-        .filter(|_| after.starts_with(before))
-        .map(|_| &after[before.len()..])?;
-    count_transactions(&String::from_utf8_lossy(appended))
+/// This is the one failure the append-it-ourselves shape introduces, and it is
+/// the dangerous kind: the entries would be in the file while hledger's dedup
+/// marker still pointed at the previous import, so the very next import of that
+/// statement would propose the same rows again and nobody would question three
+/// extra transactions dated last month.
+///
+/// So the journal is restored to `before` — the bytes read moments earlier,
+/// under the write mutex that `commit` and `save-csv` share, so nothing else can
+/// have touched the file in between — and the commit reports as a whole. The CSV
+/// stays where it was written, which is the same thing a failed import has
+/// always left behind.
+///
+/// A roll-back that itself fails says so in as many words. Reporting loudly is
+/// the only honest option there; carrying on and returning `200` would leave a
+/// duplication waiting to happen with nothing on screen about it.
+fn catchup_failed(
+    plan: &Plan,
+    request: &WireDryRunRequest,
+    before: &[u8],
+    complaint: &str,
+) -> AppError {
+    match ledgeline_core::edit::atomic_write(&plan.target, before) {
+        Ok(()) => AppError::Internal(format!(
+            "the import was undone because hledger could not record which rows it had already \
+             taken. {} is exactly as it was; {} was saved. hledger said:\n{complaint}",
+            quoted(&request.journal_id),
+            quoted(&request.csv_path),
+        )),
+        Err(error) => AppError::Internal(format!(
+            "hledger could not record which rows it had already taken, and {} could not be put \
+             back ({}). The entries ARE in the journal and the de-duplication marker was NOT \
+             updated, so importing {} again would add them a second time — check the end of the \
+             journal before you do. hledger said:\n{complaint}",
+            quoted(&request.journal_id),
+            error.kind(),
+            quoted(&request.csv_path),
+        )),
+    }
 }
 
 /// A `500` for a journal we could not read back. Only the kind, never the path.
@@ -3352,7 +3634,7 @@ fn preflight_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), A
             &plan.rules,
             &staged,
             &plan.aliases.merged,
-            true,
+            ImportRun::Preview,
         ),
         "preview the import",
     )?;
@@ -3987,16 +4269,42 @@ mod tests {
         assert!(text.contains("2026-02-01 X"));
     }
 
-    /// The appended-bytes count is exact, and declines when the file did not
-    /// simply grow — which would mean something other than this import rewrote
-    /// it.
+    /// **The bytes Ledgeline appends are the bytes hledger would have.**
+    ///
+    /// Pinned against a real `hledger import` run: a dry-run's stdout ends in a
+    /// blank line, and the append is a leading newline plus that text with the
+    /// blank line removed. Getting this wrong would show up as a creeping blank
+    /// line at the end of a journal, once per import, forever.
     #[test]
-    fn the_imported_count_is_the_bytes_the_import_added() {
-        let before = b"2026-01-01 A\n    a  $1.00\n    b  $-1.00\n";
-        let after = b"2026-01-01 A\n    a  $1.00\n    b  $-1.00\n\n2026-02-01 B\n    a  $2.00\n    b  $-2.00\n";
-        assert_eq!(appended_count(before, after), Some(1));
-        assert_eq!(appended_count(before, before), Some(0));
-        assert_eq!(appended_count(before, b"something else entirely\n"), None);
+    fn the_appended_bytes_match_hledgers_own_append() {
+        // Verbatim from `hledger 1.52 import --dry-run` — note the trailing
+        // blank line, which is hledger's, not a typo here.
+        let stdout = "2026-02-01 GROCERY STORE\n    assets:bank:checking   $-405\n\
+                      \x20   expenses:unknown        $405\n\n";
+        assert_eq!(
+            appended_text(stdout),
+            "\n2026-02-01 GROCERY STORE\n    assets:bank:checking   $-405\n\
+             \x20   expenses:unknown        $405\n",
+        );
+
+        // Exactly one trailing newline, however many the text arrived with.
+        assert_eq!(appended_text("2026-02-01 A\n"), "\n2026-02-01 A\n");
+        assert_eq!(appended_text("2026-02-01 A\n\n\n"), "\n2026-02-01 A\n");
+
+        // Nothing proposed appends NOTHING — the same thing hledger does with a
+        // statement holding no new rows.
+        assert_eq!(appended_text(""), "");
+        assert_eq!(appended_text("\n\n  \n"), "");
+    }
+
+    /// The count comes from the text that is actually appended, so it can never
+    /// disagree with what landed.
+    #[test]
+    fn the_imported_count_is_the_entries_that_were_appended() {
+        let entries = "2026-01-01 A\n    a  $1.00\n    b  $-1.00\n\n\
+                       2026-02-01 B\n    a  $2.00\n    b  $-2.00\n\n";
+        assert_eq!(count_transactions(entries), Some(2));
+        assert_eq!(count_transactions(""), Some(0));
     }
 
     /// A hostile handle must not be able to put a control character, or a
@@ -4152,9 +4460,12 @@ mod tests {
         // keeps this list from silently falling behind.
         let built = vec![
             // `import_invocation` — shared by the preview, the dedup
-            // measurement, the alias measurements and the real write.
-            import_invocation(&hledger, journal, rules, csv, &aliases, true),
-            import_invocation(&hledger, journal, rules, csv, &aliases, false),
+            // measurement, the alias measurements and the catch-up.
+            import_invocation(&hledger, journal, rules, csv, &aliases, ImportRun::Preview),
+            import_invocation(&hledger, journal, rules, csv, &aliases, ImportRun::Catchup),
+            // `restyle_invocation` — the journal's commodity styles, applied to
+            // the proposal, through a pipe.
+            restyle_invocation(&hledger, "commodity $1,000.00\n".to_string()),
             // `print_json` — candidate scoring.
             hledger
                 .invoke(alias_flags(&aliases))
@@ -4201,7 +4512,7 @@ mod tests {
     fn the_lint_covers_every_builder() {
         /// How many `.invoke(` call sites `every_import_invocation_disables_config_files`
         /// mirrors. Bump this **and add the builder to that test** together.
-        const MIRRORED: usize = 4;
+        const MIRRORED: usize = 5;
 
         let source = include_str!("import_api.rs");
         let production = source
@@ -4228,7 +4539,7 @@ mod tests {
             Path::new("/j/b.csv.rules"),
             Path::new("/j/b.csv"),
             &[],
-            true,
+            ImportRun::Preview,
         ));
         let flag = argv
             .iter()
@@ -4252,14 +4563,14 @@ mod tests {
     #[test]
     fn the_import_ignores_assertions_and_the_flag_precedes_the_subcommand() {
         let hledger = Hledger::for_tests(Path::new("/nonexistent/hledger"));
-        for dry_run in [true, false] {
+        for run in [ImportRun::Preview, ImportRun::Catchup] {
             let argv = argv_of(&import_invocation(
                 &hledger,
                 Path::new("/j/2026/2026.journal"),
                 Path::new("/j/b.csv.rules"),
                 Path::new("/j/b.csv"),
                 &[],
-                dry_run,
+                run,
             ));
             let flag = argv
                 .iter()

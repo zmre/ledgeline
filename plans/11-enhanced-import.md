@@ -525,7 +525,10 @@ to the include root, exactly as a rules `id` is.
 //   nothing to propose and nothing to reconcile; that state is `save-csv` below.
 {
   "ok": true,
-  "entries": "2026-02-01 GROCERY STORE\n    …",   // hledger's stdout, verbatim, re-parseable
+  "entries": "2026-02-01 GROCERY STORE\n    …",   // re-parseable journal text: hledger's dry-run
+                                                 // stdout, re-printed in the journal's own
+                                                 // commodity style. Literally the bytes `commit`
+                                                 // will append — see § Commodity style.
   "count": 3,
   "status": "would import 3 new transactions from bank.csv:",   // hledger's stderr, verbatim
   "skipped": {"olderThan":"2026-02-05","count":1},              // .latest dropped rows — or null
@@ -567,8 +570,9 @@ Sequencing rules the server owns, not the SPA:
 - `stage` writes the converted CSV to a per-session temp dir **named as the chosen destination
   will be**, and copies any existing `.latest.<name>` in beside it, so the dry-run sees the real
   dedup state. That is the only way `skipped` can be truthful before anything is written.
-- `commit` writes the CSV to its final destination **first**, then runs the real import there, so
-  hledger writes `.latest` next to the file it will look for next time.
+- `commit` writes the CSV to its final destination **first**, then previews and catches up there,
+  so `.latest` lands next to the file hledger will look for next time. (`commit` no longer lets
+  `hledger import` write the journal at all — see § Commodity style.)
 - A `blockedByGit` non-empty from `dry-run` makes `commit` refuse. The UI must not be the only
   thing enforcing that. `save-csv` refuses on the same terms: overwriting an uncommitted edit
   is the one thing `git diff` could not have undone.
@@ -696,6 +700,62 @@ Four changes:
 target file deliberately does not pass `hledger check` alone. `LEDGELINE_HLEDGER_LAYOUT_CHECK`
 (new, in `just hledger-checks`) asserts that every layout root does, and that this one's fragment
 does not — as a pair, since either half alone proves nothing.
+
+### Commodity style — an amendment made after WP-11 landed
+
+Per convention #9, recorded here rather than left as a surprise in the diff. No wire *field*
+changes; what changes is what one of them **contains**, plus which subprocess writes the journal.
+The motivating case is a real user's books: an accounts file declaring
+`commodity $1,000.00  ; comma thousands, 2 decimals`, and imported transactions arriving as
+`$165.2` and `$-405`.
+
+Verified against hledger 1.52, all of it against the binary:
+
+- **`import` applies a declared commodity's SEPARATOR and not its DECIMAL PLACES.** `12345.6`
+  is written `$12,345.6`; `165.2` stays `$165.2`; `-405` stays `$-405`. This is true whether the
+  import reads the root or a fragment, so it is not the include-scope problem fixed above.
+- **No flag on `import` changes it.** `-c/--commodity-style` makes no difference to its output,
+  and `--round` is rejected outright — `Unknown flag` — by the one subcommand that writes.
+- **`print --round` does apply it.** `soft` pads `$165.2` to `$165.20` and `$-405` to `$-405.00`
+  and, unlike `hard`, cannot change a value: hledger's own `--help` says `hard` "can unbalance
+  transactions", and with two declared places it writes `12345.678` as `$12,345.68`. `soft` is
+  therefore what is used, which is a **deviation from the brief's `--round=hard`** made on the
+  strength of that.
+- **`import --catchup` writes `.latest.FILE` and appends nothing.** The journal is byte-identical
+  afterwards; the state file is byte-identical to a writing import's, repeated same-date lines
+  included; a following dry-run reports no new transactions.
+- **Prepending a `commodity` directive changes how the entries PARSE.** With
+  `commodity 1.000,00 EUR` in scope, `print` re-reads its own `EUR165.2` as `1.652,00 EUR` and
+  exits zero. Reachable exactly here, because the import reads the *fragment*, which is the file
+  that does not carry the declaration.
+
+Five changes:
+
+- **`hledger import` no longer writes the journal.** `commit` runs `import --dry-run`, re-prints
+  the proposal through `hledger -I -f - print --round=soft` with the tree's own `commodity`
+  directives prepended, appends that itself through `edit::atomic_write`, and then runs
+  `import --catchup` so the dedup state stays exactly what hledger maintains. `ImportRun` has
+  **no variant that writes**, which is what keeps that structural rather than remembered.
+- **`dry-run`'s `entries` is the RESTYLED text** — the same field and type, now literally the
+  bytes the commit will append. `import_endpoints.rs::the_preview_is_the_bytes_that_are_appended`
+  asserts the appended region equals the previewed text plus hledger's own separator.
+- **`crates/ledgeline-core/src/restyle.rs` (new)** — `commodity_directives`, which spells
+  `Journal::commodity_styles` back out and drops any line that does not re-parse to the style it
+  came from; and `preserves_entries`, which compares two journal texts by **value** and is what
+  catches the decimal-mark hazard above. Both pure.
+- **Restyling never blocks an import.** No declared style, a `print` failure, or a comparison that
+  disagrees all fall back to hledger's own text and log. There is deliberately **no wire field**
+  for it: the preview still equals the bytes, so nothing on screen is wrong, and adding one would
+  have meant a change on the SPA side for a cosmetic outcome.
+- **A failed `--catchup` rolls the journal back** to the bytes read under the write mutex and
+  fails the whole commit, because the alternative — entries in the journal, marker not advanced —
+  duplicates them on the next import of the same statement. A roll-back that itself fails reports
+  the duplication risk in as many words.
+
+The appended bytes are **byte-compatible with hledger's own append**, pinned in both directions:
+`the_appended_bytes_match_hledgers_own_append` fixes the separator rule, and
+`a_journal_declaring_no_style_gets_hledgers_own_bytes` imports the same statement into a copy of
+the same journal with a real `hledger import` and compares the two files.
 
 ### Account aliases — a contract addition made after WP-11 landed
 

@@ -21,6 +21,8 @@
 //!   tabular extract (Enhanced imports; see `plans/11-enhanced-import.md`)
 //! - `hledger_conf` — the `--alias` options an `hledger.conf` declares, and
 //!   writing one into it (Enhanced imports)
+//! - `restyle` — spelling a journal's declared `commodity` styles back out, so
+//!   imported entries can be re-printed in them (Enhanced imports)
 
 pub mod aliases;
 pub mod assertions;
@@ -33,6 +35,7 @@ pub mod journals;
 pub mod model;
 pub mod parse;
 pub mod reports;
+pub mod restyle;
 pub mod rules;
 pub mod sort;
 pub mod wire;
