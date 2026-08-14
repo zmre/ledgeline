@@ -47,14 +47,31 @@
     const listing = $derived(aliasListing.value);
     const view = $derived(dataView(aliasListing.status, listing !== null));
 
-    // Seeding is an explicit call after a load, latched on the file's identity —
-    // never a `$effect` that re-runs on every keystroke and eats the user's
-    // typing. Same discipline as `EditRulesPanel`.
+    // Seeding is latched on the file's identity, never re-run on every render —
+    // otherwise it eats the user's typing. Same discipline as `EditRulesPanel`.
+    //
+    // The latch is a PLAIN `let`, deliberately not `$state`, which is the call
+    // `EditRulesPanel` makes with `selectedFor`. Two reasons, each fatal alone.
+    //
+    // `$state` deep-proxies on assignment, so a latch holding `chosen` compares
+    // a PROXY against the raw object on the next run and is never equal. And
+    // `$state` is tracked, so an effect that reads its own latch and writes it
+    // depends on itself. Either one spins this effect until Svelte throws
+    // `effect_update_depth_exceeded` — which does not merely break this panel,
+    // it kills the whole app: every button and every nav link stops responding,
+    // with no visible error. That is exactly how this shipped once.
+    //
+    // Keyed on the revision as well as the id, so a file that genuinely changed
+    // on disk re-seeds while a re-render does not.
+    let seededFor: string | null = null;
+
     $effect(() => {
         const files = listing?.files ?? [];
         if (files.length === 0) return;
         const chosen = files.find((file) => file.journalId === selectedId) ?? files[0];
-        if (baseFile === chosen) return;
+        const key = `${chosen.journalId}#${chosen.revision}`;
+        if (key === seededFor) return;
+        seededFor = key;
         selectedId = chosen.journalId;
         baseFile = chosen;
         form = toForm(chosen);
@@ -71,6 +88,7 @@
     function select(id: string): void {
         selectedId = id;
         baseFile = null;
+        seededFor = null;
     }
 
     function update(at: number, patch: Partial<AliasDraft>): void {
@@ -98,6 +116,7 @@
         // Re-seed from what the engine WROTE: an alias index is a parse ordinal,
         // and a delete renumbers every line below it.
         baseFile = result.file;
+        seededFor = `${result.file.journalId}#${result.file.revision}`;
         form = toForm(result.file);
         savedAt = Date.now();
     }
@@ -107,6 +126,7 @@
         if (url === null) return;
         aliasStore.clearConflict();
         baseFile = null;
+        seededFor = null;
         void aliasStore.reload(url);
     }
 
