@@ -14,57 +14,17 @@
 
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {settings} from "$lib/stores/settings.svelte";
+// The wire fixtures are shared with the component tests that mount this screen
+// — one copy of the engine's contract, asserted on from both projects.
+import {CAPABILITIES, STAGE, upload} from "$lib/testing/importFixtures";
 import {actionBlocker, importAction} from "./importModel";
 import {importStore} from "./importStore.svelte";
-
-const CAPABILITIES = {
-    hledger: {available: true, version: "1.52"},
-    formats: ["csv", "ofx"],
-    journals: [
-        {id: "2026/2026.journal", label: "2026.journal", txnCount: 412, lastTxnDate: "2026-08-01", isRoot: false, writable: true},
-        {id: "2025/2025.journal", label: "2025.journal", txnCount: 900, lastTxnDate: "2025-12-31", isRoot: false, writable: true},
-    ],
-    git: {available: true, autocommit: true},
-    editable: true,
-};
-
-const STAGE = {
-    stageId: "stage-1",
-    format: "csv",
-    preview: {header: ["date"], rows: [["2026-06-24"]], rowCount: 1, truncated: false},
-    statement: {ledgerBalance: "-3238.65"},
-    notes: [],
-    candidates: [
-        {
-            id: "import/2026/bank.csv.rules",
-            label: "bank",
-            score: 0.98,
-            // The account every posting this rules file makes lands in, and so
-            // the only account its statement balance could be asserted against.
-            account1: "assets:bank:checking",
-            signals: {txns: 1, postings: 2, amountlessPostings: 0, bareCommodityAmounts: 0, unknownAccounts: 0},
-            sample: [],
-        },
-        {
-            id: "import/2026/card.csv.rules",
-            label: "card",
-            score: 0.4,
-            account1: "liabilities:card:visa",
-            signals: {txns: 1, postings: 2, amountlessPostings: 0, bareCommodityAmounts: 0, unknownAccounts: 0},
-            sample: [],
-        },
-    ],
-    defaults: {csvPath: "import/2026/whatever.csv", journalId: "2026/2026.journal"},
-};
 
 const DRY_RUN = {ok: true, entries: "…", count: 3, status: "would import 3", skipped: null, balance: null, blockedByGit: []};
 
 const COMMIT = {csvWritten: "import/2026/bank.csv", journalWritten: "2026/2026.journal", imported: 3, ordering: {inOrder: true, moves: []}, git: null};
 
 const json = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
-
-/** A `File` without a DOM: node's `File` is enough for `.name` and `.arrayBuffer()`. */
-const upload = (name: string): File => new File(["date\n2026-06-24\n"], name, {type: "text/csv"});
 
 type FetchCall = [string, RequestInit | undefined];
 

@@ -1,11 +1,17 @@
 // The New Transactions flow's decisions, all of them, as pure functions.
 //
-// Not a style preference — a constraint. `web/vite.config.ts` declares ONE
-// vitest project, `node`, and explicitly excludes `*.svelte.test.ts`; there is
-// no component renderer in this repo and Chromium cannot launch in the build
-// environment either. So a decision written inside a `.svelte` file is a
-// decision that CANNOT be tested, and `model.ts` (the rules editor's twin of
-// this file) says the same thing at its head for the same reason.
+// Not a style preference. `model.ts` (the rules editor's twin of this file)
+// says the same thing at its head for the same reason.
+//
+// It used to be an absolute constraint: `web/vite.config.ts` declared ONE vitest
+// project, `node`, which excluded `*.svelte.test.ts`, so a decision written
+// inside a `.svelte` file was a decision that could not be tested at all. There
+// is now a second, `components`, that mounts them in jsdom — so the constraint
+// is softer, and the discipline is not. A decision in here is tested by naming
+// its inputs and reading its answer; the same decision in a template is tested
+// only by constructing a whole screen that reaches it, which costs more and
+// covers less. Spend the `components` project on what genuinely needs a DOM —
+// what a component was HANDED, and what it does when it is mounted.
 //
 // What that means in practice: the components under `ui/` may read a value and
 // place it on the screen, and may not decide anything. Which sections exist,
@@ -398,6 +404,13 @@ export function noteText(note: ConvertNote): string {
         }
         case "preambleSkipped":
             return `${note.lines} row${note.lines === 1 ? "" : "s"} of preamble above the header ${note.lines === 1 ? "was" : "were"} skipped.`;
+        case "trailerSkipped":
+            // Named loudly: a statement export can end in pages of disclaimer,
+            // and "we ignored the last 26 rows of your file" is the kind of
+            // helpfulness that must never be silent.
+            return `${note.lines} row${note.lines === 1 ? "" : "s"} below the last transaction ${note.lines === 1 ? "was" : "were"} skipped — a footer or disclaimer, not data.`;
+        case "blankRowsDropped":
+            return `${note.count} blank row${note.count === 1 ? " was" : "s were"} dropped. hledger abandons a whole file on one unreadable record, so an empty row cannot be passed through.`;
         case "raggedRows":
             return `${note.count} row${note.count === 1 ? " has" : "s have"} a different number of columns than the header.`;
         case "balanceMismatch":

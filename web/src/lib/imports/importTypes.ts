@@ -129,6 +129,8 @@ export type ConvertNote =
     | {readonly kind: "encodingGuessed"; readonly label: string}
     | {readonly kind: "delimiterSniffed"; readonly delimiter: string}
     | {readonly kind: "preambleSkipped"; readonly lines: number}
+    | {readonly kind: "trailerSkipped"; readonly lines: number}
+    | {readonly kind: "blankRowsDropped"; readonly count: number}
     | {readonly kind: "raggedRows"; readonly count: number}
     | {readonly kind: "balanceMismatch"; readonly expected: string; readonly computed: string};
 

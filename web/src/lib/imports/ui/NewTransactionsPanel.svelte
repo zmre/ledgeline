@@ -7,9 +7,12 @@
     // and hands each one its slice of the store. Every judgement it looks like
     // it is making — whether hledger gates the screen, which CSV path follows a
     // chosen rules file, what a `ConvertNote` says, whether a balance
-    // reconciles — is a tested function in `importModel.ts`, because a
-    // condition written in a `.svelte` file here is a condition that cannot be
-    // tested at all.
+    // reconciles — is a tested function in `importModel.ts`.
+    //
+    // Which leaves exactly one thing that can go wrong here, and it did: asking
+    // the WRONG tested function. `NewTransactionsPanel.svelte.test.ts` and its
+    // `.staged.` sibling mount this file for that, in the `components` vitest
+    // project.
     //
     // The capabilities probe is the outer async surface and comes FIRST for a
     // reason: it is what says whether hledger can be run, and with no usable

@@ -1,10 +1,12 @@
 // The New Transactions flow, tested where it is testable.
 //
-// There is no component renderer in this repo — `vite.config.ts` declares one
-// `node` vitest project and excludes `*.svelte.test.ts`, and Chromium cannot
-// launch in the build environment — so the whole screen was built with its
-// decisions in `importModel.ts` and its wire knowledge in `nativeDecode.ts`
-// precisely so that this file can cover them.
+// The whole screen was built with its decisions in `importModel.ts` and its
+// wire knowledge in `nativeDecode.ts` precisely so that this file can cover them
+// without a DOM. (It was written when that was the only option: `vite.config.ts`
+// had one `node` vitest project and excluded `*.svelte.test.ts`. There is now a
+// `components` project too — see `ui/NewTransactionsPanel.svelte.test.ts`, which
+// covers what this file structurally cannot, namely which of these answers the
+// screen actually asks for.)
 //
 // The wire fixtures below are LITERAL JSON, copied from "The lane E wire
 // contract" in plans/11-enhanced-import.md rather than round-tripped through
@@ -203,6 +205,8 @@ describe("UNIT import wire decoders", () => {
                 {kind: "encodingGuessed", label: "windows-1252"},
                 {kind: "delimiterSniffed", delimiter: ";"},
                 {kind: "preambleSkipped", lines: 4},
+                {kind: "trailerSkipped", lines: 26},
+                {kind: "blankRowsDropped", count: 14},
                 {kind: "raggedRows", count: 2},
                 {kind: "balanceMismatch", expected: "100.00", computed: "99.00"},
             ],
@@ -213,6 +217,8 @@ describe("UNIT import wire decoders", () => {
             "encodingGuessed",
             "delimiterSniffed",
             "preambleSkipped",
+            "trailerSkipped",
+            "blankRowsDropped",
             "raggedRows",
             "balanceMismatch",
         ]);
@@ -1026,5 +1032,25 @@ describe("UNIT hledger banner copy", () => {
     it("always has the engine's own sentence to show beside the copy", () => {
         expect(capabilities().hledger.message).toBeNull();
         expect(withReason("notFound").hledger.message).toBe("engine says so");
+    });
+});
+
+describe("the notes a statement export earns", () => {
+    // A real brokerage export ends in 26 rows of disclaimer: 14 blank, 12 prose.
+    // Before those were trimmed, hledger aborted the whole read on the first
+    // blank record and the user's rules file looked broken. Both notes are the
+    // engine saying what it removed, and a note nobody renders is the same as
+    // silence — which is the failure this pair exists to prevent.
+    it("says a trailer was skipped, and how much of one", () => {
+        expect(noteText({kind: "trailerSkipped", lines: 26})).toContain("26 rows below the last transaction");
+        expect(noteText({kind: "trailerSkipped", lines: 1})).toContain("1 row below the last transaction");
+        expect(noteText({kind: "trailerSkipped", lines: 1})).toContain("was skipped");
+    });
+
+    it("says blank rows were dropped, and why they could not be passed through", () => {
+        expect(noteText({kind: "blankRowsDropped", count: 14})).toContain("14 blank rows were dropped");
+        expect(noteText({kind: "blankRowsDropped", count: 1})).toContain("1 blank row was dropped");
+        // The reason matters more than the count: it is why this is not pedantry.
+        expect(noteText({kind: "blankRowsDropped", count: 1})).toContain("one unreadable record");
     });
 });

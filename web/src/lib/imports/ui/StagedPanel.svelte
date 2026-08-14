@@ -5,9 +5,12 @@
     // Which of those exist is `visibleSections`'s decision, not this file's —
     // the `sections` prop is the machine's output and this component only asks
     // whether a name is in it. That split is the same one `model.ts` makes for
-    // the rules editor and exists for the same reason: there is no component
-    // renderer in this repo, so a condition written here is a condition that
-    // cannot be tested.
+    // the rules editor: a condition named and answered in a pure function is
+    // tested by calling it, while the same condition written here is testable
+    // only by building a whole screen that reaches it. (When this was written
+    // the latter was not possible at all — see `importModel.ts`. It is now, in
+    // the `components` vitest project, and `NewTransactionsPanel.staged.svelte.test.ts`
+    // uses it to check that the values this panel is HANDED are the right ones.)
     import AsyncSection from "$lib/components/AsyncSection.svelte";
     import {actionBlocker, actionLabel, importAction, shows, validateCsvPath, type ImportSection} from "../importModel";
     import type {JournalTarget, StagedFile} from "../importTypes";

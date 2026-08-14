@@ -9,11 +9,23 @@
 // `$0.00` and "no transactions match the current filters" for a journal that was
 // never read (FE-5b). Nothing on screen said anything had failed.
 //
-// This reads the templates as text, which is unusual and worth justifying: the
-// vitest config here has a single `node` project and explicitly EXCLUDES
-// `*.svelte.test.ts`, so there is no component renderer to mount these in, and
-// Chromium cannot launch in this environment either. The property is about
-// branch ORDER in a template, so source order is the honest thing to assert.
+// This reads the templates as text, which is unusual and worth justifying.
+//
+// (The original justification — "there is no component renderer in this repo" —
+// is no longer true: `vite.config.ts` now declares a second `components` vitest
+// project that mounts `*.svelte.test.ts` in jsdom. The reasons below are the
+// ones that survive that.)
+//
+// The property is about branch ORDER in a template, so source order is the
+// honest thing to assert: a render test can only show that the error branch won
+// for the ONE state it was set up in, whereas an error branch placed after the
+// data branch is dead for every state that has ever loaded, and enumerating
+// those is not a test anybody writes. And this sweeps ELEVEN files at once for
+// the price of reading them, including the negative half — "no surface has
+// quietly grown a second, hand-rolled chain beside the shared one" — which is a
+// claim about files nobody has mounted and nobody thought to mount. That is
+// exactly the regression this guards, and it is the shape a renderer is worst
+// at. Mount tests for these surfaces are welcome alongside it, not instead.
 //
 // WHAT CHANGED (DRY-6). The four hand-written copies of that chain are gone —
 // they are one `<AsyncSection>` now. So the ordering assertion moved to the one

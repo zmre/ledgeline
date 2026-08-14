@@ -2,11 +2,23 @@
 // infinite loop.
 //
 // Reading files as text is unusual, and the justification is the same one
-// `branchOrder.test.ts` gives: the vitest project here has a single `node`
-// project and explicitly EXCLUDES `*.svelte.test.ts`, so there is no component
-// renderer to mount anything in, and Chromium cannot launch in this environment
-// either. A behavioural test for this is not available at any price. A textual
-// one is, and this bug is worth one.
+// `branchOrder.test.ts` gives — minus the part that has since expired.
+//
+// It used to say a behavioural test was not available at any price, because the
+// vitest config had a single `node` project that excluded `*.svelte.test.ts`.
+// That is no longer so: there is now a `components` project, and
+// `AliasPanel.svelte.test.ts` mounts the panel this rule was written for and
+// fails with the real `effect_update_depth_exceeded` if the latch is put back
+// the way it was.
+//
+// This still earns its keep, for the reason a mount test cannot cover: it reads
+// EVERY `.svelte` and `.svelte.ts` file under `src/`, including the ones nobody
+// has written a component test for and the one somebody adds next week. A mount
+// test proves one panel survives; this proves the shape is absent everywhere,
+// and it does it in milliseconds without a DOM. The two are complements — a
+// render test catches novel ways of writing a self-feeding effect that this
+// regex will never know about, and this catches the known one in files no
+// render test visits.
 //
 // # The bug this exists for
 //

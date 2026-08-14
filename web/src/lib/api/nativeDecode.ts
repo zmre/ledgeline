@@ -1629,6 +1629,10 @@ function decodeConvertNote(raw: RawConvertNote | undefined, context: string): Co
             return Object.freeze({kind: "delimiterSniffed" as const, delimiter: str(raw.delimiter, `${context} delimiter`)});
         case "preambleSkipped":
             return Object.freeze({kind: "preambleSkipped" as const, lines: num(raw.lines, `${context} lines`)});
+        case "trailerSkipped":
+            return Object.freeze({kind: "trailerSkipped" as const, lines: num(raw.lines, `${context} lines`)});
+        case "blankRowsDropped":
+            return Object.freeze({kind: "blankRowsDropped" as const, count: num(raw.count, `${context} count`)});
         case "raggedRows":
             return Object.freeze({kind: "raggedRows" as const, count: num(raw.count, `${context} count`)});
         case "balanceMismatch":
