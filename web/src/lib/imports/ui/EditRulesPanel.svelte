@@ -28,6 +28,7 @@
     import RulesFileList from "$lib/imports/ui/RulesFileList.svelte";
     import RulesList from "$lib/imports/ui/RulesList.svelte";
     import {journal} from "$lib/stores/journal.svelte";
+    import {holdUnsavedEdits} from "$lib/stores/refreshAll";
     import {settings} from "$lib/stores/settings.svelte";
 
     type Tab = "prefs" | "mapping" | "accounts";
@@ -87,11 +88,20 @@
     // `TransactionModal`, keyed on document identity instead of a boolean. A
     // naive effect here would overwrite what the user is typing on every
     // unrelated reactive tick.
-    let seededFrom: RulesDocument | null = null;
+    //
+    // Keyed on `id#revision` and no longer on the document OBJECT, which is what
+    // `AliasPanel` already does. Object identity made every re-read a re-seed,
+    // even of bytes that had not changed — so the header's Refresh button, which
+    // now re-opens this document, would have thrown the user back to the
+    // Preferences tab and rebuilt every card each time it was pressed. A
+    // revision is the engine's own answer to "are these the same bytes".
+    let seededFrom: string | null = null;
     $effect(() => {
         const open = openRules.value;
-        if (open === null || open.doc === seededFrom) return;
-        seededFrom = open.doc;
+        if (open === null) return;
+        const key = `${open.doc.id}#${open.doc.revision}`;
+        if (key === seededFrom) return;
+        seededFrom = key;
         baseDoc = open.doc;
         form = toForm(open.doc);
         formEpoch += 1;
@@ -108,6 +118,17 @@
     /** Read-only unless BOTH the server allows writes and this document does. */
     const canEdit = $derived(index?.editable === true && form?.editable === true);
     const disabled = $derived(!canEdit || rulesStore.saving);
+
+    // The header's Refresh button re-opens this document. Say so while there is
+    // an unsaved edit in the form, because re-reading the file underneath one
+    // replaces the user's typing with the bytes on disk and reports nothing.
+    // Withdrawn on unmount as well as on every clean state, so leaving the tab
+    // cannot leave a claim behind that blocks refreshes forever.
+    $effect(() => {
+        holdUnsavedEdits("openRules", dirty);
+        return () => holdUnsavedEdits("openRules", false);
+    });
+
     const csvFields = $derived(form === null ? [] : (fieldNames(form.items) ?? []));
     const fallbackAccount = $derived(form === null ? "" : (settingText(form.items, "account2") ?? ""));
 
@@ -159,6 +180,11 @@
         // keeping the old ones would make the next save address items that no
         // longer exist.
         baseDoc = result.doc;
+        // The latch moves with it. A save does not refetch `openRules`, so this
+        // is the only place that knows the revision advanced — without it the
+        // next global refresh would read those same bytes back and re-seed the
+        // form for nothing.
+        seededFrom = `${result.doc.id}#${result.doc.revision}`;
         form = toForm(result.doc);
         savedAt = Date.now();
     }

@@ -26,6 +26,7 @@
     // Every decision here is a call into `aliasModel.ts`. This file is markup.
     import AsyncSection from "$lib/components/AsyncSection.svelte";
     import {dataView} from "$lib/stores/loadState";
+    import {holdUnsavedEdits} from "$lib/stores/refreshAll";
     import {onServerReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
     import {ALIAS_EXPLAINER, aliasBadges, aliasText, blankRow, isDirty, toForm, toSaveRequest, validateForm} from "../aliasModel";
@@ -84,6 +85,16 @@
     const dirty = $derived(isDirty(baseline, form));
     const canEdit = $derived((listing?.editable ?? false) && (form?.writable ?? false));
     const disabled = $derived(!canEdit || aliasStore.saving);
+
+    // The header's Refresh button re-reads this listing. While the form holds an
+    // unsaved edit it must not, because a listing whose revision moved re-seeds
+    // the form through the effect above and the user's typing goes with it.
+    // Withdrawn on unmount too, so leaving the tab does not block later
+    // refreshes. Same claim `EditRulesPanel` makes for the open rules document.
+    $effect(() => {
+        holdUnsavedEdits("aliases", dirty);
+        return () => holdUnsavedEdits("aliases", false);
+    });
 
     function select(id: string): void {
         selectedId = id;
@@ -167,7 +178,11 @@
             {/if}
 
             {#if aliasStore.conflict}
-                <div class="alert alert-warning rounded-box flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-aliases-conflict">
+                <!-- `flex` before `flex-col`: daisyUI's `.alert` is
+                     `display:grid; grid-auto-flow:column`, so `flex-col` alone
+                     is inert and the button lands beside the sentence in a
+                     column of its own. See `routes/alertStacking.test.ts`. -->
+                <div class="alert alert-warning rounded-box flex flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-aliases-conflict">
                     <span>
                         {form?.label ?? "This journal"} changed on disk since you opened it, so nothing was written. Reload it and re-apply your edit — saving over
                         it would discard whatever the other change was.

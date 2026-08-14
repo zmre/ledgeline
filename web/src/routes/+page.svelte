@@ -91,7 +91,11 @@
 
     {#if loadFailed}
         <div class="flex grow items-center justify-center" data-testid="journal-error">
-            <div class="alert alert-error rounded-box max-w-xl flex-col items-start gap-2 px-4 py-3 text-sm" role="alert">
+            <!-- `flex` before `flex-col`: `.alert` is a grid with
+                 `grid-auto-flow:column`, so `flex-col` alone leaves the
+                 headline, the message and the button as three thin columns.
+                 See `routes/alertStacking.test.ts`. -->
+            <div class="alert alert-error rounded-box flex max-w-xl flex-col items-start gap-2 px-4 py-3 text-sm" role="alert">
                 <span class="font-semibold">Couldn't load the journal — no transactions were read.</span>
                 <span class="break-words">{journal.error ?? "unknown error"}</span>
                 <button type="button" class="btn btn-sm" onclick={() => void journal.refresh({force: true})}>Retry</button>

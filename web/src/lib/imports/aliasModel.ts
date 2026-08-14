@@ -404,3 +404,79 @@ export function parityWarning(parity: CliParity): string | null {
 export function canInstallParityFix(parity: CliParity, editable: boolean): boolean {
     return editable && parity.writable && parity.additions.length > 0;
 }
+
+// ---------------------------------------------------------------------------
+// The one panel the two notices share
+// ---------------------------------------------------------------------------
+
+/**
+ * Names the two sides of the parity list, for the case where it is worth
+ * printing at all.
+ *
+ * {@link parityNotice}'s differences are `command-line answer → Ledgeline's`,
+ * which is a direction no reader can infer from a list of pairs. Stating it is
+ * what stops the list being read as a repeat of the rename list above it.
+ */
+export const PARITY_DIFFERENCE_LEAD = "Each pair is the account a terminal would file it under, then the account Ledgeline files it under:";
+
+/** Said INSTEAD of the list when {@link parityRepeatsRenames}. */
+export const PARITY_SAME_ACCOUNTS = "The accounts are the ones listed above: a terminal would leave them as the rules file wrote them.";
+
+/**
+ * Is the command-line list the rewrite list all over again?
+ *
+ * Usually, yes — and this is the real reason the two notices were reported as
+ * "both saying much the same thing". With no `hledger.conf` in force, a terminal
+ * produces exactly the account names the rules file wrote and Ledgeline produces
+ * the aliased ones, so `cli.differences` is the SAME set of pairs as `renames`.
+ * The screen printed that set twice, under two headlines, in two boxes. Not
+ * similar-looking: character for character identical.
+ *
+ * When that holds, the panel names the accounts above instead of reprinting
+ * them. A config file that supplies some of the aliases and not others makes the
+ * two lists genuinely diverge, and then the list earns its space.
+ *
+ * Keyed on {@link renameText} so "the same pair" means the same thing here as it
+ * does on screen — a comparison that disagreed with what is rendered would hide
+ * a list the user can see is different.
+ */
+export function parityRepeatsRenames(effect: AliasEffect): boolean {
+    if (effect.cli.differences.length === 0) return false;
+    const shown = new Set(effect.renames.map(renameText));
+    return effect.cli.differences.every((difference) => shown.has(renameText(difference)));
+}
+
+/**
+ * Is there an alias panel to show at all?
+ *
+ * The rewrite notice and the parity notice were two separate alerts, and the
+ * owner read them as one thing said twice: both are headed by a sentence about
+ * aliases and both are followed by a list of `from → to` pairs. They are not the
+ * same fact — one says what WILL happen to these account names, the other says
+ * where it will NOT happen — but two boxes is the wrong way to say so, because
+ * the difference lives in the second half of each sentence and the eye never
+ * gets there. One panel, primary statement first, is the fix; this is what
+ * decides whether that panel exists.
+ *
+ * Deliberately an OR and not a claim that parity implies renames. Parity
+ * divergence is caused by the very aliases the rename list shows, so in practice
+ * the second never fires without the first — but that is the engine's
+ * measurement to make, not a shape this function may assume, and a panel that
+ * vanished on a case nobody predicted would take the fix button with it.
+ */
+export function showsAliasEffect(effect: AliasEffect | null): boolean {
+    return aliasNotice(effect) !== null || parityNotice(effect) !== null;
+}
+
+/**
+ * The panel's tone.
+ *
+ * `info` for the ordinary case, because aliases rewriting account names is what
+ * the user asked for by writing them — it is worth SEEING before an irreversible
+ * step, which is not the same as it being a problem. `warning` only once the
+ * parity half has something to say, since that half is the one describing a way
+ * the same import diverges from the same import.
+ */
+export function aliasEffectTone(effect: AliasEffect | null): "info" | "warning" {
+    return parityNotice(effect) === null ? "info" : "warning";
+}

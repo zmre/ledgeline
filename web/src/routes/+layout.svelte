@@ -9,6 +9,7 @@
     import {rulesStore} from "$lib/imports/rulesStore.svelte";
     import {journal} from "$lib/stores/journal.svelte";
     import {problems} from "$lib/stores/problems.svelte";
+    import {refreshEverything} from "$lib/stores/refreshAll";
     import {onServerReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
@@ -86,13 +87,19 @@
                 <div class="navbar-end gap-1 pr-2">
                     <ProblemsBadge />
                     {#if conn !== "none"}
+                        <!-- Every resource on screen, not just the journal —
+                             `refreshAll.ts` says what "every" means and why the
+                             journal alone was the wrong promise for this icon.
+                             The spinner still hangs off `journal.status`: it is
+                             the long one, and the other four are a round trip
+                             each. -->
                         <button
                             type="button"
                             class="btn btn-ghost btn-xs btn-circle"
-                            title="Refresh journal data now"
-                            aria-label="Refresh journal data now"
+                            title="Refresh everything on screen now"
+                            aria-label="Refresh everything on screen now"
                             disabled={conn === "loading"}
-                            onclick={() => void journal.refresh({force: true})}
+                            onclick={() => void refreshEverything()}
                         >
                             <svg
                                 class="h-4 w-4 {conn === 'loading' ? 'animate-spin' : ''}"

@@ -11,11 +11,16 @@ import {
     relevantAliases,
     renameText,
     toEdits,
+    aliasEffectTone,
     canInstallParityFix,
+    PARITY_DIFFERENCE_LEAD,
     PARITY_EXPLAINER,
+    PARITY_SAME_ACCOUNTS,
     parityFixLabel,
     parityNotice,
+    parityRepeatsRenames,
     parityWarning,
+    showsAliasEffect,
     toForm,
     toSaveRequest,
     validateForm,
@@ -393,5 +398,72 @@ describe("UNIT aliasModel — command-line parity", () => {
         expect(canInstallParityFix(parity({additions: []}), true)).toBe(false);
         expect(canInstallParityFix(parity({additions: ["a=b"], writable: false}), true)).toBe(false);
         expect(canInstallParityFix(parity({additions: ["a=b"]}), false)).toBe(false);
+    });
+});
+
+// The two notices were two alerts, and the owner read them as one thing said
+// twice. These are the decisions that merged them into one panel: whether there
+// is a panel at all, how loud it is, and — the part that turned out to be the
+// actual complaint — whether the second list is the first list again.
+describe("UNIT aliasModel — the one panel the two notices share", () => {
+    it("shows a panel when either half has something to say", () => {
+        expect(showsAliasEffect(effect())).toBe(true);
+        expect(showsAliasEffect(diverged())).toBe(true);
+    });
+
+    it("stays away entirely on the ordinary import", () => {
+        // Two distinct silences that must look the same on screen: no alias is
+        // in force at all, and aliases are in force but matched nothing here.
+        expect(showsAliasEffect(null)).toBe(false);
+        expect(showsAliasEffect(effect({renames: []}))).toBe(false);
+    });
+
+    it("stays informational until the two tools disagree", () => {
+        // Aliases rewriting account names is what the user asked for by writing
+        // them. A panel that shouts on every import is one nobody reads when it
+        // matters.
+        expect(aliasEffectTone(effect())).toBe("info");
+        expect(aliasEffectTone(null)).toBe("info");
+        expect(aliasEffectTone(diverged())).toBe("warning");
+    });
+
+    it("notices when the parity list is the rename list over again", () => {
+        // The default shape of this screen, not a corner case. With no
+        // hledger.conf in force a terminal writes what the rules file produced
+        // and Ledgeline writes the aliased name, so the divergence IS the
+        // rename — note that `diverged()` above had to write the same pair
+        // twice to be realistic. That set, printed under two headlines in two
+        // boxes, is the whole of "both saying much the same thing".
+        expect(parityRepeatsRenames(diverged())).toBe(true);
+    });
+
+    it("keeps the list when a config file makes the two genuinely differ", () => {
+        // Suppressing a list that says something new would be the worse bug.
+        expect(parityRepeatsRenames(diverged({differences: [{from: "assets:morganstanley:roth", to: "assets:morganstanley:pw-roth-ira"}]}))).toBe(false);
+        // A partial overlap is still worth printing whole: dropping the pairs
+        // that happen to coincide would leave a list whose length disagrees
+        // with the headline's count.
+        expect(
+            parityRepeatsRenames(
+                diverged({
+                    differences: [
+                        {from: "PW Roth IRA - 3077:cash", to: "assets:morganstanley:pw-roth-ira:cash"},
+                        {from: "assets:morganstanley:roth", to: "assets:morganstanley:pw-roth-ira"},
+                    ],
+                })
+            )
+        ).toBe(false);
+    });
+
+    it("claims no repeat when there is nothing to repeat", () => {
+        expect(parityRepeatsRenames(diverged({differences: []}))).toBe(false);
+    });
+
+    it("names the direction of the list, and of the sentence that replaces it", () => {
+        // A list of pairs carries no direction, and this list runs the opposite
+        // way round from the rename list above it in the same panel.
+        expect(PARITY_DIFFERENCE_LEAD).toContain("a terminal would file it under");
+        expect(PARITY_DIFFERENCE_LEAD).toContain("Ledgeline files it under");
+        expect(PARITY_SAME_ACCOUNTS).toContain("listed above");
     });
 });

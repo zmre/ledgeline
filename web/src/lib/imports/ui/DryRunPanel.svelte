@@ -1,7 +1,7 @@
 <script lang="ts">
     // The dry run: everything that must be seen before anything is written.
     //
-    // Four things in one panel, in the order they matter:
+    // Five things in one panel, in the order they matter:
     //
     //  1. A FAILURE renders hledger's stderr VERBATIM in a `<pre>` and is never
     //     paraphrased. hledger's import errors echo the offending CSV record
@@ -13,27 +13,27 @@
     //     lives beside the data file, keyed to its name, holding the newest date
     //     already imported, and a row older than that simply is not in the
     //     output. Nothing in hledger's own text mentions it.
-    //  3. The balance reconciliation — statement vs computed vs the difference.
-    //  4. The git block. A modified target refuses the import until it is
+    //  3. What the journal's aliases do to these account names, and where that
+    //     rewrite does not reach. ONE panel for both — `AliasEffectPanel` owns
+    //     the whole of it, including the decision to stay quiet, which is what it
+    //     does on the ordinary import. It was two alerts here and they were read
+    //     as one thing said twice.
+    //  4. The balance reconciliation — statement vs computed vs the difference.
+    //  5. The git block. A modified target refuses the import until it is
     //     committed, and the ENGINE enforces that too; this panel is not the
     //     only thing standing between an import and an unrecoverable overwrite.
     //
     // The proposed entries are hledger's stdout — valid, re-parseable journal
     // text, not scraped human-readable output — so they are shown as they are.
+    //
+    // Every alert below says `flex flex-col`, never `flex-col` alone: daisyUI's
+    // `.alert` is `display:grid; grid-auto-flow:column` and lays its children out
+    // as narrow side-by-side columns without it. `routes/alertStacking.test.ts`
+    // enforces that across every component.
     import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {
-        aliasNotice,
-        aliasText,
-        canInstallParityFix,
-        PARITY_EXPLAINER,
-        parityFixLabel,
-        parityNotice,
-        parityWarning,
-        relevantAliases,
-        renameText,
-    } from "../aliasModel";
     import {balanceVerdict, canWrite, gitBlockMessage, skippedWarning} from "../importModel";
     import type {AliasEntry, ConfWritten, DryRunResult} from "../importTypes";
+    import AliasEffectPanel from "./AliasEffectPanel.svelte";
 
     let {
         view,
@@ -88,113 +88,21 @@
                     </div>
                 {/if}
 
-                <!--
-                    An account rewrite happening silently, immediately before the
-                    only irreversible step on this screen, is exactly what must
-                    not happen. The renames are the ENGINE's measurement — the
-                    same import run again with no aliases, diffed — so this is
-                    what hledger will do rather than what we think it will.
-                    `aliasNotice` returns null when the aliases matched nothing
-                    here, which is what keeps the section quiet on the ordinary
-                    import.
-                -->
-                {#if aliasNotice(run.aliases) !== null}
-                    <div class="alert alert-info rounded-box flex-col items-start gap-2 py-2 text-sm" role="status" data-testid="imports-alias-effect">
-                        <span class="font-semibold">{aliasNotice(run.aliases)}</span>
-                        <ul class="list-inside list-disc font-mono text-xs">
-                            {#each run.aliases?.renames ?? [] as rename (rename.from)}
-                                <li>{renameText(rename)}</li>
-                            {/each}
-                        </ul>
-                        {#each relevantAliases(aliases, run.aliases) as relevance (relevance.alias.journalId + relevance.alias.index)}
-                            <span class="text-xs">
-                                {relevance.attributable ? "From" : "Possibly from"}
-                                <code>{aliasText(relevance.alias)}</code>
-                                in {relevance.alias.journalId}, line {relevance.alias.line}.
-                            </span>
-                        {/each}
-                    </div>
-                {/if}
-
-                <!--
-                    Command-line parity. An `alias` line in a journal is not
-                    applied to an imported CSV — hledger's behaviour, not ours —
-                    so Ledgeline forwards it explicitly and a plain
-                    `hledger import` in a terminal does not. That means the same
-                    statement, the same rules file and the same journal produce
-                    two different sets of account names depending on which tool
-                    was reached for, silently.
-
-                    `parityNotice` is null whenever the engine MEASURED the two
-                    as agreeing, which is every ordinary import, so this section
-                    is invisible until it is the answer to a real question.
-                -->
-                {#if run.aliases !== null && parityNotice(run.aliases) !== null}
-                    {@const parity = run.aliases.cli}
-                    <div class="alert alert-warning rounded-box flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-cli-parity">
-                        <span class="font-semibold">{parityNotice(run.aliases)}</span>
-                        <p class="text-xs">{PARITY_EXPLAINER}</p>
-
-                        <ul class="list-inside list-disc font-mono text-xs" data-testid="imports-cli-parity-differences">
-                            {#each parity.differences as difference (difference.from)}
-                                <li>from a terminal: {renameText(difference)}</li>
-                            {/each}
-                        </ul>
-
-                        {#if parityWarning(parity) !== null}
-                            <p class="text-xs" data-testid="imports-cli-parity-warning">{parityWarning(parity)}</p>
-                        {/if}
-
-                        {#if parity.additions.length > 0}
-                            <!-- Shown BEFORE the button is pressed, because the
-                                 conversion is not lossless: a space becomes `.`,
-                                 which matches any character, and a plain alias
-                                 written as a regex becomes case-insensitive.
-                                 Both are widenings, and a user is entitled to
-                                 see the exact line before it is written. -->
-                            <span class="text-xs">These lines would be added:</span>
-                            <ul class="list-inside font-mono text-xs" data-testid="imports-cli-parity-additions">
-                                {#each parity.additions as addition (addition)}
-                                    <li>--alias={addition}</li>
-                                {/each}
-                            </ul>
-                        {/if}
-
-                        {#each parity.refusals as refusal (refusal.pattern + refusal.replacement)}
-                            <span class="text-xs" data-testid="imports-cli-parity-refusal">
-                                <code>{refusal.pattern} → {refusal.replacement}</code> cannot be added because {refusal.message}.
-                            </span>
-                        {/each}
-
-                        {#if canInstallParityFix(parity, editable)}
-                            <button
-                                type="button"
-                                class="btn btn-sm"
-                                disabled={confWriting}
-                                onclick={() => onInstallConf(parity.revision)}
-                                data-testid="imports-cli-parity-fix"
-                            >
-                                {#if confWriting}<span class="loading loading-spinner loading-xs"></span>{/if}
-                                {parityFixLabel(parity)}
-                            </button>
-                        {/if}
-
-                        {#if confWritten !== null}
-                            <span class="text-xs" data-testid="imports-cli-parity-written">
-                                {confWritten.created ? "Created" : "Updated"}
-                                {confWritten.confPath} with {confWritten.added.length} alias{confWritten.added.length === 1 ? "" : "es"}.
-                            </span>
-                        {/if}
-                        {#if confError !== null}
-                            <span class="text-error text-xs" data-testid="imports-cli-parity-error">{confError}</span>
-                        {/if}
-                    </div>
-                {/if}
+                <!-- ONE panel for both alias facts — what the aliases rewrite
+                     here, and where that rewrite does not reach. They were two
+                     alerts and were read as one thing said twice;
+                     `AliasEffectPanel` explains the merge and owns the whole of
+                     it, including staying quiet on the ordinary import. -->
+                <AliasEffectPanel effect={run.aliases} {aliases} {editable} {confWriting} {confWritten} {confError} {onInstallConf} />
 
                 {#if run.balance !== null}
                     {@const verdict = balanceVerdict(run.balance)}
+                    <!-- `flex` before `flex-col`: `.alert` is a grid with
+                         `grid-auto-flow:column`, so without it the headline and
+                         the three amounts under it sit in two columns.
+                         See `routes/alertStacking.test.ts`. -->
                     <div
-                        class="alert rounded-box flex-col items-start gap-1 py-2 text-sm {verdict.tone === 'success' ? 'alert-success' : 'alert-error'}"
+                        class="alert rounded-box flex flex-col items-start gap-1 py-2 text-sm {verdict.tone === 'success' ? 'alert-success' : 'alert-error'}"
                         role="status"
                         data-testid="imports-balance-check"
                     >
@@ -204,9 +112,13 @@
                 {/if}
 
                 {#if gitBlockMessage(run.blockedByGit) !== null}
-                    <div class="alert alert-warning rounded-box flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-git-blocked">
+                    <!-- `flex` before `flex-col`: `.alert` is a grid with
+                         `grid-auto-flow:column`, so without it the sentence and
+                         the list of blocked paths become two thin columns.
+                         See `routes/alertStacking.test.ts`. -->
+                    <div class="alert alert-warning rounded-box flex flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-git-blocked">
                         <span>{gitBlockMessage(run.blockedByGit)}</span>
-                        <ul class="list-inside list-disc font-mono text-xs">
+                        <ul class="list-inside list-disc font-mono text-xs break-all">
                             {#each run.blockedByGit as path (path)}
                                 <li>{path}</li>
                             {/each}

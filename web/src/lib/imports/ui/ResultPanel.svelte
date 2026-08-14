@@ -50,7 +50,11 @@
             </ul>
 
             {#if reorderOffer(commit) !== null && sortMoved === null}
-                <div class="alert alert-warning rounded-box flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-out-of-order">
+                <!-- `flex` before `flex-col`: `.alert` is a grid with
+                     `grid-auto-flow:column`, so without it the sentence, the
+                     list of moved lines and the button become three thin
+                     side-by-side columns. See `routes/alertStacking.test.ts`. -->
+                <div class="alert alert-warning rounded-box flex flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-out-of-order">
                     <span>{reorderOffer(commit)}</span>
                     <ul class="max-h-48 overflow-auto font-mono text-xs">
                         {#each commit.ordering.moves as move (`${move.fromLine}-${move.toLine}`)}
