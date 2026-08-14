@@ -200,8 +200,12 @@ jobs:
 
   # TypeScript / SvelteKit side: build the SPA and run its unit + type checks.
   # This job deliberately runs vitest with NO live engine, which is what proves
-  # the unit suite is self-contained. The `e2e` job below re-runs it against a
-  # real server to un-skip the round-trip contract suites.
+  # the suite is self-contained. The `e2e` job below re-runs it against a real
+  # server to un-skip the round-trip contract suites.
+  #
+  # `test:unit` runs BOTH vitest projects: `unit` (node, pure functions) and
+  # `components` (jsdom, mounted `*.svelte.test.ts`). Neither needs an engine or
+  # a browser, so both belong in this job and not in `e2e`.
   spa:
     name: SPA (build + unit + check)
     runs-on: ubuntu-latest
