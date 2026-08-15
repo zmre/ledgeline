@@ -32,7 +32,6 @@ why.
 | `crates/ledgeline-core/src/sort.rs` | Format-preserving date sort of a journal file |
 | `crates/ledgeline-core/src/journals.rs` | Ranking candidate target journals, by content only |
 | `crates/ledgeline-core/src/aliases.rs` | `alias` directives: forwarding them to `--alias`, and the one-line-wide span editor |
-| `crates/ledgeline-core/src/restyle.rs` | Spelling declared `commodity` styles back out, and the value-preservation guard on a re-styling |
 | `crates/ledgeline-core/src/hledger_conf.rs` | `hledger.conf`: reading its `--alias` options, and the escaping rule for writing one |
 | `crates/ledgeline-server/src/rules_api.rs` | `/api/rules`, `/api/rules/{*id}`, `/api/rules-preview/{*id}` |
 | `crates/ledgeline-server/src/alias_api.rs` | `/api/aliases`, `/api/aliases/{*journalId}` |
@@ -195,71 +194,81 @@ Two reads deliberately stay on the target, and they are not oversights:
 
 > **`hledger import` never writes a user's journal. It previews, and it remembers.**
 
-The commit runs four steps where the obvious design runs one:
+The commit runs three steps where the obvious design runs one:
 
 1. `hledger import --dry-run` → the deduped proposal, on stdout;
-2. `hledger -I -f - print --round=soft`, fed the tree's own `commodity` directives followed by
-   that proposal → the same transactions in the journal's own spelling;
-3. Ledgeline appends that text with `edit::atomic_write`;
-4. `hledger import --catchup` → hledger records `.latest.NAME` itself.
+2. Ledgeline appends that text, unaltered, with `edit::atomic_write`;
+3. `hledger import --catchup` → hledger records `.latest.NAME` itself.
 
 ### Why
 
-`hledger import` writes a CSV's amounts with the declared **digit-group separator** and without
-the declared **decimal places**, and no flag changes it. Verified against 1.52, on a journal
-declaring `commodity $1,000.00`:
+Because it makes **the preview the bytes.** The text the dry-run route returned is the text the
+commit appends — the same string, not a second rendering of the same proposal that could drift
+from the one the user approved on screen. Everything below rests on that: the byte-compatibility
+oracle can compare whole files, and the entry count is taken from the text that actually landed.
 
-```console
-$ hledger -f main.journal import --dry-run --rules bank.csv.rules bank.csv
-    assets:bank:checking           $-405        # CSV said `-405`
-    assets:bank:checking          $165.2        # CSV said `165.2`
-    assets:bank:checking       $12,345.6        # separator applied, places not
-$ hledger -f main.journal import --round=soft …
-hledger: Error: Unknown flag: --round
-```
+Splitting the write also means Ledgeline owns the one atomic operation it needs to own, and hledger
+keeps owning `.latest` — the dedup state stays a thing hledger maintains in hledger's format,
+rather than something Ledgeline now has an opinion about.
 
-`-c/--commodity-style` makes no difference to an import's output either. `print` *does* apply the
-places, so the styling has to be done by a command that cannot write, and the writing has to be
-done by something that is not `import`. Hence the split.
+### Commodity style — why imported amounts keep hledger's own spelling
 
-It buys a second property worth having on its own: **the preview is the bytes.** The dry-run route
-returns the re-styled text, and the commit appends exactly that — there is no second rendering
-that could drift from the one the user approved.
+> **Read this before proposing to re-print imported entries in the journal's declared style. It
+> was built, it worked, and it was removed on purpose.**
 
-### `--round=soft`, not `hard`
+A journal declaring `commodity $1,000.00` receives `$165.2` and `$-405` where its author writes
+`$165.20` and `$-405.00`. That is real, it is mildly annoying, and it is **accepted**.
 
-Both pad `$165.2` to `$165.20`. `hard` also rounds, and hledger's own `--help` says it "can
-unbalance transactions": with two declared decimal places, a statement row of `12345.678` would be
-written into the books as `$12,345.68`. `soft` adds and removes decimal **zeros** only, so it
-cannot change a value. The whole change is cosmetic; it must not be capable of anything else.
+The facts, all verified against hledger 1.52:
 
-### The three ways it declines, and why each one is silent
-
-Every one of them falls back to hledger's own unstyled text, logs a line, and lets the import
-land. A slightly ugly amount is a much better outcome than a blocked import.
-
-- **The tree declares no `commodity` style.** Then there is nothing to restyle *by*, and
-  `print --round` would invent a canonical precision out of whatever is in this batch — one row
-  ending `.678` would pad the other two to three places. Skipping the step entirely is what keeps
-  an undeclared journal importing byte-for-byte as it did before, which
-  `a_journal_declaring_no_style_gets_hledgers_own_bytes` proves against a real `hledger import`.
-- **`print` failed.** It gets `-I` for the same structural reason `import` does: a rules file's
-  `balance` field writes an assertion into the proposal, and an account's running balance cannot
-  hold in three transactions read by themselves.
-- **The re-styling did not preserve the entries.** This is the sharp one. A prepended directive
-  changes how the entries **parse**, not only how they print:
+- `hledger import` applies a declared commodity's **digit-group separator** and *not* its **decimal
+  places**, and no flag on `import` changes that. `-c/--commodity-style` makes no difference to its
+  output; `--round` is rejected outright:
 
   ```console
-  $ hledger -f 2026/2026.journal import --dry-run …    # the fragment declares nothing
-      assets:bank:checking        EUR165.2
-  $ printf 'commodity 1.000,00 EUR\n\n…' | hledger -I -f- print --round=soft
-      assets:bank:checking     1.652,00 EUR             # exit 0
+  $ hledger -f main.journal import --dry-run --rules bank.csv.rules bank.csv
+      assets:bank:checking           $-405        # CSV said `-405`
+      assets:bank:checking          $165.2        # CSV said `165.2`
+      assets:bank:checking       $12,345.6        # separator applied, places not
+  $ hledger -f main.journal import --round=soft …
+  hledger: Error: Unknown flag: --round
   ```
 
-  Ten times the money, silently. `restyle::preserves_entries` parses both texts **bare** — with no
-  directive in scope, so a misparse cannot be reproduced on both sides — and compares dates,
-  descriptions, status, code, tags, accounts, amounts and balance assertions by *value*. Anything
-  that disagrees drops the whole re-styling.
+- **Re-styling does work.** `hledger -I -f - print --round=soft`, fed the tree's own `commodity`
+  directives followed by the proposal, produces exactly the wanted `$165.20` and `$-405.00`. It was
+  implemented, tested and working (`restyle.rs`, commit `b53323b`) before being taken back out.
+  `soft` rather than `hard`, because `hard` rounds — hledger's own `--help` says it "can unbalance
+  transactions" — and would write a `12345.678` statement row into the books as `$12,345.68`.
+
+**It was removed because prepending those directives changes how the entries *parse*, not merely
+how they print.**
+
+```console
+$ hledger -f 2026/2026.journal import --dry-run …    # the fragment declares nothing
+    assets:bank:checking        EUR165.2
+$ printf 'commodity 1.000,00 EUR\n\n…' | hledger -I -f- print --round=soft
+    assets:bank:checking     1.652,00 EUR             # exit 0
+```
+
+Ten times the money, silently. It is reachable precisely here because the import reads a
+**fragment** — the file that does not carry the declaration — so hledger writes the CSV's own `.`
+while the tree declares `,`.
+
+A value-comparison guard *did* catch it: parse both texts bare, compare dates, status, code, tags,
+accounts, amounts and assertions, and discard the restyle on any disagreement. The guard worked.
+It was still not worth it. On a multi-commodity book the failure mode is not a tidy tenfold on a
+bank balance but a **mangled share quantity**, and a cosmetic gain does not justify carrying that
+class of risk at all — not even behind a guard that currently holds. (The motivating user's own
+rules file carries a commented-out `#currency $ # messes up stock quantities`; they had already met
+the shape of this problem once.)
+
+So: imported amounts keep hledger's own spelling.
+`imported_amounts_keep_hledgers_own_spelling_not_the_declared_style` asserts it, so the behaviour
+cannot drift back by accident.
+
+If a future implementer wants the declared style, the safe direction is to make the **CSV carry
+correctly-scaled amounts** — a rules-file or preprocessor concern, where the number is still just a
+number — rather than re-printing finished entries under directives they were not parsed with.
 
 ### The catch-up, and what happens when it fails
 
@@ -289,6 +298,11 @@ appended "\n2026-02-01 A\n    …$-405\n\n2026-02-03 B\n    …$165.2\n"
 Note what hledger does *not* do: it never checks whether the file already ends in a newline, so a
 journal saved without one gets the first imported transaction on the line straight after the last
 posting. Reproduced exactly. An empty proposal appends nothing at all.
+
+`the_appended_bytes_are_hledgers_own_append` proves it end to end: the same statement is imported
+into a copy of the same journal by a real `hledger import`, and the two files are compared byte for
+byte. With nothing re-styling the proposal in between, that now describes **every** journal rather
+than only the ones declaring no commodity style.
 
 ## The one invariant everything rests on
 

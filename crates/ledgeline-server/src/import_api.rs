@@ -109,7 +109,6 @@ use ledgeline_core::decimal::Dec;
 use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
 use ledgeline_core::journals::{self, JournalTarget};
-use ledgeline_core::restyle;
 use ledgeline_core::rules::matching::{self, Candidate, Ranking, Score, Signals};
 use ledgeline_core::rules::{self, Discovery, RulesDoc};
 use ledgeline_core::sort;
@@ -192,18 +191,9 @@ const BALANCE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// hledger's `-I`, spelled out.
 ///
-/// It goes on exactly the two invocations that read journal text **out of the
-/// tree it belongs to**, and on nothing that reads a balance:
-///
-/// * [`import_invocation`], which reads the target file in isolation — the
-///   argument is at that function, at length, because the next reader's instinct
-///   will be to delete it;
-/// * [`restyle_invocation`], which reads the *proposed entries* on their own. A
-///   rules file's `balance` field writes an assertion into them, and an
-///   assertion carrying an account's whole running balance cannot hold in three
-///   transactions read by themselves. Verified: `print` over such a proposal
-///   exits non-zero and prints nothing at all, which would turn every import
-///   from a `balance`-field rules file into a silent fall-back.
+/// It goes on **exactly one** invocation — [`import_invocation`], the only one
+/// that reads a target file in isolation — and the argument for it is at that
+/// function, at length, because the next reader's instinct will be to delete it.
 ///
 /// [`verify_balance`] and [`check_assertion`] deliberately carry neither, and
 /// `no_balance_invocation_ignores_assertions` pins that.
@@ -211,13 +201,6 @@ const BALANCE_TIMEOUT: Duration = Duration::from_secs(60);
 /// The long spelling is used so the argv says what it does; `-I` is the same
 /// flag and hledger accepts both.
 const IGNORE_ASSERTIONS: &str = "--ignore-assertions";
-
-/// hledger's `--round=soft`: pad or trim decimal **zeros** to the declared
-/// display precision, and change nothing else.
-///
-/// The whole of the re-styling — see [`restyle_invocation`] for the pipeline and
-/// [`ledgeline_core::restyle`] for why `soft` rather than `hard`.
-const ROUND_SOFT: &str = "--round=soft";
 
 // ===========================================================================
 // Response wire types (native, camelCase)
@@ -1453,13 +1436,13 @@ fn run(invocation: Invocation, what: &str) -> Result<Output, AppError> {
 
 /// What one `hledger import` run is for.
 ///
-/// **There is no variant that writes**, and that is the point of the type. Since
-/// the re-styling landed, hledger never appends to a user's journal: it proposes
-/// (`--dry-run`), Ledgeline re-prints the proposal in the journal's own commodity
-/// style and appends it through [`edit::atomic_write`](ledgeline_core::edit::atomic_write),
-/// and then hledger is asked to record its own dedup state (`--catchup`). A
-/// third variant spelling "and now actually write it" would put back the split
-/// between what the preview showed and what landed — see [`run_commit`].
+/// **There is no variant that writes**, and that is the point of the type.
+/// hledger never appends to a user's journal: it proposes (`--dry-run`),
+/// Ledgeline appends that exact text through
+/// [`edit::atomic_write`](ledgeline_core::edit::atomic_write), and then hledger
+/// is asked to record its own dedup state (`--catchup`). A third variant
+/// spelling "and now actually write it" would put back the split between what
+/// the preview showed and what landed — see [`run_commit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ImportRun {
     /// `--dry-run`: the proposed entries on stdout, nothing on disk.
@@ -1571,90 +1554,6 @@ fn import_invocation(
         .arg(rules)
         .arg(csv)
         .timeout(IMPORT_TIMEOUT)
-}
-
-/// `hledger -I -f - print --round=soft`, fed one journal on stdin: the target
-/// tree's `commodity` directives, then the proposed entries.
-///
-/// # Why this exists at all
-///
-/// `hledger import` writes a CSV's amounts with the declared **separators** but
-/// not the declared **decimal places**, and there is no flag that changes it:
-/// `-c/--commodity-style` does nothing to an import's output and `--round` is
-/// rejected outright (`Unknown flag`) by `import`. So a journal declaring
-/// `commodity $1,000.00` receives `$165.2` and `$-405` where its author writes
-/// `$165.20` and `$-405.00`. All of it verified against hledger 1.52; the long
-/// version is in [`ledgeline_core::restyle`].
-///
-/// `print` does apply it, which is why the write moved here.
-///
-/// # Why the directives are prepended rather than the journal `include`d
-///
-/// [`verify_balance`]'s trick — `include <ROOT>` on the first line — would make
-/// `print` emit the **whole journal**, not the handful of entries being styled.
-/// What is wanted is the styles alone, and hledger drops directives from
-/// `print` output, so prepending them costs nothing on the way out.
-///
-/// It is also the reason [`ledgeline_core::restyle::preserves_entries`] exists:
-/// a directive in scope changes how the entries **parse**, and a European one
-/// re-reads `1234.5 EUR` as `12.345,00 EUR` with exit zero.
-fn restyle_invocation(hledger: &Hledger, journal: String) -> Invocation {
-    hledger
-        .invoke([IGNORE_ASSERTIONS])
-        .args(["-f", "-", "print", ROUND_SOFT])
-        .stdin(journal.into_bytes())
-        .timeout(IMPORT_TIMEOUT)
-}
-
-/// The proposed entries, re-printed in the journal tree's own commodity styles —
-/// or hledger's own text, unchanged, when anything at all is off.
-///
-/// This is the function whose output becomes both the preview and the bytes
-/// appended to the journal, so every way it can decline ends in the same place:
-/// **hledger's original entries**. A slightly ugly amount is a far better outcome
-/// than a blocked import, and every fall-back is logged rather than swallowed.
-///
-/// It declines when:
-///
-/// * the tree declares no commodity style — then there is nothing to restyle
-///   *by*, and `print --round` would invent a canonical precision out of
-///   whatever happens to be in this batch (one row ending `.678` would pad the
-///   other two to three places). This is what keeps a journal with no
-///   `commodity` directive importing exactly as it did before;
-/// * there is nothing to restyle;
-/// * hledger could not be run, or refused;
-/// * the result does not describe the same transactions, by value
-///   ([`restyle::preserves_entries`]). That is the guard against the directives
-///   changing how the entries *parse*, which is a 10× silent wrong answer rather
-///   than an error.
-fn restyled(plan: &Plan, entries: &str) -> String {
-    if plan.commodity_directives.is_empty() || entries.trim().is_empty() {
-        return entries.to_string();
-    }
-    let decline = |why: &str| {
-        // Not a wire field: the preview and the bytes still agree, so nothing on
-        // screen is wrong — the amounts merely keep hledger's own spelling. The
-        // operator's log is where "why does this journal not match my others"
-        // gets answered.
-        eprintln!(
-            "ledgeline: imported entries kept hledger's own number formatting ({why}); the \
-             amounts are correct, they simply do not carry the journal's declared decimal places"
-        );
-        entries.to_string()
-    };
-    let source = format!("{}\n{entries}", plan.commodity_directives);
-    match restyle_invocation(&plan.hledger, source).run() {
-        Err(error) => decline(&error.to_string()),
-        Ok(output) if !output.success() => decline(&plan.redactor.apply(&output.stderr_lossy())),
-        Ok(output) => {
-            let styled = output.stdout_lossy();
-            if restyle::preserves_entries(entries, &styled) {
-                styled
-            } else {
-                decline("re-printing them did not round-trip to the same transactions")
-            }
-        }
-    }
 }
 
 /// The bytes to append to a journal for `entries`, exactly as `hledger import`
@@ -2659,16 +2558,6 @@ struct Plan {
     /// writing a config line needs the pattern and replacement apart, which an
     /// assembled `OLD=NEW` argument has already joined.
     declared: Vec<aliases::Forwarded>,
-    /// The `commodity` directives of the whole TREE, spelled back out, ready to
-    /// prepend to a proposal — see [`restyle_invocation`]. Empty when the tree
-    /// declares none, which is the signal to leave hledger's output alone.
-    ///
-    /// From [`root_journal`](Self::root_journal)'s parse and never the target's,
-    /// for the reason this whole type is split in two: the motivating layout
-    /// keeps every declaration in an `accounts.journal` that the target file
-    /// neither is nor includes. Resolved once, here, so the preview and the
-    /// write cannot be styled differently.
-    commodity_directives: String,
     /// The journal's own DIRECTORY — the include root every handle is confined
     /// to. Named for the thing it is, because a `root` beside a `root_journal`
     /// is the ambiguity this type's docs are about.
@@ -2698,11 +2587,7 @@ impl Plan {
         // Both homes an account alias can live in — see `AliasArguments::merge`
         // for why the config's come first.
         let conf = conf_in_force(&root_dir);
-        let snapshot = state.snapshot();
-        let declared = aliases::forward(&snapshot.journal);
-        // The whole tree's declared styles, which in a split layout live in a
-        // file the target does not include. See `restyle_invocation`.
-        let commodity_directives = restyle::commodity_directives(&snapshot.journal);
+        let declared = aliases::forward(&state.snapshot().journal);
         let aliases = AliasArguments::merge(
             declared
                 .iter()
@@ -2735,7 +2620,6 @@ impl Plan {
             csv_name,
             aliases,
             declared,
-            commodity_directives,
             root_dir,
             conf,
             redactor,
@@ -2786,12 +2670,11 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
         }));
     }
 
-    // hledger's own proposal, and then the same thing in the journal's own
-    // commodity style. `proposed` stays in reach because `alias_effect` measures
-    // account rewrites by diffing two proposals, and both of its sides have to
-    // come off the same pipeline.
-    let proposed = output.stdout_lossy();
-    let entries = restyled(&plan, &proposed);
+    // hledger's own proposal, verbatim — and therefore literally the bytes
+    // `commit` will append. Nothing re-renders it in between; see `run_commit`,
+    // and `docs/imports.md` § "Commodity style" for why re-printing it under the
+    // tree's `commodity` directives is deliberately NOT done.
+    let entries = output.stdout_lossy();
     let status = output.stderr_lossy();
     let count = count_transactions(&entries)
         .or_else(|| reported_count(&status, "would import"))
@@ -2827,7 +2710,7 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
         status: plan.redactor.apply(&status),
         skipped: skipped_by_dedup(&plan, count)?,
         balance,
-        aliases: alias_effect(&plan, &staged, &proposed)?,
+        aliases: alias_effect(&plan, &staged, &entries)?,
         blocked_by_git: if autocommit_enabled(&prefs::load()) {
             blocked_by_git(&plan.targets(request))
         } else {
@@ -3106,22 +2989,22 @@ pub(crate) async fn commit(
 /// # Ledgeline appends; hledger only ever proposes and remembers
 ///
 /// The obvious shape — hand the CSV to `hledger import` and let it append — is
-/// not what happens, and the reason is [`restyle_invocation`]: `import` writes a
-/// CSV's amounts without the declared decimal places, and there is no flag that
-/// changes it. So the write is split into three steps that hledger cannot do in
-/// one:
+/// not what happens. The write is three steps instead of one:
 ///
-/// 1. `import --dry-run` → the deduped proposal, on stdout;
-/// 2. re-print it through `print --round=soft` in the tree's own commodity style
-///    ([`restyled`]), which is also **exactly what the dry-run route returned**;
-/// 3. append it with [`edit::atomic_write`](ledgeline_core::edit::atomic_write),
+/// 1. `import --dry-run` → the deduped proposal, on stdout, which is **exactly
+///    what the dry-run route returned** to the screen;
+/// 2. append it with [`edit::atomic_write`](ledgeline_core::edit::atomic_write),
 ///    byte-compatibly with hledger's own append ([`appended_text`]);
-/// 4. `import --catchup` → hledger records `.latest.NAME` itself, so the dedup
+/// 3. `import --catchup` → hledger records `.latest.NAME` itself, so the dedup
 ///    state stays the thing hledger maintains rather than something Ledgeline
 ///    now has an opinion about.
 ///
-/// The property that buys, beyond the fix: **the preview is the bytes**. There
-/// is no second rendering that could drift from the one the user approved.
+/// What that buys: **the preview is the bytes**. There is no second rendering
+/// that could drift from the one the user approved — and, deliberately, no
+/// re-styling step either. Imported amounts keep hledger's own spelling, even
+/// when the tree declares a `commodity` style they do not match; `docs/imports.md`
+/// § "Commodity style" records why re-printing them is a hazard rather than a
+/// polish.
 ///
 /// # What happens if the catch-up fails
 ///
@@ -3193,9 +3076,9 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
             plan.redactor.apply(&output.stderr_lossy())
         )));
     }
-    // The same two steps the dry-run route ran, in the same order, from the same
-    // `Plan` — which is what makes the preview the bytes.
-    let entries = restyled(&plan, &output.stdout_lossy());
+    // The same one step the dry-run route ran, from the same `Plan` — which is
+    // what makes the preview the bytes.
+    let entries = output.stdout_lossy();
     let imported = count_transactions(&entries)
         .or_else(|| reported_count(&output.stderr_lossy(), "would import"))
         .unwrap_or(0);
@@ -4463,9 +4346,6 @@ mod tests {
             // measurement, the alias measurements and the catch-up.
             import_invocation(&hledger, journal, rules, csv, &aliases, ImportRun::Preview),
             import_invocation(&hledger, journal, rules, csv, &aliases, ImportRun::Catchup),
-            // `restyle_invocation` — the journal's commodity styles, applied to
-            // the proposal, through a pipe.
-            restyle_invocation(&hledger, "commodity $1,000.00\n".to_string()),
             // `print_json` — candidate scoring.
             hledger
                 .invoke(alias_flags(&aliases))
@@ -4512,7 +4392,7 @@ mod tests {
     fn the_lint_covers_every_builder() {
         /// How many `.invoke(` call sites `every_import_invocation_disables_config_files`
         /// mirrors. Bump this **and add the builder to that test** together.
-        const MIRRORED: usize = 5;
+        const MIRRORED: usize = 4;
 
         let source = include_str!("import_api.rs");
         let production = source

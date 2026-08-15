@@ -107,16 +107,34 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
+- feat: import drag/drop
+  - auto convert pdf or qif or ofx or xls or whatever quickbooks produces to csv
+  - guess matching rules file options and suggest csv store then store it out
+  - shell to hledger to import the csv and display the results of the import (success or not)
+  - fix ordering and run checks
+  - ask for balances to add balance checks in file?
+  - command line options
+- feat: new import rules
+  - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
+- feat: edit budget
+  - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
+- feat: zillow integration
+  - Need a way to map an asset to an address. Maybe a special comment in the accounts file?
+  - Need a way to map the unrealized gains for that address
+  - Then on some sort of "update" click (how/where on UI?), it fetches the latest value (or launches a page and then prompts for it?), calculates the difference relative to the current asset value and then makes an adjustment to the unrealized account with a comment saying the current zestimate
 - A QuickLook plugin for journal files — render a file's transactions nicely for fast Finder browsing
   (see `mbr-markdown-browser` for the approach).
-- feat: edit budget
-- feat: preferences?
 - feat: private AI integration?
-- feat: intelligent category suggestions?
-- feat: remember categorization functionality — write a chosen category back into the rules file as a
-  new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
-- feat: imports, the rest of it — generate a starting rules file from a CSV, and convert PDF invoices /
-  QIF / OFX / XLS to CSV first
+- feat: stock price updates
+  - basically my script, maybe ported into rust, for querying yahoo and updating a prices file. should try to figure out where prices already live and if it can't find anything, prompt for location and include a new file from the base file for the purpose.
+  - this should all be on the holdings tab
+  - when i change the gain timeline, everything else should update, too, notably the "value over time" which is fixed to previous 12 months
+  - the gain timeline also needs more options. lets do 5yr, 3mo, 1mo, and 1 week as additions
+- feat: intelligent category suggestions
+  - only real way to do this is with some sort of lookback comparing similar descriptions in the past and seeing associated expense or revenue accounts
+  - need to remove random numbers from description and maybe do a predominance calculation or a vector comparison rather than full equality.  if we're doing equality and removing numbers, we need to normalize some by lowercasing.  but in a perfect world, "netflix.com" might see a previous "netflix" and guess category based on that.  the more exact the match and the more recent, the higher the sort ranking
+  - feat: remember categorization functionality — write a chosen category back into the rules file as a new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
+- feat: for the journal list, accounts get truncated past a certain width, but this leaves the unimportant info (left side of account, things like `assets` and `expenses`) visible and hides the most important bits, which are the right-most parts. Can we more intelligently truncate or reduce the display (showing the full thing on hover as we do already)
 - feat: saved report filters?
 - feat: planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
