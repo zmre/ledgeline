@@ -159,9 +159,13 @@ engine-build:
 engine-test:
     cargo test
 
+# `--all`, not bare `--check`: the workspace root has no bin or lib of its own,
+# so plain `cargo fmt` exits non-zero with "Failed to find targets" and never
+# formats anything. `nix build .#fmt` (what CI runs) uses crane's cargoFmt, which
+# already passes --all — so this recipe was the only place that was broken.
 # Format + lint the Rust engine (clippy warnings are errors)
 engine-check:
-    cargo fmt --check && cargo clippy --all-targets -- -D warnings
+    cargo fmt --all --check && cargo clippy --all-targets -- -D warnings
 
 # Run the local engine server (Phase 2+): `just serve-engine ~/finance/2026.journal`
 serve-engine file="fixtures/sample.journal":

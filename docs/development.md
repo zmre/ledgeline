@@ -50,7 +50,7 @@ faster. Push that layer to Cachix (below) and CI + teammates skip it entirely.
 | `nix build .#ledgeline` | The `ledgeline` binary (proves the GUI deps link: webkitgtk on Linux, system WebKit on macOS). It is `.#default` on Linux. |
 | `nix build .#clippy` | `cargo clippy --all-targets -- -D warnings` |
 | `nix build .#tests` | `cargo test` over the whole workspace |
-| `nix build .#fmt` | `cargo fmt --check` |
+| `nix build .#fmt` | `cargo fmt --all --check` (crane's `cargoFmt`; `--all` is required — the workspace root has no targets of its own) |
 | `nix build .#macApp` | **macOS only** — just the `result/Applications/Ledgeline.app` bundle, **real** SPA embedded (see below). |
 | `nix build` (bare, macOS) | **macOS only** `.#default` — the combined `result/{bin/ledgeline, Applications/Ledgeline.app}` (CLI on PATH + the app). |
 | `nix flake check` | Runs all of the checks above |
