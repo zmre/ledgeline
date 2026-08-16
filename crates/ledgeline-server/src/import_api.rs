@@ -2120,21 +2120,10 @@ pub(crate) async fn capabilities(State(state): State<AppState>) -> Result<Respon
 /// Every format the New Transactions tab accepts, in the order the UI lists
 /// them. Spelled from the engine's own names so the two cannot drift.
 fn convert_formats() -> Vec<&'static str> {
-    [
-        SourceFormat::Csv,
-        SourceFormat::Tsv,
-        SourceFormat::Ssv,
-        SourceFormat::Ofx,
-        SourceFormat::Qfx,
-        SourceFormat::Xls,
-        SourceFormat::Xlsx,
-        SourceFormat::Xlsm,
-        SourceFormat::Xlsb,
-        SourceFormat::Ods,
-    ]
-    .into_iter()
-    .map(SourceFormat::as_str)
-    .collect()
+    SourceFormat::ALL
+        .into_iter()
+        .map(SourceFormat::as_str)
+        .collect()
 }
 
 /// `POST /api/import/stage` — raw bytes plus `X-Ledgeline-Filename`.

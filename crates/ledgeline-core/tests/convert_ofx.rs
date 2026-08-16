@@ -810,6 +810,27 @@ fn the_real_statements_are_detected_as_the_dialect_they_are() {
 }
 
 #[test]
+fn quickbooks_web_connect_is_read_end_to_end_as_its_own_dialect() {
+    use ledgeline_core::convert::{convert, detect};
+    // A `.qbo` is Web Connect: the same OFX 1.x SGML a `.qfx` carries, under a
+    // third extension. Asserted through the WHOLE path -- detect, then
+    // dispatch -- because the two used to disagree in a way no test could see.
+    // `.qbo` was folded into `SourceFormat::Qfx`, so it parsed perfectly while
+    // being impossible to publish in `/api/import/capabilities`, and the SPA
+    // refused the file before the engine ever saw it.
+    let bytes = fixture("real-creditline-v102.qfx");
+    assert_eq!(detect("webconnect.qbo", &bytes), Ok(SourceFormat::Qbo));
+
+    let qbo = convert(SourceFormat::Qbo, &bytes).expect("a .qbo converts");
+    assert_eq!(
+        qbo,
+        parsed("real-creditline-v102.qfx"),
+        "the dialect label changes nothing about what is read"
+    );
+    assert!(!qbo.rows.is_empty(), "the fixture carries transactions");
+}
+
+#[test]
 fn no_real_fixture_still_carries_an_institution_name() {
     // A guard on the scrub itself, not on the parser. If someone refreshes
     // these fixtures from a new download and forgets to anonymise, this fails

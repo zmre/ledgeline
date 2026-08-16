@@ -15,7 +15,7 @@ disagree, the binary won and the doc claim is called out.
 - An **Imports subnav** mirroring the Reports tab strip: **New Transactions** (first, default)
   and **Edit Rules** (today's page, moved wholesale).
 - A **drop target + file picker** on New Transactions accepting `.csv`, `.tsv`, `.ssv`,
-  `.ofx`, `.qfx`, `.xls`, `.xlsx`, `.xlsm`, `.xlsb`, `.ods`.
+  `.ofx`, `.qfx`, `.qbo`, `.xls`, `.xlsx`, `.xlsm`, `.xlsb`, `.ods`.
 - A **preprocessor** normalising each of those to one in-memory CSV, with a preview of the
   first rows shown back to the user.
 - **Rules-file candidate matching**: score every discovered `*.rules` against the incoming
@@ -493,7 +493,7 @@ to the include root, exactly as a rules `id` is.
 {
   "hledger": {"available": true, "version": "1.52"},
   //  or:    {"available": false, "reason": "notFound"|"tooOld"|"unrunnable", "message": "…"}
-  "formats": ["csv","tsv","ssv","ofx","qfx","xls","xlsx","xlsm","xlsb","ods"],
+  "formats": ["csv","tsv","ssv","ofx","qfx","qbo","xls","xlsx","xlsm","xlsb","ods"],
   "journals": [{"id":"2026/2026.journal","label":"2026.journal","txnCount":412,
                 "lastTxnDate":"2026-08-01","isRoot":false,"writable":true}],
   "git": {"available": true, "autocommit": true},

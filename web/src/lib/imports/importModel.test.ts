@@ -75,7 +75,7 @@ import type {CommitResult, ImportCapabilities, JournalTarget, StagedFile} from "
 
 const CAPABILITIES_JSON = {
     hledger: {available: true, version: "1.52"},
-    formats: ["csv", "tsv", "ssv", "ofx", "qfx", "xls", "xlsx", "xlsm", "xlsb", "ods"],
+    formats: ["csv", "tsv", "ssv", "ofx", "qfx", "qbo", "xls", "xlsx", "xlsm", "xlsb", "ods"],
     journals: [{id: "2026/2026.journal", label: "2026.journal", txnCount: 412, lastTxnDate: "2026-08-01", isRoot: false, writable: true}],
     git: {available: true, autocommit: true},
     editable: true,
@@ -515,6 +515,17 @@ describe("UNIT the dropped file", () => {
 
     it("lets a supported extension through regardless of case", () => {
         expect(refuseFile("BANK.CSV", ["csv"])).toBeNull();
+    });
+
+    it("lets a QuickBooks Web Connect file through, and offers it in the picker", () => {
+        // The engine has always READ .qbo -- it is OFX -- but it published the
+        // dialect as "qfx", so this refusal fired on a format that would have
+        // converted fine, and the picker never listed it. Both halves are
+        // driven by the same published list, so both are asserted here.
+        const formats = decodeImportCapabilities(CAPABILITIES_JSON).formats;
+        expect(formats).toContain("qbo");
+        expect(refuseFile("statement.qbo", formats)).toBeNull();
+        expect(acceptAttribute(formats)).toContain(".qbo");
     });
 
     it("lists formats as a sentence", () => {

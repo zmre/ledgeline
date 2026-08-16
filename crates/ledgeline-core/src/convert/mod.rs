@@ -104,6 +104,7 @@ pub enum SourceFormat {
     Ssv,
     Ofx,
     Qfx,
+    Qbo,
     Xls,
     Xlsx,
     Xlsm,
@@ -112,6 +113,26 @@ pub enum SourceFormat {
 }
 
 impl SourceFormat {
+    /// Every format, in the order the New Transactions tab lists them.
+    ///
+    /// `/api/import/capabilities` publishes this, and the SPA refuses any
+    /// extension it does not contain, so a variant missing here is a format the
+    /// engine reads but the file picker will not offer. Derived from the enum
+    /// rather than hand-listed at the call site for that reason.
+    pub const ALL: [Self; 11] = [
+        Self::Csv,
+        Self::Tsv,
+        Self::Ssv,
+        Self::Ofx,
+        Self::Qfx,
+        Self::Qbo,
+        Self::Xls,
+        Self::Xlsx,
+        Self::Xlsm,
+        Self::Xlsb,
+        Self::Ods,
+    ];
+
     /// Lowercase display name, used in messages and in the wire types.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -121,6 +142,7 @@ impl SourceFormat {
             Self::Ssv => "ssv",
             Self::Ofx => "ofx",
             Self::Qfx => "qfx",
+            Self::Qbo => "qbo",
             Self::Xls => "xls",
             Self::Xlsx => "xlsx",
             Self::Xlsm => "xlsm",
@@ -133,6 +155,20 @@ impl SourceFormat {
     #[must_use]
     pub fn is_delimited(self) -> bool {
         matches!(self, Self::Csv | Self::Tsv | Self::Ssv)
+    }
+
+    /// Whether this format is read by the OFX backend.
+    ///
+    /// All three dialects parse identically — QFX adds Quicken's `INTU.BID` to
+    /// `SONRS` and QuickBooks Web Connect (`.qbo`) is the same file under a
+    /// third name — so the variants differ only in what we call them. They must
+    /// share a predicate rather than a hand-written `|` chain: [`convert`]
+    /// dispatches with a catch-all arm, so a dialect missing from that arm
+    /// reaches the delimited parser and fails as "malformed" instead of failing
+    /// to compile.
+    #[must_use]
+    pub fn is_ofx(self) -> bool {
+        matches!(self, Self::Ofx | Self::Qfx | Self::Qbo)
     }
 
     /// Whether this format is read by the spreadsheet backend.
@@ -219,10 +255,15 @@ pub fn detect(name: &str, bytes: &[u8]) -> Result<SourceFormat, ConvertError> {
         });
     }
     if ofx::looks_like_ofx(bytes) {
-        // OFX and QFX parse identically; the distinction is only ever cosmetic
-        // (QFX adds INTU.BID), so the name decides how we label it.
+        // OFX, QFX and QBO parse identically; the distinction is only ever
+        // cosmetic (QFX adds INTU.BID), so the name decides how we label it.
+        // They are labelled apart rather than folded together because the label
+        // is what `/api/import/capabilities` publishes, and the SPA refuses any
+        // extension absent from that list -- folding `.qbo` into `Qfx` made a
+        // format the engine reads unselectable in the file picker.
         return Ok(match ext.as_deref() {
-            Some("qfx") | Some("qbo") => SourceFormat::Qfx,
+            Some("qfx") => SourceFormat::Qfx,
+            Some("qbo") => SourceFormat::Qbo,
             _ => SourceFormat::Ofx,
         });
     }
@@ -232,7 +273,8 @@ pub fn detect(name: &str, bytes: &[u8]) -> Result<SourceFormat, ConvertError> {
         Some("tsv") => Ok(SourceFormat::Tsv),
         Some("ssv") => Ok(SourceFormat::Ssv),
         Some("ofx") => Ok(SourceFormat::Ofx),
-        Some("qfx") | Some("qbo") => Ok(SourceFormat::Qfx),
+        Some("qfx") => Ok(SourceFormat::Qfx),
+        Some("qbo") => Ok(SourceFormat::Qbo),
         Some("xls") => Ok(SourceFormat::Xls),
         Some("xlsx") => Ok(SourceFormat::Xlsx),
         Some("xlsm") => Ok(SourceFormat::Xlsm),
@@ -259,7 +301,7 @@ pub fn convert(format: SourceFormat, bytes: &[u8]) -> Result<Tabular, ConvertErr
         });
     }
     match format {
-        SourceFormat::Ofx | SourceFormat::Qfx => ofx::parse(bytes),
+        f if f.is_ofx() => ofx::parse(bytes),
         f if f.is_spreadsheet() => spreadsheet::parse(bytes, f),
         f => delimited::parse(bytes, f),
     }
@@ -293,6 +335,37 @@ mod tests {
         // A .csv that is really OFX. The bytes win.
         let ofx = b"OFXHEADER:100\nDATA:OFXSGML\n\n<OFX><SIGNONMSGSRSV1></SIGNONMSGSRSV1></OFX>";
         assert_eq!(detect("export.csv", ofx), Ok(SourceFormat::Ofx));
+    }
+
+    #[test]
+    fn every_published_format_is_detected_from_its_own_extension() {
+        // The bug this pins: `.qbo` was readable -- the extension match sent it
+        // to the OFX parser -- but it had no variant of its own, so it could
+        // not appear in `/api/import/capabilities`, and the SPA refuses any
+        // extension absent from that list. The result was a format the engine
+        // reads and the file picker will not offer.
+        //
+        // Bytes that trip no magic number, so every name resolves through the
+        // extension table and the whole of `ALL` is exercised.
+        let plain = b"header\nrow\n";
+        for format in SourceFormat::ALL {
+            let name = format!("statement.{format}");
+            assert_eq!(detect(&name, plain), Ok(format), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_quickbooks_dialect_is_read_by_the_ofx_backend() {
+        // `.qbo` is Web Connect: OFX 1.x SGML under a third name. `convert`
+        // dispatches through a catch-all arm, so a dialect the predicate misses
+        // reaches the DELIMITED parser and fails as "malformed" rather than
+        // failing to compile -- which is exactly how this would regress.
+        assert!(SourceFormat::Qbo.is_ofx());
+        assert!(!SourceFormat::Qbo.is_delimited());
+        assert!(!SourceFormat::Qbo.is_spreadsheet());
+
+        let ofx = b"OFXHEADER:100\nDATA:OFXSGML\n\n<OFX><SIGNONMSGSRSV1></SIGNONMSGSRSV1></OFX>";
+        assert_eq!(detect("webconnect.qbo", ofx), Ok(SourceFormat::Qbo));
     }
 
     #[test]
