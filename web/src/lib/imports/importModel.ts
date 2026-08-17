@@ -394,6 +394,8 @@ export function noteText(note: ConvertNote): string {
     switch (note.kind) {
         case "sheetChosen":
             return note.of <= 1 ? `Read the sheet "${note.name}".` : `Read the sheet "${note.name}" — the workbook has ${note.of}.`;
+        case "statementChosen":
+            return `This file holds ${note.of} statements, one per account. Only the first was read — import the others by downloading them separately.`;
         case "datesFromSerial":
             return `${note.count} date${note.count === 1 ? " was" : "s were"} stored as spreadsheet serial numbers and ${note.count === 1 ? "was" : "were"} read as dates.`;
         case "encodingGuessed":

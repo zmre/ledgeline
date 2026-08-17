@@ -705,6 +705,10 @@ describe("UNIT ConvertNote rendering", () => {
     it.each([
         [{kind: "sheetChosen", name: "Statement", of: 3} as const, 'Read the sheet "Statement" — the workbook has 3.'],
         [{kind: "sheetChosen", name: "Sheet1", of: 1} as const, 'Read the sheet "Sheet1".'],
+        // A multi-account OFX download. The other statements are not merged in
+        // (they belong to other accounts), so the note is the only thing that
+        // stops them being discarded in silence.
+        [{kind: "statementChosen", of: 2} as const, "This file holds 2 statements, one per account. Only the first was read — import the others by downloading them separately."],
         [{kind: "datesFromSerial", count: 12} as const, "12 dates were stored as spreadsheet serial numbers and were read as dates."],
         [{kind: "preambleSkipped", lines: 4} as const, "4 rows of preamble above the header were skipped."],
         [{kind: "preambleSkipped", lines: 1} as const, "1 row of preamble above the header was skipped."],

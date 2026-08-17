@@ -130,10 +130,15 @@ pub fn parse(bytes: &[u8]) -> Result<Tabular, ConvertError> {
         .map(row)
         .collect();
 
+    // Counted over the whole document rather than from the chosen statement, so
+    // a `CCSTMTRS` sitting beside a `STMTRS` counts too — "one of each" is what a
+    // card-plus-checking download looks like.
+    let statements = statement_count(&root);
     let notes = decoded
         .guessed
         .map(|label| ConvertNote::EncodingGuessed { label })
         .into_iter()
+        .chain((statements > 1).then_some(ConvertNote::StatementChosen { of: statements }))
         .chain(balance_note(statement, &rows))
         .collect();
 
@@ -279,6 +284,13 @@ fn scan(text: &str) -> Aggregate {
             cursor = open + 1 + skipped;
             continue;
         }
+        // A `<` that opens nothing is a character, not a tag. Values are handled
+        // below by `find_tag`; this is the same rule for the text BETWEEN
+        // elements, so a stray one there cannot invent an aggregate either.
+        if !opens_a_tag(rest) {
+            cursor = open + 1;
+            continue;
+        }
         let Some(gt) = rest.find('>') else { break };
         let inner = &rest[..gt];
         let after = open + 1 + gt + 1;
@@ -298,10 +310,12 @@ fn scan(text: &str) -> Aggregate {
             continue;
         }
 
-        // The one rule: `<` next means aggregate, anything else means value.
+        // The one rule: a TAG next means aggregate, anything else means value.
+        // "a tag" rather than "a `<`" because a value may legally begin with a
+        // raw one — `<MEMO>< 5 DOLLARS` is a memo, not an aggregate.
         let tail = &text[after..];
         let ahead = tail.trim_start();
-        if ahead.starts_with('<') || ahead.is_empty() {
+        if ahead.strip_prefix('<').is_some_and(opens_a_tag) || ahead.is_empty() {
             if stack.len() <= MAX_DEPTH {
                 stack.push(Aggregate::new(tag));
             } else {
@@ -309,7 +323,7 @@ fn scan(text: &str) -> Aggregate {
             }
             continue;
         }
-        let end = tail.find('<').unwrap_or(tail.len());
+        let end = find_tag(tail).unwrap_or(tail.len());
         push_leaf(
             &mut stack,
             tag,
@@ -318,6 +332,51 @@ fn scan(text: &str) -> Aggregate {
         cursor = after + end;
     }
     unwind(stack)
+}
+
+/// Whether `rest` — the text immediately after a `<` — opens a well-formed tag.
+///
+/// Banks write a raw `<` into a payee or a memo (`A < B REPAIRS`) rather than
+/// the `&lt;` the spec asks for, and the consequence of reading one as a tag is
+/// not a mangled string: the stray tag swallows the enclosing `</STMTTRN>`, the
+/// next close demotes `STMTTRN` to an empty leaf, and the WHOLE TRANSACTION
+/// disappears from a file that still parses and reports no note.
+///
+/// Two things separate a tag from text, and both are needed:
+///
+/// - **The name touches the `<`.** `< B REPAIRS` has a space first. A tag's name
+///   never does, which is also why attributes are no obstacle — `<OFX
+///   VERSION="200">` starts with a letter and its spaces come later.
+/// - **It closes before anything else opens.** `<B REPAIRS</STMTTRN>` reaches
+///   the `<` of the close tag before it reaches any `>`, so it is text. Without
+///   this, a raw `<` followed immediately by a capital letter would still be
+///   read as a tag.
+///
+/// What remains ambiguous is a raw `<` that is followed by a letter AND closed
+/// by a `>` before the next tag — `A <B> C`. That is genuinely indistinguishable
+/// from markup without knowing the OFX vocabulary, and guessing the other way
+/// would break real tags, so it is left as a tag.
+fn opens_a_tag(rest: &str) -> bool {
+    let body = rest.strip_prefix('/').unwrap_or(rest);
+    if !body.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    body.find(['<', '>'])
+        .is_some_and(|at| body.as_bytes()[at] == b'>')
+}
+
+/// The offset of the next `<` that actually opens a tag, skipping any that are
+/// literal text in a value.
+fn find_tag(text: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(offset) = text[from..].find('<') {
+        let at = from + offset;
+        if opens_a_tag(&text[at + 1..]) {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
 }
 
 /// Bytes consumed by a comment, declaration or processing instruction starting
@@ -523,6 +582,20 @@ fn collect_aggregates<'a>(parent: &'a Aggregate, tag: &str) -> Vec<&'a Aggregate
             Node::Leaf { .. } => Vec::new(),
         })
         .collect()
+}
+
+/// How many statements the document holds.
+///
+/// A "download all my accounts" file carries one `STMTRS` per account, and only
+/// the first is read — the transactions below it belong to THAT account, and a
+/// rules file names one `account1` for the whole import, so merging them would
+/// post one account's transactions to another. Counting them is what turns the
+/// rest from silently discarded into reported.
+fn statement_count(root: &Aggregate) -> usize {
+    ["STMTRS", "CCSTMTRS"]
+        .iter()
+        .map(|tag| collect_aggregates(root, tag).len())
+        .sum()
 }
 
 // ---------------------------------------------------------------------------

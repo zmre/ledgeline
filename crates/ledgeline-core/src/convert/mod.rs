@@ -69,6 +69,15 @@ pub struct StatementMeta {
 pub enum ConvertNote {
     /// A workbook had more than one candidate sheet and we picked this one.
     SheetChosen { name: String, of: usize },
+    /// An OFX document held more than one statement and only the first was read.
+    ///
+    /// The others are not merged in: each statement's transactions belong to its
+    /// own account, and a rules file names one `account1` for the whole import,
+    /// so merging would post one account's money to another. Without this note
+    /// the rest are discarded in silence — and the arithmetic check cannot catch
+    /// it, because the first statement reconciles perfectly against its own
+    /// closing balance.
+    StatementChosen { of: usize },
     /// Cells were stored as spreadsheet date serials and were rendered as dates.
     DatesFromSerial { count: usize },
     /// The text encoding was guessed rather than declared.

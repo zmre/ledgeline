@@ -1621,6 +1621,8 @@ function decodeConvertNote(raw: RawConvertNote | undefined, context: string): Co
     switch (raw.kind) {
         case "sheetChosen":
             return Object.freeze({kind: "sheetChosen" as const, name: str(raw.name, `${context} name`), of: num(raw.of, `${context} of`)});
+        case "statementChosen":
+            return Object.freeze({kind: "statementChosen" as const, of: num(raw.of, `${context} of`)});
         case "datesFromSerial":
             return Object.freeze({kind: "datesFromSerial" as const, count: num(raw.count, `${context} count`)});
         case "encodingGuessed":

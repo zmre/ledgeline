@@ -366,6 +366,7 @@ impl From<&StatementMeta> for WireStatement {
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum WireNote {
     SheetChosen { name: String, of: usize },
+    StatementChosen { of: usize },
     DatesFromSerial { count: usize },
     EncodingGuessed { label: String },
     DelimiterSniffed { delimiter: String },
@@ -383,6 +384,7 @@ impl From<&ConvertNote> for WireNote {
                 name: name.clone(),
                 of: *of,
             },
+            ConvertNote::StatementChosen { of } => Self::StatementChosen { of: *of },
             ConvertNote::DatesFromSerial { count } => Self::DatesFromSerial { count: *count },
             ConvertNote::EncodingGuessed { label } => Self::EncodingGuessed {
                 label: label.clone(),

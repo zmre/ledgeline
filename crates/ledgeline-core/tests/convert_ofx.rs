@@ -77,8 +77,9 @@ fn statement_with_cp1252_memo(memo: &str) -> Vec<u8> {
         .collect()
 }
 
-const EVERY_FIXTURE: [&str; 8] = [
+const EVERY_FIXTURE: [&str; 9] = [
     "bank-v1.ofx",
+    "two-accounts.ofx",
     "bank-v2.ofx",
     "creditcard.qfx",
     "citi-creditline.ofx",
@@ -430,7 +431,14 @@ fn a_percentage_in_the_balance_list_is_not_an_opening_balance() {
 fn a_lone_closing_balance_makes_no_arithmetic_claim() {
     // Every other fixture has a LEDGERBAL and no opening balance. There is
     // nothing to add it to, so it is recorded and left alone.
-    for name in EVERY_FIXTURE.iter().filter(|n| **n != "balances.ofx") {
+    //
+    // `two-accounts.ofx` is excluded from the note assertion rather than from
+    // the balance one: it carries a `StatementChosen`, which is the whole reason
+    // it exists, and its first statement's balance is still recorded normally.
+    for name in EVERY_FIXTURE
+        .iter()
+        .filter(|n| !["balances.ofx", "two-accounts.ofx"].contains(n))
+    {
         let tabular = parsed(name);
         assert!(
             tabular
@@ -841,4 +849,109 @@ fn no_real_fixture_still_carries_an_institution_name() {
             assert!(!text.contains(leaked), "{name} still names {leaked}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// More than one statement, and a raw `<` in a value
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_download_of_several_accounts_reads_the_first_and_says_so() {
+    // "Download all my accounts" is one file per bank, not one per account. Only
+    // the first statement is imported -- each statement's transactions belong to
+    // its own account and a rules file names one `account1` for the whole
+    // import, so merging them would post the savings rows to checking -- but the
+    // rest must not vanish in silence.
+    //
+    // The arithmetic safety net cannot catch this on its own: the first
+    // statement reconciles perfectly against its OWN closing balance, so the
+    // file looks entirely healthy while two thirds of it is missing.
+    let table = parsed("two-accounts.ofx");
+
+    assert_eq!(table.rows.len(), 1, "{:?}", table.rows);
+    assert_eq!(cell(&table.rows[0], "name"), "GROCERY STORE");
+    assert!(
+        table
+            .notes
+            .contains(&ConvertNote::StatementChosen { of: 2 }),
+        "the other statement must be reported, not discarded: {:?}",
+        table.notes
+    );
+    // The one that WAS read is the one the metadata describes.
+    let meta = table.statement.expect("statement metadata");
+    assert_eq!(meta.account_hint.as_deref(), Some("1111"));
+}
+
+#[test]
+fn one_statement_earns_no_statement_note() {
+    // The negative case: a note on every ordinary download would be noise, and
+    // noise is how a real warning gets ignored.
+    let table = parsed("bank-v1.ofx");
+    assert!(
+        !table
+            .notes
+            .iter()
+            .any(|note| matches!(note, ConvertNote::StatementChosen { .. })),
+        "{:?}",
+        table.notes
+    );
+}
+
+#[test]
+fn a_raw_less_than_in_a_value_does_not_delete_the_transaction() {
+    // Banks write `A < B` rather than the `A &lt; B` the spec asks for. Read as
+    // a tag, the stray `<` swallows the enclosing `</STMTTRN>`, the next close
+    // demotes STMTTRN to an empty leaf, and the WHOLE TRANSACTION disappears --
+    // from a file that still parses, still reports no note, and still balances
+    // if the amounts happen to work out. Three in, three out.
+    let ofx = "OFXHEADER:100\nDATA:OFXSGML\n\n\
+        <OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>\n\
+        <CURDEF>USD\n\
+        <BANKTRANLIST>\n\
+        <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260105<TRNAMT>-10.00<NAME>ALPHA</STMTTRN>\n\
+        <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260106<TRNAMT>-20.00<NAME>BRAVO<MEMO>A < B REPAIRS</STMTTRN>\n\
+        <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260107<TRNAMT>-30.00<NAME>CHARLIE</STMTTRN>\n\
+        </BANKTRANLIST>\n\
+        </STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>\n";
+    let table = ofx::parse(ofx.as_bytes()).expect("parses");
+
+    assert_eq!(table.rows.len(), 3, "{:?}", table.rows);
+    assert_eq!(cell(&table.rows[1], "name"), "BRAVO");
+    assert_eq!(cell(&table.rows[1], "memo"), "A < B REPAIRS");
+    assert_eq!(cell(&table.rows[2], "name"), "CHARLIE");
+}
+
+#[test]
+fn a_raw_less_than_does_not_mangle_the_payee_either() {
+    // The other half. In NAME rather than MEMO the row survives but the payee is
+    // truncated at the `<` and everything after it is lost -- silent payee
+    // mangling, which is the `ofx-rs` failure this hand-rolled parser exists to
+    // avoid rather than reproduce.
+    let ofx = "OFXHEADER:100\nDATA:OFXSGML\n\n\
+        <OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>\n\
+        <CURDEF>USD\n\
+        <BANKTRANLIST>\n\
+        <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260105<TRNAMT>-10.00<NAME>A < B REPAIRS<MEMO>CARD 1234</STMTTRN>\n\
+        </BANKTRANLIST>\n\
+        </STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>\n";
+    let table = ofx::parse(ofx.as_bytes()).expect("parses");
+
+    assert_eq!(table.rows.len(), 1, "{:?}", table.rows);
+    assert_eq!(cell(&table.rows[0], "name"), "A < B REPAIRS");
+    assert_eq!(cell(&table.rows[0], "memo"), "CARD 1234");
+}
+
+#[test]
+fn a_properly_escaped_less_than_still_reads_as_one() {
+    // The spec-compliant spelling must be unaffected by the tolerance above.
+    let ofx = "OFXHEADER:100\nDATA:OFXSGML\n\n\
+        <OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>\n\
+        <CURDEF>USD\n\
+        <BANKTRANLIST>\n\
+        <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260105<TRNAMT>-10.00<NAME>A &lt; B REPAIRS</STMTTRN>\n\
+        </BANKTRANLIST>\n\
+        </STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>\n";
+    let table = ofx::parse(ofx.as_bytes()).expect("parses");
+
+    assert_eq!(cell(&table.rows[0], "name"), "A < B REPAIRS");
 }

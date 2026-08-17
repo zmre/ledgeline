@@ -125,6 +125,7 @@ export interface ImportCapabilities {
  */
 export type ConvertNote =
     | {readonly kind: "sheetChosen"; readonly name: string; readonly of: number}
+    | {readonly kind: "statementChosen"; readonly of: number}
     | {readonly kind: "datesFromSerial"; readonly count: number}
     | {readonly kind: "encodingGuessed"; readonly label: string}
     | {readonly kind: "delimiterSniffed"; readonly delimiter: string}
