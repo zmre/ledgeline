@@ -107,6 +107,8 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
+- bug: in my main ledger, i'm getting lines like: `   expenses:auto:maintenance ; set a default so it doesn't try income:unknown          $86.88`
+- bug: i have a stock in two different accounts (QQQ) and some opening statements... oh, maybe this is because i failed to sell it all and one of my opening entries (there are three total) didn't have a cost?  i get a note about missing basis.
 - feat: import drag/drop
   - command line options
   - fix styling of numbers issues; infected the entire ui now
@@ -114,6 +116,9 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
   - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
 - feat: edit budget
   - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
+- Better keyboard navigation
+  - tab complete account selection
+  - enter to save transaction edit
 - feat: zillow integration
   - Need a way to map an asset to an address. Maybe a special comment in the accounts file?
   - Need a way to map the unrealized gains for that address
