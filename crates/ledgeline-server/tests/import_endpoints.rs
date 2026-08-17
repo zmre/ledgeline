@@ -1255,6 +1255,139 @@ async fn a_commit_writes_one_csv_one_journal_and_nothing_else() {
 }
 
 // ---------------------------------------------------------------------------
+// `skip` — the rules file counts records in the DOWNLOAD, not in our CSV
+// ---------------------------------------------------------------------------
+
+/// The same three rows, as the bank actually ships them: a title line and an
+/// account line above the header. Those two are what the user's `skip 3` counts,
+/// and they are exactly what `convert` strips out from under it.
+const PREAMBLE_STATEMENT: &str = "Acme Bank - transaction export\n\
+                                  Account ending 7890, 2026-01-01 to 2026-01-31\n\
+                                  Date,Description,Withdrawal,Deposit\n\
+                                  01/15/2026,ACME PAYROLL,,3000.00\n\
+                                  01/16/2026,STARBUCKS,6.45,\n\
+                                  01/20/2026,LANDLORD LLC,1850.00,\n";
+
+/// [`Tree::with_rules`], with the one number this section is about changed.
+///
+/// The rules file is the corpus's own correct one and stays correct — `skip 3`
+/// is what its author would have written for [`PREAMBLE_STATEMENT`], because
+/// hledger has no header concept and three records stand between the top of that
+/// file and its first transaction.
+fn preamble_tree() -> Tree {
+    let tree = Tree::with_rules();
+    let rules = std::fs::read_to_string(tree.path("import/bank.csv.rules"))
+        .expect("read the rules file")
+        .replace("skip 1", "skip 3");
+    assert!(
+        rules.contains("skip 3"),
+        "the fixture must still carry the `skip` line this test rewrites"
+    );
+    std::fs::write(tree.path("import/bank.csv.rules"), rules).expect("write the rules file");
+    tree
+}
+
+/// **The `skip` frame, end to end through the routes.** A statement with a
+/// preamble, a rules file whose `skip` was written for that preamble, and every
+/// number the screen shows equal to the number the download holds.
+///
+/// Left unaligned, the conversion moves the header to line 1 and the same
+/// `skip 3` spends itself on the header and the first two transactions: one row
+/// of three is imported, hledger exits **0**, and the count on screen is a wrong
+/// answer presented as a right one. Nothing anywhere says so.
+///
+/// Three surfaces are asserted because the alignment has to reach all three
+/// independently — the candidate card is scored against its own copy, the
+/// dry-run against a materialised one, and the commit against the CSV written to
+/// the user's own directory:
+///
+/// | Surface | Unaligned | Correct |
+/// | --- | --- | --- |
+/// | candidate `signals.txns` | 1 | 3 |
+/// | dry-run `count` | 1 | 3 |
+/// | commit `imported` | 1 | 3 |
+#[tokio::test]
+async fn a_rules_files_own_skip_still_counts_after_the_preamble_is_stripped() {
+    require_hledger!();
+    let tree = preamble_tree();
+
+    let (status, staged) = upload(&tree, "bank.csv", PREAMBLE_STATEMENT.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+
+    // The preview is of the CANONICAL table — three rows, header extracted, no
+    // padding — because the alignment belongs to the copy hledger reads and
+    // must never reach the screen.
+    assert_eq!(staged["preview"]["rowCount"], json!(3));
+    assert_eq!(
+        staged["preview"]["header"],
+        json!(["Date", "Description", "Withdrawal", "Deposit"])
+    );
+
+    // Candidate scoring: each candidate is scored against a copy padded to ITS
+    // own `skip`, so a correct rules file is not marked down for a frame
+    // mismatch that is ours.
+    let candidate = staged["candidates"]
+        .as_array()
+        .and_then(|list| list.first())
+        .expect("the rules file must be offered as a candidate");
+    assert_eq!(candidate["id"], json!("import/bank.csv.rules"));
+    assert_eq!(
+        candidate["signals"]["txns"],
+        json!(3),
+        "scoring must see the whole statement: {candidate}"
+    );
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["count"], json!(3), "{body}");
+    let entries = body["entries"].as_str().expect("entries is a string");
+    for payee in ["ACME PAYROLL", "STARBUCKS", "LANDLORD LLC"] {
+        assert!(entries.contains(payee), "{payee} is missing from {entries}");
+    }
+
+    let mut request = dry_run_body(&id, "import/bank.csv.rules");
+    request["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", request).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["imported"], json!(3), "{response}");
+
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("read the journal");
+    for payee in ["ACME PAYROLL", "STARBUCKS", "LANDLORD LLC"] {
+        assert!(journal.contains(payee), "{payee} is missing from {journal}");
+    }
+
+    // The CSV the user keeps carries the padding, and that is the point rather
+    // than a leak: the two invocations above read THIS file (so hledger keys
+    // `.latest` beside it), and so will the next import of it — from this screen
+    // or from a terminal, with the same rules file and the same `skip 3`.
+    let csv = std::fs::read_to_string(tree.path("import/bank.csv")).expect("read the written CSV");
+    assert_eq!(
+        csv,
+        "\
+,,,
+,,,
+Date,Description,Withdrawal,Deposit
+01/15/2026,ACME PAYROLL,,3000.00
+01/16/2026,STARBUCKS,6.45,
+01/20/2026,LANDLORD LLC,1850.00,
+"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.path("import/.latest.bank.csv"))
+            .expect("marker")
+            .trim(),
+        "2026-01-20",
+        "the dedup marker is still keyed to the file that was read"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Aliases — the preview and the write must agree
 // ---------------------------------------------------------------------------
 

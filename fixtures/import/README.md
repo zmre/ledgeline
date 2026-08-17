@@ -27,6 +27,7 @@ its own section here rather than starting a second README.
 | `tab.tsv` | The delimiter comes from the extension, and a declared delimiter earns no `ConvertNote` |
 | `semicolon.ssv` | Same, for `;` — and the amounts use **decimal commas**, so splitting on `,` would double the column count. Re-read as `.csv` this is also the delimiter-sniffing fixture |
 | `preamble.csv` | Two leading non-table lines, the second of which **contains commas** — so "the first record is the header" yields a two-column table. Must produce `PreambleSkipped { lines: 2 }` |
+| `preamble.csv.rules` | Not a statement: the rules file `preamble.csv`'s owner would have written, saying **`skip 3`** — a number counted against the raw download. Its oracle is real hledger, not `just rules-check`; see § *The `skip` a rules file already says* |
 | `ragged.csv` | Rows of 4, 3, 5 and 4 fields. Nothing may be dropped; the count must be reported as `RaggedRows { count: 2 }` |
 | `trailer.csv` | Three traps in ten lines. A **trailer** of disclaimer paragraphs below the last transaction; a **blank row inside** the transactions; and a last transaction whose **final field is empty**, which is the row the trim must stop at. Both blank rows are spelled `,,,` — as many fields as the table and not one of them populated — so a rule keyed on width alone misses them. Must produce `TrailerSkipped { lines: 4 }` and `BlankRowsDropped { count: 1 }`, four rows, and no `RaggedRows` |
 | `padded-prose.csv` | The trailer trap `trailer.csv` misses. Saved out of a spreadsheet, the title block and the disclaimer are padded to the table's width and are **not blank** — `Member FDIC,,,` is four fields holding one thing — so a rule keyed on field count calls them records, trims nothing, and hledger abandons the entire read on the first one. Must produce `PreambleSkipped { lines: 4 }`, `TrailerSkipped { lines: 3 }` and four rows |
@@ -34,6 +35,27 @@ its own section here rather than starting a second README.
 | `quoted.csv` | An embedded delimiter, an embedded newline and a doubled quote, all inside quoted fields. The embedded newline must not become an extra record |
 | `latin1.csv` | Windows-1252. Carries `0x92`, `0x93`, `0x94` and `0x80` — the four bytes where Windows-1252 and ISO-8859-1 disagree, and where every smart quote and currency sign lives. None is valid UTF-8, so `chardetng` is the only thing that can read it, and only one of its two plausible answers is right |
 | `utf16le-bom.csv` | **The ordering fixture.** UTF-16LE with a BOM and CRLF — what Excel's "Unicode Text" export writes — saved under a `.csv` name, as users do |
+
+### The `skip` a rules file already says
+
+`preamble.csv` and `preamble.csv.rules` are a **pair**, and they only prove anything together.
+The rules file says `skip 3` because the download has a title line, an account line and a
+header. Converting the download strips the preamble, so the header is line 1 — and the same
+`skip 3` now eats the header and the first two transactions. hledger has no header concept: it
+skips three *records* and reads whatever is left.
+
+The measured answer over this pair, hledger 1.52: the raw download gives **3** transactions and
+the converted CSV gives **1**, both at exit code 0 with nothing on stderr. On a statement of two
+rows or fewer the converted answer is **0** — the shape the bug was reported in. Either way it is
+a wrong number reported as a right one, which is why the check is behavioural:
+`converted_and_aligned_imports_what_the_raw_download_does` takes all three counts (raw,
+unaligned, aligned) and asserts the wrong one as well as the right one. A test asserting only
+`aligned == raw` would still pass on a fixture with no preamble for `skip` to disagree about.
+
+`convert::align_to_skip` is the fix — `skip - 1` comma-only records in front of the converted
+CSV, so the two frames line up again. Comma-only and not blank: hledger discards truly blank
+lines *before* `skip` counts them, so blank padding would be invisible to it and the transactions
+would still be eaten.
 
 ### Why `utf16le-bom.csv` is the important one
 

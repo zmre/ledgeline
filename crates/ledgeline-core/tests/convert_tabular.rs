@@ -911,6 +911,107 @@ fn the_real_export_imports_through_real_hledger() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn converted_and_aligned_imports_what_the_raw_download_does() {
+    // The `skip` frame mismatch, end to end, against the only oracle that
+    // decides it. `preamble.csv` is a raw download: a title line, an account
+    // line, a header, three transactions. `preamble.csv.rules` is the rules file
+    // its owner wrote for it, and it says `skip 3` — counted against THAT file.
+    //
+    // Convert it and the preamble is gone, so the header is line 1. Hand the
+    // same rules file the same statement and hledger spends its three skips on
+    // the header and the first two transactions, and imports the third one
+    // alone. **One of three, exit code 0, nothing on stderr.** On a statement
+    // with two rows or fewer the same arithmetic reads zero — which is the shape
+    // the bug was found in — but the partial answer asserted here is the worse
+    // one to live with: a user who checks the count sees transactions arrive.
+    //
+    // Three counts are taken rather than one, and the middle one is the reason
+    // this test cannot be replaced by an assertion about padding text:
+    //
+    //   raw       — what the user gets today from their terminal
+    //   unaligned — what Ledgeline gave them: the bug, pinned
+    //   aligned   — what `align_to_skip` restores
+    //
+    // Asserting only `aligned == raw` would still pass if the fixture happened
+    // to have no preamble for `skip` to disagree about. Asserting the wrong
+    // number alone would pass with the alignment deleted. Together they cannot
+    // both hold unless the fix is doing its job.
+    if std::env::var_os(HLEDGER_OPT_IN).is_none_or(|value| value.is_empty()) {
+        eprintln!("skipping: set {HLEDGER_OPT_IN}=1 to run the aligned CSV through hledger");
+        return;
+    }
+
+    let raw_path = common::fixtures_dir().join("import/delimited/preamble.csv");
+    let rules = common::fixtures_dir().join("import/delimited/preamble.csv.rules");
+    let table = parse_delimited("delimited/preamble.csv", SourceFormat::Csv);
+    let skip = 3;
+
+    let dir = std::env::temp_dir().join(format!("ledgeline_align_hledger_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+
+    let unaligned_csv = delimited::to_csv(&table);
+    let unaligned = dir.join("unaligned.csv");
+    std::fs::write(&unaligned, &unaligned_csv).expect("write the converted CSV");
+
+    let aligned = dir.join("aligned.csv");
+    std::fs::write(
+        &aligned,
+        delimited::align_to_skip(&unaligned_csv, skip).as_bytes(),
+    )
+    .expect("write the aligned CSV");
+
+    let raw_count = hledger_txns(&raw_path, &rules);
+    let unaligned_count = hledger_txns(&unaligned, &rules);
+    let aligned_count = hledger_txns(&aligned, &rules);
+
+    assert_eq!(
+        raw_count, 3,
+        "the fixture's own rules file must read the fixture's own download"
+    );
+    assert_eq!(
+        unaligned_count, 1,
+        "the bug: `skip 3` over a header-on-line-1 CSV eats two transactions, and says so nowhere"
+    );
+    assert_eq!(
+        aligned_count, raw_count,
+        "a converted statement must import exactly what the download it came from imports"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// How many transactions real hledger reads out of `data` under `rules`.
+///
+/// `-O json` and a length, never a scrape of the rendered ledger — the same rule
+/// `rules::matching` holds to, and for the same reason: a display format is not
+/// a data format.
+///
+/// A non-zero exit is a panic rather than a zero, because the failure this is
+/// used to measure produces exit **0** and the two must never be confused.
+fn hledger_txns(data: &std::path::Path, rules: &std::path::Path) -> usize {
+    let output = std::process::Command::new("hledger")
+        .arg("print")
+        .arg("-f")
+        .arg(data)
+        .arg("--rules")
+        .arg(rules)
+        .args(["-O", "json"])
+        .output()
+        .unwrap_or_else(|error| panic!("could not run hledger: {error}"));
+    assert!(
+        output.status.success(),
+        "hledger exited {} over {}:\n{}",
+        output.status,
+        data.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let entries: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("hledger's output is JSON");
+    entries.as_array().map_or(0, Vec::len)
+}
+
 // ---------------------------------------------------------------------------
 // `to_csv`
 // ---------------------------------------------------------------------------

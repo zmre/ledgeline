@@ -6,7 +6,10 @@
 //!
 //! The module boundary is deliberately narrow: [`detect`] decides *what* a byte
 //! slice is, [`convert`] turns it into a [`Tabular`], and [`to_csv`] renders
-//! that back out. Nothing here touches the filesystem, spawns a process, or
+//! that back out — with [`align_to_skip`] as the one adjustment made to the copy
+//! hledger reads, because stripping a preamble moves the header out from under
+//! the `skip` the user's rules file already says. Nothing here touches the
+//! filesystem, spawns a process, or
 //! knows a path — matching the no-disclosure rule the rules API already holds
 //! to (`docs/imports.md` § Security). Callers hand us bytes and a bare file
 //! name; errors quote neither.
@@ -211,7 +214,7 @@ pub enum ConvertError {
     NoTable,
 }
 
-pub use delimited::to_csv;
+pub use delimited::{align_to_skip, to_csv};
 
 /// Identify what `bytes` actually is.
 ///

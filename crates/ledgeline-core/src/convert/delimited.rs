@@ -64,6 +64,34 @@
 //! different test from "narrower than the header": `2026-01-09,CORNER MARKET,`
 //! is a real transaction whose last column is empty, and it is kept.
 //!
+//! # `skip N` counts records in the RAW download, not in ours
+//!
+//! Stripping the preamble moves the header to line 1 — and that silently breaks
+//! the user's existing rules file, because `skip` is a number they wrote against
+//! the file their bank gave them. hledger has **no header concept at all**: it
+//! skips `N` records and treats every remaining one as data, so a rules file
+//! written for a three-line preamble says `skip 3`, and run against our
+//! header-on-line-1 CSV it skips the header *and the first two transactions*.
+//! Verified against hledger 1.52: on a statement of two rows that is **zero
+//! transactions and exit code 0** — total loss — and on a longer one it is a
+//! silently truncated import that looks like it worked. No error either way,
+//! and nothing on stderr.
+//!
+//! [`align_to_skip`] reconciles the two frames by prepending `N - 1` empty
+//! records, so after the skip the first record is our first transaction. It is
+//! applied to the copy hledger reads, never to the [`Tabular`] — the preview and
+//! every in-memory consumer stay in the frame they were parsed in.
+//!
+//! Two things about it are not free choices, and both were measured rather than
+//! reasoned about:
+//!
+//! - The padding **cannot be blank lines**. hledger discards those *before*
+//!   `skip` counts, so two blank lines plus `skip 3` still eats two
+//!   transactions. It has to be a record that is empty but present — `,,` — the
+//!   same `,,,,` a spreadsheet's own CSV export writes.
+//! - It is `N - 1` and not `N`, because our CSV still has a header and hledger
+//!   still spends one of its `N` on it.
+//!
 //! # What this module does not do
 //!
 //! It never touches the filesystem and never sees a path, so no error it
@@ -222,6 +250,62 @@ pub fn to_csv(tabular: &Tabular) -> String {
         .chain(tabular.rows.iter())
         .map(|record| render_record(record) + "\n")
         .collect()
+}
+
+/// Prepend whatever it takes to make a rules file written for the RAW download
+/// read `csv` — which [`to_csv`] has already stripped the preamble from —
+/// starting at the same transaction.
+///
+/// `skip` is the chosen rules file's own `skip` setting
+/// (`RulesDoc::settings().skip`), and the answer is `skip - 1` empty records.
+/// The module docs argue the whole trap; the short version is that hledger has
+/// no header concept, so `skip 3` written for a two-line preamble skips our
+/// header **and two transactions**, silently and with exit code 0.
+///
+/// Both edges are the identity, and deliberately so: `skip 0` and `skip 1` are
+/// already correct against a header-on-line-1 file, so a statement whose rules
+/// file was written for our shape is handed back byte for byte and nothing about
+/// the common case changes.
+///
+/// The padding is rendered by [`render_record`], which is what makes the width
+/// question look after itself: a three-column table pads with `,,`, and a
+/// one-column table pads with `""` rather than an empty line — an empty line is
+/// the one thing that does **not** work, because hledger drops blank lines
+/// before `skip` counts them. Both spellings verified against hledger 1.52.
+#[must_use]
+pub fn align_to_skip(csv: &str, skip: u32) -> String {
+    // Past the record cap the padding cannot change the outcome — a `skip` that
+    // large consumes every record the file is allowed to hold whatever we put in
+    // front of it — so this is a bound on the arithmetic, not a policy. Without
+    // it a rules file reading `skip 4000000000`, which is a typo rather than an
+    // attack, would ask for twelve gigabytes of commas.
+    let lines = usize::try_from(skip.saturating_sub(1))
+        .unwrap_or(MAX_ROWS)
+        .min(MAX_ROWS);
+    // Zero columns means there is no table to align to — `csv` is empty, or it
+    // is a single unterminated line the reader could not make a record of. A
+    // record of no fields renders as an empty line, which hledger would discard,
+    // so padding here would produce a file that skips its own header instead.
+    let columns = columns_of(csv);
+    if lines == 0 || columns == 0 {
+        return csv.to_string();
+    }
+    let empty = render_record(&vec![String::new(); columns]) + "\n";
+    empty.repeat(lines) + csv
+}
+
+/// How many fields the first record of `csv` holds.
+///
+/// Read with the same reader everything else here uses, on a comma, because the
+/// only text this is ever asked about is [`to_csv`]'s own output and that is
+/// RFC 4180 by construction — quoted fields included, so a `"SMITH, JOHN"` in
+/// the header counts as one column rather than two.
+fn columns_of(csv: &str) -> usize {
+    reader(csv, ',')
+        .into_records()
+        .next()
+        .and_then(Result::ok)
+        .map_or(0, |record| record.len())
 }
 
 /// One record as an RFC 4180 line, without its terminator.
@@ -641,6 +725,75 @@ mod tests {
         // would strip it as a BOM.
         assert_eq!(quote("\u{feff}Date"), "\"\u{feff}Date\"");
         assert_eq!(quote("Date\u{feff}"), "Date\u{feff}");
+    }
+
+    /// Three columns and two transactions — the shape `to_csv` produces once a
+    /// preamble has been stripped, and therefore the shape a rules file's `skip`
+    /// disagrees with.
+    const CONVERTED: &str = "Date,Description,Amount\n2026-01-05,A,-1.00\n2026-01-06,B,-2.00\n";
+
+    #[test]
+    fn a_skip_of_zero_or_one_already_lines_up_and_is_left_alone() {
+        // `skip 1` is a rules file written for a file with a header and no
+        // preamble, which is exactly what we produce. Byte for byte, or the fix
+        // would be changing every import that works today.
+        assert_eq!(align_to_skip(CONVERTED, 1), CONVERTED);
+        assert_eq!(align_to_skip(CONVERTED, 0), CONVERTED);
+    }
+
+    #[test]
+    fn a_skip_of_n_prepends_n_minus_one_empty_records() {
+        // `skip 3`: two preamble lines and a header in the raw download. After
+        // three records are skipped the first record must be `2026-01-05`.
+        assert_eq!(align_to_skip(CONVERTED, 3), format!(",,\n,,\n{CONVERTED}"));
+        assert_eq!(align_to_skip(CONVERTED, 2), format!(",,\n{CONVERTED}"));
+        assert_eq!(
+            align_to_skip(CONVERTED, 5),
+            format!(",,\n,,\n,,\n,,\n{CONVERTED}")
+        );
+    }
+
+    #[test]
+    fn the_padding_is_as_wide_as_the_table() {
+        // Not decoration: a human opening the file sees a rectangle, and our own
+        // re-read counts these as blank ROWS rather than as a ragged margin.
+        for columns in 2..6 {
+            let header: Vec<String> = (0..columns).map(|n| format!("c{n}")).collect();
+            let csv = to_csv(&Tabular {
+                header: Some(header),
+                rows: vec![vec!["x".to_string(); columns]],
+                ..Tabular::default()
+            });
+            let padded = align_to_skip(&csv, 2);
+            let first = padded.lines().next().expect("a padding line");
+            assert_eq!(first.matches(',').count(), columns - 1, "{columns} columns");
+        }
+    }
+
+    #[test]
+    fn a_one_column_table_pads_with_a_quoted_empty_field_not_a_blank_line() {
+        // The case that would silently defeat the whole fix. hledger discards
+        // truly blank lines BEFORE `skip` counts them, so a bare `\n` here would
+        // leave the header inside the skipped run and eat a transaction.
+        // `""` is a record, and hledger counts it (verified against 1.52).
+        let csv = "Amount\n-1.00\n";
+        assert_eq!(align_to_skip(csv, 3), format!("\"\"\n\"\"\n{csv}"));
+    }
+
+    #[test]
+    fn an_empty_csv_has_no_table_to_align_to() {
+        // No header, no columns, nothing a `skip` could be counted against —
+        // and padding it would invent records in a file that has none.
+        assert_eq!(align_to_skip("", 3), "");
+        assert_eq!(align_to_skip("", 0), "");
+    }
+
+    #[test]
+    fn an_absurd_skip_is_bounded_by_the_record_cap() {
+        // A typo in someone's rules file, not an attack — but `skip 4000000000`
+        // would ask for twelve gigabytes of commas if this were unbounded.
+        let padded = align_to_skip(CONVERTED, u32::MAX);
+        assert_eq!(padded.lines().count(), MAX_ROWS + CONVERTED.lines().count());
     }
 
     /// A row reaching `width` fields.

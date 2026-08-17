@@ -48,8 +48,22 @@
 //! the file name the destination will have, and copies the destination
 //! directory's own `.latest.NAME` in beside it. The dry-run then sees exactly
 //! the dedup state the real import will see.
+//!
+//! # Every copy hledger reads is aligned to a rules file's `skip`
+//!
+//! [`Stage::data`] is the **canonical** CSV: header on line 1, no padding. It is
+//! what the preview is of and what a user saves. It is *not* what hledger is
+//! ever pointed at, because a rules file's `skip` was written against the raw
+//! download and our conversion stripped the preamble out from under it — see
+//! [`convert::align_to_skip`](ledgeline_core::convert::align_to_skip), which
+//! owns that whole argument.
+//!
+//! So both routes out of a stage take the `skip` of the rules file that copy
+//! will be read with: [`Stage::materialize`] for an import, and
+//! [`Stage::aligned`] for candidate scoring, where every candidate has a
+//! different `skip` and therefore needs a different copy.
 
-use ledgeline_core::convert::SourceFormat;
+use ledgeline_core::convert::{self, SourceFormat};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -76,6 +90,11 @@ const MAX_LIVE_STAGES: usize = 8;
 /// The canonical converted CSV inside a stage directory. Internal — it is never
 /// what hledger is pointed at, and never appears on the wire.
 const DATA_FILE: &str = "data.csv";
+
+/// The name [`Stage::aligned`] gives a per-`skip` copy, completed with the skip
+/// itself. A fixed prefix and a number, so nothing a client sent reaches a file
+/// name here either.
+const ALIGNED_PREFIX: &str = "aligned-";
 
 /// The biggest `.latest.NAME` we will copy. The file holds one date, so anything
 /// larger is not one and copying it would be pointless work on a path an
@@ -156,11 +175,37 @@ impl Stage {
         self.format
     }
 
-    /// The canonical converted CSV. Used directly for candidate scoring
-    /// (`hledger print` does not consult `.latest`, so no run directory is
-    /// needed) and copied from by [`materialize`](Self::materialize).
+    /// The **canonical** converted CSV: header on line 1, nothing prepended.
+    ///
+    /// This is the artifact — what the preview shows, what a commit writes to
+    /// the user's destination, what `save-csv` keeps. Nothing hledger reads
+    /// comes from here directly; see [`aligned`](Self::aligned) and
+    /// [`materialize`](Self::materialize), which both apply the chosen rules
+    /// file's `skip` alignment on the way past.
     pub(crate) fn data(&self) -> PathBuf {
         self.dir.join(DATA_FILE)
+    }
+
+    /// A copy of the CSV aligned to `skip`, for an invocation that reads the
+    /// data and nothing else — candidate scoring's `hledger print`, which does
+    /// not consult `.latest` and so needs no run directory.
+    ///
+    /// One file per distinct `skip`, kept inside the stage directory and
+    /// therefore removed with it, because scoring runs each candidate's own
+    /// rules file against this data and they do not agree on a `skip`. Handed
+    /// back as [`data`](Self::data) itself when there is nothing to prepend, so
+    /// the ordinary `skip 1` candidate costs no write at all.
+    ///
+    /// # Errors
+    /// [`std::io::Error`] if the canonical CSV cannot be read or the aligned
+    /// copy cannot be written.
+    pub(crate) fn aligned(&self, skip: u32) -> std::io::Result<PathBuf> {
+        if padding_lines(skip) == 0 {
+            return Ok(self.data());
+        }
+        let path = self.dir.join(format!("{ALIGNED_PREFIX}{skip}.csv"));
+        std::fs::write(&path, self.aligned_bytes(skip)?)?;
+        Ok(path)
     }
 
     /// Place a copy of the CSV under `name` in the run directory `slot`, with
@@ -171,6 +216,11 @@ impl Stage {
     /// `name` is a bare file name — it comes from an already-validated relative
     /// `csvPath`, and is re-checked here so this function is safe on its own
     /// terms rather than on its caller's.
+    ///
+    /// `skip` is the `skip` of the rules file this copy will be imported with.
+    /// The copy is **written, not `fs::copy`d**, precisely so the alignment
+    /// cannot be forgotten by whoever adds the next caller: there is no route
+    /// out of this module that hands hledger the unaligned bytes.
     ///
     /// The run directory is **recreated** each time: a stage is materialised
     /// again whenever the user changes the destination in the form, and a stale
@@ -185,6 +235,7 @@ impl Stage {
         slot: &str,
         name: &str,
         latest_from: Option<&Path>,
+        skip: u32,
     ) -> std::io::Result<PathBuf> {
         if !is_bare_name(name) {
             return Err(std::io::Error::new(
@@ -199,7 +250,7 @@ impl Stage {
         create_private_dir(&run)?;
 
         let staged = run.join(name);
-        std::fs::copy(self.data(), &staged)?;
+        std::fs::write(&staged, self.aligned_bytes(skip)?)?;
 
         if let Some(dir) = latest_from
             && let Some(bytes) = read_latest(dir, name)
@@ -208,6 +259,24 @@ impl Stage {
         }
         Ok(staged)
     }
+
+    /// The canonical CSV's bytes with `skip`'s padding in front of them.
+    ///
+    /// Read as text rather than bytes because that is what `align_to_skip`
+    /// takes, and it is sound here for a reason worth writing down: the only
+    /// writer of this file is [`StageArea::put`], and the only thing it is ever
+    /// given is `convert::to_csv` output, which is a `String`.
+    fn aligned_bytes(&self, skip: u32) -> std::io::Result<Vec<u8>> {
+        let csv = std::fs::read_to_string(self.data())?;
+        Ok(convert::align_to_skip(&csv, skip).into_bytes())
+    }
+}
+
+/// How many empty records `skip` calls for — the same
+/// `skip.saturating_sub(1)` [`convert::align_to_skip`] applies, asked here only
+/// so [`Stage::aligned`] can answer "nothing to do" without writing a file.
+fn padding_lines(skip: u32) -> u32 {
+    skip.saturating_sub(1)
 }
 
 /// The dedup marker `hledger import` keeps next to a data file: the newest date
@@ -459,7 +528,7 @@ mod tests {
         std::fs::write(dest.join(".latest.bank.csv"), "2026-02-05\n").expect("marker");
 
         let staged = stage
-            .materialize(RUN_WITH_LATEST, "bank.csv", Some(&dest))
+            .materialize(RUN_WITH_LATEST, "bank.csv", Some(&dest), 1)
             .expect("materialize");
         assert_eq!(
             staged.file_name().and_then(|n| n.to_str()),
@@ -477,7 +546,9 @@ mod tests {
 
         // The bare slot deliberately has no marker: the count difference between
         // the two runs is how we know what dedup would drop.
-        let bare = stage.materialize(RUN_BARE, "bank.csv", None).expect("bare");
+        let bare = stage
+            .materialize(RUN_BARE, "bank.csv", None, 1)
+            .expect("bare");
         assert!(
             !bare
                 .parent()
@@ -497,10 +568,56 @@ mod tests {
         let (_, stage) = area.put("a\n1\n", SourceFormat::Csv).expect("stage");
         for name in ["../escape.csv", "sub/bank.csv", "", ".", "..", "a\u{0}.csv"] {
             assert!(
-                stage.materialize(RUN_WITH_LATEST, name, None).is_err(),
+                stage.materialize(RUN_WITH_LATEST, name, None, 1).is_err(),
                 "{name:?} must be refused"
             );
         }
+    }
+
+    /// Everything hledger is pointed at carries the padding its rules file's
+    /// `skip` needs — and the canonical CSV never does.
+    ///
+    /// The bug this closes is silent: a genuine `skip 3` against an unpadded
+    /// converted CSV imports the file's *tail* — zero transactions on a short
+    /// statement — and **exits 0**, so a copy that forgot the alignment looks
+    /// exactly like a statement with less in it than the user thought.
+    /// `convert::align_to_skip` owns the padding's shape; what is asserted here
+    /// is that both routes out of a stage go through it.
+    #[test]
+    fn every_copy_hledger_reads_is_aligned_and_the_canonical_one_is_not() {
+        let area = StageArea::default();
+        let csv = "Date,Description,Amount\n2026-01-05,A,-1.00\n";
+        let (_, stage) = area.put(csv, SourceFormat::Csv).expect("stage");
+
+        assert_eq!(
+            std::fs::read_to_string(stage.data()).expect("canonical"),
+            csv,
+            "the artifact the user saves keeps the header on line 1"
+        );
+
+        let staged = stage
+            .materialize(RUN_WITH_LATEST, "bank.csv", None, 3)
+            .expect("materialize");
+        assert_eq!(
+            std::fs::read_to_string(&staged).expect("materialized"),
+            format!(",,\n,,\n{csv}")
+        );
+
+        let scored = stage.aligned(3).expect("aligned copy");
+        assert_eq!(
+            std::fs::read_to_string(&scored).expect("aligned"),
+            format!(",,\n,,\n{csv}")
+        );
+        assert_ne!(
+            scored,
+            stage.data(),
+            "a padded copy is not the canonical file"
+        );
+
+        // The ordinary rules file needs nothing, so it is handed the canonical
+        // file itself rather than a byte-identical duplicate of it.
+        assert_eq!(stage.aligned(1).expect("skip 1"), stage.data());
+        assert_eq!(stage.aligned(0).expect("skip 0"), stage.data());
     }
 
     /// The cap bounds what one session can hold, and evicts the oldest.

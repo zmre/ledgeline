@@ -190,6 +190,74 @@ Two reads deliberately stay on the target, and they are not oversights:
   own pure pass over the file's text — it runs no subprocess, so it cannot fail for an assertion
   reason.
 
+## The `skip` a rules file already says
+
+> **`skip N` is counted against the file the BANK produced. Our conversion strips the preamble
+> out from under it, so every copy hledger reads is padded back into that frame.**
+
+hledger has no header concept. `skip N` discards N *records* and every record after them is
+data, so a rules file written for a two-line preamble plus a header says `skip 3`. Ledgeline
+converts that download to a canonical CSV with the header on line 1 — and hands the same rules
+file the same statement. Verified against hledger 1.52:
+
+| the file hledger reads | `skip` | transactions |
+| --- | --- | --- |
+| the raw download (2 preamble lines, header, 3 rows) | 3 | 3 |
+| our converted CSV (header, 3 rows) | 3 | **1** |
+| our converted CSV (header, 2 rows) | 3 | **0** |
+
+Exit code **0** every time, nothing on stderr. The user's own correct rules file, their own
+statement, and a silently truncated import reported as a successful one. On a short statement it
+is total loss; on a long one it is worse, because transactions do arrive.
+
+`convert::align_to_skip` reconciles the two frames by prepending **`skip - 1`** empty records:
+one for the header hledger still has to spend a skip on, and the rest standing in for the
+preamble that is gone. `skip 0` and `skip 1` are already correct against a header-on-line-1 file
+and are returned byte for byte, so nothing about an import that works today changes.
+
+Three details are measurements rather than choices:
+
+- **The padding cannot be blank lines.** hledger discards a truly empty line *before* `skip`
+  counts, so blank padding is invisible to it and the transactions are still eaten. It has to be
+  a record that is empty but present: `,,` — the same shape a spreadsheet's own CSV export writes
+  for a trailer row. A one-column table pads with `""`, because there RFC 4180 gives an empty
+  record and an empty line the same bytes.
+- **The padding is as wide as the table**, so the file still reads as a rectangle to a person who
+  opens it, and so our own re-read counts those lines as blank *rows* rather than as a ragged
+  margin.
+- **It is applied per rules file, not once.** Candidate scoring runs each candidate's rules file
+  against the same statement and they do not agree on a `skip`, so `Stage::aligned` writes one
+  copy per distinct value. Before this, a genuine `skip 3` candidate was scored against a file it
+  could not read — and scored **1.0** on the one transaction it managed to reach, which is a
+  perfect mark for importing a third of the statement.
+
+Where it lands, and why the list is exactly this:
+
+| What reads it | How it is aligned |
+| --- | --- |
+| candidate scoring's `print` | `Stage::aligned(candidate's skip)` |
+| the dry-run, the dedup measurement, the alias diffs, the balance preflight | `Stage::materialize(…, plan.skip)` |
+| the commit's `import` and `--catchup` | the CSV written to the user's destination |
+
+The last row is the one worth stating plainly: **the CSV a commit saves carries the padding.**
+It has to. Those two invocations read the destination file — they must, or hledger would key
+`.latest.NAME` to a name in a temp directory that is about to be deleted — so an unpadded file
+there is a commit that imports the wrong rows and reports the number it got as the number there
+was. It is also the file the user keeps and re-imports later, from this screen or from a
+terminal, with that same rules file; padding is what makes those two agree. `save-csv` writes the
+canonical CSV unpadded, because that route has no rules file and so no `skip` to align to.
+
+The **canonical** staged CSV (`Stage::data()`) is never padded. It is what the preview is
+rendered from and what `save-csv` keeps, and `matching::prefilter` and `sample_dates` work on the
+in-memory `Tabular` rather than on any file — they already compensate in that frame, and a second
+compensation there would be a double one.
+
+`fixtures/import/delimited/preamble.csv` + `preamble.csv.rules` are the pair, and both checks
+that use them assert the **wrong** number as well as the right one:
+`converted_and_aligned_imports_what_the_raw_download_does` (core, `LEDGELINE_HLEDGER_CONVERT_CHECK`)
+and `a_rules_files_own_skip_still_counts_after_the_preamble_is_stripped` (server,
+`LEDGELINE_HLEDGER_IMPORT_CHECK`, covering the candidate card, the dry-run and the commit).
+
 ## hledger proposes; Ledgeline appends
 
 > **`hledger import` never writes a user's journal. It previews, and it remembers.**

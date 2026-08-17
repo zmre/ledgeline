@@ -1138,6 +1138,24 @@ fn resolve_rules(discovery: &Discovery, id: &str) -> Result<PathBuf, AppError> {
         .ok_or_else(|| unresolved("rules file", id))
 }
 
+/// What a rules file's own `skip` says, or `0` when it says nothing.
+///
+/// The number every copy of the staged CSV hledger reads has to be aligned to —
+/// see [`convert::align_to_skip`], and [`Plan::skip`] for where it is kept.
+/// `skip` is **first-one-wins**, unlike almost every other directive, and
+/// `RulesDoc::settings` already knows that; reading the raw text for a `skip`
+/// line here instead would get it wrong on the file that says it twice.
+///
+/// An unreadable file answers `0`, which means no padding, which is exactly
+/// today's behaviour — and the import is about to fail on its own terms anyway,
+/// with hledger's message rather than a guess of ours.
+fn rules_skip(rules: &Path) -> u32 {
+    std::fs::read_to_string(rules)
+        .ok()
+        .and_then(|text| RulesDoc::parse(&text).settings().skip)
+        .map_or(0, |setting| setting.value)
+}
+
 /// Resolve a `stageId` through the staging area — see [`crate::stage`].
 fn resolve_stage(state: &AppState, raw: &str) -> Result<std::sync::Arc<Stage>, AppError> {
     StageId::parse(raw)
@@ -2194,11 +2212,17 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
     // depends on — `run_dry_run` materialises unconditionally and propagates its
     // own failure — so a default the user is about to change, naming a directory
     // that does not exist yet, must not fail the upload they just made.
+    //
+    // Aligned to `skip 0`, i.e. not padded, and that is safe for one reason
+    // only: no rules file has been CHOSEN yet, and every route that hands this
+    // slot to hledger (`run_dry_run`, `preflight_assertion`) re-materialises it
+    // first with the plan's own `skip`. The `.latest` copy beside it is the
+    // whole point of running this early; the CSV is a placeholder.
     if let Some(root) = main.as_deref().map(include_root).transpose()?
         && let Ok(destination) = resolve_destination(&root, &defaults.csv_path)
         && let Some((dir, file)) = destination.parent().zip(file_name(&destination))
     {
-        let _ = staged.materialize(RUN_WITH_LATEST, &file, Some(dir));
+        let _ = staged.materialize(RUN_WITH_LATEST, &file, Some(dir), 0);
     }
 
     Ok(WireStage {
@@ -2272,7 +2296,13 @@ fn rank_candidates(
     aliases: &[String],
 ) -> Vec<WireCandidate> {
     let discovery = rules::discover(main);
-    let mut survivors: Vec<(usize, matching::PrefilterPass)> = discovery
+    // Each candidate's own `skip` is carried alongside its prefilter result,
+    // because the file it is scored against has to be padded into ITS frame.
+    // Scored against a header-on-line-1 CSV, a genuine `skip 3` file reads the
+    // statement's tail and nothing else — which is not even a low score: it is a
+    // clean 1.0 for correctly importing a third of the file, and a zero only
+    // when nothing at all is left. See `convert::align_to_skip`.
+    let mut survivors: Vec<(usize, matching::PrefilterPass, u32)> = discovery
         .files
         .iter()
         .take(MAX_PREFILTERED)
@@ -2280,11 +2310,13 @@ fn rank_candidates(
         .filter(|(_, found)| found.parsed)
         .filter_map(|(at, found)| {
             let text = std::fs::read_to_string(found.path().as_path()).ok()?;
-            let pass = matching::prefilter(&RulesDoc::parse(&text), data)?;
-            Some((at, pass))
+            let doc = RulesDoc::parse(&text);
+            let skip = doc.settings().skip.map_or(0, |setting| setting.value);
+            let pass = matching::prefilter(&doc, data)?;
+            Some((at, pass, skip))
         })
         .collect();
-    survivors.sort_by(|(a, _), (b, _)| {
+    survivors.sort_by(|(a, ..), (b, ..)| {
         discovery.files[*b]
             .modified
             .cmp(&discovery.files[*a].modified)
@@ -2298,9 +2330,10 @@ fn rank_candidates(
     let mut rankings: Vec<(Ranking, CandidateExtras)> = survivors
         .into_iter()
         .take(matching::MAX_SCORED_CANDIDATES)
-        .filter_map(|(at, pass)| {
+        .filter_map(|(at, pass, skip)| {
             let found = &discovery.files[at];
-            let json = print_json(hledger, &staged.data(), found.path().as_path(), aliases)?;
+            let data = staged.aligned(skip).ok()?;
+            let json = print_json(hledger, &data, found.path().as_path(), aliases)?;
             let expected = pass
                 .expected_commodity
                 .clone()
@@ -2533,6 +2566,16 @@ struct Plan {
     /// against — see [`verify_balance`].
     root_journal: PathBuf,
     rules: PathBuf,
+    /// The chosen rules file's own `skip`, read from the file at resolve time.
+    ///
+    /// It is a number the user wrote against their **raw download**, and the
+    /// conversion moved the header out from under it, so every copy of the CSV
+    /// hledger reads on this plan is padded back into that frame —
+    /// [`convert::align_to_skip`] argues why, and why the alternative is a
+    /// silent import of nothing. Resolved once, here, for the same reason
+    /// [`aliases`](Self::aliases) is: the dry-run and the commit must not be
+    /// able to disagree about it.
+    skip: u32,
     destination: PathBuf,
     /// The destination's bare file name — what the staged copy is named, and what
     /// `.latest.NAME` is keyed to.
@@ -2569,6 +2612,7 @@ impl Plan {
         let root_dir = include_root(&root_journal)?;
         let (target, _) = resolve_journal(state, &root_dir, &request.journal_id)?;
         let rules = resolve_rules(&rules::discover(&root_journal), &request.rules_id)?;
+        let skip = rules_skip(&rules);
         let destination = resolve_destination(&root_dir, &request.csv_path)?;
         let csv_name = file_name(&destination)
             .ok_or_else(|| unresolved("CSV destination", &request.csv_path))?;
@@ -2605,6 +2649,7 @@ impl Plan {
             target,
             root_journal,
             rules,
+            skip,
             destination,
             csv_name,
             aliases,
@@ -2638,6 +2683,7 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
             RUN_WITH_LATEST,
             &plan.csv_name,
             Some(plan.destination_dir()),
+            plan.skip,
         )
         .map_err(stage_failed)?;
 
@@ -2725,7 +2771,7 @@ fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, Ap
     };
     let bare = plan
         .staged
-        .materialize(RUN_BARE, &plan.csv_name, None)
+        .materialize(RUN_BARE, &plan.csv_name, None, plan.skip)
         .map_err(stage_failed)?;
     let output = run(
         import_invocation(
@@ -3037,7 +3083,18 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
 
     // Sequencing rule 2: the CSV goes to its FINAL destination first, so the
     // import writes `.latest` next to the file it will consult next time.
+    //
+    // ALIGNED, and this is the one place where that is not merely a copy's
+    // property. The two invocations below read `plan.destination` — they have
+    // to, or hledger would key `.latest` to a name in a temp directory — so an
+    // unpadded file here is a commit that imports the wrong rows — or none at
+    // all — under a genuine `skip 3`, exits 0, and reports the number it got as
+    // though it were the number there was. It is also the file the user keeps
+    // and re-imports, from this screen or from a terminal, with that same rules
+    // file: padding it is what makes those two agree.
+    // `convert::align_to_skip` argues the frame mismatch in full.
     let csv = std::fs::read_to_string(plan.staged.data()).map_err(stage_failed)?;
+    let csv = convert::align_to_skip(&csv, plan.skip);
     ledgeline_core::edit::atomic_write(&plan.destination, csv.as_bytes()).map_err(|error| {
         AppError::Internal(format!(
             "{} could not be written: {}. Nothing else was changed.",
@@ -3497,6 +3554,7 @@ fn preflight_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), A
             RUN_WITH_LATEST,
             &plan.csv_name,
             Some(plan.destination_dir()),
+            plan.skip,
         )
         .map_err(stage_failed)?;
     let output = run(
