@@ -38,9 +38,8 @@
 //! | 2 — [`signals_from_hledger_json`] + [`score`] | pure, over JSON the caller obtained | one subprocess per survivor | ranks the plausible |
 //!
 //! Stage 1 rejects on facts that need no execution: the `fields` list is wider
-//! than the data, `skip` swallows the whole file, or the `date-format` cannot
-//! read the date column. At most [`MAX_SCORED_CANDIDATES`] survivors reach
-//! stage 2.
+//! than the data, or the `date-format` cannot read the date column. At most
+//! [`MAX_SCORED_CANDIDATES`] survivors reach stage 2.
 //!
 //! # This module never runs anything
 //!
@@ -393,8 +392,16 @@ pub struct PrefilterPass {
 ///    column that does not exist anywhere in the file. (The converse — naming
 ///    *fewer* columns than the file has — is legitimate and common, and is not a
 ///    rejection; it only clears [`PrefilterPass::column_count_matches`].)
-/// 2. **`skip` swallows the file.** Nothing would be imported at all.
-/// 3. **`date-format` cannot read the date column.** Not one sampled cell parses.
+/// 2. **`date-format` cannot read the date column.** Not one sampled cell parses.
+///
+/// There used to be a third: *`skip` swallows the file*. It is gone because
+/// [`convert::align_to_skip`](crate::convert::align_to_skip) put `skip - 1`
+/// empty records in front of the CSV hledger reads, so `skip` now consumes the
+/// padding and the header and never a transaction — measured, `skip 99` over a
+/// six-row statement imports all six. Keeping the check would have made it a
+/// false rejection of exactly the rules files this crate exists to find: a
+/// `skip 4` file against a three-row month is a real pairing, and the user would
+/// have been told nothing fits.
 ///
 /// # Why the bar for rejecting is deliberately high
 ///
@@ -416,7 +423,6 @@ pub struct PrefilterPass {
 pub fn prefilter(doc: &RulesDoc, data: &Tabular) -> Option<PrefilterPass> {
     let settings = doc.settings();
     let fields = settings.fields.as_ref().map(|setting| &setting.value);
-    let skip = settings.skip.map_or(0, |setting| setting.value) as usize;
 
     // (1) The rules file must not address a column the data does not have
     // anywhere. Compared against the WIDEST record, not the modal one: a ragged
@@ -429,19 +435,10 @@ pub fn prefilter(doc: &RulesDoc, data: &Tabular) -> Option<PrefilterPass> {
         return None;
     }
 
-    // (2) `skip` must leave something to import. Only asserted when the extract
-    // is complete: `truncated` means `rows` is a lower bound, so a preview of a
-    // long file would otherwise reject a rules file with a large legitimate
-    // preamble.
-    let records = usize::from(data.header.is_some()) + data.rows.len();
-    if !data.truncated && skip >= records {
-        return None;
-    }
-
-    // (3) The date column must be readable by the declared format. `dates_tried`
+    // (2) The date column must be readable by the declared format. `dates_tried`
     // is zero whenever any input to the question is missing, and a question that
     // was not asked never rejects.
-    let sampled = sample_dates(fields, data, skip);
+    let sampled = sample_dates(fields, data);
     let parsed = settings
         .date_format
         .as_ref()
@@ -500,12 +497,20 @@ fn modal_width(widths: &[usize]) -> usize {
 }
 
 /// The first [`DATE_SAMPLES`] non-empty cells of whichever column `fields` maps
-/// to `date`, from the records `skip` leaves behind.
+/// to `date`.
+///
+/// Every row is a candidate sample, and `skip` is not consulted:
+/// [`convert::align_to_skip`](crate::convert::align_to_skip) pads the CSV
+/// hledger reads so that `skip` lands exactly past the header, which means every
+/// row here is a record hledger will parse. Skipping `skip - 1` of them, as this
+/// did while the two frames disagreed, only narrowed the sample — and a sample
+/// narrowed to nothing makes the date check decline, so a readable rules file
+/// lost its strongest evidence for no reason.
 ///
 /// Empty when there is no `fields` list, no `date` in it, or no such column in
 /// the data — each of which means the date question cannot be asked, and an
 /// unasked question never rejects a candidate.
-fn sample_dates(fields: Option<&Vec<String>>, data: &Tabular, skip: usize) -> Vec<String> {
+fn sample_dates(fields: Option<&Vec<String>>, data: &Tabular) -> Vec<String> {
     // hledger lowercases field names for its own lookups, so `Date` and `date`
     // are the same name to it and must be here too.
     let Some(at) = fields.and_then(|names| {
@@ -515,12 +520,8 @@ fn sample_dates(fields: Option<&Vec<String>>, data: &Tabular, skip: usize) -> Ve
     }) else {
         return Vec::new();
     };
-    // `skip` counts from the first record, and the header is record 0. Rows past
-    // the header therefore start at `skip - 1` when a header was extracted.
-    let skip_rows = skip.saturating_sub(usize::from(data.header.is_some()));
     data.rows
         .iter()
-        .skip(skip_rows)
         .filter_map(|row| row.get(at))
         .map(|cell| cell.trim().to_string())
         .filter(|cell| !cell.is_empty())

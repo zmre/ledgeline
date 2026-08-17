@@ -159,23 +159,32 @@ fn stage_one_reports_the_commodity_only_when_the_file_declares_one() {
 }
 
 #[test]
-fn stage_one_rejects_a_skip_that_swallows_the_file() {
+fn stage_one_no_longer_rejects_a_large_skip_because_alignment_absorbs_it() {
+    // This check used to reject `skip >= records`, on the reasoning that such a
+    // rules file would import nothing. `convert::align_to_skip` made that false:
+    // it puts `skip - 1` empty records in front of the CSV hledger reads, so
+    // `skip` lands past the header and every row survives. Measured against
+    // hledger 1.52, `skip 99` over a six-row statement imports all six.
+    //
+    // Left in place the check was a FALSE rejection, which this module's own
+    // docs call the invisible failure: a `skip 4` rules file against a
+    // three-row month is an ordinary pairing, and the user would have been told
+    // nothing fits while the import would have worked.
     let data = table("checking.csv");
-    // `skip 99` on a six-record file imports nothing at all.
     let doc = RulesDoc::parse(
         "skip 99\nfields date, description, amount-out, amount-in\ndate-format %m/%d/%Y\n",
     );
-    assert!(prefilter(&doc, &data).is_none());
-
-    // The same rules file against a TRUNCATED extract is not rejected: `rows` is
-    // then a lower bound, so the count proves nothing.
-    let truncated = Tabular {
-        truncated: true,
-        ..data
-    };
     assert!(
-        prefilter(&doc, &truncated).is_some(),
-        "a preview must not reject a legitimately long preamble"
+        prefilter(&doc, &data).is_some(),
+        "alignment means a large skip is no longer evidence of anything"
+    );
+
+    // And the date sample is drawn from the whole extract rather than from
+    // `skip - 1` rows in, so the evidence survives the large skip too.
+    let pass = prefilter(&doc, &data).expect("passes");
+    assert!(
+        pass.dates_tried > 0,
+        "a big skip must not narrow the date sample to nothing: {pass:?}"
     );
 }
 
