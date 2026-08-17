@@ -485,7 +485,14 @@ pub(super) fn margins(rows: &[RowShape]) -> Margins {
     let leading = rows
         .iter()
         .take(MAX_PREAMBLE_ROWS + 1)
-        .take_while(|row| row.width != modal)
+        // NARROWER than the table, not merely different from it. A preamble line
+        // is a title or an account line: it does not reach as far as the table
+        // does. A row that reaches FURTHER is the opposite case and trimming it
+        // costs a transaction -- a trailing column populated on only a few rows,
+        // a "Notes" or "Check #", makes the modal one short of the header's own
+        // extent, and `!=` then eats the header and promotes the first
+        // transaction into it, silently, under a `skip 1` rules file.
+        .take_while(|row| !could_be_a_record(row) || row.width < modal)
         .count();
     let preamble = if leading > MAX_PREAMBLE_ROWS {
         0
@@ -510,6 +517,7 @@ pub(super) fn margins(rows: &[RowShape]) -> Margins {
 /// empty reaches one short of the header and is a perfectly ordinary
 /// transaction. What disqualifies a row is holding nothing, or not reaching far
 /// enough to hold both of the two fields every rules file needs.
+///
 fn could_be_a_record(row: &RowShape) -> bool {
     !row.blank && row.width >= MIN_TABLE_FIELDS
 }
@@ -519,7 +527,7 @@ fn shapes(records: &[Vec<String>]) -> Vec<RowShape> {
     records
         .iter()
         .map(|record| RowShape {
-            width: record.len(),
+            width: populated_extent(record),
             blank: is_blank(record),
         })
         .collect()
@@ -533,6 +541,19 @@ fn shapes(records: &[Vec<String>]) -> Vec<RowShape> {
 /// either.
 fn is_blank(record: &[String]) -> bool {
     record.iter().all(|field| field.trim().is_empty())
+}
+
+/// One past the record's last populated field, using the same "whitespace is not
+/// content" test as [`is_blank`].
+///
+/// Trailing empties are what a spreadsheet's CSV export pads every short row
+/// with, so they say nothing about how far the row actually reaches. Zero for a
+/// blank record, which makes the extent test subsume the blank one.
+fn populated_extent(record: &[String]) -> usize {
+    record
+        .iter()
+        .rposition(|field| !field.trim().is_empty())
+        .map_or(0, |last| last + 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -622,7 +643,7 @@ mod tests {
         assert_eq!(quote("Date\u{feff}"), "Date\u{feff}");
     }
 
-    /// A row of `width` populated fields.
+    /// A row reaching `width` fields.
     fn wide(width: usize) -> RowShape {
         RowShape {
             width,
@@ -630,9 +651,13 @@ mod tests {
         }
     }
 
-    /// A row holding nothing, `width` fields across.
-    fn empty(width: usize) -> RowShape {
-        RowShape { width, blank: true }
+    /// A row holding nothing. Its extent is zero however many empty fields it
+    /// was padded out to, which is what makes `,,,` and `` the same shape.
+    fn empty() -> RowShape {
+        RowShape {
+            width: 0,
+            blank: true,
+        }
     }
 
     /// The body has to outnumber the odd rows for the modal width to be the
@@ -672,9 +697,9 @@ mod tests {
             wide(4),
             wide(4),
             wide(4),
-            empty(4),
+            empty(),
             wide(1),
-            empty(4),
+            empty(),
             wide(1),
         ];
         assert_eq!(
@@ -701,7 +726,7 @@ mod tests {
         // that might be discarding records — so a long one is trimmed rather
         // than abandoned.
         let rows: Vec<RowShape> = std::iter::repeat_n(wide(3), 3)
-            .chain(std::iter::repeat_n(empty(0), MAX_PREAMBLE_ROWS * 5))
+            .chain(std::iter::repeat_n(empty(), MAX_PREAMBLE_ROWS * 5))
             .collect();
         assert_eq!(margins(&rows).trailer, MAX_PREAMBLE_ROWS * 5);
     }

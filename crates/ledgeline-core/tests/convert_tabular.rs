@@ -214,6 +214,71 @@ fn a_trailer_is_dropped_and_reported() {
 }
 
 #[test]
+fn a_padded_prose_trailer_is_trimmed_even_though_it_is_as_wide_as_the_table() {
+    // `trailer.csv` covers padded BLANK rows; this is padded PROSE. A
+    // spreadsheet's CSV export pads every short row out to the table's width, so
+    // `Member FDIC,,,` has as many fields as a transaction and is not blank.
+    // Counted by fields it "could be a record", the trim stops at it, and
+    // hledger then abandons the whole file on the first one it cannot read.
+    let table = parse_delimited("delimited/padded-prose.csv", SourceFormat::Csv);
+
+    assert_eq!(header(&table), ["Date", "Description", "Amount", "Balance"]);
+    assert_eq!(rows(&table).len(), 4, "{:?}", rows(&table));
+    assert_eq!(rows(&table)[0][1], "GROCERY STORE");
+    assert_eq!(rows(&table)[3][1], "CORNER MARKET");
+    assert!(
+        table
+            .notes
+            .contains(&ConvertNote::PreambleSkipped { lines: 4 }),
+        "{:?}",
+        table.notes
+    );
+    assert!(
+        table
+            .notes
+            .contains(&ConvertNote::TrailerSkipped { lines: 3 }),
+        "{:?}",
+        table.notes
+    );
+    // The thing that must not come back: prose in the data.
+    assert!(
+        !rows(&table)
+            .iter()
+            .any(|row| row.iter().any(|cell| cell.contains("Disclaimer"))),
+        "{:?}",
+        rows(&table)
+    );
+}
+
+#[test]
+fn a_body_wider_than_its_own_header_does_not_cost_a_transaction() {
+    // Every data row ends with the delimiter, so the body is four fields and the
+    // header three. By field count the header is the odd row out and is trimmed
+    // as preamble -- which makes the first TRANSACTION the header. Under a
+    // `skip 1` rules file that transaction then disappears with no error at all,
+    // which is the worst shape a bug in this module can take.
+    let table = parse_delimited("delimited/trailing-delimiter.csv", SourceFormat::Csv);
+
+    assert_eq!(header(&table), ["Date", "Description", "Amount"]);
+    assert_eq!(rows(&table).len(), 4, "{:?}", rows(&table));
+    assert_eq!(rows(&table)[0][0], "2026-01-05", "no transaction was eaten");
+    assert!(
+        !table
+            .notes
+            .iter()
+            .any(|note| matches!(note, ConvertNote::PreambleSkipped { .. })),
+        "the header is not preamble: {:?}",
+        table.notes
+    );
+    // It IS honest about the shape, which is the note the user can act on.
+    assert!(
+        table.notes.contains(&ConvertNote::RaggedRows { count: 4 }),
+        "{:?}",
+        table.notes
+    );
+}
+
+#[test]
 fn a_blank_row_between_the_transactions_is_dropped_and_reported() {
     let table = parse_delimited("delimited/trailer.csv", SourceFormat::Csv);
 
