@@ -108,12 +108,8 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 ## TODO
 
 - feat: import drag/drop
-  - auto convert pdf or qif or ofx or xls or whatever quickbooks produces to csv
-  - guess matching rules file options and suggest csv store then store it out
-  - shell to hledger to import the csv and display the results of the import (success or not)
-  - fix ordering and run checks
-  - ask for balances to add balance checks in file?
   - command line options
+  - fix styling of numbers issues; infected the entire ui now
 - feat: new import rules
   - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
 - feat: edit budget
