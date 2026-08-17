@@ -53,7 +53,13 @@
 </script>
 
 {#if view === "error"}
-    <div class="alert alert-error rounded-box flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid={testid}>
+    <!-- `flex` before `flex-col`: daisyUI's `.alert` is `display:grid;
+         grid-auto-flow:column`, so `flex-col` alone is inert and the message
+         and the Retry button sit in two narrow columns — with the message in
+         the `auto` one, which is where a long error message goes to be
+         unreadable. This is every error banner in the app.
+         See `routes/alertStacking.test.ts`. -->
+    <div class="alert alert-error rounded-box flex flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid={testid}>
         <span>{message}</span>
         {#if !nativeUnavailable}
             <button type="button" class="btn btn-sm" onclick={onRetry}>Retry</button>

@@ -1,0 +1,21 @@
+; layouts/single — one file, declarations at the top and transactions below.
+;
+; The layout a lot of people start with and never leave. There is exactly one
+; possible target, and it must be offered even though its name says nothing.
+
+account assets:bank:checking
+account expenses:groceries
+account income:salary
+commodity $1,000.00
+
+2026-01-05 Paycheck
+    assets:bank:checking    $2,400.00
+    income:salary
+
+2026-02-04 Grocery store
+    expenses:groceries         $61.40
+    assets:bank:checking
+
+2026-02-18 Grocery store
+    expenses:groceries         $44.05
+    assets:bank:checking

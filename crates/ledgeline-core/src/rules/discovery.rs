@@ -246,6 +246,28 @@ pub struct DiscoveredRules {
     pub label: String,
     /// The file's size as of the scan's `stat`.
     pub size_bytes: u64,
+    /// The file's mtime as of the scan's `stat` — **used ONLY to rank candidate
+    /// rules files, and NEVER to detect change.**
+    ///
+    /// That distinction is the whole reason this comment exists. [`Fingerprint`]
+    /// deliberately stopped recording an mtime (see `edit.rs` DL-3): every
+    /// mtime-preserving copy tool breaks the inference from "timestamp unchanged"
+    /// to "bytes unchanged", so a timestamp was removed rather than left lying
+    /// around as a tempting shortcut. Nothing here reverses that. Change
+    /// detection is [`DiscoveredRules::revision`], over the raw bytes, and it
+    /// stays that way.
+    ///
+    /// Ranking is a different question with a different failure mode. A user has
+    /// rules files going back years, several of which score identically against a
+    /// dropped statement, and the one they touched most recently is the one they
+    /// are still importing into — which naturally prefers the current year's
+    /// without any filename ever being parsed for a year. Being wrong here costs
+    /// a candidate list in a slightly worse order. Being wrong about change
+    /// detection costs the user's edits. See
+    /// [`crate::rules::matching::rank`], which is the only consumer.
+    ///
+    /// `None` on a platform or filesystem that does not report one.
+    pub modified: Option<std::time::SystemTime>,
     /// [`Fingerprint::token`] over the file's **raw bytes** — the value a later
     /// write path uses as an `If-Match`, so a save cannot land on top of an edit
     /// made elsewhere. [`UNREAD_REVISION`] when the bytes were never read.
@@ -878,8 +900,25 @@ impl Scan {
             return;
         }
 
+        // A leading dot, on a directory OR on a file. A hidden entry is one the
+        // user's own file browser does not show them, so offering `.hidden.rules`
+        // for editing is offering something they cannot see — and a dot-file in a
+        // journal directory is much more often a tool's leftover than a rules
+        // file someone wants listed. For directories this is what keeps `.git/`
+        // and `.direnv/` out. Silent, like [`SKIP_DIRS`]: a policy skip is not a
+        // problem to report.
+        //
+        // Nothing legitimate is lost at the file end. A bare `.rules` is already
+        // refused by [`is_rules_name`] — it would strip to an empty label — so
+        // this only removes names the user deliberately hid. [`Discovery::preview`]
+        // has held a dot entry to the same rule from the start; this makes the
+        // scan agree with it.
+        if name.starts_with('.') {
+            return;
+        }
+
         if kind.is_dir() {
-            if name.starts_with('.') || SKIP_DIRS.contains(&name) {
+            if SKIP_DIRS.contains(&name) {
                 return;
             }
             if depth + 1 > MAX_RULES_DEPTH {
@@ -946,6 +985,8 @@ fn describe(id: String, path: PathBuf, meta: &std::fs::Metadata) -> DiscoveredRu
     let mut file = DiscoveredRules {
         label: label_for(&id),
         size_bytes: meta.len(),
+        // Ranking only. See the field.
+        modified: meta.modified().ok(),
         revision: UNREAD_REVISION.to_string(),
         parsed: false,
         account1: None,

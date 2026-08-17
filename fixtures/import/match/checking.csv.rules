@@ -1,0 +1,29 @@
+# Checking-account rules for checking.csv — the CORRECT match.
+#
+# Everything a well-formed candidate has: a date-format that reads this file's
+# dates, a fields list as wide as the file, a `currency` so amounts land in $
+# rather than in the bare commodity, and an if-rule for every description in the
+# data so no posting falls through to `expenses:unknown`.
+
+skip 1
+fields date, description, amount-out, amount-in
+date-format %m/%d/%Y
+currency $
+
+account1 assets:bank:checking
+account2 expenses:unknown
+
+if ACME PAYROLL
+    account2 income:salary
+
+if
+COFFEE
+STARBUCKS
+PEETS
+    account2 expenses:food:coffee
+
+if LANDLORD LLC
+    account2 expenses:home:rent
+
+if HARDWARE STORE
+    account2 expenses:home:supplies

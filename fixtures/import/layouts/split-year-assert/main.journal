@@ -1,0 +1,33 @@
+; layouts/split-year-assert — the tree an import cannot be reckoned inside.
+;
+; THIS file is the journal. `2026/2026.journal` is a FRAGMENT of it, and the
+; fragment's first transaction asserts the balance 2025 closed with — so it is
+; correct here and cannot be correct anywhere else:
+;
+;   $ hledger -f main.journal check         # passes; the tree is fine
+;   $ hledger -f 2026/2026.journal check    # FAILS, and nothing is wrong
+;
+; Both halves of that are the point. An assertion inside an included fragment is
+; not a check we choose to switch off during an import; it is a check that is
+; structurally incapable of being correct when only the fragment is read,
+; because the balance it asserts accumulates through a file hledger was never
+; asked to open. See `import_api::import_invocation` and `verify_balance`.
+;
+; Balances for `assets:bank:checking`, which the tests pin:
+;
+;   through this file      $895.00     ($1,000.00 - $100.00 - $5.00)
+;   2026/2026.journal alone  $-5.00
+;
+; Equality with the second number is the bug, which is why both are asserted.
+
+account assets:bank:checking
+account equity:opening balances
+account expenses:food:coffee
+account expenses:groceries
+account expenses:home:rent
+account income:salary
+
+commodity $1,000.00
+
+include 2025/2025.journal
+include 2026/2026.journal

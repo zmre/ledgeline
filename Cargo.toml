@@ -37,6 +37,31 @@ ropey = "1.6"
 # parsing path, and is the de-facto standard.
 csv = "1"
 
+# Enhanced imports (WP-11): the statement preprocessors that normalize a dropped
+# file to one tabular extract. See `plans/11-enhanced-import.md` for how each of
+# these was chosen — every one was compiled and run against real bank files
+# before it was picked, and the OFX crates were all rejected that way.
+#
+# `calamine` reads xls (BIFF2-8), xlsx, xlsm, xlsb and ods and is still
+# uncontested for this. PINNED to an exact version on purpose: 0.36.0 silently
+# began trimming XLSX whitespace, and the de-facto maintainer opened an issue in
+# July 2026 asking for help, so an unattended minor bump is a real risk to a
+# money app. `dates` is what makes `as_datetime()` available — reading a date
+# cell as f64 and dividing is how you land a transaction on the wrong day.
+calamine = { version = "=0.36.1", features = ["dates"] }
+
+# Text decoding for bank CSVs, which are routinely not UTF-8. `encoding_rs` is
+# the WHATWG-spec decoder (the one Firefox ships); `encoding_rs_io` wraps it in a
+# Read adapter that does BOM sniffing and transcoding for us — notably including
+# UTF-16, which `chardetng` documents that it cannot detect at all. `chardetng`
+# is the guesser of last resort, used ONLY after BOM sniffing has come up empty:
+# handed BOM'd UTF-16LE (what Excel's "Unicode Text" export writes) it confidently
+# answers windows-1252. Note 1.0 changed its API from the 0.1 that most examples
+# online still show.
+encoding_rs = "0.8"
+encoding_rs_io = "0.1"
+chardetng = "1"
+
 proptest = "1"
 proptest-derive = "0.8"
 

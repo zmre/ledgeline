@@ -1,0 +1,33 @@
+# Credit-card rules for creditcard.csv — correct for ITS OWN data, and a clear
+# mismatch for checking.csv.
+#
+# A deliberately different shape from checking.csv.rules, so the two reject each
+# other for two DIFFERENT stage-1 reasons and neither rejection can be passing by
+# accident:
+#
+#   this file vs checking.csv     — five fields, four columns: it addresses a
+#                                   column the data does not have
+#   checking.csv.rules vs this    — %m/%d/%Y cannot read 2024-02-03
+#
+# `category` is not an hledger field. hledger keeps it as a named CSV field so
+# `%category` can be matched on, which is what the if-rules below do.
+
+skip 1
+fields date, code, description, amount, category
+date-format %Y-%m-%d
+currency $
+
+account1 liabilities:creditcard:visa
+account2 expenses:unknown
+
+if %category Fees
+    account2 expenses:banking:fees
+
+if %category Groceries
+    account2 expenses:food:groceries
+
+if %category Payment
+    account2 assets:bank:checking
+
+if %category Dining
+    account2 expenses:food:coffee

@@ -404,6 +404,17 @@ fn every_diagnostic_has_exactly_the_four_contract_fields() {
 /// Every `*.journal` under `fixtures/`, EXCLUDING `fixtures/corpus/errors/`
 /// (journals hledger deliberately rejects) and any file that is `include`d by
 /// another (parsing it standalone is not how it is meant to be read).
+///
+/// The second exclusion is now performed rather than merely described. It went
+/// unnoticed while no included fragment could produce a diagnostic on its own;
+/// `fixtures/import/layouts/split-year-assert/2026/2026.journal` opens with a
+/// start-of-year assertion carrying the prior year's closing balance, so read
+/// alone it reports a failure — correctly, and exactly as hledger does. Its root
+/// is swept and covers every assertion in the tree.
+///
+/// Membership comes from `Journal::source_files`, the parse's own record of what
+/// it read, so nothing here forms a second opinion about how an include
+/// resolves.
 fn sweepable_journals() -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}"));
@@ -422,6 +433,26 @@ fn sweepable_journals() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     walk(&common::fixtures_dir(), &mut paths);
     paths.sort();
+
+    let included: std::collections::BTreeSet<PathBuf> = paths
+        .iter()
+        .filter_map(|path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            let parsed = parse_journal(&text, &path.to_string_lossy()).ok()?;
+            Some(
+                parsed
+                    .source_files
+                    .into_iter()
+                    .filter(move |source| source != path),
+            )
+        })
+        .flatten()
+        .collect();
+    assert!(
+        !included.is_empty(),
+        "no fixture is included by another — this filter is not being exercised"
+    );
+    paths.retain(|path| !included.contains(path));
     paths
 }
 

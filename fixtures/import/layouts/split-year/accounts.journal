@@ -1,0 +1,11 @@
+; Declarations only. No transaction has ever been written here and none ever
+; will be, which is precisely what must demote it — not its name.
+
+account assets:bank:checking
+account assets:broker
+account equity:opening balances
+account expenses:groceries
+account income:salary
+
+commodity $1,000.00
+commodity 1,000.00 AAPL

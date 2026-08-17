@@ -1,0 +1,21 @@
+; fixtures/import/sort/no-final-newline.journal
+;
+; The last line carries no terminator. The last transaction is already the
+; newest one, so it stays last and the sorted file must still end without one.
+
+account assets:bank:checking
+account expenses:groceries
+account income:salary
+commodity $1,000.00
+
+2026-01-05 Grocery store
+    expenses:groceries         $52.10
+    assets:bank:checking
+
+2026-01-01 Paycheck
+    assets:bank:checking    $2,400.00
+    income:salary
+
+2026-01-10 Grocery store
+    expenses:groceries         $18.75
+    assets:bank:checking

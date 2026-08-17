@@ -9,11 +9,23 @@
 // `$0.00` and "no transactions match the current filters" for a journal that was
 // never read (FE-5b). Nothing on screen said anything had failed.
 //
-// This reads the templates as text, which is unusual and worth justifying: the
-// vitest config here has a single `node` project and explicitly EXCLUDES
-// `*.svelte.test.ts`, so there is no component renderer to mount these in, and
-// Chromium cannot launch in this environment either. The property is about
-// branch ORDER in a template, so source order is the honest thing to assert.
+// This reads the templates as text, which is unusual and worth justifying.
+//
+// (The original justification — "there is no component renderer in this repo" —
+// is no longer true: `vite.config.ts` now declares a second `components` vitest
+// project that mounts `*.svelte.test.ts` in jsdom. The reasons below are the
+// ones that survive that.)
+//
+// The property is about branch ORDER in a template, so source order is the
+// honest thing to assert: a render test can only show that the error branch won
+// for the ONE state it was set up in, whereas an error branch placed after the
+// data branch is dead for every state that has ever loaded, and enumerating
+// those is not a test anybody writes. And this sweeps ELEVEN files at once for
+// the price of reading them, including the negative half — "no surface has
+// quietly grown a second, hand-rolled chain beside the shared one" — which is a
+// claim about files nobody has mounted and nobody thought to mount. That is
+// exactly the regression this guards, and it is the shape a renderer is worst
+// at. Mount tests for these surfaces are welcome alongside it, not instead.
 //
 // WHAT CHANGED (DRY-6). The four hand-written copies of that chain are gone —
 // they are one `<AsyncSection>` now. So the ordering assertion moved to the one
@@ -43,6 +55,25 @@ const SURFACES = [
     {name: "holdings route", file: "routes/holdings/+page.svelte", testid: "holdings-error"},
     {name: "insights dashboard", file: "lib/reports/ui/insights/InsightsDashboard.svelte", testid: "insights-error"},
     {name: "subscriptions panel", file: "lib/reports/ui/subscriptions/SubscriptionsPanel.svelte", testid: "subscriptions-error"},
+    // The rules editor moved out of `routes/imports/+page.svelte` when that
+    // became a tab host (WP-11); it is registered HERE, at the file that now
+    // owns the async surface, so the move cannot quietly lose the guarantee.
+    {name: "edit rules panel", file: "lib/imports/ui/EditRulesPanel.svelte", testid: "imports-error"},
+    // The New Transactions flow (WP-11 lane E) is four async surfaces, not one,
+    // and every one of them can hold a payload that a later request supersedes —
+    // which is exactly the FE-1/FE-5 pair this file exists for. The dry run and
+    // the commit are the dangerous ones: neither payload carries any field
+    // naming the file, rules file or destination it was computed for, so a stale
+    // one CANNOT be spotted by its own shape (see `sameRunRequest`).
+    {name: "new transactions capabilities", file: "lib/imports/ui/NewTransactionsPanel.svelte", testid: "imports-capabilities-error"},
+    {name: "staged file panel", file: "lib/imports/ui/StagedPanel.svelte", testid: "imports-stage-error"},
+    {name: "dry run panel", file: "lib/imports/ui/DryRunPanel.svelte", testid: "imports-dry-run-error"},
+    {name: "import result panel", file: "lib/imports/ui/ResultPanel.svelte", testid: "imports-commit-error"},
+    // The account-alias editor reads a listing whose failure must be reachable
+    // for the same reason as the rest: a screen that silently shows an empty
+    // alias list when the request failed tells the user their journal declares
+    // none, which is a different fact entirely.
+    {name: "alias panel", file: "lib/imports/ui/AliasPanel.svelte", testid: "imports-aliases-error"},
 ] as const;
 
 describe("UNIT data surfaces keep the error branch reachable (FE-1 / FE-5)", () => {

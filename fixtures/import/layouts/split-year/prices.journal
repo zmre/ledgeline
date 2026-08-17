@@ -1,0 +1,8 @@
+; Market prices only. Its newest line is dated 2026-06-30 — later than any
+; transaction in the tree — so a ranking that looked at dates without asking
+; whether they belong to transactions would put this file first. It must rank
+; last.
+
+P 2025-06-30 AAPL $180.00
+P 2025-12-31 AAPL $185.50
+P 2026-06-30 AAPL $196.25

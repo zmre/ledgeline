@@ -1,0 +1,28 @@
+# A GENUINE `skip 3` — the number a user writes for their own raw download.
+#
+# `preamble.csv` opens with a title line and an account line before its header,
+# so three records have to go before the first transaction. That is the whole
+# point of this file: the number is counted against the file the BANK produced,
+# and Ledgeline's conversion strips the preamble out from under it.
+#
+# Run against our converted CSV — header on line 1 — hledger spends its three
+# skips on the header and the first two transactions, and imports the third one
+# alone: ONE of three, exit code 0, nothing on stderr. Verified against hledger
+# 1.52. (Two rows or fewer and the same arithmetic reads zero.)
+# `convert::align_to_skip` is what puts the two frames back together, and
+# `converted_and_aligned_imports_what_the_raw_download_does` in
+# crates/ledgeline-core/tests/convert_tabular.rs is what proves it with this
+# pair.
+#
+# Everything below `skip` is ordinary and deliberately so — a `currency` so the
+# amounts are in `$` rather than the bare commodity, a `date-format` that reads
+# this file's ISO dates — because the only thing being tested here is the
+# record-counting frame.
+
+skip 3
+fields date, description, amount, balance
+date-format %Y-%m-%d
+currency $
+
+account1 assets:bank:checking
+account2 expenses:unknown

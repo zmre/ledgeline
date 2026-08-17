@@ -73,9 +73,16 @@ test.afterAll(() => {
     rmSync(SCRATCH_DIR, {recursive: true, force: true});
 });
 
-/** Open Imports and select the scratch file. */
+/**
+ * Open the Edit Rules tab and select the scratch file.
+ *
+ * `?tab=rules` rather than a click: Imports opens on New Transactions now, and
+ * the tab is restored from the query string on mount — so this is both the
+ * shortest route to the editor and a check that a shared/reloaded URL lands
+ * where it says it does. The tab STRIP is exercised by a click below.
+ */
 async function openScratch(page: Page): Promise<void> {
-    await page.goto("/imports");
+    await page.goto("/imports?tab=rules");
     await page.getByRole("button", {name: /^scratch/}).click();
     await expect(page.getByTestId("imports-open-file")).toHaveText("scratch");
 }
@@ -89,6 +96,21 @@ test("navigates to Imports and lists the rules files beside the journal", async 
     await page.goto("/");
     await page.getByRole("link", {name: "Imports"}).click();
     await expect(page).toHaveTitle("Ledgeline — Imports");
+
+    // Imports opens on New Transactions, so the rules editor is one tab away.
+    // Asserted rather than clicked past: which tab is the landing one is a
+    // decision, and a silent flip back to the editor would go unnoticed.
+    await expect(page.getByRole("tab", {name: "New Transactions"})).toHaveAttribute("aria-selected", "true");
+    // The panel root, not any section inside it. Which sections render depends
+    // on whether the test machine has hledger and whether a journal is bound,
+    // and neither is what this test is about.
+    await expect(page.getByTestId("imports-new")).toBeVisible();
+
+    await page.getByRole("tab", {name: "Edit Rules"}).click();
+    await expect(page.getByRole("tab", {name: "Edit Rules"})).toHaveAttribute("aria-selected", "true");
+    // The tab is mirrored into the URL, debounced — which is what makes the
+    // `?tab=rules` entry point every other test uses reachable by sharing a link.
+    await expect(page).toHaveURL(/\?tab=rules$/);
 
     // The scan root is named by LABEL — the engine deliberately never sends a path.
     await expect(page.getByText("the folder your journal is in").first()).toBeVisible();
@@ -169,7 +191,12 @@ test("names a column with an arbitrary field name and saves it", async ({page}) 
     await expect(columns.nth(2)).toContainText("available as %cat");
 
     await page.getByRole("button", {name: "Save"}).click();
-    await expect(page.getByRole("button", {name: "Save"})).toBeDisabled();
+    // The `saved` badge, NOT `Save` going disabled. Save is disabled by
+    // `!dirty || rulesStore.saving`, so it goes disabled the instant the PUT is
+    // sent — waiting on it resolves while the request is still in flight and
+    // the read below races the write. `savedAt` is only set once the engine has
+    // answered, which is the thing this test is actually about.
+    await expect(page.getByTestId("imports-saved")).toBeVisible();
 
     // It is the FILE that has to carry the name, not just the form.
     expect(readFileSync(SCRATCH_RULES, "utf8")).toContain("fields date, description, cat");
@@ -247,9 +274,16 @@ test("switching files with unsaved changes asks before discarding them", async (
     await page.getByRole("button", {name: "Move rule 2 down"}).click();
     await expect(page.getByTestId("imports-dirty")).toBeVisible();
 
+    // The folder is part of this locator on purpose. Labels are NOT unique —
+    // the corpus holds a `checking` under both `rules/simple` and
+    // `import/match`, which is exactly the case `RulesFileList` renders the
+    // folder for. Matching on the label alone was a strict-mode violation
+    // waiting for the second `checking` to be added, and it got one.
+    const otherFile = page.getByRole("button", {name: /^checking rules\/simple/});
+
     // The inline two-step confirm, not a `beforeunload` guard: the click that
     // discards the edit is never the click that asked to switch.
-    await page.getByRole("button", {name: /^checking/}).click();
+    await otherFile.click();
     await expect(page.getByText("Discard your unsaved changes?")).toBeVisible();
     await expect(page.getByTestId("imports-open-file")).toHaveText("scratch");
 
@@ -257,7 +291,7 @@ test("switching files with unsaved changes asks before discarding them", async (
     await expect(page.getByTestId("imports-open-file")).toHaveText("scratch");
     await expect(page.getByTestId("imports-dirty")).toBeVisible();
 
-    await page.getByRole("button", {name: /^checking/}).click();
+    await otherFile.click();
     await page.getByRole("button", {name: "Discard"}).click();
     await expect(page.getByTestId("imports-open-file")).toHaveText("checking");
 });

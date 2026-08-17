@@ -1,0 +1,15 @@
+; layouts/monthly — one file per month.
+;
+; The months are spelled out rather than numbered, so **alphabetical order is
+; not date order**: february, january, march by name; january, february, march
+; by content. A ranking that sorted ids would answer february first. The right
+; answer is march, because march holds the newest transaction.
+
+account assets:bank:checking
+account expenses:groceries
+account income:salary
+commodity $1,000.00
+
+include january.journal
+include february.journal
+include march.journal

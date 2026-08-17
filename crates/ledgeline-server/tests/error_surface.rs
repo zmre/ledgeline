@@ -91,9 +91,17 @@ async fn read_only(method: &str, uri: &str, body: Option<Value>) -> ErrorRespons
 /// An EDITING-ENABLED router over a temp copy of the sample journal, so the
 /// write path reaches the editor instead of short-circuiting on "not enabled".
 fn editing_state() -> AppState {
+    // A path per CALL, not per process. Ten tests in this binary call this, the
+    // harness runs them on parallel threads of ONE process, and `fs::copy`
+    // truncates before it writes -- so a pid-keyed name has one test rebuilding
+    // the journal another test is mid-way through opening. That raced roughly
+    // once in twenty full-suite runs and never in isolation, which is the worst
+    // way for a test to be wrong. `rules_state` below already does this.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join("ledgeline-error-surface-tests");
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let path = dir.join(format!("errors-{}.journal", std::process::id()));
+    let path = dir.join(format!("errors-{}-{seq}.journal", std::process::id()));
     std::fs::copy(fixture_journal_path(), &path).expect("copy sample journal");
     AppState::from_journal_path(&path).expect("editor opens")
 }

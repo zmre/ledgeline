@@ -1,0 +1,27 @@
+# Stage 1's rejection fixture: a real rules file for a German bank export, and
+# a clear mismatch for checking.csv.
+#
+# It is deliberately RIGHT about everything stage 1 can check except one thing.
+# Four fields against checking.csv's four columns, so the column test passes; the
+# only reason to reject it is that %d.%m.%Y cannot read 01/15/2024. That isolates
+# the date-format check — a test that passed because the column counts differed
+# would not be testing what it claims to.
+#
+# It is a rules file hledger accepts, which `just rules-check` proves by driving
+# it against a generated statement in the format it was written for. Driving it
+# against checking.csv would fail, and that failure is precisely what stage 1
+# exists to reach WITHOUT spawning hledger at all.
+
+skip 1
+fields date, description, amount-out, amount-in
+date-format %d.%m.%Y
+currency EUR
+
+account1 assets:bank:girokonto
+account2 expenses:unknown
+
+if GEHALT
+    account2 income:salary
+
+if SUPERMARKT
+    account2 expenses:food:groceries

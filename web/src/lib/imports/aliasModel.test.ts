@@ -1,0 +1,469 @@
+import {describe, expect, it} from "vitest";
+import {
+    ALIAS_EXPLAINER,
+    aliasBadges,
+    aliasNotice,
+    aliasPatternText,
+    aliasText,
+    blankRow,
+    isDirty,
+    plainAliasMatches,
+    relevantAliases,
+    renameText,
+    toEdits,
+    aliasEffectTone,
+    canInstallParityFix,
+    PARITY_DIFFERENCE_LEAD,
+    PARITY_EXPLAINER,
+    PARITY_SAME_ACCOUNTS,
+    parityFixLabel,
+    parityNotice,
+    parityRepeatsRenames,
+    parityWarning,
+    showsAliasEffect,
+    toForm,
+    toSaveRequest,
+    validateForm,
+    validateRow,
+} from "./aliasModel";
+import type {AliasDraft, AliasForm} from "./aliasModel";
+import type {AliasEffect, AliasEntry, AliasFile, CliParity} from "./importTypes";
+
+// The fixtures below are literal wire shapes, written out rather than built by
+// the app's own encoder — the same rule `importModel.test.ts` follows, so a test
+// cannot pass because two of our own bugs cancel.
+
+function alias(over: Partial<AliasEntry> = {}): AliasEntry {
+    return {
+        journalId: "main.journal",
+        index: 0,
+        line: 1,
+        pattern: "PW Roth IRA - 3077",
+        replacement: "assets:morganstanley:pw-roth-ira",
+        regex: false,
+        forwarded: true,
+        refusal: null,
+        refusalMessage: null,
+        editable: true,
+        lock: null,
+        lockMessage: null,
+        ...over,
+    };
+}
+
+/** The agreeing case: a command-line import would produce the same accounts. */
+function parity(over: Partial<CliParity> = {}): CliParity {
+    return {
+        matches: true,
+        differences: [],
+        confPath: null,
+        confOutside: false,
+        confHijackedBy: null,
+        additions: [],
+        refusals: [],
+        revision: "",
+        writable: true,
+        ...over,
+    };
+}
+
+function effect(over: Partial<AliasEffect> = {}): AliasEffect {
+    return {
+        forwarded: 1,
+        renames: [{from: "PW Roth IRA - 3077:cash", to: "assets:morganstanley:pw-roth-ira:cash"}],
+        cli: parity(),
+        ...over,
+    };
+}
+
+/** The diverging case: the journal's aliases reach this import and nothing else does. */
+function diverged(over: Partial<CliParity> = {}): AliasEffect {
+    return effect({
+        cli: parity({
+            matches: false,
+            differences: [{from: "PW Roth IRA - 3077:cash", to: "assets:morganstanley:pw-roth-ira:cash"}],
+            additions: ["/^PW.Roth.IRA.-.3077($|:)/=assets:morganstanley:pw-roth-ira\\1"],
+            ...over,
+        }),
+    });
+}
+
+describe("UNIT aliasModel — hledger's plain-alias matching rule", () => {
+    // `alias a = b` rewrites `a` and `a:sub` and leaves `abc` alone. A naive
+    // `startsWith` gets the third one wrong, and getting it wrong would put a
+    // rename beside the wrong line of the user's journal.
+    it("matches an exact name and a prefix at a colon boundary, and nothing else", () => {
+        expect(plainAliasMatches("a", "a")).toBe(true);
+        expect(plainAliasMatches("a", "a:sub")).toBe(true);
+        expect(plainAliasMatches("a", "a:sub:deeper")).toBe(true);
+        expect(plainAliasMatches("a", "abc")).toBe(false);
+        expect(plainAliasMatches("a", "b:a")).toBe(false);
+        expect(plainAliasMatches("a:b", "a")).toBe(false);
+    });
+
+    it("handles the bank-speak shape the feature exists for", () => {
+        expect(plainAliasMatches("PW Roth IRA - 3077", "PW Roth IRA - 3077:cash")).toBe(true);
+        expect(plainAliasMatches("PW Roth IRA - 3077", "PW Roth IRA - 30771")).toBe(false);
+    });
+});
+
+describe("UNIT aliasModel — which aliases are relevant to the staged data", () => {
+    // The requirement in one test: quiet unless an alias actually did something.
+    it("says nothing when no alias is in force", () => {
+        expect(relevantAliases([alias()], null)).toEqual([]);
+        expect(aliasNotice(null)).toBeNull();
+    });
+
+    it("says nothing when the aliases matched nothing in this statement", () => {
+        const nothing = effect({renames: []});
+        expect(relevantAliases([alias()], nothing)).toEqual([]);
+        expect(aliasNotice(nothing)).toBeNull();
+    });
+
+    it("attributes a rename to the plain alias that provably explains it", () => {
+        const relevant = relevantAliases([alias()], effect());
+        expect(relevant).toHaveLength(1);
+        expect(relevant[0].alias.pattern).toBe("PW Roth IRA - 3077");
+        expect(relevant[0].attributable).toBe(true);
+        expect(relevant[0].renames).toEqual([{from: "PW Roth IRA - 3077:cash", to: "assets:morganstanley:pw-roth-ira:cash"}]);
+    });
+
+    it("leaves out an alias that explains nothing here", () => {
+        const unrelated = alias({pattern: "CHK 8842", replacement: "assets:bank:checking", line: 2});
+        const relevant = relevantAliases([alias(), unrelated], effect());
+        expect(relevant.map((entry) => entry.alias.pattern)).toEqual(["PW Roth IRA - 3077"]);
+    });
+
+    // A regex alias cannot be attributed without running hledger's regex
+    // dialect, which this codebase deliberately does not reimplement. So it is
+    // offered as a possible explanation and flagged as unproven, rather than
+    // asserted.
+    it("offers a regex alias for what no plain alias explains, and marks it unproven", () => {
+        const regex = alias({pattern: "^CC (.+)$", regex: true, line: 3});
+        const renamed = effect({forwarded: 2, renames: [{from: "CC PLATINUM", to: "liabilities:PLATINUM"}]});
+        const relevant = relevantAliases([alias(), regex], renamed);
+        expect(relevant).toHaveLength(1);
+        expect(relevant[0].alias.regex).toBe(true);
+        expect(relevant[0].attributable).toBe(false);
+    });
+
+    it("does not offer a regex alias for a rename a plain one already explains", () => {
+        const regex = alias({pattern: "^PW", regex: true, line: 3});
+        const relevant = relevantAliases([alias(), regex], effect({forwarded: 2}));
+        expect(relevant.map((entry) => entry.alias.regex)).toEqual([false]);
+    });
+
+    // An alias the engine refused is not in force, so it cannot have caused
+    // anything and must not be presented as if it had.
+    it("ignores an alias the engine did not forward", () => {
+        const scoped = alias({forwarded: false, refusal: "scoped"});
+        expect(relevantAliases([scoped], effect())).toEqual([]);
+    });
+
+    it("orders the relevant aliases by their line in the journal", () => {
+        const first = alias({pattern: "A", replacement: "x:a", line: 9});
+        const second = alias({pattern: "B", replacement: "x:b", line: 2});
+        const both = effect({
+            forwarded: 2,
+            renames: [
+                {from: "A", to: "x:a"},
+                {from: "B", to: "x:b"},
+            ],
+        });
+        expect(relevantAliases([first, second], both).map((entry) => entry.alias.line)).toEqual([2, 9]);
+    });
+
+    it("counts the renames in its headline, singular and plural", () => {
+        expect(aliasNotice(effect())).toBe("Your journal's aliases rewrite 1 account name in this import.");
+        expect(
+            aliasNotice(
+                effect({
+                    renames: [
+                        {from: "a", to: "b"},
+                        {from: "c", to: "d"},
+                    ],
+                })
+            )
+        ).toBe("Your journal's aliases rewrite 2 account names in this import.");
+    });
+});
+
+describe("UNIT aliasModel — display", () => {
+    it("writes a regex pattern with its slashes and a plain one without", () => {
+        expect(aliasPatternText(alias())).toBe("PW Roth IRA - 3077");
+        expect(aliasPatternText(alias({pattern: "^CC", regex: true}))).toBe("/^CC/");
+        expect(aliasText(alias())).toBe("PW Roth IRA - 3077 → assets:morganstanley:pw-roth-ira");
+        expect(renameText({from: "a", to: "b"})).toBe("a → b");
+    });
+
+    it("badges only what is unusual, so a working row is undecorated", () => {
+        expect(aliasBadges(alias())).toEqual([]);
+        expect(aliasBadges(alias({forwarded: false})).map((badge) => badge.text)).toEqual(["not used for imports"]);
+        expect(aliasBadges(alias({editable: false})).map((badge) => badge.text)).toEqual(["read-only"]);
+        expect(aliasBadges(alias({regex: true})).map((badge) => badge.text)).toEqual(["regular expression"]);
+    });
+
+    // The explainer is the whole mitigation for a real divergence: Ledgeline
+    // reads aliases but does not apply them to the journal it shows you. If it
+    // ever stops saying so, that is a silent behaviour change.
+    it("tells the user that Ledgeline does not apply aliases itself", () => {
+        expect(ALIAS_EXPLAINER).toContain("does not rewrite the account names shown elsewhere");
+        expect(ALIAS_EXPLAINER).toContain("hledger applies these itself");
+    });
+});
+
+describe("UNIT aliasModel — the editor's diff", () => {
+    const file: AliasFile = {
+        journalId: "main.journal",
+        label: "main.journal",
+        revision: "2a-00ff",
+        writable: true,
+        aliases: [alias({index: 0, line: 1}), alias({index: 1, line: 2, pattern: "CHK 8842", replacement: "assets:bank:checking"})],
+    };
+
+    const edit = (form: AliasForm, at: number, over: Partial<AliasDraft>): AliasForm => ({
+        ...form,
+        rows: form.rows.map((row, i) => (i === at ? {...row, ...over} : row)),
+    });
+
+    it("produces no edits for an untouched form, so a save touches nothing", () => {
+        const form = toForm(file);
+        expect(toEdits(form, form)).toEqual([]);
+        expect(isDirty(form, form)).toBe(false);
+        expect(toSaveRequest(form, form)).toEqual({revision: "2a-00ff", edits: []});
+    });
+
+    it("names only the row that changed", () => {
+        const base = toForm(file);
+        const draft = edit(base, 1, {replacement: "assets:bank:everyday"});
+        expect(toEdits(base, draft)).toEqual([{kind: "replace", index: 1, pattern: "CHK 8842", replacement: "assets:bank:everyday", regex: false}]);
+        expect(isDirty(base, draft)).toBe(true);
+    });
+
+    it("turns a deleted row into a delete and an added row into an append", () => {
+        const base = toForm(file);
+        const draft: AliasForm = {
+            ...base,
+            rows: [{...base.rows[0], deleted: true}, base.rows[1], {...blankRow(), pattern: "SAV 1", replacement: "assets:bank:savings", regex: true}],
+        };
+        expect(toEdits(base, draft)).toEqual([
+            {kind: "delete", index: 0},
+            {kind: "append", pattern: "SAV 1", replacement: "assets:bank:savings", regex: true},
+        ]);
+    });
+
+    // A blank row the user added and then abandoned must not become an append of
+    // an empty alias the engine would refuse.
+    it("ignores a row that was added and then emptied or removed", () => {
+        const base = toForm(file);
+        expect(toEdits(base, {...base, rows: [...base.rows, blankRow()]})).toEqual([]);
+        expect(toEdits(base, {...base, rows: [...base.rows, {...blankRow(), pattern: "x", deleted: true}]})).toEqual([]);
+    });
+
+    // The engine refuses to rewrite a locked line. A UI that can build a request
+    // the engine will refuse is a UI that eventually sends one.
+    it("never produces a replace for a locked row", () => {
+        const locked: AliasFile = {...file, aliases: [alias({index: 0, editable: false, lock: "commentLike"})]};
+        const base = toForm(locked);
+        expect(base.rows[0].locked).toBe(true);
+        expect(toEdits(base, edit(base, 0, {replacement: "something:else"}))).toEqual([]);
+    });
+
+    it("still allows a locked row to be deleted", () => {
+        const locked: AliasFile = {...file, aliases: [alias({index: 0, editable: false, lock: "commentLike"})]};
+        const base = toForm(locked);
+        expect(toEdits(base, edit(base, 0, {deleted: true}))).toEqual([{kind: "delete", index: 0}]);
+    });
+
+    it("carries the revision it was planned against, never a fresh one", () => {
+        const base = toForm(file);
+        const draft = {...edit(base, 0, {replacement: "z"}), revision: "somebody-elses"};
+        expect(toSaveRequest(base, draft).revision).toBe("2a-00ff");
+    });
+});
+
+describe("UNIT aliasModel — validation mirrors the engine's refusals", () => {
+    const row = (over: Partial<AliasDraft> = {}): AliasDraft => ({...blankRow(), pattern: "a", replacement: "b:c", ...over});
+
+    it("accepts an ordinary alias in both forms", () => {
+        expect(validateRow(row())).toEqual([]);
+        expect(validateRow(row({pattern: "^PW (.+)$", replacement: "assets:\\1", regex: true}))).toEqual([]);
+    });
+
+    it("refuses a value that would be written and then read back differently", () => {
+        // Each of these is a rule `ledgeline_core::aliases` enforces; the form
+        // states them so the user hears it while typing, not after a round trip.
+        const cases: [Partial<AliasDraft>, string][] = [
+            [{pattern: ""}, "pattern cannot be empty"],
+            [{replacement: ""}, "replacement cannot be empty"],
+            [{replacement: "b ; note"}, "not as a comment"],
+            [{replacement: " b"}, "cannot begin or end with a space"],
+            [{pattern: "a=b"}, "splits the line at the first one"],
+            [{pattern: "/a/"}, "tick the box instead"],
+            [{pattern: "a/b", regex: true}, "unescaped"],
+            [{replacement: "b\nalias x = y"}, "control character"],
+        ];
+        for (const [over, needle] of cases) {
+            const problems = validateRow(row(over));
+            expect(problems.join(" "), JSON.stringify(over)).toContain(needle);
+        }
+    });
+
+    it("enforces the engine's length caps", () => {
+        expect(validateRow(row({pattern: "x".repeat(257)})).join(" ")).toContain("longer than 256 bytes");
+        expect(validateRow(row({replacement: "x".repeat(513)})).join(" ")).toContain("longer than 512 bytes");
+        // Bytes, not characters: a cap counted in UTF-16 units would let a
+        // multi-byte name through and then be refused by the engine.
+        expect(validateRow(row({pattern: "é".repeat(129)})).join(" ")).toContain("longer than 256 bytes");
+    });
+
+    it("says nothing about a row the user deleted", () => {
+        expect(validateRow(row({pattern: "", deleted: true}))).toEqual([]);
+    });
+
+    it("numbers the row a problem is in", () => {
+        const form: AliasForm = {journalId: "main.journal", label: "m", revision: "r", writable: true, rows: [row(), row({replacement: ""})]};
+        expect(validateForm(form)).toEqual(["Alias 2: The replacement cannot be empty."]);
+    });
+});
+
+describe("UNIT aliasModel — command-line parity", () => {
+    // The ordinary import: aliases are in force, they rewrote accounts, and a
+    // terminal would rewrite them the same way because a config file supplies
+    // them. Nothing to say, so nothing is said.
+    it("says nothing when the engine measured the two as agreeing", () => {
+        expect(parityNotice(effect())).toBeNull();
+        expect(parityNotice(null)).toBeNull();
+    });
+
+    it("names how many accounts would differ, singular and plural", () => {
+        expect(parityNotice(diverged())).toBe("Run from the command line, this same import would file one account differently.");
+        expect(
+            parityNotice(
+                diverged({
+                    differences: [
+                        {from: "a", to: "x"},
+                        {from: "b", to: "y"},
+                    ],
+                })
+            )
+        ).toBe("Run from the command line, this same import would file 2 accounts differently.");
+    });
+
+    // The explanation is the same every time and is worth stating every time:
+    // that a journal alias does not reach an imported CSV is hledger's
+    // behaviour and is genuinely surprising.
+    it("explains that a journal alias does not reach an imported CSV", () => {
+        expect(PARITY_EXPLAINER).toContain("not applied to a statement being imported");
+        expect(PARITY_EXPLAINER).toContain("hledger.conf");
+    });
+
+    it("distinguishes creating a config file from adding to one", () => {
+        expect(parityFixLabel(parity())).toBe("Create hledger.conf beside your journal");
+        expect(parityFixLabel(parity({confPath: "hledger.conf"}))).toBe("Add these to hledger.conf");
+        // In force from ABOVE the journal's directory: we create a new one
+        // beside the journal rather than reaching out of the tree.
+        expect(parityFixLabel(parity({confPath: "../hledger.conf", confOutside: true}))).toBe("Create hledger.conf beside your journal");
+    });
+
+    it("warns that a new config file shadows one above the journal's directory", () => {
+        const warning = parityWarning(parity({confPath: "../hledger.conf", confOutside: true}));
+        expect(warning).toContain("../hledger.conf");
+        expect(warning).toContain("nearest file only");
+    });
+
+    // A config whose first word is not a flag REPLACES the command hledger
+    // runs, which breaks every hledger command the user types. Ledgeline's own
+    // imports pass --no-conf and are unaffected, and saying both halves is what
+    // stops this reading as "Ledgeline is broken".
+    it("warns when the config in force replaces the command hledger runs", () => {
+        const warning = parityWarning(parity({confPath: "hledger.conf", confHijackedBy: "balance"}));
+        expect(warning).toContain("`balance`");
+        expect(warning).toContain("--no-conf");
+    });
+
+    it("says so when the journal's directory holds something that is not a file", () => {
+        expect(parityWarning(parity({writable: false}))).toContain("not an ordinary file");
+    });
+
+    it("is quiet when there is nothing unusual", () => {
+        expect(parityWarning(parity({confPath: "hledger.conf"}))).toBeNull();
+    });
+
+    // A button that would write nothing must not be on the screen. Every alias
+    // being inexpressible (each maps to an account name containing a space, say)
+    // produces refusals and no additions, and that is a real state.
+    it("offers the fix only when there is a line to add and somewhere to put it", () => {
+        expect(canInstallParityFix(parity({additions: ["a=b"]}), true)).toBe(true);
+        expect(canInstallParityFix(parity({additions: []}), true)).toBe(false);
+        expect(canInstallParityFix(parity({additions: ["a=b"], writable: false}), true)).toBe(false);
+        expect(canInstallParityFix(parity({additions: ["a=b"]}), false)).toBe(false);
+    });
+});
+
+// The two notices were two alerts, and the owner read them as one thing said
+// twice. These are the decisions that merged them into one panel: whether there
+// is a panel at all, how loud it is, and — the part that turned out to be the
+// actual complaint — whether the second list is the first list again.
+describe("UNIT aliasModel — the one panel the two notices share", () => {
+    it("shows a panel when either half has something to say", () => {
+        expect(showsAliasEffect(effect())).toBe(true);
+        expect(showsAliasEffect(diverged())).toBe(true);
+    });
+
+    it("stays away entirely on the ordinary import", () => {
+        // Two distinct silences that must look the same on screen: no alias is
+        // in force at all, and aliases are in force but matched nothing here.
+        expect(showsAliasEffect(null)).toBe(false);
+        expect(showsAliasEffect(effect({renames: []}))).toBe(false);
+    });
+
+    it("stays informational until the two tools disagree", () => {
+        // Aliases rewriting account names is what the user asked for by writing
+        // them. A panel that shouts on every import is one nobody reads when it
+        // matters.
+        expect(aliasEffectTone(effect())).toBe("info");
+        expect(aliasEffectTone(null)).toBe("info");
+        expect(aliasEffectTone(diverged())).toBe("warning");
+    });
+
+    it("notices when the parity list is the rename list over again", () => {
+        // The default shape of this screen, not a corner case. With no
+        // hledger.conf in force a terminal writes what the rules file produced
+        // and Ledgeline writes the aliased name, so the divergence IS the
+        // rename — note that `diverged()` above had to write the same pair
+        // twice to be realistic. That set, printed under two headlines in two
+        // boxes, is the whole of "both saying much the same thing".
+        expect(parityRepeatsRenames(diverged())).toBe(true);
+    });
+
+    it("keeps the list when a config file makes the two genuinely differ", () => {
+        // Suppressing a list that says something new would be the worse bug.
+        expect(parityRepeatsRenames(diverged({differences: [{from: "assets:morganstanley:roth", to: "assets:morganstanley:pw-roth-ira"}]}))).toBe(false);
+        // A partial overlap is still worth printing whole: dropping the pairs
+        // that happen to coincide would leave a list whose length disagrees
+        // with the headline's count.
+        expect(
+            parityRepeatsRenames(
+                diverged({
+                    differences: [
+                        {from: "PW Roth IRA - 3077:cash", to: "assets:morganstanley:pw-roth-ira:cash"},
+                        {from: "assets:morganstanley:roth", to: "assets:morganstanley:pw-roth-ira"},
+                    ],
+                })
+            )
+        ).toBe(false);
+    });
+
+    it("claims no repeat when there is nothing to repeat", () => {
+        expect(parityRepeatsRenames(diverged({differences: []}))).toBe(false);
+    });
+
+    it("names the direction of the list, and of the sentence that replaces it", () => {
+        // A list of pairs carries no direction, and this list runs the opposite
+        // way round from the rename list above it in the same panel.
+        expect(PARITY_DIFFERENCE_LEAD).toContain("a terminal would file it under");
+        expect(PARITY_DIFFERENCE_LEAD).toContain("Ledgeline files it under");
+        expect(PARITY_SAME_ACCOUNTS).toContain("listed above");
+    });
+});

@@ -1,0 +1,7 @@
+2026-02-11 Grocery store
+    expenses:groceries         $58.75
+    assets:bank:checking
+
+2026-02-27 Paycheck
+    assets:bank:checking    $2,400.00
+    income:salary

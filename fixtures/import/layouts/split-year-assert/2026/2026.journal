@@ -1,0 +1,17 @@
+; The import target, and the file that carries the bug.
+;
+; Its FIRST transaction is a start-of-year assertion holding 2025's closing
+; balance — the shape `hledger close --assert` writes, and the shape a great
+; many real books are kept in. Read from `../main.journal` the running balance
+; here is $900.00 and it holds. Read on its own the running balance is $0 and
+; hledger aborts on that line, which is what killed `hledger import -f` on this
+; file before `--ignore-assertions`.
+;
+; Alone, this file's checking balance is $-5.00. Through the root it is $895.00.
+
+2026-01-01 start of year  ; assert:
+    assets:bank:checking          $0 = $900.00
+
+2026-01-05 Coffee
+    expenses:food:coffee        $5.00
+    assets:bank:checking

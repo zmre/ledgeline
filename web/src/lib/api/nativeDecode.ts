@@ -28,6 +28,38 @@ import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
 import type {Holding, HoldingsPoint, HoldingsReport, HoldingsSeries, HoldingsWarning} from "$lib/holdings/types";
 import type {
+    AliasEffect,
+    AliasEntry,
+    AliasFile,
+    AliasListing,
+    AliasLock,
+    AliasRefusal,
+    AliasRename,
+    BalanceCheck,
+    CandidateSignals,
+    CliParity,
+    CommitResult,
+    ConfRefusalReason,
+    ConfWritten,
+    ConvertNote,
+    DryRunResult,
+    GitReport,
+    HledgerStatus,
+    HledgerUnavailableReason,
+    ImportCapabilities,
+    JournalTarget,
+    OrderingReport,
+    Prefs,
+    ProposedTxn,
+    RulesCandidate,
+    SortMove,
+    SortResult,
+    StagedFile,
+    StageDefaults,
+    StagePreview,
+    StatementMeta,
+} from "$lib/imports/importTypes";
+import type {
     IfLayout,
     OpaqueReason,
     PreviewUnavailable,
@@ -406,6 +438,230 @@ interface RawRulesPreview {
     rows?: unknown[];
     columns?: number;
     truncated?: boolean;
+}
+
+// --- New Transactions import flow (import_api.rs) ---------------------------
+// "The lane E wire contract" in plans/11-enhanced-import.md. Same posture as the
+// rules wire above: an OMITTED optional key is the fact "there is none", so it
+// decodes to null; the unconditional keys (a stage id, a dry run's `ok`, a
+// commit's `csvWritten`) are demanded.
+
+interface RawHledgerStatus {
+    available?: boolean;
+    version?: string;
+    reason?: string;
+    message?: string;
+}
+
+interface RawJournalTarget {
+    id?: string;
+    label?: string;
+    txnCount?: number;
+    lastTxnDate?: string | null;
+    isRoot?: boolean;
+    writable?: boolean;
+}
+
+interface RawGitCapability {
+    available?: boolean;
+    autocommit?: boolean;
+}
+
+interface RawImportCapabilities {
+    hledger?: RawHledgerStatus;
+    formats?: unknown[];
+    journals?: RawJournalTarget[];
+    git?: RawGitCapability;
+    aliases?: RawAlias[];
+    editable?: boolean;
+}
+
+interface RawAlias {
+    journalId?: string;
+    index?: number;
+    line?: number;
+    pattern?: string;
+    replacement?: string;
+    regex?: boolean;
+    forwarded?: boolean;
+    refusal?: string;
+    refusalMessage?: string;
+    editable?: boolean;
+    lock?: string;
+    lockMessage?: string;
+}
+
+interface RawAliasFile {
+    journalId?: string;
+    label?: string;
+    revision?: string;
+    writable?: boolean;
+    aliases?: RawAlias[];
+}
+
+interface RawAliasListing {
+    editable?: boolean;
+    files?: RawAliasFile[];
+}
+
+interface RawAliasEffect {
+    forwarded?: number;
+    renames?: {from?: string; to?: string}[];
+    cli?: RawCliParity;
+}
+
+interface RawCliParity {
+    matches?: boolean;
+    differences?: {from?: string; to?: string}[];
+    confPath?: string | null;
+    confOutside?: boolean;
+    confHijackedBy?: string | null;
+    additions?: unknown[];
+    refusals?: RawConfRefusal[];
+    revision?: string;
+    writable?: boolean;
+}
+
+interface RawConfRefusal {
+    pattern?: string;
+    replacement?: string;
+    reason?: string;
+    message?: string;
+}
+
+interface RawConfWritten {
+    confPath?: string;
+    created?: boolean;
+    added?: unknown[];
+    revision?: string;
+}
+
+/** One `ConvertNote`, flattened: the `kind` tag sits beside that variant's own fields. */
+interface RawConvertNote {
+    kind?: string;
+    name?: string;
+    of?: number;
+    count?: number;
+    label?: string;
+    delimiter?: string;
+    lines?: number;
+    expected?: string;
+    computed?: string;
+}
+
+interface RawStagePreview {
+    header?: unknown[];
+    rows?: unknown[];
+    rowCount?: number;
+    truncated?: boolean;
+}
+
+interface RawStatementMeta {
+    accountHint?: string;
+    currency?: string;
+    ledgerBalance?: string;
+    balanceAsOf?: string;
+}
+
+interface RawProposedTxn {
+    date?: string;
+    description?: string;
+    postings?: unknown[];
+}
+
+interface RawCandidateSignals {
+    txns?: number;
+    postings?: number;
+    amountlessPostings?: number;
+    bareCommodityAmounts?: number;
+    unknownAccounts?: number;
+    emptyDescriptions?: number;
+    columnCountMatches?: boolean;
+    headerMatchesSource?: boolean;
+}
+
+interface RawRulesCandidate {
+    id?: string;
+    label?: string;
+    score?: number;
+    signals?: RawCandidateSignals;
+    sample?: RawProposedTxn[];
+    account1?: string | null;
+    account2?: string | null;
+}
+
+interface RawStageDefaults {
+    csvPath?: string;
+    journalId?: string | null;
+}
+
+interface RawStagedFile {
+    stageId?: string;
+    format?: string;
+    preview?: RawStagePreview;
+    statement?: RawStatementMeta | null;
+    notes?: RawConvertNote[];
+    candidates?: RawRulesCandidate[];
+    defaults?: RawStageDefaults;
+}
+
+interface RawSkippedRows {
+    olderThan?: string;
+    count?: number;
+}
+
+interface RawBalanceCheck {
+    statement?: string;
+    computed?: string;
+    matches?: boolean;
+    difference?: string | null;
+}
+
+interface RawDryRun {
+    ok?: boolean;
+    entries?: string;
+    count?: number;
+    status?: string;
+    skipped?: RawSkippedRows | null;
+    balance?: RawBalanceCheck | null;
+    aliases?: RawAliasEffect | null;
+    blockedByGit?: unknown[];
+    stderr?: string;
+}
+
+interface RawSortMove {
+    date?: string;
+    description?: string;
+    fromLine?: number;
+    toLine?: number;
+}
+
+interface RawOrdering {
+    inOrder?: boolean;
+    moves?: RawSortMove[];
+}
+
+interface RawGitReport {
+    committed?: boolean;
+    paths?: unknown[];
+    skipped?: unknown[];
+}
+
+interface RawCommitResult {
+    csvWritten?: string;
+    journalWritten?: string | null;
+    imported?: number;
+    ordering?: RawOrdering;
+    git?: RawGitReport | null;
+}
+
+interface RawSortResult {
+    moved?: number;
+}
+
+interface RawPrefs {
+    hledgerPath?: string | null;
+    gitAutocommit?: boolean | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1116,5 +1372,473 @@ export function decodeRulesPreview(raw: unknown): RulesPreview {
         ),
         columns: num(preview.columns, "rules preview columns"),
         truncated: preview.truncated === true,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// New Transactions: capabilities, stage, dry run, commit, sort, prefs
+// ---------------------------------------------------------------------------
+
+/** An optional string key: absent or explicitly null is the fact "there is none". */
+function optStr(value: unknown, context: string): string | null {
+    return value === undefined || value === null ? null : str(value, context);
+}
+
+/** An optional number key. Same null-is-a-fact reading as [`optStr`]. */
+function optNum(value: unknown, context: string): number | null {
+    return value === undefined || value === null ? null : num(value, context);
+}
+
+/** An optional boolean key; anything present must actually BE a boolean. */
+function optBool(value: unknown, context: string): boolean | null {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "boolean") throw new ApiShapeError(`${context}: expected a boolean`);
+    return value;
+}
+
+/** A rectangular table of strings — a preview's rows. */
+function decodeRows(raw: unknown[], context: string): string[][] {
+    return raw.map((row, i) => {
+        if (!Array.isArray(row)) throw new ApiShapeError(`${context}[${i}]: expected an array`);
+        return frozen(decodeStrings(row, `${context}[${i}]`));
+    });
+}
+
+const HLEDGER_REASONS: readonly HledgerUnavailableReason[] = ["notFound", "tooOld", "unrunnable", "timedOut"];
+
+/**
+ * Whether the engine can run hledger.
+ *
+ * The unknown-`reason` case decodes to null rather than throwing, unlike every
+ * other tagged union in this file. This response is precisely the one a broken
+ * install depends on: refusing to decode it because a future engine grew a fifth
+ * reason would replace an actionable banner ("hledger 1.31 is older than 1.40")
+ * with a generic decode failure, which is the opposite of the point. `message`
+ * is the engine's own sentence and always survives.
+ */
+function decodeHledgerStatus(raw: RawHledgerStatus | undefined, context: string): HledgerStatus {
+    const status = raw ?? {};
+    return Object.freeze({
+        available: status.available === true,
+        version: optStr(status.version, `${context} version`),
+        reason: HLEDGER_REASONS.find((candidate) => candidate === status.reason) ?? null,
+        message: optStr(status.message, `${context} message`),
+    });
+}
+
+function decodeJournalTarget(raw: RawJournalTarget | undefined, context: string): JournalTarget {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing journal target`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        label: str(raw.label, `${context} label`),
+        txnCount: num(raw.txnCount, `${context} txnCount`),
+        lastTxnDate: optStr(raw.lastTxnDate, `${context} lastTxnDate`),
+        isRoot: raw.isRoot === true,
+        // Absent must NOT read as writable: offering an unwritable target as
+        // writable is how an import lands on a symlink outside the include root.
+        writable: raw.writable === true,
+    });
+}
+
+/** `GET /api/import/capabilities` → what the New Transactions screen may offer. */
+export function decodeImportCapabilities(raw: unknown): ImportCapabilities {
+    const caps = raw as RawImportCapabilities;
+    if (typeof caps !== "object" || caps === null || !Array.isArray(caps.journals)) {
+        throw new ApiShapeError("import capabilities: expected a journals array");
+    }
+    return Object.freeze({
+        hledger: decodeHledgerStatus(caps.hledger, "import capabilities hledger"),
+        formats: frozen(decodeStrings(caps.formats, "import capabilities formats")),
+        journals: frozen(caps.journals.map((target, i) => decodeJournalTarget(target, `import capabilities journals[${i}]`))),
+        git: Object.freeze({available: caps.git?.available === true, autocommit: caps.git?.autocommit === true}),
+        // Absent reads as "this journal declares none", which is true of almost
+        // every journal and is exactly what an older engine meant by omitting it.
+        aliases: frozen((caps.aliases ?? []).map((alias, i) => decodeAlias(alias, `import capabilities aliases[${i}]`))),
+        editable: caps.editable === true,
+    });
+}
+
+/** Values the engine may send; anything else reads as "no reason given". */
+const ALIAS_REFUSALS: readonly AliasRefusal[] = ["scoped", "empty", "control", "tooLong", "limit", "stale"];
+const ALIAS_LOCKS: readonly AliasLock[] = ["commentLike", "empty", "delimiter", "control", "tooLong"];
+
+function decodeAlias(raw: RawAlias | undefined, context: string): AliasEntry {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing alias`);
+    return Object.freeze({
+        journalId: str(raw.journalId, `${context} journalId`),
+        index: num(raw.index, `${context} index`),
+        line: num(raw.line, `${context} line`),
+        pattern: str(raw.pattern, `${context} pattern`),
+        replacement: str(raw.replacement, `${context} replacement`),
+        regex: raw.regex === true,
+        // Absent must NOT read as forwarded: claiming hledger saw a mapping it
+        // did not is the one wrong answer this whole surface exists to prevent.
+        forwarded: raw.forwarded === true,
+        refusal: ALIAS_REFUSALS.find((candidate) => candidate === raw.refusal) ?? null,
+        refusalMessage: optStr(raw.refusalMessage, `${context} refusalMessage`),
+        // Same argument, the other way: absent reads as NOT editable, so an
+        // engine that stops modelling a shape cannot have it rewritten anyway.
+        editable: raw.editable === true,
+        lock: ALIAS_LOCKS.find((candidate) => candidate === raw.lock) ?? null,
+        lockMessage: optStr(raw.lockMessage, `${context} lockMessage`),
+    });
+}
+
+function decodeAliasFile(raw: RawAliasFile | undefined, context: string): AliasFile {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing file`);
+    return Object.freeze({
+        journalId: str(raw.journalId, `${context} journalId`),
+        label: str(raw.label, `${context} label`),
+        revision: str(raw.revision, `${context} revision`),
+        writable: raw.writable === true,
+        aliases: frozen((raw.aliases ?? []).map((alias, i) => decodeAlias(alias, `${context} aliases[${i}]`))),
+    });
+}
+
+/** `GET /api/aliases` → every alias the open journal declares. */
+export function decodeAliasListing(raw: unknown): AliasListing {
+    const listing = raw as RawAliasListing;
+    if (typeof listing !== "object" || listing === null || !Array.isArray(listing.files)) {
+        throw new ApiShapeError("alias listing: expected a files array");
+    }
+    return Object.freeze({
+        editable: listing.editable === true,
+        files: frozen(listing.files.map((file, i) => decodeAliasFile(file, `alias listing files[${i}]`))),
+    });
+}
+
+/** `PUT /api/aliases/{*id}` → the file it just wrote, at its new revision. */
+export function decodeAliasFileResponse(raw: unknown): AliasFile {
+    return decodeAliasFile(raw as RawAliasFile, "alias save");
+}
+
+/**
+ * What the journal's aliases did to a dry run, or null when none is in force.
+ *
+ * Null and `{forwarded: 0, renames: []}` are different facts — "no alias
+ * applies to this journal" versus "aliases applied and changed nothing here" —
+ * and the screen says different things about them, so the absence is preserved
+ * rather than normalised into an empty object.
+ */
+function decodeAliasEffect(raw: RawAliasEffect | null | undefined, context: string): AliasEffect | null {
+    if (raw === undefined || raw === null) return null;
+    return Object.freeze({
+        forwarded: num(raw.forwarded, `${context} forwarded`),
+        renames: decodeRenames(raw.renames, `${context} renames`),
+        cli: decodeCliParity(raw.cli, `${context} cli`),
+    });
+}
+
+function decodeRenames(raw: {from?: string; to?: string}[] | undefined, context: string): readonly AliasRename[] {
+    return frozen(
+        (raw ?? []).map((rename, i) => Object.freeze({from: str(rename?.from, `${context}[${i}] from`), to: str(rename?.to, `${context}[${i}] to`)}))
+    );
+}
+
+/**
+ * Whether a command-line `hledger import` would agree with this one.
+ *
+ * An ABSENT `cli` decodes to "it matches", not to a thrown shape error. This is
+ * an advisory section — the same call {@link decodeConvertNote} makes — and an
+ * engine older than this build genuinely has nothing to say about parity, so the
+ * quiet reading is the honest one. Claiming a divergence because a field was
+ * missing would put a scary notice on a correct import.
+ */
+function decodeCliParity(raw: RawCliParity | null | undefined, context: string): CliParity {
+    if (raw === undefined || raw === null) {
+        return Object.freeze({
+            matches: true,
+            differences: frozen([]),
+            confPath: null,
+            confOutside: false,
+            confHijackedBy: null,
+            additions: frozen([]),
+            refusals: frozen([]),
+            revision: "",
+            writable: false,
+        });
+    }
+    return Object.freeze({
+        matches: raw.matches === true,
+        differences: decodeRenames(raw.differences, `${context} differences`),
+        confPath: raw.confPath ?? null,
+        confOutside: raw.confOutside === true,
+        confHijackedBy: raw.confHijackedBy ?? null,
+        additions: frozen(decodeStrings(raw.additions, `${context} additions`)),
+        refusals: frozen(
+            (raw.refusals ?? []).map((refusal, i) =>
+                Object.freeze({
+                    pattern: str(refusal?.pattern, `${context} refusals[${i}] pattern`),
+                    replacement: str(refusal?.replacement, `${context} refusals[${i}] replacement`),
+                    // An unknown reason decodes to null rather than throwing: the
+                    // MESSAGE is the engine's own sentence and is what the screen
+                    // shows, so a newer engine's new reason code must not cost the
+                    // user the explanation that came with it.
+                    reason: confRefusalReason(refusal?.reason),
+                    message: str(refusal?.message, `${context} refusals[${i}] message`),
+                })
+            )
+        ),
+        revision: raw.revision ?? "",
+        writable: raw.writable === true,
+    });
+}
+
+const CONF_REFUSAL_REASONS: readonly string[] = [
+    "comment",
+    "replacementWhitespace",
+    "replacementBackslash",
+    "patternBracket",
+    "patternBackslash",
+    "patternSlash",
+];
+
+function confRefusalReason(raw: string | undefined): ConfRefusalReason | null {
+    return raw !== undefined && CONF_REFUSAL_REASONS.includes(raw) ? (raw as ConfRefusalReason) : null;
+}
+
+/** `POST /api/import/hledger-conf` — what the one-click command-line-parity fix wrote. */
+export function decodeConfWritten(raw: unknown): ConfWritten {
+    const written = raw as RawConfWritten;
+    return Object.freeze({
+        confPath: str(written?.confPath, "hledger.conf confPath"),
+        created: written?.created === true,
+        added: frozen(decodeStrings(written?.added, "hledger.conf added")),
+        revision: str(written?.revision, "hledger.conf revision"),
+    });
+}
+
+/**
+ * One `ConvertNote`, or null when this build does not know its `kind`.
+ *
+ * Null rather than a throw: a note is advisory and carries no echo obligation,
+ * so a newer engine's new variant must not cost the user the whole import. The
+ * caller counts what it dropped (`StagedFile.unknownNoteCount`) so the screen can
+ * still say something was said.
+ */
+function decodeConvertNote(raw: RawConvertNote | undefined, context: string): ConvertNote | null {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing note`);
+    switch (raw.kind) {
+        case "sheetChosen":
+            return Object.freeze({kind: "sheetChosen" as const, name: str(raw.name, `${context} name`), of: num(raw.of, `${context} of`)});
+        case "statementChosen":
+            return Object.freeze({kind: "statementChosen" as const, of: num(raw.of, `${context} of`)});
+        case "datesFromSerial":
+            return Object.freeze({kind: "datesFromSerial" as const, count: num(raw.count, `${context} count`)});
+        case "encodingGuessed":
+            return Object.freeze({kind: "encodingGuessed" as const, label: str(raw.label, `${context} label`)});
+        case "delimiterSniffed":
+            return Object.freeze({kind: "delimiterSniffed" as const, delimiter: str(raw.delimiter, `${context} delimiter`)});
+        case "preambleSkipped":
+            return Object.freeze({kind: "preambleSkipped" as const, lines: num(raw.lines, `${context} lines`)});
+        case "trailerSkipped":
+            return Object.freeze({kind: "trailerSkipped" as const, lines: num(raw.lines, `${context} lines`)});
+        case "blankRowsDropped":
+            return Object.freeze({kind: "blankRowsDropped" as const, count: num(raw.count, `${context} count`)});
+        case "raggedRows":
+            return Object.freeze({kind: "raggedRows" as const, count: num(raw.count, `${context} count`)});
+        case "balanceMismatch":
+            return Object.freeze({
+                kind: "balanceMismatch" as const,
+                expected: str(raw.expected, `${context} expected`),
+                computed: str(raw.computed, `${context} computed`),
+            });
+        default:
+            return null;
+    }
+}
+
+function decodeStagePreview(raw: RawStagePreview | undefined, context: string): StagePreview {
+    if (raw === undefined || raw === null || !Array.isArray(raw.rows)) throw new ApiShapeError(`${context}: expected a rows array`);
+    return Object.freeze({
+        // An absent header is a headerless file, which is a different fact from
+        // a header of zero columns — hence null rather than [].
+        header: raw.header === undefined || raw.header === null ? null : frozen(decodeStrings(raw.header, `${context} header`)),
+        rows: frozen(decodeRows(raw.rows, `${context} rows`)),
+        rowCount: num(raw.rowCount, `${context} rowCount`),
+        truncated: raw.truncated === true,
+    });
+}
+
+function decodeStatementMeta(raw: RawStatementMeta | null | undefined, context: string): StatementMeta | null {
+    if (raw === undefined || raw === null) return null;
+    return Object.freeze({
+        accountHint: optStr(raw.accountHint, `${context} accountHint`),
+        currency: optStr(raw.currency, `${context} currency`),
+        // Verbatim decimal text. Never Number()'d here or anywhere downstream.
+        ledgerBalance: optStr(raw.ledgerBalance, `${context} ledgerBalance`),
+        balanceAsOf: optStr(raw.balanceAsOf, `${context} balanceAsOf`),
+    });
+}
+
+function decodeProposedTxn(raw: RawProposedTxn | undefined, context: string): ProposedTxn {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing transaction`);
+    return Object.freeze({
+        date: str(raw.date, `${context} date`),
+        description: str(raw.description, `${context} description`),
+        postings: frozen(decodeStrings(raw.postings, `${context} postings`)),
+    });
+}
+
+/** The five counts the contract carries are required; the three `Signals` extras are optional. */
+function decodeSignals(raw: RawCandidateSignals | undefined, context: string): CandidateSignals {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing signals`);
+    return Object.freeze({
+        txns: num(raw.txns, `${context} txns`),
+        postings: num(raw.postings, `${context} postings`),
+        amountlessPostings: num(raw.amountlessPostings, `${context} amountlessPostings`),
+        bareCommodityAmounts: num(raw.bareCommodityAmounts, `${context} bareCommodityAmounts`),
+        unknownAccounts: num(raw.unknownAccounts, `${context} unknownAccounts`),
+        emptyDescriptions: optNum(raw.emptyDescriptions, `${context} emptyDescriptions`),
+        columnCountMatches: optBool(raw.columnCountMatches, `${context} columnCountMatches`),
+        headerMatchesSource: optBool(raw.headerMatchesSource, `${context} headerMatchesSource`),
+    });
+}
+
+function decodeCandidate(raw: RawRulesCandidate | undefined, context: string): RulesCandidate {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing candidate`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        label: str(raw.label, `${context} label`),
+        score: num(raw.score, `${context} score`),
+        signals: decodeSignals(raw.signals, `${context} signals`),
+        sample: frozen((raw.sample ?? []).map((txn, i) => decodeProposedTxn(txn, `${context} sample[${i}]`))),
+        // `account1`/`account2` are `skip_serializing_if = "Option::is_none"` on
+        // the engine, so an absent key means the rules file declares none —
+        // exactly what `optStr` reads as null. It is what the balance-assertion
+        // account defaults to, and having it HERE is what removed a second
+        // `/api/rules` fetch joined onto this list by id.
+        account1: optStr(raw.account1, `${context} account1`),
+        account2: optStr(raw.account2, `${context} account2`),
+    });
+}
+
+function decodeStageDefaults(raw: RawStageDefaults | undefined, context: string): StageDefaults {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing defaults`);
+    return Object.freeze({csvPath: str(raw.csvPath, `${context} csvPath`), journalId: optStr(raw.journalId, `${context} journalId`)});
+}
+
+/** `POST /api/import/stage` → the converted file, its preview, and the rules files that fit it. */
+export function decodeStagedFile(raw: unknown): StagedFile {
+    const staged = raw as RawStagedFile;
+    if (typeof staged !== "object" || staged === null || !Array.isArray(staged.candidates)) {
+        throw new ApiShapeError("staged file: expected a candidates array");
+    }
+    const rawNotes = staged.notes ?? [];
+    const notes = rawNotes.map((note, i) => decodeConvertNote(note, `staged file notes[${i}]`));
+    return Object.freeze({
+        stageId: str(staged.stageId, "staged file stageId"),
+        format: str(staged.format, "staged file format"),
+        preview: decodeStagePreview(staged.preview, "staged file preview"),
+        statement: decodeStatementMeta(staged.statement, "staged file statement"),
+        notes: frozen(notes.filter((note): note is ConvertNote => note !== null)),
+        unknownNoteCount: notes.filter((note) => note === null).length,
+        candidates: frozen(staged.candidates.map((candidate, i) => decodeCandidate(candidate, `staged file candidates[${i}]`))),
+        defaults: decodeStageDefaults(staged.defaults, "staged file defaults"),
+    });
+}
+
+function decodeBalanceCheck(raw: RawBalanceCheck | null | undefined, context: string): BalanceCheck | null {
+    if (raw === undefined || raw === null) return null;
+    return Object.freeze({
+        statement: str(raw.statement, `${context} statement`),
+        computed: str(raw.computed, `${context} computed`),
+        // `matches` is the ENGINE's verdict, computed by concatenation (fact 3).
+        // Nothing on this side re-derives it from the two strings.
+        matches: raw.matches === true,
+        // Null when the engine could not subtract the two — a multi-commodity
+        // balance has no single gap to report. The mismatch is still a fact.
+        difference: optStr(raw.difference, `${context} difference`),
+    });
+}
+
+/**
+ * `POST /api/import/dry-run` → what hledger would write, or why it would not.
+ *
+ * `ok: false` is a VALUE, not a transport error: hledger's stderr is the most
+ * useful thing on the screen (it echoes the offending CSV record), so it is
+ * carried through to be rendered verbatim rather than thrown.
+ */
+export function decodeDryRun(raw: unknown): DryRunResult {
+    const run = raw as RawDryRun;
+    if (typeof run !== "object" || run === null || typeof run.ok !== "boolean") {
+        throw new ApiShapeError("dry run: expected an ok flag");
+    }
+    if (!run.ok) return Object.freeze({ok: false as const, stderr: str(run.stderr, "dry run stderr")});
+    return Object.freeze({
+        ok: true as const,
+        entries: str(run.entries, "dry run entries"),
+        count: num(run.count, "dry run count"),
+        status: str(run.status, "dry run status"),
+        skipped:
+            run.skipped === undefined || run.skipped === null
+                ? null
+                : Object.freeze({olderThan: str(run.skipped.olderThan, "dry run skipped olderThan"), count: num(run.skipped.count, "dry run skipped count")}),
+        balance: decodeBalanceCheck(run.balance, "dry run balance"),
+        aliases: decodeAliasEffect(run.aliases, "dry run aliases"),
+        blockedByGit: frozen(decodeStrings(run.blockedByGit, "dry run blockedByGit")),
+    });
+}
+
+function decodeSortMove(raw: RawSortMove | undefined, context: string): SortMove {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing move`);
+    return Object.freeze({
+        date: str(raw.date, `${context} date`),
+        description: str(raw.description, `${context} description`),
+        fromLine: num(raw.fromLine, `${context} fromLine`),
+        toLine: num(raw.toLine, `${context} toLine`),
+    });
+}
+
+/** Absent ordering = nothing was imported (the Save-CSV-only path), which is vacuously in order. */
+function decodeOrdering(raw: RawOrdering | null | undefined, context: string): OrderingReport {
+    if (raw === undefined || raw === null) return Object.freeze({inOrder: true, moves: frozen([])});
+    return Object.freeze({
+        inOrder: raw.inOrder === true,
+        moves: frozen((raw.moves ?? []).map((move, i) => decodeSortMove(move, `${context} moves[${i}]`))),
+    });
+}
+
+function decodeGitReport(raw: RawGitReport | null | undefined, context: string): GitReport | null {
+    if (raw === undefined || raw === null) return null;
+    return Object.freeze({
+        committed: raw.committed === true,
+        paths: frozen(decodeStrings(raw.paths, `${context} paths`)),
+        skipped: frozen(decodeStrings(raw.skipped, `${context} skipped`)),
+    });
+}
+
+/** `POST /api/import/commit` → what was written. */
+export function decodeCommitResult(raw: unknown): CommitResult {
+    const result = raw as RawCommitResult;
+    if (typeof result !== "object" || result === null) throw new ApiShapeError("commit result: expected an object");
+    return Object.freeze({
+        csvWritten: str(result.csvWritten, "commit result csvWritten"),
+        // Null on the Save-CSV-only path: no rules file was chosen, so no
+        // `hledger import` ran and no journal was touched.
+        journalWritten: optStr(result.journalWritten, "commit result journalWritten"),
+        imported: optNum(result.imported, "commit result imported") ?? 0,
+        ordering: decodeOrdering(result.ordering, "commit result ordering"),
+        git: decodeGitReport(result.git, "commit result git"),
+    });
+}
+
+/** `POST /api/import/sort` → how many transactions the confirmed re-sort moved. */
+export function decodeSortResult(raw: unknown): SortResult {
+    const result = raw as RawSortResult;
+    if (typeof result !== "object" || result === null) throw new ApiShapeError("sort result: expected an object");
+    return Object.freeze({moved: num(result.moved, "sort result moved")});
+}
+
+/** `GET`/`PUT /api/prefs` → the preferences store. */
+export function decodePrefs(raw: unknown): Prefs {
+    const prefs = raw as RawPrefs;
+    if (typeof prefs !== "object" || prefs === null) throw new ApiShapeError("prefs: expected an object");
+    return Object.freeze({
+        hledgerPath: optStr(prefs.hledgerPath, "prefs hledgerPath"),
+        // Tri-state and it matters: null = "commit when a repo is present",
+        // false = the user turned it off. Collapsing null to false would silently
+        // disable a feature the user never opted out of.
+        gitAutocommit: optBool(prefs.gitAutocommit, "prefs gitAutocommit"),
     });
 }

@@ -1,0 +1,13 @@
+; Included by interleaved.journal.
+;
+; An included file may set `Y`, `D`, `decimal-mark` or `apply account`, any of
+; which changes how the transactions below the `include` line are read. That is
+; why an `include` is a sort barrier: nothing may cross it.
+
+account assets:bank:checking
+account equity:opening balances
+commodity $1,000.00
+
+2025-12-31 Opening balance
+    assets:bank:checking    $1,000.00
+    equity:opening balances

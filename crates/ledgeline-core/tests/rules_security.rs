@@ -9,7 +9,7 @@
 //! |---|---|
 //! | `symlink_metadata`, symlinks skipped | a link in the journal directory reads (and later WRITES) anywhere on disk |
 //! | `file_type().is_file()` | a `read` on a FIFO named `x.rules` blocks forever and hangs the request |
-//! | dot-directory / `SKIP_DIRS` skip | `.git/` and `node_modules/` become "your import rules" |
+//! | dot-entry / `SKIP_DIRS` skip | `.git/`, `node_modules/` and a `.hidden.rules` become "your import rules" |
 //! | `MAX_RULES_DEPTH` | a deep tree costs an unbounded walk |
 //! | `MAX_SCAN_ENTRIES` | a journal in `$HOME` turns one scan into a full-disk walk |
 //! | `MAX_RULES_BYTES` | a mis-named gigabyte is read into memory and parsed |
@@ -359,6 +359,47 @@ fn dot_directories_and_skip_dirs_are_not_scanned() {
         "a policy skip is not a problem to report: {:?}",
         found.warnings
     );
+}
+
+#[test]
+fn dot_files_are_not_listed_any_more_than_dot_directories_are() {
+    // The check used to live inside the `is_dir()` branch, so `.hidden.rules`
+    // sat in the list beside the real ones. A hidden file is one the user's own
+    // file browser does not show them; offering it for editing offers something
+    // they cannot see, and a dot-file in a journal directory is far more often a
+    // tool's leftover than a rules file someone wants listed.
+    let dir = scratch("dotfiles");
+    let main = main_journal(&dir);
+    write(&dir, ".hidden.rules", RULES);
+    write(&dir, ".bank.csv.rules", RULES);
+    write(&dir, "import/.also-hidden.rules", RULES);
+    write(&dir, "import/visible.rules", RULES);
+    write(&dir, "keep.rules", RULES);
+
+    let found = discover(&main);
+    assert_eq!(ids(&found), vec!["import/visible.rules", "keep.rules"]);
+    assert!(found.resolve(".hidden.rules").is_none());
+    assert!(found.resolve(".bank.csv.rules").is_none());
+    assert!(found.resolve("import/.also-hidden.rules").is_none());
+    assert!(
+        found.warnings.is_empty(),
+        "a policy skip is not a problem to report: {:?}",
+        found.warnings
+    );
+}
+
+#[test]
+fn a_bare_dot_rules_was_already_refused_by_its_name() {
+    // Stated as a test because it is the reason the dot rule above costs
+    // nothing: `.rules` is not a rules name to begin with — it would strip to an
+    // empty label — so the new check removes only names a user deliberately hid.
+    let dir = scratch("bare-dot-rules");
+    let main = main_journal(&dir);
+    write(&dir, ".rules", RULES);
+    write(&dir, "keep.rules", RULES);
+
+    let found = discover(&main);
+    assert_eq!(ids(&found), vec!["keep.rules"]);
 }
 
 #[test]
@@ -738,7 +779,8 @@ fn the_committed_tree_fixture_finds_exactly_one_rules_file() {
     // because git refuses to track any path with a `.git` component, so a
     // committed `.git/hidden.rules` cannot exist. The `.git` case itself is
     // covered by `dot_directories_and_skip_dirs_are_not_scanned` above, which
-    // builds it at test time.
+    // builds it at test time. `.hidden.rules` is the dot-FILE decoy, which used
+    // to be listed because the check lived inside the `is_dir()` branch.
     let main = common::fixtures_dir().join("rules/tree/main.journal");
     let found = discover(&main);
 
@@ -747,6 +789,7 @@ fn the_committed_tree_fixture_finds_exactly_one_rules_file() {
     assert_eq!(ids(&found), vec!["import/2026/bank.csv.rules"]);
     assert!(found.resolve("node_modules/dep.rules").is_none());
     assert!(found.resolve(".hidden/hidden.rules").is_none());
+    assert!(found.resolve(".hidden.rules").is_none());
     assert_eq!(found.root_label(), "tree");
 
     let bank = found.resolve("import/2026/bank.csv.rules").expect("found");

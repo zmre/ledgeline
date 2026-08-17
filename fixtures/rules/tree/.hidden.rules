@@ -1,0 +1,18 @@
+# A rules FILE whose name starts with a dot. Discovery must not list it.
+#
+# The dot-directory decoy next door is `.hidden/hidden.rules`; this is the other
+# half of the same policy, and it used to be found because the check lived
+# inside the `is_dir()` branch. A hidden file is one the user's own file browser
+# does not show them, so offering it for editing offers something they cannot
+# see.
+#
+# Valid hledger syntax on purpose: this must be refused for being hidden, not
+# for being unparseable.
+
+skip 1
+fields date, description, amount
+date-format %Y-%m-%d
+currency $
+
+account1 assets:bank:hidden
+account2 expenses:unknown

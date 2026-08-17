@@ -1033,6 +1033,7 @@ mod tests {
             transactions,
             periodic_transactions: Vec::new(),
             accounts: Vec::new(),
+            aliases: Vec::new(),
             commodity_styles: Vec::new(),
             commodity_tags: Vec::new(),
             prices,

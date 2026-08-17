@@ -1,0 +1,28 @@
+; fixtures/import/sort/already-sorted.journal
+;
+; Every construct the other fixtures use, already in date order. Sorting this
+; must be the exact identity: the same bytes, not merely an equivalent file.
+
+account assets:bank:checking
+account expenses:groceries
+account income:salary
+commodity $1,000.00
+
+; The first paycheck of the year.
+2026-01-28 Paycheck
+    assets:bank:checking    $2,400.00
+    income:salary
+
+2026-02-03 Grocery store
+    expenses:groceries         $52.10
+    assets:bank:checking
+
+comment
+Anything at all may live in here, including a line that looks exactly like
+2026-01-01 a transaction
+    that is out of order.
+end comment
+
+2026-02-07 Grocery store
+    expenses:groceries         $18.75
+    assets:bank:checking

@@ -65,6 +65,52 @@ for rules in "$RULES"/edge/*.rules; do
     fi
 done
 
+# --- fixtures/import/match — the rules-MATCHING corpus (WP-11) ---------------
+#
+# Same house rule, different point. Here the corpus is two rules files that are
+# right and three that are wrong in three different ways, and "wrong" must still
+# mean "a real rules file hledger accepts" — otherwise the matcher would be
+# scored against syntax errors rather than against fact 4's silent garbage.
+#
+# See fixtures/import/match/README.md.
+MATCH=fixtures/import/match
+
+check() {
+    printf '%-46s ' "$3"
+    if out=$(hledger -f "$1" --rules "$2" print 2>&1); then
+        echo "OK"
+    else
+        echo "FAIL"
+        echo "$out" | sed 's/^/    /'
+        status=1
+    fi
+}
+
+# The correct pairs, driven from their own CSV. `statement-account.csv` is the
+# alias corpus: its `account1` interpolates a column of bank-speak, which is a
+# valid rules file producing a deliberately unusable account name until an
+# `--alias` maps it.
+for csv in "$MATCH"/checking.csv "$MATCH"/creditcard.csv "$MATCH"/statement-account.csv; do
+    check "$csv" "$csv.rules" "$csv"
+done
+
+# The two FACT 4 fixtures. Both must exit 0 against checking.csv — that IS the
+# point of them. hledger reads them happily and produces amountless postings and
+# bare-commodity amounts; only the structured output shows it, which is what
+# crates/ledgeline-core/tests/matching.rs asserts.
+for rules in "$MATCH"/garbage-success.rules "$MATCH"/no-currency.rules; do
+    check "$MATCH/checking.csv" "$rules" "$rules"
+done
+
+# wrong-dateformat.rules is driven from the data it was WRITTEN for, because it
+# is a genuine rules file for a German bank export. Against checking.csv it
+# fails — and reaching that conclusion WITHOUT running hledger is exactly what
+# stage 1 of the matcher exists to do.
+match_csv=$(mktemp -t ledgeline-match-euro.XXXXXX.csv)
+trap 'rm -f "$edge_csv" "$match_csv"' EXIT
+printf 'Datum,Beschreibung,Soll,Haben\n15.01.2024,GEHALT,,3000.00\n16.01.2024,SUPERMARKT,45.20,\n' > "$match_csv"
+check "$match_csv" "$MATCH/wrong-dateformat.rules" "$MATCH/wrong-dateformat.rules"
+
 if [ "$status" -ne 0 ]; then
     echo
     echo "One or more rules fixtures are not valid hledger rules files." >&2

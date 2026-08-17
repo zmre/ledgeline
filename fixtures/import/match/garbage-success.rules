@@ -1,0 +1,23 @@
+# FACT 4, the regression fixture. hledger reads checking.csv with these rules,
+# exits 0, and produces garbage.
+#
+# Plausible provenance: rules written for a deposits-only feed from the same
+# bank. They survive stage 1 — four fields against four columns, and %m/%d/%Y
+# really does read this file's dates — so nothing cheap can tell them apart from
+# checking.csv.rules. Only hledger's structured output can.
+#
+# The empty third name means "ignore column 3", so `amount` reads column 4, the
+# Deposit column. Four of the five rows are withdrawals with an empty Deposit
+# cell, and each of those becomes a transaction whose single posting has NO
+# AMOUNT AT ALL. The fifth has no if-rule to categorise it, so hledger falls back
+# to income:unknown.
+#
+# `hledger check` is perfectly happy with all of it. That is the point: parse
+# success is not a matching signal.
+
+skip 1
+fields date, description, , amount
+date-format %m/%d/%Y
+currency $
+
+account1 assets:bank:checking

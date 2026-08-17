@@ -1,0 +1,10 @@
+; layouts/split-year — the shape this repository's own author keeps books in.
+;
+; Declarations and prices live in files of their own; transactions are split by
+; year. The root holds no transactions at all, so it ranks below both year
+; files — and is still offered, because it is the root.
+
+include accounts.journal
+include prices.journal
+include 2025/2025.journal
+include 2026/2026.journal

@@ -36,12 +36,18 @@
 //! router WITHOUT any of it, for the in-process test harnesses only — read the
 //! threat model on [`security`] before putting either on a real socket.
 
+mod alias_api;
 mod edit_api;
 mod error;
+mod git;
+mod hledger;
+mod import_api;
+mod prefs;
 mod reports_api;
 mod rules_api;
 mod security;
 mod spa;
+mod stage;
 
 use arc_swap::ArcSwap;
 use axum::{
@@ -242,6 +248,21 @@ pub struct AppState {
     /// [`reports_api::compute`], so the guard necessarily crosses a yield point
     /// — which is exactly what a `std::sync::Mutex` guard may never do.
     rules_writes: Arc<tokio::sync::Mutex<()>>,
+    /// Where a dropped statement lives between the upload and the import (WP-11).
+    ///
+    /// **Per state, and therefore per server session.** Two `AppState`s in one
+    /// process — which is what the integration tests build — get two areas with
+    /// independently randomized roots, so a `StageId` minted by one is unknown to
+    /// the other twice over: it is absent from the map, and the directory it
+    /// names is not even in the same tree. The whole area is removed when the
+    /// last clone of this state drops.
+    stages: Arc<stage::StageArea>,
+    /// Serializes IMPORTS. Two concurrent commits into one journal would
+    /// interleave hledger's appends and each other's `.latest` writes, and
+    /// neither the editor mutex (imports do not go through the editor) nor
+    /// [`Self::rules_writes`] covers that. A `tokio` mutex for the same reason
+    /// as above: the guard is held across the blocking-pool `.await`.
+    import_writes: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -266,6 +287,8 @@ impl AppState {
             )))),
             editor: Arc::new(Mutex::new(None)),
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
+            stages: Arc::new(stage::StageArea::default()),
+            import_writes: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -284,6 +307,8 @@ impl AppState {
             inner: Arc::new(ArcSwap::from_pointee(snapshot)),
             editor: Arc::new(Mutex::new(Some(editor))),
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
+            stages: Arc::new(stage::StageArea::default()),
+            import_writes: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -397,6 +422,17 @@ impl AppState {
     pub(crate) fn rules_writes(&self) -> &tokio::sync::Mutex<()> {
         &self.rules_writes
     }
+
+    /// This session's staging area, shared by all clones. See the field's docs.
+    pub(crate) fn stages(&self) -> &stage::StageArea {
+        &self.stages
+    }
+
+    /// The import write mutex, shared by all clones. See the field's own docs
+    /// for why neither of the other two covers an import.
+    pub(crate) fn import_writes(&self) -> &tokio::sync::Mutex<()> {
+        &self.import_writes
+    }
 }
 
 /// Build an UNAUTHENTICATED router for a parsed `journal`.
@@ -497,6 +533,59 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             get(rules_api::document).put(rules_api::save),
         )
         .route("/api/rules-preview/{*id}", get(rules_api::preview))
+        // Enhanced imports (WP-11): capabilities, upload, dry-run, commit,
+        // re-sort, and the preferences store.
+        //
+        // THE SAME PLACEMENT TRAP AS THE RULES ROUTES ABOVE, and a worse one to
+        // fall into: `POST /api/import/commit` writes a CSV into the user's
+        // journal directory and appends to a journal file. Below the
+        // `route_layer` it would do that with no bearer token at all.
+        // `import_endpoints.rs::every_import_route_requires_the_token` pins the
+        // 401 for every one of these.
+        .route("/api/import/capabilities", get(import_api::capabilities))
+        .route(
+            "/api/import/stage",
+            // The ONLY route with a raised body limit, and it is raised on this
+            // route alone rather than globally: every other endpoint takes a
+            // small JSON body, and a global limit would lift the ceiling on all
+            // of them for the sake of one. `route_layer` here applies to just
+            // this route's method handler.
+            post(import_api::stage).route_layer(axum::extract::DefaultBodyLimit::max(
+                stage::MAX_UPLOAD_BYTES,
+            )),
+        )
+        .route("/api/import/dry-run", post(import_api::dry_run))
+        .route("/api/import/commit", post(import_api::commit))
+        // The no-rules-file path: keep the converted CSV, import nothing. Its
+        // own route rather than a commit with null handles — a dry-run with no
+        // rules file has nothing to propose, so nullable handles would encode a
+        // state that cannot happen. It writes a file into the user's journal
+        // directory, so it belongs above the `route_layer` with the rest.
+        .route("/api/import/save-csv", post(import_api::save_csv))
+        .route("/api/import/sort", post(import_api::sort_journal))
+        // The command-line-parity fix: install the journal's aliases into an
+        // `hledger.conf` beside it. A THIRD write target, and the only one that
+        // is not a journal or a CSV, so it belongs above the `route_layer` for
+        // the same reason as everything else here. It never writes outside the
+        // journal's own directory — see `import_api::resolve_conf`.
+        .route(
+            "/api/import/hledger-conf",
+            post(import_api::write_hledger_conf),
+        )
+        .route(
+            "/api/prefs",
+            get(import_api::prefs_get).put(import_api::prefs_put),
+        )
+        // Account aliases (enhanced imports): the mapping table an import
+        // forwards to `hledger --alias`, listed and edited in place.
+        //
+        // THE SAME PLACEMENT TRAP, and the worst instance of it in the file:
+        // `PUT /api/aliases/{*id}` rewrites a line of the user's JOURNAL, which
+        // is the most valuable file this application touches. Below the
+        // `route_layer` it would do that unauthenticated.
+        // `alias_endpoints.rs::every_alias_route_requires_the_token` pins the 401.
+        .route("/api/aliases", get(alias_api::index))
+        .route("/api/aliases/{*id}", axum::routing::put(alias_api::save))
         // Token-gate exactly the routes registered above. `route_layer` skips
         // the fallback, which is what lets the browser fetch the shell (and the
         // token inside it) before it has any credential to present.

@@ -1,0 +1,27 @@
+# A statement whose Account column holds BANK-SPEAK, not an account name.
+#
+# This is the shape the whole `alias` feature exists for. A real Morgan Stanley
+# export names the account `PW Roth IRA - 3077`, and interpolating that column
+# into `account1` puts the bank's own words straight into the journal. The user's
+# `alias` directive is what turns it into `assets:morganstanley:pw-roth-ira` —
+# but ONLY when it reaches hledger as `--alias`, because an alias directive
+# sitting in the target journal does not reach a CSV during an import (verified
+# against hledger 1.52; see crates/ledgeline-core/src/aliases.rs).
+#
+# `%account:cash` rather than `%account` on purpose: it proves that a PREFIX
+# alias rewrites the base and leaves the `:cash` leaf intact, which is what
+# avoids needing one alias per account-and-subaccount combination.
+
+skip 1
+fields date, account, description, amount
+date-format %m/%d/%Y
+currency $
+
+account1 %account:cash
+account2 income:unknown
+
+if DIVIDEND REINVEST
+    account2 income:dividends
+
+if ADVISORY FEE
+    account2 expenses:fees

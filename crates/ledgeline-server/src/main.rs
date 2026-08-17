@@ -569,11 +569,25 @@ mod tests {
     use super::*;
 
     /// A unique temp directory for one test, created fresh.
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ledgeline_watch_{tag}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// A scratch directory that cleans itself up and cannot collide.
+    ///
+    /// The obvious spelling — a fixed `$TMPDIR/ledgeline_watch_{tag}` that is
+    /// `remove_dir_all`ed on entry — is wrong in a way that only shows up under
+    /// load: two test binaries running at once (a second `cargo test` in
+    /// another shell, or a CI matrix sharing a runner) delete each other's
+    /// fixture mid-test. The loser then reads a file that is suddenly absent,
+    /// reports size 0 and the FNV hash of empty input, and looks like a bug in
+    /// the watcher's change detection rather than two tests colliding over a
+    /// directory name.
+    ///
+    /// `TempDir` gives a unique path per call AND removes it on drop, so the
+    /// caller must bind it for the length of the test — which is why every
+    /// caller says `let dir = ...` and then `dir.path()`.
+    fn temp_dir(tag: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("ledgeline_watch_{tag}_"))
+            .tempdir()
+            .expect("a scratch directory")
     }
 
     /// PERF-4's whole mechanism: a save is detected from the file's RAW BYTES,
@@ -589,7 +603,7 @@ mod tests {
     #[test]
     fn source_stamps_track_bytes_not_timestamps() {
         let dir = temp_dir("stamp");
-        let main = dir.join("main.journal");
+        let main = dir.path().join("main.journal");
         std::fs::write(&main, "2024-01-01 x\n    a  $1.00\n    b\n").unwrap();
         let sources = vec![main.canonicalize().unwrap()];
 
@@ -629,8 +643,8 @@ mod tests {
     #[test]
     fn source_stamps_are_order_independent() {
         let dir = temp_dir("stamp_order");
-        let one = dir.join("one.journal");
-        let two = dir.join("two.journal");
+        let one = dir.path().join("one.journal");
+        let two = dir.path().join("two.journal");
         std::fs::write(&one, "account a\n").unwrap();
         std::fs::write(&two, "account b\n").unwrap();
         let forward = vec![one.canonicalize().unwrap(), two.canonicalize().unwrap()];
@@ -641,7 +655,7 @@ mod tests {
     #[test]
     fn event_matches_source_by_dir_and_name() {
         let dir = temp_dir("match");
-        let main = dir.join("main.journal");
+        let main = dir.path().join("main.journal");
         std::fs::write(&main, "").unwrap();
         let sources = vec![main.canonicalize().unwrap()];
 
@@ -653,14 +667,14 @@ mod tests {
         ));
 
         // A different name in the same directory does NOT match.
-        let sibling = dir.join("other.journal");
+        let sibling = dir.path().join("other.journal");
         std::fs::write(&sibling, "").unwrap();
         assert!(!event_matches_source(&sibling, &sources));
 
         // A same-named file in a DIFFERENT directory does NOT match (the reason we
         // compare the directory, not just the file name).
         let other_dir = temp_dir("match_other");
-        let twin = other_dir.join("main.journal");
+        let twin = other_dir.path().join("main.journal");
         std::fs::write(&twin, "").unwrap();
         assert!(!event_matches_source(&twin, &sources));
     }
@@ -671,19 +685,19 @@ mod tests {
         // under a nonexistent parent), we keep the event by name rather than drop a
         // real change.
         let dir = temp_dir("fallback");
-        let main = dir.join("main.journal");
+        let main = dir.path().join("main.journal");
         std::fs::write(&main, "").unwrap();
         let sources = vec![main.canonicalize().unwrap()];
 
-        let ghost = dir.join("does-not-exist").join("main.journal");
+        let ghost = dir.path().join("does-not-exist").join("main.journal");
         assert!(event_matches_source(&ghost, &sources));
     }
 
     #[test]
     fn current_sources_lists_includes_and_appends_missing_main() {
         let dir = temp_dir("sources");
-        let inc = dir.join("inc.journal");
-        let main = dir.join("main.journal");
+        let inc = dir.path().join("inc.journal");
+        let main = dir.path().join("main.journal");
         std::fs::write(&inc, "account assets:bank\n").unwrap();
         std::fs::write(
             &main,
@@ -701,7 +715,7 @@ mod tests {
 
         // Defensive fallback: a main path the published journal doesn't list is
         // still appended so its directory is always watched.
-        let ghost = dir.join("ghost.journal");
+        let ghost = dir.path().join("ghost.journal");
         assert!(current_sources(&state, &ghost).contains(&ghost));
     }
 }
