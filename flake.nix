@@ -173,6 +173,15 @@
         #    @tailwindcss/oxide) are ordinary per-platform packages that land with
         #    no install script. The hash is platform-specific (it captures the
         #    aarch64-darwin native deps); re-pin it if `bun.lock` changes.
+        #
+        #    A STALE PIN HERE IS INVISIBLE UNTIL THE CACHE DROPS THE PATH. A
+        #    fixed-output derivation's store path comes from its hash, not its
+        #    inputs, so while the old path is substitutable from Cachix nothing
+        #    ever runs the builder and nothing compares. Adding a dev dependency
+        #    and forgetting this line therefore passes CI indefinitely and then
+        #    fails, on an unrelated commit, whenever the eviction happens — which
+        #    is exactly how it went: the `@testing-library/svelte` + `jsdom` bump
+        #    landed weeks before the build that reported it.
         spaNodeModules = pkgs.stdenv.mkDerivation {
           pname = "ledgeline-spa-node-modules";
           inherit version;
@@ -191,7 +200,7 @@
           dontFixup = true;
           outputHashMode = "recursive";
           outputHashAlgo = "sha256";
-          outputHash = "sha256-pcvCnuTrfQVvT2v9i7Jnj6NgB8fUvfiMX4kcb6dmEWQ=";
+          outputHash = "sha256-wwx0uWSFgAI2tuZWj89ZORMIQ8uMVQZVHklANqLhzEQ=";
         };
 
         # 2. The static SPA (`web/build`). Pure/offline: reuses the pinned
