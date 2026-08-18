@@ -7,6 +7,10 @@
     import ProblemsDrawer from "$lib/checks/ProblemsDrawer.svelte";
     import ServerSetupModal from "$lib/components/ServerSetupModal.svelte";
     import {rulesStore} from "$lib/imports/rulesStore.svelte";
+    import ChordIndicator from "$lib/keys/ChordIndicator.svelte";
+    import KeyHelp from "$lib/keys/KeyHelp.svelte";
+    import {keymap, registerKeys} from "$lib/keys/keymap.svelte";
+    import {globalLayer} from "$lib/keys/navBindings";
     import {journal} from "$lib/stores/journal.svelte";
     import {problems} from "$lib/stores/problems.svelte";
     import {refreshEverything} from "$lib/stores/refreshAll";
@@ -24,6 +28,13 @@
     // dedupes on (server, reconnect), so this is a prefetch and not a second
     // directory walk.
     onServerReady((url) => void rulesStore.ensureIndex(url, settings.serverNonce));
+
+    // The app's global keymap. `<svelte:window onkeydown>` below is the only
+    // key listener in the app that is always attached; everything else registers
+    // a layer for as long as its component is mounted. See keymap.svelte.ts for
+    // why bubble phase (and not a capture-phase document listener) is what keeps
+    // the four pre-existing element handlers working untouched.
+    registerKeys(globalLayer());
 
     // WP-08: connection status dot fed by journal.status (green ready / yellow
     // loading / red error), with a reconnect affordance back to the setup modal.
@@ -54,6 +65,10 @@
 </script>
 
 <svelte:head><link rel="icon" href={favicon} /></svelte:head>
+
+<!-- `onblur` disarms a half-typed chord on Cmd-Tab, so returning to the window
+     does not find `g` still armed from minutes ago. -->
+<svelte:window onkeydown={keymap.handle} onblur={keymap.disarm} />
 
 <div class="drawer drawer-end">
     <input id="problems-drawer" type="checkbox" class="drawer-toggle" bind:checked={problems.drawerOpen} />
@@ -131,6 +146,9 @@
     </div>
     <ProblemsDrawer />
 </div>
+
+<KeyHelp />
+<ChordIndicator />
 
 <!-- Corrupt localStorage used to drop the saved server URL and every column
      preference in silence, so the app just reappeared at first-run setup. -->
