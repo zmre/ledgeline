@@ -3,18 +3,29 @@
 // Six overlays in this app currently roll their own dismissal and NONE of them
 // restores focus — open the column menu, close it, and focus is on <body>. Only
 // ColumnMenu handles Escape and outside-click at all; ServerSetupModal has
-// neither. This is the shared piece those should converge on, and `KeyHelp` is
-// its first consumer.
+// neither. This is the shared piece those should converge on.
 //
 // The topmost-only rule is what makes nested overlays behave WITHOUT
-// `stopPropagation` (which this codebase deliberately never uses): every live
+// `stopPropagation` (which this codebase deliberately never uses): every ACTIVE
 // instance pushes onto a LIFO stack, and only the last one responds to Escape.
 
 import {FOCUSABLE} from "./target";
 
 export interface DismissibleOptions {
     onDismiss: () => void;
-    /** Trap Tab inside and focus the first focusable on mount. Screen-owning overlays want this; dropdowns do not. */
+    /**
+     * Whether the overlay is currently open. Defaults to true, for the common
+     * case of an `{#if}`-gated overlay whose mount IS its opening.
+     *
+     * The flag exists because some overlays here are always mounted (the
+     * transaction popup) and some hosts cannot be conditionally decorated (a
+     * `<details>` needs the action on the element that owns `open`). Without it
+     * those would hold the top of the stack permanently and swallow Escape from
+     * everything below — and would keep an idle document listener, which is
+     * exactly what ColumnMenu's "attached only while open" comment forbids.
+     */
+    active?: boolean;
+    /** Trap Tab inside and focus the first focusable on open. Screen-owning overlays want this; dropdowns do not. */
     trap?: boolean;
     /** Dismiss on a pointerdown outside the node. Dropdowns want this; modals use their backdrop button instead. */
     outside?: boolean;
@@ -51,11 +62,8 @@ function focusFirst(node: HTMLElement): void {
 
 export function dismissible(node: HTMLElement, options: DismissibleOptions) {
     let current = options;
-    // Captured before we move focus anywhere, so closing returns the user to
-    // whatever opened this rather than dumping them on <body>.
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
-    stack.push(node);
+    let attached = false;
+    let opener: HTMLElement | null = null;
 
     function isTopmost(): boolean {
         return stack[stack.length - 1] === node;
@@ -92,21 +100,39 @@ export function dismissible(node: HTMLElement, options: DismissibleOptions) {
         if (!node.contains(event.target as Node)) current.onDismiss();
     }
 
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("pointerdown", onPointerDown, true);
+    function attach(): void {
+        if (attached) return;
+        attached = true;
+        // Captured before we move focus anywhere, so closing returns the user to
+        // whatever opened this rather than dumping them on <body>.
+        opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        stack.push(node);
+        document.addEventListener("keydown", onKeyDown);
+        document.addEventListener("pointerdown", onPointerDown, true);
+        if (current.trap === true) focusFirst(node);
+    }
 
-    if (current.trap === true) focusFirst(node);
+    function detach(): void {
+        if (!attached) return;
+        attached = false;
+        document.removeEventListener("keydown", onKeyDown);
+        document.removeEventListener("pointerdown", onPointerDown, true);
+        const at = stack.indexOf(node);
+        if (at !== -1) stack.splice(at, 1);
+        if (opener !== null && opener.isConnected) opener.focus();
+        opener = null;
+    }
+
+    if (current.active !== false) attach();
 
     return {
         update(next: DismissibleOptions): void {
             current = next;
+            if (next.active !== false) attach();
+            else detach();
         },
         destroy(): void {
-            document.removeEventListener("keydown", onKeyDown);
-            document.removeEventListener("pointerdown", onPointerDown, true);
-            const at = stack.indexOf(node);
-            if (at !== -1) stack.splice(at, 1);
-            if (opener !== null && opener.isConnected) opener.focus();
+            detach();
         },
     };
 }
