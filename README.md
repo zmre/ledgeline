@@ -114,6 +114,8 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
   - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
 - feat: edit budget
   - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
+- feat: non-stock and cash holdings
+  - i want the holdings tab to have two sub-tabs: Stocks and Other.  Other should show all assets (type:A) excluding stocks and cash (type:C). if we get this right, we'll be able to show things like home, cars, partnerships, etc.  And like with stocks, we want to show the value of each and the change in value over time
 - Better keyboard navigation
   - tab complete account selection
   - enter to save transaction edit

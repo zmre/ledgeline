@@ -20,15 +20,35 @@ test.beforeEach(async ({page}) => {
     await page.clock.setFixedTime(FIXED_NOW);
     await page.addInitScript(
         ([url, token]) => {
-            localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token}));
+            // `insightsOpen: false` is load-bearing, not tidiness. It defaults to
+            // TRUE, and at this viewport (1280x720) the expanded charts panel
+            // fills the journal's `calc(100dvh - 7rem)` container — squeezing the
+            // table to a sliver and leaving the totals footer over the toolbar,
+            // so "Add transaction" is not clickable and a cursored row is not in
+            // the browser viewport. That is a real layout problem, but it is a
+            // pre-existing one about chart sizing; these are keyboard tests and
+            // should fail for keyboard reasons.
+            localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token, insightsOpen: false}));
         },
         [API_URL, API_TOKEN]
     );
 });
 
-/** Wait for the journal to have loaded, so the table's keymap layer is registered. */
+/**
+ * Wait until the journal table is really on screen.
+ *
+ * NOT `footer` containing "transactions": the footer renders during loading with
+ * a count of 0, so "0 transactions" satisfies that immediately — before the
+ * table has mounted and registered its keymap layer. A key pressed then goes
+ * nowhere, and the test fails looking like a broken binding.
+ */
 async function journalReady(page: Page): Promise<void> {
-    await expect(page.locator("footer")).toContainText("transactions");
+    await expect(page.locator("tbody tr[data-txn]").first()).toBeVisible();
+}
+
+/** Wait until a route has hydrated enough for the window key listener to be live. */
+async function reportsReady(page: Page): Promise<void> {
+    await expect(page.getByRole("tab", {name: "Balance Sheet"})).toBeVisible();
 }
 
 test.describe("global keys", () => {
@@ -75,6 +95,8 @@ test.describe("global keys", () => {
     test("the help sheet lists the keys of the page it was opened on", async ({page}) => {
         // Context scoping, visible: report tab digits exist only on /reports.
         await page.goto("/reports");
+        await reportsReady(page);
+
         await page.keyboard.press("Shift+Slash");
 
         await expect(page.getByTestId("key-help")).toContainText("Balance Sheet");
@@ -82,6 +104,7 @@ test.describe("global keys", () => {
 
     test("digits switch report tabs", async ({page}) => {
         await page.goto("/reports?tab=insights");
+        await reportsReady(page);
 
         await page.keyboard.press("2");
 
@@ -181,11 +204,26 @@ test.describe("the journal cursor", () => {
 });
 
 test.describe("account completion", () => {
-    /** Open the add-transaction popup and put the caret in its first account field. */
+    /**
+     * Open the add-transaction popup and put the caret in its first account field.
+     *
+     * Opened with `n` rather than by clicking the toolbar button — this is a
+     * keyboard suite, and the button's accessible name ("Add transaction") is
+     * shared with the popup's own submit control, so clicking it is ambiguous the
+     * moment the popup exists. The dialog assertion keeps a failure here readable
+     * as "the popup did not open" rather than as a combobox bug.
+     */
     async function openPopup(page: Page): Promise<void> {
         await page.goto("/");
         await journalReady(page);
-        await page.getByRole("button", {name: "Add transaction"}).click();
+        // The toolbar button appearing is the signal that `editing.canEdit` has
+        // resolved — `n` is gated on it, and pressing before the write probe
+        // answers would silently do nothing. `.first()` because the popup's own
+        // submit control shares this accessible name.
+        await expect(page.getByRole("button", {name: "Add transaction"}).first()).toBeVisible();
+
+        await page.keyboard.press("n");
+        await expect(page.getByRole("dialog", {name: "Add transaction"})).toBeVisible();
         await page.getByLabel("Account").first().click();
     }
 
