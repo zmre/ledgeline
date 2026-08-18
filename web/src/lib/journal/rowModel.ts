@@ -5,7 +5,7 @@
 
 import {accountMatches} from "$lib/domain/accounts";
 import {add, formatAmount, isZero, neg, type Dec, type MixedAmount} from "$lib/domain/money";
-import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "$lib/domain/types";
+import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from "$lib/domain/types";
 import type {JournalFilter} from "$lib/stores/filters.svelte";
 
 /** Display order: date descending, then hledger index descending. Returns a new array. */
@@ -198,4 +198,60 @@ export function computeWindow(scrollTop: number, viewportHeight: number, rowPitc
     const start = Math.min(Math.max(0, Math.floor(top / rowPitch) - overscan), total);
     const end = Math.min(total, Math.max(start, Math.ceil((top + Math.max(0, viewportHeight)) / rowPitch) + overscan));
     return {start, end, padTop: start * rowPitch, padBottom: (total - end) * rowPitch};
+}
+
+/**
+ * Scroll offset that CENTRES row `position`.
+ *
+ * This is the problems-drawer behaviour: a jump from somewhere else wants
+ * context around its target. Arithmetic rather than `scrollIntoView`, because
+ * the target row is usually not mounted — that is the whole point of the
+ * windowing above, and it is why there is no `scrollIntoView` call anywhere in
+ * this component.
+ */
+export function centerOffset(position: number, pitch: number, viewportHeight: number, topInset = 0): number {
+    return Math.max(0, topInset + position * pitch - Math.max(0, viewportHeight - pitch) / 2);
+}
+
+/**
+ * Smallest offset that brings row `position` fully into view, or `scrollTop`
+ * unchanged when it already is.
+ *
+ * This is the CURSOR behaviour, and it is deliberately different from
+ * `centerOffset`: `j` and `k` must not throw the whole page around on every
+ * keystroke.
+ *
+ * `headroom` is the sticky `<thead>`'s height. The header is sticky INSIDE the
+ * scroll box, so it paints over the first `headroom` px of a viewport that
+ * `clientHeight` counts in full — without it the row `j` just landed on sits
+ * underneath the header. `rowHeight` is the row's own height, which in card mode
+ * is smaller than `pitch` (a 96px card in a 104px slot).
+ */
+export function nearestOffset(
+    scrollTop: number,
+    position: number,
+    pitch: number,
+    rowHeight: number,
+    viewportHeight: number,
+    total: number,
+    headroom = 0,
+    topInset = 0
+): number {
+    const max = Math.max(0, topInset + total * pitch - viewportHeight);
+    const top = topInset + position * pitch;
+    const bottom = top + rowHeight;
+    if (top - headroom < scrollTop) return Math.min(max, Math.max(0, top - headroom));
+    if (bottom > scrollTop + viewportHeight) return Math.max(0, Math.min(max, bottom - viewportHeight));
+    return scrollTop;
+}
+
+/** Rows in a Ctrl-d / Ctrl-u step. Always at least 1, so the key is never a silent no-op. */
+export function halfPageRows(viewportHeight: number, pitch: number): number {
+    if (pitch <= 0) return 1;
+    return Math.max(1, Math.floor(viewportHeight / pitch / 2));
+}
+
+/** The next status in the inline cycle: unmarked → pending → cleared → unmarked. */
+export function nextStatus(status: TxnStatus): TxnStatus {
+    return status === "unmarked" ? "pending" : status === "pending" ? "cleared" : "unmarked";
 }

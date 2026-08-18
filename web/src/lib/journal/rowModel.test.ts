@@ -4,11 +4,15 @@ import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from
 import type {JournalFilter} from "$lib/stores/filters.svelte";
 import {
     accountFlow,
+    centerOffset,
     commodityStyles,
     computeWindow,
     filteredTotals,
     filterTxns,
     formatTotals,
+    halfPageRows,
+    nearestOffset,
+    nextStatus,
     periodLabel,
     sortTxnsDesc,
     txnComments,
@@ -277,6 +281,86 @@ describe("UNIT rowModel", () => {
                 const w = computeWindow(scrollTop, 800, 40, 40000, 12);
                 expect(w.padTop + (w.end - w.start) * 40 + w.padBottom).toBe(40000 * 40);
             }
+        });
+    });
+
+    describe("centerOffset", () => {
+        it("REGRESSION: matches the formula the problems drawer has always used", () => {
+            // Extracted verbatim from `TransactionTable.scrollToTxn` so the
+            // cursor work could share it. This pins the drawer's behaviour as
+            // unchanged — if the arithmetic drifts, the jump-to-problem feature
+            // starts landing somewhere else and nothing else would notice.
+            for (const position of [0, 1, 27, 184]) {
+                const expected = Math.max(0, position * 40 - Math.max(0, 600 - 40) / 2);
+                expect(centerOffset(position, 40, 600)).toBe(expected);
+            }
+        });
+
+        it("never scrolls above the top", () => {
+            expect(centerOffset(0, 40, 600)).toBe(0);
+        });
+    });
+
+    describe("nearestOffset", () => {
+        // 600px viewport, 40px rows, 1000 rows: rows 0..14 are visible at rest.
+        const at = (scrollTop: number, position: number, headroom = 0) => nearestOffset(scrollTop, position, 40, 40, 600, 1000, headroom);
+
+        it("does nothing when the row is already fully visible", () => {
+            // The whole point of a cursor scroll: j and k must not throw the page
+            // around on every keystroke.
+            expect(at(0, 5)).toBe(0);
+        });
+
+        it("scrolls down by the minimum needed", () => {
+            // Row 15's bottom is 640, the viewport ends at 600 → move exactly 40.
+            expect(at(0, 15)).toBe(40);
+        });
+
+        it("scrolls up by the minimum needed", () => {
+            expect(at(400, 5)).toBe(200);
+        });
+
+        it("keeps the row clear of a sticky header", () => {
+            // The <thead> is sticky INSIDE the scroll box, so it paints over the
+            // top of a viewport that clientHeight counts in full. Without the
+            // headroom the row j landed on sits underneath the header.
+            expect(at(400, 10, 36)).toBe(400 - 36);
+        });
+
+        it("clamps to the bottom of the list", () => {
+            expect(at(0, 999)).toBe(1000 * 40 - 600);
+        });
+
+        it("never returns a negative offset", () => {
+            expect(nearestOffset(0, 0, 40, 40, 600, 1000, 36)).toBe(0);
+        });
+
+        it("handles a list shorter than the viewport", () => {
+            expect(nearestOffset(0, 2, 40, 40, 600, 3)).toBe(0);
+        });
+
+        it("accounts for a row shorter than its pitch, as in card mode", () => {
+            // A 96px card in a 104px slot, with the wrapper's 8px top padding.
+            expect(nearestOffset(0, 6, 104, 96, 600, 100, 0, 8)).toBe(8 + 6 * 104 + 96 - 600);
+        });
+    });
+
+    describe("halfPageRows", () => {
+        it("is half a viewport of rows", () => {
+            expect(halfPageRows(600, 40)).toBe(7);
+        });
+
+        it("is never zero, so Ctrl-d is never a silent no-op", () => {
+            expect(halfPageRows(40, 104)).toBe(1);
+            expect(halfPageRows(0, 40)).toBe(1);
+        });
+    });
+
+    describe("nextStatus", () => {
+        it("cycles unmarked → pending → cleared → unmarked", () => {
+            expect(nextStatus("unmarked")).toBe("pending");
+            expect(nextStatus("pending")).toBe("cleared");
+            expect(nextStatus("cleared")).toBe("unmarked");
         });
     });
 

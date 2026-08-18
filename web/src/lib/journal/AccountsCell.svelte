@@ -17,6 +17,7 @@
     import {accountColumn} from "./accountColumn.svelte";
     import {flowChipRooms, splitChipRooms} from "./chipGeometry";
     import AccountInput from "./edit/AccountInput.svelte";
+    import {rowActions} from "./rowAction.svelte";
     import {accountFlow} from "./rowModel";
 
     let {txn}: {txn: Transaction} = $props();
@@ -62,6 +63,18 @@
     function cancel(): void {
         editingAccount = null;
     }
+
+    // Answer `c` from the keyboard. This cell owns `startEdit`, so it consumes
+    // the request directly rather than routing it through TransactionRow.
+    //
+    // Targets the flow's DESTINATION — the category you actually recategorize —
+    // falling back to the first account of an N-way split.
+    $effect(() => {
+        const request = rowActions.request;
+        if (request === null || request.txnIndex !== txn.index || request.action !== "category") return;
+        rowActions.consume(request.nonce);
+        startEdit(flow.kind === "flow" ? flow.dest : (flow.accounts[0] ?? ""));
+    });
 </script>
 
 {#if editingAccount !== null}

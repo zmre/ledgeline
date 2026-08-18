@@ -8,22 +8,23 @@
     // A cycle button has no text draft, so there is no Esc/blur state to manage —
     // Enter/Space activate it natively; the store's 409/refetch handling is unchanged.
     import {statusPatch} from "$lib/api/editMapping";
-    import type {Transaction, TxnStatus} from "$lib/domain/types";
+    import type {Transaction} from "$lib/domain/types";
     import {editing} from "$lib/stores/editing.svelte";
     import StatusBadge from "./StatusBadge.svelte";
+    // Shared with the table's `s` keybinding, so the click and the keystroke
+    // cannot drift into cycling in different orders.
+    import {nextStatus} from "./rowModel";
 
     let {txn}: {txn: Transaction} = $props();
 
     const canEdit = $derived(editing.canEdit);
-
-    const NEXT: Record<TxnStatus, TxnStatus> = {unmarked: "pending", pending: "cleared", cleared: "unmarked"};
 
     let busy = $state(false);
 
     async function cycle(): Promise<void> {
         if (!canEdit || busy) return;
         busy = true;
-        const result = await editing.patch(txn.index, statusPatch(NEXT[txn.status]));
+        const result = await editing.patch(txn.index, statusPatch(nextStatus(txn.status)));
         busy = false;
         if (!result.ok && result.failure.kind !== "conflict") editing.reportFailure(result.failure);
     }
