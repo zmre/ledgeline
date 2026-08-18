@@ -125,6 +125,32 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
   - Need a way to map an asset to an address. Maybe a special comment in the accounts file?
   - Need a way to map the unrealized gains for that address
   - Then on some sort of "update" click (how/where on UI?), it fetches the latest value (or launches a page and then prompts for it?), calculates the difference relative to the current asset value and then makes an adjustment to the unrealized account with a comment saying the current zestimate
+- balance sheet ui improvements
+  - this looks a lot like what the command line produces, but it's incredibly ugly and hard to read especially with stocks in the picture
+  - there's a row with "assets" on the left and a long list of stocks and cash on the right, all in one row. It's like rows within a row.  and things sum up oddly.
+  - And it's weird to have summaries and totals at the top above the things they total
+  - We should default to three deep and we should get smarter about how we group things and total them.
+  - We don't need to break things down by stock and we don't need to break them down by specific account, either.  We want to know about "Cash and cash equivalents" but not about how much is in bank account A vs. bank account B.
+    - I realize we may not have all the details we need to group things appropriately, BUT, we know stocks and their value, we know assets and their values, we know cash and their values, and we know liabilities and their values.
+    - We could probably improve things quite a bit through the use of optional extra tags on accounts.  We should look at examples to come up with ideas here, but common lines on a balance sheet include:
+      - accounts receivable
+      - accounts payable
+      - non-current assets
+      - depreciable assets
+      - depreciation of those assets
+      - property
+      - intangible assets
+      - deferred revenue
+      - short-term debt
+      - long-term debt
+      - long-term investments
+      - shareholders equity
+      - retained earnings
+      - inventory
+      - paid in capital
+    - My thinking is that any account can be tagged with a balance sheet group (bsgroup?) that then becomes a line in the balance sheet.
+    - We need proper totals lines, spreadsheet style, showing totla current assets, liabilities, owner equity and net
+    - I think we can make this pretty. Make each box (assets, liabilities, owner equity) pretty separate grids with lines and colored headers.  The downloaded xlsx should be nice and readable, too.
 - rules edit ui improvements
   - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
   - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
