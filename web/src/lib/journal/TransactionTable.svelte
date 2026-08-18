@@ -10,6 +10,7 @@
     import {settings} from "$lib/stores/settings.svelte";
     import ColumnMenu from "./ColumnMenu.svelte";
     import TransactionRow from "./TransactionRow.svelte";
+    import {measureAccountColumn} from "./accountColumn.svelte";
     import {txnModal} from "./edit/modalState.svelte";
     import {computeWindow} from "./rowModel";
 
@@ -99,7 +100,11 @@
                         {#if columns.date}<th class="text-left">Date</th>{/if}
                         {#if columns.status}<th class="text-left">Status</th>{/if}
                         {#if columns.description}<th class="text-left">Description</th>{/if}
-                        {#if columns.accounts}<th class="text-left">Accounts</th>{/if}
+                        <!-- One measurement for the whole column: `table-fixed`
+                             makes every accounts cell this wide, so the chips
+                             below fit themselves to real pixels without a
+                             ResizeObserver per row. -->
+                        {#if columns.accounts}<th class="text-left" use:measureAccountColumn>Accounts</th>{/if}
                         {#if columns.amount}<th class="text-right">Amount</th>{/if}
                     </tr>
                 </thead>
