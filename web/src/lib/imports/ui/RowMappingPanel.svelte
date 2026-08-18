@@ -23,12 +23,20 @@
     let {
         items,
         preview,
+        pending,
         onChange,
         disabled,
     }: {
         items: FormItem[];
         /** null = the preview REQUEST failed; `available: false` = the engine read nothing, and says why. */
         preview: RulesPreview | null;
+        /**
+         * A re-read is in flight after a save, so `preview` has been WITHHELD
+         * rather than being null for the usual reason. Without this the two are
+         * indistinguishable here and a refresh would announce itself as a
+         * failure for as long as it took.
+         */
+        pending: boolean;
         onChange: (items: FormItem[]) => void;
         disabled: boolean;
     } = $props();
@@ -91,11 +99,20 @@
         notUtf8: "the file it names is not valid UTF-8",
         empty: "the file it names is empty",
     };
-    const unavailableReason = $derived(preview === null ? "the preview request failed" : preview.reason === null ? null : UNAVAILABLE[preview.reason]);
+    // `pending` first: a withheld preview is not a missing one, and saying "the
+    // preview request failed" about a request still in flight would be a lie
+    // that resolves itself, which is the hardest kind to notice.
+    const unavailableReason = $derived(
+        pending ? null : preview === null ? "the preview request failed" : preview.reason === null ? null : UNAVAILABLE[preview.reason]
+    );
 </script>
 
 <div class="flex flex-col gap-3">
-    {#if preview?.available === true}
+    {#if pending}
+        <p class="text-base-content/60 text-xs" data-testid="imports-preview-pending">
+            Re-reading the data file with the settings you just saved… the sample values below are held back until it answers.
+        </p>
+    {:else if preview?.available === true}
         <p class="text-base-content/60 text-xs">
             Sample values are from <code>{preview.dataLabel ?? "the data file"}</code>, split on
             <code>{preview.separator === "\t" ? "TAB" : preview.separator}</code>.
