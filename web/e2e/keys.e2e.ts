@@ -167,15 +167,43 @@ test.describe("the journal cursor", () => {
     });
 
     test("G reaches the last row AND scrolls it into view", async ({page}) => {
-        // THE assertion jsdom can never make. The table is virtualized, so the
-        // last row is not in the DOM until the cursor's reveal arithmetic puts
-        // it there — and `toBeInViewport` also proves the sticky-header headroom
-        // is being subtracted, since without it the row lands under the header.
+        // THE assertions jsdom can never make, decomposed into the three links
+        // in the chain — because `toBeInViewport` alone conflates the cursor's
+        // scroll arithmetic with the page's layout, and when it fails it cannot
+        // say which one broke.
         await page.goto("/?preset=all");
         await journalReady(page);
 
         await page.keyboard.press("Shift+G");
 
+        const geometry = await page.evaluate(() => {
+            // Anchored to the table, NOT `document.querySelector(".overflow-y-auto")`:
+            // the account-tree filter's <ul> carries that class too and renders
+            // earlier in the document (it is inside a closed <details>, so it is
+            // in the DOM but has no size).
+            const scroller = document.querySelector("tbody")?.closest<HTMLElement>(".overflow-y-auto") ?? null;
+            const row = document.querySelector("[aria-current='true']");
+            return {
+                scrollTop: scroller?.scrollTop ?? -1,
+                clientHeight: scroller?.clientHeight ?? -1,
+                scrollHeight: scroller?.scrollHeight ?? -1,
+                renderedRows: document.querySelectorAll("tbody tr[data-txn]").length,
+                rowTop: Math.round(row?.getBoundingClientRect().top ?? -1),
+                rowBottom: Math.round(row?.getBoundingClientRect().bottom ?? -1),
+                viewportHeight: window.innerHeight,
+            };
+        });
+
+        // 1. The scroller is really a scroller. The whole virtualization scheme
+        //    rests on this and nothing else asserts it: an unbounded container
+        //    renders all 185 rows, never scrolls, and hides the failure.
+        expect(geometry.clientHeight, `scroller not height-bounded: ${JSON.stringify(geometry)}`).toBeLessThan(geometry.scrollHeight);
+        // 2. Only a bounded scroller virtualizes, so the row count stays small.
+        expect(geometry.renderedRows, `virtualization off: ${JSON.stringify(geometry)}`).toBeLessThan(185);
+        // 3. The reveal arithmetic actually moved it.
+        expect(geometry.scrollTop, `reveal did not scroll: ${JSON.stringify(geometry)}`).toBeGreaterThan(0);
+        // 4. And the result is on screen, which also proves the sticky-header
+        //    headroom is being subtracted.
         await expect(page.locator("[aria-current='true']")).toBeInViewport();
     });
 
@@ -204,6 +232,21 @@ test.describe("the journal cursor", () => {
 });
 
 test.describe("account completion", () => {
+    /** The popup itself. Everything below is scoped to it. */
+    const popup = (page: Page) => page.getByRole("dialog", {name: "Add transaction"});
+
+    /**
+     * The first posting's account combobox.
+     *
+     * `exact: true` matters: `getByLabel` matches on SUBSTRING by default, and
+     * the account-tree filter's input is labelled "Search accounts" — which
+     * contains "account". A loose match resolved to that instead, a hidden input
+     * inside a closed <details>, and every test here timed out clicking it.
+     */
+    const accountField = (page: Page) => popup(page).getByLabel("Account", {exact: true}).first();
+
+    const descriptionField = (page: Page) => popup(page).getByLabel("Description", {exact: true});
+
     /**
      * Open the add-transaction popup and put the caret in its first account field.
      *
@@ -223,13 +266,13 @@ test.describe("account completion", () => {
         await expect(page.getByRole("button", {name: "Add transaction"}).first()).toBeVisible();
 
         await page.keyboard.press("n");
-        await expect(page.getByRole("dialog", {name: "Add transaction"})).toBeVisible();
-        await page.getByLabel("Account").first().click();
+        await expect(popup(page)).toBeVisible();
+        await accountField(page).click();
     }
 
     test("Tab completes to the shared prefix", async ({page}) => {
         await openPopup(page);
-        const account = page.getByLabel("Account").first();
+        const account = accountField(page);
         await account.fill("ex");
 
         await page.keyboard.press("Tab");
@@ -243,7 +286,7 @@ test.describe("account completion", () => {
         // popup would be cut off. This is the assertion that the fixed-position
         // portal is doing its job, and it needs real layout.
         await openPopup(page);
-        await page.getByLabel("Account").first().fill("ex");
+        await accountField(page).fill("ex");
 
         await expect(page.getByRole("listbox")).toBeInViewport();
     });
@@ -253,24 +296,24 @@ test.describe("account completion", () => {
         // locally and bubbled to the modal, which closed and discarded
         // everything typed.
         await openPopup(page);
-        await page.getByLabel("Description").fill("Plumber");
-        await page.getByLabel("Account").first().fill("ex");
+        await descriptionField(page).fill("Plumber");
+        await accountField(page).fill("ex");
         await expect(page.getByRole("listbox")).toBeVisible();
 
         await page.keyboard.press("Escape");
 
         await expect(page.getByRole("listbox")).toBeHidden();
-        await expect(page.getByLabel("Description")).toHaveValue("Plumber");
+        await expect(descriptionField(page)).toHaveValue("Plumber");
     });
 
     test("a second Escape closes the popup", async ({page}) => {
         await openPopup(page);
-        await page.getByLabel("Account").first().fill("ex");
+        await accountField(page).fill("ex");
 
         await page.keyboard.press("Escape");
         await page.keyboard.press("Escape");
 
-        await expect(page.getByLabel("Description")).toBeHidden();
+        await expect(popup(page)).toBeHidden();
     });
 
     test("REGRESSION: Shift+Tab escapes the field rather than cycling", async ({page}) => {
@@ -278,7 +321,7 @@ test.describe("account completion", () => {
         // way out of this field and the popup becomes a keyboard trap — and only
         // a real browser has focus traversal to prove it against.
         await openPopup(page);
-        const account = page.getByLabel("Account").first();
+        const account = accountField(page);
         await account.fill("ex");
 
         await page.keyboard.press("Shift+Tab");
