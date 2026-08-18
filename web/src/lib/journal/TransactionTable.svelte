@@ -79,7 +79,10 @@
         if (position < 0) return;
         const top =
             how === "center"
-                ? centerOffset(position, pitch, viewportHeight, topInset)
+                ? // `topInset + headroom`, because rows begin below the sticky
+                  // header in content coordinates. `centerOffset` itself is
+                  // unchanged — it is simply being given the right origin now.
+                  centerOffset(position, pitch, viewportHeight, topInset + headroom)
                 : nearestOffset(scrollTop, position, pitch, rowHeight, viewportHeight, txns.length, headroom, topInset);
         if (top === scrollTop) return;
         if (scroller !== null) scroller.scrollTop = top;

@@ -237,8 +237,21 @@ export function nearestOffset(
     headroom = 0,
     topInset = 0
 ): number {
-    const max = Math.max(0, topInset + total * pitch - viewportHeight);
-    const top = topInset + position * pitch;
+    // `headroom` counts TWICE, and missing the first use was a real bug.
+    //
+    // A sticky <thead> is pinned when you scroll, but it still occupies its
+    // normal flow space — so row 0 begins at `headroom` px into the scrollable
+    // content, not at 0. Ignoring that under-scrolled every downward move by
+    // exactly the header's height, which left the LAST row sitting just below
+    // the fold: invisible in jsdom (no layout) and caught only by Playwright's
+    // `toBeInViewport`.
+    //
+    //   rowsStart — where row 0 actually begins in content coordinates.
+    //   headroom  — the strip at the top of the viewport the pinned header
+    //               paints over, which a revealed row must clear.
+    const rowsStart = topInset + headroom;
+    const max = Math.max(0, rowsStart + total * pitch - viewportHeight);
+    const top = rowsStart + position * pitch;
     const bottom = top + rowHeight;
     if (top - headroom < scrollTop) return Math.min(max, Math.max(0, top - headroom));
     if (bottom > scrollTop + viewportHeight) return Math.max(0, Math.min(max, bottom - viewportHeight));

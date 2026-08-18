@@ -121,11 +121,23 @@
         if (event.isComposing) return;
 
         if (event.key === "Escape") {
-            event.preventDefault();
-            // First Escape closes the popup, second reaches the parent. Without
-            // this the modal shut and the transaction was lost.
-            if (open) hide();
-            else onCancel?.();
+            // Claim Escape ONLY when this component actually consumes it —
+            // `preventDefault` is how everything else in the app is told a key is
+            // spoken for, so claiming one we ignored silently swallows it.
+            //
+            // Popup open  → close the popup (the fix for Escape discarding a
+            //               half-typed transaction).
+            // Popup shut  → cancel, if the caller wants one (the inline row
+            //               editor does).
+            // Neither     → not ours. Let it reach the enclosing modal, which is
+            //               what makes a second Escape close the popup.
+            if (open) {
+                event.preventDefault();
+                hide();
+            } else if (onCancel !== undefined) {
+                event.preventDefault();
+                onCancel();
+            }
             return;
         }
 

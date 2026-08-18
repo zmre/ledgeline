@@ -320,11 +320,24 @@ describe("UNIT rowModel", () => {
             expect(at(400, 5)).toBe(200);
         });
 
-        it("keeps the row clear of a sticky header", () => {
+        it("parks a row scrolled up to immediately below the sticky header", () => {
             // The <thead> is sticky INSIDE the scroll box, so it paints over the
-            // top of a viewport that clientHeight counts in full. Without the
-            // headroom the row j landed on sits underneath the header.
-            expect(at(400, 10, 36)).toBe(400 - 36);
+            // top of a viewport that clientHeight counts in full. Row 10 lives at
+            // 36 + 400 = 436, so scrolling to 400 puts its top exactly at the
+            // header's lower edge — visible, with nothing wasted.
+            expect(at(500, 10, 36)).toBe(400);
+        });
+
+        it("does not scroll at all when the header already clears the row", () => {
+            expect(at(400, 10, 36)).toBe(400);
+        });
+
+        it("REGRESSION: reaches the last row past a sticky header", () => {
+            // The bug Playwright caught and jsdom never could. A sticky header
+            // still occupies flow space, so row N starts at `headroom + N*pitch`.
+            // Treating rows as starting at 0 under-scrolled by exactly the
+            // header's height and left the last row below the fold.
+            expect(at(0, 999, 36)).toBe(36 + 1000 * 40 - 600);
         });
 
         it("clamps to the bottom of the list", () => {

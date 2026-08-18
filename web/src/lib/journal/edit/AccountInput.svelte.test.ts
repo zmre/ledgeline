@@ -150,13 +150,23 @@ describe("COMPONENT AccountInput Escape", () => {
         expect(cancelled).toBe(1);
     });
 
-    it("claims Escape either way, so an enclosing overlay sees it was handled", async () => {
+    it("claims Escape while the popup is open, so the enclosing modal ignores it", async () => {
         // `defaultPrevented` is the cooperation protocol: no `stopPropagation`
         // anywhere in this codebase.
         const {field} = mount();
         await type(field, "ex:gr");
 
         expect(key(field, "Escape")).toBe(true);
+    });
+
+    it("REGRESSION: does NOT claim Escape it ignored, so the modal can close", async () => {
+        // With no popup open and no `onCancel` — exactly how the transaction
+        // popup mounts this — Escape is not ours. Claiming it anyway marked the
+        // event handled, `dismissible` skipped it, and the popup could never be
+        // closed from an account field at all.
+        const {field} = mount();
+
+        expect(key(field, "Escape")).toBe(false);
     });
 });
 
