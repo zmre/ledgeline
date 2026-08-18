@@ -4,8 +4,8 @@
 use super::mixed_amount::MixedAmount;
 use crate::decimal::Dec;
 use crate::model::{
-    AccountName, Amount, AmountStyle, Commodity, CommoditySide, Posting, PostingType,
-    PriceDirective, SourcePos, Status, Tindex, Transaction,
+    AccountName, Amount, AmountStyle, BalanceAssertion, Commodity, CommoditySide, Posting,
+    PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
 };
 
 fn style(precision: u32) -> AmountStyle {
@@ -76,6 +76,29 @@ pub fn txn(index: u32, date: &str, postings: Vec<(&str, Vec<Amount>)>) -> Transa
         source_span: (pos, pos),
         source_file: std::path::PathBuf::new(),
     }
+}
+
+/// Attach a `= AMOUNT` balance assertion to one posting of `transaction`.
+///
+/// A combinator over [`txn`] rather than a second transaction builder, so a
+/// journal mixing asserted and un-asserted postings still needs only one.
+pub fn with_assertion(
+    mut transaction: Transaction,
+    posting_index: usize,
+    asserted: Amount,
+) -> Transaction {
+    let pos = SourcePos { line: 1, column: 1 };
+    transaction
+        .postings
+        .get_mut(posting_index)
+        .expect("posting index is within the transaction")
+        .balance_assertion = Some(BalanceAssertion {
+        amount: asserted,
+        inclusive: false,
+        total: false,
+        position: pos,
+    });
+    transaction
 }
 
 /// Build a `MixedAmount` from `(commodity, mantissa, places)` triples.
