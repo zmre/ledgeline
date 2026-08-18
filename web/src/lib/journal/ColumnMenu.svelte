@@ -1,6 +1,23 @@
 <script lang="ts">
     // Column config dropdown (WP-03): gear icon toggling journal table columns,
     // persisted via settings.columns (localStorage).
+    //
+    // # Why `<details>` and not daisyUI's default dropdown
+    //
+    // daisyUI hides `.dropdown-content` with
+    // `:not(details,.dropdown-open,.dropdown-hover:hover,:focus-within)`, so the
+    // plain version opens on FOCUS and nothing else. This trigger is a real
+    // `<button>`, and on macOS WebKit — Safari, and the WKWebView this app ships
+    // in — clicking a button does not focus it. The menu therefore could not be
+    // opened by mouse at all on that engine; daisyUI's own examples use
+    // `<div tabindex="0" role="button">` precisely to dodge this, which is a
+    // focusable div standing in for a button rather than a fix.
+    //
+    // `<details>` toggles on click in every engine, with no dependence on focus
+    // behaviour, and daisyUI supports it explicitly (`&:is(details)`). It is
+    // also the only variant whose open state is REAL DOM rather than a CSS
+    // pseudo-class, which is what lets ColumnMenu.svelte.test.ts assert that the
+    // menu opens — jsdom has no CSS engine and could never have caught this.
     import {settings, type ColumnConfig} from "$lib/stores/settings.svelte";
 
     const defs: {key: keyof ColumnConfig; label: string}[] = [
@@ -11,13 +28,34 @@
         {key: "amount", label: "Amount"},
     ];
 
+    let open = $state(false);
+    let root = $state<HTMLDetailsElement | null>(null);
+
     function toggle(key: keyof ColumnConfig): void {
         settings.columns = {...settings.columns, [key]: !settings.columns[key]};
     }
+
+    // Dismissal, attached only while open so there is no idle document listener.
+    $effect(() => {
+        if (!open || root === null) return;
+        const node = root;
+        const onPointerDown = (event: PointerEvent): void => {
+            if (!node.contains(event.target as Node)) open = false;
+        };
+        const onKeyDown = (event: KeyboardEvent): void => {
+            if (event.key === "Escape") open = false;
+        };
+        document.addEventListener("pointerdown", onPointerDown, true);
+        document.addEventListener("keydown", onKeyDown);
+        return () => {
+            document.removeEventListener("pointerdown", onPointerDown, true);
+            document.removeEventListener("keydown", onKeyDown);
+        };
+    });
 </script>
 
-<div class="dropdown dropdown-end">
-    <button type="button" class="btn btn-ghost btn-xs" aria-label="Configure columns" title="Configure columns">
+<details bind:this={root} bind:open class="dropdown dropdown-end">
+    <summary class="btn btn-ghost btn-xs" aria-label="Configure columns" title="Configure columns">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
             <path
                 fill-rule="evenodd"
@@ -26,7 +64,7 @@
             />
         </svg>
         Columns
-    </button>
+    </summary>
     <ul class="dropdown-content menu bg-base-200 rounded-box border-base-300 z-20 w-44 border p-2 shadow-lg">
         {#each defs as def (def.key)}
             <li>
@@ -37,4 +75,4 @@
             </li>
         {/each}
     </ul>
-</div>
+</details>
