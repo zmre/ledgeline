@@ -6,6 +6,7 @@
     // sticky header + spacer rows; narrow widths (<640px) render card-per-txn.
     import type {Transaction} from "$lib/domain/types";
     import {editing} from "$lib/stores/editing.svelte";
+    import {filters} from "$lib/stores/filters.svelte";
     import {problems} from "$lib/stores/problems.svelte";
     import {settings} from "$lib/stores/settings.svelte";
     import ColumnMenu from "./ColumnMenu.svelte";
@@ -32,10 +33,17 @@
     const columns = $derived(settings.columns);
     const colCount = $derived(Object.values(columns).filter(Boolean).length);
 
-    // When the dataset changes (filter/refresh), jump back to the top so the
-    // window matches what the user expects to see.
+    // EFFECT 1 — when the FILTER changes, jump back to the top: it is a
+    // different list now, so the old scroll position means nothing.
+    //
+    // Keyed on `filters.value`, NOT on `txns`. `txns` is a fresh array after
+    // every refresh — including the one `editing.patch` fires on success — so
+    // keying on it sent the user back to row 0 after every inline edit. Nobody
+    // noticed because clicking is slow; it becomes the first complaint the
+    // moment a keystroke can cycle a status. `filters.value` is replaced
+    // wholesale on every filter change, so its identity is a valid key.
     $effect(() => {
-        void txns;
+        void filters.value;
         if (scroller !== null) scroller.scrollTop = 0;
         scrollTop = 0;
     });
@@ -56,8 +64,8 @@
         pulseTimer = setTimeout(() => (pulseIndex = null), 2000);
     }
 
-    // Consume focus requests from the problems store (declared AFTER the
-    // scroll-to-top effect above so it wins when both fire in one flush).
+    // EFFECT 2 — consume focus requests from the problems store (declared AFTER
+    // the scroll-to-top effect above so it wins when both fire in one flush).
     $effect(() => {
         const request = problems.focusRequest;
         if (request === null) return;
