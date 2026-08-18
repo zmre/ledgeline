@@ -70,6 +70,11 @@ export function dismissible(node: HTMLElement, options: DismissibleOptions) {
     }
 
     function onKeyDown(event: KeyboardEvent): void {
+        // Same cooperation protocol as the keymap: a handler nearer the event
+        // already claimed this key. It is what lets the account combobox swallow
+        // the first Escape (closing its popup) while an enclosing modal keeps the
+        // second one — with no `stopPropagation`, which this codebase never uses.
+        if (event.defaultPrevented) return;
         if (!isTopmost()) return;
         if (event.key === "Escape") {
             event.preventDefault();
