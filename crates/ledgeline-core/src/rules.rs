@@ -1990,9 +1990,21 @@ impl<'a> LineIndex<'a> {
             // Rule 1. A table's rows are positional, so an edit to its header
             // silently re-points every row — never editable here.
             Construct::IfTable => Classified::opaque(OpaqueReason::IfTable),
-            Construct::IfBlock => {
-                Classified::of(self.classify_block(start, end).map(ItemKind::IfBlock))
-            }
+            // A conditional `account2` is the *likelier* place for the mistake
+            // than a top-level one, so its assignments are checked too. One
+            // warning per item, the first offender, matching `classify_fields`.
+            Construct::IfBlock => match self.classify_block(start, end) {
+                Ok(block) => Classified {
+                    warning: block.assignments.iter().find_map(|assignment| {
+                        account_comment_warning(
+                            assignment.field,
+                            &self.text[assignment.value_span.clone()],
+                        )
+                    }),
+                    kind: Ok(ItemKind::IfBlock(block)),
+                },
+                Err(reason) => Classified::opaque(reason),
+            },
             Construct::Line => classify_line(self.content(start), self.offset(start)),
         }
     }
@@ -2468,6 +2480,56 @@ fn assignment_at(content: &str, base: usize, offset: usize) -> Option<Assignment
     })
 }
 
+/// The complaint for an `accountN` whose value carries what was meant as a
+/// trailing comment.
+///
+/// **This warns; it does not strip.** A CSV rules file has no end-of-line
+/// comments — the manual's cheatsheet allows only whole lines "beginning with #
+/// or ; or *" — and [`assignment_at`] reproduces that faithfully. Stripping here
+/// would be a private dialect: the import is run by the real `hledger` binary, so
+/// a value this module trimmed would still reach the journal untrimmed, and the
+/// panel would be describing an import that never happens. Being wrong in the
+/// same way hledger is wrong is the whole contract; saying so is the fix.
+///
+/// **Two spaces do not make it a comment, and that is the trap.** A *journal*
+/// posting takes an end-of-line comment after two spaces, so the habit
+/// transfers — but a rules file is not a journal. Verified against hledger 1.52:
+/// one space silently folds the text into the account name, and two spaces are a
+/// hard parse error ("unexpected space, expecting end of input"). Neither is a
+/// comment, so there is no spacing that rescues the line.
+///
+/// Only `accountN` is worth a warning. `amountN` already fails loudly ("could
+/// not parse … as an amount"), `commentN` *is* a comment so a `;` in it is
+/// ordinary text, and `description` merely carries the characters into a
+/// description that still reads as one. Only an account name is silently
+/// absorbed and then looks fine — the imported posting lands in an account
+/// literally called `expenses:unknown ; why`, which hledger will happily keep
+/// re-reading forever.
+///
+/// `#` is deliberately **not** flagged, though it also opens a whole-line rules
+/// comment: `assets:card #1234` is a plausible account name, and a warning that
+/// fires on real files is one people learn to scroll past. `;` has no such
+/// innocent reading.
+fn account_comment_warning(field: HledgerField, value: &str) -> Option<String> {
+    let n = match field {
+        HledgerField::Numbered {
+            base: NumberedField::Account,
+            n,
+        } => Some(n),
+        _ => None,
+    }?;
+    value.contains(';').then(|| {
+        format!(
+            "`account{n}`'s value contains a `;`, but a rules file has no end-of-line \
+             comments — hledger reads the rest of the line as part of the account name, \
+             so this imports into an account literally named `{}`. Move the note to a \
+             line of its own above (two spaces before the `;` will not help: hledger \
+             rejects that outright).",
+            sanitize_display(value, LABEL_MAX_CHARS)
+        )
+    })
+}
+
 /// Does `pattern` contain an unescaped `(`, and therefore a capture group?
 ///
 /// `\(` is escaped and does not count; `\\(` does, the backslash having escaped
@@ -2560,7 +2622,16 @@ fn classify_line(content: &str, base: usize) -> Classified {
         };
     }
     if let Some(assignment) = assignment_at(content, base, 0) {
-        return Classified::typed(ItemKind::Assignment(assignment));
+        // `value_span` runs to end of line, so it is `content` from the value's
+        // start — no second slice of the whole document needed.
+        let warning = account_comment_warning(
+            assignment.field,
+            &content[assignment.value_span.start - base..],
+        );
+        return Classified {
+            kind: Ok(ItemKind::Assignment(assignment)),
+            warning,
+        };
     }
     if let Some(include) = classify_include(content, base) {
         return Classified::typed(ItemKind::Include(include));
@@ -4524,6 +4595,78 @@ mod tests {
             unreachable!()
         };
         assert_eq!(at(&doc, &assignment.value_span), "paid ; not a comment");
+    }
+
+    /// The bug this warning exists for, end to end.
+    ///
+    /// The value is asserted **unchanged** in the same breath as the warning:
+    /// that pairing is the point. Ledgeline does not run the import — real
+    /// hledger does — so trimming here would only make the panel disagree with
+    /// the journal that lands.
+    #[test]
+    fn an_account_value_with_a_trailing_comment_warns_without_being_trimmed() {
+        let doc = parsed("account2 expenses:unknown ; set a default\n");
+        let ItemKind::Assignment(assignment) = only(&doc) else {
+            unreachable!()
+        };
+        assert_eq!(
+            at(&doc, &assignment.value_span),
+            "expenses:unknown ; set a default"
+        );
+        assert_eq!(doc.warnings().len(), 1);
+        assert_eq!(doc.warnings()[0].item, Some(ItemId(0)));
+        assert!(doc.warnings()[0].message.contains("account2"));
+        assert!(
+            doc.warnings()[0]
+                .message
+                .contains("no end-of-line comments")
+        );
+        // The account hledger would really use is quoted back, so the warning
+        // shows the absurdity rather than describing it.
+        assert!(
+            doc.warnings()[0]
+                .message
+                .contains("expenses:unknown ; set a default")
+        );
+    }
+
+    /// hledger 1.52 rejects two-spaces-then-`;` outright ("unexpected space"),
+    /// so the habit borrowed from journal postings is not a rescue. The warning
+    /// has to fire on the form people actually reach for next.
+    #[test]
+    fn two_spaces_before_the_semicolon_warns_too() {
+        let doc = parsed("account1  assets:bank  ; still not a comment\n");
+        assert_eq!(doc.warnings().len(), 1);
+        assert!(doc.warnings()[0].message.contains("account1"));
+    }
+
+    /// A conditional `account2` is the likelier home for the mistake.
+    #[test]
+    fn an_account_comment_inside_a_conditional_block_warns() {
+        let doc = parsed("if COFFEE\n    account2  expenses:coffee ; why\n");
+        assert_eq!(doc.warnings().len(), 1);
+        assert_eq!(doc.warnings()[0].item, Some(ItemId(0)));
+        assert!(doc.warnings()[0].message.contains("account2"));
+    }
+
+    /// Only `accountN` is silently absorbed into a name that still looks fine.
+    /// `amount` is already a loud hledger error, `comment` *is* a comment, and a
+    /// `description` keeps reading as a description — warning on those would be
+    /// noise. `#` stays quiet because `assets:card #1234` is a real account name.
+    #[test]
+    fn only_account_fields_warn_and_only_about_a_semicolon() {
+        for quiet in [
+            "comment  paid ; not a comment\n",
+            "description  ACME ; note\n",
+            "amount  -5 ; note\n",
+            "account2  assets:card #1234\n",
+            "account2  expenses:plain\n",
+        ] {
+            assert!(
+                parsed(quiet).warnings().is_empty(),
+                "{quiet:?} should not warn"
+            );
+        }
     }
 
     // -- classification: conditional blocks --------------------------------
