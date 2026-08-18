@@ -22,6 +22,10 @@
     import {toNumber, type Dec} from "$lib/domain/money";
     import {signClass} from "$lib/format/sign";
     import type {GainPeriod, Holding, HoldingsReport} from "$lib/holdings/types";
+    import {openJournal} from "$lib/journal/openJournal";
+    import {registerKeys} from "$lib/keys/keymap.svelte";
+    import {PRIORITY} from "$lib/keys/types";
+    import {listCursor} from "$lib/ui/listCursor.svelte";
     import {gainWindowSuffix} from "./gainPeriod";
     import {EM_DASH, formatGainPct, formatShares, sortHoldings, type SortKey} from "./view";
 
@@ -48,6 +52,46 @@
 
     const ariaSort = (key: SortKey): "ascending" | "descending" | undefined =>
         sort !== null && sort.key === key ? (sort.dir === "asc" ? "ascending" : "descending") : undefined;
+
+    // Keyed on symbol over the SORTED rows, so clicking a column header keeps
+    // you on the same holding rather than on whatever slid into that position.
+    const cursor = listCursor(
+        () => rows,
+        (h) => h.symbol
+    );
+
+    function move(delta: number): void {
+        cursor.move(delta);
+        // The page scrolls here, not a container, and every row is mounted (not
+        // virtualized) — so `scrollIntoView` is the honest mechanism, unlike in
+        // the journal's virtual list.
+        document.querySelector(`[data-testid="holding-${CSS.escape(String(cursor.key ?? ""))}"]`)?.scrollIntoView({block: "nearest"});
+    }
+
+    registerKeys({
+        id: "holdings-table",
+        priority: PRIORITY.widget,
+        bindings: [
+            {keys: "j", label: "Next holding", group: "Journal", run: () => move(1)},
+            {keys: "ArrowDown", label: "Next holding", group: "Journal", run: () => move(1)},
+            {keys: "k", label: "Previous holding", group: "Journal", run: () => move(-1)},
+            {keys: "ArrowUp", label: "Previous holding", group: "Journal", run: () => move(-1)},
+            {keys: "g g", label: "First holding", group: "Journal", run: () => (cursor.first(), move(0))},
+            {keys: "G", label: "Last holding", group: "Journal", run: () => (cursor.last(), move(0))},
+            {keys: "Escape", label: "Clear the cursor", group: "Journal", run: () => cursor.clear()},
+            {
+                keys: "Enter",
+                label: "Show this holding in the journal",
+                group: "Journal",
+                run: () => {
+                    const holding = cursor.item;
+                    // A holding can span several accounts (the same stock in two
+                    // brokerages), so all of them go into the filter.
+                    if (holding !== null) void openJournal({accounts: holding.accounts, preset: "all"});
+                },
+            },
+        ],
+    });
 </script>
 
 {#snippet sortButton(key: SortKey, label: string)}
@@ -89,7 +133,11 @@
         </thead>
         <tbody>
             {#each rows as h (h.symbol)}
-                <tr data-testid="holding-{h.symbol}">
+                <tr
+                    data-testid="holding-{h.symbol}"
+                    class={cursor.key === h.symbol ? "bg-primary/25" : ""}
+                    aria-current={cursor.key === h.symbol ? "true" : undefined}
+                >
                     <th class="font-normal whitespace-nowrap" title={h.accounts.join(", ")}>{h.name}</th>
                     <th class="font-medium">{h.symbol}</th>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums" data-testid="shares-{h.symbol}">{formatShares(h.shares)}</td>
