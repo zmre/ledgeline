@@ -51,13 +51,13 @@ test("journal: last-90 default preset filters, all-time shows the full journal",
     // clock that's 2026-04-10 … 2026-07-08. The table is virtualized (row count
     // is viewport-bound), so the TotalsFooter is the source of truth for counts.
     const footer = page.locator("footer");
-    await expect(footer).toContainText("27 transactions");
+    await expect(footer).toContainText("28 transactions");
     await expect(footer).toContainText("2026-04-10 – 2026-07-08");
     await expect(page.locator("tbody tr").first()).toBeVisible();
 
     await page.locator("summary").filter({hasText: "Last 90 days"}).click();
     await page.getByRole("button", {name: "All time"}).click();
-    await expect(footer).toContainText("185 transactions");
+    await expect(footer).toContainText("189 transactions");
     await expect(footer).toContainText("all dates");
 });
 
@@ -65,7 +65,7 @@ test("journal: selecting the expenses subtree nets the totals footer", async ({p
     await page.goto("/");
 
     const footer = page.locator("footer");
-    await expect(footer).toContainText("27 transactions"); // journal loaded, last-90 filter active
+    await expect(footer).toContainText("28 transactions"); // journal loaded, last-90 filter active
 
     await page.locator("summary").filter({hasText: "Accounts"}).click();
     await page.getByRole("checkbox", {name: "expenses", exact: true}).check();
@@ -73,8 +73,9 @@ test("journal: selecting the expenses subtree nets the totals footer", async ({p
     // Visible Journal Total = net of the selected expenses postings over the
     // last-90 window, shown negative (money spent). The footer reports the primary
     // (most-used) commodity only — $ here — verified vs
-    // `hledger bal expenses -b 2026-04-10 -e 2026-07-09` ($11,526.62).
-    await expect(footer).toContainText("$-11,526.62");
+    // `hledger bal expenses -b 2026-04-10 -e 2026-07-09` ($15,026.62 — it includes
+    // the 2026-06-30 vehicle depreciation).
+    await expect(footer).toContainText("$-15,026.62");
 });
 
 test("journal: insights depth slider starts at the default, not browser-clamped (regression)", async ({page}) => {
@@ -98,25 +99,27 @@ test("reports: balance sheet shows known fixture numbers", async ({page}) => {
     // Default balance-sheet params with the pinned clock: asOf 2026-07-08, no
     // depth clamp, valued at MARKET (plans/12) — so these are `hledger bs -V`'s
     // numbers, not `hledger bs`'s. Verified against hledger 1.52:
-    //   bal assets -V -e 2026-07-09 → $59612.615, 5.0 GLD, -2.0 TSLA
-    //   liabilities                 → $531.15
+    //   bal assets -V -e 2026-07-09 → $548112.615, 5.0 GLD, -2.0 TSLA
+    //   liabilities                 → $336531.15
+    // The six figures are the WP-14 home ($468,000.00 at its 2026-06-30 price)
+    // and car ($20,500.00), against the $336,000.00 mortgage that bought them.
     // Scoped to each box: "Total Assets" is deliberately repeated in the summary
     // and the tie-out below, so an unscoped locator is a strict-mode violation.
-    await expect(page.getByTestId("bs-section-assets").locator("tr", {has: page.locator('th:text-is("Total Assets")')})).toContainText("$59,612.62");
-    await expect(page.getByTestId("bs-section-liabilities").locator("tr", {has: page.locator('th:text-is("Total Liabilities")')})).toContainText("$531.15");
+    await expect(page.getByTestId("bs-section-assets").locator("tr", {has: page.locator('th:text-is("Total Assets")')})).toContainText("$548,112.62");
+    await expect(page.getByTestId("bs-section-liabilities").locator("tr", {has: page.locator('th:text-is("Total Liabilities")')})).toContainText("$336,531.15");
 
     // The tie-out: liabilities + equity must come back to total assets, and that
     // pair — not net worth — carries the verdict.
     const tieOut = page.getByTestId("bs-tie-out");
     await expect(page.getByTestId("bs-summary")).toContainText("Liabilities + Equity");
-    await expect(tieOut).toContainText("$59,612.62");
+    await expect(tieOut).toContainText("$548,112.62");
     await expect(tieOut).toContainText("Balanced");
 
-    // Net worth = assets − liabilities = $59,081.465 exactly. We show $59,081.47:
-    // `formatDec` rounds half AWAY FROM ZERO everywhere in this app, while
-    // hledger's CLI prints $59,081.46 because Haskell's `round` is half-to-even.
-    // The cent is a display convention, not a disagreement about the balance.
-    await expect(page.getByTestId("bs-net-worth")).toContainText("$59,081.47");
+    // Net worth = assets − liabilities = $211,581.465 exactly. We show
+    // $211,581.47: `formatDec` rounds half AWAY FROM ZERO everywhere in this app,
+    // while hledger's CLI prints $211,581.46 because Haskell's `round` is
+    // half-to-even. The cent is a display convention, not a disagreement.
+    await expect(page.getByTestId("bs-net-worth")).toContainText("$211,581.47");
 
     // GLD and TSLA have no `P` directive, so the valuation could not convert
     // them. They must be visible, never silently dropped from the total.
@@ -149,7 +152,7 @@ test("reports: P&L shows grouped boxes with known fixture numbers", async ({page
     const revenue = page.getByTestId("is-section-revenue");
     const expenses = page.getByTestId("is-section-opex");
     await expect(revenue.locator("tfoot")).toContainText("$34,010.00");
-    await expect(expenses.locator("tfoot")).toContainText("$25,126.48");
+    await expect(expenses.locator("tfoot")).toContainText("$28,626.48");
 
     // The complaint this redesign fixes: $34,010.00 appeared as an `income`
     // roll-up row, then again under each account, then again as "Total
@@ -168,12 +171,12 @@ test("reports: P&L shows grouped boxes with known fixture numbers", async ({page
 
     // The prior column: the previous equal-length window, which for a full
     // calendar year is the previous calendar year (hledger `-b 2025-01-01
-    // -e 2026-01-01` → $66,428.75 / $44,450.54).
+    // -e 2026-01-01` → $66,428.75 / $48,450.54).
     await expect(revenue.locator("tfoot")).toContainText("$66,428.75");
-    await expect(expenses.locator("tfoot")).toContainText("$44,450.54");
+    await expect(expenses.locator("tfoot")).toContainText("$48,450.54");
 
-    // % of revenue, from the exact Decs: 25,126.48 / 34,010.00 = 73.8797% → 73.9%.
-    await expect(expenses.locator("tfoot")).toContainText("73.9%");
+    // % of revenue, from the exact Decs: 28,626.48 / 34,010.00 = 84.1707% → 84.2%.
+    await expect(expenses.locator("tfoot")).toContainText("84.2%");
     await expect(revenue.locator("tfoot")).toContainText("100.0%");
 
     // The summary below the boxes is net income and NOTHING else. A condensed
@@ -181,12 +184,12 @@ test("reports: P&L shows grouped boxes with known fixture numbers", async ({page
     // every figure in it was already a box footer directly above, which is the
     // duplicate-total complaint this redesign exists to fix, one panel down.
     const net = page.getByTestId("is-net-income");
-    await expect(net).toContainText("$8,883.52");
-    await expect(net).toContainText("$21,978.21"); // the prior year's
-    await expect(net).toContainText("26.1%");
+    await expect(net).toContainText("$5,383.52");
+    await expect(net).toContainText("$17,978.21"); // the prior year's
+    await expect(net).toContainText("15.8%");
     await expect(page.getByTestId("is-summary")).toHaveCount(0);
     // So each section total is on the page exactly once, in its own footer.
-    await expect(page.getByTestId("income-statement").getByText("$25,126.48", {exact: true})).toHaveCount(1);
+    await expect(page.getByTestId("income-statement").getByText("$28,626.48", {exact: true})).toHaveCount(1);
 });
 
 test("reports: P&L groups start collapsed and open to their accounts", async ({page}) => {

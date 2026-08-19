@@ -207,6 +207,13 @@ test("other holdings: the row cursor moves and drills into the journal", async (
 
 test("other holdings: the digit keys select tabs, and the help sheet files them under Holdings", async ({page}) => {
     await page.goto("/holdings");
+    // Wait for the strip to be live before typing at it. `goto` resolves on the
+    // load event, but the keymap layer is registered during hydration, and a
+    // digit pressed before that lands nowhere and is not retried — the
+    // assertion below would then poll a tab that never changes. Every other
+    // keyboard test here (and `keys.e2e.ts`'s report-tab twin, via
+    // `reportsReady`) waits first for the same reason.
+    await expect(page.getByRole("tab", {name: "Stocks"})).toHaveAttribute("aria-selected", "true");
 
     await page.keyboard.press("2");
     await expect(page.getByRole("tab", {name: "Other"})).toHaveAttribute("aria-selected", "true");

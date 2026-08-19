@@ -138,6 +138,10 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
+- code review by fable
+- do we need a way to flag "current" assets and liabilities in balance sheet?
+- need to remove the URL in the top right. would like to instead put an indication of what file or folder we're looking at
+  - Lets make this more interesting. If the first line of the main journal file is a comment with one to five words (not symbols like ======), then we'll take that as the title to use. Otherwise we'll use the folder name of the parent of the main journal.
 - chore: route bad `issection:` / `holdings:` / `type:` tag values into Problems
   - a mistyped `issection:` currently fails the whole P&L request with a 400 naming the account and the
     valid codes, and `holdings:` now does the same to the Holdings tab. Right that it isn't silently

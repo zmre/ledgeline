@@ -48,12 +48,12 @@ test("insights: is the default reports tab and renders the core metric boxes", a
 
     // Boxes 1-3 headline figures.
     await expect(page.getByTestId("insights-box-revenue-big")).toHaveText("$68,007.50");
-    await expect(page.getByTestId("insights-box-expenses-big")).toHaveText("$44,908.85");
+    await expect(page.getByTestId("insights-box-expenses-big")).toHaveText("$48,408.85");
     await expect(page.getByTestId("insights-box-networth")).toBeVisible();
 
     // Box 4: cost of living is the monthly average EXCLUDING taxes, so it is well
-    // below the raw monthly expense rate ($44,908.85 / 12 = $3,742).
-    await expect(page.getByTestId("insights-box-costofliving-big")).toHaveText("$2,282.40");
+    // below the raw monthly expense rate ($48,408.85 / 12 = $4,034).
+    await expect(page.getByTestId("insights-box-costofliving-big")).toHaveText("$2,574.07");
 
     // Box 6: cash balance at the end of the current period.
     await expect(page.getByTestId("insights-box-cash-big")).toHaveText("$50,277.56");
