@@ -95,11 +95,55 @@ The stock engine gains the mirror of rule 3: accounts classified `Other` or
 `None` are dropped from its scope. Nothing may appear on both tabs — a house
 counted twice is worse than a house counted nowhere.
 
-**Rows are flat: one per posting-bearing account, no subtree roll-up.** A journal
-with `assets:property:house:land` and `assets:property:house:structure` gets two
-rows and no house subtotal. This is a known limit, not an oversight; the
-extension path is `bsgroup:`, which already groups exactly these accounts on the
-balance sheet.
+**Rows are holdings, not accounts.** The first cut was flat — one row per
+posting-bearing account — and the very first real chart it met broke it:
+
+```journal
+account assets:home:cost        ; type:A
+account assets:home:unrealized  ; type:A
+```
+
+Two rows for one house, sorted apart by value, and each one's cost equal to its
+own balance so BOTH reported a change of zero. The tab's entire subject read as
+nothing. Roll-up is therefore not a nicety; see § Roll-up below.
+
+## Roll-up: which accounts form one row
+
+Decided with Patrick 2026-08-19, after the flat version met a real chart.
+
+1. **An explicit `holdings:` tag wins** — the nearest tagged ancestor-or-self owns
+   the row.
+2. **Otherwise roll up to a purely-container parent**: no postings of its own,
+   its posting-bearing descendants all direct children, at least two of them.
+
+Rule 2 is applied ONCE, never iterated, and both of its clauses earn their keep:
+
+- *Shallow* is what keeps `assets:partnerships:angel-continuity` a row while
+  leaving `assets:partnerships` alone — the fund's children are leaves, the
+  portfolio's child is not.
+- *At least two* is what stops a lone `assets:vehicles:car` being relabelled
+  `assets:vehicles`, which would trade a named row for an unnamed one and gain
+  nothing, since there is nothing to merge.
+
+The tag override exists for the case rule 2 declines: a single-child fund reads
+as `…:second-fund:contributed` until you tag `…:second-fund`.
+
+## The `valuation:` tag, and why it is not `holdings:`
+
+`holdings:` decides which TAB; `valuation:` decides what an account MEANS once it
+is on one. Closed vocabulary, `cost` (the default) and `unrealized`, refused by
+name when misspelt.
+
+Keeping them apart was Patrick's call and it is the split this codebase already
+makes twice: `type:` picks the statement section and `bsgroup:` the line within
+it; `issection:` picks the box and `isgroup:` the line inside it. Membership and
+role are never one tag. Overloading `holdings:` would have made "move this to the
+Other tab" and "this is a paper gain" the same sentence.
+
+**No inference.** An untagged mark counts as money in, so cost equals value and
+the change reads `$0.00`. The rejected alternative — treat value arriving from a
+revenue account as a mark — reads a reinvested distribution as a paper gain when
+it genuinely raises basis, and a wrong Cost column is worse than an honest zero.
 
 ## Valuation
 
@@ -113,8 +157,8 @@ the three reports disagreeing silently would be a bug.
 
 | Field        | Definition                                                                    |
 |--------------|-------------------------------------------------------------------------------|
-| `value`      | Balance at `as_of`, market-valued in `base`. `None` if any held commodity is unpriceable. |
-| `cost`       | Balance at `as_of` at cost (`-B`), valued into `base`.                          |
+| `value`      | The WHOLE subtree at `as_of`, market-valued in `base`. `None` if any held commodity is unpriceable. |
+| `cost`       | The subtree's non-`unrealized` accounts at cost (`-B`), valued into `base`.    |
 | `reference`  | `cost` when `gain_since` is `None`; else `value` recomputed at `gain_since`.    |
 | `change`     | `value − reference`.                                                            |
 | `change_pct` | `change / reference × 100`; `None` when `reference` is missing or zero.          |

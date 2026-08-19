@@ -226,12 +226,16 @@
         >
             {#snippet children(report)}
                 {#if report.holdings.length > 0}
-                    <OtherHoldingsTable holdings={report.holdings} totals={report.totals} base={report.base} {format} {formatUnits} {gainPeriod} />
-                    <!-- HoldingsTrend unchanged: the Other series is the stock series'
-                         wire shape byte for byte, which is exactly why the engine reuses it. -->
+                    <!-- Chart ABOVE the table, matching Stocks. The two tabs sit one
+                         click apart under one scope bar, so a reader moving between
+                         them should not find the same two panels in the opposite
+                         order. HoldingsTrend itself is unchanged: the Other series is
+                         the stock series' wire shape byte for byte, which is exactly
+                         why the engine reuses it. -->
                     {#if otherTrend !== null}
                         <HoldingsTrend trend={otherTrend} formatValue={formatTrendValue} formatAxis={formatTrendAxis} />
                     {/if}
+                    <OtherHoldingsTable holdings={report.holdings} totals={report.totals} base={report.base} {format} {formatUnits} {gainPeriod} />
                 {/if}
 
                 <!-- Below the table, not above it: an unpriced asset is a row that

@@ -31,8 +31,9 @@ pub mod types;
 mod test_helpers;
 
 pub use classify::{
-    HOLDINGS_TAG, HoldingsClass, declared_holdings_classes, parse_holdings_tag,
-    resolve_holdings_class,
+    HOLDINGS_TAG, HoldingsClass, VALUATION_TAG, ValuationRole, declared_holdings_classes,
+    declared_valuation_roles, parse_holdings_tag, parse_valuation_tag, resolve_holdings_class,
+    resolve_valuation_role,
 };
 pub use commodities::is_currency;
 pub use engine::{compute_holdings, prices_any_held, valuation_base};

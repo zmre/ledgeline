@@ -325,6 +325,214 @@ fn an_asset_acquired_inside_the_window_references_zero() {
 }
 
 // ---------------------------------------------------------------------------
+// Subtree holdings: cost and mark carried in the ACCOUNT TREE
+// ---------------------------------------------------------------------------
+
+/// The shape these tests are about, and the most common way to mark an illiquid
+/// asset to market without booking it as its own commodity.
+const SPLIT_ASSET: &str = "\
+account assets:home             ; type:A, name: Family home
+account assets:home:cost        ; type:A
+account assets:home:unrealized  ; type:A, valuation: unrealized
+account assets:partnerships:angel-continuity:contributed ; type:A
+account assets:partnerships:angel-continuity:unrealized  ; type:A, valuation: unrealized
+account assets:partnerships:second-fund:contributed      ; type:A
+account revenues:unrealized     ; type:R
+account assets:bank:checking    ; type:C
+account equity:opening          ; type:E
+account liabilities:mortgage    ; type:L
+
+2024-01-01 opening
+    assets:bank:checking      $900,000.00
+    equity:opening
+
+2024-02-01 buy the house
+    assets:home:cost          $500,000.00
+    liabilities:mortgage     $-400,000.00
+    assets:bank:checking     $-100,000.00
+
+2025-06-30 mark the house to market
+    assets:home:unrealized    $120,000.00
+    revenues:unrealized
+
+2024-03-01 capital call
+    assets:partnerships:angel-continuity:contributed   $250,000.00
+    assets:bank:checking
+
+2025-12-31 NAV mark
+    assets:partnerships:angel-continuity:unrealized     $75,000.00
+    revenues:unrealized
+
+2025-03-01 second fund call
+    assets:partnerships:second-fund:contributed   $40,000.00
+    assets:bank:checking
+";
+
+fn split_report() -> ledgeline_core::holdings::OtherHoldingsReport {
+    let journal = parse_journal(SPLIT_ASSET, "split.journal").expect("journal parses");
+    report(&journal, &scope("2026-01-01", None))
+}
+
+/// A cost account and its mark are ONE asset, not two rows.
+///
+/// Reported separately they do not merely read untidily: the table sorts by
+/// value, so the two halves of a house end up either side of somebody's fund,
+/// and each row's cost equals its own balance — so both report a change of zero
+/// and the tab's whole subject disappears.
+#[test]
+fn a_cost_account_and_its_mark_roll_into_one_holding() {
+    let report = split_report();
+    let accounts: Vec<&str> = report.holdings.iter().map(|h| h.account.as_str()).collect();
+    assert_eq!(
+        accounts,
+        vec![
+            "assets:home",
+            "assets:partnerships:angel-continuity",
+            "assets:partnerships:second-fund:contributed",
+        ]
+    );
+
+    let home = &report.holdings[0];
+    assert_eq!(
+        home.name, "Family home",
+        "the root's `name:` tag names the row"
+    );
+    assert_eq!(home.value, Some(usd("620000.00")), "cost + mark");
+    assert_eq!(home.cost, Some(usd("500000.00")), "the mark is NOT cost");
+    assert_eq!(home.change, Some(usd("120000.00")));
+    let pct = home.change_pct.expect("a known cost gives a percentage");
+    assert!((pct - 24.0).abs() < 1e-9, "120000/500000 = 24%, got {pct}");
+}
+
+/// The roll-up is SHALLOW — applied once, never iterated — so a container of
+/// containers is left alone. Both funds live under `assets:partnerships`, and
+/// merging them into one row would report a portfolio as a position.
+#[test]
+fn sibling_funds_do_not_merge_into_their_shared_parent() {
+    let report = split_report();
+    assert!(
+        !report
+            .holdings
+            .iter()
+            .any(|h| h.account == "assets:partnerships"),
+        "the shared parent is not a holding"
+    );
+    let fund = &report.holdings[1];
+    assert_eq!(fund.account, "assets:partnerships:angel-continuity");
+    assert_eq!(fund.value, Some(usd("325000.00")));
+    assert_eq!(fund.cost, Some(usd("250000.00")));
+    assert_eq!(fund.change, Some(usd("75000.00")));
+}
+
+/// A lone child is not rolled up: there is nothing to merge, and relabelling the
+/// row with its parent would trade a specific account name for a vaguer one.
+#[test]
+fn a_single_child_keeps_its_own_account_as_the_row() {
+    let report = split_report();
+    let solo = &report.holdings[2];
+    assert_eq!(solo.account, "assets:partnerships:second-fund:contributed");
+    assert_eq!(solo.value, Some(usd("40000.00")));
+    assert_eq!(solo.cost, Some(usd("40000.00")));
+    assert_eq!(solo.change, Some(Dec::zero()), "nothing has marked it");
+}
+
+/// The chooser offers row ROOTS. A holding the reader can see but cannot
+/// deselect is a broken control.
+#[test]
+fn the_chooser_offers_roots_not_the_accounts_underneath_them() {
+    let report = split_report();
+    assert_eq!(
+        report.accounts,
+        vec![
+            "assets:home",
+            "assets:partnerships:angel-continuity",
+            "assets:partnerships:second-fund:contributed",
+        ]
+    );
+}
+
+/// Totals sum the rolled-up rows, so the cost column is the money actually put
+/// in across the whole tab rather than a copy of the value column.
+#[test]
+fn totals_sum_the_rolled_up_rows() {
+    let report = split_report();
+    assert_eq!(report.totals.value, usd("985000.00"));
+    assert_eq!(report.totals.cost, Some(usd("790000.00")));
+    assert_eq!(report.totals.change, Some(usd("195000.00")));
+}
+
+/// Without the tag, a mark is just another dollar balance: it lands in cost as
+/// well as value and the gain reads zero. That is the honest answer for an
+/// untagged journal — nothing declared the account to be an adjustment — and it
+/// is exactly why the tag exists.
+#[test]
+fn an_untagged_mark_is_indistinguishable_from_money_in() {
+    let untagged = SPLIT_ASSET.replace(", valuation: unrealized", "");
+    let journal = parse_journal(&untagged, "untagged.journal").expect("journal parses");
+    let report = report(&journal, &scope("2026-01-01", None));
+    let home = &report.holdings[0];
+
+    assert_eq!(
+        home.account, "assets:home",
+        "still one row: roll-up is separate"
+    );
+    assert_eq!(home.value, Some(usd("620000.00")));
+    assert_eq!(
+        home.cost,
+        Some(usd("620000.00")),
+        "the mark counts as money in"
+    );
+    assert_eq!(home.change, Some(Dec::zero()));
+}
+
+/// A holding with no cost side at all reports an UNKNOWN cost, not a zero one.
+///
+/// A zero basis would make every such row an infinite gain, and `change_pct`
+/// would have to invent a number for it. The row still counts in the value
+/// total — the asset is real — and drops out of the cost and change totals.
+#[test]
+fn a_holding_that_is_all_mark_has_an_unknown_cost() {
+    let text = "\
+account assets:art:unrealized ; type:A, valuation: unrealized
+account revenues:unrealized   ; type:R
+
+2025-01-01 appraised upward, never bought
+    assets:art:unrealized   $9,000.00
+    revenues:unrealized
+";
+    let journal = parse_journal(text, "allmark.journal").expect("journal parses");
+    let report = report(&journal, &scope("2026-01-01", None));
+    let art = &report.holdings[0];
+
+    assert_eq!(art.value, Some(usd("9000.00")));
+    assert_eq!(art.cost, None, "nothing was ever recorded as money in");
+    assert_eq!(art.change, None);
+    assert_eq!(art.change_pct, None);
+
+    assert_eq!(report.totals.value, usd("9000.00"), "still real value");
+    assert_eq!(report.totals.cost, None);
+    assert_eq!(report.totals.change, None);
+}
+
+/// A misspelt role is refused rather than quietly reverting the account to
+/// `cost`, which would fold the gain into the basis and report it as zero.
+#[test]
+fn an_unknown_valuation_role_is_refused() {
+    let bad = SPLIT_ASSET.replace("valuation: unrealized", "valuation: unrealised-gain");
+    let journal = parse_journal(&bad, "bad.journal").expect("journal parses");
+    let err = other_holdings(
+        &journal.transactions,
+        &journal.prices,
+        &journal.accounts,
+        &scope("2026-01-01", None),
+    )
+    .expect_err("an unknown role is refused");
+    let text = err.to_string();
+    assert!(text.contains("cost"), "{text}");
+    assert!(text.contains("unrealized"), "{text}");
+}
+
+// ---------------------------------------------------------------------------
 // Totals
 // ---------------------------------------------------------------------------
 

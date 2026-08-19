@@ -30,8 +30,11 @@ use std::collections::BTreeMap;
 use crate::model::AccountDeclaration;
 use crate::reports::ReportError;
 
-/// The account-directive tag this module reads.
+/// The account-directive tag that decides WHICH TAB an account appears on.
 pub const HOLDINGS_TAG: &str = "holdings";
+
+/// The account-directive tag that decides an account's ROLE WITHIN its holding.
+pub const VALUATION_TAG: &str = "valuation";
 
 /// The Holdings tab an account has been explicitly assigned to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +99,100 @@ pub fn declared_holdings_classes(
                 })
         })
         .collect()
+}
+
+/// What an account contributes to its holding's valuation.
+///
+/// A DIFFERENT tag from [`HoldingsClass`] on purpose, and the separation is the
+/// one this codebase already makes twice: `type:` decides which statement
+/// section an account is in and `bsgroup:` decides its line within that section;
+/// `issection:` decides the box and `isgroup:` the line inside it. Membership and
+/// role are never the same tag. `holdings:` says which TAB; `valuation:` says
+/// what this account MEANS once it is on one, and overloading the first with the
+/// second would make "move this to the Other tab" and "this is a paper gain"
+/// the same sentence.
+///
+/// It exists because a very common way to model an illiquid asset carries the
+/// cost/market split in the ACCOUNT TREE rather than in commodity costs:
+///
+/// ```journal
+/// account assets:home:cost        ; type:A   ; what you actually paid
+/// account assets:home:unrealized  ; type:A, valuation: unrealized
+/// ```
+///
+/// Without the tag both sub-accounts are just dollars, so cost equals value and
+/// the holding reports a change of zero — the tab's entire subject, reading as
+/// nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValuationRole {
+    /// `valuation: cost` — money actually put in. The default for every untagged
+    /// account, so it rarely needs writing.
+    Cost,
+    /// `valuation: unrealized` — a mark-to-market or NAV adjustment. Counted in
+    /// the holding's VALUE and excluded from its COST, which is what makes the
+    /// difference between them the unrealized gain.
+    Unrealized,
+}
+
+/// Parse a `valuation:` tag value; `None` for anything outside the vocabulary.
+#[must_use]
+pub fn parse_valuation_tag(value: &str) -> Option<ValuationRole> {
+    match value.trim().to_lowercase().as_str() {
+        "cost" | "basis" => Some(ValuationRole::Cost),
+        "unrealized" | "unrealised" | "mark" => Some(ValuationRole::Unrealized),
+        _ => None,
+    }
+}
+
+/// The `valuation:` role declared per account. Untagged accounts are absent and
+/// read as [`ValuationRole::Cost`].
+///
+/// # Errors
+/// Returns [`ReportError::UnknownValuationRole`] for a value outside the closed
+/// vocabulary — [`declared_holdings_classes`]' reasoning, and for a sharper
+/// consequence: a misspelt role silently reverts the account to `cost`, which
+/// makes a holding's unrealized gain vanish into its basis and reports a real
+/// gain as zero.
+pub fn declared_valuation_roles(
+    accounts: &[AccountDeclaration],
+) -> Result<BTreeMap<String, ValuationRole>, ReportError> {
+    accounts
+        .iter()
+        .filter_map(|decl| {
+            decl.tags
+                .iter()
+                .find(|(key, _)| key == VALUATION_TAG)
+                .map(|(_, value)| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    parse_valuation_tag(value)
+                        .map(|role| (decl.name.0.clone(), role))
+                        .ok_or_else(|| ReportError::UnknownValuationRole {
+                            account: decl.name.0.clone(),
+                            value: value.to_string(),
+                        })
+                })
+        })
+        .collect()
+}
+
+/// The effective role of `account`: its own declared tag, else the nearest
+/// declared ancestor's, else [`ValuationRole::Cost`].
+#[must_use]
+pub fn resolve_valuation_role(
+    account: &str,
+    declared: &BTreeMap<String, ValuationRole>,
+) -> ValuationRole {
+    let mut name = account;
+    loop {
+        if let Some(role) = declared.get(name) {
+            return *role;
+        }
+        match name.rfind(':') {
+            Some(cut) => name = &name[..cut],
+            None => return ValuationRole::Cost,
+        }
+    }
 }
 
 /// The effective class of `account`: its own declared tag, else the nearest

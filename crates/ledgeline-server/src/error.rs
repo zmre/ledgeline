@@ -142,7 +142,8 @@ impl From<ReportError> for AppError {
         match error {
             ReportError::InvalidBucketKey(_)
             | ReportError::UnknownIsSection { .. }
-            | ReportError::UnknownHoldingsClass { .. } => Self::BadRequest(message),
+            | ReportError::UnknownHoldingsClass { .. }
+            | ReportError::UnknownValuationRole { .. } => Self::BadRequest(message),
             ReportError::Decimal(_) => Self::Internal(message),
         }
     }

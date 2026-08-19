@@ -1,16 +1,17 @@
-# Holdings, and the `holdings:` tag
+# Holdings, and the `holdings:` / `valuation:` tags
 
 The Holdings tab has two sub-tabs:
 
 - **Stocks** — securities, one row per commodity, with average-cost basis and
   unrealized gain.
 - **Other** — everything else you own that is neither a security nor cash: a
-  house, a car, a partnership interest, a receivable. One row per **account**,
-  with its value, its cost, and how much it has changed.
+  house, a car, a partnership interest, a receivable. One row per **holding**,
+  with its value, its cost, and how much it has changed. A holding may be one
+  account or a small subtree of them.
 
-This page covers which tab an account lands on, how to override that with
-`holdings:`, what "change" means on each, and how a non-stock asset gets a value
-in the first place.
+This page covers which tab an account lands on and how `holdings:` overrides
+that, how several accounts become one holding, how `valuation:` separates what
+you paid from what it is now worth, and what "change" means on each tab.
 
 Design notes and the reasoning behind each decision live in
 [`plans/10-stock-holdings.md`](../plans/10-stock-holdings.md) and
@@ -86,6 +87,82 @@ separate concern — it fixes the same account's line on the balance sheet, whic
 otherwise groups it under Investments for the same "holds a non-base commodity"
 reason.
 
+## One asset, several accounts
+
+A very common way to carry an asset's cost/market split is in the account tree
+rather than in commodity costs:
+
+```journal
+account assets:home             ; type: A, name: Family home
+account assets:home:cost        ; type: A
+account assets:home:unrealized  ; type: A, valuation: unrealized
+```
+
+Those three accounts are **one house**, and the Other tab reports them as one
+row. Two rules decide where a row begins:
+
+1. **An explicit `holdings:` tag wins.** The nearest tagged ancestor owns the
+   row. Tag the umbrella when the shape below it is unusual.
+2. **Otherwise a purely-container parent is rolled up**: one with no postings of
+   its own whose posting-bearing descendants are *all* direct children, of which
+   there are at least two.
+
+Rule 2 is deliberately shallow — applied once, never repeated — which is what
+keeps two funds apart:
+
+```
+assets:partnerships                 <- its child is not a leaf, so NOT a row
+  :angel-continuity                 <- children are leaves => ONE row
+    :contributed
+    :unrealized
+  :vintage-2021                     <- its own row
+    :contributed
+    :unrealized
+```
+
+Two consequences worth knowing:
+
+- **The row's name comes from the root.** Put `name:` on `assets:home`, not on
+  `assets:home:cost`.
+- **A lone child is not rolled up.** `assets:partnerships:second-fund:contributed`
+  with no sibling stays its own row, because merging it would only trade a
+  specific name for a vaguer one. If you would rather it read as
+  `…:second-fund`, tag that account `holdings: other` and rule 1 takes over.
+
+## The `valuation:` tag
+
+Within a holding, `valuation:` says what an account CONTRIBUTES:
+
+| Value        | Meaning                                                        |
+|--------------|----------------------------------------------------------------|
+| `cost`       | Money actually put in. The default — you rarely write it.       |
+| `unrealized` | A mark-to-market or NAV adjustment: value, but not money in.    |
+
+It inherits down the tree like every other tag here, and it is a closed
+vocabulary: an unrecognised value is refused by name rather than ignored.
+
+This is a **separate tag from `holdings:` on purpose**, and it is the same split
+the rest of the app makes twice over: `type:` decides which statement section an
+account is in and `bsgroup:` decides its line within that section; `issection:`
+decides the box and `isgroup:` the line inside it. Membership and role are never
+the same tag. `holdings:` says which *tab*; `valuation:` says what an account
+*means* once it is on one.
+
+Without the tag, a mark is just another dollar balance — it lands in Cost as
+well as in Value, so the holding reports a change of exactly `$0.00`. That is
+the honest answer for a journal that never declared the account to be an
+adjustment, and it is precisely the situation the tag exists to fix:
+
+```
+                    Value        Cost       Change   Change %
+untagged       620,000.00  620,000.00        $0.00        —
+tagged         620,000.00  500,000.00  120,000.00     +24.0%
+```
+
+A holding whose accounts are *all* marks has no cost side at all. Its Cost and
+Change read as em-dashes — unknown, rather than a zero basis and an infinite
+gain — and it drops out of those two totals while still counting in Value.
+
 ## The two ways a non-stock asset changes value
 
 Both work, and the Other tab shows both:
@@ -93,7 +170,10 @@ Both work, and the Other tab shows both:
 1. **The price moves.** Book the asset as its own commodity, as above, and write
    a `P` directive whenever you revalue it. Cost stays at what you paid; value
    follows the directives.
-2. **The balance moves.** Book it in your own currency and write entries that
+2. **A mark account moves.** Keep cost and market in sibling accounts and tag the
+   adjustment `valuation: unrealized`, as above. This is the approach that needs
+   no commodity, and the one most funds and property holdings use.
+3. **The balance moves.** Book it in your own currency and write entries that
    adjust it — depreciation, improvements, a partner's capital contribution:
 
 ```journal

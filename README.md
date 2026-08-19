@@ -40,8 +40,18 @@ I built this because I was dissatisfied with existing GUIs. They often hard code
   account assets:receivable     ; type: A, holdings: none
   ```
 
-  See **[docs/holdings.md](docs/holdings.md)** for the `holdings:` tag, the two ways a non-stock asset
-  changes value, and why the three reports read prices from different places.
+  A holding may span several accounts. The common cost/market split is rolled into one row, and
+  `valuation:` says which side each account is on — so Cost stays what you actually paid and the
+  difference is the unrealized gain:
+
+  ```journal
+  account assets:home:cost        ; type: A
+  account assets:home:unrealized  ; type: A, valuation: unrealized
+  ```
+
+  See **[docs/holdings.md](docs/holdings.md)** for both tags, how several accounts become one
+  holding, the ways a non-stock asset changes value, and why the three reports read prices from
+  different places.
 - **Imports** — finds the CSV import rules files (`*.rules`) beside your journal and edits them in a
   friendly form instead of a text box: date format, the CSV column → field mapping (labelled with your
   data file's real headers and sample values), the default accounts, and a reorderable list of `if`
@@ -129,8 +139,8 @@ See **[docs/imports.md](docs/imports.md)** for the CSV rules-file editor — the
 model, what it will and won't edit, and the guards on its write path.
 See **[docs/balance-sheet.md](docs/balance-sheet.md)** for the balance sheet — the `bsgroup:` tag,
 how untagged accounts are grouped, valuation, and the balance check's tolerance.
-See **[docs/holdings.md](docs/holdings.md)** for the Holdings tabs — the `holdings:` tag, what
-"change" measures against, and the account chooser's scope-independence.
+See **[docs/holdings.md](docs/holdings.md)** for the Holdings tabs — the `holdings:` and
+`valuation:` tags, how several accounts become one holding, and what "change" measures against.
 
 ## Architecture
 
@@ -142,7 +152,7 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 - do we need a way to flag "current" assets and liabilities in balance sheet?
 - need to remove the URL in the top right. would like to instead put an indication of what file or folder we're looking at
   - Lets make this more interesting. If the first line of the main journal file is a comment with one to five words (not symbols like ======), then we'll take that as the title to use. Otherwise we'll use the folder name of the parent of the main journal.
-- chore: route bad `issection:` / `holdings:` / `type:` tag values into Problems
+- chore: route bad `issection:` / `holdings:` / `valuation:` / `type:` tag values into Problems
   - a mistyped `issection:` currently fails the whole P&L request with a 400 naming the account and the
     valid codes, and `holdings:` now does the same to the Holdings tab. Right that it isn't silently
     dropped, wrong that one typo takes the tab down. Problems
@@ -183,6 +193,10 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
   - only real way to do this is with some sort of lookback comparing similar descriptions in the past and seeing associated expense or revenue accounts
   - need to remove random numbers from description and maybe do a predominance calculation or a vector comparison rather than full equality.  if we're doing equality and removing numbers, we need to normalize some by lowercasing.  but in a perfect world, "netflix.com" might see a previous "netflix" and guess category based on that.  the more exact the match and the more recent, the higher the sort ranking
   - feat: remember categorization functionality — write a chosen category back into the rules file as a new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
+- feat: File -> New
+  - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and demand an empty folder as a starting point and the create a skeleton so someone can start using us to track things.
+  - HOWEVER, we don't have any way currently to handle when a new file should be created and used for new imports.  It's common to have a journal file per year included in a main journal file, for example, but do we automatically create that or figure that out?
+    - I guess the user could select a 2027.journal file on import when desired, but can they specify that if it doesn't already exist?
 - feat: saved report filters?
 - feat: planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)

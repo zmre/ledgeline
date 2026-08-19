@@ -22,7 +22,7 @@
 //! `1 HOUSE @ $150,000` and nothing else — reads as unpriced.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::decimal::Dec;
 use crate::model::{AccountDeclaration, AccountName, Commodity, PriceDirective, Transaction};
@@ -33,7 +33,10 @@ use crate::reports::{
 };
 use crate::wire::{account_tag_map, inherited_account_tags};
 
-use super::classify::{HoldingsClass, declared_holdings_classes, resolve_holdings_class};
+use super::classify::{
+    HoldingsClass, ValuationRole, declared_holdings_classes, declared_valuation_roles,
+    resolve_holdings_class, resolve_valuation_role,
+};
 use super::commodities::is_currency;
 use super::engine::{FALLBACK_BASE, gain_pct, scope_accounts};
 use super::series::{HoldingsPoint, HoldingsSeries};
@@ -133,7 +136,12 @@ struct OtherInputs<'a> {
     db: PriceDb,
     types: AccountTypes,
     classes: BTreeMap<String, HoldingsClass>,
+    roles: BTreeMap<String, ValuationRole>,
     account_tags: HashMap<&'a str, &'a [(String, String)]>,
+    /// Each posting-bearing account mapped to the account that OWNS its row.
+    /// Precomputed from the whole journal, so the tree shape — and therefore the
+    /// row set — does not change as `as_of` moves.
+    row_roots: BTreeMap<String, String>,
 }
 
 impl<'a> OtherInputs<'a> {
@@ -146,12 +154,15 @@ impl<'a> OtherInputs<'a> {
         // precedence, and exactly the order `net_worth` combines them in.
         let mut all_prices = infer_market_prices(txns)?;
         all_prices.extend_from_slice(explicit_prices);
+        let classes = declared_holdings_classes(accounts)?;
         Ok(Self {
             txns,
             db: PriceDb::build(&all_prices),
             types: AccountTypes::from_declared(declared_types(&account_decls_from(accounts))),
-            classes: declared_holdings_classes(accounts)?,
+            roles: declared_valuation_roles(accounts)?,
             account_tags: account_tag_map(accounts),
+            row_roots: row_roots(txns, &classes),
+            classes,
         })
     }
 
@@ -173,7 +184,92 @@ impl<'a> OtherInputs<'a> {
     }
 }
 
-/// One account's balance at a date, as written and at cost.
+/// The parent path of `account`, or `None` for a single-segment root.
+fn parent_of(account: &str) -> Option<&str> {
+    account.rfind(':').map(|cut| &account[..cut])
+}
+
+/// Map every posting-bearing account to the account that owns its ROW.
+///
+/// A great many real journals split one asset across sibling accounts, because
+/// that is how you carry a cost/market split without booking the asset as its
+/// own commodity:
+///
+/// ```journal
+/// assets:home:cost        ; what you paid
+/// assets:home:unrealized  ; the mark against it
+/// ```
+///
+/// Those are one house. Reported as two rows they are not merely untidy: they
+/// sit apart once the table sorts by value, and each one's cost equals its own
+/// balance, so both report a change of zero and the tab's whole subject
+/// disappears.
+///
+/// Two rules, in order:
+///
+/// 1. **An explicit `holdings:` tag wins.** The nearest tagged ancestor-or-self
+///    owns the row. Tagging is how you say "this subtree is one thing" when the
+///    shape below is unusual.
+/// 2. **Otherwise, roll up to a parent that is purely a container**: it has no
+///    postings of its own, and its posting-bearing descendants are ALL direct
+///    children, of which there are at least two.
+///
+/// Rule 2 is deliberately shallow — applied once, never iterated. That is what
+/// keeps `assets:partnerships:angel-continuity` one row while leaving
+/// `assets:partnerships` alone: the fund's children are leaves, but
+/// `assets:partnerships`'s child is not, so the walk stops. And the "at least
+/// two" clause is what stops a lone `assets:vehicles:car` from being relabelled
+/// `assets:vehicles`, which would trade a name for nothing.
+fn row_roots(
+    txns: &[Transaction],
+    classes: &BTreeMap<String, HoldingsClass>,
+) -> BTreeMap<String, String> {
+    let posted: BTreeSet<&str> = txns
+        .iter()
+        .flat_map(|txn| txn.postings.iter())
+        .map(|posting| posting.account.0.as_str())
+        .collect();
+
+    // Per candidate parent: how many posting-bearing descendants it has, and
+    // whether every one of them is a direct child.
+    let mut descendants: BTreeMap<&str, (usize, bool)> = BTreeMap::new();
+    for account in &posted {
+        let mut ancestor = parent_of(account);
+        while let Some(name) = ancestor {
+            let direct = parent_of(account) == Some(name);
+            let entry = descendants.entry(name).or_insert((0, true));
+            entry.0 += 1;
+            entry.1 &= direct;
+            ancestor = parent_of(name);
+        }
+    }
+
+    posted
+        .iter()
+        .map(|account| {
+            // 1 — the nearest explicitly tagged ancestor-or-self.
+            let mut name: Option<&str> = Some(account);
+            while let Some(current) = name {
+                if classes.contains_key(current) {
+                    return ((*account).to_string(), current.to_string());
+                }
+                name = parent_of(current);
+            }
+            // 2 — a container parent, once.
+            let root = parent_of(account)
+                .filter(|parent| !posted.contains(*parent))
+                .filter(|parent| {
+                    descendants
+                        .get(*parent)
+                        .is_some_and(|(count, all_direct)| *count >= 2 && *all_direct)
+                })
+                .unwrap_or(account);
+            ((*account).to_string(), root.to_string())
+        })
+        .collect()
+}
+
+/// One holding's figures at a date, accumulated over its whole subtree.
 struct RowFacts {
     account: String,
     commodities: MixedAmount,
@@ -256,6 +352,9 @@ fn is_other_holding(inputs: &OtherInputs<'_>, account: &str, commodities: &Mixed
 /// to compose a scope.
 fn candidate_accounts(inputs: &OtherInputs<'_>) -> Result<Vec<String>, ReportError> {
     let lifetime = account_totals(inputs.txns, &PostingFilter::default())?;
+    // Row ROOTS, deduped — the chooser must offer the same thing the table shows
+    // it, or a holding the reader can see is one they cannot deselect. `BTreeSet`
+    // both dedupes the siblings that share a root and keeps the list sorted.
     Ok(lifetime
         .iter()
         .filter(|(account, balance)| {
@@ -263,7 +362,9 @@ fn candidate_accounts(inputs: &OtherInputs<'_>) -> Result<Vec<String>, ReportErr
             commodities.drop_zeros();
             !commodities.is_zero() && is_other_holding(inputs, account, &commodities)
         })
-        .map(|(account, _)| account.clone())
+        .map(|(account, _)| inputs.row_roots.get(account).unwrap_or(account).clone())
+        .collect::<BTreeSet<String>>()
+        .into_iter()
         .collect())
 }
 
@@ -290,7 +391,13 @@ fn rows_at(
     let written = totals(false)?;
     let at_cost = totals(true)?;
 
-    let mut rows = Vec::new();
+    // Accumulate per ROW ROOT rather than per account, so an asset split across
+    // sibling accounts is one holding. `held` is the whole subtree (the value);
+    // `basis` takes only the accounts that are not a mark (the cost). The
+    // difference between them IS the unrealized gain, which is the entire reason
+    // the two are tracked apart.
+    let mut held: BTreeMap<&str, MixedAmount> = BTreeMap::new();
+    let mut basis: BTreeMap<&str, MixedAmount> = BTreeMap::new();
     for (account, balance) in &written {
         let mut commodities = balance.clone();
         commodities.drop_zeros();
@@ -300,14 +407,39 @@ fn rows_at(
         {
             continue;
         }
+        let root = inputs
+            .row_roots
+            .get(account)
+            .map_or(account.as_str(), String::as_str);
+        held.entry(root).or_default().ma_add_assign(&commodities)?;
 
+        // A mark contributes to value and NOT to cost. Everything else is money
+        // in, taken at cost (hledger `-B`), which is also what keeps a
+        // commodity-booked asset's basis at what was paid for it.
+        if resolve_valuation_role(account, &inputs.roles) == ValuationRole::Cost
+            && let Some(ma) = at_cost.get(account)
+        {
+            basis.entry(root).or_default().ma_add_assign(ma)?;
+        }
+    }
+
+    let mut rows = Vec::with_capacity(held.len());
+    for (root, mut commodities) in held {
+        commodities.drop_zeros();
+        if commodities.is_zero() {
+            continue;
+        }
         let (value, unpriced) = value_or_nothing(&commodities, base, &inputs.db, as_of)?;
-        let cost = match at_cost.get(account) {
+        // No cost side at all means the holding is ALL mark — nothing was ever
+        // recorded as money in — so its cost is unknown rather than zero, and it
+        // drops out of the cost and change totals instead of claiming an
+        // infinite gain.
+        let cost = match basis.get(root) {
             Some(ma) => value_or_nothing(ma, base, &inputs.db, as_of)?.0,
             None => None,
         };
         rows.push(RowFacts {
-            account: account.clone(),
+            account: root.to_string(),
             commodities,
             value,
             cost,

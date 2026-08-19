@@ -137,4 +137,22 @@ pub enum ReportError {
         /// The value as written, trimmed.
         value: String,
     },
+    /// An `account` directive declared a `valuation:` value outside the closed
+    /// vocabulary — see [`crate::holdings::parse_valuation_tag`].
+    ///
+    /// Refused for the same reason as its two siblings above, with the sharpest
+    /// consequence of the three: `valuation:` decides whether an account is
+    /// money-in or a mark-to-market adjustment, so a silent fallback to `cost`
+    /// folds a holding's unrealized gain into its own basis and reports the gain
+    /// as exactly zero — a real number replaced by a plausible wrong one.
+    #[error(
+        "account '{account}' declares `valuation: {value}`, which is not one of \
+         cost, unrealized"
+    )]
+    UnknownValuationRole {
+        /// The declaring account.
+        account: String,
+        /// The value as written, trimmed.
+        value: String,
+    },
 }
