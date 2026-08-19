@@ -270,12 +270,14 @@ async fn balancesheet_matches_bs_d1_golden() {
 // ===========================================================================
 
 /// `hledger -f fixtures/sample.journal bs -V -e 2026-07-09` reports
-/// `$59,612.62, 5.0 GLD, -2.0 TSLA` of assets against `$531.15` of liabilities,
-/// and `bse -B` / `is -B` agree on a Net of `$42,998.91, -933,25 EUR`. The whole
-/// point of the report is that those reconcile, so `check` must be `{}`.
+/// `$548,112.62, 5.0 GLD, -2.0 TSLA` of assets against `$336,531.15` of
+/// liabilities, and `bse -B` / `is -B` agree on a Net of `$35,498.91,
+/// -933,25 EUR`. The whole point of the report is that those reconcile, so
+/// `check` must be `{}`.
 ///
 /// The `$` figures here are the UNROUNDED ones; hledger's CLI displays them to
-/// two places.
+/// two places, and `bs -V -c '$1000.0000'` prints the `$548112.6150` /
+/// `$211581.4650` asserted below.
 #[tokio::test]
 async fn balancesheet_grouped_matches_the_hledger_cli() {
     let journal = sample_journal();
@@ -315,27 +317,30 @@ async fn balancesheet_grouped_matches_the_hledger_cli() {
     assert_eq!(
         wire_ma(&sections[0]["total"]),
         Canon::from([
-            ("$".to_string(), canon(596_126_150, 4)),
+            ("$".to_string(), canon(5_481_126_150, 4)),
             ("GLD".to_string(), canon(5, 0)),
             ("TSLA".to_string(), canon(-2, 0)),
         ])
     );
     assert_eq!(
         wire_ma(&sections[1]["total"]),
-        Canon::from([("$".to_string(), canon(53_115, 2))])
+        Canon::from([("$".to_string(), canon(33_653_115, 2))])
     );
     // `bs -V` Net: assets − liabilities.
     assert_eq!(
         wire_ma(&body["netWorth"]),
         Canon::from([
-            ("$".to_string(), canon(590_814_650, 4)),
+            ("$".to_string(), canon(2_115_814_650, 4)),
             ("GLD".to_string(), canon(5, 0)),
             ("TSLA".to_string(), canon(-2, 0)),
         ])
     );
     // A == L + E, from exact values rather than displayed ones. Note the
-    // displayed group subtotals need NOT visibly add up: $49,059.99 + $10,552.62
-    // reads as $59,612.61 against a true $59,612.615.
+    // displayed group subtotals need NOT visibly add up. hledger's own figures
+    // for the four asset groups are $49,059.99 + $10,552.62 + $468,000.00 +
+    // $20,500.00, which reads as $548,112.61 — while the exact total is
+    // $548,112.6150 and displays as $548,112.62. The half-cent lives in
+    // Investments, whose true value is $10,552.6250.
     assert_eq!(
         wire_ma(&sections[0]["total"]),
         add_wire_ma(&sections[1]["total"], &sections[2]["total"]),
@@ -367,16 +372,24 @@ async fn balancesheet_grouped_reports_groups_and_their_provenance() {
             })
             .collect()
     };
+    // `Property` is tag-sourced (`bsgroup: Property` on `assets:property:home`,
+    // which holds `HOME` and would otherwise be filed under Investments by the
+    // commodity rule); `Vehicles` is segment-sourced, the car holding only `$`.
     assert_eq!(
         groups(0),
         [
             ("Cash and cash equivalents".to_string(), "type".to_string()),
             ("Investments".to_string(), "commodity".to_string()),
+            ("Property".to_string(), "tag".to_string()),
+            ("Vehicles".to_string(), "segment".to_string()),
         ]
     );
     assert_eq!(
         groups(1),
-        [("Credit cards".to_string(), "segment".to_string())]
+        [
+            ("Credit cards".to_string(), "segment".to_string()),
+            ("Mortgage".to_string(), "segment".to_string()),
+        ]
     );
     assert_eq!(
         groups(2),
@@ -394,7 +407,7 @@ async fn balancesheet_grouped_reports_groups_and_their_provenance() {
     assert_eq!(
         wire_ma(&retained["total"]),
         Canon::from([
-            ("$".to_string(), canon(4_299_891, 2)),
+            ("$".to_string(), canon(3_549_891, 2)),
             ("EUR".to_string(), canon(-93_325, 2)),
         ])
     );
@@ -418,10 +431,18 @@ async fn balancesheet_grouped_reports_groups_and_their_provenance() {
 }
 
 /// `value=cost` reproduces `bse -B` exactly — including its DECLARED equity of
-/// `$14,550.00 + 5.0 GLD`, which is the figure the identity needs (an unvalued
-/// `bal type:E` says `$15,550.00` and would throw the check off by $1,000 and
+/// `$126,550.00 + 5.0 GLD`, which is the figure the identity needs (an unvalued
+/// `bal type:E` says `$127,550.00` and would throw the check off by $1,000 and
 /// 5 GLD). At cost nothing is unbooked, so there is no valuation-adjustment line
 /// and no single base commodity.
+///
+/// `hledger -f fixtures/sample.journal bse -B -e 2026-07-09`:
+/// ```text
+///  Assets  $498,580.06, -933,25 EUR, 5.0 GLD
+///  Equity  $126,550.00, 5.0 GLD
+/// ```
+/// The house enters at its `1 HOME @ $420,000.00` cost here, not the
+/// 2026-06-30 price.
 #[tokio::test]
 async fn balancesheet_grouped_at_cost_matches_hledger_bse_b() {
     let journal = sample_journal();
@@ -439,13 +460,13 @@ async fn balancesheet_grouped_at_cost_matches_hledger_bse_b() {
     assert_eq!(
         wire_ma(&body["sections"][0]["total"]),
         Canon::from([
-            ("$".to_string(), canon(5_808_006, 2)),
+            ("$".to_string(), canon(49_858_006, 2)),
             ("EUR".to_string(), canon(-93_325, 2)),
             ("GLD".to_string(), canon(5, 0)),
         ])
     );
 
-    // Declared equity = every non-computed group: $14,550.00 + 5.0 GLD.
+    // Declared equity = every non-computed group: $126,550.00 + 5.0 GLD.
     let equity: Vec<&Value> = body["sections"][2]["groups"]
         .as_array()
         .unwrap()
@@ -454,7 +475,7 @@ async fn balancesheet_grouped_at_cost_matches_hledger_bse_b() {
         .collect();
     assert_eq!(
         wire_ma(&equity[0]["total"]),
-        Canon::from([("$".to_string(), canon(1_455_000, 2))])
+        Canon::from([("$".to_string(), canon(12_655_000, 2))])
     );
     assert_eq!(
         wire_ma(&equity[1]["total"]),
@@ -472,6 +493,14 @@ async fn balancesheet_grouped_at_cost_matches_hledger_bse_b() {
 
 /// `value=none` is `hledger bse` unvalued: share counts, no base, and the
 /// identity still holding because the revaluation line books the cost residue.
+///
+/// `hledger -f fixtures/sample.journal bse -e 2026-07-09` Assets:
+/// ```text
+///  $68,902.56, 19.5000 AAPL, 566,75 EUR, 5.0 GLD, 1.0 HOME, -2.0 TSLA, 17.0 VTI
+/// ```
+/// The house is the bare `1.0 HOME` it was booked as — no `P` directive is
+/// consulted — while the car is `$20,500.00`, its depreciation being postings
+/// that land on every basis.
 #[tokio::test]
 async fn balancesheet_grouped_unvalued_matches_hledger_bse() {
     let journal = sample_journal();
@@ -487,10 +516,11 @@ async fn balancesheet_grouped_unvalued_matches_hledger_bse() {
     assert_eq!(
         wire_ma(&body["sections"][0]["total"]),
         Canon::from([
-            ("$".to_string(), canon(4_840_256, 2)),
+            ("$".to_string(), canon(6_890_256, 2)),
             ("AAPL".to_string(), canon(195, 1)),
             ("EUR".to_string(), canon(56_675, 2)),
             ("GLD".to_string(), canon(5, 0)),
+            ("HOME".to_string(), canon(1, 0)),
             ("TSLA".to_string(), canon(-2, 0)),
             ("VTI".to_string(), canon(17, 0)),
         ])
@@ -801,12 +831,15 @@ fn assert_amounts(amounts: &Value, current: i128, prior: Option<i128>, what: &st
 ///
 /// `hledger -f fixtures/sample.journal is -V -b 2026-01-01 -e 2026-07-09 --depth 2`
 /// ```text
-///  Revenues  $34,010.00   Expenses  $25,126.48   Net:  $8,883.52
+///  Revenues  $34,010.00   Expenses  $28,626.48   Net:  $5,383.52
 /// ```
 /// and the prior window (`2025-06-26..2025-12-31`, the preceding 188 days):
 /// ```text
-///  Revenues  $39,397.50   Expenses  $24,516.71   Net:  $14,880.79
+///  Revenues  $39,397.50   Expenses  $28,516.71   Net:  $10,880.79
 /// ```
+/// The two windows take one `expenses:depreciation` entry each — `$3,500.00`
+/// (2026-06-30) current, `$4,000.00` (2025-06-30) prior — so a boundary
+/// off-by-one would move a four-figure sum across the columns.
 #[tokio::test]
 async fn incomestatement_grouped_matches_the_hledger_cli() {
     let journal = sample_journal();
@@ -850,19 +883,23 @@ async fn incomestatement_grouped_matches_the_hledger_cli() {
     );
     assert_amounts(
         &is_box(&body, "opex")["total"],
-        2_512_648,
-        Some(2_451_671),
+        2_862_648,
+        Some(2_851_671),
         "Expenses",
     );
-    assert_amounts(&body["netIncome"], 888_352, Some(1_488_079), "Net income");
+    assert_amounts(&body["netIncome"], 538_352, Some(1_088_079), "Net income");
 }
 
 /// The group shape the SPA renders, with the plan's own pinned figures.
 ///
 /// `hledger … is -V -b 2026-01-01 -e 2026-07-09 --depth 2` per account:
-/// Salary `$33,960.00`, Dividends `$50.00`; Food `$1,654.38`, Housing
-/// `$13,125.00`, Taxes `$8,760.00`, Transport `$186.54`, Travel `$656.40`,
-/// Unknown `$75.00`, Utilities `$669.16`.
+/// Salary `$33,960.00`, Dividends `$50.00`; Depreciation `$3,500.00`, Food
+/// `$1,654.38`, Housing `$13,125.00`, Taxes `$8,760.00`, Transport `$186.54`,
+/// Travel `$656.40`, Unknown `$75.00`, Utilities `$669.16`.
+///
+/// `Depreciation` takes its line from the same untagged second-segment rule as
+/// every neighbour — `expenses:depreciation` declares nothing but `type: X` —
+/// and sorts first because the list is alphabetical, as hledger's rows are.
 #[tokio::test]
 async fn incomestatement_grouped_reports_groups_and_their_provenance() {
     let journal = sample_journal();
@@ -898,6 +935,7 @@ async fn incomestatement_grouped_reports_groups_and_their_provenance() {
             .map(|(name, _)| name)
             .collect::<Vec<_>>(),
         [
+            "Depreciation",
             "Food",
             "Housing",
             "Taxes",
@@ -919,6 +957,7 @@ async fn incomestatement_grouped_reports_groups_and_their_provenance() {
     for (kind, name, value) in [
         ("revenue", "Salary", 3_396_000),
         ("revenue", "Dividends", 5_000),
+        ("opex", "Depreciation", 350_000),
         ("opex", "Food", 165_438),
         ("opex", "Housing", 1_312_500),
         ("opex", "Taxes", 876_000),
@@ -1134,8 +1173,8 @@ async fn incomestatement_grouped_keeps_a_line_that_exists_in_only_one_period() {
 /// basis produced its numbers.
 ///
 /// `hledger -f fixtures/sample.journal is -B -b 2024-07-01 -e 2026-07-09`
-/// Net: `$42,998.91, -933,25 EUR` — the at-cost net income that IS the balance
-/// sheet's Retained earnings line.
+/// Net: `$35,498.91, -933,25 EUR` — the at-cost net income that IS the balance
+/// sheet's Retained earnings line, and which `bse -B` reports as the same Net.
 #[tokio::test]
 async fn incomestatement_grouped_honors_value_and_value_in() {
     let journal = sample_journal();
@@ -1149,7 +1188,7 @@ async fn incomestatement_grouped_honors_value_and_value_in() {
     assert_eq!(
         wire_ma(&at_cost["netIncome"]["current"]),
         Canon::from([
-            ("$".to_string(), canon(4_299_891, 2)),
+            ("$".to_string(), canon(3_549_891, 2)),
             ("EUR".to_string(), canon(-93_325, 2)),
         ]),
         "at-cost net income == the grouped balance sheet's Retained earnings"
@@ -1952,8 +1991,25 @@ async fn hledger_date_spellings_normalize_to_the_iso_date() {
 }
 
 /// RPT-4, with the finding's own numbers. `?asOf=2026-7-1` is a date hledger
-/// accepts; it used to serve the ALL-TIME grand total ($47,871.41) with a `200`
-/// because `"2026-7-1"` sorts above every real 2026 date.
+/// accepts; it used to serve the ALL-TIME grand total (`-$267,628.59`) with a
+/// `200` because `"2026-7-1"` sorts above every real 2026 date.
+///
+/// This endpoint takes no `value` parameter — it is the flat, UNVALUED
+/// hledger-parity shape — so `grandTotal` is `hledger bs`'s Net with no `-V` or
+/// `-B`, and its `$` component is legitimately NEGATIVE: the house sits in the
+/// assets as `1.0 HOME` while the mortgage against it is `$336,000.00` of real
+/// dollars. Unvalued, those two do not meet. `bs -V` nets them to a healthy
+/// `$211,581.46`; this figure is not a net worth and is not read as one.
+///
+/// ```text
+/// $ hledger -f fixtures/sample.journal bs -e 2026-07-02   (i.e. asOf 2026-07-01)
+///   Net:  $-267,159.55, 19.5000 AAPL, 566,75 EUR, 5.0 GLD, 1.0 HOME, -2.0 TSLA, 17.0 VTI
+/// $ hledger -f fixtures/sample.journal bs -e 2027-01-01   (i.e. asOf 2026-12-31)
+///   Net:  $-267,628.59, 19.5000 AAPL, 566,75 EUR, 5.0 GLD, 1.0 HOME, -2.0 TSLA, 17.0 VTI
+/// ```
+/// The $469.04 between them is the July visa activity ($412.80 of flights plus
+/// $56.24 of groceries) — the same gap the pre-`plans/14` figures had, so the
+/// test still separates "the date I asked for" from "everything".
 #[tokio::test]
 async fn hand_typed_as_of_no_longer_serves_the_all_time_total() {
     let journal = sample_journal();
@@ -1962,15 +2018,15 @@ async fn hand_typed_as_of_no_longer_serves_the_all_time_total() {
     assert_eq!(hand_typed, padded);
     assert_eq!(
         wire_ma(&hand_typed["grandTotal"])["$"],
-        canon(4_834_045, 2),
-        "asOf=2026-7-1 must be the 2026-07-01 total, $48,340.45"
+        canon(-26_715_955, 2),
+        "asOf=2026-7-1 must be the 2026-07-01 total, -$267,159.55"
     );
     assert_eq!(
         wire_ma(
             &body_ok(&journal, "/api/reports/balancesheet?asOf=2026-12-31").await["grandTotal"]
         )["$"],
-        canon(4_787_141, 2),
-        "the all-time total is a DIFFERENT number, $47,871.41 — the one the bug served"
+        canon(-26_762_859, 2),
+        "the all-time total is a DIFFERENT number, -$267,628.59 — the one the bug served"
     );
 }
 

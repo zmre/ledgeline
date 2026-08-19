@@ -36,9 +36,9 @@
                   "acost": null,
                   "acostbasis": null,
                   "aquantity": {
-                    "decimalMantissa": 5027756,
+                    "decimalMantissa": 7077756,
                     "decimalPlaces": 2,
-                    "floatingPoint": 50277.56
+                    "floatingPoint": 70777.56
                   },
                   "astyle": {
                     "ascommodityside": "L",
@@ -321,6 +321,49 @@
                   }
                 },
                 {
+                  "acommodity": "HOME",
+                  "acost": {
+                    "contents": {
+                      "acommodity": "$",
+                      "acost": null,
+                      "acostbasis": null,
+                      "aquantity": {
+                        "decimalMantissa": 42000000,
+                        "decimalPlaces": 2,
+                        "floatingPoint": 420000
+                      },
+                      "astyle": {
+                        "ascommodityside": "L",
+                        "ascommodityspaced": false,
+                        "asdecimalmark": ".",
+                        "asdigitgroups": [
+                          ",",
+                          [
+                            3
+                          ]
+                        ],
+                        "asprecision": 2,
+                        "asrounding": "HardRounding"
+                      }
+                    },
+                    "tag": "UnitCost"
+                  },
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 1,
+                    "decimalPlaces": 0,
+                    "floatingPoint": 1
+                  },
+                  "astyle": {
+                    "ascommodityside": "R",
+                    "ascommodityspaced": true,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": null,
+                    "asprecision": 1,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                {
                   "acommodity": "NVDA",
                   "acost": {
                     "contents": {
@@ -586,9 +629,9 @@
                 "acost": null,
                 "acostbasis": null,
                 "aquantity": {
-                  "decimalMantissa": 5027756,
+                  "decimalMantissa": 7077756,
                   "decimalPlaces": 2,
-                  "floatingPoint": 50277.56
+                  "floatingPoint": 70777.56
                 },
                 "astyle": {
                   "ascommodityside": "L",
@@ -871,6 +914,49 @@
                 }
               },
               {
+                "acommodity": "HOME",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 42000000,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 420000
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 1,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 1
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 1,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
                 "acommodity": "NVDA",
                 "acost": {
                   "contents": {
@@ -1136,9 +1222,9 @@
                 "acost": null,
                 "acostbasis": null,
                 "aquantity": {
-                  "decimalMantissa": 5027756,
+                  "decimalMantissa": 7077756,
                   "decimalPlaces": 2,
-                  "floatingPoint": 50277.56
+                  "floatingPoint": 70777.56
                 },
                 "astyle": {
                   "ascommodityside": "L",
@@ -1410,6 +1496,49 @@
                   "decimalMantissa": 5,
                   "decimalPlaces": 0,
                   "floatingPoint": 5
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 1,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
+                "acommodity": "HOME",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 42000000,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 420000
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 1,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 1
                 },
                 "astyle": {
                   "ascommodityside": "R",
@@ -1689,9 +1818,9 @@
                 "acost": null,
                 "acostbasis": null,
                 "aquantity": {
-                  "decimalMantissa": 5027756,
+                  "decimalMantissa": 7077756,
                   "decimalPlaces": 2,
-                  "floatingPoint": 50277.56
+                  "floatingPoint": 70777.56
                 },
                 "astyle": {
                   "ascommodityside": "L",
@@ -1974,6 +2103,49 @@
                 }
               },
               {
+                "acommodity": "HOME",
+                "acost": {
+                  "contents": {
+                    "acommodity": "$",
+                    "acost": null,
+                    "acostbasis": null,
+                    "aquantity": {
+                      "decimalMantissa": 42000000,
+                      "decimalPlaces": 2,
+                      "floatingPoint": 420000
+                    },
+                    "astyle": {
+                      "ascommodityside": "L",
+                      "ascommodityspaced": false,
+                      "asdecimalmark": ".",
+                      "asdigitgroups": [
+                        ",",
+                        [
+                          3
+                        ]
+                      ],
+                      "asprecision": 2,
+                      "asrounding": "HardRounding"
+                    }
+                  },
+                  "tag": "UnitCost"
+                },
+                "acostbasis": null,
+                "aquantity": {
+                  "decimalMantissa": 1,
+                  "decimalPlaces": 0,
+                  "floatingPoint": 1
+                },
+                "astyle": {
+                  "ascommodityside": "R",
+                  "ascommodityspaced": true,
+                  "asdecimalmark": ".",
+                  "asdigitgroups": null,
+                  "asprecision": 1,
+                  "asrounding": "HardRounding"
+                }
+              },
+              {
                 "acommodity": "NVDA",
                 "acost": {
                   "contents": {
@@ -2239,9 +2411,9 @@
               "acost": null,
               "acostbasis": null,
               "aquantity": {
-                "decimalMantissa": 5027756,
+                "decimalMantissa": 7077756,
                 "decimalPlaces": 2,
-                "floatingPoint": 50277.56
+                "floatingPoint": 70777.56
               },
               "astyle": {
                 "ascommodityside": "L",
@@ -2524,6 +2696,49 @@
               }
             },
             {
+              "acommodity": "HOME",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 42000000,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 420000
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 1,
+                "decimalPlaces": 0,
+                "floatingPoint": 1
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 1,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
               "acommodity": "NVDA",
               "acost": {
                 "contents": {
@@ -2789,9 +3004,9 @@
               "acost": null,
               "acostbasis": null,
               "aquantity": {
-                "decimalMantissa": 5027756,
+                "decimalMantissa": 7077756,
                 "decimalPlaces": 2,
-                "floatingPoint": 50277.56
+                "floatingPoint": 70777.56
               },
               "astyle": {
                 "ascommodityside": "L",
@@ -3063,6 +3278,49 @@
                 "decimalMantissa": 5,
                 "decimalPlaces": 0,
                 "floatingPoint": 5
+              },
+              "astyle": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ".",
+                "asdigitgroups": null,
+                "asprecision": 1,
+                "asrounding": "HardRounding"
+              }
+            },
+            {
+              "acommodity": "HOME",
+              "acost": {
+                "contents": {
+                  "acommodity": "$",
+                  "acost": null,
+                  "acostbasis": null,
+                  "aquantity": {
+                    "decimalMantissa": 42000000,
+                    "decimalPlaces": 2,
+                    "floatingPoint": 420000
+                  },
+                  "astyle": {
+                    "ascommodityside": "L",
+                    "ascommodityspaced": false,
+                    "asdecimalmark": ".",
+                    "asdigitgroups": [
+                      ",",
+                      [
+                        3
+                      ]
+                    ],
+                    "asprecision": 2,
+                    "asrounding": "HardRounding"
+                  }
+                },
+                "tag": "UnitCost"
+              },
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 1,
+                "decimalPlaces": 0,
+                "floatingPoint": 1
               },
               "astyle": {
                 "ascommodityside": "R",
@@ -3360,9 +3618,9 @@
                   "acost": null,
                   "acostbasis": null,
                   "aquantity": {
-                    "decimalMantissa": 6211,
+                    "decimalMantissa": 33606211,
                     "decimalPlaces": 2,
-                    "floatingPoint": 62.11
+                    "floatingPoint": 336062.11
                   },
                   "astyle": {
                     "ascommodityside": "L",
@@ -3386,9 +3644,9 @@
                 "acost": null,
                 "acostbasis": null,
                 "aquantity": {
-                  "decimalMantissa": 6211,
+                  "decimalMantissa": 33606211,
                   "decimalPlaces": 2,
-                  "floatingPoint": 62.11
+                  "floatingPoint": 336062.11
                 },
                 "astyle": {
                   "ascommodityside": "L",
@@ -3412,9 +3670,9 @@
                 "acost": null,
                 "acostbasis": null,
                 "aquantity": {
-                  "decimalMantissa": 6211,
+                  "decimalMantissa": 33606211,
                   "decimalPlaces": 2,
-                  "floatingPoint": 62.11
+                  "floatingPoint": 336062.11
                 },
                 "astyle": {
                   "ascommodityside": "L",
@@ -3441,9 +3699,9 @@
                 "acost": null,
                 "acostbasis": null,
                 "aquantity": {
-                  "decimalMantissa": 6211,
+                  "decimalMantissa": 33606211,
                   "decimalPlaces": 2,
-                  "floatingPoint": 62.11
+                  "floatingPoint": 336062.11
                 },
                 "astyle": {
                   "ascommodityside": "L",
@@ -3467,9 +3725,9 @@
               "acost": null,
               "acostbasis": null,
               "aquantity": {
-                "decimalMantissa": 6211,
+                "decimalMantissa": 33606211,
                 "decimalPlaces": 2,
-                "floatingPoint": 62.11
+                "floatingPoint": 336062.11
               },
               "astyle": {
                 "ascommodityside": "L",
@@ -3493,9 +3751,9 @@
               "acost": null,
               "acostbasis": null,
               "aquantity": {
-                "decimalMantissa": 6211,
+                "decimalMantissa": 33606211,
                 "decimalPlaces": 2,
-                "floatingPoint": 62.11
+                "floatingPoint": 336062.11
               },
               "astyle": {
                 "ascommodityside": "L",
@@ -3526,9 +3784,9 @@
           "acost": null,
           "acostbasis": null,
           "aquantity": {
-            "decimalMantissa": 5021545,
+            "decimalMantissa": -26528455,
             "decimalPlaces": 2,
-            "floatingPoint": 50215.45
+            "floatingPoint": -265284.55
           },
           "astyle": {
             "ascommodityside": "L",
@@ -3811,6 +4069,49 @@
           }
         },
         {
+          "acommodity": "HOME",
+          "acost": {
+            "contents": {
+              "acommodity": "$",
+              "acost": null,
+              "acostbasis": null,
+              "aquantity": {
+                "decimalMantissa": 42000000,
+                "decimalPlaces": 2,
+                "floatingPoint": 420000
+              },
+              "astyle": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [
+                  ",",
+                  [
+                    3
+                  ]
+                ],
+                "asprecision": 2,
+                "asrounding": "HardRounding"
+              }
+            },
+            "tag": "UnitCost"
+          },
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 1,
+            "decimalPlaces": 0,
+            "floatingPoint": 1
+          },
+          "astyle": {
+            "ascommodityside": "R",
+            "ascommodityspaced": true,
+            "asdecimalmark": ".",
+            "asdigitgroups": null,
+            "asprecision": 1,
+            "asrounding": "HardRounding"
+          }
+        },
+        {
           "acommodity": "NVDA",
           "acost": {
             "contents": {
@@ -4076,9 +4377,9 @@
         "acost": null,
         "acostbasis": null,
         "aquantity": {
-          "decimalMantissa": 5021545,
+          "decimalMantissa": -26528455,
           "decimalPlaces": 2,
-          "floatingPoint": 50215.45
+          "floatingPoint": -265284.55
         },
         "astyle": {
           "ascommodityside": "L",
@@ -4361,6 +4662,49 @@
         }
       },
       {
+        "acommodity": "HOME",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 42000000,
+              "decimalPlaces": 2,
+              "floatingPoint": 420000
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 2,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 1,
+          "decimalPlaces": 0,
+          "floatingPoint": 1
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ".",
+          "asdigitgroups": null,
+          "asprecision": 1,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
         "acommodity": "NVDA",
         "acost": {
           "contents": {
@@ -4626,9 +4970,9 @@
         "acost": null,
         "acostbasis": null,
         "aquantity": {
-          "decimalMantissa": 5021545,
+          "decimalMantissa": -26528455,
           "decimalPlaces": 2,
-          "floatingPoint": 50215.45
+          "floatingPoint": -265284.55
         },
         "astyle": {
           "ascommodityside": "L",
@@ -4900,6 +5244,49 @@
           "decimalMantissa": 5,
           "decimalPlaces": 0,
           "floatingPoint": 5
+        },
+        "astyle": {
+          "ascommodityside": "R",
+          "ascommodityspaced": true,
+          "asdecimalmark": ".",
+          "asdigitgroups": null,
+          "asprecision": 1,
+          "asrounding": "HardRounding"
+        }
+      },
+      {
+        "acommodity": "HOME",
+        "acost": {
+          "contents": {
+            "acommodity": "$",
+            "acost": null,
+            "acostbasis": null,
+            "aquantity": {
+              "decimalMantissa": 42000000,
+              "decimalPlaces": 2,
+              "floatingPoint": 420000
+            },
+            "astyle": {
+              "ascommodityside": "L",
+              "ascommodityspaced": false,
+              "asdecimalmark": ".",
+              "asdigitgroups": [
+                ",",
+                [
+                  3
+                ]
+              ],
+              "asprecision": 2,
+              "asrounding": "HardRounding"
+            }
+          },
+          "tag": "UnitCost"
+        },
+        "acostbasis": null,
+        "aquantity": {
+          "decimalMantissa": 1,
+          "decimalPlaces": 0,
+          "floatingPoint": 1
         },
         "astyle": {
           "ascommodityside": "R",

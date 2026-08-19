@@ -36,20 +36,22 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
     it("shows one row per group when everything is collapsed", () => {
         const rows = rowsOf(EXPENSES, NONE);
 
-        expect(rows.map((r) => r.label)).toEqual(["Food", "Housing", "Taxes", "Transport", "Travel", "Unknown", "Utilities"]);
+        expect(rows.map((r) => r.label)).toEqual(["Depreciation", "Food", "Housing", "Taxes", "Transport", "Travel", "Unknown", "Utilities"]);
         expect(rows.every((r) => r.kind === "group")).toBe(true);
         // Collapsed is the DEFAULT, and a collapsed group still has to be
         // cursorable — otherwise `j` on a freshly-loaded report does nothing at
         // all, because no account row exists yet.
-        expect(rows).toHaveLength(7);
+        expect(rows).toHaveLength(8);
     });
 
     it("carries each group's own subtotal, not a row's balance", () => {
-        const [food] = rowsOf(EXPENSES, NONE);
+        // By label, not by position: Depreciation now sorts ahead of Food, and
+        // the claim here is about Food's subtotal rather than about the first row.
+        const food = rowsOf(EXPENSES, NONE).find((r) => r.label === "Food");
 
-        expect(food.amounts.current.get("$")).toEqual({m: 165438n, p: 2});
-        expect(food.amounts.prior?.get("$")).toEqual({m: 154635n, p: 2});
-        expect(food.account).toBeNull(); // a group heading is not an account
+        expect(food?.amounts.current.get("$")).toEqual({m: 165438n, p: 2});
+        expect(food?.amounts.prior?.get("$")).toEqual({m: 154635n, p: 2});
+        expect(food?.account).toBeNull(); // a group heading is not an account
     });
 
     it("prints no ancestor roll-up above its own children — the duplicate this redesign removes", () => {
@@ -71,6 +73,7 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
         // table: the group's own root keeps its full path, its children are named
         // by the segments below it.
         expect(rows.map((r) => r.label)).toEqual([
+            "Depreciation",
             "Food",
             "expenses:food",
             "groceries",
@@ -82,9 +85,12 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
             "Unknown",
             "Utilities",
         ]);
-        expect(rows[0].expanded).toBe(true);
-        expect(rows[4].expanded).toBe(false);
-        expect(rows[4].kind).toBe("group"); // the neighbour is still just its heading
+        // Index 1 is the expanded Food group; 0 and 5 are untouched neighbours on
+        // either side of it, which is the claim — expanding one opens exactly one.
+        expect(rows[1].expanded).toBe(true);
+        expect(rows[0].expanded).toBe(false);
+        expect(rows[5].expanded).toBe(false);
+        expect(rows[5].kind).toBe("group"); // the neighbour is still just its heading
     });
 
     it("compresses single-child chains, testing BOTH periods before folding one", () => {
@@ -148,12 +154,12 @@ describe("UNIT reports/ui/incomeStatementRows — pctOfRevenue", () => {
     const usd = (m: number, p: number): MixedAmount => new Map([["$", dec(m, p)]]);
 
     it("divides the exact Decs, never the rounded figures beside them", () => {
-        // $25,126.48 / $34,010.00 = 73.8797%. Both operands are exact here, and
+        // $28,626.48 / $34,010.00 = 84.1707%. Both operands are exact here, and
         // that is the point: a percentage taken from the DISPLAYED strings agrees
         // by luck on a two-decimal journal and disagrees the moment the engine
         // sends a third place, which it does for anything valued at a price.
-        expect(pctOfRevenue(usd(2512648, 2), RATIO_BASE, "$")).toBe(73.9);
-        expect(pctOfRevenue(usd(888352, 2), RATIO_BASE, "$")).toBe(26.1);
+        expect(pctOfRevenue(usd(2862648, 2), RATIO_BASE, "$")).toBe(84.2);
+        expect(pctOfRevenue(usd(538352, 2), RATIO_BASE, "$")).toBe(15.8);
     });
 
     it("is unaffected by the operands' decimal places", () => {
@@ -307,8 +313,8 @@ describe("UNIT reports/ui/incomeStatementRows — isDisplayModel and the cursor 
     });
 
     it("grows the cursor list as groups open", () => {
-        expect(isCursorRows(isDisplayModel(REPORT, NONE))).toHaveLength(9); // 2 revenue + 7 expense groups
-        expect(isCursorRows(isDisplayModel(REPORT, ALL)).length).toBeGreaterThan(9);
+        expect(isCursorRows(isDisplayModel(REPORT, NONE))).toHaveLength(10); // 2 revenue + 8 expense groups
+        expect(isCursorRows(isDisplayModel(REPORT, ALL)).length).toBeGreaterThan(10);
     });
 });
 
@@ -316,9 +322,9 @@ describe("UNIT reports/ui/incomeStatementRows — isSummary", () => {
     it("carries the bottom line and its margin, and nothing else", () => {
         const summary = isSummary(REPORT);
 
-        expect(summary.netIncome.current.get("$")).toEqual({m: 888352n, p: 2});
-        expect(summary.netIncome.prior?.get("$")).toEqual({m: 1488079n, p: 2});
-        expect(fmtPct(summary.netPct)).toBe("26.1%");
+        expect(summary.netIncome.current.get("$")).toEqual({m: 538352n, p: 2});
+        expect(summary.netIncome.prior?.get("$")).toEqual({m: 1088079n, p: 2});
+        expect(fmtPct(summary.netPct)).toBe("15.8%");
         // The per-section restatement is gone on purpose. Every section total is
         // already in a box footer and every intermediate figure is already a rung
         // of the ladder, so repeating them was the duplicate-totals complaint
@@ -379,12 +385,12 @@ describe("UNIT reports/ui/incomeStatementRows — over the committed engine gold
         const revenue = revenueTotal(GOLDEN);
         const expenses = GOLDEN.sections.find((s) => s.kind === "opex")?.total.current ?? new Map();
 
-        // $34,010.00 at places 2 against $25,126.4800 at places 4 — the shapes
+        // $34,010.00 at places 2 against $28,626.4800 at places 4 — the shapes
         // the engine actually sends, not the cents-on-both-sides the literals use.
         expect(revenue.get("$")?.p).toBe(2);
         expect(expenses.get("$")?.p).toBe(4);
-        expect(fmtPct(pctOfRevenue(expenses, revenue, "$"))).toBe("73.9%");
-        expect(fmtPct(isSummary(GOLDEN).netPct)).toBe("26.1%");
+        expect(fmtPct(pctOfRevenue(expenses, revenue, "$"))).toBe("84.2%");
+        expect(fmtPct(isSummary(GOLDEN).netPct)).toBe("15.8%");
     });
 
     it("renders the same figures the hand-written fixture claims", () => {
@@ -406,7 +412,7 @@ describe("UNIT reports/ui/incomeStatementRows — over the committed engine gold
         const box = (kind: string) => isDisplayModel(GOLDEN, NONE).boxes.find((b) => b.kind === kind);
 
         expect(box("revenue")?.total.current.get("$")).toMatchObject({m: 3401000n}); // $34,010.00
-        expect(box("opex")?.rows.map((r) => r.label)).toEqual(["Food", "Housing", "Taxes", "Transport", "Travel", "Unknown", "Utilities"]);
-        expect(fmtPct(box("opex")?.totalPct ?? null)).toBe("73.9%");
+        expect(box("opex")?.rows.map((r) => r.label)).toEqual(["Depreciation", "Food", "Housing", "Taxes", "Transport", "Travel", "Unknown", "Utilities"]);
+        expect(fmtPct(box("opex")?.totalPct ?? null)).toBe("84.2%");
     });
 });

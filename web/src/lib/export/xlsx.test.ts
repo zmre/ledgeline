@@ -427,19 +427,21 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("B10").value).toBe(34010); // Total Revenue
             expect(ws.getCell("B10").numFmt).toBe('"$"#,##0.00');
             expect(ws.getCell("C10").value).toBe(39397.5); // the prior window's
-            expect(ws.getCell("B34").value).toBe(25126.48); // Total Expenses
-            expect(ws.getCell("C34").value).toBe(24516.71);
-            expect(ws.getCell("B34").font.bold).toBe(true);
+            // Row 34 → 36: the Depreciation group inserts its heading and its one
+            // account row directly under the Expenses header.
+            expect(ws.getCell("B36").value).toBe(28626.48); // Total Expenses
+            expect(ws.getCell("C36").value).toBe(28516.71);
+            expect(ws.getCell("B36").font.bold).toBe(true);
         });
 
         it("writes the percentage as a real percent, not as pre-rendered text", async () => {
             const ws = await readBack(await build(), "Income Statement");
 
-            // Excel's % format multiplies by 100, so 0.739 renders "73.9%" — and
-            // stays sortable, chartable and re-totalable, which "73.9%" as a
+            // Excel's % format multiplies by 100, so 0.842 renders "84.2%" — and
+            // stays sortable, chartable and re-totalable, which "84.2%" as a
             // string is not.
-            expect(ws.getCell("D34").value).toBe(0.739);
-            expect(ws.getCell("D34").numFmt).toBe("0.0%");
+            expect(ws.getCell("D36").value).toBe(0.842);
+            expect(ws.getCell("D36").numFmt).toBe("0.0%");
             expect(ws.getCell("D10").value).toBe(1); // revenue is 100.0% of revenue
             // …and it is free of the float noise `pct / 100` would leave behind:
             // Salary is 99.9% of revenue, which that division stores as
@@ -452,7 +454,7 @@ describe("UNIT export/xlsx", () => {
 
             // `expenses:housing` has one child with the same figure in both
             // windows, so the workbook shows the one row the screen shows.
-            expect(column(ws, 17, 2)).toEqual(["Housing", "expenses:housing:rent"]);
+            expect(column(ws, 19, 2)).toEqual(["Housing", "expenses:housing:rent"]);
         });
 
         it("writes every group EXPANDED, whatever is collapsed on screen", async () => {
@@ -461,16 +463,16 @@ describe("UNIT export/xlsx", () => {
             // A disclosure triangle is a way to read a long statement on a
             // screen; an exported statement missing the accounts the reader
             // happened to have closed is just an incomplete document.
-            expect(column(ws, 19, 4)).toEqual(["Taxes", "expenses:taxes", "federal", "state"]);
+            expect(column(ws, 21, 4)).toEqual(["Taxes", "expenses:taxes", "federal", "state"]);
         });
 
         it("keeps a line that ran in only one period, with an explicit zero on the other side", async () => {
             const ws = await readBack(await build(), "Income Statement");
 
             // `expenses:travel:flights` is current-only, `…:activities` prior-only.
-            expect(column(ws, 27, 3)).toEqual(["activities", "flights", "lodging"]);
-            expect([ws.getCell("B27").value, ws.getCell("C27").value]).toEqual([0, 39.6]);
-            expect([ws.getCell("B28").value, ws.getCell("C28").value]).toEqual([412.8, 0]);
+            expect(column(ws, 29, 3)).toEqual(["activities", "flights", "lodging"]);
+            expect([ws.getCell("B29").value, ws.getCell("C29").value]).toEqual([0, 39.6]);
+            expect([ws.getCell("B30").value, ws.getCell("C30").value]).toEqual([412.8, 0]);
         });
 
         it("ends on net income, and restates nothing above it", async () => {
@@ -481,24 +483,24 @@ describe("UNIT export/xlsx", () => {
             // figures is already a `Total …` row above, so the block was
             // duplicated totals in a document whose whole point is that nothing
             // is printed twice.
-            expect(column(ws, 36, 3)).toEqual(["Net income (revenue − expenses)", null, null]);
-            expect(ws.getCell("A36").border?.top?.style).toBe("medium");
+            expect(column(ws, 38, 3)).toEqual(["Net income (revenue − expenses)", null, null]);
+            expect(ws.getCell("A38").border?.top?.style).toBe("medium");
             // `isSummary` is shared with the view precisely so the workbook cannot
             // claim a different bottom line — or a different margin — from the
             // page it was exported from.
-            expect(ws.getCell("B36").value).toBe(8883.52);
-            expect(ws.getCell("C36").value).toBe(14880.79);
-            expect(ws.getCell("D36").value).toBe(0.261);
-            expect(ws.getCell("A36").font.bold).toBe(true);
+            expect(ws.getCell("B38").value).toBe(5383.52);
+            expect(ws.getCell("C38").value).toBe(10880.79);
+            expect(ws.getCell("D38").value).toBe(0.158);
+            expect(ws.getCell("A38").font.bold).toBe(true);
         });
 
         it("writes each section total exactly once, in its own box's footer", async () => {
             const ws = await readBack(await build(), "Income Statement");
-            const amounts = Array.from({length: 40}, (_, i) => ws.getCell(i + 1, 2).value);
+            const amounts = Array.from({length: 42}, (_, i) => ws.getCell(i + 1, 2).value);
 
-            // The claim the summary block used to break: 25,126.48 appeared as
-            // "Total Expenses" AND as "Less: Expenses" four rows later.
-            expect(amounts.filter((v) => v === 25126.48)).toHaveLength(1);
+            // The claim the summary block used to break: the expense total
+            // appeared as "Total Expenses" AND as "Less: Expenses" four rows later.
+            expect(amounts.filter((v) => v === 28626.48)).toHaveLength(1);
             expect(amounts.filter((v) => v === 34010)).toHaveLength(1);
         });
 
@@ -574,14 +576,14 @@ describe("UNIT export/xlsx", () => {
             // omitted them would be the worst place to break it.
             const unpriced = decodeIncomeStatementReport({
                 ...(UNCOMPARED_INCOME_STATEMENT as object),
-                netIncome: {current: {$: {mantissa: "888352", places: 2}, GLD: {mantissa: "5", places: 0}}},
+                netIncome: {current: {$: {mantissa: "538352", places: 2}, GLD: {mantissa: "5", places: 0}}},
             });
             const ws = await readBack(await build(unpriced), "Income Statement");
 
-            expect(ws.getCell("A36").value).toBe("Net income (revenue − expenses)");
-            expect(ws.getCell("B36").value).toBe(8883.52);
-            expect(ws.getCell("C36").value).toBe(0.261); // no prior column here, so % is in C
-            expect(ws.getCell("D36").value).toBe("5 GLD");
+            expect(ws.getCell("A38").value).toBe("Net income (revenue − expenses)");
+            expect(ws.getCell("B38").value).toBe(5383.52);
+            expect(ws.getCell("C38").value).toBe(0.158); // no prior column here, so % is in C
+            expect(ws.getCell("D38").value).toBe("5 GLD");
         });
     });
 
@@ -614,6 +616,7 @@ describe("UNIT export/xlsx", () => {
             asOf: "2026-07-08",
             base: "$",
             holdings: [aapl, gld],
+            accounts: [], // the scope chooser's options; the workbook does not read them
             totals: {marketValue: dec(210000n, 2), basis: null, gain: null, gainPct: null}, // honest: GLD is tainted/unpriced
             topGainers: [],
             topLosers: [],
@@ -674,6 +677,7 @@ describe("UNIT export/xlsx", () => {
             asOf: "2026-07-08",
             base: "$",
             holdings: [btc],
+            accounts: [],
             totals: {marketValue: dec(1005n, 3), basis: dec(7000n, 2), gain: dec(-1015n, 3), gainPct: null},
             topGainers: [],
             topLosers: [],

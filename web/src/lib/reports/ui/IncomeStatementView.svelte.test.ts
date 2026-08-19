@@ -102,9 +102,10 @@ describe("COMPONENT IncomeStatementView", () => {
             mount();
             const expenses = screen.getByTestId("is-section-opex");
 
+            expect(expenses.textContent).toContain("$3,500.00"); // Depreciation
             expect(expenses.textContent).toContain("$1,654.38"); // Food
             expect(expenses.textContent).toContain("$13,125.00"); // Housing
-            expect(expenses.textContent).toContain("$25,126.48"); // the section total
+            expect(expenses.textContent).toContain("$28,626.48"); // the section total
         });
 
         it("reports its state through aria-expanded", () => {
@@ -178,7 +179,7 @@ describe("COMPONENT IncomeStatementView", () => {
         it("prints each line's share of revenue to one decimal", () => {
             mount();
 
-            expect(screen.getByTestId("is-section-opex").textContent).toContain("73.9%"); // 25,126.48 / 34,010.00
+            expect(screen.getByTestId("is-section-opex").textContent).toContain("84.2%"); // 28,626.48 / 34,010.00
             expect(screen.getByTestId("is-section-revenue").textContent).toContain("100.0%");
             // 1.9675% → "2.0%", not "2%": the trailing zero says the column has a
             // decimal place, which is what makes 0.5% and 38.6% read as a column.
@@ -208,7 +209,7 @@ describe("COMPONENT IncomeStatementView", () => {
             );
 
             // Not 0%, not ∞, not NaN: with no revenue there is no such ratio.
-            expect(pctCells.filter((text) => text === "—").length).toBe(8); // 7 groups + the section total
+            expect(pctCells.filter((text) => text === "—").length).toBe(9); // 8 groups + the section total
             expect(pctCells.filter((text) => text?.endsWith("%"))).toEqual([]);
         });
     });
@@ -353,15 +354,15 @@ describe("COMPONENT IncomeStatementView", () => {
             const box = screen.getByTestId("is-net-income");
 
             expect(box.textContent).toContain("Net income");
-            expect(box.textContent).toContain("$8,883.52");
-            expect(box.textContent).toContain("$14,880.79"); // the prior period's
-            expect(box.textContent).toContain("26.1%");
+            expect(box.textContent).toContain("$5,383.52");
+            expect(box.textContent).toContain("$10,880.79"); // the prior period's
+            expect(box.textContent).toContain("15.8%");
         });
 
         // REGRESSION: this panel rendered prior BEFORE current, so it read
-        // "$14,880.79  $8,883.52" — inviting anyone who had just read the
-        // Amount / Prior / % headers above to take net income as $14,880.79 when
-        // the period earned $8,883.52. `toContain` above cannot see order, and
+        // "$10,880.79  $5,383.52" — inviting anyone who had just read the
+        // Amount / Prior / % headers above to take net income as $10,880.79 when
+        // the period earned $5,383.52. `toContain` above cannot see order, and
         // this is the one place on the page with no column header to disambiguate,
         // so pin the sequence — and pin it against the workbook's order too, since
         // `setIsAmounts` writes current into Amount and prior into Prior.
@@ -369,8 +370,8 @@ describe("COMPONENT IncomeStatementView", () => {
             mount();
             const text = screen.getByTestId("is-net-income").textContent ?? "";
 
-            expect(text.indexOf("$8,883.52")).toBeLessThan(text.indexOf("$14,880.79"));
-            expect(text.indexOf("$14,880.79")).toBeLessThan(text.indexOf("26.1%"));
+            expect(text.indexOf("$5,383.52")).toBeLessThan(text.indexOf("$10,880.79"));
+            expect(text.indexOf("$10,880.79")).toBeLessThan(text.indexOf("15.8%"));
         });
 
         it("restates nothing the boxes already showed", () => {

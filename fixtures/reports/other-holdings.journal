@@ -1,0 +1,101 @@
+; Fixture for the Other holdings tab (WP-14): the assets a person owns that are
+; neither securities nor cash — a house, a van, a partnership interest — plus a
+; real stock position and a cash account to prove they are excluded.
+;
+; It covers each of the three ways a non-stock asset behaves over time, because
+; the whole point of the tab is "value, and change in value":
+;
+;   1. HOUSE   — booked as its OWN COMMODITY with `P` directives, which is the
+;                only way a dollar journal makes an asset revalue. Tagged
+;                `holdings: other`, because without the tag the commodity would
+;                file it under Stocks. Bought at $400,000, worth $455,000.
+;   2. van     — booked in DOLLARS and depreciated by explicit entries. Its cost
+;                and its value are the same number by construction, so its change
+;                is honestly zero at all times and the movement shows up as the
+;                balance falling. $32,000 → $24,500.
+;   3. acme    — booked in DOLLARS with a capital contribution partway through.
+;                No revaluation at all: the common "I put money in and that is
+;                what it is worth" case. $50,000 → $75,000.
+;
+; Membership is decided ENTIRELY by declared `type:` and `holdings:` tags, never
+; by what an account is called, so a regression that reintroduced name matching
+; shows up here as a tab that reads empty. `assets:receivable:petty` carries a
+; real balance and `holdings: none`: it must stay on the balance sheet and appear
+; on neither tab. Dates end 2026-06-30, so reports pin `asOf=2026-06-30`.
+;
+; Verified against hledger 1.52 at 2026-06-30:
+;   hledger -f other-holdings.journal bal type:A --value=end,'$' -e 2026-07-01
+;   assets:bank:checking      $25,000.00
+;   assets:broker:taxable        20 VTI   ($5,400.00 at $270.00)
+;   assets:partners:acme      $75,000.00
+;   assets:property:house          1 HOUSE ($455,000.00 at $455,000.00)
+;   assets:vehicles:van       $24,500.00
+
+account assets                       ; type: A
+account assets:bank:checking         ; type: C
+account assets:broker:taxable        ; type: A
+account assets:property:house        ; type: A, holdings: other, name: Family home
+account assets:vehicles:van          ; type: A, name: Delivery van
+account assets:partners:acme         ; type: A, name: Acme Partners LP
+account assets:receivable:petty      ; type: A, holdings: none
+account liabilities:mortgage         ; type: L
+account equity:opening               ; type: E
+account income:consulting            ; type: R
+account expenses:depreciation        ; type: X
+
+commodity $1,000.00
+commodity 1. HOUSE
+
+; The house revalues; VTI is a genuine security and must stay on the Stocks tab.
+P 2026-01-01 HOUSE $400,000.00
+P 2026-04-01 HOUSE $430,000.00
+P 2026-06-30 HOUSE $455,000.00
+P 2026-06-30 VTI $270.00
+
+2026-01-01 Opening balances
+    assets:bank:checking             $60,000.00
+    equity:opening
+
+2026-01-15 Notary | buy the house
+    assets:property:house                 1 HOUSE @ $400,000.00
+    liabilities:mortgage           $-320,000.00
+    assets:bank:checking            $-80,000.00
+
+2026-02-01 Dealer | buy the van
+    assets:vehicles:van              $32,000.00
+    assets:bank:checking            $-32,000.00
+
+2026-02-15 Acme Partners | initial capital contribution
+    assets:partners:acme             $50,000.00
+    assets:bank:checking            $-50,000.00
+
+2026-03-01 Broker | buy VTI
+    assets:broker:taxable                20 VTI @ $250.00
+    assets:bank:checking             $-5,000.00
+
+2026-03-31 Consulting income
+    assets:bank:checking            $160,000.00
+    income:consulting
+
+2026-05-01 Acme Partners | follow-on contribution
+    assets:partners:acme             $25,000.00
+    assets:bank:checking            $-25,000.00
+
+; Depreciation moves the van's BALANCE, not a price. This is how a
+; dollar-booked asset changes value, and the Other tab has to show it.
+2026-06-30 Depreciate the van
+    expenses:depreciation             $7,500.00
+    assets:vehicles:van              $-7,500.00
+
+; A `holdings: none` account with a real balance: it stays on the balance sheet
+; and must NOT appear on either tab.
+2026-06-30 Petty reimbursement owed
+    assets:receivable:petty           $1,000.00
+    assets:bank:checking             $-1,000.00
+
+2026-06-30 Mortgage payment
+    liabilities:mortgage              $2,000.00
+    assets:bank:checking             $-2,000.00
+
+2026-06-30 Closing checking balance assertion
+    assets:bank:checking                  $0.00 = $25,000.00

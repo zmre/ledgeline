@@ -26,7 +26,17 @@
 
 import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
-import type {Holding, HoldingsPoint, HoldingsReport, HoldingsSeries, HoldingsWarning} from "$lib/holdings/types";
+import type {
+    Holding,
+    HoldingsPoint,
+    HoldingsReport,
+    HoldingsSeries,
+    HoldingsWarning,
+    OtherHolding,
+    OtherHoldingsReport,
+    OtherHoldingsTotals,
+    OtherHoldingsWarning,
+} from "$lib/holdings/types";
 import type {
     AliasEffect,
     AliasEntry,
@@ -296,10 +306,44 @@ interface RawHoldingsReport {
     asOf?: string;
     base?: string;
     holdings?: RawHolding[];
+    accounts?: unknown[];
     totals?: RawHoldingsTotals;
     topGainers?: RawHolding[];
     topLosers?: RawHolding[];
     warnings?: RawWarning[];
+}
+
+interface RawOtherHolding {
+    account?: string;
+    name?: string;
+    commodities?: RawMixed;
+    value?: RawDec | null;
+    cost?: RawDec | null;
+    change?: RawDec | null;
+    changePct?: number | null;
+}
+
+interface RawOtherHoldingsTotals {
+    value?: RawDec;
+    cost?: RawDec | null;
+    change?: RawDec | null;
+    changePct?: number | null;
+}
+
+/** The Other tab's warning is ACCOUNT-keyed, where the stock tab's is symbol-keyed. */
+interface RawOtherWarning {
+    account?: string;
+    kind?: string;
+    message?: string;
+}
+
+interface RawOtherHoldingsReport {
+    asOf?: string;
+    base?: string;
+    holdings?: RawOtherHolding[];
+    accounts?: unknown[];
+    totals?: RawOtherHoldingsTotals;
+    warnings?: RawOtherWarning[];
 }
 
 interface RawHoldingsPoint {
@@ -1243,18 +1287,112 @@ export function decodeHoldingsReport(raw: unknown): HoldingsReport {
         report === null ||
         typeof report.asOf !== "string" ||
         typeof report.base !== "string" ||
-        !Array.isArray(report.holdings)
+        !Array.isArray(report.holdings) ||
+        // Demanded, not defaulted to []: this is the scope chooser's whole option
+        // list, and an absent key would empty the account picker while the report
+        // beside it rendered perfectly (DRY-3).
+        !Array.isArray(report.accounts)
     ) {
-        throw new ApiShapeError("holdings report: expected asOf/base/holdings");
+        throw new ApiShapeError("holdings report: expected asOf/base/holdings/accounts");
     }
     return Object.freeze({
         asOf: report.asOf as ISODate,
         base: report.base,
         holdings: frozen(report.holdings.map((holding, i) => decodeHolding(holding, `holding #${i}`))),
+        accounts: frozen(decodeStrings(report.accounts, "holdings accounts")),
         totals: decodeHoldingsTotals(report.totals, "holdings totals"),
         topGainers: frozen((report.topGainers ?? []).map((holding, i) => decodeHolding(holding, `topGainer #${i}`))),
         topLosers: frozen((report.topLosers ?? []).map((holding, i) => decodeHolding(holding, `topLoser #${i}`))),
         warnings: frozen((report.warnings ?? []).map((warning, i) => decodeWarning(warning, `warning #${i}`))),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// OtherHoldingsReport (plans/14) — the non-stock, non-cash assets.
+//
+// A separate decoder rather than a variant of `decodeHolding`: the two reports
+// share not one field name. This one is account-keyed and carries the balance
+// as-written (`commodities`), where the stock report is symbol-keyed and carries
+// `shares`/`price`/`basis`. Its SERIES, by contrast, IS the stock series byte
+// for byte, so there is no `decodeOtherHoldingsSeries` — callers pass the
+// response straight to `decodeHoldingsSeries`, and a second decoder would only
+// create somewhere for the two to drift.
+// ---------------------------------------------------------------------------
+
+function decodeOtherHolding(raw: RawOtherHolding | undefined, context: string): OtherHolding {
+    if (raw === undefined || typeof raw.account !== "string" || typeof raw.name !== "string") {
+        throw new ApiShapeError(`${context}: missing account/name`);
+    }
+    return Object.freeze({
+        account: raw.account,
+        name: raw.name,
+        // Demanded, never defaulted to an empty Map: an account that holds
+        // nothing is not a row at all (membership requires a non-zero balance),
+        // so an empty `commodities` here would mean the engine stopped sending
+        // the balance — and the Holding cell would silently read as a
+        // currency-only asset (DRY-3, the same reasoning as decodeMixed).
+        commodities: decodeMixed(raw.commodities, `${context} commodities`),
+        value: decodeOptDec(raw.value, `${context} value`),
+        cost: decodeOptDec(raw.cost, `${context} cost`),
+        change: decodeOptDec(raw.change, `${context} change`),
+        changePct: typeof raw.changePct === "number" ? raw.changePct : null,
+    });
+}
+
+function decodeOtherWarning(raw: RawOtherWarning | undefined, context: string): OtherHoldingsWarning {
+    if (raw === undefined || typeof raw.account !== "string" || typeof raw.message !== "string") {
+        throw new ApiShapeError(`${context}: missing account/message`);
+    }
+    // One kind today. Throwing on a new one is the same call `decodeWarning`
+    // makes: a warning we cannot classify is not a warning we should render.
+    if (raw.kind !== "unpriced") {
+        throw new ApiShapeError(`${context}: unknown warning kind ${JSON.stringify(raw.kind)}`);
+    }
+    return Object.freeze({account: raw.account, kind: raw.kind, message: raw.message});
+}
+
+function decodeOtherHoldingsTotals(raw: RawOtherHoldingsTotals | undefined, context: string): OtherHoldingsTotals {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing totals`);
+    return Object.freeze({
+        // `value` alone is unconditional on the wire: it sums the rows that HAVE
+        // a value, so an all-unpriced report still totals to zero rather than to
+        // nothing. The other three are refusals the UI renders as an em-dash.
+        value: decodeDec(raw.value, `${context} value`),
+        cost: decodeOptDec(raw.cost, `${context} cost`),
+        change: decodeOptDec(raw.change, `${context} change`),
+        changePct: typeof raw.changePct === "number" ? raw.changePct : null,
+    });
+}
+
+/** `GET /api/holdings/other` → the Other tab's table + totals. */
+export function decodeOtherHoldingsReport(raw: unknown): OtherHoldingsReport {
+    const report = raw as RawOtherHoldingsReport;
+    if (
+        typeof report !== "object" ||
+        report === null ||
+        typeof report.asOf !== "string" ||
+        typeof report.base !== "string" ||
+        !Array.isArray(report.holdings) ||
+        // Demanded, not defaulted to []: this is the scope chooser's whole option
+        // list, and an absent key would empty the account picker while the report
+        // beside it rendered perfectly — "this journal tracks no other assets",
+        // said by a field that went missing (DRY-3).
+        !Array.isArray(report.accounts) ||
+        // Demanded for the same reason, and specifically because the golden has
+        // NO unpriced row: `?? []` would make renaming this key indistinguishable
+        // from the honest empty case, which is exactly the hole the rename sweep
+        // exists to close. "Nothing is unpriced" must be the engine saying so.
+        !Array.isArray(report.warnings)
+    ) {
+        throw new ApiShapeError("other holdings report: expected asOf/base/holdings/accounts/warnings");
+    }
+    return Object.freeze({
+        asOf: report.asOf as ISODate,
+        base: report.base,
+        holdings: frozen(report.holdings.map((holding, i) => decodeOtherHolding(holding, `other holding #${i}`))),
+        accounts: frozen(decodeStrings(report.accounts, "other holdings accounts")),
+        totals: decodeOtherHoldingsTotals(report.totals, "other holdings totals"),
+        warnings: frozen(report.warnings.map((warning, i) => decodeOtherWarning(warning, `other holdings warning #${i}`))),
     });
 }
 

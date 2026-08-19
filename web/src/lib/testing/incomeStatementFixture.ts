@@ -25,18 +25,24 @@
 //
 //   hledger is -V -b 2026-01-01 -e 2026-07-09 --depth 2
 //       income:salary $33,960.00   income:dividends     $50.00   → $34,010.00
+//       expenses:depreciation $3,500.00
 //       expenses:food  $1,654.38   expenses:housing $13,125.00
 //       expenses:taxes $8,760.00   expenses:transport  $186.54
 //       expenses:travel  $656.40   expenses:unknown     $75.00
-//       expenses:utilities $669.16                              → $25,126.48
-//       Net                                                     →  $8,883.52
+//       expenses:utilities $669.16                              → $28,626.48
+//       Net                                                     →  $5,383.52
 //
 //   hledger is -V -b 2025-06-26 -e 2026-01-01 --depth 2     (the prior window)
 //       income:salary $39,360.00   income:dividends     $37.50   → $39,397.50
+//       expenses:depreciation $4,000.00
 //       expenses:food  $1,546.35   expenses:housing $11,175.00
 //       expenses:taxes $10,110.00  expenses:transport  $182.15
-//       expenses:travel  $749.10   expenses:utilities  $754.11   → $24,516.71
-//       Net                                                     → $14,880.79
+//       expenses:travel  $749.10   expenses:utilities  $754.11   → $28,516.71
+//       Net                                                     → $10,880.79
+//
+// `expenses:depreciation` is the vehicle write-down plans/14 added to the
+// journal: $4,000 on 2025-06-30 (inside the prior window, which opens 2025-06-26)
+// and $3,500 on 2026-06-30. It is a leaf at depth 2, so its group has one row.
 //
 //   hledger bal income expenses -V -b … --tree              (the account rows)
 //
@@ -125,6 +131,14 @@ export const GROUPED_INCOME_STATEMENT: unknown = {
             title: "Expenses",
             groups: [
                 {
+                    // Sorted by name, so Depreciation leads. A single leaf at
+                    // depth 2: the group and its only row carry the same figure.
+                    name: "Depreciation",
+                    source: "segment",
+                    total: both("350000", "400000"),
+                    rows: [{account: "expenses:depreciation", depth: 2, amounts: both("350000", "400000")}],
+                },
+                {
                     name: "Food",
                     source: "segment",
                     total: both("165438", "154635"),
@@ -197,11 +211,11 @@ export const GROUPED_INCOME_STATEMENT: unknown = {
                     ],
                 },
             ],
-            total: both("2512648", "2451671"),
+            total: both("2862648", "2851671"),
             trailing: [],
         },
     ],
-    netIncome: both("888352", "1488079"),
+    netIncome: both("538352", "1088079"),
     meta: {unpriced: []},
 };
 

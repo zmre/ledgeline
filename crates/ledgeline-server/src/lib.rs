@@ -517,6 +517,14 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             "/api/holdings/series",
             get(reports_api::holdings_series_report),
         )
+        .route(
+            "/api/holdings/other",
+            get(reports_api::other_holdings_report),
+        )
+        .route(
+            "/api/holdings/other/series",
+            get(reports_api::other_holdings_series_report),
+        )
         // Write path (Phase 5.2+): add / delete / replace (PUT) / partial-edit
         // (PATCH) a transaction through the editor.
         .route("/api/transactions", post(edit_api::add_transaction))

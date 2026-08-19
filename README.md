@@ -28,8 +28,20 @@ I built this because I was dissatisfied with existing GUIs. They often hard code
   balance check is a real journal-integrity signal rather than decoration. See
   **[docs/balance-sheet.md](docs/balance-sheet.md)** for the grouping rules, valuation, and why the check
   has a tolerance.
-- **Holdings** — average-cost basis, unrealized gain (all-time / year-to-date / trailing-12-months),
-  value-over-time, per-symbol names from `commodity` directives, partial portfolio totals; XLSX export.
+- **Holdings** — two sub-tabs. **Stocks**: average-cost basis, unrealized gain (all-time /
+  year-to-date / trailing-12-months), value-over-time, per-symbol names from `commodity` directives,
+  partial portfolio totals; XLSX export. **Other**: the assets that are neither securities nor cash —
+  a house, a car, a partnership interest — one row per account with its value, cost and change over
+  the same window. Which tab an account lands on is mechanical (does it hold a non-currency
+  commodity?) and overridable per account:
+
+  ```journal
+  account assets:property:home  ; type: A, holdings: other
+  account assets:receivable     ; type: A, holdings: none
+  ```
+
+  See **[docs/holdings.md](docs/holdings.md)** for the `holdings:` tag, the two ways a non-stock asset
+  changes value, and why the three reports read prices from different places.
 - **Imports** — finds the CSV import rules files (`*.rules`) beside your journal and edits them in a
   friendly form instead of a text box: date format, the CSV column → field mapping (labelled with your
   data file's real headers and sample values), the default accounts, and a reorderable list of `if`
@@ -117,6 +129,8 @@ See **[docs/imports.md](docs/imports.md)** for the CSV rules-file editor — the
 model, what it will and won't edit, and the guards on its write path.
 See **[docs/balance-sheet.md](docs/balance-sheet.md)** for the balance sheet — the `bsgroup:` tag,
 how untagged accounts are grouped, valuation, and the balance check's tolerance.
+See **[docs/holdings.md](docs/holdings.md)** for the Holdings tabs — the `holdings:` tag, what
+"change" measures against, and the account chooser's scope-independence.
 
 ## Architecture
 
@@ -124,17 +138,14 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
-- chore: route bad `issection:` / `type:` tag values into Problems
+- chore: route bad `issection:` / `holdings:` / `type:` tag values into Problems
   - a mistyped `issection:` currently fails the whole P&L request with a 400 naming the account and the
-    valid codes. Right that it isn't silently dropped, wrong that one typo takes the tab down. Problems
+    valid codes, and `holdings:` now does the same to the Holdings tab. Right that it isn't silently
+    dropped, wrong that one typo takes the tab down. Problems
     entries anchor to a `txnIndex` and an `account` directive has none, so this needs a wire field that
     allows a directive-anchored diagnostic plus an allow-list entry in the SPA's `normalize.ts`.
-- p&l report ui improvements
-  - Much like the balance sheet, the P&L report is a bit hard to read in part because totals show up at the top and the bottom of a group. so "revenue" has a total, then each thing under it has a total, then there's a "Total Revenues" which is the same as the "revenue" line.
-  - Lets update this a bit more like the balance sheet where we add boxes that are sections with colors and totals, which should make it easier to scan and read.
-  - Lets also line up a bit better with some standard GAAP accounting and setup a similar trick with tags like what we used with the balance sheet where we make intelligent guesses if we don't have tags on accounts to be more specific.  This is tricky because this software is used both by businesses, where things like cost of goods sold and operating expenses and sales are separated from other income and expenses so an EBITDA can be calculated, but also for personal finance tracking where EBITDA doesn't matter and most income is salary or dividends or whatever and there's no COGS. The default should probably just be revenue/expenses as boxes, but with tagging, we can group things in other ways.
 - feat: non-stock and cash holdings
-  - i want the holdings tab to have two sub-tabs: Stocks and Other.  Other should show all assets (type:A) excluding stocks and cash (type:C). if we get this right, we'll be able to show things like home, cars, partnerships, etc.  And like with stocks, we want to show the value of each and the change in value over time
+  - i want the holdings tab to have two sub-tabs: Stocks and Other.  Other should show all assets (type:A) excluding stocks (stock symbol) and cash (type:C). if we get this right, we'll be able to show things like home, cars, partnerships, etc.  And like with stocks, we want to show the value of each and the change in value over time
 - **Imports**
   - feat: quickbooks import handling
     - transaction matching and skipping

@@ -13,6 +13,11 @@
 ;   - stock holdings (WP-10): AAPL + VTI with @ costs and name: tags (average-cost math
 ;     incl. the 2026-04-14 partial VTI sell), NVDA bought then fully sold (must NOT appear
 ;     in holdings), GLD held with unknown basis and no P price, TSLA never bought
+;   - other holdings (WP-14): the assets that are neither securities nor cash — a home
+;     booked as its own HOME commodity and revalued by P directives (tagged
+;     `holdings: other`, or the commodity would file it under Stocks), and a car booked
+;     in dollars and written down by explicit depreciation entries. Together they cover
+;     both ways a non-stock asset changes value: the price moves, or the balance does.
 ;
 ; Deliberate problem records for WP-08/WP-10 (do not "fix" these):
 ;   - 2026-06-20  posting to expenses:unknown (also left undeclared)
@@ -38,8 +43,11 @@ account assets:broker:taxable:vti     ; type: A
 account assets:broker:taxable:gld     ; type: A
 account assets:broker:taxable:nvda    ; type: A
 account assets:broker:taxable:tsla    ; type: A
+account assets:property:home          ; type: A, holdings: other, bsgroup: Property, name: Family home
+account assets:vehicles:car           ; type: A, name: Honda CR-V
 account liabilities                   ; type: L
 account liabilities:cc:visa           ; type: L
+account liabilities:mortgage          ; type: L
 account equity                        ; type: E
 account equity:opening                ; type: E
 account equity:transfers              ; type: E
@@ -58,6 +66,7 @@ account expenses:travel:lodging
 account expenses:travel:activities
 account expenses:travel:flights
 account expenses:shopping
+account expenses:depreciation         ; type: X
 
 ; ---------- commodity declarations (display styles) ----------
 
@@ -68,17 +77,21 @@ commodity 1.0 VTI
 commodity 1.0 GLD
 commodity 1.0 NVDA
 commodity 1.0 TSLA
+commodity 1.0 HOME
 
 ; ---------- market prices (net-worth valuation) ----------
 
+P 2024-07-01 HOME $420,000.00
 P 2024-09-30 EUR $1.11
 P 2024-09-30 AAPL $228.00
 P 2025-03-31 EUR $1.08
 P 2025-03-31 AAPL $221.50
 P 2025-03-31 VTI $268.90
+P 2025-06-30 HOME $445,000.00
 P 2025-12-31 EUR $1.10
 P 2025-12-31 AAPL $255.00
 P 2025-12-31 VTI $298.40
+P 2026-06-30 HOME $468,000.00
 P 2026-06-30 EUR $1.16
 P 2026-06-30 AAPL $270.25
 P 2026-06-30 VTI $310.75
@@ -89,6 +102,18 @@ P 2026-06-30 VTI $310.75
     assets:bank:checking       $5,000.00 = $5,000.00
     assets:bank:savings       $10,000.00
     liabilities:cc:visa         $-450.00
+    equity:opening
+
+; The home is booked as its OWN commodity so the P directives above can revalue
+; it; `holdings: other` is what keeps it off the Stocks tab. Both opening
+; positions are funded from equity, so neither asserted cash balance moves.
+2024-07-01 * Opening property position
+    assets:property:home            1 HOME @ $420,000.00
+    liabilities:mortgage        $-336,000.00
+    equity:opening
+
+2024-07-01 * Opening vehicle position
+    assets:vehicles:car            $28,000.00
     equity:opening
 
 2024-07-01 * Oakview Properties | rent
@@ -457,6 +482,14 @@ P 2026-06-30 VTI $310.75
     expenses:taxes:federal     $1,050.00
     expenses:taxes:state         $300.00
     assets:bank:checking       $4,050.00
+
+; A dollar-booked asset changes value the only way it can: an explicit entry.
+; The two are described distinctly ON PURPOSE: one payee repeating a year apart is
+; exactly the shape the subscription detector looks for, and a non-cash write-down
+; listed as an annual subscription would be the demo journal teaching a wrong thing.
+2025-06-30 * vehicle depreciation FY2025
+    expenses:depreciation          $4,000.00
+    assets:vehicles:car
 
 2025-07-01 * Oakview Properties | rent
     expenses:housing:rent      $1,800.00
@@ -876,6 +909,10 @@ P 2026-06-30 VTI $310.75
     assets:bank:checking
 
 ; ---------- July 2026 (current month) ----------
+
+2026-06-30 * vehicle depreciation FY2026
+    expenses:depreciation          $3,500.00
+    assets:vehicles:car
 
 2026-07-01 Oakview Properties | rent
     expenses:housing:rent      $1,875.00

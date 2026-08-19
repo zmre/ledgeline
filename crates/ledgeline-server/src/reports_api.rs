@@ -25,8 +25,9 @@ use axum::extract::{Query, State};
 use ledgeline_core::Dec;
 use ledgeline_core::holdings::{
     Holding, HoldingPrice, HoldingsPoint, HoldingsReport, HoldingsScope, HoldingsSeries,
-    HoldingsTotals, HoldingsWarning, PriceSource, ScopeMode, WarningKind, compute_holdings,
-    holdings_series, prices_any_held,
+    HoldingsTotals, HoldingsWarning, OtherHolding, OtherHoldingsReport, OtherHoldingsTotals,
+    OtherHoldingsWarning, OtherWarningKind, PriceSource, ScopeMode, WarningKind, compute_holdings,
+    holdings_series, other_holdings, other_holdings_series, prices_any_held,
 };
 use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods;
@@ -1012,6 +1013,7 @@ pub(crate) struct WireHoldingsReport {
     as_of: String,
     base: String,
     holdings: Vec<WireHolding>,
+    accounts: Vec<String>,
     totals: WireHoldingsTotals,
     top_gainers: Vec<WireHolding>,
     top_losers: Vec<WireHolding>,
@@ -1024,6 +1026,7 @@ impl From<&HoldingsReport> for WireHoldingsReport {
             as_of: report.as_of.clone(),
             base: report.base.clone(),
             holdings: report.holdings.iter().map(WireHolding::from).collect(),
+            accounts: report.accounts.clone(),
             totals: (&report.totals).into(),
             top_gainers: report.top_gainers.iter().map(WireHolding::from).collect(),
             top_losers: report.top_losers.iter().map(WireHolding::from).collect(),
@@ -1070,6 +1073,107 @@ impl From<&HoldingsSeries> for WireHoldingsSeries {
             base: series.base.clone(),
             points: series.points.iter().map(WireHoldingsPoint::from).collect(),
             has_basis: series.has_basis,
+        }
+    }
+}
+
+/// One Other-holdings row: an ACCOUNT you own that is neither a security nor
+/// cash. `commodities` is the balance as written, so the UI can print `1 HOUSE`
+/// beside the dollar value. Null-valued keys are kept, matching `WireHolding`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireOtherHolding {
+    account: String,
+    name: String,
+    commodities: WireMixed,
+    value: Option<WireDec>,
+    cost: Option<WireDec>,
+    change: Option<WireDec>,
+    change_pct: Option<f64>,
+}
+
+impl From<&OtherHolding> for WireOtherHolding {
+    fn from(holding: &OtherHolding) -> Self {
+        Self {
+            account: holding.account.clone(),
+            name: holding.name.clone(),
+            commodities: wire_mixed(&holding.commodities),
+            value: holding.value.map(WireDec::from),
+            cost: holding.cost.map(WireDec::from),
+            change: holding.change.map(WireDec::from),
+            change_pct: holding.change_pct,
+        }
+    }
+}
+
+/// An Other-holdings warning → `{account, kind, message}`. Keyed by ACCOUNT
+/// rather than by symbol, because that is what a row is here.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireOtherWarning {
+    account: String,
+    kind: &'static str,
+    message: String,
+}
+
+impl From<&OtherHoldingsWarning> for WireOtherWarning {
+    fn from(warning: &OtherHoldingsWarning) -> Self {
+        Self {
+            account: warning.account.clone(),
+            kind: match warning.kind {
+                OtherWarningKind::Unpriced => "unpriced",
+            },
+            message: warning.message.clone(),
+        }
+    }
+}
+
+/// Other-holdings totals: `value` always present; the rest null when refused.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireOtherHoldingsTotals {
+    value: WireDec,
+    cost: Option<WireDec>,
+    change: Option<WireDec>,
+    change_pct: Option<f64>,
+}
+
+impl From<&OtherHoldingsTotals> for WireOtherHoldingsTotals {
+    fn from(totals: &OtherHoldingsTotals) -> Self {
+        Self {
+            value: totals.value.into(),
+            cost: totals.cost.map(WireDec::from),
+            change: totals.change.map(WireDec::from),
+            change_pct: totals.change_pct,
+        }
+    }
+}
+
+/// The full Other-holdings report.
+///
+/// The matching TREND has no wire type of its own: it is a
+/// [`WireHoldingsSeries`], byte for byte, so the SPA decodes both trends with
+/// one function and draws them with one chart component.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireOtherHoldingsReport {
+    as_of: String,
+    base: String,
+    holdings: Vec<WireOtherHolding>,
+    accounts: Vec<String>,
+    totals: WireOtherHoldingsTotals,
+    warnings: Vec<WireOtherWarning>,
+}
+
+impl From<&OtherHoldingsReport> for WireOtherHoldingsReport {
+    fn from(report: &OtherHoldingsReport) -> Self {
+        Self {
+            as_of: report.as_of.clone(),
+            base: report.base.clone(),
+            holdings: report.holdings.iter().map(WireOtherHolding::from).collect(),
+            accounts: report.accounts.clone(),
+            totals: (&report.totals).into(),
+            warnings: report.warnings.iter().map(WireOtherWarning::from).collect(),
         }
     }
 }
@@ -2106,6 +2210,73 @@ pub(crate) async fn holdings_series_report(
             &snapshot.journal.prices,
             &snapshot.journal.accounts,
             &snapshot.journal.commodity_tags,
+            &scope,
+            interval,
+            count,
+        )?;
+        Ok(WireHoldingsSeries::from(&series))
+    })
+    .await
+}
+
+/// `GET /api/holdings/other` — the assets you own that are neither securities
+/// nor cash: a house, a car, a partnership interest.
+///
+/// Same scope, same `asOf`/`gainSince`/`valueIn` contract as `/api/holdings`, so
+/// the page's one scope bar drives both tabs. What differs is the KEY: rows here
+/// are accounts, not commodities — see `holdings::other` for why that cannot be
+/// a filter over the stock engine.
+pub(crate) async fn other_holdings_report(
+    State(state): State<AppState>,
+    Query(query): Query<HoldingsQuery>,
+) -> Result<Json<WireOtherHoldingsReport>, AppError> {
+    let snapshot = state.snapshot();
+    compute(move || {
+        let scope = holdings_scope(
+            &snapshot.journal,
+            query.accounts.as_deref(),
+            query.mode.as_deref(),
+            query.as_of,
+            query.gain_since,
+            query.value_in.as_deref(),
+        )?;
+        let report = other_holdings(
+            &snapshot.journal.transactions,
+            &snapshot.journal.prices,
+            &snapshot.journal.accounts,
+            &scope,
+        )?;
+        Ok(WireOtherHoldingsReport::from(&report))
+    })
+    .await
+}
+
+/// `GET /api/holdings/other/series` — total Other-holdings value (and cost) at
+/// each of the last `count` period boundaries ending at `asOf`.
+///
+/// Returns a `WireHoldingsSeries`, the same shape `/api/holdings/series` does,
+/// so one decoder and one chart component serve both tabs.
+pub(crate) async fn other_holdings_series_report(
+    State(state): State<AppState>,
+    Query(query): Query<HoldingsSeriesQuery>,
+) -> Result<Json<WireHoldingsSeries>, AppError> {
+    let snapshot = state.snapshot();
+    let interval = parse_interval(query.interval.as_deref())?;
+    let count = parse_count(query.count)?;
+    compute(move || {
+        let scope = holdings_scope(
+            &snapshot.journal,
+            query.accounts.as_deref(),
+            query.mode.as_deref(),
+            query.as_of,
+            // The trend tracks value/cost only — no per-point change window.
+            None,
+            query.value_in.as_deref(),
+        )?;
+        let series = other_holdings_series(
+            &snapshot.journal.transactions,
+            &snapshot.journal.prices,
+            &snapshot.journal.accounts,
             &scope,
             interval,
             count,

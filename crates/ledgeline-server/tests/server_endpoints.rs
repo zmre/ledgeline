@@ -110,9 +110,9 @@ async fn diagnostics_serves_the_sample_journals_stock_findings() {
     assert_eq!(
         anchors,
         vec![
-            (&json!(99), &json!("stock-missing-basis")),
-            (&json!(179), &json!("stock-negative")),
-            (&json!(99), &json!("stock-unpriced")),
+            (&json!(102), &json!("stock-missing-basis")),
+            (&json!(182), &json!("stock-negative")),
+            (&json!(102), &json!("stock-unpriced")),
         ],
         "{body}"
     );

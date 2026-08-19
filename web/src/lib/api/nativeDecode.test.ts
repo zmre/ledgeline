@@ -10,6 +10,7 @@ import {
     decodeHoldingsSeries,
     decodeIncomeStatementReport,
     decodeInsightsReport,
+    decodeOtherHoldingsReport,
     decodePeriodReport,
     decodeRulesDoc,
     decodeRulesIndex,
@@ -34,6 +35,13 @@ import {
 // a budget goal of `{}`). Each says which.
 
 const dec = (mantissa: number, places: number) => ({mantissa: String(mantissa), places});
+
+/** A copy of `obj` with one key removed — for asserting a decoder NOTICES an absent field rather than defaulting it. */
+function without<T extends object>(obj: T, key: keyof T): Partial<T> {
+    const copy: Partial<T> = {...obj};
+    delete copy[key];
+    return copy;
+}
 
 function golden(name: string): unknown {
     return JSON.parse(readFileSync(new URL(`../../../../fixtures/native/v1/${name}.json`, import.meta.url), "utf8"));
@@ -65,17 +73,21 @@ describe("UNIT nativeDecode — SectionedReport over the balancesheet golden", (
         const assets = report.sections[0];
         expect(assets.rows[0]).toMatchObject({account: "assets", depth: 1});
         // {mantissa, places} → Dec {m: bigint, p: number}
-        expect(assets.rows[0].inclusive.get("$")).toEqual({m: 4840256n, p: 2});
+        expect(assets.rows[0].inclusive.get("$")).toEqual({m: 6890256n, p: 2});
         expect(assets.rows[0].inclusive.get("AAPL")).toEqual({m: 195n, p: 1});
         // places 0 stays places 0, and a negative mantissa survives
         expect(assets.rows[0].inclusive.get("TSLA")).toEqual({m: -2n, p: 0});
+        // This report is UNVALUED, so the home stays the unit it is written as —
+        // which is exactly why the Other tab shows "1 HOME" beside a dollar value.
+        expect(assets.rows[0].inclusive.get("HOME")).toEqual({m: 1n, p: 0});
         // a parent account's OWN amount is an empty object → an empty Map
         expect(assets.rows[0].own.size).toBe(0);
         expect(assets.rows[1]).toMatchObject({account: "assets:bank", depth: 2});
-        expect(assets.total.get("$")).toEqual({m: 4840256n, p: 2});
+        expect(assets.total.get("$")).toEqual({m: 6890256n, p: 2});
 
-        expect(report.sections[1].total.get("$")).toEqual({m: 53115n, p: 2});
-        expect(report.grandTotal.get("$")).toEqual({m: 4787141n, p: 2});
+        // $531.15 of credit card, plus the $336,000 mortgage that funds the home.
+        expect(report.sections[1].total.get("$")).toEqual({m: 33653115n, p: 2});
+        expect(report.grandTotal.get("$")).toEqual({m: -26762859n, p: 2});
     });
 
     it("carries from/to on a range report (the incomestatement golden)", () => {
@@ -285,8 +297,8 @@ describe("UNIT nativeDecode — IncomeStatementReport (grouped)", () => {
 
         // hledger 1.52, `is -V -b 2026-01-01 -e 2026-07-09`.
         expect(report.sections[0].total.current.get("$")).toEqual({m: 3401000n, p: 2});
-        expect(report.sections[1].total.current.get("$")).toEqual({m: 2512648n, p: 2});
-        expect(report.netIncome.current.get("$")).toEqual({m: 888352n, p: 2});
+        expect(report.sections[1].total.current.get("$")).toEqual({m: 2862648n, p: 2});
+        expect(report.netIncome.current.get("$")).toEqual({m: 538352n, p: 2});
     });
 
     it("decodes the prior window and every figure inside it", () => {
@@ -294,7 +306,7 @@ describe("UNIT nativeDecode — IncomeStatementReport (grouped)", () => {
         // day, less the 188-day span.
         expect(report.prior).toEqual({from: "2025-06-26", to: "2025-12-31"});
         expect(report.sections[0].total.prior?.get("$")).toEqual({m: 3939750n, p: 2});
-        expect(report.netIncome.prior?.get("$")).toEqual({m: 1488079n, p: 2});
+        expect(report.netIncome.prior?.get("$")).toEqual({m: 1088079n, p: 2});
     });
 
     it("decodes groups with their resolution source and member rows", () => {
@@ -506,8 +518,10 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
         const report = decodePeriodReport(golden("networth"));
         expect(report.rows[0]).toMatchObject({account: "assets", depth: 1});
         // 6 decimal places: a computed value, not a parsed one.
-        expect(report.rows[0].values[0].get("$")).toEqual({m: 59729101000n, p: 6});
-        expect(report.totals[2].get("$")).toEqual({m: 594514650n, p: 4});
+        // 2026-05-31: the stock portfolio plus the home at its then-current
+        // $445,000 price and the car at $24,000 — the Other tab's first trend point.
+        expect(report.rows[0].values[0].get("$")).toEqual({m: 528729101000n, p: 6});
+        expect(report.totals[2].get("$")).toEqual({m: 2119514650n, p: 4});
     });
 
     // Literal: sample.journal leaves nothing unpriced, so `meta` never appears in
@@ -639,6 +653,7 @@ describe("UNIT nativeDecode — HoldingsReport over the holdings golden", () => 
             asOf: "2026-07-08",
             base: "$",
             holdings: [],
+            accounts: [],
             totals: {marketValue: dec(10552625, 3), basis: null, gain: null, gainPct: null},
         });
         expect(report.totals.marketValue).toEqual({m: 10552625n, p: 3});
@@ -656,8 +671,169 @@ describe("UNIT nativeDecode — HoldingsReport over the holdings golden", () => 
         expect(() => decodeHoldingsReport({...(raw as object), holdings})).toThrow(/unknown price source/);
     });
 
-    it("throws ApiShapeError when base is missing", () => {
-        expect(() => decodeHoldingsReport({asOf: "2026-07-08", holdings: [], totals: {marketValue: dec(0, 0)}})).toThrow(ApiShapeError);
+    it("throws ApiShapeError when base or the candidate account list is missing", () => {
+        expect(() => decodeHoldingsReport({asOf: "2026-07-08", holdings: [], accounts: [], totals: {marketValue: dec(0, 0)}})).toThrow(ApiShapeError);
+        // The scope chooser's option list, demanded for the reason `accounts` is
+        // demanded on the Other report: an absent key would empty the picker.
+        expect(() => decodeHoldingsReport(without(raw as object as Record<string, unknown>, "accounts"))).toThrow(ApiShapeError);
+    });
+});
+
+// The golden covers the happy path (below); these literals cover what
+// `fixtures/sample.journal` cannot produce — an all-null row, an unknown warning
+// kind, an absent key, a mantissa past the safe-integer range. Same division of
+// labour every other decoder here uses, and each case says which.
+describe("UNIT nativeDecode — OtherHoldingsReport (plans/14)", () => {
+    const HOUSE = {
+        account: "assets:property:house",
+        name: "Family home",
+        commodities: {HOUSE: dec(1, 0)},
+        value: dec(17500000, 2),
+        cost: dec(15000000, 2),
+        change: dec(2500000, 2),
+        changePct: 16.67,
+    };
+    const RAW = {
+        asOf: "2026-07-08",
+        base: "$",
+        holdings: [HOUSE],
+        accounts: ["assets:partners:acme", "assets:property:house", "assets:vehicles:van"],
+        totals: {value: dec(17500000, 2), cost: dec(15000000, 2), change: dec(2500000, 2), changePct: 16.67},
+        warnings: [{account: "assets:foreign", kind: "unpriced", message: "no market price for FOO"}],
+    };
+
+    it("decodes the committed golden: a commodity-booked home and a dollar-booked car", () => {
+        const report = decodeOtherHoldingsReport(golden("holdings-other"));
+
+        expect(report.asOf).toBe("2026-07-08");
+        expect(report.base).toBe("$");
+        expect(report.holdings.map((h) => h.account)).toEqual(["assets:property:home", "assets:vehicles:car"]);
+
+        // `1 HOME @ $420,000.00`, revalued by `P 2026-06-30 HOME $468,000.00`.
+        const home = report.holdings[0];
+        expect(home.name).toBe("Family home"); // the `name:` tag, not the last segment
+        expect(home.commodities.get("HOME")).toEqual({m: 1n, p: 0});
+        expect(home.value).toEqual({m: 46800000n, p: 2});
+        expect(home.change).toEqual({m: 4800000n, p: 2});
+        expect(home.changePct).toBeCloseTo(11.4285714, 6);
+
+        // Dollar-booked and depreciated: cost IS value, so all-time change is
+        // honestly zero — the correct answer, not a missing feature.
+        const car = report.holdings[1];
+        expect(car.commodities.get("$")).toEqual({m: 2050000n, p: 2});
+        expect(car.value).toEqual({m: 2050000n, p: 2});
+        expect(car.change).toEqual({m: 0n, p: 2});
+        expect(car.changePct).toBe(0);
+
+        expect(report.totals.value).toEqual({m: 48850000n, p: 2});
+        expect(report.totals.cost).toEqual({m: 44050000n, p: 2});
+        expect(report.totals.changePct).toBeCloseTo(10.8967083, 6);
+        // Everything in scope is priced, so nothing is refused.
+        expect(report.warnings).toEqual([]);
+    });
+
+    it("keeps cost at the precision the engine sent, rather than normalizing it to cents", () => {
+        // `cost` for the home arrives as {mantissa: "420000", places: 0} — a
+        // whole-dollar cost from a `@ $420,000.00` annotation. Exact is exact;
+        // display rounding happens at format time and nowhere else.
+        const report = decodeOtherHoldingsReport(golden("holdings-other"));
+        expect(report.holdings[0].cost).toEqual({m: 420000n, p: 0});
+    });
+
+    it("decodes the Other trend with the STOCK series decoder, which is the contract", () => {
+        // Byte-identical wire shape, so there is deliberately no second decoder.
+        const series = decodeHoldingsSeries(golden("holdings-other-series"));
+
+        expect(series.base).toBe("$");
+        expect(series.hasBasis).toBe(true);
+        expect(series.points.map((p) => p.bucket)).toEqual(["2026-05", "2026-06", "2026-07"]);
+        // The June revaluation ($445,000 → $468,000) is visible as a step.
+        expect(series.points[0].marketValue).toEqual({m: 46900000n, p: 2});
+        expect(series.points[1].marketValue).toEqual({m: 48850000n, p: 2});
+    });
+
+    it("decodes an account-keyed row, its as-written commodities, and the warning", () => {
+        const report = decodeOtherHoldingsReport(RAW);
+        expect(report.asOf).toBe("2026-07-08");
+        expect(report.base).toBe("$");
+        expect(report.holdings.map((h) => h.account)).toEqual(["assets:property:house"]);
+        const house = report.holdings[0];
+        expect(house.name).toBe("Family home");
+        // MixedAmount, exact: "1 HOUSE" is what makes the row revalue at all.
+        expect(house.commodities.get("HOUSE")).toEqual({m: 1n, p: 0});
+        expect(house.value).toEqual({m: 17500000n, p: 2});
+        expect(house.cost).toEqual({m: 15000000n, p: 2});
+        expect(house.change).toEqual({m: 2500000n, p: 2});
+        expect(house.changePct).toBeCloseTo(16.67, 6);
+        expect(report.totals.value).toEqual({m: 17500000n, p: 2});
+        expect(report.warnings).toEqual([{account: "assets:foreign", kind: "unpriced", message: "no market price for FOO"}]);
+    });
+
+    it("keeps every nullable field null rather than folding it to zero (DRY-3)", () => {
+        const report = decodeOtherHoldingsReport({
+            ...RAW,
+            holdings: [{...HOUSE, value: null, cost: null, change: null, changePct: null}],
+            totals: {value: dec(0, 0), cost: null, change: null, changePct: null},
+        });
+        expect(report.holdings[0].value).toBeNull();
+        expect(report.holdings[0].cost).toBeNull();
+        expect(report.holdings[0].change).toBeNull();
+        expect(report.holdings[0].changePct).toBeNull();
+        expect(report.totals.cost).toBeNull();
+        expect(report.totals.change).toBeNull();
+        expect(report.totals.changePct).toBeNull();
+        // `value` is the one unconditional total: an all-unpriced report sums to
+        // zero, which is a different fact from "no total".
+        expect(report.totals.value).toEqual({m: 0n, p: 0});
+    });
+
+    it("decodes the scope chooser's candidate account list, which is wider than the rows", () => {
+        const report = decodeOtherHoldingsReport(RAW);
+
+        // Scope- and date-independent by contract, so it names accounts that are
+        // NOT rows of this particular report — that is the point of it.
+        expect(report.accounts).toEqual(["assets:partners:acme", "assets:property:house", "assets:vehicles:van"]);
+        expect(report.holdings.map((h) => h.account)).toEqual(["assets:property:house"]);
+    });
+
+    it("throws rather than defaulting an absent candidate list to an empty picker", () => {
+        expect(() => decodeOtherHoldingsReport(without(RAW, "accounts"))).toThrow(ApiShapeError);
+        // And a non-string member is a broken contract, not something to coerce.
+        expect(() => decodeOtherHoldingsReport({...RAW, accounts: ["ok", 7]})).toThrow(ApiShapeError);
+    });
+
+    it("freezes what it emits, like its neighbours", () => {
+        const report = decodeOtherHoldingsReport(RAW);
+        expect(Object.isFrozen(report)).toBe(true);
+        expect(Object.isFrozen(report.holdings[0])).toBe(true);
+        expect(Object.isFrozen(report.accounts)).toBe(true);
+        expect(Object.isFrozen(report.totals)).toBe(true);
+        expect(Object.isFrozen(report.warnings[0])).toBe(true);
+    });
+
+    it("throws rather than defaulting an absent balance to an empty amount", () => {
+        // An account with no balance is not a row at all (membership demands a
+        // non-zero one), so an absent `commodities` means a broken contract —
+        // and the Holding cell would silently read as a currency-only asset.
+        expect(() => decodeOtherHoldingsReport({...RAW, holdings: [{account: "a", name: "a", value: dec(1, 0)}]})).toThrow(ApiShapeError);
+    });
+
+    it("rejects an unknown warning kind", () => {
+        expect(() => decodeOtherHoldingsReport({...RAW, warnings: [{account: "a", kind: "surprise", message: "?"}]})).toThrow(/unknown warning kind/);
+    });
+
+    it("throws ApiShapeError when any unconditional key is missing", () => {
+        const ok = {asOf: "2026-07-08", base: "$", holdings: [], accounts: [], totals: {value: dec(0, 0)}, warnings: []};
+        expect(decodeOtherHoldingsReport(ok).holdings).toEqual([]);
+        for (const key of ["asOf", "base", "holdings", "accounts", "totals", "warnings"] as const) {
+            expect(() => decodeOtherHoldingsReport(without(ok, key)), `dropping ${key} was absorbed`).toThrow(ApiShapeError);
+        }
+    });
+
+    it("guards the mantissa past Number.MAX_SAFE_INTEGER, like every other Dec on this wire", () => {
+        const huge = {mantissa: "90071992547409910000", places: 2};
+        const report = decodeOtherHoldingsReport({...RAW, holdings: [{...HOUSE, value: huge}]});
+        expect(report.holdings[0].value).toEqual({m: 90071992547409910000n, p: 2});
     });
 });
 
@@ -712,13 +888,15 @@ describe("UNIT nativeDecode — InsightsReport over the insights golden", () => 
         expect(report.revenue.pct).toBeCloseTo(0.0367674, 6);
         // a multi-commodity metric keeps every commodity
         expect(report.expenses.delta.get("EUR")).toEqual({m: -47575n, p: 2});
-        expect(report.netWorth.current.get("$")).toEqual({m: 594514650n, p: 4});
+        expect(report.netWorth.current.get("$")).toEqual({m: 2119514650n, p: 4});
         expect(report.cashBalance.delta.get("$")).toEqual({m: 1523496n, p: 2});
     });
 
     it("decodes cost of living and investment performance", () => {
         const report = decodeInsightsReport(raw);
-        expect(report.costOfLiving.currentTotal.get("$")).toEqual({m: 1422613n, p: 2});
+        // +$3,500 on the current side alone: the 2026-06-30 vehicle depreciation
+        // is an expense, and the 2025-06-30 one falls before the previous window.
+        expect(report.costOfLiving.currentTotal.get("$")).toEqual({m: 1772613n, p: 2});
         expect(report.costOfLiving.previousTotal.get("$")).toEqual({m: 1550676n, p: 2});
         expect(report.costOfLiving.monthsCurrent).toBe(6);
         expect(report.costOfLiving.monthsPrevious).toBe(6);
@@ -746,8 +924,11 @@ describe("UNIT nativeDecode — InsightsReport over the insights golden", () => 
         // GLD's window start fell back to purchase cost — the UI caveats this row.
         expect(report.movers[2].startEstimated).toBe(true);
 
+        // The index moved 141 → 144 when sample.journal gained three earlier
+        // entries (two 2024-07-01 opening positions and the 2025-06-30
+        // depreciation); the transaction itself is the same one.
         const top = report.topTxns[0];
-        expect(top).toMatchObject({index: 141, date: "2026-01-27", description: "Acme Corp | January salary"});
+        expect(top).toMatchObject({index: 144, date: "2026-01-27", description: "Acme Corp | January salary"});
         expect(top.amount).toEqual({m: 566000n, p: 2});
     });
 
@@ -774,7 +955,6 @@ describe("UNIT nativeDecode — SubscriptionsReport over the subscriptions golde
         const report = decodeSubscriptionsReport(raw);
         expect(report.asOf).toBe("2026-07-08");
         expect(report.lookbackStart).toBe("2024-07-08");
-        expect(report.annual).toEqual([]);
 
         const rent = report.monthly[0];
         expect(rent.payee).toBe("Oakview Properties");
@@ -789,9 +969,27 @@ describe("UNIT nativeDecode — SubscriptionsReport over the subscriptions golde
         expect(rent.manual).toBe(false);
     });
 
-    // Literal: sample.journal carries no `subscription:true` tag and no annual
-    // cadence, so neither appears in the golden.
-    it("decodes an annual, manually-tagged subscription", () => {
+    it("finds no annual subscription in the golden, and that is deliberate", () => {
+        const report = decodeSubscriptionsReport(raw);
+
+        // This briefly listed `annual vehicle depreciation`. plans/14 gave
+        // sample.journal two vehicle write-downs a year apart, and while they
+        // shared one description they were a twice-seen, same-account expense —
+        // exactly the shape the cadence detector matches. The detector was not
+        // wrong; the FIXTURE was, because a non-cash depreciation entry listed
+        // under Subscriptions is the demo journal teaching something false.
+        //
+        // The two entries are now described distinctly (`vehicle depreciation
+        // FY2025` / `FY2026`), which is also just better bookkeeping. This
+        // assertion is the guard: if a future fixture edit makes the demo
+        // journal claim a depreciation charge is a subscription again, it fails
+        // here rather than being noticed by a user browsing the demo.
+        expect(report.annual).toEqual([]);
+    });
+
+    // Literal: sample.journal carries no `subscription:true` tag, so the manual
+    // flag is `false` everywhere in the golden.
+    it("decodes a manually-tagged subscription", () => {
         const report = decodeSubscriptionsReport({
             asOf: "2026-07-08",
             lookbackStart: "2024-07-08",
@@ -1119,6 +1317,12 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         ["subscriptions", decodeSubscriptionsReport],
         ["holdings", decodeHoldingsReport],
         ["holdings-series", decodeHoldingsSeries],
+        ["holdings-other", decodeOtherHoldingsReport],
+        // Same decoder as the stock series, because the engine reuses
+        // `WireHoldingsSeries` for it byte for byte. Swept separately anyway: the
+        // two goldens have different VALUES, and a rename this one absorbs is not
+        // necessarily one the other absorbs.
+        ["holdings-other-series", decodeHoldingsSeries],
     ];
 
     // Renames these decoders CANNOT currently notice. Every one is a gap in the
@@ -1134,7 +1338,19 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         "budget $.rows[].cells[].goal", // every goal in the golden is already null
         "budget $.totals[].goal", // ditto
         "subscriptions $.monthly[].manual", // no `subscription:true` tag in sample.journal
-        "subscriptions $.annual", // no annual cadence in sample.journal → [] either way
+        // The whole array, because sample.journal has no annual subscription and
+        // the golden's `annual` is `[]`.
+        //
+        // It briefly did: plans/14's two vehicle-depreciation entries shared one
+        // description a year apart, which is exactly the shape the cadence
+        // detector matches, and that shrank this list to `$.annual[].manual`.
+        // The entries have since been described distinctly, because a non-cash
+        // write-down listed under Subscriptions is the demo journal teaching
+        // something false — a worse cost than this gap. So this is the same
+        // entry that was here before plans/14, not a new one; the list did not
+        // grow. Closing it honestly needs a real annual charge in
+        // sample.journal (an insurance premium, a domain renewal).
+        "subscriptions $.annual",
         "holdings $.topLosers", // nothing is down as of 2026-07-08 → [] either way
         // No income or expense account in sample.journal holds an unpriced
         // commodity at ANY range — its only foreign postings are EUR, and every

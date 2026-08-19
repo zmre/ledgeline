@@ -97,8 +97,9 @@ pub enum ReportError {
     /// An `account` directive declared an `issection:` value outside the closed
     /// vocabulary — see [`income_statement::parse_is_section_tag`].
     ///
-    /// This is the ONE piece of journal content the report engine refuses
-    /// outright, and it is deliberate. Everything else it reads from a tag has a
+    /// This and [`Self::UnknownHoldingsClass`] are the only pieces of journal
+    /// content the report engine refuses outright, and it is deliberate.
+    /// Everything else it reads from a tag has a
     /// total fallback, because a fallback there is harmless; here it is not.
     /// `issection:` decides section MEMBERSHIP, so a silent `None` would drop
     /// the account back to its type-inferred section and the box the user
@@ -112,6 +113,25 @@ pub enum ReportError {
          revenue, cogs, opex, depreciation, interest, tax, other"
     )]
     UnknownIsSection {
+        /// The declaring account.
+        account: String,
+        /// The value as written, trimmed.
+        value: String,
+    },
+    /// An `account` directive declared a `holdings:` value outside the closed
+    /// vocabulary — see [`crate::holdings::parse_holdings_tag`].
+    ///
+    /// Refused for [`Self::UnknownIsSection`]'s reason, one step milder in its
+    /// consequence and identical in its shape: `holdings:` decides which
+    /// Holdings TAB an account appears on, so a silent `None` returns it to the
+    /// mechanical default — and the user who tagged a commodity-booked house to
+    /// move it off Stocks finds it still sitting on Stocks, with nothing on
+    /// screen to say why. Three-word vocabulary, so a miss is a typo.
+    #[error(
+        "account '{account}' declares `holdings: {value}`, which is not one of \
+         stocks, other, none"
+    )]
+    UnknownHoldingsClass {
         /// The declaring account.
         account: String,
         /// The value as written, trimmed.

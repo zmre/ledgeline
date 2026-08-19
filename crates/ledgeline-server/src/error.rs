@@ -119,9 +119,9 @@ impl IntoResponse for AppError {
 /// A bad bucket key is a client error; a decimal overflow is ours. Both are
 /// unreachable for realistic journals, but neither is unwrapped.
 ///
-/// # Why a bad `issection:` is a `400` and not a `500`
+/// # Why a bad `issection:` or `holdings:` is a `400` and not a `500`
 ///
-/// It is the one variant whose cause is the JOURNAL rather than the request or
+/// They are the variants whose cause is the JOURNAL rather than the request or
 /// an invariant, so neither status is a perfect fit. `400` is chosen because the
 /// two things that actually matter about the response are that it FAILS rather
 /// than serving a plausible statement with a box reading zero, and that the
@@ -140,9 +140,9 @@ impl From<ReportError> for AppError {
     fn from(error: ReportError) -> Self {
         let message = error.to_string();
         match error {
-            ReportError::InvalidBucketKey(_) | ReportError::UnknownIsSection { .. } => {
-                Self::BadRequest(message)
-            }
+            ReportError::InvalidBucketKey(_)
+            | ReportError::UnknownIsSection { .. }
+            | ReportError::UnknownHoldingsClass { .. } => Self::BadRequest(message),
             ReportError::Decimal(_) => Self::Internal(message),
         }
     }

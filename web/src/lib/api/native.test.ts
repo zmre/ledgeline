@@ -152,6 +152,36 @@ describe("UNIT LedgelineApi — error taxonomy", () => {
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("boom", {status: 500, statusText: "Internal Server Error"})));
         await expect(new LedgelineApi("http://127.0.0.1:5000").cashFlow()).rejects.toBeInstanceOf(ApiUnreachableError);
     });
+
+    // The read path used to report the STATUS LINE and drop the body unread,
+    // which threw away the only actionable half of a journal-authoring mistake.
+    it("carries the engine's own sentence on a 4xx, so a bad `holdings:` tag reaches the user", async () => {
+        const sentence = "account 'assets:property:house' declares `holdings: hous`, which is not one of stocks, other, none";
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(sentence, {status: 400, statusText: "Bad Request"})));
+
+        await expect(new LedgelineApi("http://127.0.0.1:5000").otherHoldings({asOf: "2026-07-08"})).rejects.toThrow(sentence);
+    });
+
+    it("falls back to the status line when the body is empty", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("   ", {status: 503, statusText: "Service Unavailable"})));
+
+        await expect(new LedgelineApi("http://127.0.0.1:5000").otherHoldings()).rejects.toThrow(/responded 503 Service Unavailable/);
+    });
+
+    it("refuses an HTML error page from a proxy rather than putting markup in an alert", async () => {
+        const page = "<!doctype html><html><body><h1>502 Bad Gateway</h1></body></html>";
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(page, {status: 502, statusText: "Bad Gateway"})));
+        const promise = new LedgelineApi("http://127.0.0.1:5000").otherHoldingsSeries();
+
+        await expect(promise).rejects.toThrow(/responded 502 Bad Gateway/);
+        await expect(promise).rejects.not.toThrow(/doctype/);
+    });
+
+    it("refuses a body too long to read, rather than truncating it into a half sentence", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("x".repeat(501), {status: 400, statusText: "Bad Request"})));
+
+        await expect(new LedgelineApi("http://127.0.0.1:5000").otherHoldings()).rejects.toThrow(/responded 400 Bad Request/);
+    });
 });
 
 // ===========================================================================

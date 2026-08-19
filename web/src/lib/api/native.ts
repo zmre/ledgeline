@@ -317,6 +317,47 @@ export interface PrefsBody {
     gitAutocommit: boolean | null;
 }
 
+/**
+ * Longest error body worth showing a user. The engine's are single sentences
+ * (~90 characters at their longest); anything past this is a document, not a
+ * message.
+ */
+const MAX_ERROR_BODY_CHARS = 500;
+
+/**
+ * The sentence to report for a failed READ, preferring the engine's own body.
+ *
+ * The read path used to throw `GET …/api/holdings/other?… responded 400 Bad
+ * Request` and drop the body unread, which was fine while every 4xx was a
+ * malformed query the SPA itself had built — nobody could act on those, so there
+ * was nothing to lose. It stopped being fine when the engine started reporting
+ * JOURNAL-authoring mistakes this way: an unknown `holdings:` (or `issection:`)
+ * tag value answers `400` with "account 'assets:x' declares `holdings: y`, which
+ * is not one of stocks, other, none" — a sentence that names the account, the bad
+ * value and the fix, and which the status line replaces with nothing.
+ *
+ * The write path (`send`) has always preferred the body for the same reason, in
+ * its own words. This is that rule, arriving on the read path.
+ *
+ * Two guards, both falling back rather than truncating. A non-engine server (a
+ * proxy, a dev server) answers errors with an HTML DOCUMENT, and a page of markup
+ * in an alert box is strictly worse than the status line; so is a body long
+ * enough to push the Retry button off screen. Half a sentence from an unknown
+ * source is not more useful than "responded 502", so neither case is trimmed into
+ * service.
+ */
+async function readErrorBody(response: Response, request: string): Promise<string> {
+    const fallback = `${request} responded ${response.status} ${response.statusText}`;
+    let body: string;
+    try {
+        body = (await response.text()).trim();
+    } catch {
+        return fallback; // a body that cannot be read is not a message
+    }
+    if (body === "" || body.length > MAX_ERROR_BODY_CHARS || body.startsWith("<")) return fallback;
+    return body;
+}
+
 type QueryValue = string | number | undefined;
 
 /** Build a `?a=1&b=2` string, dropping undefined and empty-string values (no leading "?" when empty). */
@@ -429,6 +470,23 @@ export interface HoldingsSeriesQuery extends HoldingsQuery {
     interval?: string;
     count?: number;
 }
+/**
+ * The Other-holdings query (plans/14): the stock query's params, verbatim, plus
+ * `valueIn`.
+ *
+ * Same scope, same `mode`, same `gainSince` window — deliberately, because the
+ * scope bar drives both tabs and a window control that meant two things would be
+ * a lie. `valueIn` is optional for the reason the grouped statements give: the
+ * engine's default (value in `prices.base_commodity()`) is exactly what the
+ * screen wants and there is no control for it, so sending one would pin the SPA
+ * to a base commodity it had to guess.
+ */
+export interface OtherHoldingsQuery extends HoldingsQuery {
+    valueIn?: string;
+}
+export interface OtherHoldingsSeriesQuery extends HoldingsSeriesQuery {
+    valueIn?: string;
+}
 
 /** Cancellation + deadline for one client's requests; see `REQUEST_TIMEOUT_MS`. */
 export interface LedgelineApiOptions {
@@ -463,7 +521,7 @@ export class LedgelineApi {
                 throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE);
             }
             if (!response.ok) {
-                throw new ApiUnreachableError(`GET ${url} responded ${response.status} ${response.statusText}`);
+                throw new ApiUnreachableError(await readErrorBody(response, `GET ${url}`));
             }
             try {
                 return (await response.json()) as unknown;
@@ -555,6 +613,29 @@ export class LedgelineApi {
     holdingsSeries(query: HoldingsSeriesQuery = {}): Promise<unknown> {
         return this.getJson(
             `/api/holdings/series${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count})}`
+        );
+    }
+
+    /** Non-stock, non-cash assets — a house, a van, a partnership (decode with `decodeOtherHoldingsReport`). */
+    otherHoldings(query: OtherHoldingsQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/holdings/other${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, gainSince: query.gainSince, valueIn: query.valueIn})}`
+        );
+    }
+
+    /**
+     * The Other tab's value-over-time series. The response is the same
+     * `WireHoldingsSeries` the stock series returns, byte for byte, so it decodes
+     * with `decodeHoldingsSeries` and renders through `HoldingsTrend` with no new
+     * chart code — the whole reason the engine reuses the type.
+     *
+     * `gainSince` is not sent, for the reason `holdingsSeries` does not send it:
+     * the series is always all-time, and only the report's change column is
+     * windowed.
+     */
+    otherHoldingsSeries(query: OtherHoldingsSeriesQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/holdings/other/series${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, valueIn: query.valueIn})}`
         );
     }
 

@@ -358,14 +358,17 @@ describe("UNIT normalizeTransactions over the fixtures/api/v1.52 snapshot", () =
     const txns = normalizeTransactions(raw);
 
     it("normalizes every transaction and posting", () => {
-        expect(txns).toHaveLength(185);
-        expect(txns.reduce((n, t) => n + t.postings.length, 0)).toBe(420);
+        // 185 → 189 and 420 → 429 when plans/14 added the home and car opening
+        // positions and two depreciation entries to sample.journal.
+        expect(txns).toHaveLength(189);
+        expect(txns.reduce((n, t) => n + t.postings.length, 0)).toBe(429);
     });
 
     it("preserves the status distribution", () => {
         const counts = {cleared: 0, pending: 0, unmarked: 0};
         for (const txn of txns) counts[txn.status] += 1;
-        expect(counts).toEqual({cleared: 171, pending: 1, unmarked: 13});
+        // All four new entries are `*` cleared, so only that count moved.
+        expect(counts).toEqual({cleared: 175, pending: 1, unmarked: 13});
     });
 
     it("carries exact Dec quantities (opening checking balance)", () => {
@@ -378,7 +381,12 @@ describe("UNIT normalizeTransactions over the fixtures/api/v1.52 snapshot", () =
     });
 
     it("builds lowercase haystacks (the pending flight)", () => {
-        const flight = txns.find((t) => t.index === 184);
+        // Located by description rather than by index: it is the journal's one
+        // `!` transaction, and pinning the index here meant every later fixture
+        // edit failed as `expected undefined` instead of naming what moved. The
+        // index is still asserted, one line down.
+        const flight = txns.find((t) => t.description.startsWith("Delta Airlines"));
+        expect(flight?.index).toBe(188);
         expect(flight?.status).toBe("pending");
         expect(flight?.date).toBe("2026-07-02");
         expect(flight?.haystack).toContain("delta airlines");

@@ -116,8 +116,8 @@ fn transactions_match_hledger_snapshot() {
     // Sanity: the snapshot is the full 185-transaction array.
     assert_eq!(
         expected.as_array().map(Vec::len),
-        Some(185),
-        "snapshot should contain 185 transactions"
+        Some(189),
+        "snapshot should contain 189 transactions"
     );
 
     if let Err(message) = compare("$", &expected, &actual) {
@@ -135,8 +135,10 @@ fn opening_balances_inference_and_assertion() {
 
     assert_eq!(first["tindex"], serde_json::json!(1));
     assert_eq!(first["tstatus"], serde_json::json!("Cleared"));
-    assert_eq!(first["tsourcepos"][0]["sourceLine"], serde_json::json!(88));
-    assert_eq!(first["tsourcepos"][1]["sourceLine"], serde_json::json!(93));
+    // The WP-14 account/commodity/price declarations pushed the first
+    // transaction down the file: it now opens on line 101 and ends on 106.
+    assert_eq!(first["tsourcepos"][0]["sourceLine"], serde_json::json!(101));
+    assert_eq!(first["tsourcepos"][1]["sourceLine"], serde_json::json!(106));
 
     let postings = first["tpostings"].as_array().expect("postings");
 
@@ -161,7 +163,7 @@ fn opening_balances_inference_and_assertion() {
     );
     assert_eq!(
         checking["pbalanceassertion"]["baposition"]["sourceLine"],
-        serde_json::json!(89)
+        serde_json::json!(102)
     );
     assert_eq!(
         checking["pbalanceassertion"]["baposition"]["sourceColumn"],

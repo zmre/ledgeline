@@ -116,17 +116,23 @@ const DEPTHS: [Option<usize>; 8] = [
 
 /// `hledger -f fixtures/sample.journal bs -V -e 2026-07-09`
 /// ```text
-///  Assets  $59,612.62, 5.0 GLD, -2.0 TSLA
-///  Liabilities  $531.15
-///  Net:  $59,081.46, 5.0 GLD, -2.0 TSLA
+///  assets:property:home        $468,000.00
+///  assets:vehicles:car          $20,500.00
+///  Assets  $548,112.62, 5.0 GLD, -2.0 TSLA
+///  liabilities:mortgage        $336,000.00
+///  liabilities:cc:visa             $531.15
+///  Liabilities  $336,531.15
+///  Net:  $211,581.46, 5.0 GLD, -2.0 TSLA
 /// ```
-/// We keep the unrounded `$59,612.6150`; hledger displays it to 2 places.
+/// We keep the unrounded `$548,112.6150`, and it is hledger's own figure rather
+/// than an un-rounding of the line above: the same command with
+/// `-c '$1000.0000'` prints `$548112.6150` and `$211581.4650`.
 #[test]
 fn sample_at_market_matches_hledger_bs_v() {
     let journal = common::fixture_journal();
     let report = report(&journal, "2026-07-08", Some(3), Valuation::Market);
 
-    let mut assets = usd(596_126_150, 4);
+    let mut assets = usd(5_481_126_150, 4);
     assets
         .accumulate(&commodity("GLD"), Dec::new(5, 0))
         .unwrap();
@@ -134,9 +140,9 @@ fn sample_at_market_matches_hledger_bs_v() {
         .accumulate(&commodity("TSLA"), Dec::new(-2, 0))
         .unwrap();
     assert_eq!(report.sections[0].total, assets);
-    assert_eq!(report.sections[1].total, usd(53_115, 2));
+    assert_eq!(report.sections[1].total, usd(33_653_115, 2));
 
-    let mut net = usd(590_814_650, 4);
+    let mut net = usd(2_115_814_650, 4);
     net.accumulate(&commodity("GLD"), Dec::new(5, 0)).unwrap();
     net.accumulate(&commodity("TSLA"), Dec::new(-2, 0)).unwrap();
     assert_eq!(report.net_worth, net);
@@ -145,9 +151,19 @@ fn sample_at_market_matches_hledger_bs_v() {
     assert_eq!(report.as_of, "2026-07-08");
 }
 
-/// `hledger -f fixtures/sample.journal bal -V -e 2026-07-09 'type:C'` → `$49,059.99`
-/// (checking + savings + wise:eur valued + broker:taxable:cash — all four are
-/// declared `type: C`).
+/// `hledger -f fixtures/sample.journal bal -V -e 2026-07-09 'type:C'`
+/// ```text
+///          $28,292.81  assets:bank:checking
+///          $13,500.00  assets:bank:savings
+///             $657.43  assets:bank:wise:eur
+///           $6,609.75  assets:broker:taxable:cash
+/// --------------------
+///          $49,059.99
+/// ```
+/// — all four are declared `type: C`, and the same query at `-c '$1000.0000'`
+/// prints the `$49059.9900` asserted below. The property and vehicle accounts
+/// added for `plans/14-other-holdings.md` are `type: A`, so this total is exactly
+/// the one it was before them.
 #[test]
 fn sample_cash_group_matches_hledger_type_c_query() {
     let journal = common::fixture_journal();
@@ -156,32 +172,61 @@ fn sample_cash_group_matches_hledger_type_c_query() {
     assert_eq!(cash.source, GroupSource::Type);
     assert_eq!(cash.total, usd(490_599_900, 4)); // $49,059.99
 
-    // Everything else in Assets is an investment: the four securities accounts
-    // are the only ones holding a commodity other than the base `$`.
+    // The remaining assets show all three of the non-tag signals disagreeing
+    // usefully, and one tag overriding one of them:
+    //
+    // - the four securities accounts hold a commodity other than the base `$`
+    //   (step 4 → Investments);
+    // - `assets:property:home` holds `1.0 HOME`, so step 4 would have filed the
+    //   house under Investments too — its `bsgroup: Property` (step 1) is what
+    //   keeps a house out of the securities bucket;
+    // - `assets:vehicles:car` holds only `$` and is a non-cash `type: A`, so
+    //   steps 3 and 4 both decline and it falls through to its second path
+    //   segment (step 5 → "Vehicles").
+    //
+    // Order is `group_rank`: the built-ins in balance-sheet order first, then
+    // everything else alphabetically — so Investments precedes Property and
+    // Vehicles regardless of how the tag was spelled.
     assert_eq!(
         group_names(&report, BsSectionKind::Assets),
         [
             (CASH_GROUP.to_string(), GroupSource::Type),
             (INVESTMENTS_GROUP.to_string(), GroupSource::Commodity),
+            ("Property".to_string(), GroupSource::Tag),
+            ("Vehicles".to_string(), GroupSource::Segment),
         ]
+    );
+
+    // `hledger -f fixtures/sample.journal bal -V -e 2026-07-09 assets:property
+    //  assets:vehicles` → `$468,000.00` / `$20,500.00`, total `$488,500.00`.
+    assert_eq!(
+        group(&report, BsSectionKind::Assets, "Property").total,
+        usd(46_800_000, 2)
+    );
+    assert_eq!(
+        group(&report, BsSectionKind::Assets, "Vehicles").total,
+        usd(2_050_000, 2)
     );
 }
 
 /// `hledger -f fixtures/sample.journal bse -B -e 2026-07-09`:
 /// ```text
-///  Assets  $58,080.06, -933,25 EUR, 5.0 GLD
-///  Liabilities  $531.15
-///  Equity  $14,550.00, 5.0 GLD   (opening $14,550.00 + transfers 5.0 GLD)
-///  Net:  $42,998.91, -933,25 EUR
+///  Assets  $498,580.06, -933,25 EUR, 5.0 GLD
+///  Liabilities  $336,531.15
+///  Equity  $126,550.00, 5.0 GLD  (opening $126,550.00 + transfers 5.0 GLD)
+///  Net:  $35,498.91, -933,25 EUR
 /// ```
-/// and `hledger … is -B` reports the SAME Net — which is the identity the
-/// retained-earnings line is built on.
+/// and `hledger … is -B` reports the SAME Net — `$35,498.91, -933,25 EUR` — which
+/// is the identity the retained-earnings line is built on. The house enters at
+/// its `1 HOME @ $420,000.00` COST here rather than at the 2026-06-30 price, and
+/// the two `expenses:depreciation` entries are the whole of the $7,500.00 by
+/// which this Net sits below the pre-`plans/14` figure.
 #[test]
 fn sample_at_cost_matches_hledger_bse_b() {
     let journal = common::fixture_journal();
     let report = report(&journal, "2026-07-08", Some(4), Valuation::Cost);
 
-    let mut assets = usd(5_808_006, 2);
+    let mut assets = usd(49_858_006, 2);
     assets
         .accumulate(&commodity("EUR"), Dec::new(-93_325, 2))
         .unwrap();
@@ -189,10 +234,10 @@ fn sample_at_cost_matches_hledger_bse_b() {
         .accumulate(&commodity("GLD"), Dec::new(5, 0))
         .unwrap();
     assert_eq!(report.sections[0].total, assets);
-    assert_eq!(report.sections[1].total, usd(53_115, 2));
+    assert_eq!(report.sections[1].total, usd(33_653_115, 2));
 
     // `is -B` Net, per commodity.
-    let mut retained = usd(4_299_891, 2);
+    let mut retained = usd(3_549_891, 2);
     retained
         .accumulate(&commodity("EUR"), Dec::new(-93_325, 2))
         .unwrap();
@@ -204,7 +249,7 @@ fn sample_at_cost_matches_hledger_bse_b() {
     // Declared equity, `bse -B`'s own split.
     assert_eq!(
         group(&report, BsSectionKind::Equity, "Opening").total,
-        usd(1_455_000, 2)
+        usd(12_655_000, 2)
     );
     assert_eq!(
         group(&report, BsSectionKind::Equity, "Transfers").total,
@@ -219,10 +264,10 @@ fn sample_at_cost_matches_hledger_bse_b() {
     );
 
     // The identity, arithmetic and all, exactly as hledger reports it:
-    //   $58,080.06 − $531.15 − $14,550.00 = $42,998.91
+    //   $498,580.06 − $336,531.15 − $126,550.00 = $35,498.91
     //   EUR: −933,25 − 0 − 0 = −933,25       GLD: 5 − 0 − 5 = 0
-    // The DECLARED equity here is $14,550.00 + 5 GLD — the at-cost figure, not
-    // the $15,550.00 an unvalued `bal type:E` reports. Feeding the unvalued one
+    // The DECLARED equity here is $126,550.00 + 5 GLD — the at-cost figure, not
+    // the $127,550.00 an unvalued `bal type:E` reports. Feeding the unvalued one
     // into this line throws the check off by exactly $1,000.00 and 5 GLD.
     let declared_equity = report.sections[2]
         .groups
@@ -230,7 +275,7 @@ fn sample_at_cost_matches_hledger_bse_b() {
         .filter(|group| group.source != GroupSource::Computed)
         .try_fold(MixedAmount::new(), |acc, group| acc.ma_add(&group.total))
         .unwrap();
-    let mut want_equity = usd(1_455_000, 2);
+    let mut want_equity = usd(12_655_000, 2);
     want_equity
         .accumulate(&commodity("GLD"), Dec::new(5, 0))
         .unwrap();
@@ -250,19 +295,24 @@ fn sample_at_cost_matches_hledger_bse_b() {
 
 /// `hledger -f fixtures/sample.journal bse -e 2026-07-09` (unvalued):
 /// ```text
-///  Assets  $48,402.56, 19.5000 AAPL, 566,75 EUR, 5.0 GLD, -2.0 TSLA, 17.0 VTI
-///  Equity  $15,550.00
+///  Assets  $68,902.56, 19.5000 AAPL, 566,75 EUR, 5.0 GLD, 1.0 HOME, -2.0 TSLA, 17.0 VTI
+///  Equity  $127,550.00
 /// ```
+/// Unvalued is where the two ways a non-stock asset moves come apart: the house
+/// is still the bare `1.0 HOME` it was booked as, because no `P` directive is
+/// consulted, while the car is `$20,500.00` — the depreciation entries are
+/// postings, so they are already in the balance on every basis.
 #[test]
 fn sample_unvalued_matches_hledger_bse() {
     let journal = common::fixture_journal();
     let report = report(&journal, "2026-07-08", Some(4), Valuation::None);
 
-    let mut assets = usd(4_840_256, 2);
+    let mut assets = usd(6_890_256, 2);
     for (symbol, mantissa, places) in [
         ("AAPL", 195, 1),
         ("EUR", 56_675, 2),
         ("GLD", 5, 0),
+        ("HOME", 1, 0),
         ("TSLA", -2, 0),
         ("VTI", 17, 0),
     ] {
@@ -277,7 +327,7 @@ fn sample_unvalued_matches_hledger_bse() {
             .total
             .ma_add(&group(&report, BsSectionKind::Equity, "Transfers").total)
             .unwrap(),
-        usd(1_555_000, 2),
+        usd(12_755_000, 2),
         "declared equity as `bse` prints it"
     );
     assert_eq!(report.base, None, "nothing is valued, so there is no base");
@@ -622,6 +672,37 @@ fn groups_omit_ancestors_they_do_not_own() {
             "assets:broker:taxable:vti",
         ]
     );
+
+    // The converse case: a group that owns its whole branch KEEPS the ancestor,
+    // because the rolled row is then the group's own total rather than a partial
+    // subtotal of somebody else's subtree. Totals are hledger's:
+    // `bal -V -e 2026-07-09 assets:property assets:vehicles` → `$468,000.00`
+    // on `assets:property:home` and `$20,500.00` on `assets:vehicles:car`.
+    for (name, branch, leaf, total) in [
+        (
+            "Property",
+            "assets:property",
+            "assets:property:home",
+            usd(46_800_000, 2),
+        ),
+        (
+            "Vehicles",
+            "assets:vehicles",
+            "assets:vehicles:car",
+            usd(2_050_000, 2),
+        ),
+    ] {
+        let owned = group(&report, BsSectionKind::Assets, name);
+        assert_eq!(
+            owned
+                .rows
+                .iter()
+                .map(|row| row.account.as_str())
+                .collect::<Vec<_>>(),
+            [branch, leaf]
+        );
+        assert_eq!(owned.total, total);
+    }
 }
 
 /// The rows a group opens with — those with no ancestor among its own rows —
@@ -837,6 +918,12 @@ fn rows_are_clamped_to_depth_except_for_group_roots() {
     // still opens with the branch it owns, even though those sit deeper than one
     // segment. The alternative — clamping absolutely — expands the securities
     // group to nothing while it reports a five-figure total.
+    //
+    // Property and Vehicles show the same rule from the other end. Each owns its
+    // whole subtree, so its root is the two-segment branch (`assets:property`,
+    // `assets:vehicles`) and not the three-segment account beneath it: past the
+    // clamp, a group emits its roots and stops. `assets` itself is shared with
+    // every other asset group and so is dropped from all four.
     let shallow = report(&journal, "2026-07-08", Some(1), Valuation::Market);
     let assets = &shallow.sections[0];
     assert_eq!(
@@ -857,6 +944,8 @@ fn rows_are_clamped_to_depth_except_for_group_roots() {
                 "assets:broker:taxable:tsla",
                 "assets:broker:taxable:vti",
             ],
+            vec!["assets:property"],
+            vec!["assets:vehicles"],
         ]
     );
     assert_eq!(
@@ -890,6 +979,19 @@ fn account_groups_reads_only_bsgroup_tags() {
         .collect::<BTreeMap<_, _>>(),
         "accounts declared with only a `type:` must not appear"
     );
-    // sample.journal declares no groups at all, and must still report.
-    assert!(account_groups(&common::fixture_journal()).is_empty());
+
+    // sample.journal declares exactly one, on a directive that also carries two
+    // tags this function must ignore:
+    //   account assets:property:home  ; type: A, holdings: other,
+    //                                   bsgroup: Property, name: Family home
+    // so it is also the check that a tag VALUE stops at the next comma rather
+    // than swallowing `, name: Family home`.
+    assert_eq!(
+        account_groups(&common::fixture_journal()),
+        [("assets:property:home", "Property")]
+            .into_iter()
+            .map(|(account, group)| (account.to_string(), group.to_string()))
+            .collect::<BTreeMap<_, _>>(),
+        "`holdings:` and `name:` are not group tags, and the value ends at the comma"
+    );
 }

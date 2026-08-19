@@ -196,15 +196,21 @@ const BASES: [Valuation; 3] = [Valuation::Market, Valuation::Cost, Valuation::No
 /// ```text
 ///  Revenues            income:salary $33,960.00, income:dividends $50.00
 ///                                                          $34,010.00
-///  Expenses            food $1,654.38, housing $13,125.00, taxes $8,760.00,
-///                      transport $186.54, travel $656.40, unknown $75.00,
-///                      utilities $669.16
-///                                                          $25,126.48
-///  Net:                                                     $8,883.52
+///  Expenses            depreciation $3,500.00, food $1,654.38,
+///                      housing $13,125.00, taxes $8,760.00, transport $186.54,
+///                      travel $656.40, unknown $75.00, utilities $669.16
+///                                                          $28,626.48
+///  Net:                                                     $5,383.52
 /// ```
 /// `--depth 2` is what the shared-prefix rule reproduces on this chart: every
 /// member of each section shares one root segment and the shortest has two, so
 /// the group segment is the second.
+///
+/// `expenses:depreciation` is the `plans/14-other-holdings.md` account, and the
+/// $3,500.00 is the 2026-06-30 vehicle write-down — the one way a dollar-booked
+/// asset can change value, and the only one of the two new asset accounts that
+/// touches this statement at all. The house is revalued by `P` directives, which
+/// are a balance-sheet event and post nothing.
 #[test]
 fn untagged_journal_is_two_boxes_and_matches_hledger_is_v() {
     let journal = common::fixture_journal();
@@ -240,11 +246,11 @@ fn untagged_journal_is_two_boxes_and_matches_hledger_is_v() {
     );
     assert_amounts(
         &report.section(IsSectionKind::Opex).total,
-        2_512_648,
+        2_862_648,
         None,
         "Expenses",
     );
-    assert_amounts(&report.net_income, 888_352, None, "Net income");
+    assert_amounts(&report.net_income, 538_352, None, "Net income");
 
     assert_eq!(report.from, "2026-01-01");
     assert_eq!(report.to, "2026-07-08");
@@ -257,13 +263,18 @@ fn untagged_journal_is_two_boxes_and_matches_hledger_is_v() {
 }
 
 /// The same run's per-group figures, which are `hledger is -V --depth 2`'s
-/// per-account rows: Salary `$33,960.00`, Dividends `$50.00`; Food `$1,654.38`,
-/// Housing `$13,125.00`, Taxes `$8,760.00`, Transport `$186.54`, Travel
-/// `$656.40`, Unknown `$75.00`, Utilities `$669.16`.
+/// per-account rows: Salary `$33,960.00`, Dividends `$50.00`; Depreciation
+/// `$3,500.00`, Food `$1,654.38`, Housing `$13,125.00`, Taxes `$8,760.00`,
+/// Transport `$186.54`, Travel `$656.40`, Unknown `$75.00`, Utilities `$669.16`.
 ///
 /// Travel is the one that proves the valuation ran: `210,00 EUR` of Munich
 /// lodging at the 2026-06-30 rate of `$1.16` is `$243.60`, and `$412.80` of
 /// flights makes `$656.40`.
+///
+/// Depreciation is the one that proves the fallback is a rule and not a table:
+/// nothing about `expenses:depreciation` was declared beyond `type: X`, and it
+/// takes its line from the same second-segment rule as every neighbour — landing
+/// first because the list is alphabetical, which is hledger's own row order too.
 #[test]
 fn untagged_groups_are_the_humanized_second_segment() {
     let journal = common::fixture_journal();
@@ -289,6 +300,7 @@ fn untagged_groups_are_the_humanized_second_segment() {
             .map(|(name, _)| name)
             .collect::<Vec<_>>(),
         [
+            "Depreciation",
             "Food",
             "Housing",
             "Taxes",
@@ -302,6 +314,7 @@ fn untagged_groups_are_the_humanized_second_segment() {
     for (kind, name, cents) in [
         (IsSectionKind::Revenue, "Salary", 3_396_000),
         (IsSectionKind::Revenue, "Dividends", 5_000),
+        (IsSectionKind::Opex, "Depreciation", 350_000),
         (IsSectionKind::Opex, "Food", 165_438),
         (IsSectionKind::Opex, "Housing", 1_312_500),
         (IsSectionKind::Opex, "Taxes", 876_000),
@@ -329,14 +342,30 @@ fn untagged_groups_are_the_humanized_second_segment() {
             ("expenses:travel:lodging", 3),
         ]
     );
+
+    // And a group whose segment IS its only account: `expenses:depreciation` has
+    // exactly two segments, so the group name and the leaf are the same word. The
+    // line still expands to a real row rather than to nothing.
+    assert_eq!(
+        report
+            .group(IsSectionKind::Opex, "Depreciation")
+            .rows
+            .iter()
+            .map(|row| (row.account.as_str(), row.depth))
+            .collect::<Vec<_>>(),
+        [("expenses:depreciation", 2)]
+    );
 }
 
 /// `hledger -f fixtures/sample.journal is -V -b 2024-07-01 -e 2026-07-09 --depth 2`
 /// ```text
-///  Revenues  $132,851.25   Expenses  $90,934.91   Net:  $41,916.34
+///  Revenues  $132,851.25   Expenses  $98,434.91   Net:  $34,416.34
 /// ```
+/// (`expenses:depreciation $7,500.00` — both write-downs — is the whole of the
+/// difference from the pre-`plans/14` Expenses figure.)
+///
 /// Note the valued net income is NOT the balance sheet's at-cost retained
-/// earnings (`$42,998.91`); the difference is exactly what the Valuation
+/// earnings (`$35,498.91`); the difference is exactly what the Valuation
 /// adjustment line absorbs there.
 #[test]
 fn untagged_journal_over_the_whole_history() {
@@ -356,11 +385,11 @@ fn untagged_journal_over_the_whole_history() {
     );
     assert_amounts(
         &report.section(IsSectionKind::Opex).total,
-        9_093_491,
+        9_843_491,
         None,
         "Expenses",
     );
-    assert_amounts(&report.net_income, 4_191_634, None, "Net income");
+    assert_amounts(&report.net_income, 3_441_634, None, "Net income");
 }
 
 // ===========================================================================
@@ -372,10 +401,15 @@ fn untagged_journal_over_the_whole_history() {
 ///
 /// `hledger -f fixtures/sample.journal is -V -b 2025-06-26 -e 2026-01-01 --depth 2`
 /// ```text
-///  Revenues  $39,397.50   Expenses  $24,516.71   Net:  $14,880.79
+///  Revenues  $39,397.50   Expenses  $28,516.71   Net:  $10,880.79
 /// ```
 /// (2026-01-01 .. 2026-07-08 is 188 days, so the prior window is the 188 days
 /// ending 2025-12-31 — which is 2025-06-26.)
+///
+/// The two windows land one depreciation entry each — 2025-06-30's `$4,000.00`
+/// in the prior, 2026-06-30's `$3,500.00` in the current — which is a useful
+/// accident: an off-by-one in the boundary arithmetic would move a four-figure
+/// sum across the column, not a rounding artefact.
 #[test]
 fn the_prior_window_is_the_preceding_equal_length_range() {
     let journal = common::fixture_journal();
@@ -402,11 +436,11 @@ fn the_prior_window_is_the_preceding_equal_length_range() {
     );
     assert_amounts(
         &report.section(IsSectionKind::Opex).total,
-        2_512_648,
-        Some(2_451_671),
+        2_862_648,
+        Some(2_851_671),
         "Expenses",
     );
-    assert_amounts(&report.net_income, 888_352, Some(1_488_079), "Net income");
+    assert_amounts(&report.net_income, 538_352, Some(1_088_079), "Net income");
 }
 
 /// A full calendar year yields the prior calendar year — with ONE documented
@@ -1436,15 +1470,21 @@ fn unpriced_commodities_stay_on_the_line_and_are_reported() {
 
 /// `hledger -f fixtures/sample.journal is -B -b 2024-07-01 -e 2026-07-09`
 /// ```text
-///  Revenues  $132,720.00 + 131,25 ... ; Net:  $42,998.91, -933,25 EUR
+///  Revenues  $132,851.25  (salary $132,720.00 + dividends $131.25)
+///  Expenses   $97,352.34, 933,25 EUR  (incl. depreciation $7,500.00)
+///  Net:       $35,498.91, -933,25 EUR
 /// ```
 /// The at-cost net is the balance sheet's Retained earnings, which is the whole
-/// reason that line can exist — so this is the two reports tying out.
+/// reason that line can exist — so this is the two reports tying out. The same
+/// figure is asserted from the other side by
+/// `balance_sheet_grouped::sample_at_cost_matches_hledger_bse_b`, off the same
+/// `bse -B` / `is -B` pair; if only one of the two is ever updated, they stop
+/// agreeing and both say so.
 #[test]
 fn at_cost_net_income_is_the_balance_sheets_retained_earnings() {
     let journal = common::fixture_journal();
     let report = report(&journal, "2024-07-01", "2026-07-08", Valuation::Cost, false);
-    let mut want = usd(4_299_891);
+    let mut want = usd(3_549_891);
     want.accumulate(&commodity("EUR"), Dec::new(-93_325, 2))
         .unwrap();
     assert_money(&report.net_income.current, &want, "at-cost net income");

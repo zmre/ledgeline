@@ -181,6 +181,14 @@ pub struct HoldingsReport {
     /// Holdings with `shares != 0`, sorted by market value desc (unpriced last,
     /// then by symbol).
     pub holdings: Vec<Holding>,
+    /// Every account that could hold a security, over the whole journal and
+    /// ignoring the scope — the scope chooser's option list, sorted.
+    ///
+    /// Engine-side rather than derived in the UI because a `holdings: other`
+    /// account is not a stock account however many non-currency commodities it
+    /// holds, and the SPA's account feed carries `type:` but no tags. Mirrors
+    /// `OtherHoldingsReport::accounts`.
+    pub accounts: Vec<String>,
     /// Portfolio totals.
     pub totals: HoldingsTotals,
     /// `gain_pct > 0` only, sorted desc, ≤ 5.

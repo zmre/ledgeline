@@ -1,18 +1,21 @@
 import {describe, expect, it} from "vitest";
-import {dec, formatDec, type Dec} from "$lib/domain/money";
-import type {Holding} from "$lib/holdings/types";
-import {amt, txn, usd} from "$lib/holdings/test-helpers";
+import {dec, formatDec, type Dec, type MixedAmount} from "$lib/domain/money";
+import type {AmountStyle} from "$lib/domain/types";
+import type {Holding, OtherHolding} from "$lib/holdings/types";
 import {
     EM_DASH,
     formatGainPct,
+    formatHeldCommodities,
     formatShares,
+    formatUnitsWith,
     partitionShortPositions,
     PIE_OTHER,
     pieSlices,
     shortPositionNote,
     sortHoldings,
-    stockAccounts,
+    sortOtherHoldings,
     untotaledBasisCount,
+    type OtherSortKey,
     type SortKey,
 } from "./view";
 
@@ -37,31 +40,6 @@ function holding(symbol: string, marketValueDollars: number | null, overrides: P
 const fmt = (v: Dec): string => `$${formatDec(v, {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: null})}`;
 
 describe("UNIT holdings view helpers", () => {
-    describe("stockAccounts", () => {
-        it("returns sorted accounts that ever hold a non-currency commodity", () => {
-            const txns = [
-                txn(1, "2025-01-01", [
-                    {account: "assets:broker:aapl", amounts: [amt("AAPL", 100n, 1)]},
-                    {account: "assets:bank:checking", amounts: [usd(-100000n)]},
-                ]),
-                txn(2, "2025-02-01", [
-                    {account: "assets:broker:vti", amounts: [amt("VTI", 50n, 1)]},
-                    {account: "assets:bank:checking", amounts: [usd(-50000n)]},
-                ]),
-            ];
-            expect(stockAccounts(txns)).toEqual(["assets:broker:aapl", "assets:broker:vti"]);
-        });
-
-        it("dedupes accounts and ignores currency-only postings (EUR is a currency)", () => {
-            const txns = [
-                txn(1, "2025-01-01", [{account: "assets:broker", amounts: [amt("AAPL", 10n, 0)]}]),
-                txn(2, "2025-06-01", [{account: "assets:broker", amounts: [amt("AAPL", -10n, 0)]}]),
-                txn(3, "2025-07-01", [{account: "assets:cash", amounts: [amt("EUR", 100n, 0)]}]),
-            ];
-            expect(stockAccounts(txns)).toEqual(["assets:broker"]);
-        });
-    });
-
     describe("pieSlices", () => {
         it("keeps one named slice per priced holding with % shares summing to 100", () => {
             const slices = pieSlices([holding("AAPL", 75), holding("VTI", 25)], fmt);
@@ -252,6 +230,108 @@ describe("UNIT holdings view helpers", () => {
             const rows = [holding("BBB", 10), holding("AAA", 10), holding("CCC", 10)];
             expect(symbols(rows, "marketValue", "desc")).toEqual(["AAA", "BBB", "CCC"]);
             expect(rows.map((h) => h.symbol)).toEqual(["BBB", "AAA", "CCC"]); // input untouched
+        });
+    });
+});
+
+// --- Other holdings (plans/14) ---------------------------------------------
+
+/** Units as a journal writes them: `1 HOUSE` (symbol on the right, spaced, no grouping). */
+const UNIT_STYLE: AmountStyle = {side: "R", spaced: true, precision: 0, decimalPoint: ".", digitGroups: null};
+const formatUnits = formatUnitsWith(() => UNIT_STYLE);
+
+const mixed = (entries: [string, Dec][]): MixedAmount => new Map(entries);
+
+/** Other holding with a value in whole dollars; `overrides` fills whichever other fields a test sorts on. */
+function other(account: string, valueDollars: number | null, overrides: Partial<OtherHolding> = {}): OtherHolding {
+    return {
+        account,
+        name: account.split(":").pop() ?? account,
+        commodities: mixed([["$", dec(0n, 2)]]),
+        value: valueDollars === null ? null : dec(BigInt(valueDollars) * 100n, 2),
+        cost: null,
+        change: null,
+        changePct: null,
+        ...overrides,
+    };
+}
+
+describe("UNIT other-holdings view helpers", () => {
+    describe("formatHeldCommodities", () => {
+        it("prints a non-base commodity as written", () => {
+            expect(formatHeldCommodities(mixed([["HOUSE", dec(1n, 0)]]), "$", formatUnits)).toBe("1 HOUSE");
+        });
+
+        it("is blank when the only commodity IS the base — the Value column already says it", () => {
+            expect(formatHeldCommodities(mixed([["$", dec(1800000n, 2)]]), "$", formatUnits)).toBe("");
+        });
+
+        it("is blank for an empty amount, not the string 'undefined'", () => {
+            expect(formatHeldCommodities(mixed([]), "$", formatUnits)).toBe("");
+        });
+
+        it("prints the base alongside a real unit rather than hiding half the balance", () => {
+            const held = mixed([
+                ["HOUSE", dec(1n, 0)],
+                ["$", dec(500n, 2)],
+            ]);
+            expect(formatHeldCommodities(held, "$", formatUnits)).toBe("1 HOUSE, 5 $");
+        });
+
+        it("follows the report's base, not a hardcoded dollar", () => {
+            expect(formatHeldCommodities(mixed([["€", dec(100n, 2)]]), "€", formatUnits)).toBe("");
+            expect(formatHeldCommodities(mixed([["€", dec(100n, 2)]]), "$", formatUnits)).toBe("1 €");
+        });
+    });
+
+    describe("formatUnitsWith", () => {
+        it("formats past the 2-place money cap — a unit count is not cents", () => {
+            const precise = formatUnitsWith(() => ({...UNIT_STYLE, precision: 8}));
+            // Under MAX_DISPLAY_DECIMALS this read "0 BTC" beside a real dollar value.
+            expect(precise("BTC", dec(123456n, 8))).toBe("0.00123456 BTC");
+        });
+
+        it("asks the caller for a style per commodity", () => {
+            const asked: string[] = [];
+            const format = formatUnitsWith((commodity) => {
+                asked.push(commodity);
+                return UNIT_STYLE;
+            });
+            format("HOUSE", dec(1n, 0));
+            expect(asked).toEqual(["HOUSE"]);
+        });
+    });
+
+    describe("sortOtherHoldings", () => {
+        const accounts = (rows: OtherHolding[], key: OtherSortKey, dir: "asc" | "desc"): string[] => sortOtherHoldings(rows, key, dir).map((h) => h.account);
+
+        it("sorts Dec columns exactly, in both directions", () => {
+            const rows = [other("a:one", 10), other("a:two", 30), other("a:three", 20)];
+            expect(accounts(rows, "value", "desc")).toEqual(["a:two", "a:three", "a:one"]);
+            expect(accounts(rows, "value", "asc")).toEqual(["a:one", "a:three", "a:two"]);
+        });
+
+        it("keeps nulls last in BOTH directions, null ties broken by account asc", () => {
+            const rows = [other("z:nul", null), other("a:aaa", 10), other("b:nul", null), other("c:bbb", 20)];
+            expect(accounts(rows, "value", "asc")).toEqual(["a:aaa", "c:bbb", "b:nul", "z:nul"]);
+            expect(accounts(rows, "value", "desc")).toEqual(["c:bbb", "a:aaa", "b:nul", "z:nul"]);
+        });
+
+        it("compares name and account case-insensitively", () => {
+            const rows = [other("z:c", null, {name: "apple"}), other("m:b", null, {name: "Banana"}), other("a:a", null, {name: "CHERRY"})];
+            expect(accounts(rows, "name", "asc")).toEqual(["z:c", "m:b", "a:a"]);
+            expect(accounts(rows, "account", "asc")).toEqual(["a:a", "m:b", "z:c"]);
+        });
+
+        it("sorts changePct numerically", () => {
+            const rows = [other("a", null, {changePct: -3.5}), other("b", null, {changePct: 12}), other("c", null, {changePct: 2})];
+            expect(accounts(rows, "changePct", "desc")).toEqual(["b", "c", "a"]);
+        });
+
+        it("breaks equal keys by ACCOUNT — two assets may share a name: tag — and never mutates the input", () => {
+            const rows = [other("b:home", 10, {name: "Home"}), other("a:home", 10, {name: "Home"}), other("c:home", 10, {name: "Home"})];
+            expect(accounts(rows, "value", "desc")).toEqual(["a:home", "b:home", "c:home"]);
+            expect(rows.map((h) => h.account)).toEqual(["b:home", "a:home", "c:home"]); // input untouched
         });
     });
 });

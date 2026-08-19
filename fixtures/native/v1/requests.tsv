@@ -22,3 +22,5 @@ insights	/api/insights?start=2025-07-01&end=2026-07-08
 subscriptions	/api/subscriptions?asOf=2026-07-08
 holdings	/api/holdings?asOf=2026-07-08
 holdings-series	/api/holdings/series?asOf=2026-07-08&interval=monthly&count=3
+holdings-other	/api/holdings/other?asOf=2026-07-08
+holdings-other-series	/api/holdings/other/series?asOf=2026-07-08&interval=monthly&count=3
