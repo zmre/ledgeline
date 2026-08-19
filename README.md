@@ -124,32 +124,40 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
+- chore: route bad `issection:` / `type:` tag values into Problems
+  - a mistyped `issection:` currently fails the whole P&L request with a 400 naming the account and the
+    valid codes. Right that it isn't silently dropped, wrong that one typo takes the tab down. Problems
+    entries anchor to a `txnIndex` and an `account` directive has none, so this needs a wire field that
+    allows a directive-anchored diagnostic plus an allow-list entry in the SPA's `normalize.ts`.
 - p&l report ui improvements
   - Much like the balance sheet, the P&L report is a bit hard to read in part because totals show up at the top and the bottom of a group. so "revenue" has a total, then each thing under it has a total, then there's a "Total Revenues" which is the same as the "revenue" line.
   - Lets update this a bit more like the balance sheet where we add boxes that are sections with colors and totals, which should make it easier to scan and read.
   - Lets also line up a bit better with some standard GAAP accounting and setup a similar trick with tags like what we used with the balance sheet where we make intelligent guesses if we don't have tags on accounts to be more specific.  This is tricky because this software is used both by businesses, where things like cost of goods sold and operating expenses and sales are separated from other income and expenses so an EBITDA can be calculated, but also for personal finance tracking where EBITDA doesn't matter and most income is salary or dividends or whatever and there's no COGS. The default should probably just be revenue/expenses as boxes, but with tagging, we can group things in other ways.
-- rules edit ui improvements
-  - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
-  - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
-  - perhaps instead of one giant form, we have display separate from edit and can therefore make this nicer
-- feat: import drag/drop
-  - command line options
-  - fix styling of numbers issues; infected the entire ui now
-- feat: create new import rules
-  - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
-- feat: edit budget
-  - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
 - feat: non-stock and cash holdings
   - i want the holdings tab to have two sub-tabs: Stocks and Other.  Other should show all assets (type:A) excluding stocks and cash (type:C). if we get this right, we'll be able to show things like home, cars, partnerships, etc.  And like with stocks, we want to show the value of each and the change in value over time
-- Better keyboard navigation
-  - tab complete account selection
-  - enter to save transaction edit
+- **Imports**
+  - feat: quickbooks import handling
+    - transaction matching and skipping
+    - account mapping (prompt for unmapped) (aliases?)
+  - feat: import drag/drop
+    - command line options
+    - fix styling of numbers issues; infected the entire ui now
+  - feat: create new import rules files
+    - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
+* **Editors**
+  - Account List Editor
+    - Most financial apps allow editing of the chart of accounts. We should detect where they live and allow editing. If there aren't any, we should create an accounts.journal and include it from the main file.
+    - For each account, we should provide an editor for comments/notes, type, tags in general, and our special tags used in various reports
+  - rules editor ui improvements
+    - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
+    - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
+    - perhaps instead of one giant form, we have display separate from edit and can therefore make this nicer
+  - feat: edit / create budget
+    - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
+    - if they don't exist, make a budget.journal file and include it from the main file
 - chore: Setup releases and builds for download
 - chore: Add screenshots and better descriptions to the readme
-- feat: zillow integration
-  - Need a way to map an asset to an address. Maybe a special comment in the accounts file?
-  - Need a way to map the unrealized gains for that address
-  - Then on some sort of "update" click (how/where on UI?), it fetches the latest value (or launches a page and then prompts for it?), calculates the difference relative to the current asset value and then makes an adjustment to the unrealized account with a comment saying the current zestimate
+- feat: kelly blue book integration?
 - feat: private AI integration?
 - feat: stock price updates
   - basically my script, maybe ported into rust, for querying yahoo and updating a prices file. should try to figure out where prices already live and if it can't find anything, prompt for location and include a new file from the base file for the purpose.
@@ -164,3 +172,4 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 - feat: planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
   - investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
+

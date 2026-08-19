@@ -70,7 +70,11 @@ export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     // engine is asked for an unclamped report), single-child chains still
     // compressed by `compressSectionRows`.
     bs: {asOf: true, range: false, end: false, interval: false, count: false, depth: false, budgetPreset: false},
-    is: {asOf: false, range: true, end: false, interval: false, count: false, depth: true, budgetPreset: false},
+    // The income statement dropped its depth slider for the same reason (plans/13):
+    // it is grouped now, and a clamp that hid accounts with no control on screen
+    // to ask for them back was the worst of both. The range stays — a P&L is a
+    // report ABOUT a period, and that is the one thing it cannot infer.
+    is: {asOf: false, range: true, end: false, interval: false, count: false, depth: false, budgetPreset: false},
     cf: {asOf: false, range: false, end: true, interval: true, count: true, depth: true, budgetPreset: false},
     nw: {asOf: false, range: false, end: true, interval: true, count: true, depth: true, budgetPreset: false},
     // Budget: a from/to range (with preset buttons) + depth; interval is always monthly (derived in the store).
@@ -187,11 +191,12 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
         end: now,
         interval: "monthly",
         count: 12,
-        // Shared by is/cf/nw/budget, and by nothing else: the balance sheet no
-        // longer reads `depth` at all (see TAB_CONTROLS.bs). It was raised from
-        // 2 to 3 for the balance sheet's sake and is left there deliberately —
+        // Shared by cf/nw/budget, and by nothing else: neither statement reads
+        // `depth` any more (see TAB_CONTROLS.bs and .is — both are grouped and
+        // both ask the engine for an unclamped report). It was raised from 2 to
+        // 3 for the balance sheet's sake and is left there deliberately —
         // moving it back would change what the period reports show, which is a
-        // separate decision from removing a control from one tab.
+        // separate decision from removing a control from two tabs.
         depth: 3,
         insStart: ins.start,
         insEnd: ins.end,

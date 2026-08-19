@@ -19,7 +19,14 @@ import {formatTotals} from "$lib/journal/rowModel";
 import {reportStyles} from "$lib/reports/ui/styles";
 import {HledgerApi} from "./client";
 import {LedgelineApi} from "./native";
-import {decodeHoldingsReport, decodeHoldingsSeries, decodePeriodReport, decodeSectionedReport} from "./nativeDecode";
+import {
+    decodeBalanceSheetReport,
+    decodeHoldingsReport,
+    decodeHoldingsSeries,
+    decodeIncomeStatementReport,
+    decodePeriodReport,
+    decodeSectionedReport,
+} from "./nativeDecode";
 import {normalizeTransactions} from "./normalize";
 
 const apiUrl = process.env.LEDGELINE_API_URL;
@@ -50,6 +57,56 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         const revenues = report.sections.find((s) => s.title === "Revenues");
         expect(revenues).toBeDefined();
         expect(dollarLine(revenues!.total, styles)).toBe("$34,010.00");
+    });
+
+    // The two GROUPED statements. These matter more than the flat ones above: the
+    // flat reports are pinned byte-for-byte by a golden, whereas these are the
+    // reports the /reports page actually renders, and their decoders are the ones
+    // carrying the `Amounts`/`prior` present-vs-absent convention that no type
+    // system checks across the language boundary.
+    it("grouped balance sheet ties out and names its unpriced commodities", async () => {
+        const report = decodeBalanceSheetReport(await new LedgelineApi(url).balanceSheetGrouped({asOf: AS_OF}));
+        expect(report.asOf).toBe(AS_OF);
+        expect(report.sections.map((s) => s.kind)).toEqual(["assets", "liabilities", "equity"]);
+        expect(report.balanced).toBe(true);
+        // GLD and TSLA have no `P` directive at any date — the genuinely unpriced path.
+        expect(report.meta?.unpriced).toEqual(["GLD", "TSLA"]);
+    });
+
+    it("grouped P&L groups by segment, valued, against the prior equal-length window", async () => {
+        const styles = reportStyles(normalizeTransactions(await new HledgerApi(url).transactions()));
+        const report = decodeIncomeStatementReport(await new LedgelineApi(url).incomeStatementGrouped({from: "2026-01-01", to: AS_OF}));
+
+        // Untagged journal ⇒ the simple two-box shape, no GAAP ladder.
+        expect(report.multiStep).toBe(false);
+        expect(report.sections.map((s) => s.kind)).toEqual(["revenue", "opex"]);
+        expect(report.sections.map((s) => s.title)).toEqual(["Revenue", "Expenses"]);
+        expect(report.sections.flatMap((s) => s.trailing)).toEqual([]);
+
+        // hledger 1.52: `is -V -b 2026-01-01 -e 2026-07-09 --depth 2`.
+        const [revenue, expenses] = report.sections;
+        expect(dollarLine(revenue.total.current, styles)).toBe("$34,010.00");
+        expect(dollarLine(expenses.total.current, styles)).toBe("$25,126.48");
+        expect(dollarLine(report.netIncome.current, styles)).toBe("$8,883.52");
+        expect(revenue.groups.map((g) => g.name)).toEqual(["Dividends", "Salary"]);
+        expect(revenue.groups.every((g) => g.source === "segment")).toBe(true);
+
+        // The prior window is equal-LENGTH, not the prior calendar year:
+        // `is -V -b 2025-06-26 -e 2026-01-01 --depth 2`.
+        expect(report.prior).toEqual({from: "2025-06-26", to: "2025-12-31"});
+        expect(dollarLine(revenue.total.prior!, styles)).toBe("$39,397.50");
+        expect(dollarLine(report.netIncome.prior!, styles)).toBe("$14,880.79");
+    });
+
+    it("omits every prior figure, not just the header, when compare=none", async () => {
+        const report = decodeIncomeStatementReport(await new LedgelineApi(url).incomeStatementGrouped({from: "2026-01-01", to: AS_OF, compare: "none"}));
+        expect(report.prior).toBeNull();
+        expect(report.netIncome.prior).toBeUndefined();
+        expect(
+            report.sections
+                .flatMap((s) => [s.total, ...s.groups.flatMap((g) => [g.total, ...g.rows.map((r) => r.amounts)])])
+                .every((a) => a.prior === undefined)
+        ).toBe(true);
     });
 
     // GLD and TSLA used to land here as unpriced. Since net worth started inferring

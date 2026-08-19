@@ -43,6 +43,40 @@ describe("UNIT LedgelineApi — query building", () => {
         expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/reports/balancesheet");
     });
 
+    it("builds the grouped income-statement query on its own route, with no depth", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({sections: []}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").incomeStatementGrouped({from: "2026-01-01", to: "2026-07-08"});
+        // A SIBLING of `/api/reports/incomestatement`, which still exists and is
+        // still byte-checked by the hledger parity golden. And no `depth`: this
+        // report has no such control and the endpoint takes no such param.
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08");
+    });
+
+    it("omits value/valueIn/compare so the engine's own defaults apply", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({sections: []}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").incomeStatementGrouped({});
+        // The screen has no control for any of them, and sending them anyway
+        // would pin the SPA to a base commodity it had to guess.
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/reports/incomestatement/grouped");
+    });
+
+    it("passes value/valueIn/compare through when a caller does set them", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({sections: []}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").incomeStatementGrouped({
+            from: "2026-01-01",
+            to: "2026-07-08",
+            value: "cost",
+            valueIn: "€",
+            compare: "none",
+        });
+        expect(lastUrl(fetchMock)).toBe(
+            "http://127.0.0.1:5000/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&value=cost&valueIn=%E2%82%AC&compare=none"
+        );
+    });
+
     it("builds the holdings query, dropping an empty accounts set but keeping mode", async () => {
         const fetchMock = vi.fn().mockResolvedValue(jsonResponse({asOf: "x", base: "$", holdings: [], totals: {marketValue: {mantissa: "0", places: 0}}}));
         vi.stubGlobal("fetch", fetchMock);

@@ -1,12 +1,14 @@
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
 import {GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
+import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
 import {ApiShapeError} from "./client";
 import {
     decodeBalanceSheetReport,
     decodeBudgetReport,
     decodeHoldingsReport,
     decodeHoldingsSeries,
+    decodeIncomeStatementReport,
     decodeInsightsReport,
     decodePeriodReport,
     decodeRulesDoc,
@@ -253,6 +255,231 @@ describe("UNIT nativeDecode — BalanceSheetReport (grouped)", () => {
         it("throws when asOf or sections are missing", () => {
             expect(() => decodeBalanceSheetReport({sections: []})).toThrow(/expected asOf and a sections array/);
             expect(() => decodeBalanceSheetReport({asOf: "2026-07-08"})).toThrow(/expected asOf and a sections array/);
+        });
+    });
+});
+
+// The grouped income statement (plans/13). Sourced from hand-written literals
+// rather than `fixtures/native/v1/`, because the endpoint it mirrors is being
+// built in parallel — `incomeStatementFixture.ts` says what has to happen to
+// this suite the moment `just snapshot-native` can produce the real bytes.
+describe("UNIT nativeDecode — IncomeStatementReport (grouped)", () => {
+    const report = decodeIncomeStatementReport(GROUPED_INCOME_STATEMENT);
+
+    it("tags the report so it can be told apart from the other two `sections` shapes", () => {
+        // SectionedReport, BalanceSheetReport and this all carry a `sections`
+        // array. `kind` is added by the decoder, never sent — it is the whole
+        // reason the page can pick the right renderer and the right workbook
+        // builder (FE-1, two shapes further on).
+        expect(report.kind).toBe("incomeStatement");
+        expect((GROUPED_INCOME_STATEMENT as Record<string, unknown>).kind).toBeUndefined();
+    });
+
+    it("decodes the sections in ladder order with their kinds, titles and totals", () => {
+        expect(report.sections.map((s) => s.kind)).toEqual(["revenue", "opex"]);
+        expect(report.sections.map((s) => s.title)).toEqual(["Revenue", "Expenses"]);
+        expect([report.from, report.to]).toEqual(["2026-01-01", "2026-07-08"]);
+        expect(report.base).toBe("$");
+        expect(report.value).toBe("market");
+        expect(report.multiStep).toBe(false);
+
+        // hledger 1.52, `is -V -b 2026-01-01 -e 2026-07-09`.
+        expect(report.sections[0].total.current.get("$")).toEqual({m: 3401000n, p: 2});
+        expect(report.sections[1].total.current.get("$")).toEqual({m: 2512648n, p: 2});
+        expect(report.netIncome.current.get("$")).toEqual({m: 888352n, p: 2});
+    });
+
+    it("decodes the prior window and every figure inside it", () => {
+        // The immediately preceding window of EQUAL length: 2026-01-01 minus one
+        // day, less the 188-day span.
+        expect(report.prior).toEqual({from: "2025-06-26", to: "2025-12-31"});
+        expect(report.sections[0].total.prior?.get("$")).toEqual({m: 3939750n, p: 2});
+        expect(report.netIncome.prior?.get("$")).toEqual({m: 1488079n, p: 2});
+    });
+
+    it("decodes groups with their resolution source and member rows", () => {
+        // Groups arrive sorted by name, so Dividends precedes Salary — which is
+        // NOT the order `hledger is` prints them in.
+        const [dividends, salary] = report.sections[0].groups;
+        expect([salary.name, salary.source]).toEqual(["Salary", "segment"]);
+        expect(salary.total.current.get("$")).toEqual({m: 3396000n, p: 2});
+        expect(salary.rows.map((r) => r.account)).toEqual(["income:salary"]);
+        expect(salary.rows[0].depth).toBe(2);
+        expect(dividends.name).toBe("Dividends");
+    });
+
+    it("keeps a line that exists in only one period, with an EXPLICIT empty amount on the other side", () => {
+        // `expenses:unknown` had no postings in the prior window. The engine joins
+        // over the union of keys precisely so the group does not disappear, and
+        // `{}` is how "nothing here" arrives — never a missing key, which would
+        // be indistinguishable from a renamed field.
+        const unknown = report.sections[1].groups.find((g) => g.name === "Unknown");
+        expect(unknown?.total.current.get("$")).toEqual({m: 7500n, p: 2});
+        expect(unknown?.total.prior).toEqual(new Map());
+        expect(unknown?.total.prior).not.toBeUndefined();
+    });
+
+    it("decodes the ladder, attached to the sections it follows", () => {
+        const multi = decodeIncomeStatementReport(MULTI_STEP_INCOME_STATEMENT);
+
+        expect(multi.multiStep).toBe(true);
+        expect(multi.sections.map((s) => s.kind)).toEqual(["revenue", "cogs", "opex", "depreciation", "other", "interest", "tax"]);
+        expect(multi.sections.map((s) => s.trailing.map((t) => t.kind))).toEqual([
+            [],
+            ["grossProfit"],
+            ["ebitda"],
+            ["operatingIncome"],
+            [],
+            ["pretaxIncome"],
+            [],
+        ]);
+        expect(multi.sections[1].trailing[0].label).toBe("Gross profit");
+        expect(multi.sections[1].trailing[0].total.current.get("$")).toEqual({m: 51740000n, p: 2});
+        // `other` is the one section allowed to be negative — it is a net
+        // contribution to income, not a magnitude.
+        expect(multi.sections[4].total.current.get("$")).toEqual({m: -1500000n, p: 2});
+    });
+
+    it("carries a `tag`-sourced group, which is how two unrelated accounts share a line", () => {
+        const multi = decodeIncomeStatementReport(MULTI_STEP_INCOME_STATEMENT);
+        const cloud = multi.sections[1].groups[0];
+
+        expect([cloud.name, cloud.source]).toEqual(["Cloud infrastructure", "tag"]);
+        expect(cloud.rows.map((r) => r.account)).toEqual(["cogs:cdn", "cogs:hosting"]);
+    });
+
+    it("omits `prior` entirely — never nulls it, never zeroes it — when not comparing", () => {
+        const uncompared = decodeIncomeStatementReport(UNCOMPARED_INCOME_STATEMENT);
+
+        expect(uncompared.prior).toBeNull();
+        expect(uncompared.netIncome.prior).toBeUndefined();
+        expect(uncompared.sections[0].total.prior).toBeUndefined();
+        expect(uncompared.sections[0].groups[0].rows[0].amounts.prior).toBeUndefined();
+        // A zero would be a claim about a period that was never computed.
+        expect(uncompared.sections[0].total.current.get("$")).toEqual({m: 3401000n, p: 2});
+    });
+
+    it("freezes the whole tree, as every other decoder does", () => {
+        expect(Object.isFrozen(report)).toBe(true);
+        expect(Object.isFrozen(report.sections)).toBe(true);
+        expect(Object.isFrozen(report.sections[0])).toBe(true);
+        expect(Object.isFrozen(report.sections[0].groups[0])).toBe(true);
+        expect(Object.isFrozen(report.sections[0].groups[0].rows[0])).toBe(true);
+        expect(Object.isFrozen(report.sections[0].groups[0].rows[0].amounts)).toBe(true);
+        expect(Object.isFrozen(report.prior)).toBe(true);
+    });
+
+    it("keeps a null base as null rather than inventing a commodity", () => {
+        expect(decodeIncomeStatementReport({...(GROUPED_INCOME_STATEMENT as object), base: null}).base).toBeNull();
+    });
+
+    describe("refuses a body it cannot trust", () => {
+        const mutate = (patch: Record<string, unknown>): unknown => ({...(GROUPED_INCOME_STATEMENT as object), ...patch});
+        const without = (key: string): unknown => {
+            const copy = {...(GROUPED_INCOME_STATEMENT as Record<string, unknown>)};
+            delete copy[key];
+            return copy;
+        };
+        /** The comparing fixture's first section, with one field patched. */
+        const section = (patch: Record<string, unknown>): unknown =>
+            mutate({sections: [{...((GROUPED_INCOME_STATEMENT as {sections: object[]}).sections[0] as object), ...patch}]});
+
+        it("throws when a figure is absent instead of decoding it to $0.00", () => {
+            expect(() => decodeIncomeStatementReport(without("netIncome"))).toThrow(ApiShapeError);
+            expect(() => decodeIncomeStatementReport(without("netIncome"))).toThrow(/netIncome: missing amounts/);
+            expect(() => decodeIncomeStatementReport(mutate({netIncome: {}}))).toThrow(/netIncome current: missing amount/);
+        });
+
+        // The cross-check that turns an optional key into a checked one. A
+        // renamed `prior` field would otherwise just stop rendering the column,
+        // which reads as "this report has no comparison" rather than as a bug.
+        it("throws when the report says it compares but a figure carries no prior", () => {
+            const noPrior = section({total: {current: {$: {mantissa: "3401000", places: 2}}}});
+            expect(() => decodeIncomeStatementReport(noPrior)).toThrow(/prior: missing amount/);
+        });
+
+        it("throws when a figure carries a prior the report has no window for", () => {
+            // There would be no dates to label the column with, so the figure
+            // cannot be rendered and must not be silently held.
+            const stray = {...(UNCOMPARED_INCOME_STATEMENT as object), netIncome: {current: {}, prior: {$: {mantissa: "1", places: 2}}}};
+            expect(() => decodeIncomeStatementReport(stray)).toThrow(/no prior period/);
+        });
+
+        it("tolerates a null prior as absent, which is what serde emits for a bare Option", () => {
+            const nulled = {...(UNCOMPARED_INCOME_STATEMENT as object), prior: null, netIncome: {current: {}, prior: null}};
+            expect(decodeIncomeStatementReport(nulled).prior).toBeNull();
+            expect(decodeIncomeStatementReport(nulled).netIncome.prior).toBeUndefined();
+        });
+
+        it("throws when `multiStep` is absent or is not a boolean", () => {
+            // It decides whether `opex` reads "Expenses" or "Operating expenses",
+            // so a missing one may not silently relabel a box.
+            expect(() => decodeIncomeStatementReport(without("multiStep"))).toThrow(/multiStep: expected a boolean/);
+            expect(() => decodeIncomeStatementReport(mutate({multiStep: "yes"}))).toThrow(/multiStep: expected a boolean/);
+        });
+
+        it.each([
+            ["section kind", {sections: [{kind: "profits", title: "X", groups: [], total: {current: {}, prior: {}}, trailing: []}]}],
+            [
+                "group source",
+                {
+                    sections: [
+                        {
+                            kind: "revenue",
+                            title: "X",
+                            groups: [{name: "G", source: "vibes", rows: [], total: {current: {}, prior: {}}}],
+                            total: {current: {}, prior: {}},
+                            trailing: [],
+                        },
+                    ],
+                },
+            ],
+            [
+                "subtotal kind",
+                {
+                    sections: [
+                        {
+                            kind: "revenue",
+                            title: "X",
+                            groups: [],
+                            total: {current: {}, prior: {}},
+                            trailing: [{kind: "vibes", label: "L", total: {current: {}, prior: {}}}],
+                        },
+                    ],
+                },
+            ],
+            ["valuation", {value: "guessed"}],
+        ])("throws on an unknown %s rather than guessing one", (_what, patch) => {
+            expect(() => decodeIncomeStatementReport(mutate(patch))).toThrow(ApiShapeError);
+        });
+
+        it("throws when a section omits `trailing` — an empty ladder is a computed answer", () => {
+            const patch = {sections: [{kind: "revenue", title: "X", groups: [], total: {current: {}, prior: {}}}]};
+            expect(() => decodeIncomeStatementReport(mutate(patch))).toThrow(/missing title\/groups\/trailing/);
+        });
+
+        it("throws when a group omits `rows` — absent and empty are different facts", () => {
+            const patch = {
+                sections: [
+                    {
+                        kind: "revenue",
+                        title: "X",
+                        groups: [{name: "G", source: "segment", total: {current: {}, prior: {}}}],
+                        total: {current: {}, prior: {}},
+                        trailing: [],
+                    },
+                ],
+            };
+            expect(() => decodeIncomeStatementReport(mutate(patch))).toThrow(/missing name\/rows/);
+        });
+
+        it("throws when a prior window is half-written", () => {
+            expect(() => decodeIncomeStatementReport(mutate({prior: {from: "2025-06-26"}}))).toThrow(/expected \{from, to\} ISO dates/);
+        });
+
+        it("throws when from, to or sections are missing", () => {
+            expect(() => decodeIncomeStatementReport({to: "2026-07-08", sections: []})).toThrow(/expected from, to and a sections array/);
+            expect(() => decodeIncomeStatementReport({from: "2026-01-01", to: "2026-07-08"})).toThrow(/expected from, to and a sections array/);
         });
     });
 });
@@ -882,7 +1109,9 @@ describe("UNIT nativeDecode — RulesPreview", () => {
 describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed", () => {
     const DECODERS: [string, (raw: unknown) => unknown][] = [
         ["balancesheet", decodeSectionedReport],
+        ["balancesheet-grouped", decodeBalanceSheetReport],
         ["incomestatement", decodeSectionedReport],
+        ["incomestatement-grouped", decodeIncomeStatementReport],
         ["cashflow", decodePeriodReport],
         ["networth", decodePeriodReport],
         ["budget", decodeBudgetReport],
@@ -907,6 +1136,15 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         "subscriptions $.monthly[].manual", // no `subscription:true` tag in sample.journal
         "subscriptions $.annual", // no annual cadence in sample.journal → [] either way
         "holdings $.topLosers", // nothing is down as of 2026-07-08 → [] either way
+        // No income or expense account in sample.journal holds an unpriced
+        // commodity at ANY range — its only foreign postings are EUR, and every
+        // one of them falls after the first `P EUR` directive — so this is [] on
+        // both sides of the rename. Closing it needs journal data we don't have.
+        // The rename it would hide is still caught: `unpriced` is one shared
+        // `WireReportMeta` (reports_api.rs:510), and the sweep proves the very
+        // same key IS load-bearing on `balancesheet-grouped`, where GLD and TSLA
+        // are genuinely unpriced.
+        "incomestatement-grouped $.meta.unpriced",
     ]);
 
     /** Rename every key of every golden in turn; report the ones nothing noticed. */

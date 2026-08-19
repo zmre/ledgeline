@@ -26,8 +26,8 @@ describe("UNIT reports/ui/params", () => {
                 end: "2026-07-08",
                 interval: "monthly",
                 count: 12,
-                // Shared by is/cf/nw/budget. The balance sheet no longer reads
-                // it: that tab asks the engine for an unclamped report.
+                // Shared by cf/nw/budget. Neither statement reads it: both tabs
+                // ask the engine for an unclamped report.
                 depth: 3,
                 insStart: "2024-07-01",
                 insEnd: "2026-06-30",
@@ -38,10 +38,12 @@ describe("UNIT reports/ui/params", () => {
     describe("paramsToSearch", () => {
         it("writes only the active tab's params, in full", () => {
             expect(paramsToSearch(DFLT)).toBe("tab=insights&istart=2024-07-01&iend=2026-06-30");
-            // No `depth` on bs: the slider is gone and the tab requests an
-            // unclamped report, so the URL has nothing to say about depth.
+            // No `depth` on bs or is: the slider is gone from both statements
+            // and each requests an unclamped report, so the URL has nothing to
+            // say about depth. The P&L keeps its RANGE — that is the one thing a
+            // report about a period cannot infer.
             expect(paramsToSearch({...DFLT, tab: "bs"})).toBe("tab=bs&asof=2026-07-08");
-            expect(paramsToSearch({...DFLT, tab: "is"})).toBe("tab=is&from=2026-01-01&to=2026-12-31&depth=3");
+            expect(paramsToSearch({...DFLT, tab: "is"})).toBe("tab=is&from=2026-01-01&to=2026-12-31");
             expect(paramsToSearch({...DFLT, tab: "cf"})).toBe("tab=cf&end=2026-07-08&interval=monthly&count=12&depth=3");
             expect(paramsToSearch({...DFLT, tab: "nw"})).toBe("tab=nw&end=2026-07-08&interval=monthly&count=12&depth=3");
             expect(paramsToSearch({...DFLT, tab: "budget"})).toBe("tab=budget&from=2026-01-01&to=2026-12-31&depth=3");
@@ -113,6 +115,27 @@ describe("UNIT reports/ui/params", () => {
             expect(parsed.asOf).toBe("2026-07-08");
             expect(parsed.depth).toBe(3);
             expect(paramsToSearch(parsed)).toBe("tab=bs&asof=2026-07-08");
+        });
+
+        it("still loads a bookmarked ?tab=is&depth=N, keeping the range it does honor", () => {
+            // Same posture, one tab further on. The range is what the P&L
+            // actually needs restoring, and it must survive the stale param
+            // beside it rather than being dropped with it.
+            const parsed = searchToParams("tab=is&from=2025-01-01&to=2025-06-30&depth=4", DFLT);
+            expect(parsed.tab).toBe("is");
+            expect([parsed.from, parsed.to]).toEqual(["2025-01-01", "2025-06-30"]);
+            expect(parsed.depth).toBe(4);
+            expect(paramsToSearch(parsed)).toBe("tab=is&from=2025-01-01&to=2025-06-30");
+        });
+
+        it("shows a depth slider on the period tabs and on neither statement", () => {
+            // The control is driven off this config, so this IS the assertion
+            // that the slider is gone from the P&L (`ReportControls` renders it
+            // `{#if config.depth}`).
+            expect(TAB_CONTROLS.bs.depth).toBe(false);
+            expect(TAB_CONTROLS.is.depth).toBe(false);
+            expect(TAB_CONTROLS.is.range).toBe(true);
+            expect([TAB_CONTROLS.cf.depth, TAB_CONTROLS.nw.depth, TAB_CONTROLS.budget.depth]).toEqual([true, true, true]);
         });
 
         it("clamps count and depth to sane ranges", () => {

@@ -90,15 +90,24 @@ import type {
     TopTxn,
 } from "$lib/reports/insightsTypes";
 import type {
+    Amounts,
     BalanceSheetReport,
     BsGroup,
-    BsGroupSource,
     BsSection,
     BsSectionKind,
     BsValuation,
     BudgetCell,
     BudgetReport,
     BudgetRow,
+    DateRange,
+    GroupSource,
+    IncomeStatementReport,
+    IsGroup,
+    IsRow,
+    IsSection,
+    IsSectionKind,
+    IsSubtotal,
+    IsSubtotalKind,
     PeriodReport,
     ReportRow,
     Section,
@@ -163,6 +172,56 @@ interface RawBalanceSheetReport {
     netWorth?: RawMixed;
     check?: RawMixed;
     balanced?: boolean;
+    meta?: RawReportMeta | null;
+}
+
+/** `{current, prior?}` — `prior` is ABSENT, not null, when `compare=none`. */
+interface RawAmounts {
+    current?: RawMixed;
+    prior?: RawMixed | null;
+}
+
+interface RawIsRow {
+    account?: string;
+    depth?: number;
+    amounts?: RawAmounts;
+}
+
+interface RawIsGroup {
+    name?: string;
+    source?: string;
+    rows?: RawIsRow[];
+    total?: RawAmounts;
+}
+
+interface RawIsSubtotal {
+    kind?: string;
+    label?: string;
+    total?: RawAmounts;
+}
+
+interface RawIsSection {
+    kind?: string;
+    title?: string;
+    groups?: RawIsGroup[];
+    total?: RawAmounts;
+    trailing?: RawIsSubtotal[];
+}
+
+interface RawDateRange {
+    from?: string;
+    to?: string;
+}
+
+interface RawIncomeStatementReport {
+    from?: string;
+    to?: string;
+    prior?: RawDateRange | null;
+    base?: string | null;
+    value?: string;
+    sections?: RawIsSection[];
+    netIncome?: RawAmounts;
+    multiStep?: boolean;
     meta?: RawReportMeta | null;
 }
 
@@ -829,7 +888,8 @@ export function decodeSectionedReport(raw: unknown): SectionedReport {
 // ---------------------------------------------------------------------------
 
 const BS_SECTION_KINDS: readonly BsSectionKind[] = ["assets", "liabilities", "equity"];
-const BS_GROUP_SOURCES: readonly BsGroupSource[] = ["tag", "type", "commodity", "segment", "computed"];
+/** Shared by both statements — one resolver on the Rust side, one vocabulary here. */
+const GROUP_SOURCES: readonly GroupSource[] = ["tag", "type", "commodity", "segment", "computed"];
 const BS_VALUATIONS: readonly BsValuation[] = ["market", "cost", "none"];
 
 /**
@@ -861,7 +921,7 @@ function decodeBsGroup(raw: RawBsGroup | undefined, context: string): BsGroup {
     }
     return Object.freeze({
         name: raw.name,
-        source: decodeEnum(BS_GROUP_SOURCES, raw.source, `${context} source`),
+        source: decodeEnum(GROUP_SOURCES, raw.source, `${context} source`),
         rows: frozen(raw.rows.map((row, i) => decodeReportRow(row, `${context} row #${i}`))),
         total: decodeMixed(raw.total, `${context} total`),
     });
@@ -920,6 +980,140 @@ export function decodeBalanceSheetReport(raw: unknown): BalanceSheetReport {
     // Omitted (`skip_serializing_if = "Option::is_none"`) when nothing is unpriced.
     if (report.meta !== undefined && report.meta !== null) {
         out.meta = Object.freeze({unpriced: frozen(decodeStrings(report.meta.unpriced, "balance sheet meta.unpriced"))});
+    }
+    return Object.freeze(out);
+}
+
+// ---------------------------------------------------------------------------
+// IncomeStatementReport (grouped, adaptive GAAP — plans/13)
+// ---------------------------------------------------------------------------
+
+const IS_SECTION_KINDS: readonly IsSectionKind[] = ["revenue", "cogs", "opex", "depreciation", "interest", "tax", "other"];
+const IS_SUBTOTAL_KINDS: readonly IsSubtotalKind[] = ["grossProfit", "ebitda", "operatingIncome", "pretaxIncome"];
+
+/**
+ * `{current, prior?}`, checked against whether the REPORT is comparing.
+ *
+ * That cross-check is the whole point of taking `comparing` as an argument.
+ * `prior` is an optional key, and an optional key is exactly where a renamed
+ * Rust field disappears without trace: the column would simply stop rendering,
+ * which reads as "this report has no comparison" rather than as a bug. So:
+ *
+ *   - comparing (`report.prior` is a window) → `prior` MUST decode. Absent throws.
+ *   - not comparing → `prior` must be absent. `null` is tolerated as absent,
+ *     because that is what serde emits for an `Option` without
+ *     `skip_serializing_if` and it means the identical thing; an actual amount
+ *     throws, since there would be no window to label the column with.
+ *
+ * `current` is unconditionally required via `decodeMixed`, so a missing figure
+ * can never become `$0.00` (DRY-3).
+ */
+function decodeAmounts(raw: RawAmounts | undefined, context: string, comparing: boolean): Amounts {
+    if (raw === undefined || raw === null || typeof raw !== "object") {
+        throw new ApiShapeError(`${context}: missing amounts (expected {current, prior?})`);
+    }
+    const out: Amounts = {current: decodeMixed(raw.current, `${context} current`)};
+    if (comparing) {
+        out.prior = decodeMixed(raw.prior ?? undefined, `${context} prior`);
+    } else if (raw.prior !== undefined && raw.prior !== null) {
+        throw new ApiShapeError(`${context} prior: sent a prior figure on a report with no prior period`);
+    }
+    return Object.freeze(out);
+}
+
+function decodeIsRow(raw: RawIsRow | undefined, context: string, comparing: boolean): IsRow {
+    if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number") {
+        throw new ApiShapeError(`${context}: missing account/depth`);
+    }
+    return Object.freeze({account: raw.account, depth: raw.depth, amounts: decodeAmounts(raw.amounts, `${context} amounts`, comparing)});
+}
+
+function decodeIsGroup(raw: RawIsGroup | undefined, context: string, comparing: boolean): IsGroup {
+    // `rows` demanded even when empty, for the reason `decodeBsGroup` gives:
+    // absent and empty are different facts and only one is safe to render.
+    if (raw === undefined || typeof raw.name !== "string" || !Array.isArray(raw.rows)) {
+        throw new ApiShapeError(`${context}: missing name/rows`);
+    }
+    return Object.freeze({
+        name: raw.name,
+        source: decodeEnum(GROUP_SOURCES, raw.source, `${context} source`),
+        rows: frozen(raw.rows.map((row, i) => decodeIsRow(row, `${context} row #${i}`, comparing))),
+        total: decodeAmounts(raw.total, `${context} total`, comparing),
+    });
+}
+
+function decodeIsSubtotal(raw: RawIsSubtotal | undefined, context: string, comparing: boolean): IsSubtotal {
+    if (raw === undefined || typeof raw.label !== "string") throw new ApiShapeError(`${context}: missing label`);
+    return Object.freeze({
+        kind: decodeEnum(IS_SUBTOTAL_KINDS, raw.kind, `${context} kind`),
+        label: raw.label,
+        total: decodeAmounts(raw.total, `${context} total`, comparing),
+    });
+}
+
+function decodeIsSection(raw: RawIsSection | undefined, context: string, comparing: boolean): IsSection {
+    // `trailing` is required for the same reason `rows` is: "this box has no
+    // ladder line under it" is a real answer the engine computes from its
+    // guards, and it must not be reachable by the field going missing.
+    if (raw === undefined || typeof raw.title !== "string" || !Array.isArray(raw.groups) || !Array.isArray(raw.trailing)) {
+        throw new ApiShapeError(`${context}: missing title/groups/trailing`);
+    }
+    return Object.freeze({
+        kind: decodeEnum(IS_SECTION_KINDS, raw.kind, `${context} kind`),
+        title: raw.title,
+        groups: frozen(raw.groups.map((group, i) => decodeIsGroup(group, `${context} group #${i}`, comparing))),
+        total: decodeAmounts(raw.total, `${context} total`, comparing),
+        trailing: frozen(raw.trailing.map((subtotal, i) => decodeIsSubtotal(subtotal, `${context} subtotal #${i}`, comparing))),
+    });
+}
+
+/** `{from, to}` — the window the prior figures cover. Both dates required. */
+function decodeDateRange(raw: RawDateRange, context: string): DateRange {
+    if (typeof raw.from !== "string" || typeof raw.to !== "string") {
+        throw new ApiShapeError(`${context}: expected {from, to} ISO dates`);
+    }
+    return Object.freeze({from: raw.from as ISODate, to: raw.to as ISODate});
+}
+
+/**
+ * `GET /api/reports/incomestatement/grouped` → the grouped income statement.
+ *
+ * `kind: "incomeStatement"` is added HERE and is not on the wire. Three report
+ * types now carry a `sections` array, so this tag is what lets the page pick a
+ * renderer and a workbook builder at all (FE-1).
+ *
+ * `prior` does double duty: it is the window the comparison column covers AND
+ * the switch that says every `Amounts` in the tree must carry one. Reading it
+ * first, and passing `comparing` down, is what turns an optional key into a
+ * checked one — see `decodeAmounts`.
+ */
+export function decodeIncomeStatementReport(raw: unknown): IncomeStatementReport {
+    const report = raw as RawIncomeStatementReport;
+    if (typeof report !== "object" || report === null || typeof report.from !== "string" || typeof report.to !== "string" || !Array.isArray(report.sections)) {
+        throw new ApiShapeError("income statement: expected from, to and a sections array");
+    }
+    if (report.base !== null && report.base !== undefined && typeof report.base !== "string") {
+        throw new ApiShapeError("income statement base: expected a commodity string or null");
+    }
+    // Omitted (or null) for `compare=none`; a window for `compare=previous`.
+    const prior = report.prior === undefined || report.prior === null ? null : decodeDateRange(report.prior, "income statement prior");
+    const comparing = prior !== null;
+    const out: IncomeStatementReport = {
+        kind: "incomeStatement",
+        from: report.from as ISODate,
+        to: report.to as ISODate,
+        prior,
+        base: typeof report.base === "string" ? report.base : null,
+        value: decodeEnum(BS_VALUATIONS, report.value, "income statement value"),
+        sections: frozen(report.sections.map((section, i) => decodeIsSection(section, `income statement section #${i}`, comparing))),
+        netIncome: decodeAmounts(report.netIncome, "income statement netIncome", comparing),
+        // Required, not defaulted: it decides whether `opex` reads "Expenses" or
+        // "Operating expenses", so a missing one would silently relabel a box.
+        multiStep: decodeBoolean(report.multiStep, "income statement multiStep"),
+    };
+    // Omitted (`skip_serializing_if = "Option::is_none"`) when nothing is unpriced.
+    if (report.meta !== undefined && report.meta !== null) {
+        out.meta = Object.freeze({unpriced: frozen(decodeStrings(report.meta.unpriced, "income statement meta.unpriced"))});
     }
     return Object.freeze(out);
 }

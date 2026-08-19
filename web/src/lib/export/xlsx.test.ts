@@ -4,13 +4,14 @@
 
 import {describe, expect, it} from "vitest";
 import {Workbook, type Worksheet} from "exceljs";
-import {decodeBalanceSheetReport} from "$lib/api/nativeDecode";
+import {decodeBalanceSheetReport, decodeIncomeStatementReport} from "$lib/api/nativeDecode";
 import {dec, type MixedAmount} from "$lib/domain/money";
 import type {AccountType} from "$lib/domain/accountTypes";
 import type {Holding, HoldingsReport} from "$lib/holdings/types";
 import type {BudgetCell, BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
 import {GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
-import {buildBalanceSheetWorkbook, buildBudgetWorkbook, buildHoldingsWorkbook, buildWorkbook, numberFormat} from "./xlsx";
+import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
+import {buildBalanceSheetWorkbook, buildBudgetWorkbook, buildHoldingsWorkbook, buildIncomeStatementWorkbook, buildWorkbook, numberFormat} from "./xlsx";
 
 const usd = (cents: number): MixedAmount => new Map([["$", dec(cents, 2)]]);
 const amt = (m: number, p: number): MixedAmount => new Map([["$", dec(m, p)]]);
@@ -371,6 +372,216 @@ describe("UNIT export/xlsx", () => {
 
             expect(ws.getCell("A34").value).toBe("Balanced");
             expect(ws.getCell("B34").value).toBeNull();
+        });
+    });
+
+    // plans/13: the income statement is valued into ONE commodity and compares
+    // against a prior window, so its money columns are real numbers with a number
+    // format and its percentage column is a real percent — not pre-rendered text.
+    describe("grouped income-statement workbook", () => {
+        const report = decodeIncomeStatementReport(GROUPED_INCOME_STATEMENT);
+        const build = (r = report) => buildIncomeStatementWorkbook(r, {title: "Income Statement", params: "2026-01-01 to 2026-07-08"});
+        const column = (ws: Worksheet, from: number, count: number, col = 1) => Array.from({length: count}, (_, i) => ws.getCell(from + i, col).value);
+
+        it("lays out a coloured section header, bold groups, indented accounts, a ruled total", async () => {
+            const ws = await readBack(await build(), "Income Statement");
+
+            expect(ws.getCell("A1").value).toBe("Income Statement");
+            // The prior column is headed with its own DATES: the previous
+            // equal-length window is not a period a reader can infer from the
+            // range in the title.
+            expect(column(ws, 4, 5, 1).length).toBe(5);
+            expect([ws.getCell("A4").value, ws.getCell("B4").value, ws.getCell("C4").value, ws.getCell("D4").value, ws.getCell("E4").value]).toEqual([
+                "Account",
+                "Amount ($)",
+                "2025-06-26 … 2025-12-31",
+                "% of revenue",
+                "Other commodities",
+            ]);
+
+            expect(column(ws, 5, 8)).toEqual([
+                "Revenue",
+                // Groups sort by name, so Dividends precedes Salary — the
+                // engine's order, not `hledger is`'s. See the fixture's note.
+                "Dividends",
+                "income:dividends",
+                "Salary",
+                "income:salary",
+                "Total Revenue",
+                null, // a blank row between boxes, matching the gap on screen
+                "Expenses",
+            ]);
+
+            // The section header is filled, not merely bold.
+            expect(ws.getCell("A5").fill).toMatchObject({type: "pattern", fgColor: {argb: "FF14532D"}});
+            expect(ws.getCell("A5").font.bold).toBe(true);
+            expect(ws.getCell("A6").font.bold).toBe(true); // group row
+            expect(ws.getCell("A7").alignment?.indent).toBe(2); // account row, indented under its group
+            expect(ws.getCell("A10").border?.top?.style).toBe("thin"); // the subtotal rule
+            expect(ws.views[0]).toMatchObject({state: "frozen", ySplit: 4});
+        });
+
+        it("writes every figure as a real number rounded exactly as the screen rounds it", async () => {
+            const ws = await readBack(await build(), "Income Statement");
+
+            expect(ws.getCell("B10").value).toBe(34010); // Total Revenue
+            expect(ws.getCell("B10").numFmt).toBe('"$"#,##0.00');
+            expect(ws.getCell("C10").value).toBe(39397.5); // the prior window's
+            expect(ws.getCell("B34").value).toBe(25126.48); // Total Expenses
+            expect(ws.getCell("C34").value).toBe(24516.71);
+            expect(ws.getCell("B34").font.bold).toBe(true);
+        });
+
+        it("writes the percentage as a real percent, not as pre-rendered text", async () => {
+            const ws = await readBack(await build(), "Income Statement");
+
+            // Excel's % format multiplies by 100, so 0.739 renders "73.9%" — and
+            // stays sortable, chartable and re-totalable, which "73.9%" as a
+            // string is not.
+            expect(ws.getCell("D34").value).toBe(0.739);
+            expect(ws.getCell("D34").numFmt).toBe("0.0%");
+            expect(ws.getCell("D10").value).toBe(1); // revenue is 100.0% of revenue
+            // …and it is free of the float noise `pct / 100` would leave behind:
+            // Salary is 99.9% of revenue, which that division stores as
+            // 0.9990000000000001.
+            expect(String(ws.getCell("D8").value)).toBe("0.999");
+        });
+
+        it("compresses single-child chains exactly as the screen does", async () => {
+            const ws = await readBack(await build(), "Income Statement");
+
+            // `expenses:housing` has one child with the same figure in both
+            // windows, so the workbook shows the one row the screen shows.
+            expect(column(ws, 17, 2)).toEqual(["Housing", "expenses:housing:rent"]);
+        });
+
+        it("writes every group EXPANDED, whatever is collapsed on screen", async () => {
+            const ws = await readBack(await build(), "Income Statement");
+
+            // A disclosure triangle is a way to read a long statement on a
+            // screen; an exported statement missing the accounts the reader
+            // happened to have closed is just an incomplete document.
+            expect(column(ws, 19, 4)).toEqual(["Taxes", "expenses:taxes", "federal", "state"]);
+        });
+
+        it("keeps a line that ran in only one period, with an explicit zero on the other side", async () => {
+            const ws = await readBack(await build(), "Income Statement");
+
+            // `expenses:travel:flights` is current-only, `…:activities` prior-only.
+            expect(column(ws, 27, 3)).toEqual(["activities", "flights", "lodging"]);
+            expect([ws.getCell("B27").value, ws.getCell("C27").value]).toEqual([0, 39.6]);
+            expect([ws.getCell("B28").value, ws.getCell("C28").value]).toEqual([412.8, 0]);
+        });
+
+        it("ends on net income, and restates nothing above it", async () => {
+            const ws = await readBack(await build(), "Income Statement");
+
+            // A condensed restatement of every section total stood between the
+            // last box and this row, and went with the screen's: each of those
+            // figures is already a `Total …` row above, so the block was
+            // duplicated totals in a document whose whole point is that nothing
+            // is printed twice.
+            expect(column(ws, 36, 3)).toEqual(["Net income (revenue − expenses)", null, null]);
+            expect(ws.getCell("A36").border?.top?.style).toBe("medium");
+            // `isSummary` is shared with the view precisely so the workbook cannot
+            // claim a different bottom line — or a different margin — from the
+            // page it was exported from.
+            expect(ws.getCell("B36").value).toBe(8883.52);
+            expect(ws.getCell("C36").value).toBe(14880.79);
+            expect(ws.getCell("D36").value).toBe(0.261);
+            expect(ws.getCell("A36").font.bold).toBe(true);
+        });
+
+        it("writes each section total exactly once, in its own box's footer", async () => {
+            const ws = await readBack(await build(), "Income Statement");
+            const amounts = Array.from({length: 40}, (_, i) => ws.getCell(i + 1, 2).value);
+
+            // The claim the summary block used to break: 25,126.48 appeared as
+            // "Total Expenses" AND as "Less: Expenses" four rows later.
+            expect(amounts.filter((v) => v === 25126.48)).toHaveLength(1);
+            expect(amounts.filter((v) => v === 34010)).toHaveLength(1);
+        });
+
+        describe("a multi-step statement", () => {
+            const multi = decodeIncomeStatementReport(MULTI_STEP_INCOME_STATEMENT);
+            const buildMulti = () => buildIncomeStatementWorkbook(multi, {title: "Income Statement", params: "2026"});
+
+            it("writes each ladder rung between its boxes, ruled and blank-separated", async () => {
+                const ws = await readBack(await buildMulti(), "Income Statement");
+
+                expect(column(ws, 18, 5)).toEqual([
+                    "Total Cost of revenue",
+                    null, // the rung reads as separate from the box above it
+                    "Gross profit",
+                    null,
+                    "Operating expenses", // …and from the box below it
+                ]);
+                // A heavier rule than a section total's, because a rung spans
+                // everything above it rather than one box.
+                expect(ws.getCell("A20").border?.top?.style).toBe("medium");
+                expect(ws.getCell("A18").border?.top?.style).toBe("thin");
+                expect(ws.getCell("B20").value).toBe(517400);
+                expect(ws.getCell("C20").value).toBe(0.835);
+            });
+
+            it("orders EBITDA above D&A and Operating income below it", async () => {
+                const ws = await readBack(await buildMulti(), "Income Statement");
+
+                expect(ws.getCell("A29").value).toBe("EBITDA");
+                expect(ws.getCell("A31").value).toBe("Depreciation & amortization");
+                expect(ws.getCell("A36").value).toBe("Operating income");
+                // Each rung is a running total of everything printed above it.
+                expect([ws.getCell("B29").value, ws.getCell("B36").value]).toEqual([160900, 136900]);
+            });
+
+            it("gives every section its own fill, so the boxes are as distinct as on screen", async () => {
+                const ws = await readBack(await buildMulti(), "Income Statement");
+                const fills = [5, 12, 22, 31, 38, 45, 52].map((row) => (ws.getCell(row, 1).fill as {fgColor?: {argb?: string}}).fgColor?.argb);
+
+                expect(new Set(fills).size).toBe(fills.length);
+                expect(fills[0]).toBe("FF14532D"); // revenue, the one green box
+            });
+
+            it("writes the mixed `other` box below zero, alone among the sections", async () => {
+                const ws = await readBack(await buildMulti(), "Income Statement");
+
+                expect(ws.getCell("A43").value).toBe("Total Other income & expense");
+                expect(ws.getCell("B43").value).toBe(-15000);
+                expect(ws.getCell("C43").value).toBe(-0.024);
+            });
+        });
+
+        it("drops the prior column entirely when the report is not comparing", async () => {
+            const ws = await readBack(await build(decodeIncomeStatementReport(UNCOMPARED_INCOME_STATEMENT)), "Income Statement");
+
+            // A blank column headed "Prior" would read as "the prior period was
+            // zero" rather than as "there is no prior period", so every column
+            // after it shifts.
+            expect([ws.getCell("A4").value, ws.getCell("B4").value, ws.getCell("C4").value, ws.getCell("D4").value]).toEqual([
+                "Account",
+                "Amount ($)",
+                "% of revenue",
+                "Other commodities",
+            ]);
+            expect(ws.getCell("C10").value).toBe(1); // the percentage, now in C
+            expect(ws.getCell("C10").numFmt).toBe("0.0%");
+            expect(ws.getCell("D10").value).toBeNull();
+        });
+
+        it("surfaces the commodities the valuation could not convert instead of dropping them", async () => {
+            // "unpriced commodities are surfaced, never silently dropped" is the
+            // rule the whole redesign rests on, and a workbook that quietly
+            // omitted them would be the worst place to break it.
+            const unpriced = decodeIncomeStatementReport({
+                ...(UNCOMPARED_INCOME_STATEMENT as object),
+                netIncome: {current: {$: {mantissa: "888352", places: 2}, GLD: {mantissa: "5", places: 0}}},
+            });
+            const ws = await readBack(await build(unpriced), "Income Statement");
+
+            expect(ws.getCell("A36").value).toBe("Net income (revenue − expenses)");
+            expect(ws.getCell("B36").value).toBe(8883.52);
+            expect(ws.getCell("C36").value).toBe(0.261); // no prior column here, so % is in C
+            expect(ws.getCell("D36").value).toBe("5 GLD");
         });
     });
 

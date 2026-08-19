@@ -357,6 +357,24 @@ export interface IncomeStatementQuery {
     to?: string;
     depth?: number;
 }
+/**
+ * The grouped income statement's query (plans/13). Note what is NOT here:
+ * `depth`. This report has no depth control and the endpoint takes no such
+ * param — groups are the reading, and the accounts inside one are a drill-down.
+ *
+ * `value`/`valueIn`/`compare` are optional for the same reason they are on the
+ * grouped balance sheet: the engine's defaults (market, valued in
+ * `prices.base_commodity()`, comparing against the previous equal-length window)
+ * are exactly what the screen wants, and there is no control for any of them.
+ * Sending them anyway would pin the SPA to a base commodity it had to guess.
+ */
+export interface GroupedIncomeStatementQuery {
+    from?: string;
+    to?: string;
+    value?: "market" | "cost" | "none";
+    valueIn?: string;
+    compare?: "previous" | "none";
+}
 export interface CashFlowQuery {
     end?: string;
     interval?: string;
@@ -485,8 +503,20 @@ export class LedgelineApi {
         );
     }
 
+    /**
+     * The flat, unvalued income statement. Still here, and still exercised by
+     * the hledger parity golden — the screen no longer uses it, but
+     * `fixtures/native/v1/incomestatement.json` must stay byte-identical.
+     */
     incomeStatement(query: IncomeStatementQuery = {}): Promise<unknown> {
         return this.getJson(`/api/reports/incomestatement${queryString({from: query.from, to: query.to, depth: query.depth})}`);
+    }
+
+    /** The grouped, market-valued income statement the P&L tab renders (decode with `decodeIncomeStatementReport`). */
+    incomeStatementGrouped(query: GroupedIncomeStatementQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/reports/incomestatement/grouped${queryString({from: query.from, to: query.to, value: query.value, valueIn: query.valueIn, compare: query.compare})}`
+        );
     }
 
     cashFlow(query: CashFlowQuery = {}): Promise<unknown> {

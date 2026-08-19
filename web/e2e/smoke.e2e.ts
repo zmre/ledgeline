@@ -8,8 +8,14 @@
 //   - `hledger bal expenses -b 2026-04-10 -e 2026-07-09` → $11,526.62 (+ 228,75 EUR);
 //     the footer shows the negated primary-commodity net, $-11,526.62
 //   - deepest account is 4 segments (assets:broker:taxable:vti) → depth-slider max 4
-//     (the slider is on is/cf/nw/budget only; the balance sheet dropped it and
-//     asks the engine for an unclamped report)
+//     (the slider is on cf/nw/budget only; BOTH statements dropped it and ask the
+//     engine for an unclamped report)
+//   - `hledger is -V -b 2026-01-01 -e 2027-01-01 --depth 2`: the P&L tab is
+//     GROUPED and market-valued since plans/13, and its default range is the
+//     calendar year — Revenue $34,010.00, Expenses $25,126.48, Net $8,883.52.
+//     Its prior column is the previous equal-length window, which for a full
+//     calendar year is the previous calendar year: 2025 reads $66,428.75 /
+//     $44,450.54 / $21,978.21.
 //   - `hledger bs -V -e 2026-07-09` (CLI -e is exclusive ≙ our asOf
 //     2026-07-08): the Balance Sheet tab is MARKET-valued since plans/12, so
 //     Total Assets $59,612.615 (+ 5 GLD − 2 TSLA, both unpriced), Liabilities
@@ -122,11 +128,105 @@ test("reports: balance sheet shows known fixture numbers", async ({page}) => {
 
     // No depth slider on this tab: groups are the reading and the accounts under
     // one are a drill-down, so the clamp had nothing left to say. It is still on
-    // the tabs whose tables it does move.
+    // the tabs whose tables it does move — but the P&L is no longer one of them
+    // (plans/13), so Cash Flow is what proves the control still exists at all.
     const depthSlider = page.locator('input[aria-label="Account depth"]');
     await expect(depthSlider).toHaveCount(0);
     await page.getByRole("tab", {name: "P&L"}).click();
+    await expect(depthSlider).toHaveCount(0);
+    await page.getByRole("tab", {name: "Cash Flow"}).click();
     await expect(depthSlider).toHaveCount(1);
+});
+
+test("reports: P&L shows grouped boxes with known fixture numbers", async ({page}) => {
+    await page.goto("/");
+    await page.getByRole("link", {name: "Reports"}).click();
+    await page.getByRole("tab", {name: "P&L"}).click();
+
+    // Default P&L params with the pinned clock: the calendar year 2026, valued at
+    // MARKET (plans/13). Verified against hledger 1.52,
+    // `is -V -b 2026-01-01 -e 2027-01-01 --depth 2`.
+    const revenue = page.getByTestId("is-section-revenue");
+    const expenses = page.getByTestId("is-section-opex");
+    await expect(revenue.locator("tfoot")).toContainText("$34,010.00");
+    await expect(expenses.locator("tfoot")).toContainText("$25,126.48");
+
+    // The complaint this redesign fixes: $34,010.00 appeared as an `income`
+    // roll-up row, then again under each account, then again as "Total
+    // Revenues". The section total now lives ONLY in the footer — the body
+    // holds group lines, and no group is the whole section.
+    await expect(revenue.locator("tbody")).not.toContainText("$34,010.00");
+    await expect(revenue.locator("tbody")).toContainText("$33,960.00"); // Salary, the group line
+
+    // The adaptive shape: an untagged personal journal earns no rung of the
+    // GAAP ladder and no empty boxes.
+    await expect(page.getByTestId("is-section-cogs")).toHaveCount(0);
+    await expect(page.getByTestId("is-subtotal-grossProfit")).toHaveCount(0);
+    await expect(page.getByTestId("is-subtotal-ebitda")).toHaveCount(0);
+    // …and `opex` is titled plain "Expenses", not "Operating expenses".
+    await expect(expenses.getByRole("heading", {name: "Expenses"})).toBeVisible();
+
+    // The prior column: the previous equal-length window, which for a full
+    // calendar year is the previous calendar year (hledger `-b 2025-01-01
+    // -e 2026-01-01` → $66,428.75 / $44,450.54).
+    await expect(revenue.locator("tfoot")).toContainText("$66,428.75");
+    await expect(expenses.locator("tfoot")).toContainText("$44,450.54");
+
+    // % of revenue, from the exact Decs: 25,126.48 / 34,010.00 = 73.8797% → 73.9%.
+    await expect(expenses.locator("tfoot")).toContainText("73.9%");
+    await expect(revenue.locator("tfoot")).toContainText("100.0%");
+
+    // The summary below the boxes is net income and NOTHING else. A condensed
+    // "Total Revenue / Less: Expenses / …" table stood there and was removed:
+    // every figure in it was already a box footer directly above, which is the
+    // duplicate-total complaint this redesign exists to fix, one panel down.
+    const net = page.getByTestId("is-net-income");
+    await expect(net).toContainText("$8,883.52");
+    await expect(net).toContainText("$21,978.21"); // the prior year's
+    await expect(net).toContainText("26.1%");
+    await expect(page.getByTestId("is-summary")).toHaveCount(0);
+    // So each section total is on the page exactly once, in its own footer.
+    await expect(page.getByTestId("income-statement").getByText("$25,126.48", {exact: true})).toHaveCount(1);
+});
+
+test("reports: P&L groups start collapsed and open to their accounts", async ({page}) => {
+    // The range the plan's ground-truth table pins, rather than the default
+    // calendar year, so the figures below are the ones hledger printed for it.
+    // No `depth`: the tab has no such control any more and asks the engine for an
+    // unclamped report, so the URL carries nothing about it.
+    await page.goto("/reports?tab=is&from=2026-01-01&to=2026-07-08");
+
+    const expenses = page.getByTestId("is-section-opex");
+    const food = expenses.getByRole("button", {name: "Food"});
+
+    // Collapsed by default: the group SUBTOTAL is the whole reading, and the
+    // accounts behind it are not on the page at all.
+    await expect(food).toHaveAttribute("aria-expanded", "false");
+    await expect(expenses).toContainText("$1,654.38");
+    await expect(page.locator('[data-account="expenses:food"]')).toHaveCount(0);
+    await expect(page.locator('[data-account="expenses:food:groceries"]')).toHaveCount(0);
+
+    // Expanded: the drill-down appears, and its parts still add to the subtotal
+    // the collapsed row showed ($1,272.50 + $381.88 = $1,654.38).
+    await food.click();
+    await expect(food).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator('[data-account="expenses:food:groceries"]')).toContainText("$1,272.50");
+    await expect(page.locator('[data-account="expenses:food:restaurants"]')).toContainText("$381.88");
+
+    // Full depth, and single-child chains folded exactly as every other report
+    // table folds them: `expenses:housing` holds nothing itself, so the pair
+    // renders as one `expenses:housing:rent` row.
+    const housing = expenses.getByRole("button", {name: "Housing"});
+    await housing.click();
+    await expect(page.locator('[data-account="expenses:housing:rent"]')).toContainText("$13,125.00");
+    await expect(page.locator('[data-account="expenses:housing"]')).toHaveCount(0);
+
+    // A group that ran in only ONE window still appears, with an explicit zero on
+    // the other side — the union join the engine does over section/group/account
+    // keys. Nothing landed in `expenses:unknown` during 2025-06-26..2025-12-31.
+    const unknownRow = page.locator('[data-is-row="opex/Unknown"]');
+    await expect(unknownRow).toContainText("$75.00");
+    await expect(unknownRow).toContainText("$0.00");
 });
 
 test("reports: balance-sheet groups start collapsed and open to their accounts", async ({page}) => {

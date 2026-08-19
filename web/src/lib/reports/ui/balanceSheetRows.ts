@@ -12,11 +12,14 @@
 // is not reachable with `j`.
 
 import {maAdd, type MixedAmount} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import {fmt} from "$lib/format/amounts";
 import type {BalanceSheetReport, BsSection, BsSectionKind} from "$lib/reports/types";
 import {compressSectionRows} from "./displayRows";
-import {extras as nonBaseLines, fmtBase} from "./insights/format";
+
+// `amountCell` lives in its own module now that the income statement renders
+// its figures the same way; re-exported so the balance sheet's view and tests
+// keep their one import (the pattern `insights/format.ts` already uses for the
+// primitives it shares with the holdings UI).
+export {amountCell, type AmountCell} from "./amountCell";
 
 /** A group heading (always shown) or one of its accounts (only when expanded). */
 export type BsRowKind = "group" | "account";
@@ -134,44 +137,4 @@ export function sectionDisplayRows(section: BsSection, isExpanded: (key: string)
         }
     }
     return out;
-}
-
-/**
- * One amount rendered the way the insights dashboard renders one: a single
- * dominant figure in the base commodity, everything else demoted to a small
- * secondary line.
- *
- * This replaces `formatTotals`' stack of `<div>`s — with every line valued into
- * one commodity, a balance sheet cell has exactly one number in it, and the
- * leftovers (an unpriced holding the valuation could not convert) are an
- * annotation rather than a second balance.
- */
-export interface AmountCell {
-    /** The headline figure. A real formatted zero ("$0.00") when the amount has no base part. */
-    text: string;
-    /** Whether `text` is negative — the caller paints it `text-error`. */
-    negative: boolean;
-    /** Non-base commodities, formatted, sorted, zeroes dropped. */
-    extras: string[];
-}
-
-/**
- * `base` may be null: the engine reports no base commodity for a journal that
- * has none, and there is then no figure to promote. Rather than invent one, the
- * first commodity (in sort order) becomes the headline and the rest stay extras
- * — deterministic, and honest that nothing was converted.
- */
-export function amountCell(ma: MixedAmount, base: string | null, styles: ReadonlyMap<string, AmountStyle>): AmountCell {
-    if (base !== null) {
-        const qty = ma.get(base);
-        return {text: fmtBase(ma, base, styles), negative: qty !== undefined && qty.m < 0n, extras: nonBaseLines(ma, base, styles)};
-    }
-    const sorted = [...ma.entries()].filter(([, qty]) => qty.m !== 0n).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    if (sorted.length === 0) return {text: "0", negative: false, extras: []};
-    const [commodity, qty] = sorted[0];
-    return {
-        text: fmt(commodity, qty, styles),
-        negative: qty.m < 0n,
-        extras: sorted.slice(1).map(([c, q]) => fmt(c, q, styles)),
-    };
 }
