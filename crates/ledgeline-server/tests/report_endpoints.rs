@@ -710,6 +710,560 @@ async fn incomestatement_matches_is_d2_golden() {
 }
 
 // ===========================================================================
+// Grouped income statement (plans/13-income-statement-redesign.md)
+// ===========================================================================
+//
+// Every figure below was read off `hledger 1.52` in the dev shell, never off our
+// own output. `-e` is EXCLUSIVE there and our `to` is INCLUSIVE, so
+// `to=2026-07-08` is checked against `-e 2026-07-09`.
+
+/// `(kind, title)` per box, in presentation order.
+fn is_boxes(body: &Value) -> Vec<(String, String)> {
+    body["sections"]
+        .as_array()
+        .expect("sections array")
+        .iter()
+        .map(|section| {
+            (
+                section["kind"].as_str().unwrap().to_string(),
+                section["title"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The named box.
+fn is_box<'a>(body: &'a Value, kind: &str) -> &'a Value {
+    body["sections"]
+        .as_array()
+        .expect("sections array")
+        .iter()
+        .find(|section| section["kind"] == kind)
+        .unwrap_or_else(|| panic!("box {kind} in {:?}", is_boxes(body)))
+}
+
+/// `(kind, label)` for every subtotal on the statement, in presentation order.
+fn is_subtotals(body: &Value) -> Vec<(String, String)> {
+    body["sections"]
+        .as_array()
+        .expect("sections array")
+        .iter()
+        .flat_map(|section| section["trailing"].as_array().expect("trailing array"))
+        .map(|subtotal| {
+            (
+                subtotal["kind"].as_str().unwrap().to_string(),
+                subtotal["label"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The named subtotal's `Amounts`.
+fn is_subtotal<'a>(body: &'a Value, kind: &str) -> &'a Value {
+    body["sections"]
+        .as_array()
+        .expect("sections array")
+        .iter()
+        .flat_map(|section| section["trailing"].as_array().expect("trailing array"))
+        .find(|subtotal| subtotal["kind"] == kind)
+        .map(|subtotal| &subtotal["total"])
+        .unwrap_or_else(|| panic!("subtotal {kind} in {:?}", is_subtotals(body)))
+}
+
+/// `$x.yz` in cents, canonicalized for comparison against a wire `Amounts`.
+fn cents(value: i128) -> Canon {
+    if value == 0 {
+        return Canon::new();
+    }
+    Canon::from([("$".to_string(), canon(value, 2))])
+}
+
+/// Both columns of an `Amounts` at once, in cents. `prior: None` asserts the key
+/// is ABSENT, which is what `compare=none` must produce.
+#[track_caller]
+fn assert_amounts(amounts: &Value, current: i128, prior: Option<i128>, what: &str) {
+    assert_eq!(
+        wire_ma(&amounts["current"]),
+        cents(current),
+        "{what} (current)"
+    );
+    match prior {
+        Some(want) => assert_eq!(wire_ma(&amounts["prior"]), cents(want), "{what} (prior)"),
+        None => assert!(
+            amounts.get("prior").is_none(),
+            "{what}: `prior` must be ABSENT, not null — got {:?}",
+            amounts.get("prior")
+        ),
+    }
+}
+
+/// The default shape on an UNTAGGED journal: two boxes, no ladder, no jargon.
+///
+/// `hledger -f fixtures/sample.journal is -V -b 2026-01-01 -e 2026-07-09 --depth 2`
+/// ```text
+///  Revenues  $34,010.00   Expenses  $25,126.48   Net:  $8,883.52
+/// ```
+/// and the prior window (`2025-06-26..2025-12-31`, the preceding 188 days):
+/// ```text
+///  Revenues  $39,397.50   Expenses  $24,516.71   Net:  $14,880.79
+/// ```
+#[tokio::test]
+async fn incomestatement_grouped_matches_the_hledger_cli() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08",
+    )
+    .await;
+
+    assert_eq!(body["from"], "2026-01-01");
+    assert_eq!(body["to"], "2026-07-08");
+    assert_eq!(body["base"], "$");
+    assert_eq!(body["value"], "market", "the default basis, echoed back");
+    assert_eq!(
+        body["multiStep"], false,
+        "an untagged journal asks for no ladder"
+    );
+    assert_eq!(body["meta"]["unpriced"], serde_json::json!([]));
+    assert_eq!(
+        body["prior"],
+        serde_json::json!({"from": "2025-06-26", "to": "2025-12-31"}),
+        "compare=previous defaults on, over the preceding equal-length window"
+    );
+
+    assert_eq!(
+        is_boxes(&body),
+        [
+            ("revenue".to_string(), "Revenue".to_string()),
+            // Not "Operating expenses" — there is nothing to be operating as
+            // distinct from.
+            ("opex".to_string(), "Expenses".to_string()),
+        ]
+    );
+    assert!(is_subtotals(&body).is_empty(), "no rungs on a simple book");
+
+    assert_amounts(
+        &is_box(&body, "revenue")["total"],
+        3_401_000,
+        Some(3_939_750),
+        "Revenue",
+    );
+    assert_amounts(
+        &is_box(&body, "opex")["total"],
+        2_512_648,
+        Some(2_451_671),
+        "Expenses",
+    );
+    assert_amounts(&body["netIncome"], 888_352, Some(1_488_079), "Net income");
+}
+
+/// The group shape the SPA renders, with the plan's own pinned figures.
+///
+/// `hledger … is -V -b 2026-01-01 -e 2026-07-09 --depth 2` per account:
+/// Salary `$33,960.00`, Dividends `$50.00`; Food `$1,654.38`, Housing
+/// `$13,125.00`, Taxes `$8,760.00`, Transport `$186.54`, Travel `$656.40`,
+/// Unknown `$75.00`, Utilities `$669.16`.
+#[tokio::test]
+async fn incomestatement_grouped_reports_groups_and_their_provenance() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&compare=none",
+    )
+    .await;
+
+    let groups = |kind: &str| -> Vec<(String, String)> {
+        is_box(&body, kind)["groups"]
+            .as_array()
+            .expect("groups array")
+            .iter()
+            .map(|group| {
+                (
+                    group["name"].as_str().unwrap().to_string(),
+                    group["source"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        groups("revenue"),
+        [
+            ("Dividends".to_string(), "segment".to_string()),
+            ("Salary".to_string(), "segment".to_string()),
+        ]
+    );
+    assert_eq!(
+        groups("opex")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>(),
+        [
+            "Food",
+            "Housing",
+            "Taxes",
+            "Transport",
+            "Travel",
+            "Unknown",
+            "Utilities",
+        ]
+    );
+
+    let group = |kind: &str, name: &str| -> &Value {
+        is_box(&body, kind)["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["name"] == name)
+            .unwrap_or_else(|| panic!("group {name}"))
+    };
+    for (kind, name, value) in [
+        ("revenue", "Salary", 3_396_000),
+        ("revenue", "Dividends", 5_000),
+        ("opex", "Food", 165_438),
+        ("opex", "Housing", 1_312_500),
+        ("opex", "Taxes", 876_000),
+        ("opex", "Transport", 18_654),
+        ("opex", "Travel", 65_640),
+        ("opex", "Unknown", 7_500),
+        ("opex", "Utilities", 66_916),
+    ] {
+        assert_amounts(&group(kind, name)["total"], value, None, name);
+    }
+
+    // Rows are the group's accounts at full depth — there is no depth control on
+    // this report.
+    assert_eq!(
+        group("opex", "Travel")["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| (row["account"].as_str().unwrap(), row["depth"].as_u64()))
+            .collect::<Vec<_>>(),
+        [
+            ("expenses:travel:flights", Some(3)),
+            ("expenses:travel:lodging", Some(3)),
+        ]
+    );
+}
+
+/// `compare=none` must leave `prior` ABSENT — key by key, everywhere — so a
+/// client cannot read "not compared" as "the prior period was empty".
+#[tokio::test]
+async fn incomestatement_grouped_omits_prior_entirely_without_a_comparison() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&compare=none",
+    )
+    .await;
+
+    // The top-level window is an EXPLICIT null: it is the switch the client
+    // reads to decide whether to demand a prior figure everywhere else, and a
+    // switch has to be present to be read.
+    assert_eq!(body["prior"], Value::Null, "no prior WINDOW");
+    assert!(body.as_object().unwrap().contains_key("prior"));
+    // Every FIGURE, by contrast, omits the key entirely — so a missing one is
+    // caught rather than defaulting to an empty period.
+    assert!(body["netIncome"].get("prior").is_none());
+    for section in body["sections"].as_array().unwrap() {
+        assert!(section["total"].get("prior").is_none());
+        for subtotal in section["trailing"].as_array().unwrap() {
+            assert!(subtotal["total"].get("prior").is_none());
+        }
+        for group in section["groups"].as_array().unwrap() {
+            assert!(group["total"].get("prior").is_none());
+            for row in group["rows"].as_array().unwrap() {
+                assert!(row["amounts"].get("prior").is_none(), "{}", row["account"]);
+            }
+        }
+    }
+    // The current column is untouched by dropping the comparison.
+    let compared = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&compare=previous",
+    )
+    .await;
+    assert_eq!(
+        wire_ma(&body["netIncome"]["current"]),
+        wire_ma(&compared["netIncome"]["current"])
+    );
+}
+
+/// The tagged book: all seven boxes, the full ladder, kebab-case subtotal codes,
+/// and a `other` box that prints NEGATIVE.
+///
+/// hledger 1.52 over `fixtures/reports/is-sections.journal`, 2026:
+/// ```text
+/// bal revenue                                        $-150,000.00
+/// bal cogs                                             $22,500.00
+/// bal 'acct:^expenses:(salaries|marketing|rent)'       $101,000.00
+/// bal expenses:depreciation                             $6,000.00
+/// bal 'acct:^(income:grants|expenses:lawsuit)'           $3,000.00
+/// bal expenses:interest                                 $3,000.00
+/// bal expenses:taxes                                    $6,200.00
+/// is                                          Net:      $8,300.00
+/// ```
+#[tokio::test]
+async fn incomestatement_grouped_renders_the_full_ladder_when_tagged() {
+    let journal = report_fixture_journal("is-sections.journal");
+    let body = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-12-31&value=none&compare=none",
+    )
+    .await;
+
+    assert_eq!(body["multiStep"], true);
+    assert_eq!(body["base"], Value::Null, "unvalued has no base commodity");
+    assert_eq!(
+        is_boxes(&body),
+        [
+            ("revenue".to_string(), "Revenue".to_string()),
+            ("cogs".to_string(), "Cost of revenue".to_string()),
+            // Retitled by the ladder; same box, same accounts.
+            ("opex".to_string(), "Operating expenses".to_string()),
+            (
+                "depreciation".to_string(),
+                "Depreciation & amortization".to_string()
+            ),
+            ("other".to_string(), "Other income & expense".to_string()),
+            ("interest".to_string(), "Interest".to_string()),
+            ("tax".to_string(), "Income taxes".to_string()),
+        ]
+    );
+    assert_eq!(
+        is_subtotals(&body),
+        [
+            ("grossProfit".to_string(), "Gross profit".to_string()),
+            // EBITDA sits ABOVE the D&A box, so each rung is a running total of
+            // everything printed above it.
+            ("ebitda".to_string(), "EBITDA".to_string()),
+            (
+                "operatingIncome".to_string(),
+                "Operating income".to_string()
+            ),
+            (
+                "pretaxIncome".to_string(),
+                "Income before taxes".to_string()
+            ),
+        ]
+    );
+
+    for (kind, value, what) in [
+        ("revenue", 15_000_000, "Revenue"),
+        ("cogs", 2_250_000, "Cost of revenue"),
+        ("opex", 10_100_000, "Operating expenses"),
+        ("depreciation", 600_000, "D&A"),
+        // The mixed box is signed: $5,000 of grants against an $8,000
+        // settlement is a drag on income, and it says so.
+        ("other", -300_000, "Other income & expense"),
+        ("interest", 300_000, "Interest"),
+        ("tax", 620_000, "Income taxes"),
+    ] {
+        assert_amounts(&is_box(&body, kind)["total"], value, None, what);
+    }
+    for (kind, value) in [
+        ("grossProfit", 12_750_000),
+        ("ebitda", 2_650_000),
+        ("operatingIncome", 2_050_000),
+        ("pretaxIncome", 1_450_000),
+    ] {
+        assert_amounts(is_subtotal(&body, kind), value, None, kind);
+    }
+    assert_amounts(&body["netIncome"], 830_000, None, "Net income");
+
+    // `isgroup:` merges two accounts with no common ancestor onto one line:
+    // `hledger … bal 'acct:^(expenses:marketing:ads|expenses:salaries:sales)$'` → $32,000.00
+    let growth = is_box(&body, "opex")["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["name"] == "Growth")
+        .expect("the tagged Growth line");
+    assert_eq!(growth["source"], "tag");
+    assert_amounts(&growth["total"], 3_200_000, None, "Growth");
+    assert_eq!(
+        growth["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["account"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["expenses:marketing:ads", "expenses:salaries:sales"]
+    );
+}
+
+/// The union merge over the wire: a line present in only one period arrives with
+/// a zero (an EMPTY mixed amount) on the other side rather than being dropped.
+///
+/// ```text
+/// bal -b 2026-01-01 -e 2027-01-01 expenses:marketing:events            0
+/// bal -b 2025-01-01 -e 2026-01-01 expenses:marketing:events    $4,000.00
+/// is  -b 2025-01-01 -e 2026-01-01                       Net:   $-4,300.00
+/// ```
+#[tokio::test]
+async fn incomestatement_grouped_keeps_a_line_that_exists_in_only_one_period() {
+    let journal = report_fixture_journal("is-sections.journal");
+    let body = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-12-31&value=none",
+    )
+    .await;
+    assert_eq!(
+        body["prior"],
+        serde_json::json!({"from": "2025-01-01", "to": "2025-12-31"})
+    );
+
+    let marketing = is_box(&body, "opex")["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["name"] == "Marketing")
+        .expect("a 2025-only line must still be on the page");
+    assert_amounts(&marketing["total"], 0, Some(400_000), "Marketing");
+    assert_eq!(
+        marketing["total"]["current"],
+        serde_json::json!({}),
+        "a zero column is the EMPTY mixed amount, matching the engine's contract"
+    );
+    // And the prior column still ties out to hledger's own prior net income —
+    // which is precisely what a dropped line would break.
+    assert_amounts(&body["netIncome"], 830_000, Some(-430_000), "Net income");
+}
+
+/// `value=cost` and `valueIn=` reach the engine, and the response says which
+/// basis produced its numbers.
+///
+/// `hledger -f fixtures/sample.journal is -B -b 2024-07-01 -e 2026-07-09`
+/// Net: `$42,998.91, -933,25 EUR` — the at-cost net income that IS the balance
+/// sheet's Retained earnings line.
+#[tokio::test]
+async fn incomestatement_grouped_honors_value_and_value_in() {
+    let journal = sample_journal();
+    let at_cost = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2024-07-01&to=2026-07-08&value=cost&compare=none",
+    )
+    .await;
+    assert_eq!(at_cost["value"], "cost");
+    assert_eq!(at_cost["base"], Value::Null);
+    assert_eq!(
+        wire_ma(&at_cost["netIncome"]["current"]),
+        Canon::from([
+            ("$".to_string(), canon(4_299_891, 2)),
+            ("EUR".to_string(), canon(-93_325, 2)),
+        ]),
+        "at-cost net income == the grouped balance sheet's Retained earnings"
+    );
+    assert_eq!(
+        wire_ma(&at_cost["netIncome"]["current"]),
+        wire_ma(
+            &body_ok(
+                &journal,
+                "/api/reports/balancesheet/grouped?asOf=2026-07-08&value=cost"
+            )
+            .await["sections"][2]["groups"][2]["total"]
+        ),
+        "the two statements tie out on the same number"
+    );
+
+    let in_eur = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&valueIn=EUR&compare=none",
+    )
+    .await;
+    assert_eq!(in_eur["base"], "EUR");
+    assert_eq!(in_eur["value"], "market");
+    assert!(
+        wire_ma(&in_eur["netIncome"]["current"]).contains_key("EUR"),
+        "valueIn must actually retarget the valuation"
+    );
+}
+
+/// The new route validates `value` and `compare`, rejecting rather than
+/// defaulting — and takes no `depth` at all, which is silently ignored like any
+/// unknown param rather than changing the answer.
+#[tokio::test]
+async fn incomestatement_grouped_validates_value_and_compare() {
+    let journal = sample_journal();
+
+    for uri in [
+        "/api/reports/incomestatement/grouped?value=fair",
+        "/api/reports/incomestatement/grouped?compare=yoy",
+        "/api/reports/incomestatement/grouped?compare=",
+    ] {
+        let (status, _, _) = get_on(&journal, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "GET {uri}");
+    }
+    let (_, message) =
+        get_error(&journal, "/api/reports/incomestatement/grouped?compare=yoy").await;
+    assert!(message.contains("previous|none"), "{message}");
+    let (_, message) = get_error(&journal, "/api/reports/incomestatement/grouped?value=fair").await;
+    assert!(message.contains("market|cost|none"), "{message}");
+
+    // No depth on this report: passing one cannot change the answer.
+    assert_eq!(
+        body_ok(
+            &journal,
+            "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&depth=1"
+        )
+        .await,
+        body_ok(
+            &journal,
+            "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08"
+        )
+        .await
+    );
+}
+
+/// **The cautionary tale, over HTTP.** A journal whose `issection:` is misspelt
+/// must fail loudly instead of serving a statement with a box reading zero.
+#[tokio::test]
+async fn a_bad_issection_tag_is_a_400_naming_the_account_and_the_alternatives() {
+    let text = std::fs::read_to_string(fixtures_dir().join("reports").join("is-sections.journal"))
+        .expect("read is-sections.journal")
+        .replace("issection: cogs", "issection: cost-of-goods-sold");
+    let journal =
+        parse_journal(&text, "is-sections-typo.journal").expect("the FILE is still valid");
+
+    let (status, message) = get_error(&journal, "/api/reports/incomestatement/grouped").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    for expected in ["cogs", "cost-of-goods-sold", "revenue", "depreciation"] {
+        assert!(message.contains(expected), "{message}");
+    }
+    // Every OTHER report is unaffected — the tag is this statement's alone.
+    for uri in [
+        "/api/reports/incomestatement",
+        "/api/reports/balancesheet/grouped",
+        "/api/reports/networth",
+    ] {
+        let (status, _, _) = get_on(&journal, uri).await;
+        assert_eq!(status, StatusCode::OK, "GET {uri}");
+    }
+}
+
+/// The new route must not disturb the old one, whose bytes are pinned by
+/// `fixtures/native/v1/incomestatement.json` and by the hledger golden above.
+#[tokio::test]
+async fn the_flat_incomestatement_is_unchanged_by_the_grouped_one() {
+    let journal = sample_journal();
+    let flat = body_ok(
+        &journal,
+        "/api/reports/incomestatement?from=2026-01-01&to=2026-07-08&depth=2",
+    )
+    .await;
+    assert_eq!(
+        flat,
+        golden("native/v1", "incomestatement.json"),
+        "/api/reports/incomestatement must stay byte-identical to its committed golden"
+    );
+    // It still answers the flat shape, with no grouped keys leaking in.
+    assert!(flat.get("netIncome").is_none());
+    assert!(flat.get("multiStep").is_none());
+    assert!(flat.get("prior").is_none());
+    assert_eq!(flat["sections"].as_array().unwrap().len(), 2);
+}
+
+// ===========================================================================
 // Cash flow — vs fixtures/golden/cf-monthly.json (per-bucket totals)
 // ===========================================================================
 
@@ -1199,6 +1753,7 @@ async fn default_params_return_ok() {
         "/api/reports/balancesheet",
         "/api/reports/balancesheet/grouped",
         "/api/reports/incomestatement",
+        "/api/reports/incomestatement/grouped",
         "/api/reports/cashflow",
         "/api/reports/networth",
         "/api/insights",
@@ -1300,11 +1855,13 @@ async fn absent_count_still_uses_the_default() {
 /// unvalidated caller string straight into the engine's lexical `&str` date
 /// comparisons, where a malformed value cannot fail — it just sorts somewhere
 /// wrong and the report comes back plausible-looking with a `200`.
-const DATE_PARAMS: [(&str, &str); 13] = [
+const DATE_PARAMS: [(&str, &str); 15] = [
     ("/api/reports/balancesheet", "asOf"),
     ("/api/reports/balancesheet/grouped", "asOf"),
     ("/api/reports/incomestatement", "from"),
     ("/api/reports/incomestatement", "to"),
+    ("/api/reports/incomestatement/grouped", "from"),
+    ("/api/reports/incomestatement/grouped", "to"),
     ("/api/reports/cashflow", "end"),
     ("/api/reports/networth", "end"),
     ("/api/budget", "end"),

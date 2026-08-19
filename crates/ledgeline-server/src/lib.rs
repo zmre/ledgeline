@@ -501,6 +501,12 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             "/api/reports/incomestatement",
             get(reports_api::incomestatement),
         )
+        // The grouped/valued adaptive-GAAP P&L, a sibling of the flat route
+        // above for the same reason the balance sheet has one.
+        .route(
+            "/api/reports/incomestatement/grouped",
+            get(reports_api::incomestatement_grouped),
+        )
         .route("/api/reports/cashflow", get(reports_api::cashflow))
         .route("/api/reports/networth", get(reports_api::networth))
         .route("/api/insights", get(reports_api::insights_report))

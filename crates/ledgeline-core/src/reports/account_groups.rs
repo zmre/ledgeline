@@ -103,6 +103,11 @@ pub fn group_rank(name: &str, source: GroupSource) -> usize {
         .unwrap_or(BUILT_IN_ORDER.len())
 }
 
+/// The account tag naming a BALANCE-SHEET group.
+pub const BS_GROUP_TAG: &str = "bsgroup";
+/// The account tag naming an INCOME-STATEMENT group.
+pub const IS_GROUP_TAG: &str = "isgroup";
+
 /// Declared `bsgroup:` values per account, read off a parsed journal's `account`
 /// directives — the group analogue of
 /// [`super::account_types::declared_types`].
@@ -119,17 +124,59 @@ pub fn account_groups(journal: &Journal) -> BTreeMap<String, String> {
 /// [`account_groups`] over a bare slice of declarations.
 #[must_use]
 pub fn account_groups_from(accounts: &[AccountDeclaration]) -> BTreeMap<String, String> {
+    declared_groups_from(accounts, BS_GROUP_TAG)
+}
+
+/// Declared group names per account for ONE tag — [`BS_GROUP_TAG`] or
+/// [`IS_GROUP_TAG`].
+///
+/// The two statements' group tags are the same idea read off the same
+/// directives, so they are the same function with the tag name as a parameter
+/// rather than two copies that can drift on trimming, on the empty-value rule,
+/// or on hledger's own "a tag value ends at the next comma" gotcha (which is the
+/// parser's business, and is therefore shared for free).
+#[must_use]
+pub fn declared_groups(journal: &Journal, tag: &str) -> BTreeMap<String, String> {
+    declared_groups_from(&journal.accounts, tag)
+}
+
+/// [`declared_groups`] over a bare slice of declarations.
+#[must_use]
+pub fn declared_groups_from(
+    accounts: &[AccountDeclaration],
+    tag: &str,
+) -> BTreeMap<String, String> {
     accounts
         .iter()
         .filter_map(|decl| {
             decl.tags
                 .iter()
-                .find(|(key, _)| key == "bsgroup")
+                .find(|(key, _)| key == tag)
                 .map(|(_, value)| value.trim())
                 .filter(|value| !value.is_empty())
                 .map(|value| (decl.name.0.clone(), value.to_string()))
         })
         .collect()
+}
+
+/// The value declared for `account` itself, else the nearest declared
+/// ANCESTOR's — steps 1 and 2 of every group resolution in this crate.
+///
+/// Walking up by `rfind(':')` is [`super::account_types::resolve_account_type`]'s
+/// own loop, so a group tag inherits down a subtree exactly like `type:` does.
+/// Shared by [`AccountGroups::resolve_uncached`] and by the income statement's
+/// section and group resolution, all four of which are the same walk.
+pub(super) fn nearest_declared<'a, T>(
+    declared: &'a BTreeMap<String, T>,
+    account: &str,
+) -> Option<&'a T> {
+    let mut name = account;
+    loop {
+        if let Some(found) = declared.get(name) {
+            return Some(found);
+        }
+        name = &name[..name.rfind(':')?];
+    }
 }
 
 /// Group resolution over one immutable set of declarations, memoized exactly as
@@ -200,17 +247,9 @@ impl AccountGroups {
 
     fn resolve_uncached(&self, account: &str) -> (String, GroupSource) {
         // 1 & 2 — the account's own `bsgroup:`, else the nearest declared
-        // ancestor's. Walking up by `rfind(':')` is `resolve_account_type`'s own
-        // loop, so a tag inherits down a subtree exactly like `type:` does.
-        let mut name = account;
-        loop {
-            if let Some(group) = self.declared.get(name) {
-                return (group.clone(), GroupSource::Tag);
-            }
-            match name.rfind(':') {
-                Some(cut) => name = &name[..cut],
-                None => break,
-            }
+        // ancestor's, so a tag inherits down a subtree exactly like `type:`.
+        if let Some(group) = nearest_declared(&self.declared, account) {
+            return (group.clone(), GroupSource::Tag);
         }
         // 3 — type-driven. `Cash` is hledger's Asset subtype, the one
         // `cashflow` selects on, so it is exactly "money you can spend today".
@@ -235,6 +274,17 @@ fn segment_label(account: &str) -> String {
     let mut segments = account.split(':');
     let root = segments.next().unwrap_or("");
     let segment = segments.next().filter(|s| !s.is_empty()).unwrap_or(root);
+    humanized_segment(segment)
+}
+
+/// One path segment as a group LABEL: the cosmetic [`alias`] when there is one,
+/// else the segment with its first character upper-cased.
+///
+/// Shared with the income statement, whose untagged fallback picks a DIFFERENT
+/// segment (see `income_statement::group_segment_index`) but humanizes it
+/// identically — so `cc` reads "Credit cards" on both statements, and the alias
+/// table has exactly one home.
+pub(super) fn humanized_segment(segment: &str) -> String {
     alias(segment).map_or_else(|| capitalized(segment), str::to_string)
 }
 

@@ -186,8 +186,18 @@ async fn balancesheet_matches_the_native_golden() {
 }
 
 #[tokio::test]
+async fn balancesheet_grouped_matches_the_native_golden() {
+    assert_matches_golden("balancesheet-grouped").await;
+}
+
+#[tokio::test]
 async fn incomestatement_matches_the_native_golden() {
     assert_matches_golden("incomestatement").await;
+}
+
+#[tokio::test]
+async fn incomestatement_grouped_matches_the_native_golden() {
+    assert_matches_golden("incomestatement-grouped").await;
 }
 
 #[tokio::test]
@@ -238,7 +248,7 @@ fn every_manifest_entry_is_covered_by_a_committed_body() {
     let entries = requests();
     assert_eq!(
         entries.len(),
-        9,
+        11,
         "the manifest gained or lost an endpoint; add/remove the matching \
          #[tokio::test] above and update this count"
     );

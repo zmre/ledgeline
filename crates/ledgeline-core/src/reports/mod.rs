@@ -44,8 +44,9 @@ use crate::decimal::DecError;
 use thiserror::Error;
 
 pub use account_groups::{
-    AccountGroups, CASH_GROUP, GroupSource, INVESTMENTS_GROUP, RETAINED_EARNINGS_GROUP,
-    VALUATION_ADJUSTMENT_GROUP, account_groups, account_groups_from, group_rank,
+    AccountGroups, BS_GROUP_TAG, CASH_GROUP, GroupSource, INVESTMENTS_GROUP, IS_GROUP_TAG,
+    RETAINED_EARNINGS_GROUP, VALUATION_ADJUSTMENT_GROUP, account_groups, account_groups_from,
+    declared_groups, declared_groups_from, group_rank,
 };
 pub use account_types::{
     AccountDecl, AccountType, AccountTypes, account_decls, account_decls_from, cash_predicate,
@@ -59,7 +60,11 @@ pub use balance_sheet::{
 };
 pub use budget::{BudgetCell, BudgetOpts, BudgetReport, BudgetRow, UNBUDGETED, budget_report};
 pub use cash_flow::{cash_flow, is_cash_like};
-pub use income_statement::income_statement;
+pub use income_statement::{
+    Amounts, DateRange, IS_SECTION_TAG, IncomeStatementReport, IsGroup, IsOpts, IsRow, IsSection,
+    IsSectionKind, IsSubtotal, IsSubtotalKind, account_sections, account_sections_from,
+    income_statement, income_statement_grouped, parse_is_section_tag,
+};
 pub use insights::{
     ChangeKind, ChangeRow, CostOfLiving, InsightsOpts, InsightsPeriod, InsightsReport,
     InvestmentPerf, MetricDelta, MoverRow, PerfPoint, TopTxn, insights,
@@ -89,4 +94,27 @@ pub enum ReportError {
     /// from `bucketStart`/`bucketEnd`).
     #[error("unrecognized bucket key: '{0}'")]
     InvalidBucketKey(String),
+    /// An `account` directive declared an `issection:` value outside the closed
+    /// vocabulary — see [`income_statement::parse_is_section_tag`].
+    ///
+    /// This is the ONE piece of journal content the report engine refuses
+    /// outright, and it is deliberate. Everything else it reads from a tag has a
+    /// total fallback, because a fallback there is harmless; here it is not.
+    /// `issection:` decides section MEMBERSHIP, so a silent `None` would drop
+    /// the account back to its type-inferred section and the box the user
+    /// spelled would read zero with nothing on screen to say why — the exact
+    /// `account-type-not-name` failure `parse_account_type_tag` had to be
+    /// corrected for (`account_types.rs:91-113`). A misspelt code is a typo in a
+    /// closed seven-word vocabulary; naming it and its alternatives is the only
+    /// answer that leads anywhere.
+    #[error(
+        "account '{account}' declares `issection: {value}`, which is not one of \
+         revenue, cogs, opex, depreciation, interest, tax, other"
+    )]
+    UnknownIsSection {
+        /// The declaring account.
+        account: String,
+        /// The value as written, trimmed.
+        value: String,
+    },
 }

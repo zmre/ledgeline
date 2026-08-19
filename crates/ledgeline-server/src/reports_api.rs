@@ -32,14 +32,16 @@ use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BudgetCell, BudgetOpts,
+    Amounts, BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BudgetCell, BudgetOpts,
     BudgetReport, BudgetRow, Cadence, ChangeKind, ChangeRow, CostOfLiving, DEFAULT_EXCLUDE_DESC,
-    GroupSource, InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf,
-    MetricDelta, MixedAmount, MoverRow, NetWorthOpts, PerfPoint, PeriodReport, PeriodRow,
-    ReportMeta, ReportRow, Section, SectionedReport, Subscription, SubscriptionOpts,
-    SubscriptionsReport, TopTxn, Valuation, account_decls, account_groups, balance_sheet,
-    balance_sheet_grouped, budget_report, cash_flow, cash_predicate, declared_types,
-    detect_subscriptions, income_statement, insights, net_worth,
+    DateRange, GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts, InsightsPeriod,
+    InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection, IsSectionKind,
+    IsSubtotal, IsSubtotalKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts, PerfPoint,
+    PeriodReport, PeriodRow, ReportMeta, ReportRow, Section, SectionedReport, Subscription,
+    SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation, account_decls, account_groups,
+    account_sections, balance_sheet, balance_sheet_grouped, budget_report, cash_flow,
+    cash_predicate, declared_groups, declared_types, detect_subscriptions, income_statement,
+    income_statement_grouped, insights, net_worth,
 };
 use serde::{Deserialize, Serialize};
 
@@ -195,16 +197,22 @@ impl From<&BsGroup> for WireBsGroup {
     fn from(group: &BsGroup) -> Self {
         Self {
             name: group.name.clone(),
-            source: match group.source {
-                GroupSource::Tag => "tag",
-                GroupSource::Type => "type",
-                GroupSource::Commodity => "commodity",
-                GroupSource::Segment => "segment",
-                GroupSource::Computed => "computed",
-            },
+            source: group_source(group.source),
             rows: group.rows.iter().map(WireReportRow::from).collect(),
             total: wire_mixed(&group.total),
         }
+    }
+}
+
+/// The one `GroupSource` → wire spelling, shared by both grouped statements so
+/// a `tag` on the balance sheet cannot become a `tagged` on the P&L.
+fn group_source(source: GroupSource) -> &'static str {
+    match source {
+        GroupSource::Tag => "tag",
+        GroupSource::Type => "type",
+        GroupSource::Commodity => "commodity",
+        GroupSource::Segment => "segment",
+        GroupSource::Computed => "computed",
     }
 }
 
@@ -273,6 +281,205 @@ impl WireBalanceSheetReport {
             net_worth: wire_mixed(&report.net_worth),
             check: wire_mixed(&report.check),
             balanced: report.balanced,
+            meta: WireReportMeta::from(&report.meta),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Grouped income statement (plans/13-income-statement-redesign.md)
+// ---------------------------------------------------------------------------
+
+/// One figure per window. `prior` is ABSENT (not null) when `compare=none`, so
+/// a client cannot mistake "not compared" for "the prior period was empty".
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireAmounts {
+    current: WireMixed,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prior: Option<WireMixed>,
+}
+
+impl From<&Amounts> for WireAmounts {
+    fn from(amounts: &Amounts) -> Self {
+        Self {
+            current: wire_mixed(&amounts.current),
+            prior: amounts.prior.as_ref().map(wire_mixed),
+        }
+    }
+}
+
+/// The window a set of `prior` figures covers, for the column header.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireDateRange {
+    from: String,
+    to: String,
+}
+
+impl From<&DateRange> for WireDateRange {
+    fn from(range: &DateRange) -> Self {
+        Self {
+            from: range.from.clone(),
+            to: range.to.clone(),
+        }
+    }
+}
+
+/// One account inside an expanded group.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireIsRow {
+    account: String,
+    depth: usize,
+    amounts: WireAmounts,
+}
+
+impl From<&IsRow> for WireIsRow {
+    fn from(row: &IsRow) -> Self {
+        Self {
+            account: row.account.clone(),
+            depth: row.depth,
+            amounts: WireAmounts::from(&row.amounts),
+        }
+    }
+}
+
+/// One line of a box.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireIsGroup {
+    name: String,
+    /// `"tag" | "segment"` — this statement has no built-in groups, so the other
+    /// three [`GroupSource`] spellings cannot occur here.
+    source: &'static str,
+    total: WireAmounts,
+    rows: Vec<WireIsRow>,
+}
+
+impl From<&IsGroup> for WireIsGroup {
+    fn from(group: &IsGroup) -> Self {
+        Self {
+            name: group.name.clone(),
+            source: group_source(group.source),
+            total: WireAmounts::from(&group.total),
+            rows: group.rows.iter().map(WireIsRow::from).collect(),
+        }
+    }
+}
+
+/// A subtotal ruled beneath the box it follows.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireIsSubtotal {
+    /// `"grossProfit" | "ebitda" | "operatingIncome" | "pretaxIncome"`.
+    ///
+    /// camelCase, not the kebab-case `WarningKind` uses for `"missing-basis"`.
+    /// The plan pins the section codes (all single words, so identical either
+    /// way) and says only "lowercase" about the rest, which does not decide a
+    /// multi-word value. camelCase is chosen because it is what every other key
+    /// on this wire is, and because these values are read straight into the TS
+    /// union `IsSubtotalKind` in `web/src/lib/reports/types.ts` — whose
+    /// `decodeEnum` allow-list THROWS on an unrecognised value, so the two
+    /// spellings are not merely untidy but mutually exclusive.
+    kind: &'static str,
+    label: String,
+    total: WireAmounts,
+}
+
+impl From<&IsSubtotal> for WireIsSubtotal {
+    fn from(subtotal: &IsSubtotal) -> Self {
+        Self {
+            kind: match subtotal.kind {
+                IsSubtotalKind::GrossProfit => "grossProfit",
+                IsSubtotalKind::Ebitda => "ebitda",
+                IsSubtotalKind::OperatingIncome => "operatingIncome",
+                IsSubtotalKind::PretaxIncome => "pretaxIncome",
+            },
+            label: subtotal.label.clone(),
+            total: WireAmounts::from(&subtotal.total),
+        }
+    }
+}
+
+/// One box of the statement.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireIsSection {
+    /// `"revenue" | "cogs" | "opex" | "depreciation" | "interest" | "tax" | "other"`.
+    kind: &'static str,
+    title: String,
+    groups: Vec<WireIsGroup>,
+    total: WireAmounts,
+    /// Subtotals printed AFTER this box; `[]` for most of them.
+    trailing: Vec<WireIsSubtotal>,
+}
+
+impl From<&IsSection> for WireIsSection {
+    fn from(section: &IsSection) -> Self {
+        Self {
+            kind: match section.kind {
+                IsSectionKind::Revenue => "revenue",
+                IsSectionKind::Cogs => "cogs",
+                IsSectionKind::Opex => "opex",
+                IsSectionKind::Depreciation => "depreciation",
+                IsSectionKind::Interest => "interest",
+                IsSectionKind::Tax => "tax",
+                IsSectionKind::Other => "other",
+            },
+            title: section.title.clone(),
+            groups: section.groups.iter().map(WireIsGroup::from).collect(),
+            total: WireAmounts::from(&section.total),
+            trailing: section.trailing.iter().map(WireIsSubtotal::from).collect(),
+        }
+    }
+}
+
+/// The grouped, valued income statement with its adaptive GAAP ladder.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireIncomeStatementReport {
+    from: String,
+    to: String,
+    /// The window the comparison column covers, or an EXPLICIT `null` when
+    /// `compare=none`.
+    ///
+    /// Deliberately not omitted, unlike [`WireAmounts::prior`], and the two
+    /// conventions are load-bearing rather than inconsistent. This key is the
+    /// SWITCH: the client reads it first, derives "am I comparing?" from it, and
+    /// then requires every `Amounts` in the tree to agree. A switch has to be
+    /// present to be read, so it is `DateRange | null`; the figures it governs
+    /// are absent-or-present, so a missing one is caught instead of defaulting
+    /// to an empty period.
+    prior: Option<WireDateRange>,
+    /// The commodity everything is valued into — `null` on the cost and
+    /// unvalued bases. Kept (not omitted) so the decoder always sees the key.
+    base: Option<String>,
+    /// The basis the numbers are on, echoed back from the request.
+    value: &'static str,
+    /// Whether the GAAP ladder materialised — which is also what decides whether
+    /// `opex` is titled "Expenses" or "Operating expenses".
+    multi_step: bool,
+    /// Non-empty sections only, in ladder order.
+    sections: Vec<WireIsSection>,
+    net_income: WireAmounts,
+    /// Always present, because the unpriced banner keys off it on every request.
+    meta: WireReportMeta,
+}
+
+impl WireIncomeStatementReport {
+    /// `value` is the request's own spelling, so the response says which basis
+    /// produced the numbers it carries.
+    fn new(report: &IncomeStatementReport, value: &'static str) -> Self {
+        Self {
+            from: report.from.clone(),
+            to: report.to.clone(),
+            prior: report.prior.as_ref().map(WireDateRange::from),
+            base: report.base.as_ref().map(|base| base.0.clone()),
+            value,
+            multi_step: report.multi_step,
+            sections: report.sections.iter().map(WireIsSection::from).collect(),
+            net_income: WireAmounts::from(&report.net_income),
             meta: WireReportMeta::from(&report.meta),
         }
     }
@@ -983,6 +1190,22 @@ fn parse_valuation(raw: Option<&str>) -> Result<(Valuation, &'static str), AppEr
     }
 }
 
+/// Parse the grouped income statement's `compare` mode, defaulting to the
+/// preceding equal-length window.
+///
+/// Rejects rather than defaults, exactly as [`parse_valuation`] does: `compare`
+/// decides whether a whole column of figures is on the page, so quietly serving
+/// the default for `compare=yoy` would answer a question the caller did not ask.
+fn parse_compare(raw: Option<&str>) -> Result<bool, AppError> {
+    match raw {
+        None | Some("previous") => Ok(true),
+        Some("none") => Ok(false),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "unknown compare '{other}' (expected previous|none)"
+        ))),
+    }
+}
+
 /// Validate one date and normalize it to ISO `YYYY-MM-DD`, or return the reason
 /// it is not a date. [`parse_date`] wraps the reason in a `400`.
 ///
@@ -1324,6 +1547,25 @@ pub(crate) struct IncomeStatementQuery {
     depth: Option<usize>,
 }
 
+/// `?from=&to=&value=&valueIn=&compare=` — grouped income statement.
+///
+/// Deliberately NO `depth`: this report has none. Groups are the reading and the
+/// accounts inside one are a drill-down, so a clamp could only hide accounts the
+/// reader has no remaining control to ask for — the same correction that took
+/// the slider off the balance-sheet tab.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IncomeStatementGroupedQuery {
+    from: Option<String>,
+    to: Option<String>,
+    /// `market` (default) | `cost` | `none`.
+    value: Option<String>,
+    /// Commodity to value into; defaults to the price table's base commodity.
+    value_in: Option<String>,
+    /// `previous` (default) | `none`.
+    compare: Option<String>,
+}
+
 /// `?end=&interval=&count=&depth=` — cash flow.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1568,6 +1810,67 @@ pub(crate) async fn incomestatement(
         let report =
             income_statement(&snapshot.journal.transactions, &from, &to, depth, &declared)?;
         Ok(WireSectionedReport::from(&report))
+    })
+    .await
+}
+
+/// `GET /api/reports/incomestatement/grouped` — the adaptive-GAAP income
+/// statement: revenue and expense accounts collapsed into named lines, valued
+/// into one commodity, with a subtotal ladder that materialises rung by rung as
+/// the journal's `issection:` tags ask for it.
+///
+/// - `from=YYYY-MM-DD` (default: Jan 1 of the current year)
+/// - `to=YYYY-MM-DD` (default: today) — both INCLUSIVE
+/// - `value=market|cost|none` (default: `market`)
+/// - `valueIn=$` (default: the price table's own base commodity)
+/// - `compare=previous|none` (default: `previous`) — the immediately preceding
+///   window of EQUAL length, each period valued at its OWN end so the prior
+///   column agrees with the `hledger is -V` that would have been run over it.
+///
+/// An untagged journal gets two boxes and a Net income figure, with no ladder at
+/// all; `sections` carries only the boxes that have members, so there are never
+/// empty headings. `prior` keys are absent rather than null when `compare=none`.
+///
+/// A `400` here can come from the JOURNAL as well as the query: an `account`
+/// directive declaring an `issection:` outside the closed vocabulary is refused
+/// by name rather than silently misfiled (see [`AppError`]'s `From<ReportError>`).
+///
+/// `/api/reports/incomestatement` is untouched and still serves the flat
+/// hledger-parity shape.
+pub(crate) async fn incomestatement_grouped(
+    State(state): State<AppState>,
+    Query(query): Query<IncomeStatementGroupedQuery>,
+) -> Result<Json<WireIncomeStatementReport>, AppError> {
+    let snapshot = state.snapshot();
+    let today = today_utc();
+    let from = parse_date("from", query.from, || {
+        format!("{}-01-01", periods::bucket_key(&today, Interval::Yearly))
+    })?;
+    let to = parse_date("to", query.to, || today)?;
+    let (value, label) = parse_valuation(query.value.as_deref())?;
+    let compare = parse_compare(query.compare.as_deref())?;
+    let value_in = query
+        .value_in
+        .filter(|symbol| !symbol.is_empty())
+        .map(Commodity);
+
+    compute(move || {
+        let journal = &snapshot.journal;
+        let report = income_statement_grouped(
+            &journal.transactions,
+            &journal.prices,
+            &IsOpts {
+                from: &from,
+                to: &to,
+                value,
+                value_in,
+                compare,
+            },
+            &declared_types(&account_decls(journal)),
+            &account_sections(journal)?,
+            &declared_groups(journal, IS_GROUP_TAG),
+        )?;
+        Ok(WireIncomeStatementReport::new(&report, label))
     })
     .await
 }
