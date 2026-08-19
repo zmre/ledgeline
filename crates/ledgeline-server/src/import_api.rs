@@ -980,20 +980,68 @@ fn plain_field(value: &str, what: &str) -> Result<String, AppError> {
     })
 }
 
-/// [`plain_field`], and additionally not option-shaped.
+/// [`plain_field`], and additionally shaped like an account name rather than an
+/// option, a comment, or two fields.
 ///
-/// For the balance ACCOUNT, which becomes a positional query argument to
-/// `hledger balance`. `Invocation` passes arguments as a `Vec<OsString>` with no
-/// shell in sight, so there is nothing to quote — but a value beginning with `-`
-/// is still read by hledger's own parser as a flag, and there is no `--`
-/// terminator on a query. No account name begins with `-`, so refusing one costs
-/// nothing.
+/// For the balance ACCOUNT, which plays two roles and is checked for both. It
+/// becomes a positional query argument to `hledger balance`, and it is also
+/// written verbatim into the posting line [`assertion_lines`] appends to the
+/// journal — so anything that changes where hledger thinks the NAME ends is a
+/// correctness problem, not tidiness.
+///
+/// 1. **A leading `-`.** `Invocation` passes arguments as a `Vec<OsString>` with
+///    no shell in sight, so there is nothing to quote — but a value beginning
+///    with `-` is still read by hledger's own parser as a flag, and there is no
+///    `--` terminator on a query.
+/// 2. **A `;`.** There is no end-of-line comment *inside* an account name: the
+///    name runs to the two-space separator, so `assets:bank ; note` is one
+///    account whose name contains a semicolon. Verified against hledger 1.52 —
+///    `hledger accounts` reports `assets:bank ; note` alongside `assets:bank`.
+///    This is the same defect `rules::account_comment_warning` exists for,
+///    arriving through a different door, and it is not hypothetical: it has
+///    already put real transactions into an account named for its own comment.
+///    It can even pass the [`check_assertion`] gate — a phantom account has a
+///    zero balance, so asserting `$0` against it succeeds and the line lands.
+/// 3. **Two spaces in a row.** That *is* the separator between an account name
+///    and its amount on a posting line, so `assets:bank  checking` would be read
+///    as the account `assets:bank` with an amount of `checking`. hledger refuses
+///    the result outright, which at least fails closed, but it fails with a
+///    parse error about an unexpected `$` that says nothing about the real
+///    cause.
+///
+/// **`#` is deliberately NOT refused**, for the reason it is not flagged in a
+/// rules file either: `assets:card #1234` is a plausible account name. The
+/// reasoning is in fact *stronger* here. `#` opens a comment in a journal only
+/// at the very start of a line, and [`assertion_lines`] always writes the
+/// account indented by four spaces, so it can never land in that column.
+/// Confirmed against hledger 1.52: `assets:card #1234` round-trips through
+/// `hledger accounts` intact.
+///
+/// No account name can contain any of the three refused shapes — hledger cannot
+/// represent them — so refusing them costs nothing.
 fn argument_field(value: &str, what: &str) -> Result<String, AppError> {
     let field = plain_field(value, what)?;
     if field.starts_with('-') {
         return Err(AppError::BadRequest(format!(
             "{} is not a usable {what}: it may not begin with `-`, which hledger would read as an \
              option rather than a name",
+            quoted(value)
+        )));
+    }
+    if field.contains(';') {
+        return Err(AppError::BadRequest(format!(
+            "{} is not a usable {what}: it may not contain `;`. An account name has no end-of-line \
+             comment — it runs to the end of the field — so the `;` would not start one. The \
+             journal would gain a real account whose NAME is that entire string, semicolon and \
+             note included",
+            quoted(value)
+        )));
+    }
+    if field.contains("  ") {
+        return Err(AppError::BadRequest(format!(
+            "{} is not a usable {what}: it may not contain two spaces in a row, which is what \
+             separates an account name from its amount, so hledger would stop reading the name at \
+             them and try to take the rest as a number",
             quoted(value)
         )));
     }
@@ -4340,6 +4388,69 @@ mod tests {
         );
         assert!(argument_field("-f", "account").is_err());
         assert!(argument_field("--depth", "account").is_err());
+    }
+
+    /// **A balance account may not smuggle a `;` into the journal.**
+    ///
+    /// The account is written verbatim into the posting line `assertion_lines`
+    /// appends, and an account name has no end-of-line comment: it runs to the
+    /// two-space separator. So `assets:bank ; note` is not an account with a
+    /// note attached, it is one account whose NAME contains a semicolon —
+    /// verified against hledger 1.52, where `hledger accounts` lists
+    /// `assets:bank ; note` beside `assets:bank`.
+    ///
+    /// `check_assertion` does not save us: a phantom account holds nothing, so a
+    /// `$0` statement balance asserts truthfully against it, `hledger check`
+    /// exits 0, and the line is committed. This is the defect that already
+    /// reached a real journal through the rules-file door.
+    #[test]
+    fn a_balance_account_may_not_carry_a_comment() {
+        let refused = argument_field("assets:bank ; note", "balance account")
+            .expect_err("a `;` in an account name must be refused");
+        let message = refused.to_string();
+        // The message must teach WHY, not just say "invalid character": the
+        // point the user has to learn is that it becomes part of the name.
+        assert!(message.contains(";"), "{message}");
+        assert!(message.contains("NAME"), "{message}");
+        assert!(
+            matches!(refused, AppError::BadRequest(_)),
+            "a bad field is the caller's fault, not a 500"
+        );
+
+        // Two spaces in a row end the account name and start the amount.
+        assert!(argument_field("assets:bank  checking", "balance account").is_err());
+
+        // A newline would inject a whole journal LINE. `plain_field` already
+        // refuses it as a control character; this pins that it stays refused
+        // through the account validator too, since that is the one that guards
+        // the write.
+        assert!(argument_field("assets:bank\n2026-01-01 fake", "balance account").is_err());
+        assert!(argument_field("assets:bank\tchecking", "balance account").is_err());
+
+        // ...and the legitimate names all still pass. `#` is NOT refused: it
+        // opens a comment only at the start of a line, and the account is always
+        // written indented, so `assets:card #1234` round-trips intact through
+        // hledger 1.52. Single interior spaces are ordinary in account names.
+        for good in [
+            "assets:bank:checking",
+            "assets:card #1234",
+            "expenses:home office",
+            "liabilities:credit card:visa",
+            "assets:banque:épargne",
+        ] {
+            assert_eq!(
+                argument_field(good, "balance account").as_deref(),
+                Ok(good),
+                "{good:?} is a real account name and must pass"
+            );
+        }
+
+        // Surrounding whitespace is trimmed rather than refused, as it is for
+        // every other field — a pasted account name usually brings some.
+        assert_eq!(
+            argument_field("  assets:bank:checking  ", "balance account").as_deref(),
+            Ok("assets:bank:checking")
+        );
     }
 
     // -----------------------------------------------------------------------

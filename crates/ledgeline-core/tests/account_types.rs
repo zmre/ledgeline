@@ -14,8 +14,8 @@ mod common;
 use common::fixtures_dir;
 use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
-    AccountType, Interval, MixedAmount, NetWorthOpts, account_decls, balance_sheet, declared_types,
-    income_statement, net_worth,
+    AccountType, InsightsOpts, Interval, MixedAmount, NetWorthOpts, account_decls, balance_sheet,
+    declared_types, income_statement, insights, net_worth,
 };
 use ledgeline_core::{Dec, Journal, parse_journal};
 use std::collections::BTreeMap;
@@ -118,4 +118,44 @@ fn net_worth_counts_typed_assets_and_liabilities() {
 
     // $14,350 of assets less $600 owed — equity and income are excluded.
     assert_eq!(usd(&report.totals[0]), Dec::new(1_375_000, 2));
+}
+
+/// Insights' "top transactions" box must drop opening-balance entries by their
+/// DECLARED type. `patrimonio:inicio` is `type: E` and named so that no English
+/// heuristic can reach it, so a name-based `equity:` filter would leave the
+/// fixture's `Apertura` entry — $10,500, the largest row in the journal by far —
+/// sitting at the top of a list that is supposed to show spending.
+///
+/// The span is two years so the midpoint split puts all four of the fixture's
+/// transactions in the CURRENT half, which is the only half this box ranks.
+#[test]
+fn top_transactions_drop_opening_balances_declared_by_type() {
+    let journal = fixture();
+    let report = insights(
+        &journal,
+        &InsightsOpts {
+            start: "2025-01-01",
+            end: "2026-12-31",
+            cost_exclude: &[],
+            change_min: Dec::zero(),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.period.curr_start, "2026-01-01");
+
+    // Only the three economic events survive: the consulting fee ($4,000), the
+    // servers ($600) and the office supplies ($150). `Apertura` is absent.
+    let ranked: Vec<(&str, Dec)> = report
+        .top_txns
+        .iter()
+        .map(|row| (row.description.as_str(), row.amount))
+        .collect();
+    assert_eq!(
+        ranked,
+        [
+            ("Cliente Uno | consulting fee", Dec::new(400_000, 2)),
+            ("Proveedor | servers", Dec::new(60_000, 2)),
+            ("Papeleria | office supplies", Dec::new(15_000, 2)),
+        ]
+    );
 }

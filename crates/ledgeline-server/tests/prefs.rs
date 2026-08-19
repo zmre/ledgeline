@@ -1285,6 +1285,52 @@ fn the_child_never_inherits_our_stdin() {
     assert_eq!(output.stdout_lossy(), "eof\n");
 }
 
+/// A binary that is momentarily **busy** is waited for, not reported missing.
+///
+/// Linux refuses to `exec` a file that any process holds open for writing
+/// (`ETXTBSY`), and a spawn failure resolves to `NotFound` — so without the retry
+/// in `spawn_retrying_while_busy` the answer is "hledger was not found" about the
+/// binary the user configured, which sends them looking for an installation that
+/// is right there.
+///
+/// This is not hypothetical, and it is why the retry exists: every stub in this
+/// file is written and then immediately run from a test binary running tests on
+/// every core, and `fork` carries a write descriptor another thread had open at
+/// that instant into the window. It surfaced as
+/// `a_binary_that_predates_the_flag_still_reports_its_version` failing on a
+/// 4-core Ubuntu CI runner — and only there, because the same binary on a 32-core
+/// machine rarely loses the race.
+///
+/// Holding the descriptor open is the deterministic form of that race. macOS does
+/// not implement `ETXTBSY` — a spawn against an open write descriptor simply
+/// succeeds — so there is nothing to pin there and this test is Linux-only rather
+/// than platform-agnostic with an assertion that proves nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_binary_that_is_still_open_for_writing_is_waited_for() {
+    let dir = TempDir::new().expect("temp dir");
+    let script = write_stub(dir.path(), "hledger", "hledger 1.52, x");
+
+    let held = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&script)
+        .expect("hold the stub open for writing");
+    // Released well inside the retry budget, so the first spawn must fail with
+    // ETXTBSY and a later one must succeed. Without the retry, `resolve` answers
+    // the first failure.
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(held);
+    });
+
+    let hledger = Hledger::resolve(&Prefs {
+        hledger_path: Some(script.clone()),
+        git_autocommit: None,
+    })
+    .expect("a momentarily busy binary must be waited for, not called missing");
+    assert_eq!(hledger.path(), script);
+}
+
 /// Resolve a stub by absolute path through the ordinary preference route, so the
 /// invocation tests exercise the same `Hledger` a real caller would hold.
 fn resolve_stub(path: &Path) -> Hledger {

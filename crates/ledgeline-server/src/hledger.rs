@@ -154,6 +154,16 @@ const POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// ALREADY finished writing. See [`collect`].
 const COLLECT_GRACE: Duration = Duration::from_millis(250);
 
+/// How long a spawn may keep waiting on a binary the kernel reports as *busy* —
+/// generous, because the condition lasts microseconds and the alternative is
+/// telling the user their hledger does not exist. See
+/// [`spawn_retrying_while_busy`].
+const BUSY_BUDGET: Duration = Duration::from_millis(250);
+
+/// How often that wait retries. The cost of a needless attempt is one failed
+/// `exec`.
+const BUSY_INTERVAL: Duration = Duration::from_millis(5);
+
 /// An hledger release, compared as NUMBERS.
 ///
 /// Which matters more than it looks: hledger 1.9 and hledger 1.40 sort the wrong
@@ -506,7 +516,8 @@ impl Invocation {
         // Fixed before the spawn, so the process's own start-up cost counts
         // against the caller's budget rather than extending it.
         let deadline = Instant::now() + self.timeout;
-        let mut child = Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        command
             // Invariant 5 lands here: `argv`, never `self.args`.
             .args(self.argv())
             .stdin(if self.stdin.is_some() {
@@ -519,8 +530,10 @@ impl Invocation {
             // Separately, never merged and never inherited: invariant 3, which
             // the whole dry-run preview depends on.
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        // Bounded by the caller's own deadline as well as by the retry budget,
+        // so waiting out a busy binary can never extend a call past its timeout.
+        let mut child = spawn_retrying_while_busy(&mut command, deadline)
             .map_err(|_| HledgerError::Unrunnable)?;
 
         let out = drain(child.stdout.take());
@@ -542,6 +555,45 @@ impl Invocation {
             stdout: collect(&out, deadline, self.timeout)?,
             stderr: collect(&err, deadline, self.timeout)?,
         })
+    }
+}
+
+/// Spawn, waiting out a kernel that says the program is **busy**.
+///
+/// Linux refuses to `exec` a file that any process still holds open for WRITING,
+/// with `ETXTBSY` — and the process holding it need not be one that is doing any
+/// writing. `fork` copies the file-descriptor table, so a write descriptor that
+/// another thread had open at that instant lives on in the forked child until it
+/// reaches its own `exec`, and any attempt to run that file in the window loses.
+/// Writing a program and immediately running it from a multi-threaded process is
+/// therefore a race, on a file that is complete, closed and executable.
+///
+/// Untreated it is the worst possible diagnosis: [`probe_version`] reads a spawn
+/// failure as "not here, try the next candidate", so a transient `ETXTBSY` on the
+/// binary the user configured resolves to `hledger was not found` — sending them
+/// to look for a missing installation that is sitting right there. A package
+/// manager replacing hledger during an import is the real-world trigger; this
+/// crate's own tests, which write a stub and run it from a test binary running
+/// tests on every core, are the frequent one and the reason this was found.
+///
+/// The window closes as soon as the forked child `exec`s — microseconds — so a
+/// short poll covers it. macOS does not implement the behaviour at all, which is
+/// why the test that pins this is Linux-only.
+fn spawn_retrying_while_busy(
+    command: &mut Command,
+    deadline: Instant,
+) -> std::io::Result<std::process::Child> {
+    let give_up = deadline.min(Instant::now() + BUSY_BUDGET);
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && Instant::now() < give_up =>
+            {
+                std::thread::sleep(BUSY_INTERVAL);
+            }
+            settled => return settled,
+        }
     }
 }
 
@@ -671,6 +723,8 @@ impl Output {
 /// A spawn failure or a timeout is [`Probe::Absent`] — "not here, try the next"
 /// — because both are what a stale preference or a broken symlink look like.
 /// Output that does not parse is [`Probe::Unrecognised`], which is terminal.
+/// A binary that is momentarily *busy* looks like neither and is waited out
+/// before it can be mistaken for a missing one: [`spawn_retrying_while_busy`].
 ///
 /// # The one invocation that may fall back to reading a config
 ///

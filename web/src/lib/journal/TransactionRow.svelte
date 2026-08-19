@@ -18,6 +18,7 @@
     import CommentIndicator from "./CommentIndicator.svelte";
     import StatusCell from "./StatusCell.svelte";
     import {txnModal} from "./edit/modalState.svelte";
+    import {rowActions} from "./rowAction.svelte";
     import {txnFlowAmounts} from "./rowModel";
 
     let {
@@ -26,16 +27,39 @@
         mode = "row",
         flags = [],
         pulse = false,
-    }: {txn: Transaction; columns: ColumnConfig; mode?: "row" | "card"; flags?: Problem[]; pulse?: boolean} = $props();
+        cursor = false,
+    }: {txn: Transaction; columns: ColumnConfig; mode?: "row" | "card"; flags?: Problem[]; pulse?: boolean; cursor?: boolean} = $props();
 
     const amounts = $derived(txnFlowAmounts(txn));
     const flagTip = $derived(flags.map((problem) => problem.message).join("; "));
     const dotClass = $derived(maxSeverity(flags) === "error" ? "bg-error" : maxSeverity(flags) === "warning" ? "bg-warning" : "bg-info");
     const pulseClass = "bg-primary/15 animate-pulse";
+    // Distinct from BOTH hover (bg-base-200/60) and pulse (bg-primary/15 +
+    // animate-pulse): a stronger tint plus an inset left rule that hover cannot
+    // repaint. Inset box-shadow on the first <td> rather than a border on the
+    // <tr>, because daisyUI's `.table` is border-collapse:separate (where row
+    // borders are not painted) and a border-l would shift the content 4px.
+    const cursorClass = "bg-primary/25 [&>td:first-child]:shadow-[inset_3px_0_0_0_var(--color-primary)]";
+    const cursorCardClass = "ring-primary ring-2 ring-inset";
+    // Mutually exclusive, and in this order. `hover:` carries a pseudo-class, so
+    // it beats a plain background utility regardless of source order — hovering
+    // the cursored row would otherwise make it look un-cursored.
+    const rowClass = $derived(pulse ? pulseClass : cursor ? cursorClass : "hover:bg-base-200/60");
+    const cardClass = $derived(pulse ? pulseClass : cursor ? cursorCardClass : "");
     const canEdit = $derived(editing.canEdit);
 
     let editingDesc = $state(false);
     let draft = $state("");
+
+    // Answer `e` from the keyboard. The table cannot reach this state directly:
+    // the list is virtualized, so this row may not have been mounted when the key
+    // was pressed. See rowAction.svelte.ts.
+    $effect(() => {
+        const request = rowActions.request;
+        if (request === null || request.txnIndex !== txn.index || request.action !== "description") return;
+        rowActions.consume(request.nonce);
+        startEditDesc();
+    });
 
     function startEditDesc(): void {
         if (!canEdit) return;
@@ -108,7 +132,12 @@
 {/snippet}
 
 {#if mode === "row"}
-    <tr class="hover:bg-base-200/60 h-10 {pulse ? pulseClass : ''}">
+    <!-- `aria-current` rather than `aria-selected`: it is a GLOBAL aria
+         attribute, so no role constraints apply, and it already has house
+         precedent in RulesFileList. `aria-selected` would only be meaningful
+         inside a role="grid", which would drag required row/gridcell roles
+         across a <tbody> that also contains aria-hidden spacer rows. -->
+    <tr class="h-10 {rowClass}" aria-current={cursor ? "true" : undefined} data-txn={txn.index}>
         {#if columns.date}
             <td class="text-base-content/80 py-1 font-mono text-xs whitespace-nowrap">{txn.date}</td>
         {/if}
@@ -126,7 +155,8 @@
         {/if}
     </tr>
 {:else}
-    <article class="card bg-base-200 mb-2 h-24 overflow-hidden {pulse ? pulseClass : ''}">
+    <!-- A ring, not a background: the card already has `bg-base-200`. -->
+    <article class="card bg-base-200 mb-2 h-24 overflow-hidden {cardClass}" aria-current={cursor ? "true" : undefined} data-txn={txn.index}>
         <div class="card-body gap-1 p-3">
             <div class="flex items-center justify-between gap-2">
                 <div class="flex min-w-0 items-center gap-1.5">

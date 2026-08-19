@@ -24,7 +24,7 @@
 
 use super::ReportError;
 use super::account_types::{
-    AccountType, account_decls, cash_predicate, declared_types, resolve_account_type,
+    AccountType, AccountTypes, account_decls, cash_predicate, declared_types, resolve_account_type,
 };
 use super::accounts::account_matches;
 use super::aggregate::{PostingFilter, account_totals};
@@ -808,18 +808,86 @@ fn movers(
     Ok(rows)
 }
 
+/// True when `account` is where a bookkeeping entry parks its counterweight:
+/// hledger's `type: E` (equity) or its `type: V` conversion subtype.
+///
+/// The two are tested separately rather than through one `is_type(_, Equity)`
+/// call because `Conversion` is deliberately NOT modelled as an `Equity` subtype
+/// here — only `Cash`→`Asset` and `Gain`→`Revenue` are (see
+/// `account_types::is_category`) — and widening that hierarchy would move
+/// accounts between balance-sheet sections, which is not this fix's business.
+fn is_equity_leg(account: &str, types: &AccountTypes) -> bool {
+    types.is_type(account, AccountType::Equity) || types.is_type(account, AccountType::Conversion)
+}
+
+/// True when `account` is a leg that makes a transaction an economic event:
+/// revenue earned or an expense incurred. `Gain` counts as revenue through the
+/// existing subtype hierarchy, so no extra arm is needed for it.
+fn is_operating_leg(account: &str, types: &AccountTypes) -> bool {
+    types.is_type(account, AccountType::Revenue) || types.is_type(account, AccountType::Expense)
+}
+
+/// True when `txn` is a bookkeeping artifact rather than an economic event, and
+/// so must never compete for a place in the "largest transactions" box.
+///
+/// The test is **equity-settled**: the transaction has an equity-ish leg
+/// ([`is_equity_leg`]) and no revenue or expense leg. That is the shape of every
+/// opening/closing-balance entry, every `equity:adjustment` reconcile and every
+/// `equity:conversion` pair — the asset legs exist only to give the equity leg
+/// somewhere to land, so the "amount moved" is an artifact of double entry
+/// rather than money going anywhere. Left in, one opening balance is a whole net
+/// worth and permanently owns the top of a list meant to show spending.
+///
+/// The revenue/expense escape hatch is what keeps the rule honest: a transaction
+/// that genuinely earns or spends is an economic event whatever else it touches,
+/// so it is never excluded here. That is also what separates an
+/// `equity:adjustment` reconcile from a real purchase whose only unusual feature
+/// is a balance assertion on one leg.
+///
+/// Membership is decided by DECLARED account type first — name inference is only
+/// the fallback inside [`AccountTypes`] — so a chart of accounts that books
+/// opening balances outside an `equity:` root, or in another language, is still
+/// recognised.
+///
+/// # Why there is no separate balance-assertion arm
+///
+/// A transaction that exists ONLY to assert a balance moves nothing, and
+/// [`top_transactions`] already drops every transaction of zero base magnitude.
+/// Both spellings reduce to that: `acct = $5000` parses to a posting with an
+/// EMPTY `amounts` vector (the inferred residual of a lone posting is zero), and
+/// `acct $0 = $5000` parses to an explicit zero. A second predicate for them
+/// could never change an outcome, so adding one would be a parallel mechanism
+/// that never fires. `top_txns_skip_a_balance_check_transaction` pins the
+/// behaviour regardless of which guard delivers it.
+fn is_bookkeeping_only(txn: &Transaction, types: &AccountTypes) -> bool {
+    let accounts = || {
+        txn.postings
+            .iter()
+            .map(|posting| posting.account.0.as_str())
+    };
+    accounts().any(|account| is_equity_leg(account, types))
+        && !accounts().any(|account| is_operating_leg(account, types))
+}
+
 /// The largest transactions over `[from, to]` by base-commodity magnitude moved
 /// (Box 10): per transaction, the greater of its summed positive and summed
 /// negative base legs.
+///
+/// Bookkeeping artifacts are skipped ([`is_bookkeeping_only`]) — they move no
+/// money, so ranking them by "money moved" is meaningless.
 fn top_transactions(
     txns: &[Transaction],
     from: &str,
     to: &str,
     base: &Commodity,
+    types: &AccountTypes,
 ) -> Result<Vec<TopTxn>, ReportError> {
     let mut scored: Vec<TopTxn> = Vec::new();
     for txn in txns {
         if txn.date.as_str() < from || txn.date.as_str() > to {
+            continue;
+        }
+        if is_bookkeeping_only(txn, types) {
             continue;
         }
         let mut positive = Dec::zero();
@@ -876,6 +944,11 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     let decls = account_decls(journal);
     let declared = declared_types(&decls);
     let is_cash = cash_predicate(&decls);
+    // The same declarations, memoized, for the one box that classifies per
+    // POSTING rather than per aggregated account (Box 10). The free
+    // `resolve_account_type` would re-walk the ancestry of every posting in the
+    // window; this answers each distinct account name once (PERF-5e).
+    let types = AccountTypes::from_declared(declared.clone());
 
     // The four posting sweeps every unpriced box is assembled from. Each
     // `account_totals` call is a full pass over every posting, and these four
@@ -984,7 +1057,7 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     let movers_list = movers(journal, &current_window, &mid)?;
 
     // Box 10 — largest transactions in the current period.
-    let top_txns = top_transactions(txns, &curr_start, end, &base)?;
+    let top_txns = top_transactions(txns, &curr_start, end, &base, &types)?;
 
     Ok(InsightsReport {
         period: InsightsPeriod {
@@ -1016,7 +1089,7 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{amount, price, txn, usd};
+    use super::super::test_support::{amount, price, txn, usd, with_assertion};
     use super::*;
     use crate::model::{Amount, Cost, CostKind, Journal, PriceDirective};
 
@@ -1275,6 +1348,181 @@ mod tests {
                 (5, Dec::new(30_000, 2)),
             ]
         );
+    }
+
+    // ---- Box 10: bookkeeping artifacts never rank as "top transactions" ----
+
+    /// The indices Box 10 ranked, in order.
+    fn ranked(report: &InsightsReport) -> Vec<u32> {
+        report.top_txns.iter().map(|row| row.index).collect()
+    }
+
+    /// One journal holding every shape Box 10 must ignore next to the two it
+    /// must keep. All six land in the CURRENT half of `run`'s span
+    /// (`[2025-01-07, 2025-01-11]`), and every MONEY-MOVING artifact is
+    /// deliberately larger than both real transactions — unfiltered, the
+    /// artifacts alone fill the box and neither real one is ever seen.
+    fn bookkeeping_journal() -> Journal {
+        journal(vec![
+            // Opening balances: a whole net worth, entered on one day.
+            txn(
+                1,
+                "2025-01-07",
+                vec![
+                    ("assets:bank:checking", vec![usd(9_999_900)]),
+                    ("equity:opening balances", vec![usd(-9_999_900)]),
+                ],
+            ),
+            // An equity adjustment — the fudge that makes a balance come out.
+            txn(
+                2,
+                "2025-01-08",
+                vec![
+                    ("assets:bank:savings", vec![usd(800_000)]),
+                    ("equity:adjustment", vec![usd(-800_000)]),
+                ],
+            ),
+            // hledger's conversion idiom: currency crossing through
+            // `equity:conversion`, which moves no money in or out.
+            txn(
+                3,
+                "2025-01-09",
+                vec![
+                    ("assets:cash:eur", vec![amount("€", 60_000, 2)]),
+                    ("equity:conversion", vec![amount("€", -60_000, 2)]),
+                    ("equity:conversion", vec![usd(700_000)]),
+                    ("assets:cash:usd", vec![usd(-700_000)]),
+                ],
+            ),
+            // A balance check: every posting asserts, none of them moves money.
+            with_assertion(
+                txn(
+                    4,
+                    "2025-01-10",
+                    vec![("assets:bank:checking", vec![usd(0)])],
+                ),
+                0,
+                usd(9_999_900),
+            ),
+            // REAL: a paycheck that also pins the resulting bank balance. The
+            // assertion rides on a transaction that genuinely moved money, so it
+            // must still rank.
+            with_assertion(
+                txn(
+                    5,
+                    "2025-01-10",
+                    vec![
+                        ("income:salary", vec![usd(-400_000)]),
+                        ("assets:bank:checking", vec![usd(400_000)]),
+                    ],
+                ),
+                1,
+                usd(10_399_900),
+            ),
+            // REAL: ordinary spending, no assertion.
+            txn(
+                6,
+                "2025-01-11",
+                vec![
+                    ("expenses:food", vec![usd(120_000)]),
+                    ("assets:bank:checking", vec![usd(-120_000)]),
+                ],
+            ),
+        ])
+    }
+
+    #[test]
+    fn top_txns_skip_opening_balances_equity_adjustments_and_conversions() {
+        let report = run(&bookkeeping_journal());
+        // Only the paycheck ($4,000) and the groceries ($1,200) are economic
+        // events; every larger row in the journal is an artifact of double entry.
+        assert_eq!(ranked(&report), [5, 6]);
+        assert_eq!(report.top_txns[0].amount, Dec::new(400_000, 2));
+        assert_eq!(report.top_txns[1].amount, Dec::new(120_000, 2));
+    }
+
+    /// A reconcile marker — an `equity:adjustment` posting absorbing the
+    /// difference — is an artifact even though it moves a real amount, because
+    /// the equity leg says the money did not come from anywhere.
+    #[test]
+    fn top_txns_skip_an_equity_settled_reconcile() {
+        let report = run(&journal(vec![with_assertion(
+            txn(
+                1,
+                "2025-01-08",
+                vec![
+                    ("assets:bank:checking", vec![usd(1_234)]),
+                    ("equity:adjustment", vec![usd(-1_234)]),
+                ],
+            ),
+            0,
+            usd(501_234),
+        )]));
+        assert!(report.top_txns.is_empty());
+    }
+
+    /// A transaction written purely to pin a balance never ranks, in either of
+    /// the two spellings the parser accepts. Both reduce to zero base magnitude
+    /// (`= $5000` alone yields an EMPTY `amounts` vector; `$0 = $5000` an
+    /// explicit zero), which is why [`is_bookkeeping_only`] needs no arm for it.
+    /// This test owns that contract whichever guard enforces it.
+    #[test]
+    fn top_txns_skip_a_balance_check_transaction() {
+        // `assets:bank:checking $0 = $5000` — the explicit-zero spelling.
+        let explicit = run(&journal(vec![with_assertion(
+            txn(
+                1,
+                "2025-01-08",
+                vec![("assets:bank:checking", vec![usd(0)])],
+            ),
+            0,
+            usd(500_000),
+        )]));
+        assert!(explicit.top_txns.is_empty());
+
+        // `assets:bank:checking = $5000` — the amount-less spelling.
+        let amountless = run(&journal(vec![with_assertion(
+            txn(1, "2025-01-08", vec![("assets:bank:checking", Vec::new())]),
+            0,
+            usd(500_000),
+        )]));
+        assert!(amountless.top_txns.is_empty());
+    }
+
+    /// The predicate's boundary, stated as a test: an equity leg alone is not
+    /// disqualifying. A transaction that genuinely spends is an economic event
+    /// whatever else it touches, so it keeps its place.
+    #[test]
+    fn top_txns_keep_an_equity_transaction_that_also_spends() {
+        let report = run(&journal(vec![
+            // Equity-settled AND expensed: a closing entry that books a real fee.
+            txn(
+                1,
+                "2025-01-08",
+                vec![
+                    ("assets:bank:checking", vec![usd(-500_000)]),
+                    ("expenses:fees", vec![usd(2_500)]),
+                    ("equity:draws", vec![usd(497_500)]),
+                ],
+            ),
+        ]));
+        assert_eq!(ranked(&report), [1]);
+    }
+
+    /// A transaction with NO equity leg and no assertion is untouched by the
+    /// filter even when it only moves money between the user's own accounts —
+    /// this fix narrows Box 10 to bookkeeping artifacts, not to spending.
+    #[test]
+    fn top_txns_keep_a_plain_transfer_between_asset_accounts() {
+        let report = run(&journal(vec![txn(
+            1,
+            "2025-01-08",
+            vec![
+                ("assets:bank:savings", vec![usd(300_000)]),
+                ("assets:bank:checking", vec![usd(-300_000)]),
+            ],
+        )]));
+        assert_eq!(ranked(&report), [1]);
     }
 
     // ---- diagnostics: how movers behave with and without price history ----

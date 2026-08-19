@@ -22,11 +22,14 @@
 <div class="bg-base-200 rounded-box flex flex-col gap-2 p-2">
     <div class="flex flex-wrap items-center gap-2">
         <DateRangePicker />
+        <!-- `a`, not `/`: on this page `/` belongs to the free-text SearchInput
+             below, which is the box people reach for first. -->
         <AccountTreeSelect
             {accountNames}
             selected={filters.value.accounts}
             onToggle={(name) => filters.toggleAccount(name)}
             onClear={() => filters.clearAccounts()}
+            searchKey="a"
         />
         <div class="w-full min-w-48 sm:ml-auto sm:w-64">
             <SearchInput />

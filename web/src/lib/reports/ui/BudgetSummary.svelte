@@ -7,12 +7,10 @@
      magnitude as "earned $X of $Y target". Clicking a category opens the journal
      filtered to that account subtree for the same period. -->
 <script lang="ts">
-    import {goto} from "$app/navigation";
-    import {resolve} from "$app/paths";
     import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
+    import {openJournal} from "$lib/journal/openJournal";
     import {maAdd, maNeg, type MixedAmount} from "$lib/domain/money";
     import type {AmountStyle, ISODate} from "$lib/domain/types";
-    import {filterToSearch} from "$lib/filters/urlCodec";
     import {formatTotals} from "$lib/journal/rowModel";
     import {bucketLabel} from "$lib/reports/periods";
     import {
@@ -26,7 +24,6 @@
         type BudgetLine,
     } from "$lib/reports/budgetSummary";
     import type {BudgetReport} from "$lib/reports/types";
-    import {defaultFilter, filters, type JournalFilter} from "$lib/stores/filters.svelte";
 
     let {
         report,
@@ -125,10 +122,7 @@
 
     /** Open the journal filtered to `account` (and its subaccounts) for the budget's period. */
     function openInJournal(account: string): void {
-        const filter: JournalFilter = {from, to, accounts: new Set([account]), query: "", preset: null};
-        filters.replace(filter);
-        // eslint-disable-next-line svelte/no-navigation-without-resolve -- resolve("/") IS the route id; the query string is appended
-        void goto(`${resolve("/")}?${filterToSearch(filter, defaultFilter())}`);
+        void openJournal({accounts: [account], from, to});
     }
 </script>
 

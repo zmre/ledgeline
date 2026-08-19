@@ -107,24 +107,54 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
-- bug: in my main ledger, i'm getting lines like: `   expenses:auto:maintenance ; set a default so it doesn't try income:unknown          $86.88`
-- bug: i have a stock in two different accounts (QQQ) and some opening statements... oh, maybe this is because i failed to sell it all and one of my opening entries (there are three total) didn't have a cost?  i get a note about missing basis.
 - feat: import drag/drop
   - command line options
   - fix styling of numbers issues; infected the entire ui now
-- feat: new import rules
+- feat: create new import rules
   - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
 - feat: edit budget
   - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
+- feat: non-stock and cash holdings
+  - i want the holdings tab to have two sub-tabs: Stocks and Other.  Other should show all assets (type:A) excluding stocks and cash (type:C). if we get this right, we'll be able to show things like home, cars, partnerships, etc.  And like with stocks, we want to show the value of each and the change in value over time
 - Better keyboard navigation
   - tab complete account selection
   - enter to save transaction edit
+- chore: Setup releases and builds for download
+- chore: Add screenshots and better descriptions to the readme
 - feat: zillow integration
   - Need a way to map an asset to an address. Maybe a special comment in the accounts file?
   - Need a way to map the unrealized gains for that address
   - Then on some sort of "update" click (how/where on UI?), it fetches the latest value (or launches a page and then prompts for it?), calculates the difference relative to the current asset value and then makes an adjustment to the unrealized account with a comment saying the current zestimate
-- A QuickLook plugin for journal files — render a file's transactions nicely for fast Finder browsing
-  (see `mbr-markdown-browser` for the approach).
+- balance sheet ui improvements
+  - this looks a lot like what the command line produces, but it's incredibly ugly and hard to read especially with stocks in the picture
+  - there's a row with "assets" on the left and a long list of stocks and cash on the right, all in one row. It's like rows within a row.  and things sum up oddly.
+  - And it's weird to have summaries and totals at the top above the things they total
+  - We should default to three deep and we should get smarter about how we group things and total them.
+  - We don't need to break things down by stock and we don't need to break them down by specific account, either.  We want to know about "Cash and cash equivalents" but not about how much is in bank account A vs. bank account B.
+    - I realize we may not have all the details we need to group things appropriately, BUT, we know stocks and their value, we know assets and their values, we know cash and their values, and we know liabilities and their values.
+    - We could probably improve things quite a bit through the use of optional extra tags on accounts.  We should look at examples to come up with ideas here, but common lines on a balance sheet include:
+      - accounts receivable
+      - accounts payable
+      - non-current assets
+      - depreciable assets
+      - depreciation of those assets
+      - property
+      - intangible assets
+      - deferred revenue
+      - short-term debt
+      - long-term debt
+      - long-term investments
+      - shareholders equity
+      - retained earnings
+      - inventory
+      - paid in capital
+    - My thinking is that any account can be tagged with a balance sheet group (bsgroup?) that then becomes a line in the balance sheet.
+    - We need proper totals lines, spreadsheet style, showing totla current assets, liabilities, owner equity and net
+    - I think we can make this pretty. Make each box (assets, liabilities, owner equity) pretty separate grids with lines and colored headers.  The downloaded xlsx should be nice and readable, too.
+- rules edit ui improvements
+  - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
+  - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
+  - perhaps instead of one giant form, we have display separate from edit and can therefore make this nicer
 - feat: private AI integration?
 - feat: stock price updates
   - basically my script, maybe ported into rust, for querying yahoo and updating a prices file. should try to figure out where prices already live and if it can't find anything, prompt for location and include a new file from the base file for the purpose.
@@ -135,7 +165,6 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
   - only real way to do this is with some sort of lookback comparing similar descriptions in the past and seeing associated expense or revenue accounts
   - need to remove random numbers from description and maybe do a predominance calculation or a vector comparison rather than full equality.  if we're doing equality and removing numbers, we need to normalize some by lowercasing.  but in a perfect world, "netflix.com" might see a previous "netflix" and guess category based on that.  the more exact the match and the more recent, the higher the sort ranking
   - feat: remember categorization functionality — write a chosen category back into the rules file as a new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
-- feat: for the journal list, accounts get truncated past a certain width, but this leaves the unimportant info (left side of account, things like `assets` and `expenses`) visible and hides the most important bits, which are the right-most parts. Can we more intelligently truncate or reduce the display (showing the full thing on hover as we do already)
 - feat: saved report filters?
 - feat: planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)

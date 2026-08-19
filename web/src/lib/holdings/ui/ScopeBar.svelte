@@ -23,11 +23,14 @@
 
 <div class="bg-base-200 rounded-box flex flex-col gap-2 p-2" data-testid="holdings-scope-bar">
     <div class="flex flex-wrap items-center gap-2">
+        <!-- `/` here: holdings has no free-text search box, so the account tree
+             is the search on this page. -->
         <AccountTreeSelect
             {accountNames}
             selected={holdingsScope.value.accounts}
             onToggle={(name) => holdingsScope.toggleAccount(name)}
             onClear={() => holdingsScope.clear()}
+            searchKey="/"
         />
         <div class="join" role="group" aria-label="Scope mode">
             <button

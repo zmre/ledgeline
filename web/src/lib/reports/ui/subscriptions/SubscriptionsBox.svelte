@@ -13,6 +13,7 @@
      thing to cancel is always first. -->
 <script lang="ts">
     import {resolve} from "$app/paths";
+    import {journalSearch} from "$lib/filters/journalTarget";
     import {add, type Dec} from "$lib/domain/money";
     import type {AmountStyle} from "$lib/domain/types";
     import type {Cadence, Subscription} from "$lib/reports/insightsTypes";
@@ -42,9 +43,16 @@
     const perYear = $derived(rows.reduce<Dec>((sum, row) => add(sum, row.annualizedCost), {m: 0n, p: 0}));
     const perMonth = $derived(monthlyAverage(perYear, 12));
 
-    /** The journal, filtered to this payee across all dates. */
+    /**
+     * The journal, filtered to this payee across all dates.
+     *
+     * Stays a real `<a href>` rather than moving to `openJournal`: middle-click
+     * and open-in-new-tab are worth keeping. It shares the query-string
+     * arithmetic instead, so the destination cannot drift from the imperative
+     * drill-downs elsewhere.
+     */
     function journalLink(payee: string): string {
-        return `${resolve("/")}?preset=all&q=${encodeURIComponent(payee)}`;
+        return `${resolve("/")}?${journalSearch({query: payee, preset: "all"})}`;
     }
 </script>
 

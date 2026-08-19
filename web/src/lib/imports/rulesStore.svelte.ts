@@ -121,6 +121,31 @@ export const rulesStore = {
     },
 
     /**
+     * Re-read JUST the CSV preview, after a save changed what it would say.
+     *
+     * A save can move `skip` and `separator`, and the engine feeds both into the
+     * preview — `skip` picks which record is the header row, `separator` picks
+     * where the columns are. So the preview loaded with the document can end up
+     * labelling the wrong columns with the wrong header the moment a save lands.
+     * Unlike the parse warnings, the `PUT` response cannot fix this: `wire_doc`
+     * describes the rules document and says nothing about the DATA file it
+     * names, so a second request is the only way to learn the new answer.
+     *
+     * Handed BACK rather than written into `openRules`, because that resource
+     * holds `{doc, preview}` as one value answering one question (FE-1) and has
+     * no partial update. Reloading it to refresh a decoration would refetch the
+     * document too and flip the whole editor to its loading state — and would
+     * re-open the file underneath an edit. The caller owns where this lands,
+     * exactly as it already owns `baseDoc`.
+     *
+     * Null means the REQUEST failed, the same distinction `OpenRules.preview`
+     * draws, and never an excuse to disturb the open document.
+     */
+    async reloadPreview(serverUrl: string, id: string): Promise<RulesPreview | null> {
+        return loadPreview(new LedgelineApi(serverUrl), id);
+    },
+
+    /**
      * Save a whole document.
      *
      * On success the engine answers with the document it actually wrote — a

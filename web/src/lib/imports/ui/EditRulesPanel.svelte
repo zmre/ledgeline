@@ -21,7 +21,7 @@
     import AsyncSection from "$lib/components/AsyncSection.svelte";
     import {fieldNames, isDirty, settingText, toForm, toSaveRequest, validateForm, type FormItem, type RulesForm} from "$lib/imports/model";
     import {openRules, rulesIndex, rulesStore} from "$lib/imports/rulesStore.svelte";
-    import type {RulesDocument} from "$lib/imports/types";
+    import type {RulesDocument, RulesPreview} from "$lib/imports/types";
     import AccountsPanel from "$lib/imports/ui/AccountsPanel.svelte";
     import PreferencesPanel from "$lib/imports/ui/PreferencesPanel.svelte";
     import RowMappingPanel from "$lib/imports/ui/RowMappingPanel.svelte";
@@ -58,6 +58,28 @@
      * resetting the model and leaving the screen disagreeing with it.
      */
     let formEpoch = $state(0);
+    /**
+     * A CSV preview re-read after a save, replacing the one the document was
+     * opened with — and the fact that one is in flight.
+     *
+     * THREE states, because two cannot tell the interesting ones apart:
+     * `null` is "no save has refetched yet, so use what was opened",
+     * `{value: null}` is "the refetch FAILED", which the mapping panel already
+     * reports as such, and `previewPending` withholds the old preview entirely
+     * while a new one is on its way. Showing the pre-save columns under the
+     * post-save settings is the bug; showing them during the refetch would just
+     * be the same bug for a shorter time.
+     */
+    let previewOverride = $state<{value: RulesPreview | null} | null>(null);
+    let previewPending = $state(false);
+    /**
+     * Monotonic, so a slow refetch cannot land on top of a newer one — the
+     * stale-response discipline `resource.svelte.ts` documents as invariant 1.
+     * Two quick saves put two of these in flight, and without the token the
+     * FIRST response can arrive last and win, which is precisely the stale
+     * preview this refetch exists to remove, only harder to see.
+     */
+    let previewSeq = 0;
 
     // Select a file as soon as the listing arrives, and re-select when a
     // reconnect brings a different listing. Latched on the index OBJECT so
@@ -105,6 +127,13 @@
         baseDoc = open.doc;
         form = toForm(open.doc);
         formEpoch += 1;
+        // This load carries its OWN preview, so any save-refetched one belonged
+        // to the document being replaced. Bumping the token as well as clearing
+        // the override is what stops a refetch still in flight for the previous
+        // file from landing on this one.
+        previewSeq += 1;
+        previewOverride = null;
+        previewPending = false;
         clientErrors = [];
         serverError = null;
         savedAt = null;
@@ -112,7 +141,34 @@
     });
 
     const index = $derived(rulesIndex.value);
-    const preview = $derived(openRules.value?.preview ?? null);
+    /**
+     * The CSV preview to show — the refetched one once a save has produced it,
+     * the opened one until then, and NOTHING while a refetch is in flight.
+     *
+     * Not `previewOverride?.value ?? openRules…`: a failed refetch is a real
+     * `{value: null}`, and `??` would quietly fall back through it to the
+     * pre-save preview — reinstating the stale data precisely when we have just
+     * learned we cannot vouch for it.
+     */
+    const preview = $derived.by(() => {
+        if (previewPending) return null;
+        return previewOverride === null ? (openRules.value?.preview ?? null) : previewOverride.value;
+    });
+    /**
+     * The loaded document's parse warnings — from `baseDoc`, NOT from
+     * `openRules`.
+     *
+     * A save does not refetch the resource (see `save` below), so `openRules`
+     * still holds the parse of the bytes as they were when the file was opened.
+     * Reading the warnings off it left a file that had just been fixed still
+     * showing the complaint it was fixed for, until something unrelated
+     * re-opened it. `baseDoc` is re-seeded from what the engine WROTE and
+     * re-parsed, so it is the only one of the two that moves when a save lands.
+     *
+     * This was never specific to one warning: every diagnostic `doc.warnings()`
+     * produces came through the same stale reference.
+     */
+    const warnings = $derived(baseDoc?.warnings ?? []);
     const baseline = $derived(baseDoc === null ? null : toForm(baseDoc));
     const dirty = $derived(baseline !== null && form !== null && isDirty(baseline, form));
     /** Read-only unless BOTH the server allows writes and this document does. */
@@ -187,6 +243,34 @@
         seededFrom = `${result.doc.id}#${result.doc.revision}`;
         form = toForm(result.doc);
         savedAt = Date.now();
+        // Not awaited: the save has LANDED, and a data file that cannot be
+        // re-read must not turn a successful write into a failure on screen.
+        // `refreshPreview` reports its own outcome into the mapping panel.
+        void refreshPreview(result.doc.id);
+    }
+
+    /**
+     * Re-read the CSV preview for the document a save just wrote.
+     *
+     * Never throws and never reports through `serverError`: the write already
+     * succeeded, and this is a decoration on top of it. A failure becomes a
+     * `{value: null}` override, which the mapping panel renders as "the preview
+     * request failed" — the user is told the columns are unverified rather than
+     * shown the pre-save ones as if they still described the file.
+     *
+     * A superseded response returns without touching `previewPending`: the
+     * newer request owns that flag and is still going to clear it.
+     */
+    async function refreshPreview(id: string): Promise<void> {
+        const token = ++previewSeq;
+        previewPending = true;
+        const url = settings.serverUrl;
+        // No server IS a failed refetch, and is reported as one rather than
+        // leaving the pre-save preview on screen looking current.
+        const value = url === null ? null : await rulesStore.reloadPreview(url, id);
+        if (token !== previewSeq) return;
+        previewOverride = {value};
+        previewPending = false;
     }
 
     /** Discard the local edit and re-read the file — the only safe answer to a 409. */
@@ -301,10 +385,10 @@
                                 </div>
                             {/if}
 
-                            {#if openRules.value?.doc.warnings.length}
+                            {#if warnings.length}
                                 <div class="alert alert-warning rounded-box items-start px-3 py-2 text-sm" role="alert" data-testid="imports-warnings">
                                     <ul class="list-inside list-disc">
-                                        {#each openRules.value.doc.warnings as warning (warning.line + warning.message)}
+                                        {#each warnings as warning (warning.line + warning.message)}
                                             <li>{warning.line > 0 ? `Line ${warning.line}: ` : ""}{warning.message}</li>
                                         {/each}
                                     </ul>
@@ -334,14 +418,9 @@
                                     </div>
                                     <div class="p-3">
                                         {#if tab === "prefs"}
-                                            <PreferencesPanel
-                                                items={form.items}
-                                                source={openRules.value?.doc.settings.source ?? null}
-                                                onChange={updateItems}
-                                                {disabled}
-                                            />
+                                            <PreferencesPanel items={form.items} source={baseDoc?.settings.source ?? null} onChange={updateItems} {disabled} />
                                         {:else if tab === "mapping"}
-                                            <RowMappingPanel items={form.items} {preview} onChange={updateItems} {disabled} />
+                                            <RowMappingPanel items={form.items} {preview} pending={previewPending} onChange={updateItems} {disabled} />
                                         {:else}
                                             <AccountsPanel items={form.items} accountNames={journal.accountNames} onChange={updateItems} {disabled} />
                                         {/if}
