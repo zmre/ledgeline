@@ -19,6 +19,18 @@ pub struct PostingFilter<'a> {
     pub accounts: Option<&'a [String]>,
     /// Required effective status.
     pub status: Option<Status>,
+    /// Total each posting at its COST (hledger `-B`) rather than as written —
+    /// see [`crate::model::Amount::at_cost`].
+    ///
+    /// Not a filter, but it belongs on the same struct because it changes what
+    /// this one pass accumulates and nothing else; a parallel `account_totals`
+    /// would be the same loop twice. It defaults to `false`, so every existing
+    /// caller (all of which spread `..PostingFilter::default()`) is untouched.
+    ///
+    /// This is the only basis on which the accounting identity actually holds:
+    /// transactions balance AT COST, so `10 AAPL @ $220.00` against
+    /// `$-2,200.00` sums to zero here and to `10 AAPL - $2,200.00` without it.
+    pub at_cost: bool,
 }
 
 /// One pass over all postings, summing per FULL account name.
@@ -64,7 +76,12 @@ pub fn account_totals(
             }
             let entry = totals.entry(posting.account.0.clone()).or_default();
             for amount in &posting.amounts {
-                entry.accumulate(&amount.commodity, amount.quantity)?;
+                let (commodity, quantity) = if filter.at_cost {
+                    amount.at_cost()?
+                } else {
+                    (&amount.commodity, amount.quantity)
+                };
+                entry.accumulate(commodity, quantity)?;
             }
         }
     }

@@ -335,6 +335,23 @@ export interface BalanceSheetQuery {
     asOf?: string;
     depth?: number;
 }
+/**
+ * The grouped balance sheet's query (plans/12). `value`/`valueIn` are optional
+ * because the engine's defaults — market, valued in `prices.base_commodity()` —
+ * are exactly what the screen wants, and there is no control for either; sending
+ * them anyway would pin the SPA to a base commodity it had to guess.
+ */
+export interface GroupedBalanceSheetQuery {
+    asOf?: string;
+    /**
+     * Account-depth clamp for the rows inside an expanded group. OMIT IT for no
+     * clamp — that is the endpoint's contract, and `0` cannot express it because
+     * `depth=0` already means hledger's totals-only. The reports page omits it.
+     */
+    depth?: number;
+    value?: "market" | "cost" | "none";
+    valueIn?: string;
+}
 export interface IncomeStatementQuery {
     from?: string;
     to?: string;
@@ -452,8 +469,20 @@ export class LedgelineApi {
         return this.getJson("/api/diagnostics");
     }
 
+    /**
+     * The flat, unvalued balance sheet. Still here, and still exercised by the
+     * hledger parity golden — the screen no longer uses it, but
+     * `fixtures/native/v1/balancesheet.json` must stay byte-identical.
+     */
     balanceSheet(query: BalanceSheetQuery = {}): Promise<unknown> {
         return this.getJson(`/api/reports/balancesheet${queryString({asOf: query.asOf, depth: query.depth})}`);
+    }
+
+    /** The grouped, market-valued balance sheet the Balance Sheet tab renders (decode with `decodeBalanceSheetReport`). */
+    balanceSheetGrouped(query: GroupedBalanceSheetQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/reports/balancesheet/grouped${queryString({asOf: query.asOf, depth: query.depth, value: query.value, valueIn: query.valueIn})}`
+        );
     }
 
     incomeStatement(query: IncomeStatementQuery = {}): Promise<unknown> {

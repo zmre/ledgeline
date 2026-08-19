@@ -6,16 +6,16 @@
 // the very first load shows a spinner).
 
 import {LedgelineApi} from "$lib/api/native";
-import {decodeBudgetReport, decodePeriodReport, decodeSectionedReport} from "$lib/api/nativeDecode";
+import {decodeBalanceSheetReport, decodeBudgetReport, decodePeriodReport, decodeSectionedReport} from "$lib/api/nativeDecode";
 import type {ISODate} from "$lib/domain/types";
 import {monthsBetween} from "$lib/reports/periods";
-import type {BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
+import type {BalanceSheetReport, BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
 import type {ReportInterval, ReportParams} from "$lib/reports/ui/params";
 import type {LoadStatus} from "./loadState";
 import {createResource} from "./resource.svelte";
 
 /** The union of every report shape the store can hold. */
-export type AnyReport = SectionedReport | PeriodReport | BudgetReport;
+export type AnyReport = SectionedReport | PeriodReport | BudgetReport | BalanceSheetReport;
 
 /** The exact query for one tab — only the fields that endpoint honors, so the fetch effect refires minimally. */
 export type ReportQuery =
@@ -24,7 +24,7 @@ export type ReportQuery =
     // keep the tab switches exhaustive — neither is ever fetched here.
     | {tab: "insights"}
     | {tab: "subs"}
-    | {tab: "bs"; asOf: string; depth: number}
+    | {tab: "bs"; asOf: string}
     | {tab: "is"; from: string; to: string; depth: number}
     | {tab: "cf"; end: string; interval: ReportInterval; count: number; depth: number}
     | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number}
@@ -38,7 +38,7 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
         case "subs":
             return {tab: "subs"};
         case "bs":
-            return {tab: "bs", asOf: params.asOf, depth: params.depth};
+            return {tab: "bs", asOf: params.asOf};
         case "is":
             return {tab: "is", from: params.from, to: params.to, depth: params.depth};
         case "cf":
@@ -99,7 +99,14 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
             // never calls this one for those tabs.
             throw new Error(`${query.tab} is served by its own store`);
         case "bs":
-            return decodeSectionedReport(await api.balanceSheet({asOf: query.asOf, depth: query.depth}));
+            // The GROUPED endpoint (plans/12): three boxes, market-valued, one
+            // number per line. `/api/reports/balancesheet` still exists and is
+            // still golden-tested — it is just no longer what the tab renders.
+            //
+            // No `depth`: absent means UNCLAMPED on this endpoint, which is what
+            // expanding a group has to show. It cannot be spelled as a number —
+            // `depth=0` is already hledger's totals-only.
+            return decodeBalanceSheetReport(await api.balanceSheetGrouped({asOf: query.asOf}));
         case "is":
             return decodeSectionedReport(await api.incomeStatement({from: query.from, to: query.to, depth: query.depth}));
         case "cf":

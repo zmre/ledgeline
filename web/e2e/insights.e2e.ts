@@ -128,7 +128,13 @@ test("insights: switching to another tab still renders that report", async ({pag
 
     await page.getByRole("tab", {name: "Balance Sheet"}).click();
     await expect(page.getByTestId("insights-dashboard")).toHaveCount(0);
-    // The balance sheet's sectioned table takes over (account names are row headers).
-    await expect(page.getByRole("rowheader", {name: "assets", exact: true})).toBeVisible();
-    await expect(page.getByRole("rowheader", {name: "Total Assets"})).toBeVisible();
+    // The grouped balance sheet takes over: three boxes, groups collapsed, each
+    // box's total in a `<tfoot>` row header. Account names are NOT visible yet —
+    // they are behind the disclosures (plans/12).
+    await expect(page.getByTestId("balance-sheet")).toBeVisible();
+    const assets = page.getByTestId("bs-section-assets");
+    await expect(assets).toBeVisible();
+    // Scoped to the box: the summary and the tie-out below carry "Total Assets"
+    // too, so the bare role locator matches three rows and fails strict mode.
+    await expect(assets.getByRole("rowheader", {name: "Total Assets"})).toBeVisible();
 });

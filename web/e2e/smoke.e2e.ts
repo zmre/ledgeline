@@ -8,9 +8,14 @@
 //   - `hledger bal expenses -b 2026-04-10 -e 2026-07-09` → $11,526.62 (+ 228,75 EUR);
 //     the footer shows the negated primary-commodity net, $-11,526.62
 //   - deepest account is 4 segments (assets:broker:taxable:vti) → depth-slider max 4
-//   - `hledger bs --depth 2 -e 2026-07-09` (CLI -e is exclusive ≙ our asOf 2026-07-08):
-//     Total Assets $48,402.56 (+ 19.5 AAPL + 566,75 EUR + 5 GLD − 2 TSLA + 17 VTI),
-//     Net $47,871.41
+//     (the slider is on is/cf/nw/budget only; the balance sheet dropped it and
+//     asks the engine for an unclamped report)
+//   - `hledger bs -V -e 2026-07-09` (CLI -e is exclusive ≙ our asOf
+//     2026-07-08): the Balance Sheet tab is MARKET-valued since plans/12, so
+//     Total Assets $59,612.615 (+ 5 GLD − 2 TSLA, both unpriced), Liabilities
+//     $531.15, net worth $59,081.465. Unvalued (`hledger bs`) it would read
+//     $48,402.56 / $47,871.41 — that is the OLD tab, and the numbers below are
+//     deliberately not those.
 //   - 6 deliberate problem records: pending txn, expenses:unknown, empty description,
 //     GLD missing basis, GLD unpriced, TSLA negative shares (WP-10)
 //
@@ -84,9 +89,79 @@ test("reports: balance sheet shows known fixture numbers", async ({page}) => {
     // Reports opens on the Insights dashboard, so select the balance sheet first.
     await page.getByRole("tab", {name: "Balance Sheet"}).click();
 
-    // Default balance-sheet params with the pinned clock: asOf 2026-07-08, depth 2.
-    await expect(page.locator("tr", {has: page.locator('th:text-is("Total Assets")')})).toContainText("$48,402.56");
-    await expect(page.locator("tr", {has: page.locator('th:text-is("Net")')})).toContainText("$47,871.41");
+    // Default balance-sheet params with the pinned clock: asOf 2026-07-08, no
+    // depth clamp, valued at MARKET (plans/12) — so these are `hledger bs -V`'s
+    // numbers, not `hledger bs`'s. Verified against hledger 1.52:
+    //   bal assets -V -e 2026-07-09 → $59612.615, 5.0 GLD, -2.0 TSLA
+    //   liabilities                 → $531.15
+    // Scoped to each box: "Total Assets" is deliberately repeated in the summary
+    // and the tie-out below, so an unscoped locator is a strict-mode violation.
+    await expect(page.getByTestId("bs-section-assets").locator("tr", {has: page.locator('th:text-is("Total Assets")')})).toContainText("$59,612.62");
+    await expect(page.getByTestId("bs-section-liabilities").locator("tr", {has: page.locator('th:text-is("Total Liabilities")')})).toContainText("$531.15");
+
+    // The tie-out: liabilities + equity must come back to total assets, and that
+    // pair — not net worth — carries the verdict.
+    const tieOut = page.getByTestId("bs-tie-out");
+    await expect(page.getByTestId("bs-summary")).toContainText("Liabilities + Equity");
+    await expect(tieOut).toContainText("$59,612.62");
+    await expect(tieOut).toContainText("Balanced");
+
+    // Net worth = assets − liabilities = $59,081.465 exactly. We show $59,081.47:
+    // `formatDec` rounds half AWAY FROM ZERO everywhere in this app, while
+    // hledger's CLI prints $59,081.46 because Haskell's `round` is half-to-even.
+    // The cent is a display convention, not a disagreement about the balance.
+    await expect(page.getByTestId("bs-net-worth")).toContainText("$59,081.47");
+
+    // GLD and TSLA have no `P` directive, so the valuation could not convert
+    // them. They must be visible, never silently dropped from the total.
+    await expect(page.getByTestId("unpriced-warning")).toContainText("GLD");
+    await expect(page.getByTestId("unpriced-warning")).toContainText("TSLA");
+
+    // The journal balances, so the check line stays off the screen entirely.
+    await expect(page.getByTestId("bs-check")).toHaveCount(0);
+
+    // No depth slider on this tab: groups are the reading and the accounts under
+    // one are a drill-down, so the clamp had nothing left to say. It is still on
+    // the tabs whose tables it does move.
+    const depthSlider = page.locator('input[aria-label="Account depth"]');
+    await expect(depthSlider).toHaveCount(0);
+    await page.getByRole("tab", {name: "P&L"}).click();
+    await expect(depthSlider).toHaveCount(1);
+});
+
+test("reports: balance-sheet groups start collapsed and open to their accounts", async ({page}) => {
+    // No `depth`: the tab has no such control any more and asks the engine for an
+    // unclamped report, so the URL carries nothing about it. (A bookmarked
+    // `&depth=3` still loads — `searchToParams` is not tab-gated — it is just
+    // ignored here and dropped from the address bar on the next mirror.)
+    await page.goto("/reports?tab=bs&asof=2026-07-08");
+
+    const assets = page.getByTestId("bs-section-assets");
+    const cash = assets.getByRole("button", {name: "Cash and cash equivalents"});
+
+    // Collapsed by default: the group SUBTOTAL is the whole reading, and the
+    // accounts behind it are not on the page at all.
+    await expect(cash).toHaveAttribute("aria-expanded", "false");
+    await expect(assets).toContainText("$49,059.99");
+    await expect(assets).not.toContainText("$42,450.24"); // the assets:bank drill-down
+    await expect(page.locator('[data-account="assets:bank"]')).toHaveCount(0);
+    await expect(page.locator('[data-account="assets:bank:checking"]')).toHaveCount(0);
+
+    // Expanded: the drill-down appears, and its parts still add to the subtotal
+    // the collapsed row showed ($28,292.81 + $13,500.00 + $657.43 = $42,450.24,
+    // plus assets:broker:taxable:cash $6,609.75 = the group's $49,059.99).
+    await cash.click();
+    await expect(cash).toHaveAttribute("aria-expanded", "true");
+    await expect(assets).toContainText("$42,450.24");
+    await expect(page.locator('[data-account="assets:bank:checking"]')).toContainText("$28,292.81");
+
+    // Full depth, so the Wise EUR account is reachable. It is FOUR segments
+    // down — under the old depth-3 clamp the row said `assets:bank:wise` and
+    // stood for an account there was no longer any control to ask for.
+    // `assets:bank:wise` holds nothing itself, so `compressSectionRows` folds
+    // the chain into a single `wise:eur` row carrying the child's account name.
+    await expect(page.locator('[data-account="assets:bank:wise:eur"]')).toContainText("$657.43");
+    await expect(page.locator('[data-account="assets:bank:wise"]')).toHaveCount(0);
 });
 
 test("problems badge shows the deliberate problem count", async ({page}) => {

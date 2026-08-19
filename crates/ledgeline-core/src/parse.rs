@@ -1847,25 +1847,18 @@ fn cost_contribution(amount: &Amount) -> Result<(Commodity, Dec, u32, AmountStyl
 /// style)` an amount contributes to its transaction's balance. Shared with
 /// [`check_transaction_balances`], so the verification and the inference value
 /// a priced amount identically.
+///
+/// The commodity and quantity come from [`Amount::at_cost`] — the engine's one
+/// definition of "at cost" — so the balance sheet's at-cost totals and this
+/// balancing pass can never disagree about what a priced posting is worth. Only
+/// the display STYLE is chosen here, since valuation has no use for it.
 fn cost_value(amount: &Amount) -> Result<(&Commodity, Dec, &AmountStyle), ParseError> {
-    match &amount.cost {
-        None => Ok((&amount.commodity, amount.quantity, &amount.style)),
-        Some(cost) => {
-            let price = &cost.amount;
-            let quantity = match cost.kind {
-                CostKind::Unit => amount.quantity.mul(price.quantity)?,
-                CostKind::Total => {
-                    let magnitude = price.quantity.abs()?;
-                    if amount.quantity.mantissa < 0 {
-                        magnitude.neg()?
-                    } else {
-                        magnitude
-                    }
-                }
-            };
-            Ok((&price.commodity, quantity, &price.style))
-        }
-    }
+    let (commodity, quantity) = amount.at_cost()?;
+    let style = match &amount.cost {
+        None => &amount.style,
+        Some(cost) => &cost.amount.style,
+    };
+    Ok((commodity, quantity, style))
 }
 
 fn finalize_posting(raw: RawPosting, sums: &[CommoditySum]) -> Result<Posting, ParseError> {

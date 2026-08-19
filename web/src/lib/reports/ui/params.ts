@@ -63,7 +63,13 @@ export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     // Insights owns its own period control (PeriodControl), so the shared
     // ReportControls bar shows nothing for it.
     insights: {asOf: false, range: false, end: false, interval: false, count: false, depth: false, budgetPreset: false},
-    bs: {asOf: true, range: false, end: false, interval: false, count: false, depth: true, budgetPreset: false},
+    // No depth on the balance sheet: groups ARE the reading and the accounts
+    // inside one are a drill-down, so a clamp had almost nothing left to move —
+    // and what it did move it moved wrongly, hiding accounts with no control on
+    // screen to ask for them back. Expanding a group now shows all of it (the
+    // engine is asked for an unclamped report), single-child chains still
+    // compressed by `compressSectionRows`.
+    bs: {asOf: true, range: false, end: false, interval: false, count: false, depth: false, budgetPreset: false},
     is: {asOf: false, range: true, end: false, interval: false, count: false, depth: true, budgetPreset: false},
     cf: {asOf: false, range: false, end: true, interval: true, count: true, depth: true, budgetPreset: false},
     nw: {asOf: false, range: false, end: true, interval: true, count: true, depth: true, budgetPreset: false},
@@ -181,7 +187,12 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
         end: now,
         interval: "monthly",
         count: 12,
-        depth: 2,
+        // Shared by is/cf/nw/budget, and by nothing else: the balance sheet no
+        // longer reads `depth` at all (see TAB_CONTROLS.bs). It was raised from
+        // 2 to 3 for the balance sheet's sake and is left there deliberately —
+        // moving it back would change what the period reports show, which is a
+        // separate decision from removing a control from one tab.
+        depth: 3,
         insStart: ins.start,
         insEnd: ins.end,
     };

@@ -490,6 +490,13 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // array, so it has nowhere to carry a sibling field.
         .route("/api/diagnostics", get(diagnostics))
         .route("/api/reports/balancesheet", get(reports_api::balancesheet))
+        // The grouped/valued three-box balance sheet. A SIBLING route, not a
+        // mode of the one above: that one is a flat hledger-parity shape with a
+        // committed golden, and this one answers a different question.
+        .route(
+            "/api/reports/balancesheet/grouped",
+            get(reports_api::balancesheet_grouped),
+        )
         .route(
             "/api/reports/incomestatement",
             get(reports_api::incomestatement),

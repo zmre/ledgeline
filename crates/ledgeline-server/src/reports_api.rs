@@ -32,12 +32,14 @@ use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    BudgetCell, BudgetOpts, BudgetReport, BudgetRow, Cadence, ChangeKind, ChangeRow, CostOfLiving,
-    DEFAULT_EXCLUDE_DESC, InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf,
+    BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BudgetCell, BudgetOpts,
+    BudgetReport, BudgetRow, Cadence, ChangeKind, ChangeRow, CostOfLiving, DEFAULT_EXCLUDE_DESC,
+    GroupSource, InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf,
     MetricDelta, MixedAmount, MoverRow, NetWorthOpts, PerfPoint, PeriodReport, PeriodRow,
     ReportMeta, ReportRow, Section, SectionedReport, Subscription, SubscriptionOpts,
-    SubscriptionsReport, TopTxn, account_decls, balance_sheet, budget_report, cash_flow,
-    cash_predicate, declared_types, detect_subscriptions, income_statement, insights, net_worth,
+    SubscriptionsReport, TopTxn, Valuation, account_decls, account_groups, balance_sheet,
+    balance_sheet_grouped, budget_report, cash_flow, cash_predicate, declared_types,
+    detect_subscriptions, income_statement, insights, net_worth,
 };
 use serde::{Deserialize, Serialize};
 
@@ -168,6 +170,110 @@ impl From<&SectionedReport> for WireSectionedReport {
             to: report.to.clone(),
             sections: report.sections.iter().map(WireSection::from).collect(),
             grand_total: wire_mixed(&report.grand_total),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Grouped balance sheet (plans/12-balance-sheet-redesign.md)
+// ---------------------------------------------------------------------------
+
+/// One collapsible group. `source` names the resolution step that chose it, so
+/// the UI can explain a grouping the user did not ask for.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsGroup {
+    name: String,
+    /// `"tag" | "type" | "commodity" | "segment" | "computed"`.
+    source: &'static str,
+    /// Empty for the `computed` lines, which stand for no accounts.
+    rows: Vec<WireReportRow>,
+    total: WireMixed,
+}
+
+impl From<&BsGroup> for WireBsGroup {
+    fn from(group: &BsGroup) -> Self {
+        Self {
+            name: group.name.clone(),
+            source: match group.source {
+                GroupSource::Tag => "tag",
+                GroupSource::Type => "type",
+                GroupSource::Commodity => "commodity",
+                GroupSource::Segment => "segment",
+                GroupSource::Computed => "computed",
+            },
+            rows: group.rows.iter().map(WireReportRow::from).collect(),
+            total: wire_mixed(&group.total),
+        }
+    }
+}
+
+/// One of the three boxes.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsSection {
+    /// `"assets" | "liabilities" | "equity"`.
+    kind: &'static str,
+    title: String,
+    groups: Vec<WireBsGroup>,
+    total: WireMixed,
+}
+
+impl From<&BsSection> for WireBsSection {
+    fn from(section: &BsSection) -> Self {
+        Self {
+            kind: match section.kind {
+                BsSectionKind::Assets => "assets",
+                BsSectionKind::Liabilities => "liabilities",
+                BsSectionKind::Equity => "equity",
+            },
+            title: section.title.clone(),
+            groups: section.groups.iter().map(WireBsGroup::from).collect(),
+            total: wire_mixed(&section.total),
+        }
+    }
+}
+
+/// The grouped, valued balance sheet. `check` is `{}` when the journal
+/// balances; anything else is a real problem and the UI must show it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireBalanceSheetReport {
+    as_of: String,
+    /// The commodity everything is valued into — `null` on the cost and
+    /// unvalued bases, neither of which collapses to a single commodity. Kept
+    /// (not omitted) so the decoder always sees the key.
+    base: Option<String>,
+    /// The basis the numbers are on, echoed back from the request.
+    value: &'static str,
+    sections: Vec<WireBsSection>,
+    net_worth: WireMixed,
+    /// The EXACT `A − L − E` residual — what to show when `balanced` is false.
+    /// Not the verdict: on a journal holding priced lots this is routinely a
+    /// non-zero speck of cost-multiplication dust.
+    check: WireMixed,
+    /// The verdict. Every client renders its ✓/✗ from THIS, so the page, the
+    /// workbook it exports and any other consumer cannot reach three different
+    /// conclusions from one residual.
+    balanced: bool,
+    /// Always present here (unlike `WirePeriodReport`'s), because the balance
+    /// sheet's unpriced banner keys off it on every request.
+    meta: WireReportMeta,
+}
+
+impl WireBalanceSheetReport {
+    /// `value` is the request's own spelling, so the response says which basis
+    /// produced the numbers it carries.
+    fn new(report: &BalanceSheetReport, value: &'static str) -> Self {
+        Self {
+            as_of: report.as_of.clone(),
+            base: report.base.as_ref().map(|base| base.0.clone()),
+            value,
+            sections: report.sections.iter().map(WireBsSection::from).collect(),
+            net_worth: wire_mixed(&report.net_worth),
+            check: wire_mixed(&report.check),
+            balanced: report.balanced,
+            meta: WireReportMeta::from(&report.meta),
         }
     }
 }
@@ -823,6 +929,60 @@ fn parse_count(raw: Option<usize>) -> Result<usize, AppError> {
     }
 }
 
+/// The deepest account a `depth` param may ask for.
+///
+/// Nothing in the engine breaks past it — `at_depth` is a filter, and hledger
+/// imposes no limit of its own — so this is not a crash guard. It is
+/// [`parse_count`]'s judgement applied to the other clamp: no chart of accounts
+/// is a hundred segments deep, so `depth=1000000` is a typo, and serving it the
+/// same report `depth=100` would give hides the typo behind a plausible-looking
+/// answer.
+const MAX_DEPTH: usize = 100;
+
+/// Validate an account-depth clamp, passing ABSENT through as "no clamp".
+///
+/// `depth=0` stays legal: it is hledger's "totals only", and every total this
+/// crate serves is summed from the unclamped accounts, so it reports figures
+/// rather than zeros (RPT-4). A negative or non-integer value is already a `400`
+/// from serde before it reaches here.
+///
+/// Because `0` is already spoken for, "unlimited" cannot be a depth VALUE at
+/// all — so it is the absence of one, which is also what an omitted clamp
+/// naturally reads as. The alternative, some large sentinel, would make the
+/// contract "a number nobody's chart of accounts exceeds" instead of a stated
+/// fact, and `MAX_DEPTH` below exists precisely to reject numbers like that as
+/// the typos they usually are.
+///
+/// Only the NEW `/api/reports/balancesheet/grouped` route runs this. The older
+/// report routes still take `depth` unchecked; tightening them would change
+/// answers the committed `fixtures/native/v1/` goldens pin, so that is a
+/// separate change with its own regeneration.
+fn parse_depth(raw: Option<usize>) -> Result<Option<usize>, AppError> {
+    match raw {
+        None => Ok(None),
+        Some(depth) if depth <= MAX_DEPTH => Ok(Some(depth)),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "depth {other} is out of range (expected 0..={MAX_DEPTH})"
+        ))),
+    }
+}
+
+/// Parse the grouped balance sheet's `value` basis, defaulting to market.
+///
+/// Returns the spelling alongside the basis so the handler can echo back
+/// exactly what it computed from ONE table — the request and the response
+/// cannot end up disagreeing about which basis produced the numbers.
+fn parse_valuation(raw: Option<&str>) -> Result<(Valuation, &'static str), AppError> {
+    match raw {
+        None | Some("market") => Ok((Valuation::Market, "market")),
+        Some("cost") => Ok((Valuation::Cost, "cost")),
+        Some("none") => Ok((Valuation::None, "none")),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "unknown value '{other}' (expected market|cost|none)"
+        ))),
+    }
+}
+
 /// Validate one date and normalize it to ISO `YYYY-MM-DD`, or return the reason
 /// it is not a date. [`parse_date`] wraps the reason in a `400`.
 ///
@@ -1143,6 +1303,18 @@ pub(crate) struct BalanceSheetQuery {
     depth: Option<usize>,
 }
 
+/// `?asOf=&depth=&value=&valueIn=` — grouped balance sheet.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BalanceSheetGroupedQuery {
+    as_of: Option<String>,
+    depth: Option<usize>,
+    /// `market` (default) | `cost` | `none`.
+    value: Option<String>,
+    /// Commodity to value into; defaults to the price table's base commodity.
+    value_in: Option<String>,
+}
+
 /// `?from=&to=&depth=` — income statement.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1319,6 +1491,59 @@ pub(crate) async fn balancesheet(
         let declared = declared_types(&account_decls(&snapshot.journal));
         let report = balance_sheet(&snapshot.journal.transactions, &as_of, depth, &declared)?;
         Ok(WireSectionedReport::from(&report))
+    })
+    .await
+}
+
+/// `GET /api/reports/balancesheet/grouped` — the three-box balance sheet:
+/// assets, liabilities and equity, each split into collapsible groups, with a
+/// `check` line that is `{}` exactly when the journal balances.
+///
+/// - `asOf=YYYY-MM-DD` (default: today)
+/// - `depth=N` (range `0..=100`; ABSENT means no clamp at all) — clamps the
+///   expandable ROWS only; every total is summed over members, so none of them
+///   move with it. The SPA omits it: the balance sheet reads as groups, the
+///   accounts inside one are a drill-down, and a drill-down that stops part-way
+///   down the tree just hides accounts with no way to ask for them.
+/// - `value=market|cost|none` (default: `market`)
+/// - `valueIn=$` (default: the price table's own base commodity)
+///
+/// Prices come from the journal's `P` directives alone, matching `hledger bs
+/// -V`. Commodities no price reaches stay on the row as share counts and are
+/// listed in `meta.unpriced`, rather than being valued from a stale cost
+/// annotation — `/api/reports/networth` makes the opposite choice on purpose,
+/// because it is modelling `--infer-market-prices`.
+///
+/// `/api/reports/balancesheet` is untouched and still serves the flat
+/// hledger-parity shape.
+pub(crate) async fn balancesheet_grouped(
+    State(state): State<AppState>,
+    Query(query): Query<BalanceSheetGroupedQuery>,
+) -> Result<Json<WireBalanceSheetReport>, AppError> {
+    let snapshot = state.snapshot();
+    let as_of = parse_date("asOf", query.as_of, today_utc)?;
+    let depth = parse_depth(query.depth)?;
+    let (value, label) = parse_valuation(query.value.as_deref())?;
+    let value_in = query
+        .value_in
+        .filter(|symbol| !symbol.is_empty())
+        .map(Commodity);
+
+    compute(move || {
+        let journal = &snapshot.journal;
+        let report = balance_sheet_grouped(
+            &journal.transactions,
+            &journal.prices,
+            &BsOpts {
+                as_of: &as_of,
+                depth,
+                value,
+                value_in,
+            },
+            &declared_types(&account_decls(journal)),
+            &account_groups(journal),
+        )?;
+        Ok(WireBalanceSheetReport::new(&report, label))
     })
     .await
 }

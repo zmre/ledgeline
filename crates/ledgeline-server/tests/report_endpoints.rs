@@ -37,6 +37,12 @@ fn budget_fixture_journal(name: &str) -> Journal {
     parse_journal(&text, &path.to_string_lossy()).unwrap_or_else(|e| panic!("parse {name}: {e}"))
 }
 
+fn report_fixture_journal(name: &str) -> Journal {
+    let path = fixtures_dir().join("reports").join(name);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
+    parse_journal(&text, &path.to_string_lossy()).unwrap_or_else(|e| panic!("parse {name}: {e}"))
+}
+
 fn golden(dir: &str, name: &str) -> Value {
     let path = fixtures_dir().join(dir).join(name);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
@@ -137,6 +143,34 @@ fn wire_ma(value: &Value) -> Canon {
         .collect()
 }
 
+/// Commodity-wise sum of two wire `MixedAmount`s, with exact `Dec` math.
+///
+/// The canonical form [`wire_ma`] produces cannot be added directly — it has
+/// already dropped the scale the addition needs — so this reads the raw
+/// `(mantissa, places)` pairs, adds, and canonicalizes at the end. Used to check
+/// `A == L + E` from exact values, never from displayed ones.
+fn add_wire_ma(a: &Value, b: &Value) -> Canon {
+    let mut sum: BTreeMap<String, Dec> = BTreeMap::new();
+    for value in [a, b] {
+        for (commodity, dec) in value.as_object().expect("mixed amount is an object") {
+            let mantissa: i128 = dec["mantissa"]
+                .as_str()
+                .expect("mantissa string")
+                .parse()
+                .expect("mantissa");
+            let places = u32::try_from(dec["places"].as_u64().expect("places")).unwrap();
+            let addend = Dec::new(mantissa, places);
+            sum.entry(commodity.clone())
+                .and_modify(|prev| *prev = prev.add(addend).expect("no overflow"))
+                .or_insert(addend);
+        }
+    }
+    sum.into_iter()
+        .map(|(commodity, dec)| (commodity, canon(dec.mantissa, dec.places)))
+        .filter(|(_, (mantissa, _))| *mantissa != 0)
+        .collect()
+}
+
 /// Sum a golden hledger MixedAmount (array of `GAmount`) per commodity with exact
 /// `Dec` math, then canonicalize and drop zeros — the golden side of a compare.
 fn sum_golden(amounts: &Value) -> Canon {
@@ -229,6 +263,410 @@ async fn balancesheet_matches_bs_d1_golden() {
         wire_ma(&assets["rows"][0]["inclusive"]),
         wire_ma(&assets["total"])
     );
+}
+
+// ===========================================================================
+// Grouped balance sheet — vs the hledger CLI (`bs -V`, `bse -B`, `is -B`)
+// ===========================================================================
+
+/// `hledger -f fixtures/sample.journal bs -V -e 2026-07-09` reports
+/// `$59,612.62, 5.0 GLD, -2.0 TSLA` of assets against `$531.15` of liabilities,
+/// and `bse -B` / `is -B` agree on a Net of `$42,998.91, -933,25 EUR`. The whole
+/// point of the report is that those reconcile, so `check` must be `{}`.
+///
+/// The `$` figures here are the UNROUNDED ones; hledger's CLI displays them to
+/// two places.
+#[tokio::test]
+async fn balancesheet_grouped_matches_the_hledger_cli() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08&depth=3&value=market",
+    )
+    .await;
+
+    assert_eq!(body["asOf"], "2026-07-08");
+    assert_eq!(body["base"], "$");
+    assert_eq!(body["value"], "market");
+    assert_eq!(
+        body["check"],
+        serde_json::json!({}),
+        "a balanced journal must report an EMPTY check"
+    );
+    assert_eq!(body["meta"]["unpriced"], serde_json::json!(["GLD", "TSLA"]));
+
+    let sections = body["sections"].as_array().expect("three sections");
+    assert_eq!(
+        sections
+            .iter()
+            .map(|section| (
+                section["kind"].as_str().unwrap(),
+                section["title"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("assets", "Assets"),
+            ("liabilities", "Liabilities"),
+            ("equity", "Equity"),
+        ]
+    );
+
+    // `bs -V`: assets, then liabilities.
+    assert_eq!(
+        wire_ma(&sections[0]["total"]),
+        Canon::from([
+            ("$".to_string(), canon(596_126_150, 4)),
+            ("GLD".to_string(), canon(5, 0)),
+            ("TSLA".to_string(), canon(-2, 0)),
+        ])
+    );
+    assert_eq!(
+        wire_ma(&sections[1]["total"]),
+        Canon::from([("$".to_string(), canon(53_115, 2))])
+    );
+    // `bs -V` Net: assets − liabilities.
+    assert_eq!(
+        wire_ma(&body["netWorth"]),
+        Canon::from([
+            ("$".to_string(), canon(590_814_650, 4)),
+            ("GLD".to_string(), canon(5, 0)),
+            ("TSLA".to_string(), canon(-2, 0)),
+        ])
+    );
+    // A == L + E, from exact values rather than displayed ones. Note the
+    // displayed group subtotals need NOT visibly add up: $49,059.99 + $10,552.62
+    // reads as $59,612.61 against a true $59,612.615.
+    assert_eq!(
+        wire_ma(&sections[0]["total"]),
+        add_wire_ma(&sections[1]["total"], &sections[2]["total"]),
+        "assets must equal liabilities plus equity"
+    );
+}
+
+/// The group shape the SPA renders: names, provenance and the two synthetic
+/// equity lines, with `rows` empty on the computed ones.
+#[tokio::test]
+async fn balancesheet_grouped_reports_groups_and_their_provenance() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08&depth=3&value=market",
+    )
+    .await;
+
+    let groups = |index: usize| -> Vec<(String, String)> {
+        body["sections"][index]["groups"]
+            .as_array()
+            .expect("groups array")
+            .iter()
+            .map(|group| {
+                (
+                    group["name"].as_str().unwrap().to_string(),
+                    group["source"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        groups(0),
+        [
+            ("Cash and cash equivalents".to_string(), "type".to_string()),
+            ("Investments".to_string(), "commodity".to_string()),
+        ]
+    );
+    assert_eq!(
+        groups(1),
+        [("Credit cards".to_string(), "segment".to_string())]
+    );
+    assert_eq!(
+        groups(2),
+        [
+            ("Opening".to_string(), "segment".to_string()),
+            ("Transfers".to_string(), "segment".to_string()),
+            ("Retained earnings".to_string(), "computed".to_string()),
+            ("Valuation adjustment".to_string(), "computed".to_string()),
+        ]
+    );
+
+    // `is -B` Net, on the retained-earnings line.
+    let equity = body["sections"][2]["groups"].as_array().unwrap();
+    let retained = &equity[2];
+    assert_eq!(
+        wire_ma(&retained["total"]),
+        Canon::from([
+            ("$".to_string(), canon(4_299_891, 2)),
+            ("EUR".to_string(), canon(-93_325, 2)),
+        ])
+    );
+    assert!(
+        retained["rows"].as_array().unwrap().is_empty(),
+        "a computed line stands for no accounts"
+    );
+
+    // Rows carry the same shape as the flat report's.
+    let cash_rows = body["sections"][0]["groups"][0]["rows"]
+        .as_array()
+        .expect("rows array");
+    assert_eq!(cash_rows[0]["account"], "assets:bank");
+    assert_eq!(cash_rows[0]["depth"], 2);
+    assert_eq!(cash_rows[0]["own"], serde_json::json!({}));
+    assert_eq!(
+        wire_ma(&cash_rows[1]["inclusive"]),
+        Canon::from([("$".to_string(), canon(2_829_281, 2))]),
+        "assets:bank:checking, `hledger bal` $28,292.81"
+    );
+}
+
+/// `value=cost` reproduces `bse -B` exactly — including its DECLARED equity of
+/// `$14,550.00 + 5.0 GLD`, which is the figure the identity needs (an unvalued
+/// `bal type:E` says `$15,550.00` and would throw the check off by $1,000 and
+/// 5 GLD). At cost nothing is unbooked, so there is no valuation-adjustment line
+/// and no single base commodity.
+#[tokio::test]
+async fn balancesheet_grouped_at_cost_matches_hledger_bse_b() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08&depth=4&value=cost",
+    )
+    .await;
+
+    assert_eq!(body["value"], "cost");
+    assert_eq!(body["base"], Value::Null);
+    assert_eq!(body["check"], serde_json::json!({}));
+    assert_eq!(body["meta"]["unpriced"], serde_json::json!([]));
+
+    assert_eq!(
+        wire_ma(&body["sections"][0]["total"]),
+        Canon::from([
+            ("$".to_string(), canon(5_808_006, 2)),
+            ("EUR".to_string(), canon(-93_325, 2)),
+            ("GLD".to_string(), canon(5, 0)),
+        ])
+    );
+
+    // Declared equity = every non-computed group: $14,550.00 + 5.0 GLD.
+    let equity: Vec<&Value> = body["sections"][2]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|group| group["source"] != "computed")
+        .collect();
+    assert_eq!(
+        wire_ma(&equity[0]["total"]),
+        Canon::from([("$".to_string(), canon(1_455_000, 2))])
+    );
+    assert_eq!(
+        wire_ma(&equity[1]["total"]),
+        Canon::from([("GLD".to_string(), canon(5, 0))])
+    );
+    assert!(
+        !body["sections"][2]["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|group| group["name"] == "Valuation adjustment"),
+        "nothing is unbooked at cost"
+    );
+}
+
+/// `value=none` is `hledger bse` unvalued: share counts, no base, and the
+/// identity still holding because the revaluation line books the cost residue.
+#[tokio::test]
+async fn balancesheet_grouped_unvalued_matches_hledger_bse() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08&depth=4&value=none",
+    )
+    .await;
+
+    assert_eq!(body["value"], "none");
+    assert_eq!(body["base"], Value::Null);
+    assert_eq!(body["check"], serde_json::json!({}));
+    assert_eq!(
+        wire_ma(&body["sections"][0]["total"]),
+        Canon::from([
+            ("$".to_string(), canon(4_840_256, 2)),
+            ("AAPL".to_string(), canon(195, 1)),
+            ("EUR".to_string(), canon(56_675, 2)),
+            ("GLD".to_string(), canon(5, 0)),
+            ("TSLA".to_string(), canon(-2, 0)),
+            ("VTI".to_string(), canon(17, 0)),
+        ])
+    );
+}
+
+/// Defaults: today's date, market, and NO depth clamp. Only `depth` and `value`
+/// are checkable without a clock, so those are what is pinned.
+///
+/// An omitted `depth` is unlimited rather than some default level, which is what
+/// the SPA relies on: it stopped sending the param when the balance sheet's
+/// depth slider was removed, and expanding a group has to show the whole group.
+/// `depth=0` already means totals-only, so unlimited cannot be a number at all.
+#[tokio::test]
+async fn balancesheet_grouped_defaults_to_no_clamp_and_market() {
+    let journal = sample_journal();
+    let defaulted = body_ok(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08",
+    )
+    .await;
+    // `sample.journal`'s deepest account is 4 segments, so anything at or past
+    // that is already unclamped — and the basis defaults to market.
+    let explicit = body_ok(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08&depth=100&value=market",
+    )
+    .await;
+    assert_eq!(defaulted, explicit);
+
+    // ... and it really is deeper than the 3 the slider used to ask for, so the
+    // assertion above is not vacuous.
+    let clamped = body_ok(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08&depth=3",
+    )
+    .await;
+    assert_ne!(defaulted, clamped);
+    assert_eq!(
+        clamped["netWorth"], defaulted["netWorth"],
+        "only the rows move with depth, never a total (RPT-1/RPT-4)"
+    );
+}
+
+/// `valueIn` moves the whole report into another commodity. hledger reverses the
+/// `P … EUR $1.16` edge to price `$` in EUR, so everything converts — and the
+/// identity survives the change of unit.
+#[tokio::test]
+async fn balancesheet_grouped_honors_value_in() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08&depth=3&value=market&valueIn=EUR",
+    )
+    .await;
+    assert_eq!(body["base"], "EUR");
+    assert_eq!(body["check"], serde_json::json!({}));
+    assert!(
+        body["sections"][0]["total"].get("EUR").is_some(),
+        "assets are reported in EUR: {}",
+        body["sections"][0]["total"]
+    );
+}
+
+/// `check` and `balanced` are two different facts and the wire carries both.
+///
+/// `bs-cost-dust.journal` is valid — hledger's `check` passes on it — yet
+/// `26.2690 VTI @ $289.7713` costs `$7,612.00227970` and no cash posting can
+/// carry the surplus digits. The residual must reach the client EXACTLY (it is
+/// what a warning would have to quote) while the verdict says the journal is
+/// fine, so nothing downstream re-derives the ✓/✗ from `check` itself.
+#[tokio::test]
+async fn balancesheet_grouped_sends_the_verdict_beside_the_exact_residual() {
+    let balanced = body_ok(
+        &sample_journal(),
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08",
+    )
+    .await;
+    assert_eq!(balanced["check"], serde_json::json!({}));
+    assert_eq!(balanced["balanced"], serde_json::json!(true));
+
+    let dusty = body_ok(
+        &report_fixture_journal("bs-cost-dust.journal"),
+        "/api/reports/balancesheet/grouped?asOf=2026-12-31",
+    )
+    .await;
+    assert_eq!(
+        wire_ma(&dusty["check"]),
+        Canon::from([("$".to_string(), canon(22797, 7))]),
+        "the exact residual survives to the wire"
+    );
+    assert_eq!(
+        dusty["balanced"],
+        serde_json::json!(true),
+        "sub-cent cost dust is not an imbalance"
+    );
+
+    let broken = body_ok(
+        &report_fixture_journal("errors/bs-unbalanced.journal"),
+        "/api/reports/balancesheet/grouped?asOf=2026-12-31",
+    )
+    .await;
+    assert_eq!(
+        wire_ma(&broken["check"]),
+        Canon::from([("$".to_string(), canon(1000, 2))])
+    );
+    assert_eq!(
+        broken["balanced"],
+        serde_json::json!(false),
+        "a real $10.00 imbalance must still be reported as one"
+    );
+}
+
+/// The new route validates `depth`, which the older ones do not. `0` is
+/// hledger's totals-only and stays legal; past the ceiling is a 400 naming the
+/// range, and a non-numeric value is a 400 from the extractor.
+#[tokio::test]
+async fn balancesheet_grouped_validates_depth_and_value() {
+    let journal = sample_journal();
+
+    let (status, _, body) = get_on(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08&depth=0",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "depth 0 is `--depth 0`, not an error"
+    );
+    assert_eq!(
+        body["check"],
+        serde_json::json!({}),
+        "totals survive depth 0 (RPT-4)"
+    );
+
+    let (status, message) = get_error(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08&depth=1000000",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message.contains("depth 1000000"), "{message}");
+    assert!(message.contains("out of range"), "{message}");
+
+    for uri in [
+        "/api/reports/balancesheet/grouped?depth=lots",
+        "/api/reports/balancesheet/grouped?depth=-1",
+        "/api/reports/balancesheet/grouped?value=fair",
+    ] {
+        let (status, _, _) = get_on(&journal, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "GET {uri}");
+    }
+    let (_, message) = get_error(&journal, "/api/reports/balancesheet/grouped?value=fair").await;
+    assert!(message.contains("market|cost|none"), "{message}");
+}
+
+/// The new route must not disturb the old one, whose bytes are pinned by
+/// `fixtures/native/v1/balancesheet.json` and by the hledger golden above.
+#[tokio::test]
+async fn the_flat_balancesheet_is_unchanged_by_the_grouped_one() {
+    let journal = sample_journal();
+    let flat = body_ok(
+        &journal,
+        "/api/reports/balancesheet?asOf=2026-07-08&depth=2",
+    )
+    .await;
+    assert_eq!(
+        flat,
+        golden("native/v1", "balancesheet.json"),
+        "/api/reports/balancesheet must stay byte-identical to its committed golden"
+    );
+    // It still answers the flat shape, with no grouped keys leaking in.
+    assert!(flat.get("groups").is_none());
+    assert!(flat.get("check").is_none());
+    assert_eq!(flat["sections"].as_array().unwrap().len(), 2);
 }
 
 // ===========================================================================
@@ -759,6 +1197,7 @@ async fn default_params_return_ok() {
     let journal = sample_journal();
     for uri in [
         "/api/reports/balancesheet",
+        "/api/reports/balancesheet/grouped",
         "/api/reports/incomestatement",
         "/api/reports/cashflow",
         "/api/reports/networth",
@@ -861,8 +1300,9 @@ async fn absent_count_still_uses_the_default() {
 /// unvalidated caller string straight into the engine's lexical `&str` date
 /// comparisons, where a malformed value cannot fail — it just sorts somewhere
 /// wrong and the report comes back plausible-looking with a `200`.
-const DATE_PARAMS: [(&str, &str); 12] = [
+const DATE_PARAMS: [(&str, &str); 13] = [
     ("/api/reports/balancesheet", "asOf"),
+    ("/api/reports/balancesheet/grouped", "asOf"),
     ("/api/reports/incomestatement", "from"),
     ("/api/reports/incomestatement", "to"),
     ("/api/reports/cashflow", "end"),

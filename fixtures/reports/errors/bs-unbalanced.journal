@@ -1,0 +1,37 @@
+; A journal that does NOT balance, so the grouped balance sheet's check line has
+; something to find.
+;
+; It lives under an `errors/` directory for the same reason
+; `fixtures/corpus/errors/` does: the fixture-tree sweeps
+; (`tests/diagnostics.rs::the_whole_fixtures_tree_is_diagnostic_free`) assert
+; that every journal hledger ACCEPTS produces no diagnostics, and skip any
+; directory called `errors`. This file is the counter-example those sweeps must
+; not trip over.
+;
+; The second transaction posts $100.00 out and $90.00 in, with BOTH amounts
+; written explicitly so nothing is inferred to paper over the gap. hledger
+; refuses the file outright:
+;
+;   $ hledger -f fixtures/reports/errors/bs-unbalanced.journal bal
+;   hledger: Error: …:35-37:
+;     This transaction is unbalanced.
+;     The real postings' sum should be 0 but is: $10.00
+;
+; Ledgeline opens it anyway — an unbalanced transaction is a diagnostic here, not
+; a parse error (see `parse::check_transaction_balances`) — so the report has to
+; be the thing that says so. `A − L − E` comes out as exactly `$10.00`: the same
+; residual, in the same commodity, arrived at from the other end.
+
+account assets:bank        ; type: A
+account liabilities:cc     ; type: L
+account equity:opening     ; type: E
+account income:fees        ; type: R
+account expenses:food      ; type: X
+
+2026-01-01 opening balance
+    assets:bank                $1,000.00
+    equity:opening            $-1,000.00
+
+2026-02-01 short by ten
+    expenses:food                $100.00
+    assets:bank                  $-90.00

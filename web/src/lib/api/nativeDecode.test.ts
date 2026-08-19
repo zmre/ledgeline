@@ -1,7 +1,9 @@
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
+import {GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
 import {ApiShapeError} from "./client";
 import {
+    decodeBalanceSheetReport,
     decodeBudgetReport,
     decodeHoldingsReport,
     decodeHoldingsSeries,
@@ -114,6 +116,144 @@ describe("UNIT nativeDecode — SectionedReport over the balancesheet golden", (
     it("rejects a negative places value", () => {
         const bad = {sections: [], grandTotal: {$: {mantissa: "100", places: -1}}};
         expect(() => decodeSectionedReport(bad)).toThrow(/invalid places/);
+    });
+});
+
+// The grouped balance sheet (plans/12). Sourced from a hand-written literal
+// rather than `fixtures/native/v1/`, because the endpoint it mirrors is being
+// built in parallel — `balanceSheetFixture.ts` says what has to happen to this
+// suite the moment `just snapshot-native` can produce the real bytes.
+describe("UNIT nativeDecode — BalanceSheetReport (grouped)", () => {
+    const report = decodeBalanceSheetReport(GROUPED_BALANCE_SHEET);
+
+    it("tags the report so it can be told apart from a SectionedReport", () => {
+        // Both carry a `sections` array. `kind` is added by the decoder, never
+        // sent — it is the whole reason the page can pick the right renderer
+        // and the right workbook builder (FE-1, one shape further on).
+        expect(report.kind).toBe("balanceSheet");
+        expect((GROUPED_BALANCE_SHEET as Record<string, unknown>).kind).toBeUndefined();
+    });
+
+    it("decodes the three sections in order with their kinds and totals", () => {
+        expect(report.sections.map((s) => s.kind)).toEqual(["assets", "liabilities", "equity"]);
+        expect(report.sections.map((s) => s.title)).toEqual(["Assets", "Liabilities", "Equity"]);
+        expect(report.asOf).toBe("2026-07-08");
+        expect(report.base).toBe("$");
+        expect(report.value).toBe("market");
+
+        // Assets at market, full engine precision — $59,612.615, not a rounded $59,612.62.
+        expect(report.sections[0].total.get("$")).toEqual({m: 59612615n, p: 3});
+        expect(report.sections[0].total.get("GLD")).toEqual({m: 5n, p: 0});
+        expect(report.sections[0].total.get("TSLA")).toEqual({m: -2n, p: 0});
+        expect(report.sections[1].total.get("$")).toEqual({m: 53115n, p: 2});
+    });
+
+    it("decodes groups with their resolution source and member rows", () => {
+        const [cash, investments] = report.sections[0].groups;
+        expect([cash.name, cash.source]).toEqual(["Cash and cash equivalents", "type"]);
+        expect(cash.total.get("$")).toEqual({m: 4245024n, p: 2});
+        expect(cash.rows.map((r) => r.account)).toEqual([
+            "assets:bank",
+            "assets:bank:checking",
+            "assets:bank:savings",
+            "assets:bank:wise",
+            "assets:bank:wise:eur",
+        ]);
+        expect(cash.rows[0].own.size).toBe(0); // a parent's own amount is `{}` → an empty Map
+        expect(cash.rows[1].inclusive.get("$")).toEqual({m: 2829281n, p: 2});
+        expect(investments.source).toBe("commodity");
+    });
+
+    it("keeps a computed group's empty row list as a fact, not as missing data", () => {
+        const retained = report.sections[2].groups.find((g) => g.name === "Retained earnings");
+        expect(retained?.source).toBe("computed");
+        expect(retained?.rows).toEqual([]);
+        expect(retained?.total.get("EUR")).toEqual({m: -93325n, p: 2});
+    });
+
+    it("decodes netWorth, an empty check, and the unpriced list", () => {
+        expect(report.netWorth.get("$")).toEqual({m: 59081465n, p: 3});
+        expect(report.check.size).toBe(0); // `{}` — the journal balances
+        expect(report.balanced).toBe(true);
+        expect(report.meta?.unpriced).toEqual(["GLD", "TSLA"]);
+    });
+
+    it("carries `balanced` through independently of `check`", () => {
+        // Two different facts, and the client may not infer either from the
+        // other: a journal holding fractional lots leaves unavoidable sub-cent
+        // dust in `check` and is still balanced (the engine decides that from
+        // the precisions the journal writes, which the client cannot see).
+        const dusty = decodeBalanceSheetReport({...(GROUPED_BALANCE_SHEET as object), check: {$: {mantissa: "22797", places: 7}}, balanced: true});
+        expect(dusty.check.get("$")).toEqual({m: 22797n, p: 7});
+        expect(dusty.balanced).toBe(true);
+        expect(decodeBalanceSheetReport(UNBALANCED_BALANCE_SHEET).balanced).toBe(false);
+    });
+
+    it("freezes the whole tree, as every other decoder does", () => {
+        expect(Object.isFrozen(report)).toBe(true);
+        expect(Object.isFrozen(report.sections)).toBe(true);
+        expect(Object.isFrozen(report.sections[0])).toBe(true);
+        expect(Object.isFrozen(report.sections[0].groups[0])).toBe(true);
+        expect(Object.isFrozen(report.sections[0].groups[0].rows[0])).toBe(true);
+    });
+
+    it("decodes a non-zero check at sub-cent precision", () => {
+        // Half a cent: invisible at the 2-decimal display cap, so this is exactly
+        // the imbalance a check computed from rendered strings would miss.
+        const unbalanced = decodeBalanceSheetReport(UNBALANCED_BALANCE_SHEET);
+        expect(unbalanced.check.get("$")).toEqual({m: 5n, p: 3});
+    });
+
+    it("keeps a null base as null rather than inventing a commodity", () => {
+        const noBase = decodeBalanceSheetReport({...(GROUPED_BALANCE_SHEET as object), base: null});
+        expect(noBase.base).toBeNull();
+    });
+
+    describe("refuses a body it cannot trust", () => {
+        const mutate = (patch: Record<string, unknown>): unknown => ({...(GROUPED_BALANCE_SHEET as object), ...patch});
+        const without = (key: string): unknown => {
+            const copy = {...(GROUPED_BALANCE_SHEET as Record<string, unknown>)};
+            delete copy[key];
+            return copy;
+        };
+
+        // A MISSING check must never read as "balanced" — that is the single
+        // wrong answer this field is capable of giving (DRY-3).
+        it("throws when `check` is absent instead of defaulting to balanced", () => {
+            expect(() => decodeBalanceSheetReport(without("check"))).toThrow(ApiShapeError);
+            expect(() => decodeBalanceSheetReport(without("check"))).toThrow(/check: missing amount/);
+        });
+
+        it("throws when `netWorth` is absent", () => {
+            expect(() => decodeBalanceSheetReport(without("netWorth"))).toThrow(/netWorth: missing amount/);
+        });
+
+        // Same reasoning as `check`, one step further along: `balanced` is the
+        // field every consumer renders its verdict from, so a missing one may
+        // not silently become `true`.
+        it("throws when `balanced` is absent or is not a boolean", () => {
+            expect(() => decodeBalanceSheetReport(without("balanced"))).toThrow(ApiShapeError);
+            expect(() => decodeBalanceSheetReport(without("balanced"))).toThrow(/balanced: expected a boolean/);
+            expect(() => decodeBalanceSheetReport(mutate({balanced: "yes"}))).toThrow(/balanced: expected a boolean/);
+        });
+
+        it.each([
+            ["section kind", {sections: [{kind: "profits", title: "X", groups: [], total: {}}]}],
+            ["group source", {sections: [{kind: "assets", title: "X", groups: [{name: "G", source: "vibes", rows: [], total: {}}], total: {}}]}],
+            ["valuation", {value: "guessed"}],
+        ])("throws on an unknown %s rather than guessing one", (_what, patch) => {
+            expect(() => decodeBalanceSheetReport(mutate(patch))).toThrow(ApiShapeError);
+        });
+
+        it("throws when a group omits `rows` — absent and empty are different facts", () => {
+            const patch = {sections: [{kind: "assets", title: "X", groups: [{name: "G", source: "computed", total: {}}], total: {}}]};
+            expect(() => decodeBalanceSheetReport(mutate(patch))).toThrow(/missing name\/rows/);
+        });
+
+        it("throws when asOf or sections are missing", () => {
+            expect(() => decodeBalanceSheetReport({sections: []})).toThrow(/expected asOf and a sections array/);
+            expect(() => decodeBalanceSheetReport({asOf: "2026-07-08"})).toThrow(/expected asOf and a sections array/);
+        });
     });
 });
 

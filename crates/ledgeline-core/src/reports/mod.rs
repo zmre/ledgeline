@@ -20,6 +20,7 @@
 //! Money arithmetic stays exact-decimal (`Dec`); every fallible `Dec` op is
 //! surfaced through [`ReportError`] rather than unwrapped.
 
+pub mod account_groups;
 pub mod account_types;
 pub mod accounts;
 pub mod aggregate;
@@ -42,13 +43,20 @@ mod test_support;
 use crate::decimal::DecError;
 use thiserror::Error;
 
+pub use account_groups::{
+    AccountGroups, CASH_GROUP, GroupSource, INVESTMENTS_GROUP, RETAINED_EARNINGS_GROUP,
+    VALUATION_ADJUSTMENT_GROUP, account_groups, account_groups_from, group_rank,
+};
 pub use account_types::{
-    AccountDecl, AccountType, account_decls, account_decls_from, cash_predicate, declared_types,
-    is_account_type, resolve_account_type,
+    AccountDecl, AccountType, AccountTypes, account_decls, account_decls_from, cash_predicate,
+    declared_types, is_account_type, resolve_account_type,
 };
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
-pub use balance_sheet::balance_sheet;
+pub use balance_sheet::{
+    BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, Valuation, balance_sheet,
+    balance_sheet_grouped,
+};
 pub use budget::{BudgetCell, BudgetOpts, BudgetReport, BudgetRow, UNBUDGETED, budget_report};
 pub use cash_flow::{cash_flow, is_cash_like};
 pub use income_statement::income_statement;

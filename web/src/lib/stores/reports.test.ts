@@ -1,8 +1,9 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {defaultReportParams} from "$lib/reports/ui/params";
+import {GROUPED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
 import {budgetSpan, buildReportQuery, reports, sameReportQuery, type ReportQuery} from "./reports.svelte";
 
-/** A minimal engine response for a sectioned (bs/is) report. */
+/** A minimal engine response for a sectioned (is) report. */
 const sectioned = (title: string) => ({
     sections: [{title, rows: [], total: {}}],
     // `grandTotal`, not `total` — the engine's key (reports_api.rs
@@ -12,19 +13,29 @@ const sectioned = (title: string) => ({
     grandTotal: {},
 });
 
-/** Stub the network so `reports.load` decodes a real payload without an engine. */
+/**
+ * Stub the network so `reports.load` decodes a real payload without an engine.
+ *
+ * The handler is routed on the URL rather than answering one canned body,
+ * because the tabs no longer share a wire shape: `bs` goes to
+ * `/balancesheet/grouped` and its decoder REFUSES a flat sectioned report — as
+ * it should, and as it did the moment this file was left serving the old one.
+ */
 function serve(handler: (url: string) => unknown): void {
     vi.stubGlobal("fetch", (input: string) =>
         Promise.resolve(new Response(JSON.stringify(handler(String(input))), {status: 200, headers: {"Content-Type": "application/json"}}))
     );
 }
 
-const BS: ReportQuery = {tab: "bs", asOf: "2025-12-31", depth: 2};
+/** The body each report route expects, keyed off the requested path. */
+const engine = (url: string): unknown => (url.includes("/balancesheet/grouped") ? GROUPED_BALANCE_SHEET : sectioned("Revenues"));
+
+const BS: ReportQuery = {tab: "bs", asOf: "2025-12-31"};
 const IS: ReportQuery = {tab: "is", from: "2026-01-01", to: "2026-12-31", depth: 2};
 
 describe("UNIT reports store tags each report with the query it came from (FE-1)", () => {
     beforeEach(() => {
-        serve(() => sectioned("Assets"));
+        serve(engine);
     });
     afterEach(() => {
         vi.unstubAllGlobals();
@@ -56,7 +67,7 @@ describe("UNIT reports store tags each report with the query it came from (FE-1)
 
 describe("UNIT sameReportQuery gates the export on an exact match", () => {
     it("accepts an identical query", () => {
-        expect(sameReportQuery(BS, {tab: "bs", asOf: "2025-12-31", depth: 2})).toBe(true);
+        expect(sameReportQuery(BS, {tab: "bs", asOf: "2025-12-31"})).toBe(true);
     });
 
     it("rejects a different tab", () => {
@@ -67,11 +78,24 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
         // The export names the file and titles the sheet from the CURRENT
         // controls: `balance-sheet-2026-06-30.xlsx` holding December's figures
         // is exactly the failure this prevents.
-        expect(sameReportQuery(BS, {tab: "bs", asOf: "2026-06-30", depth: 2})).toBe(false);
+        expect(sameReportQuery(BS, {tab: "bs", asOf: "2026-06-30"})).toBe(false);
     });
 
     it("rejects a different depth", () => {
-        expect(sameReportQuery(BS, {tab: "bs", asOf: "2025-12-31", depth: 3})).toBe(false);
+        // The balance sheet no longer HAS a depth (it asks for an unclamped
+        // report), so this is pinned on the P&L, which still does.
+        expect(sameReportQuery(IS, {tab: "is", from: "2026-01-01", to: "2026-12-31", depth: 3})).toBe(false);
+    });
+
+    it("builds the bs query without a depth, whatever the shared field holds", () => {
+        // The balance sheet asks the engine for an UNCLAMPED report — expanding
+        // a group has to show all of it — and absent is how that endpoint spells
+        // "no clamp" (`depth=0` is already totals-only). A stale `?depth=` from a
+        // bookmark still lands in the shared param for is/cf/nw, and must not
+        // leak back into this request.
+        const params = defaultReportParams();
+        expect(buildReportQuery({...params, tab: "bs", depth: 3})).toEqual({tab: "bs", asOf: params.asOf});
+        expect(buildReportQuery({...params, tab: "bs", depth: 1})).toEqual(buildReportQuery({...params, tab: "bs", depth: 9}));
     });
 
     it("distinguishes budget spans that share an end and a month count", () => {

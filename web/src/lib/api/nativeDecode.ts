@@ -89,7 +89,21 @@ import type {
     SubscriptionsReport,
     TopTxn,
 } from "$lib/reports/insightsTypes";
-import type {BudgetCell, BudgetReport, BudgetRow, PeriodReport, ReportRow, Section, SectionedReport} from "$lib/reports/types";
+import type {
+    BalanceSheetReport,
+    BsGroup,
+    BsGroupSource,
+    BsSection,
+    BsSectionKind,
+    BsValuation,
+    BudgetCell,
+    BudgetReport,
+    BudgetRow,
+    PeriodReport,
+    ReportRow,
+    Section,
+    SectionedReport,
+} from "$lib/reports/types";
 import {ApiShapeError} from "./client";
 
 // ---------------------------------------------------------------------------
@@ -125,6 +139,31 @@ interface RawSectionedReport {
     to?: string;
     sections?: RawSection[];
     grandTotal?: RawMixed;
+}
+
+interface RawBsGroup {
+    name?: string;
+    source?: string;
+    rows?: RawReportRow[];
+    total?: RawMixed;
+}
+
+interface RawBsSection {
+    kind?: string;
+    title?: string;
+    groups?: RawBsGroup[];
+    total?: RawMixed;
+}
+
+interface RawBalanceSheetReport {
+    asOf?: string;
+    base?: string | null;
+    value?: string;
+    sections?: RawBsSection[];
+    netWorth?: RawMixed;
+    check?: RawMixed;
+    balanced?: boolean;
+    meta?: RawReportMeta | null;
 }
 
 interface RawPeriodRow {
@@ -782,6 +821,106 @@ export function decodeSectionedReport(raw: unknown): SectionedReport {
     if (typeof report.asOf === "string") out.asOf = report.asOf;
     if (typeof report.from === "string") out.from = report.from;
     if (typeof report.to === "string") out.to = report.to;
+    return Object.freeze(out);
+}
+
+// ---------------------------------------------------------------------------
+// BalanceSheetReport (grouped, market-valued — plans/12)
+// ---------------------------------------------------------------------------
+
+const BS_SECTION_KINDS: readonly BsSectionKind[] = ["assets", "liabilities", "equity"];
+const BS_GROUP_SOURCES: readonly BsGroupSource[] = ["tag", "type", "commodity", "segment", "computed"];
+const BS_VALUATIONS: readonly BsValuation[] = ["market", "cost", "none"];
+
+/**
+ * A closed enum off the wire.
+ *
+ * THROWS on an unknown member rather than falling back, exactly like
+ * `decodeChangeKind`/`decodeCadence`: `source` drives a badge and `kind` drives
+ * which of the three boxes a section lands in, so an invented default would put
+ * real balances under the wrong heading.
+ */
+function decodeEnum<T extends string>(allowed: readonly T[], raw: string | undefined, context: string): T {
+    const found = allowed.find((member) => member === raw);
+    if (found === undefined) throw new ApiShapeError(`${context}: expected one of ${allowed.join("/")}, got ${JSON.stringify(raw)}`);
+    return found;
+}
+
+/** A REQUIRED boolean. Absent is a broken contract, not a `false` (DRY-3). */
+function decodeBoolean(raw: boolean | undefined, context: string): boolean {
+    if (typeof raw !== "boolean") throw new ApiShapeError(`${context}: expected a boolean, got ${JSON.stringify(raw)}`);
+    return raw;
+}
+
+function decodeBsGroup(raw: RawBsGroup | undefined, context: string): BsGroup {
+    // `rows` is demanded even though a computed group's is always `[]`: absent
+    // and empty are different facts, and only one of them is safe to render as
+    // "this group has no accounts" (DRY-3, the same reasoning as decodeMixed).
+    if (raw === undefined || typeof raw.name !== "string" || !Array.isArray(raw.rows)) {
+        throw new ApiShapeError(`${context}: missing name/rows`);
+    }
+    return Object.freeze({
+        name: raw.name,
+        source: decodeEnum(BS_GROUP_SOURCES, raw.source, `${context} source`),
+        rows: frozen(raw.rows.map((row, i) => decodeReportRow(row, `${context} row #${i}`))),
+        total: decodeMixed(raw.total, `${context} total`),
+    });
+}
+
+function decodeBsSection(raw: RawBsSection | undefined, context: string): BsSection {
+    if (raw === undefined || typeof raw.title !== "string" || !Array.isArray(raw.groups)) {
+        throw new ApiShapeError(`${context}: missing title/groups`);
+    }
+    return Object.freeze({
+        kind: decodeEnum(BS_SECTION_KINDS, raw.kind, `${context} kind`),
+        title: raw.title,
+        groups: frozen(raw.groups.map((group, i) => decodeBsGroup(group, `${context} group #${i}`))),
+        total: decodeMixed(raw.total, `${context} total`),
+    });
+}
+
+/**
+ * `GET /api/reports/balancesheet/grouped` → the three-box balance sheet.
+ *
+ * `base` is `Option<Commodity>` on the Rust side and arrives as `null` for a
+ * journal with no base commodity — a fact the UI has to render differently
+ * (there is no dominant figure to promote), so it is kept as null rather than
+ * coerced to "".
+ *
+ * `kind: "balanceSheet"` is added HERE and is not on the wire: this report and
+ * `SectionedReport` both carry a `sections` array, and the page picks its
+ * renderer and its export builder off that tag.
+ */
+export function decodeBalanceSheetReport(raw: unknown): BalanceSheetReport {
+    const report = raw as RawBalanceSheetReport;
+    if (typeof report !== "object" || report === null || typeof report.asOf !== "string" || !Array.isArray(report.sections)) {
+        throw new ApiShapeError("balance sheet: expected asOf and a sections array");
+    }
+    if (report.base !== null && report.base !== undefined && typeof report.base !== "string") {
+        throw new ApiShapeError("balance sheet base: expected a commodity string or null");
+    }
+    const out: BalanceSheetReport = {
+        kind: "balanceSheet",
+        asOf: report.asOf as ISODate,
+        base: typeof report.base === "string" ? report.base : null,
+        value: decodeEnum(BS_VALUATIONS, report.value, "balance sheet value"),
+        sections: frozen(report.sections.map((section, i) => decodeBsSection(section, `balance sheet section #${i}`))),
+        netWorth: decodeMixed(report.netWorth, "balance sheet netWorth"),
+        // `{}` is the balanced case and IS sent; absent is a broken contract.
+        // Defaulting it to empty would turn "the engine stopped answering the
+        // integrity question" into "the journal balances", which is the one
+        // wrong answer this field must never give.
+        check: decodeMixed(report.check, "balance sheet check"),
+        // Likewise required, and for the same reason: the engine derives it from
+        // the precisions the journal writes, so it is not something the client
+        // can reconstruct. Defaulting a missing one to `true` would silently
+        // suppress a real imbalance.
+        balanced: decodeBoolean(report.balanced, "balance sheet balanced"),
+    };
+    // Omitted (`skip_serializing_if = "Option::is_none"`) when nothing is unpriced.
+    if (report.meta !== undefined && report.meta !== null) {
+        out.meta = Object.freeze({unpriced: frozen(decodeStrings(report.meta.unpriced, "balance sheet meta.unpriced"))});
+    }
     return Object.freeze(out);
 }
 

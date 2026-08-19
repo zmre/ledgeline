@@ -13,6 +13,21 @@ I built this because I was dissatisfied with existing GUIs. They often hard code
 - **Reports** — balance sheet, income statement, cash flow, net worth, and budgets (`~` periodic goals vs.
   actuals) — the budget view shows each category as a period-summary envelope bar (year-to-date by default).
   Computed in Rust with exact decimal math and hledger parity. XLSX exports.
+- **Balance sheet** — three boxes (assets / liabilities / equity), every line valued to one number in your
+  base currency so a portfolio reads as money rather than as a column of share counts. Lines are *groups*
+  ("Cash and cash equivalents", "Investments"), collapsed by default and expandable to the accounts behind
+  them. Tag any account with `bsgroup:` to put it on a line of your choosing — the tag inherits to
+  sub-accounts exactly like `type:` does:
+
+  ```journal
+  account assets:property:house    ; type: A, bsgroup: Property
+  account liabilities:mortgage     ; type: L, bsgroup: Long-term debt
+  ```
+
+  Equity carries a computed **Retained earnings** line, so `assets = liabilities + equity` ties out and the
+  balance check is a real journal-integrity signal rather than decoration. See
+  **[docs/balance-sheet.md](docs/balance-sheet.md)** for the grouping rules, valuation, and why the check
+  has a tolerance.
 - **Holdings** — average-cost basis, unrealized gain (all-time / year-to-date / trailing-12-months),
   value-over-time, per-symbol names from `commodity` directives, partial portfolio totals; XLSX export.
 - **Imports** — finds the CSV import rules files (`*.rules`) beside your journal and edits them in a
@@ -100,6 +115,8 @@ See **[docs/development.md](docs/development.md)** for the Nix + Crane build cac
 `nix build .#{ledgeline,clippy,tests,fmt,macApp}` outputs, CI, and how the SPA is built and embedded.
 See **[docs/imports.md](docs/imports.md)** for the CSV rules-file editor — the format-preserving
 model, what it will and won't edit, and the guards on its write path.
+See **[docs/balance-sheet.md](docs/balance-sheet.md)** for the balance sheet — the `bsgroup:` tag,
+how untagged accounts are grouped, valuation, and the balance check's tolerance.
 
 ## Architecture
 
@@ -107,6 +124,14 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
+- p&l report ui improvements
+  - Much like the balance sheet, the P&L report is a bit hard to read in part because totals show up at the top and the bottom of a group. so "revenue" has a total, then each thing under it has a total, then there's a "Total Revenues" which is the same as the "revenue" line.
+  - Lets update this a bit more like the balance sheet where we add boxes that are sections with colors and totals, which should make it easier to scan and read.
+  - Lets also line up a bit better with some standard GAAP accounting and setup a similar trick with tags like what we used with the balance sheet where we make intelligent guesses if we don't have tags on accounts to be more specific.  This is tricky because this software is used both by businesses, where things like cost of goods sold and operating expenses and sales are separated from other income and expenses so an EBITDA can be calculated, but also for personal finance tracking where EBITDA doesn't matter and most income is salary or dividends or whatever and there's no COGS. The default should probably just be revenue/expenses as boxes, but with tagging, we can group things in other ways.
+- rules edit ui improvements
+  - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
+  - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
+  - perhaps instead of one giant form, we have display separate from edit and can therefore make this nicer
 - feat: import drag/drop
   - command line options
   - fix styling of numbers issues; infected the entire ui now
@@ -125,36 +150,6 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
   - Need a way to map an asset to an address. Maybe a special comment in the accounts file?
   - Need a way to map the unrealized gains for that address
   - Then on some sort of "update" click (how/where on UI?), it fetches the latest value (or launches a page and then prompts for it?), calculates the difference relative to the current asset value and then makes an adjustment to the unrealized account with a comment saying the current zestimate
-- balance sheet ui improvements
-  - this looks a lot like what the command line produces, but it's incredibly ugly and hard to read especially with stocks in the picture
-  - there's a row with "assets" on the left and a long list of stocks and cash on the right, all in one row. It's like rows within a row.  and things sum up oddly.
-  - And it's weird to have summaries and totals at the top above the things they total
-  - We should default to three deep and we should get smarter about how we group things and total them.
-  - We don't need to break things down by stock and we don't need to break them down by specific account, either.  We want to know about "Cash and cash equivalents" but not about how much is in bank account A vs. bank account B.
-    - I realize we may not have all the details we need to group things appropriately, BUT, we know stocks and their value, we know assets and their values, we know cash and their values, and we know liabilities and their values.
-    - We could probably improve things quite a bit through the use of optional extra tags on accounts.  We should look at examples to come up with ideas here, but common lines on a balance sheet include:
-      - accounts receivable
-      - accounts payable
-      - non-current assets
-      - depreciable assets
-      - depreciation of those assets
-      - property
-      - intangible assets
-      - deferred revenue
-      - short-term debt
-      - long-term debt
-      - long-term investments
-      - shareholders equity
-      - retained earnings
-      - inventory
-      - paid in capital
-    - My thinking is that any account can be tagged with a balance sheet group (bsgroup?) that then becomes a line in the balance sheet.
-    - We need proper totals lines, spreadsheet style, showing totla current assets, liabilities, owner equity and net
-    - I think we can make this pretty. Make each box (assets, liabilities, owner equity) pretty separate grids with lines and colored headers.  The downloaded xlsx should be nice and readable, too.
-- rules edit ui improvements
-  - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
-  - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
-  - perhaps instead of one giant form, we have display separate from edit and can therefore make this nicer
 - feat: private AI integration?
 - feat: stock price updates
   - basically my script, maybe ported into rust, for querying yahoo and updating a prices file. should try to figure out where prices already live and if it can't find anything, prompt for location and include a new file from the base file for the purpose.

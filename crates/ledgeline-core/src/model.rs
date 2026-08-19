@@ -5,7 +5,7 @@
 //! model independent means the wire shape can evolve without contaminating the
 //! engine's internal representation.
 
-use crate::decimal::Dec;
+use crate::decimal::{Dec, DecError};
 use std::path::PathBuf;
 
 /// A commodity symbol, e.g. `$`, `EUR`, `AAPL`.
@@ -128,6 +128,43 @@ pub struct Amount {
     pub style: AmountStyle,
     /// Optional cost annotation.
     pub cost: Option<Box<Cost>>,
+}
+
+impl Amount {
+    /// What this amount is worth **at cost** — hledger's `-B`/`--cost`: the cost
+    /// commodity and the quantity its annotation names, or the amount itself
+    /// when it carries none.
+    ///
+    /// This is the single definition of "at cost" in the engine. The parser
+    /// infers elided amounts and verifies transaction balance through it
+    /// (`parse::cost_value`), and the grouped balance sheet totals accounts
+    /// through it, so that report's check line is *exactly* the residual the
+    /// parser would call an imbalance. The two cannot drift into disagreeing
+    /// about whether a journal balances.
+    ///
+    /// A `@@` TOTAL cost is a magnitude and takes the sign of the amount it
+    /// annotates (hledger's `amountCost`), so `-3 AAPL @@ $600.00` costs
+    /// `$-600.00`.
+    ///
+    /// # Errors
+    /// Returns [`DecError`] on decimal overflow.
+    pub fn at_cost(&self) -> Result<(&Commodity, Dec), DecError> {
+        let Some(cost) = self.cost.as_deref() else {
+            return Ok((&self.commodity, self.quantity));
+        };
+        let quantity = match cost.kind {
+            CostKind::Unit => self.quantity.mul(cost.amount.quantity)?,
+            CostKind::Total => {
+                let magnitude = cost.amount.quantity.abs()?;
+                if self.quantity.mantissa < 0 {
+                    magnitude.neg()?
+                } else {
+                    magnitude
+                }
+            }
+        };
+        Ok((&cost.amount.commodity, quantity))
+    }
 }
 
 /// A 1-based source location.
