@@ -9,7 +9,7 @@ use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 use super::balance_sheet::{Valuation, signed, valued_keeping_unpriced};
 use super::mixed_amount::MixedAmount;
 use super::periods::{add_days, days_between};
-use super::prices::{PriceDb, ValuationMeta};
+use super::prices::{PriceDb, ValuationMeta, priced_count};
 use super::sections::build_section;
 use super::types::{ReportMeta, SectionedReport};
 use crate::model::{AccountDeclaration, Commodity, Journal, PriceDirective, Transaction};
@@ -889,9 +889,68 @@ pub fn income_statement_grouped(
     })
 }
 
+/// True when valuing this income statement in `target` prices at least one of
+/// the commodities it would display (vacuously true for a statement with no
+/// rows in either window).
+///
+/// The HTTP layer's admission test for an explicit `valueIn` on
+/// `/api/reports/incomestatement/grouped` —
+/// `balance_sheet::prices_any_on_sheet`'s question, asked about THIS
+/// statement's own windows: the as-written direct totals of every on-statement
+/// account (the same section resolution [`income_statement_grouped`] narrows
+/// by), each window measured at ITS OWN end, exactly as [`window_totals`]
+/// values it, through the same explicit-`P`-only [`PriceDb`]. When `compare`
+/// is on, the prior window counts too: a commodity pricing only prior-period
+/// rows still retargets the prior column, so it is not refused.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn prices_any_on_statement(
+    txns: &[Transaction],
+    explicit_prices: &[PriceDirective],
+    window: &DateRange,
+    compare: bool,
+    declared: &BTreeMap<String, AccountType>,
+    sections: &BTreeMap<String, IsSectionKind>,
+    target: &Commodity,
+) -> Result<bool, ReportError> {
+    let types = AccountTypes::from_declared(declared.clone());
+    let on_statement = |account: &str| {
+        nearest_declared(sections, account).is_some()
+            || types.is_type(account, AccountType::Revenue)
+            || types.is_type(account, AccountType::Expense)
+    };
+    let held_in = |window: &DateRange| -> Result<BTreeSet<Commodity>, ReportError> {
+        let direct = account_totals(
+            txns,
+            &PostingFilter {
+                from: Some(&window.from),
+                to: Some(&window.to),
+                ..PostingFilter::default()
+            },
+        )?;
+        Ok(direct
+            .iter()
+            .filter(|(account, _)| on_statement(account))
+            .flat_map(|(_, ma)| ma.iter().map(|(commodity, _)| commodity.clone()))
+            .collect())
+    };
+    let windows: Vec<(BTreeSet<Commodity>, String)> = std::iter::once(window.clone())
+        .chain(compare.then(|| prior_window(window)))
+        .map(|window| Ok((held_in(&window)?, window.to)))
+        .collect::<Result<_, ReportError>>()?;
+    if windows.iter().all(|(held, _)| held.is_empty()) {
+        return Ok(true);
+    }
+    let db = PriceDb::build(explicit_prices);
+    windows.iter().try_fold(false, |admitted, (held, to)| {
+        Ok(admitted || priced_count(held, target, &db, to)? > 0)
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{mixed, txn, usd};
+    use super::super::test_support::{amount, mixed, price, txn, usd};
     use super::*;
     use crate::reports::mixed_amount::MixedAmount;
 
@@ -945,6 +1004,102 @@ mod tests {
 
     fn usd_ma(cents: i128) -> MixedAmount {
         mixed(&[("$", cents, 2)])
+    }
+
+    /// The HTTP layer's admission question, measured over THIS statement's own
+    /// rows and windows: an off-statement commodity admits nothing, a priced
+    /// route into the current window's rows admits, and with `compare` on the
+    /// PRIOR window's rows count too — each at its own end, as
+    /// [`window_totals`] values them.
+    #[test]
+    fn prices_any_on_statement_measures_the_statements_own_rows_and_windows() {
+        let c = |symbol: &str| Commodity(symbol.to_string());
+        // One EUR expense in the current window, one GBP expense in the prior
+        // one, and an asset-only commodity (STK) the statement never shows.
+        let txns = vec![
+            txn(
+                1,
+                "2026-03-01",
+                vec![
+                    ("expenses:travel", vec![amount("EUR", 10_000, 2)]),
+                    ("assets:bank", vec![usd(-11_000)]),
+                ],
+            ),
+            txn(
+                2,
+                "2025-03-01",
+                vec![
+                    ("expenses:travel", vec![amount("GBP", 5_000, 2)]),
+                    ("assets:bank", vec![usd(-6_000)]),
+                ],
+            ),
+            txn(
+                3,
+                "2026-02-01",
+                vec![
+                    ("assets:broker:stk", vec![amount("STK", 1, 0)]),
+                    ("assets:bank", vec![usd(-100)]),
+                ],
+            ),
+        ];
+        let window = DateRange {
+            from: "2026-01-01".to_string(),
+            to: "2026-12-31".to_string(),
+        };
+        let admits = |prices: &[PriceDirective], compare: bool, target: &str| {
+            prices_any_on_statement(
+                &txns,
+                prices,
+                &window,
+                compare,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &c(target),
+            )
+            .expect("no overflow")
+        };
+
+        assert!(admits(&[], false, "EUR"), "EUR is itself on the statement");
+        assert!(
+            !admits(&[], false, "STK"),
+            "STK is held by an asset account only — the statement never values it"
+        );
+        assert!(
+            !admits(&[], false, "$"),
+            "with no prices, nothing routes the EUR row to the dollar"
+        );
+        let eur_price = vec![price("2026-06-30", "EUR", amount("$", 110, 2))];
+        assert!(
+            admits(&eur_price, false, "$"),
+            "P EUR $1.10 prices the current window's one row"
+        );
+        assert!(
+            !admits(&[], false, "GBP"),
+            "the prior window's rows do not count without a comparison"
+        );
+        assert!(
+            admits(&[], true, "GBP"),
+            "with compare on, a commodity pricing only the PRIOR window's rows \
+             still retargets the prior column"
+        );
+        // Vacuously true when neither window has a row to value.
+        let empty_window = DateRange {
+            from: "2020-01-01".to_string(),
+            to: "2020-12-31".to_string(),
+        };
+        assert!(
+            prices_any_on_statement(
+                &txns,
+                &[],
+                &empty_window,
+                true,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &c("USDD"),
+            )
+            .expect("no overflow"),
+            "an empty statement admits vacuously"
+        );
     }
 
     #[test]

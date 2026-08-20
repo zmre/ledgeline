@@ -39,11 +39,12 @@ use ledgeline_core::reports::{
     DEFAULT_EXCLUDE_DESC, DateRange, GroupSource, IS_GROUP_TAG, IncomeStatementReport,
     InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow,
     IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, MetricDelta, MixedAmount, MoverRow,
-    NetWorthOpts, PerfPoint, PeriodReport, PeriodRow, ReportMeta, ReportRow, Section,
+    NetWorthOpts, PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, Section,
     SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
     account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped,
     bs_terms, budget_report, cash_flow, cash_predicate, declared_groups, declared_types,
     detect_subscriptions, income_statement, income_statement_grouped, insights, net_worth,
+    prices_any_on_sheet, prices_any_on_statement,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1586,6 +1587,51 @@ fn resolve_value_in(
     }
 }
 
+/// [`resolve_value_in`]'s contract for the two grouped statements, with the
+/// admission question asked by `prices_anything` — which measures price
+/// coverage over the requesting REPORT's own rows
+/// ([`prices_any_on_sheet`] / [`prices_any_on_statement`]), the same way each
+/// Holdings tab measures its own held set (see [`HoldingsTab`] for why a
+/// borrowed set answers the wrong question).
+///
+/// Same precedence, same demotion: an explicit `valueIn` (trimmed, as holdings
+/// trims — `valueIn=%20$` is `$`, not the unpriceable `Commodity(" $")`) that
+/// prices nothing the report values is a `400` naming the value, because the
+/// alternative is a `200` echoing `base: "USDD"` over numbers the basis never
+/// touched, with every commodity in `meta.unpriced`. The journal's own `D`
+/// default is held to the same test but DEMOTED rather than rejected — nobody
+/// asked for it on this request — and `None` hands the choice to the report's
+/// own default, the price table's base commodity.
+///
+/// The refusal names the statement (`what`) and, unlike holdings', mentions
+/// only price directives: the grouped statements value through explicit `P`
+/// directives alone (see [`balance_sheet_grouped`]'s valuation notes), so a
+/// cost annotation genuinely cannot connect anything here.
+fn resolve_grouped_value_in(
+    journal: &Journal,
+    what: &str,
+    raw: Option<&str>,
+    prices_anything: impl Fn(&Commodity) -> Result<bool, ReportError>,
+) -> Result<Option<Commodity>, AppError> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(symbol) => {
+            let target = Commodity(symbol.to_string());
+            if prices_anything(&target)? {
+                Ok(Some(target))
+            } else {
+                Err(AppError::BadRequest(format!(
+                    "cannot value {what} in '{symbol}': no price directive connects any \
+                     commodity on it to it"
+                )))
+            }
+        }
+        None => match journal.default_commodity.clone() {
+            Some(declared) if prices_anything(&declared)? => Ok(Some(declared)),
+            _ => Ok(None),
+        },
+    }
+}
+
 /// The scope shared by a tab's report and series endpoints: the same account
 /// selection, date and valuation commodity, validated the same way — with the
 /// `valueIn` admission test measured over `tab`'s own rows.
@@ -1712,7 +1758,10 @@ pub(crate) struct BalanceSheetGroupedQuery {
     depth: Option<usize>,
     /// `market` (default) | `cost` | `none`.
     value: Option<String>,
-    /// Commodity to value into; defaults to the price table's base commodity.
+    /// Commodity to value into; trimmed and admitted against the sheet's own
+    /// rows (a value pricing nothing there is a `400`), defaulting to the
+    /// journal's `D` commodity when that prices something, else the price
+    /// table's base commodity. See [`resolve_grouped_value_in`].
     value_in: Option<String>,
 }
 
@@ -1738,7 +1787,9 @@ pub(crate) struct IncomeStatementGroupedQuery {
     to: Option<String>,
     /// `market` (default) | `cost` | `none`.
     value: Option<String>,
-    /// Commodity to value into; defaults to the price table's base commodity.
+    /// Commodity to value into; same trim + admission + `D` default contract
+    /// as [`BalanceSheetGroupedQuery`]'s, measured over THIS statement's own
+    /// windows. See [`resolve_grouped_value_in`].
     value_in: Option<String>,
     /// `previous` (default) | `none`.
     compare: Option<String>,
@@ -1926,7 +1977,10 @@ pub(crate) async fn balancesheet(
 ///   accounts inside one are a drill-down, and a drill-down that stops part-way
 ///   down the tree just hides accounts with no way to ask for them.
 /// - `value=market|cost|none` (default: `market`)
-/// - `valueIn=$` (default: the price table's own base commodity)
+/// - `valueIn=$` (default: the journal's `D` commodity when it prices
+///   something on the sheet, else the price table's own base commodity). A
+///   `valueIn` pricing NOTHING the sheet displays is a `400`; see
+///   [`resolve_grouped_value_in`].
 ///
 /// Prices come from the journal's `P` directives alone, matching `hledger bs
 /// -V`. Commodities no price reaches stay on the row as share counts and are
@@ -1944,13 +1998,28 @@ pub(crate) async fn balancesheet_grouped(
     let as_of = parse_date("asOf", query.as_of, today_utc)?;
     let depth = parse_depth(query.depth)?;
     let (value, label) = parse_valuation(query.value.as_deref())?;
-    let value_in = query
-        .value_in
-        .filter(|symbol| !symbol.is_empty())
-        .map(Commodity);
+    let raw_value_in = query.value_in;
 
     compute(move || {
         let journal = &snapshot.journal;
+        let declared = declared_types(&account_decls(journal));
+        // Like `holdings_scope`, admitting `valueIn` scans the whole journal
+        // for a price route, so it belongs on the blocking side with the
+        // report.
+        let value_in = resolve_grouped_value_in(
+            journal,
+            "this balance sheet",
+            raw_value_in.as_deref(),
+            |target| {
+                prices_any_on_sheet(
+                    &journal.transactions,
+                    &journal.prices,
+                    &as_of,
+                    &declared,
+                    target,
+                )
+            },
+        )?;
         let report = balance_sheet_grouped(
             &journal.transactions,
             &journal.prices,
@@ -1960,7 +2029,7 @@ pub(crate) async fn balancesheet_grouped(
                 value,
                 value_in,
             },
-            &declared_types(&account_decls(journal)),
+            &declared,
             &account_groups(journal),
             &bs_terms(journal)?,
         )?;
@@ -2001,7 +2070,10 @@ pub(crate) async fn incomestatement(
 /// - `from=YYYY-MM-DD` (default: Jan 1 of the current year)
 /// - `to=YYYY-MM-DD` (default: today) — both INCLUSIVE
 /// - `value=market|cost|none` (default: `market`)
-/// - `valueIn=$` (default: the price table's own base commodity)
+/// - `valueIn=$` (default: the journal's `D` commodity when it prices
+///   something on the statement, else the price table's own base commodity).
+///   A `valueIn` pricing NOTHING in either window is a `400`; see
+///   [`resolve_grouped_value_in`].
 /// - `compare=previous|none` (default: `previous`) — the immediately preceding
 ///   window of EQUAL length, each period valued at its OWN end so the prior
 ///   column agrees with the `hledger is -V` that would have been run over it.
@@ -2028,13 +2100,32 @@ pub(crate) async fn incomestatement_grouped(
     let to = parse_date("to", query.to, || today)?;
     let (value, label) = parse_valuation(query.value.as_deref())?;
     let compare = parse_compare(query.compare.as_deref())?;
-    let value_in = query
-        .value_in
-        .filter(|symbol| !symbol.is_empty())
-        .map(Commodity);
+    let raw_value_in = query.value_in;
 
     compute(move || {
         let journal = &snapshot.journal;
+        let declared = declared_types(&account_decls(journal));
+        let sections = account_sections(journal)?;
+        let window = DateRange {
+            from: from.clone(),
+            to: to.clone(),
+        };
+        let value_in = resolve_grouped_value_in(
+            journal,
+            "this income statement",
+            raw_value_in.as_deref(),
+            |target| {
+                prices_any_on_statement(
+                    &journal.transactions,
+                    &journal.prices,
+                    &window,
+                    compare,
+                    &declared,
+                    &sections,
+                    target,
+                )
+            },
+        )?;
         let report = income_statement_grouped(
             &journal.transactions,
             &journal.prices,
@@ -2045,8 +2136,8 @@ pub(crate) async fn incomestatement_grouped(
                 value_in,
                 compare,
             },
-            &declared_types(&account_decls(journal)),
-            &account_sections(journal)?,
+            &declared,
+            &sections,
             &declared_groups(journal, IS_GROUP_TAG),
         )?;
         Ok(WireIncomeStatementReport::new(&report, label))

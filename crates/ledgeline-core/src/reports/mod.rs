@@ -57,14 +57,14 @@ pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 pub use balance_sheet::{
     BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
-    balance_sheet, balance_sheet_grouped,
+    balance_sheet, balance_sheet_grouped, prices_any_on_sheet,
 };
 pub use budget::{BudgetCell, BudgetOpts, BudgetReport, BudgetRow, UNBUDGETED, budget_report};
 pub use cash_flow::{cash_flow, is_cash_like};
 pub use income_statement::{
     Amounts, DateRange, IS_SECTION_TAG, IncomeStatementReport, IsGroup, IsOpts, IsRow, IsSection,
     IsSectionKind, IsSubtotal, IsSubtotalKind, account_sections, account_sections_from,
-    income_statement, income_statement_grouped, parse_is_section_tag,
+    income_statement, income_statement_grouped, parse_is_section_tag, prices_any_on_statement,
 };
 pub use insights::{
     ChangeKind, ChangeRow, CostOfLiving, InsightsOpts, InsightsPeriod, InsightsReport,

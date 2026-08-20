@@ -9,7 +9,7 @@ use super::account_groups::{
 use super::account_types::{AccountType, AccountTypes};
 use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
-use super::prices::{PriceDb, ValuationMeta, value_at};
+use super::prices::{PriceDb, ValuationMeta, priced_count, value_at};
 use super::sections::build_section;
 use super::types::{ReportMeta, ReportRow, SectionedReport};
 use crate::decimal::Dec;
@@ -452,6 +452,52 @@ pub fn balance_sheet_grouped(
             unpriced: meta.unpriced,
         },
     })
+}
+
+/// True when valuing this balance sheet in `target` prices at least one of the
+/// commodities it would display (vacuously true for an empty sheet).
+///
+/// The HTTP layer's admission test for an explicit `valueIn` on
+/// `/api/reports/balancesheet/grouped` — the question
+/// `holdings::prices_any_held` answers for the Holdings tabs, measured over
+/// THIS report's own rows: the as-written balances, as of `as_of`, of every
+/// account the three boxes display (the same [`SECTIONS`] narrowing
+/// [`balance_sheet_grouped`] applies before valuing). The price set is the
+/// explicit-`P`-only [`PriceDb`] the report itself values with — never
+/// cost-inferred directives, see the valuation notes on
+/// [`balance_sheet_grouped`] — so admission can never disagree with the report
+/// it admits.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn prices_any_on_sheet(
+    txns: &[Transaction],
+    explicit_prices: &[PriceDirective],
+    as_of: &str,
+    declared: &BTreeMap<String, AccountType>,
+    target: &Commodity,
+) -> Result<bool, ReportError> {
+    let types = AccountTypes::from_declared(declared.clone());
+    let written = account_totals(
+        txns,
+        &PostingFilter {
+            to: Some(as_of),
+            ..PostingFilter::default()
+        },
+    )?;
+    let held: BTreeSet<Commodity> = written
+        .iter()
+        .filter(|(account, _)| {
+            SECTIONS
+                .iter()
+                .any(|(_, _, category, _)| types.is_type(account, *category))
+        })
+        .flat_map(|(_, ma)| ma.iter().map(|(commodity, _)| commodity.clone()))
+        .collect();
+    Ok(
+        held.is_empty()
+            || priced_count(&held, target, &PriceDb::build(explicit_prices), as_of)? > 0,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1157,6 +1203,52 @@ mod tests {
         );
         assert_eq!(report.as_of, "2026-07-01");
         assert_eq!(report.base, Some(c("$")));
+    }
+
+    /// The HTTP layer's admission question, measured over THIS report's rows:
+    /// commodities the sheet holds admit themselves, a typo prices nothing and
+    /// is refused, and an empty sheet admits vacuously.
+    #[test]
+    fn prices_any_on_sheet_answers_the_valuation_admission_question() {
+        let txns = grouped_sample();
+        let prices = stk_prices();
+        let admits = |target: &str| {
+            prices_any_on_sheet(&txns, &prices, "2026-07-01", &BTreeMap::new(), &c(target))
+                .expect("no overflow")
+        };
+        assert!(admits("$"), "the sheet holds dollars themselves");
+        assert!(admits("STK"), "the sheet holds STK themselves");
+        assert!(!admits("USDD"), "a typo prices nothing on the sheet");
+        assert!(
+            prices_any_on_sheet(&[], &prices, "2026-07-01", &BTreeMap::new(), &c("USDD"))
+                .expect("no overflow"),
+            "an empty sheet admits vacuously — there is nothing to misvalue"
+        );
+    }
+
+    /// The set is the SHEET's, not the whole journal's: a commodity that
+    /// appears only on an income-statement account cannot admit a `valueIn`
+    /// the three boxes will never value — the wrong-set failure the holdings
+    /// tabs' split admission exists to prevent, measured for this report.
+    #[test]
+    fn prices_any_on_sheet_ignores_off_sheet_commodities() {
+        let txns = vec![txn(
+            1,
+            "2026-01-01",
+            vec![
+                ("expenses:fx-fees", vec![amount("EUR", 500, 2)]),
+                ("assets:bank:checking", vec![usd(-600)]),
+            ],
+        )];
+        let admits = |target: &str| {
+            prices_any_on_sheet(&txns, &[], "2026-07-01", &BTreeMap::new(), &c(target))
+                .expect("no overflow")
+        };
+        assert!(
+            !admits("EUR"),
+            "EUR lives only on an expense account, which the sheet never values"
+        );
+        assert!(admits("$"), "the bank balance itself admits the dollar");
     }
 
     /// Every clamp the report can be asked for, `None` (unclamped) included.

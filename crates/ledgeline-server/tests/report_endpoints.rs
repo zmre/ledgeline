@@ -658,6 +658,104 @@ async fn balancesheet_grouped_honors_value_in() {
     );
 }
 
+/// HOLD-3's lesson, on the grouped statements: a `valueIn` that prices nothing
+/// the report values — a typo like `USDD` — used to be echoed back as
+/// `base: "USDD"` over numbers the basis never touched, with every commodity in
+/// `meta.unpriced`. It is a `400` naming the value on BOTH grouped endpoints,
+/// while a `valueIn` that does price the report still serves a `200`.
+#[tokio::test]
+async fn an_unpriceable_value_in_is_a_400_on_both_grouped_endpoints() {
+    let journal = sample_journal();
+    for (typo, good) in [
+        (
+            "/api/reports/balancesheet/grouped?asOf=2026-07-08&valueIn=USDD",
+            "/api/reports/balancesheet/grouped?asOf=2026-07-08&valueIn=%24",
+        ),
+        (
+            "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&valueIn=USDD",
+            "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&valueIn=%24",
+        ),
+    ] {
+        let (status, message) = get_error(&journal, typo).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "GET {typo}");
+        assert!(message.contains("'USDD'"), "{message}");
+        assert!(message.contains("no price directive"), "{message}");
+
+        let (status, _, body) = get_on(&journal, good).await;
+        assert_eq!(status, StatusCode::OK, "GET {good}");
+        assert_eq!(body["base"], "$", "a priceable valueIn still serves");
+    }
+}
+
+/// `valueIn` is trimmed before it is resolved, exactly as the holdings
+/// endpoints trim theirs: `valueIn=%20$%20` used to build `Commodity(" $")` and
+/// silently serve an unvalued report whose `base` was `" $"`. It is now the
+/// same request as `valueIn=$`, byte for byte.
+#[tokio::test]
+async fn a_padded_value_in_is_the_same_request_as_the_bare_one() {
+    let journal = sample_journal();
+    for (padded, bare) in [
+        (
+            "/api/reports/balancesheet/grouped?asOf=2026-07-08&valueIn=%20%24%20",
+            "/api/reports/balancesheet/grouped?asOf=2026-07-08&valueIn=%24",
+        ),
+        (
+            "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&valueIn=%20%24%20",
+            "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&valueIn=%24",
+        ),
+    ] {
+        let padded_body = body_ok(&journal, padded).await;
+        assert_eq!(padded_body, body_ok(&journal, bare).await, "GET {padded}");
+        assert_eq!(padded_body["base"], "$");
+    }
+}
+
+/// **The cautionary tale, on the balance sheet.** A journal whose `bsterm:` is
+/// misspelt must fail loudly instead of filing the account under the wrong
+/// Current/Non-current subtotal — the income-statement analogue is
+/// [`a_bad_issection_tag_is_a_400_naming_the_account_and_the_alternatives`],
+/// and without this pin a regression mapping `ReportError::UnknownBsTerm` to a
+/// `500` would pass the whole suite.
+#[tokio::test]
+async fn a_bad_bsterm_tag_is_a_400_naming_the_account_and_the_alternatives() {
+    let source =
+        std::fs::read_to_string(common::fixture_journal_path()).expect("read sample.journal");
+    // Misspell ONE declaration (the home's) — to a word OUTSIDE the vocabulary
+    // and its documented synonyms (`non-current`, `long-term`, … all parse) —
+    // anchored on the account line, because the same words also appear in a
+    // comment near the top of the fixture, which a bare `replacen` would hit.
+    let text = source.replacen(
+        "bsterm: noncurrent, name: Family home",
+        "bsterm: fixed, name: Family home",
+        1,
+    );
+    assert_ne!(
+        text, source,
+        "the fixture still declares the tag this test misspells"
+    );
+    let journal =
+        parse_journal(&text, "sample-bsterm-typo.journal").expect("the FILE is still valid");
+
+    let (status, message) = get_error(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    for expected in ["assets:property:home", "fixed", "current", "noncurrent"] {
+        assert!(message.contains(expected), "{message}");
+    }
+    // Every OTHER report is unaffected — the tag is this statement's alone.
+    for uri in [
+        "/api/reports/balancesheet?asOf=2026-07-08",
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08",
+        "/api/reports/networth?end=2026-07-08",
+    ] {
+        let (status, _, _) = get_on(&journal, uri).await;
+        assert_eq!(status, StatusCode::OK, "GET {uri}");
+    }
+}
+
 /// `check` and `balanced` are two different facts and the wire carries both.
 ///
 /// `bs-cost-dust.journal` is valid — hledger's `check` passes on it — yet
