@@ -241,6 +241,126 @@
       ]
     ],
     [
+      "assets:property:home",
+      "assets:property:home",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 468000,
+            "decimalPlaces": 0,
+            "floatingPoint": 468000
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "assets:vehicles:car:cost",
+      "assets:vehicles:car:cost",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": 2800000,
+            "decimalPlaces": 2,
+            "floatingPoint": 28000
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "assets:vehicles:car:depreciation",
+      "assets:vehicles:car:depreciation",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": -750000,
+            "decimalPlaces": 2,
+            "floatingPoint": -7500
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "liabilities:mortgage",
+      "liabilities:mortgage",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": -33600000,
+            "decimalPlaces": 2,
+            "floatingPoint": -336000
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
       "liabilities:cc:visa",
       "liabilities:cc:visa",
       0,
@@ -277,9 +397,9 @@
       "acost": null,
       "acostbasis": null,
       "aquantity": {
-        "decimalMantissa": 61795505,
+        "decimalMantissa": 214295505,
         "decimalPlaces": 3,
-        "floatingPoint": 61795.505
+        "floatingPoint": 214295.505
       },
       "astyle": {
         "ascommodityside": "L",

@@ -182,8 +182,18 @@ fn balance_sheet_depth_3_matches_golden() {
     check_sectioned(&report, &golden("bs-d3.json"));
 }
 
-/// Depth-2 balance sheet: no committed golden, so the expectations are the
-/// CLI-derived values embedded in `golden.test.ts` (hledger 1.52, `--depth 2`).
+/// Depth-2 balance sheet: no committed golden, so the expectations are read off
+/// the CLI directly (hledger 1.52):
+/// ```text
+/// hledger -f fixtures/sample.journal bal 'type:A' -e 2026-07-01 --depth 2
+///     $43,667.81, 566,75 EUR                                assets:bank
+///     $6,609.75, 19.5000 AAPL, 5.0 GLD, -2.0 TSLA, 17.0 VTI assets:broker
+///     1.0 HOME                                              assets:property
+///     $20,500.00                                            assets:vehicles
+///   total $70,777.56, 19.5000 AAPL, 566,75 EUR, 5.0 GLD, 1.0 HOME, -2.0 TSLA, 17.0 VTI
+/// hledger … bal 'type:L' -e 2026-07-01 --depth 2
+///     $-336,000.00 liabilities:mortgage / $-62.11 liabilities:cc
+/// ```
 #[test]
 fn balance_sheet_depth_2_matches_embedded_cli_values() {
     let journal = fixture_journal();
@@ -222,16 +232,35 @@ fn balance_sheet_depth_2_matches_embedded_cli_values() {
     assert_eq!(by_account["assets:broker"], broker);
     assert_eq!(by_account["liabilities:cc"], entry(&[("$", 6211, 2)]));
 
-    let mut assets_total = entry(&[("$", 5_027_756, 2), ("EUR", 56_675, 2)]);
-    assets_total.extend(entry(&stocks));
+    // The WP-14 other holdings: the home is a HOME unit at this (unvalued)
+    // basis, the car is plain dollars, and the mortgage funds them.
+    assert_eq!(by_account["assets:property"], entry(&[("HOME", 1, 0)]));
+    assert_eq!(by_account["assets:vehicles"], entry(&[("$", 2_050_000, 2)]));
+    assert_eq!(
+        by_account["liabilities:mortgage"],
+        entry(&[("$", 33_600_000, 2)])
+    );
+
+    // Everything the sheet carries that is not the base commodity.
+    let positions: [(&str, i128, u32); 5] = [
+        ("AAPL", 195, 1),
+        ("GLD", 5, 0),
+        ("HOME", 1, 0),
+        ("TSLA", -2, 0),
+        ("VTI", 17, 0),
+    ];
+
+    let mut assets_total = entry(&[("$", 7_077_756, 2), ("EUR", 56_675, 2)]);
+    assets_total.extend(entry(&positions));
     assert_eq!(canon_map(&report.sections[0].total), assets_total);
     assert_eq!(
         canon_map(&report.sections[1].total),
-        entry(&[("$", 6211, 2)])
+        entry(&[("$", 33_606_211, 2)])
     );
 
-    let mut grand = entry(&[("$", 5_021_545, 2), ("EUR", 56_675, 2)]);
-    grand.extend(entry(&stocks));
+    // A − L, and the mortgage makes it negative: $70,777.56 − $336,062.11.
+    let mut grand = entry(&[("$", -26_528_455, 2), ("EUR", 56_675, 2)]);
+    grand.extend(entry(&positions));
     assert_eq!(canon_map(&report.grand_total), grand);
 }
 

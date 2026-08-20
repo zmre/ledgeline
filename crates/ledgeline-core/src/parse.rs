@@ -188,6 +188,10 @@ struct Ctx {
     /// How many `include`s have been admitted so far, capped by
     /// [`MAX_INCLUDE_FILES`].
     includes_admitted: usize,
+    /// The MAIN file's leading comment, if it opens with one. Set once, by the
+    /// first [`parse_source`] call; `include`d files never touch it. Feeds
+    /// [`Journal::leading_comment`] — see [`leading_comment`].
+    leading_comment: Option<String>,
     tindex: u32,
 }
 
@@ -210,6 +214,7 @@ impl Ctx {
             include_root: include_root_for(main_source_name),
             include_stack: Vec::new(),
             includes_admitted: 0,
+            leading_comment: None,
             tindex: 0,
         }
     }
@@ -226,6 +231,7 @@ impl Ctx {
             commodity_tags: self.commodity_tags,
             prices: self.prices,
             default_commodity: self.default_commodity.map(|(commodity, _style)| commodity),
+            leading_comment: self.leading_comment,
         }
     }
 }
@@ -293,6 +299,10 @@ fn parse_source(
     overrides: Option<&HashMap<PathBuf, String>>,
 ) -> Result<(), ParseError> {
     let source_file = resolve_source_file(source_name);
+    // Are we the MAIN file? Every parse starts with an empty `source_files`, and
+    // the push below is the first thing that ever writes to it, so "nothing
+    // recorded yet" is exactly "this is the top-level file". Read BEFORE the push.
+    let is_main_file = ctx.source_files.is_empty();
     // Record this file (main or `include`d) so the whole dependency set is known
     // for live-reload watching, even for directive-only includes. Deduplicated to
     // stay stable if the same file is included more than once.
@@ -306,6 +316,14 @@ fn parse_source(
     // file, and Windows/Excel-exported journals routinely carry one. Stripped
     // here (not in `parse_journal`) so an `include`d file is covered too.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    // Retain the main file's opening comment for `crate::title`. AFTER the BOM
+    // strip above, or a Windows-exported journal's title would silently begin
+    // with U+FEFF. `include`d files deliberately do not contribute: the title
+    // names the journal the user opened, and an included file's header describes
+    // that file alone.
+    if is_main_file {
+        ctx.leading_comment = leading_comment(text);
+    }
     let lines: Vec<&str> = text.lines().collect();
 
     let mut i = 0;
@@ -496,6 +514,33 @@ fn parse_source(
     Ok(())
 }
 
+/// A journal source's LEADING COMMENT: the text of its first non-empty line
+/// when that line is a comment, with the marker and the whitespace around it
+/// stripped. `None` when the file is empty or opens with anything else.
+///
+/// hledger's line-comment markers are `;`, `#` and `*`, and a comment line may
+/// be indented — the same three the parse loop dispatches on. The whole leading
+/// RUN of them is stripped, so the common `;;;;` banner and the org-mode `****`
+/// heading reduce to their text instead of keeping a stray marker.
+///
+/// The parse loop otherwise discards comments outright. This one is kept because
+/// it is where a journal names itself; [`crate::title`] turns it into the title
+/// the UI shows, and owns every judgement about whether it reads as one. Nothing
+/// is rejected here — this reports what the file says, not what it means.
+fn leading_comment(text: &str) -> Option<String> {
+    let first = text.lines().find(|line| !line.trim().is_empty())?;
+    let trimmed = first.trim_start();
+    if !trimmed.starts_with([';', '#', '*']) {
+        return None;
+    }
+    Some(
+        trimmed
+            .trim_start_matches([';', '#', '*'])
+            .trim()
+            .to_string(),
+    )
+}
+
 /// Convert a `usize` line/column index to `u32`, saturating (line counts here
 /// never approach `u32::MAX`).
 fn to_u32(n: usize) -> u32 {
@@ -520,19 +565,79 @@ fn locate(source_name: &str, line: u32, line_text: &str, err: ParseError) -> Par
 // Directives
 // ---------------------------------------------------------------------------
 
+/// Split an `account` directive's body into the account NAME and any trailing
+/// comment, by hledger's rule rather than at the first `;`.
+///
+/// Verified against the hledger 1.52 binary, not read off the manual:
+///
+/// ```text
+/// account two:space  ; type: A    -> name "two:space",         tag APPLIED
+/// account one:space ; type: A     -> name "one:space ; type: A", tag IGNORED
+/// account a:b is here  ; type: A  -> name "a:b is here",       tag APPLIED
+/// account tab:name<TAB>; type: A  -> name "tab:name ; type: A", tag IGNORED
+/// account two:words  junk         -> parse ERROR
+/// ```
+///
+/// An account name may contain SINGLE spaces, so nothing but a run of two or
+/// more whitespace characters can end one — the same rule that separates a
+/// posting's account from its amount, and the reason a lone tab is part of the
+/// name (normalized to a space) while a space-then-tab is a separator.
+///
+/// Splitting at the first `;`, as [`split_comment`] does for the directives
+/// whose value cannot contain spaces, is wrong here and wrong INVISIBLY: it
+/// turns `account a:b ; type: A` into a declaration of the account literally
+/// named `a:b ; type: A`, which matches no posting and carries no type. The
+/// journal parses, the report is simply missing an account, and nothing says so.
+///
+/// Returns `None` when the text after the separator is neither empty nor a
+/// comment — hledger rejects that outright ("expecting ';', end of input, or
+/// newline") and so do we.
+fn split_account_name(body: &str) -> Option<(String, Option<&str>)> {
+    let mut run_start: Option<usize> = None;
+    let mut separator: Option<usize> = None;
+    for (at, ch) in body.char_indices() {
+        if ch == ' ' || ch == '\t' {
+            match run_start {
+                // The second consecutive whitespace ends the name, which stops
+                // at the FIRST character of the run.
+                Some(start) => {
+                    separator = Some(start);
+                    break;
+                }
+                None => run_start = Some(at),
+            }
+        } else {
+            run_start = None;
+        }
+    }
+
+    let (name_part, rest) = match separator {
+        Some(at) => (&body[..at], body[at..].trim_start()),
+        None => (body, ""),
+    };
+    // A lone tab inside the name reads as a space, matching how hledger prints
+    // the account back.
+    let name = name_part.replace('\t', " ").trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    match rest.strip_prefix(';') {
+        Some(comment) => Some((name, Some(comment))),
+        None if rest.is_empty() => Some((name, None)),
+        None => None,
+    }
+}
+
 fn parse_account_directive(line: &str, line_no: u32) -> Result<AccountDeclaration, ParseError> {
     let after = line
         .strip_prefix("account")
         .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?
         .trim_start();
-    let (name_part, comment) = split_comment(after);
-    let name = name_part.trim();
-    if name.is_empty() {
-        return Err(ParseError::MalformedDirective(line.to_string()));
-    }
+    let (name, comment) = split_account_name(after)
+        .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?;
     let (comment_text, tags) = build_comment(comment);
     Ok(AccountDeclaration {
-        name: AccountName(name.to_string()),
+        name: AccountName(name),
         tags,
         comment: comment_text,
         // `account` directives are always top-level, so the keyword sits at
@@ -1847,25 +1952,18 @@ fn cost_contribution(amount: &Amount) -> Result<(Commodity, Dec, u32, AmountStyl
 /// style)` an amount contributes to its transaction's balance. Shared with
 /// [`check_transaction_balances`], so the verification and the inference value
 /// a priced amount identically.
+///
+/// The commodity and quantity come from [`Amount::at_cost`] — the engine's one
+/// definition of "at cost" — so the balance sheet's at-cost totals and this
+/// balancing pass can never disagree about what a priced posting is worth. Only
+/// the display STYLE is chosen here, since valuation has no use for it.
 fn cost_value(amount: &Amount) -> Result<(&Commodity, Dec, &AmountStyle), ParseError> {
-    match &amount.cost {
-        None => Ok((&amount.commodity, amount.quantity, &amount.style)),
-        Some(cost) => {
-            let price = &cost.amount;
-            let quantity = match cost.kind {
-                CostKind::Unit => amount.quantity.mul(price.quantity)?,
-                CostKind::Total => {
-                    let magnitude = price.quantity.abs()?;
-                    if amount.quantity.mantissa < 0 {
-                        magnitude.neg()?
-                    } else {
-                        magnitude
-                    }
-                }
-            };
-            Ok((&price.commodity, quantity, &price.style))
-        }
-    }
+    let (commodity, quantity) = amount.at_cost()?;
+    let style = match &amount.cost {
+        None => &amount.style,
+        Some(cost) => &cost.amount.style,
+    };
+    Ok((commodity, quantity, style))
 }
 
 fn finalize_posting(raw: RawPosting, sums: &[CommoditySum]) -> Result<Posting, ParseError> {
@@ -2571,6 +2669,102 @@ fn analyze_number(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `account` directive's name/comment boundary, pinned against the
+    /// hledger 1.52 binary rather than the manual. Every expectation below was
+    /// read off `hledger -f … accounts --declared` and a `bal type:A` query.
+    ///
+    /// This diverged silently once already: our parser split at the first `;`,
+    /// so `account a:b ; type: A` declared the account `a:b` with a type while
+    /// hledger declared one literally named `a:b ; type: A` with none. The
+    /// journal parsed on both sides and the reports disagreed.
+    mod account_directive_names {
+        use super::*;
+
+        fn parsed(line: &str) -> (String, Vec<(String, String)>) {
+            let decl = parse_account_directive(line, 1).expect("directive parses");
+            (decl.name.0, decl.tags)
+        }
+
+        #[test]
+        fn two_spaces_separate_the_name_from_its_comment() {
+            let (name, tags) = parsed("account two:space  ; type: A");
+            assert_eq!(name, "two:space");
+            assert_eq!(tags, vec![("type".to_string(), "A".to_string())]);
+        }
+
+        /// ONE space does not. hledger takes the whole rest of the line as the
+        /// account name, tag and all.
+        #[test]
+        fn one_space_leaves_the_comment_inside_the_name() {
+            let (name, tags) = parsed("account one:space ; type: A");
+            assert_eq!(name, "one:space ; type: A");
+            assert!(tags.is_empty(), "no comment was parsed, so no tags");
+        }
+
+        #[test]
+        fn no_space_at_all_leaves_the_comment_inside_the_name() {
+            let (name, tags) = parsed("account no:space; type: A");
+            assert_eq!(name, "no:space; type: A");
+            assert!(tags.is_empty());
+        }
+
+        /// Single spaces are legal INSIDE an account name, which is the whole
+        /// reason a single space cannot end one.
+        #[test]
+        fn a_name_may_contain_single_spaces() {
+            let (name, tags) = parsed("account trailing:words is here  ; type: A");
+            assert_eq!(name, "trailing:words is here");
+            assert_eq!(tags, vec![("type".to_string(), "A".to_string())]);
+        }
+
+        /// A lone tab reads as a single space — part of the name, and printed
+        /// back as a space — while a space-then-tab is two whitespace and does
+        /// separate.
+        #[test]
+        fn a_lone_tab_is_part_of_the_name_but_a_pair_is_a_separator() {
+            let (name, tags) = parsed("account tab:name\t; type: A");
+            assert_eq!(name, "tab:name ; type: A");
+            assert!(tags.is_empty());
+
+            let (name, tags) = parsed("account tabsp:name \t; type: A");
+            assert_eq!(name, "tabsp:name");
+            assert_eq!(tags, vec![("type".to_string(), "A".to_string())]);
+        }
+
+        #[test]
+        fn a_bare_name_needs_no_comment() {
+            let (name, tags) = parsed("account plain:name");
+            assert_eq!(name, "plain:name");
+            assert!(tags.is_empty());
+        }
+
+        /// hledger: "expecting ';', end of input, or newline". Anything else
+        /// after the separator is a hard error, not silently-kept text.
+        #[test]
+        fn text_after_the_separator_that_is_not_a_comment_is_refused() {
+            assert!(parse_account_directive("account two:words  trailing junk", 1).is_err());
+        }
+
+        /// A name-less directive whose body is only a comment is NOT an error:
+        /// with no two-whitespace run there is nothing to separate, so hledger
+        /// declares an account literally named `; type: A`. Checked against the
+        /// binary, which prints exactly that and exits 0 — following it here
+        /// costs nothing and diverging would be one more silent disagreement.
+        #[test]
+        fn a_body_that_is_only_a_comment_becomes_the_name() {
+            let (name, tags) = parsed("account   ; type: A");
+            assert_eq!(name, "; type: A");
+            assert!(tags.is_empty());
+        }
+
+        /// A bare `account` with no body IS an error, as it is in hledger.
+        #[test]
+        fn a_bare_directive_is_refused() {
+            assert!(parse_account_directive("account", 1).is_err());
+            assert!(parse_account_directive("account   ", 1).is_err());
+        }
+    }
 
     fn eur_styles() -> Styles {
         let (commodity, style, _tags) =

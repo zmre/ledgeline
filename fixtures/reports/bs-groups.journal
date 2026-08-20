@@ -1,0 +1,66 @@
+; Balance-sheet GROUPS over a chart of accounts with no English in it.
+;
+; `fixtures/sample.journal` cannot test this: its roots are `assets:`/`bank:`/
+; `cc:`, so a grouping rule that secretly matched English names would pass there
+; anyway. Nothing here matches an English word list, so any such rule collapses
+; every account into one bucket — the `account-type-not-name` failure, where the
+; report reads zero rather than merely wrong.
+;
+; Every one of the five resolution steps is exercised exactly once:
+;
+;   1. own `bsgroup:` tag ............ activo:vehiculo:furgoneta → "Flota"
+;   2. ancestor's `bsgroup:` tag ..... activo:inmueble:casa → "Bienes inmuebles"
+;   3. effective type is Cash ........ activo:banco:corriente → "Cash and cash equivalents"
+;   4. holds a non-base commodity .... activo:cartera:acciones → "Investments"
+;   5. second path segment ........... pasivo:hipoteca:casa → "Hipoteca"
+;                                      pasivo:cc:oro → "cc" → "Credit cards" (alias)
+;
+; Step 5's alias table renames and nothing else: `pasivo:cc:oro` is grouped by
+; its tree position, and the label it is GIVEN happens to be English.
+;
+; Verified against hledger 1.52 at 2026-06-30 (see tests/balance_sheet_grouped.rs):
+;   $ hledger -f fixtures/reports/bs-groups.journal bs -V -e 2026-07-01
+;       Assets  $172,050.00   Liabilities  $142,000.00   Net  $30,050.00
+;   $ hledger -f fixtures/reports/bs-groups.journal bse -B -e 2026-07-01
+;       Net  $8,550.00   (= `is -B` Net, the identity this report rests on)
+
+account activo                       ; type: A
+account activo:banco:corriente       ; type: C
+account activo:cartera:acciones      ; type: A
+account activo:inmueble              ; type: A, bsgroup: Bienes inmuebles
+account activo:inmueble:casa         ; type: A
+account activo:vehiculo:furgoneta    ; type: A, bsgroup: Flota
+account pasivo:cc:oro                ; type: L
+account pasivo:hipoteca:casa         ; type: L
+account patrimonio:inicio            ; type: E
+account ingresos:consultoria         ; type: R
+account gastos:oficina               ; type: X
+
+; The only price in the file, so `$` is the base commodity — which is what makes
+; ACC a NON-base commodity, and `activo:cartera:acciones` an investment.
+P 2026-06-30 ACC $55.00
+
+2026-01-01 Apertura | opening balances
+    activo:banco:corriente        $20,000.00
+    patrimonio:inicio            $-20,000.00
+
+2026-02-01 Corredor | compra de acciones
+    activo:cartera:acciones           100 ACC @ $40.00
+    activo:banco:corriente
+
+2026-03-01 Notaria | compra de casa
+    activo:inmueble:casa         $150,000.00
+    pasivo:hipoteca:casa        $-130,000.00
+    activo:banco:corriente       $-20,000.00
+
+2026-04-01 Concesionario | furgoneta a credito
+    activo:vehiculo:furgoneta     $12,000.00
+    pasivo:cc:oro                $-12,000.00
+
+2026-05-01 Cliente Uno | honorarios
+    activo:banco:corriente         $9,000.00
+    ingresos:consultoria          $-9,000.00
+
+2026-06-01 Papeleria | material de oficina
+    gastos:oficina                   $450.00
+    activo:banco:corriente

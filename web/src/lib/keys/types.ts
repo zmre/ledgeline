@@ -3,10 +3,20 @@
 // — no runes, no DOM — so `dispatch.ts` and its tests stay in the fast `unit`
 // vitest project rather than needing jsdom.
 
-/** Help-sheet sections, rendered in this order. A binding with no home here has no home in the app. */
-export type KeyGroup = "Global" | "Navigation" | "Journal" | "Reports" | "Imports" | "Filters";
+/**
+ * Help-sheet sections, rendered in this order. A binding with no home here has
+ * no home in the app.
+ *
+ * The middle four mirror the nav bar's own order (Journal, Holdings, Reports,
+ * Imports), so a reader scanning `?` finds the section where they expect the
+ * page to be. "Holdings" arrived with plans/14: the holdings table's row cursor
+ * had been borrowing "Journal" while it was the page's only keyboard surface,
+ * and once the tab strip added a second one, that would have filed one feature
+ * under two headings.
+ */
+export type KeyGroup = "Global" | "Navigation" | "Journal" | "Holdings" | "Reports" | "Imports" | "Filters";
 
-export const GROUP_ORDER: readonly KeyGroup[] = ["Global", "Navigation", "Journal", "Reports", "Imports", "Filters"];
+export const GROUP_ORDER: readonly KeyGroup[] = ["Global", "Navigation", "Journal", "Holdings", "Reports", "Imports", "Filters"];
 
 /**
  * Layer priorities. Higher wins; registration order breaks ties (later beats

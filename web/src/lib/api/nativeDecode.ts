@@ -26,7 +26,17 @@
 
 import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
-import type {Holding, HoldingsPoint, HoldingsReport, HoldingsSeries, HoldingsWarning} from "$lib/holdings/types";
+import type {
+    Holding,
+    HoldingsPoint,
+    HoldingsReport,
+    HoldingsSeries,
+    HoldingsWarning,
+    OtherHolding,
+    OtherHoldingsReport,
+    OtherHoldingsTotals,
+    OtherHoldingsWarning,
+} from "$lib/holdings/types";
 import type {
     AliasEffect,
     AliasEntry,
@@ -89,7 +99,32 @@ import type {
     SubscriptionsReport,
     TopTxn,
 } from "$lib/reports/insightsTypes";
-import type {BudgetCell, BudgetReport, BudgetRow, PeriodReport, ReportRow, Section, SectionedReport} from "$lib/reports/types";
+import type {
+    Amounts,
+    BalanceSheetReport,
+    BsGroup,
+    BsSection,
+    BsSectionKind,
+    BsSubsection,
+    BsTerm,
+    BsValuation,
+    BudgetCell,
+    BudgetReport,
+    BudgetRow,
+    DateRange,
+    GroupSource,
+    IncomeStatementReport,
+    IsGroup,
+    IsRow,
+    IsSection,
+    IsSectionKind,
+    IsSubtotal,
+    IsSubtotalKind,
+    PeriodReport,
+    ReportRow,
+    Section,
+    SectionedReport,
+} from "$lib/reports/types";
 import {ApiShapeError} from "./client";
 
 // ---------------------------------------------------------------------------
@@ -125,6 +160,91 @@ interface RawSectionedReport {
     to?: string;
     sections?: RawSection[];
     grandTotal?: RawMixed;
+}
+
+interface RawBsGroup {
+    name?: string;
+    source?: string;
+    // `null` = unclassified (the untagged journal); ABSENT is a broken contract.
+    term?: string | null;
+    rows?: RawReportRow[];
+    total?: RawMixed;
+}
+
+interface RawBsSubsection {
+    term?: string;
+    heading?: string;
+    label?: string;
+    total?: RawMixed;
+}
+
+interface RawBsSection {
+    kind?: string;
+    title?: string;
+    groups?: RawBsGroup[];
+    subsections?: RawBsSubsection[];
+    total?: RawMixed;
+}
+
+interface RawBalanceSheetReport {
+    asOf?: string;
+    base?: string | null;
+    value?: string;
+    sections?: RawBsSection[];
+    netWorth?: RawMixed;
+    check?: RawMixed;
+    balanced?: boolean;
+    meta?: RawReportMeta | null;
+}
+
+/** `{current, prior?}` — `prior` is ABSENT, not null, when `compare=none`. */
+interface RawAmounts {
+    current?: RawMixed;
+    prior?: RawMixed | null;
+}
+
+interface RawIsRow {
+    account?: string;
+    depth?: number;
+    amounts?: RawAmounts;
+}
+
+interface RawIsGroup {
+    name?: string;
+    source?: string;
+    rows?: RawIsRow[];
+    total?: RawAmounts;
+}
+
+interface RawIsSubtotal {
+    kind?: string;
+    label?: string;
+    total?: RawAmounts;
+}
+
+interface RawIsSection {
+    kind?: string;
+    title?: string;
+    groups?: RawIsGroup[];
+    total?: RawAmounts;
+    trailing?: RawIsSubtotal[];
+}
+
+interface RawDateRange {
+    from?: string;
+    to?: string;
+}
+
+interface RawIncomeStatementReport {
+    from?: string;
+    to?: string;
+    prior?: RawDateRange | null;
+    base?: string | null;
+    value?: string;
+    sections?: RawIsSection[];
+    netIncome?: RawAmounts;
+    multiStep?: boolean;
+    meta?: RawReportMeta | null;
 }
 
 interface RawPeriodRow {
@@ -198,10 +318,44 @@ interface RawHoldingsReport {
     asOf?: string;
     base?: string;
     holdings?: RawHolding[];
+    accounts?: unknown[];
     totals?: RawHoldingsTotals;
     topGainers?: RawHolding[];
     topLosers?: RawHolding[];
     warnings?: RawWarning[];
+}
+
+interface RawOtherHolding {
+    account?: string;
+    name?: string;
+    commodities?: RawMixed;
+    value?: RawDec | null;
+    cost?: RawDec | null;
+    change?: RawDec | null;
+    changePct?: number | null;
+}
+
+interface RawOtherHoldingsTotals {
+    value?: RawDec;
+    cost?: RawDec | null;
+    change?: RawDec | null;
+    changePct?: number | null;
+}
+
+/** The Other tab's warning is ACCOUNT-keyed, where the stock tab's is symbol-keyed. */
+interface RawOtherWarning {
+    account?: string;
+    kind?: string;
+    message?: string;
+}
+
+interface RawOtherHoldingsReport {
+    asOf?: string;
+    base?: string;
+    holdings?: RawOtherHolding[];
+    accounts?: unknown[];
+    totals?: RawOtherHoldingsTotals;
+    warnings?: RawOtherWarning[];
 }
 
 interface RawHoldingsPoint {
@@ -664,6 +818,13 @@ interface RawPrefs {
     gitAutocommit?: boolean | null;
 }
 
+interface RawJournalInfo {
+    // Both nullable on the wire: the engine says so when it could derive
+    // neither a title nor a main file, rather than inventing one.
+    title?: string | null;
+    file?: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Scalar decoders (shared)
 // ---------------------------------------------------------------------------
@@ -782,6 +943,299 @@ export function decodeSectionedReport(raw: unknown): SectionedReport {
     if (typeof report.asOf === "string") out.asOf = report.asOf;
     if (typeof report.from === "string") out.from = report.from;
     if (typeof report.to === "string") out.to = report.to;
+    return Object.freeze(out);
+}
+
+// ---------------------------------------------------------------------------
+// BalanceSheetReport (grouped, market-valued — plans/12)
+// ---------------------------------------------------------------------------
+
+const BS_SECTION_KINDS: readonly BsSectionKind[] = ["assets", "liabilities", "equity"];
+/** Shared by both statements — one resolver on the Rust side, one vocabulary here. */
+const GROUP_SOURCES: readonly GroupSource[] = ["tag", "type", "commodity", "segment", "computed"];
+const BS_VALUATIONS: readonly BsValuation[] = ["market", "cost", "none"];
+const BS_TERMS: readonly BsTerm[] = ["current", "noncurrent"];
+
+/**
+ * A closed enum off the wire.
+ *
+ * THROWS on an unknown member rather than falling back, exactly like
+ * `decodeChangeKind`/`decodeCadence`: `source` drives a badge and `kind` drives
+ * which of the three boxes a section lands in, so an invented default would put
+ * real balances under the wrong heading.
+ */
+function decodeEnum<T extends string>(allowed: readonly T[], raw: string | undefined, context: string): T {
+    const found = allowed.find((member) => member === raw);
+    if (found === undefined) throw new ApiShapeError(`${context}: expected one of ${allowed.join("/")}, got ${JSON.stringify(raw)}`);
+    return found;
+}
+
+/** A REQUIRED boolean. Absent is a broken contract, not a `false` (DRY-3). */
+function decodeBoolean(raw: boolean | undefined, context: string): boolean {
+    if (typeof raw !== "boolean") throw new ApiShapeError(`${context}: expected a boolean, got ${JSON.stringify(raw)}`);
+    return raw;
+}
+
+/**
+ * A closed enum that may be NULL but may not be ABSENT.
+ *
+ * `null` is a real answer here — "this group is not classified as current or
+ * non-current" — and the engine says it explicitly, which is why an absent key
+ * throws instead of collapsing into it. The two are indistinguishable on screen
+ * (both render a box with no bands), so a renamed Rust field would look exactly
+ * like an untagged journal and nothing would ever report the loss.
+ */
+function decodeNullableEnum<T extends string>(allowed: readonly T[], raw: string | null | undefined, context: string): T | null {
+    if (raw === null) return null;
+    if (raw === undefined) throw new ApiShapeError(`${context}: expected one of ${allowed.join("/")} or null, got nothing`);
+    return decodeEnum(allowed, raw, context);
+}
+
+/**
+ * A STRING that may be NULL but may not be ABSENT — `decodeNullableEnum` with
+ * the closed vocabulary swapped for free text.
+ *
+ * `base` on the two grouped statements is the caller: `Option<Commodity>` on
+ * the Rust side with no `skip_serializing_if`, so the key is ALWAYS on the
+ * wire and `null` is a real answer — "this journal has no base commodity" —
+ * that the UI renders differently (there is no dominant figure to promote).
+ * Collapsing an absent key into that answer would make a renamed Rust field
+ * indistinguishable from an honest no-base journal under version skew, which
+ * is exactly the silent loss `term`/`check`/`balanced` all throw on. (`optStr`
+ * is the deliberate opposite half: it reads absence itself as the fact, for
+ * keys serde is allowed to omit.)
+ */
+function decodeNullableStr(raw: string | null | undefined, context: string): string | null {
+    if (raw === null) return null;
+    if (raw === undefined) throw new ApiShapeError(`${context}: expected a string or null, got nothing`);
+    if (typeof raw !== "string") throw new ApiShapeError(`${context}: expected a string or null, got ${JSON.stringify(raw)}`);
+    return raw;
+}
+
+function decodeBsGroup(raw: RawBsGroup | undefined, context: string): BsGroup {
+    // `rows` is demanded even though a computed group's is always `[]`: absent
+    // and empty are different facts, and only one of them is safe to render as
+    // "this group has no accounts" (DRY-3, the same reasoning as decodeMixed).
+    if (raw === undefined || typeof raw.name !== "string" || !Array.isArray(raw.rows)) {
+        throw new ApiShapeError(`${context}: missing name/rows`);
+    }
+    return Object.freeze({
+        name: raw.name,
+        source: decodeEnum(GROUP_SOURCES, raw.source, `${context} source`),
+        term: decodeNullableEnum(BS_TERMS, raw.term, `${context} term`),
+        rows: frozen(raw.rows.map((row, i) => decodeReportRow(row, `${context} row #${i}`))),
+        total: decodeMixed(raw.total, `${context} total`),
+    });
+}
+
+/**
+ * One current/non-current band. `heading` and `label` are required STRINGS off
+ * the wire and are never reconstructed here — see `BsSubsection`: the term→prose
+ * mapping living in both the view and the workbook builder is the duplication
+ * this field exists to prevent.
+ */
+function decodeBsSubsection(raw: RawBsSubsection | undefined, context: string): BsSubsection {
+    if (raw === undefined || typeof raw.heading !== "string" || typeof raw.label !== "string") {
+        throw new ApiShapeError(`${context}: missing heading/label`);
+    }
+    return Object.freeze({
+        term: decodeEnum(BS_TERMS, raw.term, `${context} term`),
+        heading: raw.heading,
+        label: raw.label,
+        total: decodeMixed(raw.total, `${context} total`),
+    });
+}
+
+function decodeBsSection(raw: RawBsSection | undefined, context: string): BsSection {
+    // `subsections` is demanded even though it is `[]` on every untagged journal
+    // and on every equity section, for the reason `rows` is demanded one
+    // function up: an absent array would render as "this journal classifies
+    // nothing", which is indistinguishable from the honest untagged case and is
+    // therefore the one failure nothing downstream could ever notice.
+    if (raw === undefined || typeof raw.title !== "string" || !Array.isArray(raw.groups) || !Array.isArray(raw.subsections)) {
+        throw new ApiShapeError(`${context}: missing title/groups/subsections`);
+    }
+    return Object.freeze({
+        kind: decodeEnum(BS_SECTION_KINDS, raw.kind, `${context} kind`),
+        title: raw.title,
+        groups: frozen(raw.groups.map((group, i) => decodeBsGroup(group, `${context} group #${i}`))),
+        subsections: frozen(raw.subsections.map((subsection, i) => decodeBsSubsection(subsection, `${context} subsection #${i}`))),
+        total: decodeMixed(raw.total, `${context} total`),
+    });
+}
+
+/**
+ * `GET /api/reports/balancesheet/grouped` → the three-box balance sheet.
+ *
+ * `base` is `Option<Commodity>` on the Rust side and arrives as `null` for a
+ * journal with no base commodity — a fact the UI has to render differently
+ * (there is no dominant figure to promote), so it is kept as null rather than
+ * coerced to "". The KEY itself is always sent, so its absence throws — see
+ * `decodeNullableStr`.
+ *
+ * `kind: "balanceSheet"` is added HERE and is not on the wire: this report and
+ * `SectionedReport` both carry a `sections` array, and the page picks its
+ * renderer and its export builder off that tag.
+ */
+export function decodeBalanceSheetReport(raw: unknown): BalanceSheetReport {
+    const report = raw as RawBalanceSheetReport;
+    if (typeof report !== "object" || report === null || typeof report.asOf !== "string" || !Array.isArray(report.sections)) {
+        throw new ApiShapeError("balance sheet: expected asOf and a sections array");
+    }
+    const out: BalanceSheetReport = {
+        kind: "balanceSheet",
+        asOf: report.asOf as ISODate,
+        base: decodeNullableStr(report.base, "balance sheet base"),
+        value: decodeEnum(BS_VALUATIONS, report.value, "balance sheet value"),
+        sections: frozen(report.sections.map((section, i) => decodeBsSection(section, `balance sheet section #${i}`))),
+        netWorth: decodeMixed(report.netWorth, "balance sheet netWorth"),
+        // `{}` is the balanced case and IS sent; absent is a broken contract.
+        // Defaulting it to empty would turn "the engine stopped answering the
+        // integrity question" into "the journal balances", which is the one
+        // wrong answer this field must never give.
+        check: decodeMixed(report.check, "balance sheet check"),
+        // Likewise required, and for the same reason: the engine derives it from
+        // the precisions the journal writes, so it is not something the client
+        // can reconstruct. Defaulting a missing one to `true` would silently
+        // suppress a real imbalance.
+        balanced: decodeBoolean(report.balanced, "balance sheet balanced"),
+    };
+    // Omitted (`skip_serializing_if = "Option::is_none"`) when nothing is unpriced.
+    if (report.meta !== undefined && report.meta !== null) {
+        out.meta = Object.freeze({unpriced: frozen(decodeStrings(report.meta.unpriced, "balance sheet meta.unpriced"))});
+    }
+    return Object.freeze(out);
+}
+
+// ---------------------------------------------------------------------------
+// IncomeStatementReport (grouped, adaptive GAAP — plans/13)
+// ---------------------------------------------------------------------------
+
+const IS_SECTION_KINDS: readonly IsSectionKind[] = ["revenue", "cogs", "opex", "depreciation", "interest", "tax", "other"];
+const IS_SUBTOTAL_KINDS: readonly IsSubtotalKind[] = ["grossProfit", "ebitda", "operatingIncome", "pretaxIncome"];
+
+/**
+ * `{current, prior?}`, checked against whether the REPORT is comparing.
+ *
+ * That cross-check is the whole point of taking `comparing` as an argument.
+ * `prior` is an optional key, and an optional key is exactly where a renamed
+ * Rust field disappears without trace: the column would simply stop rendering,
+ * which reads as "this report has no comparison" rather than as a bug. So:
+ *
+ *   - comparing (`report.prior` is a window) → `prior` MUST decode. Absent throws.
+ *   - not comparing → `prior` must be absent. `null` is tolerated as absent,
+ *     because that is what serde emits for an `Option` without
+ *     `skip_serializing_if` and it means the identical thing; an actual amount
+ *     throws, since there would be no window to label the column with.
+ *
+ * `current` is unconditionally required via `decodeMixed`, so a missing figure
+ * can never become `$0.00` (DRY-3).
+ */
+function decodeAmounts(raw: RawAmounts | undefined, context: string, comparing: boolean): Amounts {
+    if (raw === undefined || raw === null || typeof raw !== "object") {
+        throw new ApiShapeError(`${context}: missing amounts (expected {current, prior?})`);
+    }
+    const out: Amounts = {current: decodeMixed(raw.current, `${context} current`)};
+    if (comparing) {
+        out.prior = decodeMixed(raw.prior ?? undefined, `${context} prior`);
+    } else if (raw.prior !== undefined && raw.prior !== null) {
+        throw new ApiShapeError(`${context} prior: sent a prior figure on a report with no prior period`);
+    }
+    return Object.freeze(out);
+}
+
+function decodeIsRow(raw: RawIsRow | undefined, context: string, comparing: boolean): IsRow {
+    if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number") {
+        throw new ApiShapeError(`${context}: missing account/depth`);
+    }
+    return Object.freeze({account: raw.account, depth: raw.depth, amounts: decodeAmounts(raw.amounts, `${context} amounts`, comparing)});
+}
+
+function decodeIsGroup(raw: RawIsGroup | undefined, context: string, comparing: boolean): IsGroup {
+    // `rows` demanded even when empty, for the reason `decodeBsGroup` gives:
+    // absent and empty are different facts and only one is safe to render.
+    if (raw === undefined || typeof raw.name !== "string" || !Array.isArray(raw.rows)) {
+        throw new ApiShapeError(`${context}: missing name/rows`);
+    }
+    return Object.freeze({
+        name: raw.name,
+        source: decodeEnum(GROUP_SOURCES, raw.source, `${context} source`),
+        rows: frozen(raw.rows.map((row, i) => decodeIsRow(row, `${context} row #${i}`, comparing))),
+        total: decodeAmounts(raw.total, `${context} total`, comparing),
+    });
+}
+
+function decodeIsSubtotal(raw: RawIsSubtotal | undefined, context: string, comparing: boolean): IsSubtotal {
+    if (raw === undefined || typeof raw.label !== "string") throw new ApiShapeError(`${context}: missing label`);
+    return Object.freeze({
+        kind: decodeEnum(IS_SUBTOTAL_KINDS, raw.kind, `${context} kind`),
+        label: raw.label,
+        total: decodeAmounts(raw.total, `${context} total`, comparing),
+    });
+}
+
+function decodeIsSection(raw: RawIsSection | undefined, context: string, comparing: boolean): IsSection {
+    // `trailing` is required for the same reason `rows` is: "this box has no
+    // ladder line under it" is a real answer the engine computes from its
+    // guards, and it must not be reachable by the field going missing.
+    if (raw === undefined || typeof raw.title !== "string" || !Array.isArray(raw.groups) || !Array.isArray(raw.trailing)) {
+        throw new ApiShapeError(`${context}: missing title/groups/trailing`);
+    }
+    return Object.freeze({
+        kind: decodeEnum(IS_SECTION_KINDS, raw.kind, `${context} kind`),
+        title: raw.title,
+        groups: frozen(raw.groups.map((group, i) => decodeIsGroup(group, `${context} group #${i}`, comparing))),
+        total: decodeAmounts(raw.total, `${context} total`, comparing),
+        trailing: frozen(raw.trailing.map((subtotal, i) => decodeIsSubtotal(subtotal, `${context} subtotal #${i}`, comparing))),
+    });
+}
+
+/** `{from, to}` — the window the prior figures cover. Both dates required. */
+function decodeDateRange(raw: RawDateRange, context: string): DateRange {
+    if (typeof raw.from !== "string" || typeof raw.to !== "string") {
+        throw new ApiShapeError(`${context}: expected {from, to} ISO dates`);
+    }
+    return Object.freeze({from: raw.from as ISODate, to: raw.to as ISODate});
+}
+
+/**
+ * `GET /api/reports/incomestatement/grouped` → the grouped income statement.
+ *
+ * `kind: "incomeStatement"` is added HERE and is not on the wire. Three report
+ * types now carry a `sections` array, so this tag is what lets the page pick a
+ * renderer and a workbook builder at all (FE-1).
+ *
+ * `prior` does double duty: it is the window the comparison column covers AND
+ * the switch that says every `Amounts` in the tree must carry one. Reading it
+ * first, and passing `comparing` down, is what turns an optional key into a
+ * checked one — see `decodeAmounts`.
+ */
+export function decodeIncomeStatementReport(raw: unknown): IncomeStatementReport {
+    const report = raw as RawIncomeStatementReport;
+    if (typeof report !== "object" || report === null || typeof report.from !== "string" || typeof report.to !== "string" || !Array.isArray(report.sections)) {
+        throw new ApiShapeError("income statement: expected from, to and a sections array");
+    }
+    // Omitted (or null) for `compare=none`; a window for `compare=previous`.
+    const prior = report.prior === undefined || report.prior === null ? null : decodeDateRange(report.prior, "income statement prior");
+    const comparing = prior !== null;
+    const out: IncomeStatementReport = {
+        kind: "incomeStatement",
+        from: report.from as ISODate,
+        to: report.to as ISODate,
+        prior,
+        // Null is the no-base answer; absent throws (see `decodeNullableStr`).
+        base: decodeNullableStr(report.base, "income statement base"),
+        value: decodeEnum(BS_VALUATIONS, report.value, "income statement value"),
+        sections: frozen(report.sections.map((section, i) => decodeIsSection(section, `income statement section #${i}`, comparing))),
+        netIncome: decodeAmounts(report.netIncome, "income statement netIncome", comparing),
+        // Required, not defaulted: it decides whether `opex` reads "Expenses" or
+        // "Operating expenses", so a missing one would silently relabel a box.
+        multiStep: decodeBoolean(report.multiStep, "income statement multiStep"),
+    };
+    // Omitted (`skip_serializing_if = "Option::is_none"`) when nothing is unpriced.
+    if (report.meta !== undefined && report.meta !== null) {
+        out.meta = Object.freeze({unpriced: frozen(decodeStrings(report.meta.unpriced, "income statement meta.unpriced"))});
+    }
     return Object.freeze(out);
 }
 
@@ -910,18 +1364,112 @@ export function decodeHoldingsReport(raw: unknown): HoldingsReport {
         report === null ||
         typeof report.asOf !== "string" ||
         typeof report.base !== "string" ||
-        !Array.isArray(report.holdings)
+        !Array.isArray(report.holdings) ||
+        // Demanded, not defaulted to []: this is the scope chooser's whole option
+        // list, and an absent key would empty the account picker while the report
+        // beside it rendered perfectly (DRY-3).
+        !Array.isArray(report.accounts)
     ) {
-        throw new ApiShapeError("holdings report: expected asOf/base/holdings");
+        throw new ApiShapeError("holdings report: expected asOf/base/holdings/accounts");
     }
     return Object.freeze({
         asOf: report.asOf as ISODate,
         base: report.base,
         holdings: frozen(report.holdings.map((holding, i) => decodeHolding(holding, `holding #${i}`))),
+        accounts: frozen(decodeStrings(report.accounts, "holdings accounts")),
         totals: decodeHoldingsTotals(report.totals, "holdings totals"),
         topGainers: frozen((report.topGainers ?? []).map((holding, i) => decodeHolding(holding, `topGainer #${i}`))),
         topLosers: frozen((report.topLosers ?? []).map((holding, i) => decodeHolding(holding, `topLoser #${i}`))),
         warnings: frozen((report.warnings ?? []).map((warning, i) => decodeWarning(warning, `warning #${i}`))),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// OtherHoldingsReport (plans/14) — the non-stock, non-cash assets.
+//
+// A separate decoder rather than a variant of `decodeHolding`: the two reports
+// share not one field name. This one is account-keyed and carries the balance
+// as-written (`commodities`), where the stock report is symbol-keyed and carries
+// `shares`/`price`/`basis`. Its SERIES, by contrast, IS the stock series byte
+// for byte, so there is no `decodeOtherHoldingsSeries` — callers pass the
+// response straight to `decodeHoldingsSeries`, and a second decoder would only
+// create somewhere for the two to drift.
+// ---------------------------------------------------------------------------
+
+function decodeOtherHolding(raw: RawOtherHolding | undefined, context: string): OtherHolding {
+    if (raw === undefined || typeof raw.account !== "string" || typeof raw.name !== "string") {
+        throw new ApiShapeError(`${context}: missing account/name`);
+    }
+    return Object.freeze({
+        account: raw.account,
+        name: raw.name,
+        // Demanded, never defaulted to an empty Map: an account that holds
+        // nothing is not a row at all (membership requires a non-zero balance),
+        // so an empty `commodities` here would mean the engine stopped sending
+        // the balance — and the Holding cell would silently read as a
+        // currency-only asset (DRY-3, the same reasoning as decodeMixed).
+        commodities: decodeMixed(raw.commodities, `${context} commodities`),
+        value: decodeOptDec(raw.value, `${context} value`),
+        cost: decodeOptDec(raw.cost, `${context} cost`),
+        change: decodeOptDec(raw.change, `${context} change`),
+        changePct: typeof raw.changePct === "number" ? raw.changePct : null,
+    });
+}
+
+function decodeOtherWarning(raw: RawOtherWarning | undefined, context: string): OtherHoldingsWarning {
+    if (raw === undefined || typeof raw.account !== "string" || typeof raw.message !== "string") {
+        throw new ApiShapeError(`${context}: missing account/message`);
+    }
+    // Throwing on a new kind is the same call `decodeWarning` makes: a warning
+    // we cannot classify is not a warning we should render.
+    if (raw.kind !== "unpriced" && raw.kind !== "unpriced-cost") {
+        throw new ApiShapeError(`${context}: unknown warning kind ${JSON.stringify(raw.kind)}`);
+    }
+    return Object.freeze({account: raw.account, kind: raw.kind, message: raw.message});
+}
+
+function decodeOtherHoldingsTotals(raw: RawOtherHoldingsTotals | undefined, context: string): OtherHoldingsTotals {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing totals`);
+    return Object.freeze({
+        // `value` alone is unconditional on the wire: it sums the rows that HAVE
+        // a value, so an all-unpriced report still totals to zero rather than to
+        // nothing. The other three are refusals the UI renders as an em-dash.
+        value: decodeDec(raw.value, `${context} value`),
+        cost: decodeOptDec(raw.cost, `${context} cost`),
+        change: decodeOptDec(raw.change, `${context} change`),
+        changePct: typeof raw.changePct === "number" ? raw.changePct : null,
+    });
+}
+
+/** `GET /api/holdings/other` → the Other tab's table + totals. */
+export function decodeOtherHoldingsReport(raw: unknown): OtherHoldingsReport {
+    const report = raw as RawOtherHoldingsReport;
+    if (
+        typeof report !== "object" ||
+        report === null ||
+        typeof report.asOf !== "string" ||
+        typeof report.base !== "string" ||
+        !Array.isArray(report.holdings) ||
+        // Demanded, not defaulted to []: this is the scope chooser's whole option
+        // list, and an absent key would empty the account picker while the report
+        // beside it rendered perfectly — "this journal tracks no other assets",
+        // said by a field that went missing (DRY-3).
+        !Array.isArray(report.accounts) ||
+        // Demanded for the same reason, and specifically because the golden has
+        // NO unpriced row: `?? []` would make renaming this key indistinguishable
+        // from the honest empty case, which is exactly the hole the rename sweep
+        // exists to close. "Nothing is unpriced" must be the engine saying so.
+        !Array.isArray(report.warnings)
+    ) {
+        throw new ApiShapeError("other holdings report: expected asOf/base/holdings/accounts/warnings");
+    }
+    return Object.freeze({
+        asOf: report.asOf as ISODate,
+        base: report.base,
+        holdings: frozen(report.holdings.map((holding, i) => decodeOtherHolding(holding, `other holding #${i}`))),
+        accounts: frozen(decodeStrings(report.accounts, "other holdings accounts")),
+        totals: decodeOtherHoldingsTotals(report.totals, "other holdings totals"),
+        warnings: frozen(report.warnings.map((warning, i) => decodeOtherWarning(warning, `other holdings warning #${i}`))),
     });
 }
 
@@ -1828,6 +2376,47 @@ export function decodeSortResult(raw: unknown): SortResult {
     const result = raw as RawSortResult;
     if (typeof result !== "object" || result === null) throw new ApiShapeError("sort result: expected an object");
     return Object.freeze({moved: num(result.moved, "sort result moved")});
+}
+
+// ---------------------------------------------------------------------------
+// Journal identity (which ledger is on screen)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which journal the engine has open, as the app bar labels it.
+ *
+ * Declared here rather than in a feature `types.ts` like `HoldingsReport` or
+ * `Prefs`: two nullable strings and one consumer do not make a domain, and there
+ * is no journal-identity module for them to be the domain OF.
+ */
+export interface JournalInfo {
+    /** Display title (the journal's first-line comment, else its folder name); null when the engine derived none. */
+    title: string | null;
+    /** The BARE filename of the main journal file — never a path. */
+    file: string | null;
+}
+
+/**
+ * `GET /api/journal` → which ledger this engine has open.
+ *
+ * Both fields go through `optStr`, so absent and explicitly null decode to the
+ * same fact — "the engine could not derive one" — and the caller falls back to
+ * naming the server URL, which is honest about not knowing. A non-string is
+ * still a throw, and that is the point of decoding two strings at all: a title
+ * that quietly became `"[object Object]"` (or `"null"`) would label the screen
+ * with confident nonsense, and a wrong-but-confident ledger name is precisely
+ * the failure this label exists to prevent.
+ */
+export function decodeJournalInfo(raw: unknown): JournalInfo {
+    const info = raw as RawJournalInfo;
+    // Arrays are `typeof "object"` too, and `[].title` is undefined — so a JSON
+    // array body used to be absorbed as {title: null, file: null}, an answer no
+    // engine ever gave, instead of the non-engine-server throw it is.
+    if (typeof info !== "object" || info === null || Array.isArray(info)) throw new ApiShapeError("journal info: expected an object");
+    return Object.freeze({
+        title: optStr(info.title, "journal info title"),
+        file: optStr(info.file, "journal info file"),
+    });
 }
 
 /** `GET`/`PUT /api/prefs` → the preferences store. */

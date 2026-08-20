@@ -12,6 +12,7 @@
 
 import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
 import {
+    dec,
     displayPlaces,
     formatDec,
     maAdd,
@@ -27,8 +28,19 @@ import type {AmountStyle} from "$lib/domain/types";
 import type {HoldingsReport} from "$lib/holdings/types";
 import {budgetLeaves, budgetTotals, magnitudeAmount, primaryValue, summarizeBudget, type BudgetLine} from "$lib/reports/budgetSummary";
 import {bucketLabel} from "$lib/reports/periods";
-import type {BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
-import {compressPeriodRows, compressSectionRows} from "$lib/reports/ui/displayRows";
+import type {
+    Amounts,
+    BalanceSheetReport,
+    BsSectionKind,
+    BudgetReport,
+    IncomeStatementReport,
+    IsSectionKind,
+    PeriodReport,
+    SectionedReport,
+} from "$lib/reports/types";
+import {bsSectionBlocks, bsSummary} from "$lib/reports/ui/balanceSheetRows";
+import {compressIsRows, compressPeriodRows, compressSectionRows} from "$lib/reports/ui/displayRows";
+import {isSummary, pctOfRevenue, revenueTotal} from "$lib/reports/ui/incomeStatementRows";
 import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build time
 
 const HEADER_ARGB = "FF1E293B";
@@ -94,18 +106,31 @@ function writeDec(cell: Cell, commodity: string, qty: Dec, maxDecimals: number):
     cell.numFmt = numberFormat(commodity, places, places);
 }
 
+/**
+ * Commodity-labelled text for a list of exact quantities, e.g. `5 GLD, -2 TSLA`.
+ *
+ * Formatted from the exact Dec, never `toNumber(...).toFixed(...)` — that rounds
+ * the binary double and drifts a cent off the screen's string (FE-6).
+ */
+function amountsText(entries: readonly [string, Dec][]): string {
+    return entries.map(([commodity, qty]) => `${formatDec(qty, {...TEXT_STYLE, precision: qty.p})} ${commodity}`).join(", ");
+}
+
+/** A MixedAmount's commodities, sorted, so a cell's contents never depend on Map insertion order. */
+function sortedEntries(ma: MixedAmount): [string, Dec][] {
+    return [...ma.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
 /** Write a MixedAmount: single-commodity → real number + numFmt; multi → text fallback; empty → 0. */
 function setAmount(cell: Cell, ma: MixedAmount): void {
-    const entries = [...ma.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const entries = sortedEntries(ma);
     if (entries.length === 1) {
         writeDec(cell, entries[0][0], entries[0][1], MAX_DISPLAY_DECIMALS);
     } else if (entries.length === 0) {
         cell.value = 0;
         cell.numFmt = "#,##0";
     } else {
-        // Formatted from the exact Dec, never `toNumber(...).toFixed(...)` — that
-        // rounds the binary double and drifts a cent off the screen's string.
-        cell.value = entries.map(([commodity, qty]: [string, Dec]) => `${formatDec(qty, {...TEXT_STYLE, precision: qty.p})} ${commodity}`).join(", ");
+        cell.value = amountsText(entries);
     }
     cell.alignment = {...cell.alignment, horizontal: "right"};
 }
@@ -140,7 +165,353 @@ function labelCell(ws: Worksheet, rowIx: number, label: string, indent: number, 
     if (bold) cell.font = {bold: true};
 }
 
-/** Balance sheet / income statement: same compressed rows the UI shows, one Amount column. */
+// --- Grouped balance sheet (plans/12) ---------------------------------------
+
+/**
+ * Section fills, matching the on-screen accents (daisyUI success / warning /
+ * info) at a darkness that reads against white with the same white bold text
+ * `addTitleRows` uses for the header row.
+ */
+const BS_SECTION_ARGB: Record<BsSectionKind, string> = {
+    assets: "FF14532D",
+    liabilities: "FF7C2D12",
+    equity: "FF1E3A8A",
+};
+
+/** An exact zero at cent precision, so a missing base part still formats as `$0.00` and not `0`. */
+const ZERO_MONEY: Dec = dec(0n, 2);
+
+/**
+ * One balance-sheet figure across the Amount and "Other commodities" columns.
+ *
+ * The whole report is valued into `base`, so the Amount column is finally a REAL
+ * NUMBER with a number format rather than the comma-joined text `setAmount`
+ * falls back to. What could NOT be valued — a holding with no `P` directive —
+ * goes into its own text column instead of being dropped: "unpriced commodities
+ * are surfaced, never silently dropped" is the rule the whole redesign rests on,
+ * and a workbook that quietly omitted them would be the worst place to break it.
+ *
+ * `base === null` (a journal with no base commodity) has no figure to promote,
+ * so it degrades to `setAmount`'s existing behaviour.
+ */
+function setBsAmount(ws: Worksheet, rowIx: number, ma: MixedAmount, base: string | null, bold: boolean): void {
+    const cell = ws.getCell(rowIx, 2);
+    if (base === null) setAmount(cell, ma);
+    else setDec(cell, base, ma.get(base) ?? ZERO_MONEY);
+    if (bold) cell.font = {bold: true};
+
+    const others = sortedEntries(ma).filter(([commodity, qty]) => commodity !== base && qty.m !== 0n);
+    if (others.length === 0 || base === null) return;
+    const extras = ws.getCell(rowIx, 3);
+    extras.value = amountsText(others);
+    extras.alignment = {...extras.alignment, horizontal: "right"};
+    if (bold) extras.font = {bold: true};
+}
+
+/** A full-width rule above a totals row (the workbook's answer to the screen's `<tfoot>` border). */
+function ruleAbove(ws: Worksheet, rowIx: number, style: "thin" | "medium"): void {
+    for (const col of [1, 2, 3]) {
+        const cell = ws.getCell(rowIx, col);
+        cell.border = {...cell.border, top: {style}};
+    }
+}
+
+/**
+ * The grouped balance sheet: a coloured header per box, a bold row per group
+ * with its subtotal, the group's indented accounts beneath it, a ruled section
+ * total, then the same tie-out the screen shows — the three section totals,
+ * `Liabilities + equity` against `Total assets`, the verdict, and net worth as
+ * its own figure below.
+ *
+ * Assets and Liabilities may be banded CURRENT / NON-CURRENT: a subheading row
+ * above the band's first group, a ruled subtotal below its last. `bsSectionBlocks`
+ * is shared with the view, so the workbook cannot split its bands at a different
+ * group from the page — and the heading and subtotal prose is the engine's, so it
+ * cannot word them differently either. A journal that tags nothing produces
+ * neither row, exactly as it produces neither on screen.
+ *
+ * `bsSummary` is shared with the view precisely so a workbook cannot claim a
+ * different `Liabilities + equity` (or a different verdict) from the page it was
+ * exported from.
+ *
+ * Deliberately UNLIKE the screen in exactly one way: every group is written out
+ * in full, whatever is collapsed in the UI. A disclosure triangle is a way to
+ * read a long statement on a screen; an exported statement missing the accounts
+ * the reader happened to have closed is just an incomplete document.
+ */
+function addBalanceSheet(ws: Worksheet, report: BalanceSheetReport): void {
+    let rowIx = 5;
+    for (const section of report.sections) {
+        for (const col of [1, 2, 3]) {
+            const cell = ws.getCell(rowIx, col);
+            cell.font = {bold: true, color: {argb: "FFFFFFFF"}};
+            cell.fill = {type: "pattern", pattern: "solid", fgColor: {argb: BS_SECTION_ARGB[section.kind]}};
+        }
+        ws.getCell(rowIx, 1).value = section.title;
+        rowIx += 1;
+
+        // A banded section pushes its groups one level right, so the workbook's
+        // only structural language — indentation — says what typography says on
+        // screen: heading over group over account. An unbanded section is
+        // untouched, and its groups stay exactly where they have always been.
+        const groupIndent = section.subsections.length > 0 ? 2 : 1;
+
+        for (const {opens, group, closes} of bsSectionBlocks(section)) {
+            if (opens !== null) {
+                labelCell(ws, rowIx, opens.heading, 1, true);
+                rowIx += 1;
+            }
+            labelCell(ws, rowIx, group.name, groupIndent, true);
+            setBsAmount(ws, rowIx, group.total, report.base, true);
+            rowIx += 1;
+            // Same compression the screen applies, so a single-child chain is one
+            // row in both places.
+            for (const {label, indent, row} of compressSectionRows(group.rows)) {
+                labelCell(ws, rowIx, label, indent + groupIndent + 1);
+                setBsAmount(ws, rowIx, row.inclusive, report.base, false);
+                rowIx += 1;
+            }
+            if (closes !== null) {
+                ruleAbove(ws, rowIx, "thin");
+                // The engine's subtotal, at the subheading's own indent so the
+                // band reads as opened and closed by the same level.
+                labelCell(ws, rowIx, closes.label, 1, true);
+                setBsAmount(ws, rowIx, closes.total, report.base, true);
+                rowIx += 1;
+            }
+        }
+
+        ruleAbove(ws, rowIx, "thin");
+        labelCell(ws, rowIx, `Total ${section.title}`, 0, true);
+        setBsAmount(ws, rowIx, section.total, report.base, true);
+        rowIx += 2; // a blank row between boxes, as the screen puts a gap between them
+    }
+
+    const summary = bsSummary(report);
+    ruleAbove(ws, rowIx, "medium");
+    for (const [label, ma] of [
+        ["Total Assets", summary.assets],
+        ["Total Liabilities", summary.liabilities],
+        ["Total Equity", summary.equity],
+    ] as const) {
+        labelCell(ws, rowIx, label, 0);
+        setBsAmount(ws, rowIx, ma, report.base, false);
+        rowIx += 1;
+    }
+
+    // The tie-out proper. `Liabilities + equity` is summed from the exact Decs
+    // by `bsSummary`, never by re-adding the rounded cells above it.
+    ruleAbove(ws, rowIx, "thin");
+    labelCell(ws, rowIx, "Liabilities + Equity", 0, true);
+    setBsAmount(ws, rowIx, summary.liabilitiesPlusEquity, report.base, true);
+    rowIx += 1;
+    labelCell(ws, rowIx, "Total Assets", 0, true);
+    setBsAmount(ws, rowIx, summary.assets, report.base, true);
+    rowIx += 1;
+
+    // The engine's verdict, taken as given (`bsSummary` — the same one the
+    // screen renders). When it fails, the row carries the exact residue so the
+    // reader can go looking for it.
+    if (summary.balanced) {
+        labelCell(ws, rowIx, "Balanced", 0, true);
+        ws.getCell(rowIx, 1).font = {bold: true, color: {argb: "FF15803D"}};
+    } else {
+        labelCell(ws, rowIx, "Out of balance (assets − liabilities − equity)", 0, true);
+        setBsAmount(ws, rowIx, report.check, report.base, true);
+        for (const col of [1, 2, 3]) ws.getCell(rowIx, col).font = {bold: true, color: {argb: "FFB45309"}};
+    }
+    rowIx += 2;
+
+    ruleAbove(ws, rowIx, "medium");
+    labelCell(ws, rowIx, "Net worth (assets − liabilities)", 0, true);
+    setBsAmount(ws, rowIx, summary.netWorth, report.base, true);
+}
+
+// --- Grouped income statement (plans/13) ------------------------------------
+
+/**
+ * Section fills, matching the on-screen accents at a darkness that reads against
+ * white with the same white bold text `addTitleRows` uses for the header row.
+ * Revenue is the one green box; every cost section is in the warm half of the
+ * wheel, and the two genuinely different ones (`other`, which is signed, and
+ * `depreciation`, which is non-cash) are visibly apart from both.
+ */
+const IS_SECTION_ARGB: Record<IsSectionKind, string> = {
+    revenue: "FF14532D",
+    cogs: "FF7C2D12",
+    opex: "FF7F1D1D",
+    depreciation: "FF581C87",
+    interest: "FF134E4A",
+    tax: "FF78350F",
+    other: "FF1E3A8A",
+};
+
+/**
+ * Column layout, which depends on whether the report compares.
+ *
+ * Computed ONCE per workbook rather than open-coded per row: the prior column
+ * exists only when there is a prior period, so every column after it shifts, and
+ * a hand-numbered `getCell(row, 4)` somewhere would silently write the
+ * percentage into the extras column on half the reports.
+ */
+interface IsColumns {
+    label: number;
+    amount: number;
+    prior: number | null;
+    pct: number;
+    extras: number;
+    /** The PRIOR period's unconverted leftovers. Exists exactly when `prior` does. */
+    priorExtras: number | null;
+    count: number;
+}
+
+function isColumns(comparing: boolean): IsColumns {
+    return comparing
+        ? {label: 1, amount: 2, prior: 3, pct: 4, extras: 5, priorExtras: 6, count: 6}
+        : {label: 1, amount: 2, prior: null, pct: 3, extras: 4, priorExtras: null, count: 4};
+}
+
+/**
+ * One income-statement figure across the Amount / Prior / % / extras columns.
+ *
+ * The report is valued into `base`, so the money columns are REAL NUMBERS with a
+ * number format rather than the comma-joined text `setAmount` falls back to, and
+ * the percentage is a real number with Excel's own percent format (which
+ * multiplies by 100 — hence `/100`) rather than a pre-rendered "73.9%" string.
+ * A reader can therefore sort, chart and re-total the sheet.
+ *
+ * `pctOfRevenue` is the same function the screen calls, so the workbook cannot
+ * round a percentage the other way from the page it came from. `null` leaves the
+ * cell EMPTY: there is no percentage when there is no revenue, and `0.0%` would
+ * be a claim rather than a blank.
+ */
+function setIsAmounts(ws: Worksheet, rowIx: number, cols: IsColumns, amounts: Amounts, pct: number | null, base: string | null, bold: boolean): void {
+    const write = (col: number, ma: MixedAmount): void => {
+        const cell = ws.getCell(rowIx, col);
+        if (base === null) setAmount(cell, ma);
+        else setDec(cell, base, ma.get(base) ?? ZERO_MONEY);
+        if (bold) cell.font = {bold: true};
+    };
+    write(cols.amount, amounts.current);
+    if (cols.prior !== null && amounts.prior !== undefined) write(cols.prior, amounts.prior);
+
+    if (pct !== null) {
+        const cell = ws.getCell(rowIx, cols.pct);
+        // `round(pct × 10) / 1000`, not `pct / 100` — Excel's % format multiplies
+        // by 100, and the naive division compounds the error already in `pct`:
+        // 99.9/100 stores 0.9990000000000001, which is a spreadsheet cell a
+        // reader can see is wrong the moment they widen the column. Going via the
+        // integer tenths the percentage already IS lands on the nearest double to
+        // 0.999, which prints as 0.999.
+        cell.value = Math.round(pct * 10) / 1000;
+        cell.numFmt = "0.0%";
+        cell.alignment = {...cell.alignment, horizontal: "right"};
+        if (bold) cell.font = {bold: true};
+    }
+
+    // What the valuation could NOT convert, in its own column rather than
+    // dropped — the rule the whole redesign rests on, and a workbook that quietly
+    // omitted them would be the worst place to break it. Each period's leftovers
+    // land in that period's OWN column, matching the screen, which hangs a
+    // figure's extras under the column the figure is in (current under Amount,
+    // prior under the dated prior column). Concatenating both into one cell read
+    // "5 GLD, 3 GLD" — neither figure attributed to a window, and the pair
+    // indistinguishable from a typo'd duplicate.
+    if (base === null) return;
+    const writeExtras = (col: number, ma: MixedAmount | undefined): void => {
+        const leftovers = sortedEntries(ma ?? new Map()).filter(([commodity, qty]) => commodity !== base && qty.m !== 0n);
+        if (leftovers.length === 0) return;
+        const extras = ws.getCell(rowIx, col);
+        extras.value = amountsText(leftovers);
+        extras.alignment = {...extras.alignment, horizontal: "right"};
+        if (bold) extras.font = {bold: true};
+    };
+    writeExtras(cols.extras, amounts.current);
+    if (cols.priorExtras !== null) writeExtras(cols.priorExtras, amounts.prior);
+}
+
+/**
+ * The grouped income statement: a coloured header per box, a bold row per group
+ * with its subtotal, the group's indented accounts beneath it, a ruled section
+ * total, the ladder lines between boxes, then the condensed summary and net
+ * income.
+ *
+ * `isSummary` and `pctOfRevenue` are shared with the view precisely so a workbook
+ * cannot claim different components — or a different percentage — from the page
+ * it was exported from.
+ *
+ * Deliberately UNLIKE the screen in exactly one way: every group is written out
+ * in full, whatever is collapsed in the UI. A disclosure triangle is a way to
+ * read a long statement on a screen; an exported statement missing the accounts
+ * the reader happened to have closed is just an incomplete document.
+ */
+function addIncomeStatement(ws: Worksheet, report: IncomeStatementReport, cols: IsColumns): void {
+    const base = report.base;
+    const revenue = revenueTotal(report);
+    const pct = (amounts: Amounts): number | null => pctOfRevenue(amounts.current, revenue, base);
+    const columns = Array.from({length: cols.count}, (_, i) => i + 1);
+    const rule = (rowIx: number, style: "thin" | "medium"): void => {
+        for (const col of columns) {
+            const cell = ws.getCell(rowIx, col);
+            cell.border = {...cell.border, top: {style}};
+        }
+    };
+
+    let rowIx = 5;
+    for (const section of report.sections) {
+        for (const col of columns) {
+            const cell = ws.getCell(rowIx, col);
+            cell.font = {bold: true, color: {argb: "FFFFFFFF"}};
+            cell.fill = {type: "pattern", pattern: "solid", fgColor: {argb: IS_SECTION_ARGB[section.kind]}};
+        }
+        ws.getCell(rowIx, cols.label).value = section.title;
+        rowIx += 1;
+
+        for (const group of section.groups) {
+            labelCell(ws, rowIx, group.name, 1, true);
+            setIsAmounts(ws, rowIx, cols, group.total, pct(group.total), base, true);
+            rowIx += 1;
+            // The same compression the screen applies, so a single-child chain is
+            // one row in both places.
+            for (const {label, indent, row} of compressIsRows(group.rows)) {
+                labelCell(ws, rowIx, label, indent + 2);
+                setIsAmounts(ws, rowIx, cols, row.amounts, pct(row.amounts), base, false);
+                rowIx += 1;
+            }
+        }
+
+        rule(rowIx, "thin");
+        labelCell(ws, rowIx, `Total ${section.title}`, 0, true);
+        setIsAmounts(ws, rowIx, cols, section.total, pct(section.total), base, true);
+        rowIx += 1;
+
+        // The ladder, between the boxes exactly as on screen — a subtotal spans
+        // everything above it, so writing it inside a box would claim otherwise.
+        for (const subtotal of section.trailing) {
+            rowIx += 1; // a blank row, so the rung reads as separate from the box
+            rule(rowIx, "medium");
+            labelCell(ws, rowIx, subtotal.label, 0, true);
+            setIsAmounts(ws, rowIx, cols, subtotal.total, pct(subtotal.total), base, true);
+            rowIx += 1;
+        }
+        rowIx += 1; // a blank row between boxes, as the screen puts a gap between them
+    }
+
+    // The bottom line, and nothing else. A condensed restatement of every
+    // section's total stood here and went with the screen's: each of those
+    // figures is already a `Total …` row above, so the block was seven duplicated
+    // totals in a document whose whole point is that nothing is printed twice.
+    const summary = isSummary(report);
+    rule(rowIx, "medium");
+    labelCell(ws, rowIx, "Net income (revenue − expenses)", 0, true);
+    setIsAmounts(ws, rowIx, cols, summary.netIncome, summary.netPct, base, true);
+}
+
+/**
+ * The FLAT sectioned report: same compressed rows the UI shows, one Amount
+ * column. No tab produces one any more (both statements moved to their grouped
+ * shapes), but it is still the type the hledger parity goldens decode into.
+ */
 function addSectioned(ws: Worksheet, report: SectionedReport): void {
     let rowIx = 5;
     for (const section of report.sections) {
@@ -245,6 +616,64 @@ export async function buildWorkbook(report: SectionedReport | PeriodReport, meta
 }
 
 /**
+ * Grouped balance-sheet workbook: three coloured boxes, the `Liabilities +
+ * equity` vs `Total assets` tie-out with its verdict, and net worth.
+ *
+ * A third column carries the commodities the valuation could not convert, so
+ * the Amount column can stay a real number throughout (see `setBsAmount`). The
+ * header rows are frozen, because a balance sheet is read by scrolling down
+ * through the sections and the column headings are what say which number is
+ * which.
+ */
+export async function buildBalanceSheetWorkbook(report: BalanceSheetReport, meta: {title: string; params: string}): Promise<Workbook> {
+    const {Workbook: ExcelWorkbook} = await import("exceljs");
+    const workbook = new ExcelWorkbook();
+    const ws = workbook.addWorksheet(meta.title);
+    addTitleRows(ws, meta, ["Account", report.base === null ? "Amount" : `Amount (${report.base})`, "Other commodities"]);
+    ws.getColumn(3).width = 24; // "5 GLD, -2 TSLA" needs more room than a money column
+    ws.views = [{state: "frozen", ySplit: 4}];
+    addBalanceSheet(ws, report);
+    return workbook;
+}
+
+/**
+ * Grouped income-statement workbook: ladder-ordered coloured boxes, the ruled
+ * subtotals between them, the condensed summary and net income.
+ *
+ * The Prior column exists only when the report compares — a blank column headed
+ * "Prior" would read as "the prior period was zero" rather than as "there is no
+ * prior period" — so every column after it shifts, which is why the layout is
+ * computed once in `isColumns` and threaded through.
+ *
+ * The header rows are frozen, because an income statement is read by scrolling
+ * down through the sections and the column headings are what say which number is
+ * which.
+ */
+export async function buildIncomeStatementWorkbook(report: IncomeStatementReport, meta: {title: string; params: string}): Promise<Workbook> {
+    const {Workbook: ExcelWorkbook} = await import("exceljs");
+    const workbook = new ExcelWorkbook();
+    const ws = workbook.addWorksheet(meta.title);
+    const cols = isColumns(report.prior !== null);
+    const amountHeader = report.base === null ? "Amount" : `Amount (${report.base})`;
+    // The prior column is headed with its own DATES, not "Prior": the window is
+    // the previous equal-length one, which is not a period a reader can infer
+    // from the range in the title — and a mislabelled comparison column is worse
+    // than none.
+    const priorHeader = report.prior === null ? [] : [`${report.prior.from} … ${report.prior.to}`];
+    // Extras split per period exactly as the amounts do (see `setIsAmounts`), so
+    // the prior period's column repeats the prior window's dates — two columns
+    // both headed "Other commodities" would put the ambiguity the split removes
+    // from the cells straight back into the headers.
+    const priorExtrasHeader = report.prior === null ? [] : [`Other commodities (${report.prior.from} … ${report.prior.to})`];
+    addTitleRows(ws, meta, ["Account", amountHeader, ...priorHeader, "% of revenue", "Other commodities", ...priorExtrasHeader]);
+    ws.getColumn(cols.extras).width = 24; // "5 GLD, -2 TSLA" needs more room than a money column
+    if (cols.priorExtras !== null) ws.getColumn(cols.priorExtras).width = 24;
+    ws.views = [{state: "frozen", ySplit: 4}];
+    addIncomeStatement(ws, report, cols);
+    return workbook;
+}
+
+/**
  * Holdings workbook: one row per holding mirroring the UI table (Name …
  * Gain %), then a bold totals row with values ONLY in Basis and Market value
  * — the engine's honest totals, never recomputed (basis blank when any
@@ -324,6 +753,16 @@ async function downloadWorkbook(workbook: Workbook, filename: string): Promise<v
 /** Build the .xlsx and trigger a browser download (Blob + anchor). */
 export async function exportXlsx(report: SectionedReport | PeriodReport, meta: {title: string; params: string}, filename: string): Promise<void> {
     await downloadWorkbook(await buildWorkbook(report, meta), filename);
+}
+
+/** Build the grouped balance-sheet .xlsx and trigger a browser download. */
+export async function exportBalanceSheetXlsx(report: BalanceSheetReport, meta: {title: string; params: string}, filename: string): Promise<void> {
+    await downloadWorkbook(await buildBalanceSheetWorkbook(report, meta), filename);
+}
+
+/** Build the grouped income-statement .xlsx and trigger a browser download. */
+export async function exportIncomeStatementXlsx(report: IncomeStatementReport, meta: {title: string; params: string}, filename: string): Promise<void> {
+    await downloadWorkbook(await buildIncomeStatementWorkbook(report, meta), filename);
 }
 
 /** Build the holdings .xlsx and trigger a browser download. */

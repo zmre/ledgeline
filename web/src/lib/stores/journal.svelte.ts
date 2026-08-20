@@ -6,6 +6,7 @@
 
 import {HledgerApi, isNotModified, resetConditionalCache} from "$lib/api/client";
 import {LedgelineApi} from "$lib/api/native";
+import {decodeJournalInfo} from "$lib/api/nativeDecode";
 import {normalizeAccounts, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "$lib/api/normalize";
 import type {Problem} from "$lib/checks/engine";
 import type {Dec} from "$lib/domain/money";
@@ -23,6 +24,9 @@ let accountDecls = $state<AccountDecl[]>([]);
 let prices = $state<PriceDirective[]>([]);
 let diagnostics = $state<Problem[]>([]);
 let engineChecked = $state(false);
+/** The engine's name for the journal on screen, and its main file — the app bar's label. */
+let title = $state<string | null>(null);
+let file = $state<string | null>(null);
 let status = $state<JournalStatus>("idle");
 let error = $state<string | null>(null);
 let fetchedAt = $state<number | null>(null);
@@ -171,17 +175,40 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // `conditional`: this is the one caller that repeats these requests
         // forever (a 30-second poll) and can act on a 304 by keeping what it has.
         const api = new HledgerApi(baseUrl, undefined, {conditional: true, signal});
+        // One native client for both native calls: same base URL, same abort
+        // signal, same round.
+        const native = new LedgelineApi(baseUrl, {signal});
         // Diagnostics are advisory and Ledgeline-native: a plain hledger-web has
         // no such route. Failing it to `null` here (rather than letting it reject
         // the whole `Promise.all`) is what keeps the journal loading against any
         // engine — an unreachable or absent route means "no diagnostics", never a
-        // failed load.
-        const [rawTxns, nextNames, rawPrices, rawAccounts, rawDiagnostics] = await Promise.all([
+        // failed load. The journal's title rides this round for the same reason
+        // and on the same terms, plus one of its own:
+        //
+        // WHY PER ROUND, and not once per connection. The desktop File→Open
+        // action rebinds the engine to a DIFFERENT journal at the SAME URL, and
+        // nothing about the connection changes when it does — no new address, no
+        // reconnect, no nonce. A title fetched once per connection would go on
+        // naming the previous entity for as long as the window stayed open,
+        // which is exactly the mistake this label exists to prevent: somebody
+        // running several sets of books reading the wrong one confidently. The
+        // journal round is the thing that already reruns whenever the journal
+        // might have changed, so the name travels with the data it names.
+        //
+        // Decoding happens INSIDE the chain, unlike diagnostics' (which
+        // normalizes below, and never throws). `decodeJournalInfo` does throw —
+        // rejecting a shape is nativeDecode's whole contract — and a malformed
+        // title must not be able to fail a journal load that otherwise succeeded.
+        const [rawTxns, nextNames, rawPrices, rawAccounts, rawDiagnostics, nextInfo] = await Promise.all([
             api.transactions(),
             api.accountNames(),
             api.prices(),
             api.accounts(),
-            new LedgelineApi(baseUrl, {signal}).diagnostics().catch(() => null),
+            native.diagnostics().catch(() => null),
+            native
+                .journalInfo()
+                .then(decodeJournalInfo)
+                .catch(() => null),
         ]);
 
         // Superseded while the network was answering: these payloads describe a
@@ -189,6 +216,27 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // through would write `lastFingerprint` from them and make the newer
         // round's swap look like a no-op.
         if (token !== roundToken) return;
+
+        // The ledger's name, assigned HERE: after the supersession guard, so a
+        // late-answering older round can never relabel the screen, and before
+        // the 304 branches below — every one of which returns — so the label
+        // still tracks the newest successful round even when the journal itself
+        // was unchanged and nothing was swapped.
+        //
+        // It is deliberately NOT part of `contentFingerprint`. That hash gates
+        // the transaction-state swap; this is separate state with no cost to
+        // reassign, and folding it in would make a retitled journal look like
+        // changed transactions.
+        //
+        // `null` is the route being absent (a plain hledger-web) or unreachable,
+        // and it CLEARS both fields rather than keeping the last name we knew —
+        // the app bar then shows no label at all, which is honest about not
+        // knowing, and a stale name on a rebound engine would not be. A round
+        // that fails outright never reaches this line, so a red dot keeps the
+        // last good title beside it, exactly as it keeps the last good
+        // transactions.
+        title = nextInfo?.title ?? null;
+        file = nextInfo?.file ?? null;
 
         // Every journal payload comes from one server-side snapshot carrying one
         // ETag, so an unchanged journal answers 304 on all three of the big
@@ -301,6 +349,18 @@ export const journal = {
      * "unchecked". False against a plain hledger-web. */
     get engineChecked(): boolean {
         return engineChecked;
+    },
+    /**
+     * What the engine calls the journal on screen (its first-line comment, else
+     * its folder), for the app bar. Null against a server that cannot say — a
+     * plain hledger-web, or an engine older than the `/api/journal` route.
+     */
+    get title(): string | null {
+        return title;
+    },
+    /** The bare filename of the main journal file (never a path); null on the same terms as `title`. */
+    get file(): string | null {
+        return file;
     },
     get status(): JournalStatus {
         return status;

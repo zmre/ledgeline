@@ -20,6 +20,7 @@
 //! Money arithmetic stays exact-decimal (`Dec`); every fallible `Dec` op is
 //! surfaced through [`ReportError`] rather than unwrapped.
 
+pub mod account_groups;
 pub mod account_types;
 pub mod accounts;
 pub mod aggregate;
@@ -42,16 +43,29 @@ mod test_support;
 use crate::decimal::DecError;
 use thiserror::Error;
 
+pub use account_groups::{
+    AccountGroups, BS_GROUP_TAG, BS_TERM_TAG, BsTerm, CASH_GROUP, GroupSource, INVESTMENTS_GROUP,
+    IS_GROUP_TAG, RETAINED_EARNINGS_GROUP, VALUATION_ADJUSTMENT_GROUP, account_groups,
+    account_groups_from, bs_terms, declared_bs_terms, declared_groups, declared_groups_from,
+    group_rank, parse_bs_term_tag, resolve_bs_term,
+};
 pub use account_types::{
-    AccountDecl, AccountType, account_decls, account_decls_from, cash_predicate, declared_types,
-    is_account_type, resolve_account_type,
+    AccountDecl, AccountType, AccountTypes, account_decls, account_decls_from, cash_predicate,
+    declared_types, is_account_type, resolve_account_type,
 };
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
-pub use balance_sheet::balance_sheet;
+pub use balance_sheet::{
+    BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
+    balance_sheet, balance_sheet_grouped, prices_any_on_sheet,
+};
 pub use budget::{BudgetCell, BudgetOpts, BudgetReport, BudgetRow, UNBUDGETED, budget_report};
 pub use cash_flow::{cash_flow, is_cash_like};
-pub use income_statement::income_statement;
+pub use income_statement::{
+    Amounts, DateRange, IS_SECTION_TAG, IncomeStatementReport, IsGroup, IsOpts, IsRow, IsSection,
+    IsSectionKind, IsSubtotal, IsSubtotalKind, account_sections, account_sections_from,
+    income_statement, income_statement_grouped, parse_is_section_tag, prices_any_on_statement,
+};
 pub use insights::{
     ChangeKind, ChangeRow, CostOfLiving, InsightsOpts, InsightsPeriod, InsightsReport,
     InvestmentPerf, MetricDelta, MoverRow, PerfPoint, TopTxn, insights,
@@ -81,4 +95,82 @@ pub enum ReportError {
     /// from `bucketStart`/`bucketEnd`).
     #[error("unrecognized bucket key: '{0}'")]
     InvalidBucketKey(String),
+    /// An `account` directive declared an `issection:` value outside the closed
+    /// vocabulary — see [`income_statement::parse_is_section_tag`].
+    ///
+    /// This and [`Self::UnknownHoldingsClass`] are the only pieces of journal
+    /// content the report engine refuses outright, and it is deliberate.
+    /// Everything else it reads from a tag has a
+    /// total fallback, because a fallback there is harmless; here it is not.
+    /// `issection:` decides section MEMBERSHIP, so a silent `None` would drop
+    /// the account back to its type-inferred section and the box the user
+    /// spelled would read zero with nothing on screen to say why — the exact
+    /// `account-type-not-name` failure `parse_account_type_tag` had to be
+    /// corrected for (`account_types.rs:91-113`). A misspelt code is a typo in a
+    /// closed seven-word vocabulary; naming it and its alternatives is the only
+    /// answer that leads anywhere.
+    #[error(
+        "account '{account}' declares `issection: {value}`, which is not one of \
+         revenue, cogs, opex, depreciation, interest, tax, other"
+    )]
+    UnknownIsSection {
+        /// The declaring account.
+        account: String,
+        /// The value as written, trimmed.
+        value: String,
+    },
+    /// An `account` directive declared a `holdings:` value outside the closed
+    /// vocabulary — see [`crate::holdings::parse_holdings_tag`].
+    ///
+    /// Refused for [`Self::UnknownIsSection`]'s reason, one step milder in its
+    /// consequence and identical in its shape: `holdings:` decides which
+    /// Holdings TAB an account appears on, so a silent `None` returns it to the
+    /// mechanical default — and the user who tagged a commodity-booked house to
+    /// move it off Stocks finds it still sitting on Stocks, with nothing on
+    /// screen to say why. Three-word vocabulary, so a miss is a typo.
+    #[error(
+        "account '{account}' declares `holdings: {value}`, which is not one of \
+         stocks, other, none"
+    )]
+    UnknownHoldingsClass {
+        /// The declaring account.
+        account: String,
+        /// The value as written, trimmed.
+        value: String,
+    },
+    /// An `account` directive declared a `valuation:` value outside the closed
+    /// vocabulary — see [`crate::holdings::parse_valuation_tag`].
+    ///
+    /// Refused for the same reason as its two siblings above, with the sharpest
+    /// consequence of the three: `valuation:` decides whether an account is
+    /// money-in or a mark-to-market adjustment, so a silent fallback to `cost`
+    /// folds a holding's unrealized gain into its own basis and reports the gain
+    /// as exactly zero — a real number replaced by a plausible wrong one.
+    #[error(
+        "account '{account}' declares `valuation: {value}`, which is not one of \
+         cost, unrealized, depreciation, adjustment"
+    )]
+    UnknownValuationRole {
+        /// The declaring account.
+        account: String,
+        /// The value as written, trimmed.
+        value: String,
+    },
+    /// An `account` directive declared a `bsterm:` value outside the closed
+    /// vocabulary — see [`account_groups::parse_bs_term_tag`].
+    ///
+    /// Refused for its siblings' reason: a misspelt term silently files the
+    /// account under the wrong subheading and its balance into the wrong
+    /// subtotal, so the statement stays plausible while the current ratio it
+    /// exists to support is wrong.
+    #[error(
+        "account '{account}' declares `bsterm: {value}`, which is not one of \
+         current, noncurrent"
+    )]
+    UnknownBsTerm {
+        /// The declaring account.
+        account: String,
+        /// The value as written, trimmed.
+        value: String,
+    },
 }

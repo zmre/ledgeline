@@ -11,10 +11,12 @@
     import AsyncSection from "$lib/components/AsyncSection.svelte";
     import ErrorToast from "$lib/components/ErrorToast.svelte";
     import {declaredTypes} from "$lib/domain/accountTypes";
-    import {exportBudgetXlsx, exportXlsx} from "$lib/export/xlsx";
+    import {exportBalanceSheetXlsx, exportBudgetXlsx, exportIncomeStatementXlsx, exportXlsx} from "$lib/export/xlsx";
     import InsightsDashboard from "$lib/reports/ui/insights/InsightsDashboard.svelte";
+    import BalanceSheetView from "$lib/reports/ui/BalanceSheetView.svelte";
     import BudgetSummary from "$lib/reports/ui/BudgetSummary.svelte";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
+    import IncomeStatementView from "$lib/reports/ui/IncomeStatementView.svelte";
     import ReportControls from "$lib/reports/ui/ReportControls.svelte";
     import ReportTable from "$lib/reports/ui/ReportTable.svelte";
     import ReportTabs from "$lib/reports/ui/ReportTabs.svelte";
@@ -118,8 +120,12 @@
     const view = $derived(dataView(reports.status, report !== null, loadedTab === params.tab));
     const shown = $derived(view === "data" ? report : null);
 
-    // Discriminate the report shape: budget (kind:"budget") → BudgetSummary; bs/is/cf/nw → ReportTable.
-    const tableReport = $derived(shown !== null && !("kind" in shown) ? shown : null);
+    // Discriminate the report shape by its decoder-applied `kind` tag:
+    // "budget" → BudgetSummary, "balanceSheet" → BalanceSheetView,
+    // "incomeStatement" → IncomeStatementView, untagged (cf/nw) → ReportTable.
+    // The tag exists because THREE report types now carry a `sections` array
+    // (SectionedReport, BalanceSheetReport, IncomeStatementReport), so shape
+    // alone cannot tell them apart — the FE-1 mistake, two shapes further on.
 
     /**
      * The report the export button may act on: the one being shown AND answering
@@ -133,8 +139,20 @@
         return shown !== null && held !== null && sameReportQuery(held, reportQuery) ? shown : null;
     });
 
-    /** Commodities the valuation had to skip (net worth) — surfaced as a warning badge. */
-    const unpriced = $derived.by(() => (tableReport !== null && !("sections" in tableReport) ? (tableReport.meta?.unpriced ?? []) : []));
+    /**
+     * Commodities the valuation had to skip — surfaced as a warning banner.
+     *
+     * `meta` is carried by every report that HAS a valuation step: net worth,
+     * the balance sheet and now the income statement. This used to be gated on
+     * "is a PeriodReport", so a balance sheet holding an unpriced GLD position
+     * said nothing at all, which is the one thing a valued report must never do
+     * about a commodity it silently left out of the total.
+     *
+     * `"meta" in shown` rather than a per-kind branch, deliberately: it is the
+     * property that MAKES the claim, so a fourth valued report gets the banner by
+     * existing rather than by someone remembering to add a case here.
+     */
+    const unpriced = $derived.by(() => (shown !== null && "meta" in shown ? (shown.meta?.unpriced ?? []) : []));
 
     const exportInfo = $derived.by(() => {
         const span = `last ${params.count} ${params.interval} periods ending ${params.end}`;
@@ -144,11 +162,18 @@
                 // Neither has an XLSX export yet; the button is hidden for them.
                 return {title: TAB_LABELS[params.tab], params: "", filename: "report.xlsx"};
             case "bs":
-                return {title: "Balance Sheet", params: `as of ${params.asOf}, depth ${params.depth}`, filename: `balance-sheet-${params.asOf}.xlsx`};
+                // No depth: the tab has no such control and asks the engine for
+                // an unclamped report, so stamping one on the workbook would
+                // advertise a setting the reader cannot see or reproduce.
+                return {title: "Balance Sheet", params: `as of ${params.asOf}`, filename: `balance-sheet-${params.asOf}.xlsx`};
             case "is":
+                // No depth, for the reason `bs` has none: the tab dropped that
+                // control and asks the engine for an unclamped report, so stamping
+                // one on the workbook would advertise a setting the reader cannot
+                // see or reproduce.
                 return {
                     title: "Income Statement",
-                    params: `${params.from} to ${params.to}, depth ${params.depth}`,
+                    params: `${params.from} to ${params.to}`,
                     filename: `income-statement-${params.from}-to-${params.to}.xlsx`,
                 };
             case "cf":
@@ -164,10 +189,18 @@
         }
     });
 
-    /** Export the current report — budget uses its own workbook builder; the rest share exportXlsx. */
+    /** Export the current report — the three tagged shapes own their builders; cf/nw share exportXlsx. */
     function runExport(current: AnyReport): Promise<void> {
         const meta = {title: exportInfo.title, params: exportInfo.params};
-        return "kind" in current ? exportBudgetXlsx(current, meta, exportInfo.filename, declared) : exportXlsx(current, meta, exportInfo.filename);
+        if (!("kind" in current)) return exportXlsx(current, meta, exportInfo.filename);
+        switch (current.kind) {
+            case "budget":
+                return exportBudgetXlsx(current, meta, exportInfo.filename, declared);
+            case "balanceSheet":
+                return exportBalanceSheetXlsx(current, meta, exportInfo.filename);
+            case "incomeStatement":
+                return exportIncomeStatementXlsx(current, meta, exportInfo.filename);
+        }
     }
 </script>
 
@@ -214,15 +247,21 @@
         >
             {#snippet children(current)}
                 {#if "kind" in current}
-                    <!-- budgetSpan, not params: the bars cover whole months, so the journal
-                         link has to cover the same span or the rows won't add up to the bar. -->
-                    <BudgetSummary
-                        report={current}
-                        {styles}
-                        {declared}
-                        from={budgetSpan(params.from, params.to).from}
-                        to={budgetSpan(params.from, params.to).to}
-                    />
+                    {#if current.kind === "budget"}
+                        <!-- budgetSpan, not params: the bars cover whole months, so the journal
+                             link has to cover the same span or the rows won't add up to the bar. -->
+                        <BudgetSummary
+                            report={current}
+                            {styles}
+                            {declared}
+                            from={budgetSpan(params.from, params.to).from}
+                            to={budgetSpan(params.from, params.to).to}
+                        />
+                    {:else if current.kind === "balanceSheet"}
+                        <BalanceSheetView report={current} {styles} />
+                    {:else}
+                        <IncomeStatementView report={current} {styles} />
+                    {/if}
                 {:else}
                     <ReportTable report={current} {styles} />
                 {/if}

@@ -113,7 +113,7 @@
 
                 <!-- Box 4: Average Monthly Cost of Living -->
                 <StatBox
-                    title="Avg Monthly Cost of Living"
+                    title="Avg Monthly Costs"
                     big={fmt(base, colCur, styles)}
                     small={deltaLine(baseMetric(colCur, colPrev, base), base, styles, false)}
                     testid="insights-box-costofliving"

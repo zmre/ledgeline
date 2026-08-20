@@ -9,11 +9,13 @@
    immutable snapshots: every change replaces `value` wholesale, so plain Set
    is correct (and the contract exposes ReadonlySet). */
 import {LedgelineApi} from "$lib/api/native";
-import {decodeHoldingsReport, decodeHoldingsSeries} from "$lib/api/nativeDecode";
+import {decodeHoldingsReport, decodeHoldingsSeries, decodeOtherHoldingsReport} from "$lib/api/nativeDecode";
 import type {ISODate} from "$lib/domain/types";
 import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
-import type {GainPeriod, HoldingsReport, HoldingsScope, HoldingsSeries} from "$lib/holdings/types";
+import {TAB_ORDER, type HoldingsTab} from "$lib/holdings/params";
+import type {GainPeriod, HoldingsReport, HoldingsScope, HoldingsSeries, OtherHoldingsReport} from "$lib/holdings/types";
 import {gainSinceFor} from "$lib/holdings/ui/gainPeriod";
+import type {HoldingsUrlState} from "$lib/holdings/ui/urlCodec";
 import {localToday} from "./filters.svelte";
 import type {DataView, LoadStatus} from "./loadState";
 import {createResource} from "./resource.svelte";
@@ -30,15 +32,45 @@ export function defaultScope(): HoldingsScope {
 let value = $state<HoldingsScope>(defaultScope());
 
 /**
- * Observe scope changes outside component context (used by the holdings URL
- * sync, which is plain TS and cannot declare rune effects itself). The
- * callback fires once immediately, then after every change. Returns an
- * unsubscribe — same contract as subscribeFilters.
+ * Which sub-tab is open (plans/14). Separate state, NOT a field of
+ * `HoldingsScope`: the scope is the report resources' refetch key below, so a
+ * tab living in it would refetch the stock report on every tab click.
+ *
+ * It is still module state rather than the page's own, because the URL sync has
+ * to observe it from plain TS — see `subscribeHoldingsUrlState`.
  */
-export function subscribeHoldingsScope(cb: (s: HoldingsScope) => void): () => void {
+let tab = $state<HoldingsTab>(TAB_ORDER[0]);
+
+/**
+ * The tab, as a bindable property so `<HoldingsTabs bind:tab={holdingsTab.value}>`
+ * writes straight through to the state the URL sync watches. The scope's
+ * setters are named methods because each one preserves an invariant; a tab has
+ * none, so an accessor is the honest shape.
+ */
+export const holdingsTab = {
+    get value(): HoldingsTab {
+        return tab;
+    },
+    set value(next: HoldingsTab) {
+        tab = next;
+    },
+};
+
+/**
+ * Observe everything the holdings screen mirrors into the query string —
+ * scope AND tab — outside component context (used by the holdings URL sync,
+ * which is plain TS and cannot declare rune effects itself). The callback fires
+ * once immediately, then after every change. Returns an unsubscribe — same
+ * contract as subscribeFilters.
+ *
+ * ONE subscription for both, deliberately: two would mean two debounced writers
+ * to the same query string, and whichever fired last would erase the other's
+ * keys.
+ */
+export function subscribeHoldingsUrlState(cb: (s: HoldingsUrlState) => void): () => void {
     return $effect.root(() => {
         $effect(() => {
-            cb(value);
+            cb({scope: value, tab});
         });
     });
 }
@@ -119,4 +151,59 @@ export const holdingsData = {
     },
     /** Fetch + decode the report and trend for `scope`; stale responses (superseded by a newer load) are discarded. */
     load: resource.load,
+};
+
+/** The Other tab's payload. One value for the same reason `HoldingsPayload` is one — see its comment. */
+interface OtherHoldingsPayload {
+    report: OtherHoldingsReport;
+    trend: HoldingsSeries;
+}
+
+/**
+ * The Other tab's report + trend, keyed on the SAME scope as the stock report.
+ *
+ * Its own resource rather than a third field on `HoldingsPayload`, because the
+ * two are not fetched together: this one is loaded LAZILY, the first time the
+ * Other tab is opened (plans/14), so a user who never clicks it pays nothing.
+ * Folding it into the stock payload would make that impossible — `createResource`
+ * lands a payload in one assignment or not at all, which is exactly the property
+ * we want WITHIN a tab and exactly the wrong one across two.
+ *
+ * `valueIn` is not sent: the engine values in the journal's own base commodity,
+ * which is what the screen wants and what the Stocks tab already shows.
+ */
+const otherResource = createResource<HoldingsScope, OtherHoldingsPayload>(async (serverUrl, scope) => {
+    const api = new LedgelineApi(serverUrl);
+    const accounts = [...scope.accounts].join(",");
+    // gainSince narrows only the report's change column; the value-over-time series is always all-time.
+    const gainSince = gainSinceFor(scope.gainPeriod, scope.asOf);
+    const [rawReport, rawSeries] = await Promise.all([
+        api.otherHoldings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince}),
+        api.otherHoldingsSeries({asOf: scope.asOf, accounts, mode: scope.mode, interval: TREND_INTERVAL, count: TREND_COUNT}),
+    ]);
+    // The series wire shape is the stock series', byte for byte — hence no second decoder.
+    return {report: decodeOtherHoldingsReport(rawReport), trend: decodeHoldingsSeries(rawSeries)};
+});
+
+export const otherHoldingsData = {
+    /** The decoded other-holdings report for the last loaded scope, or null before the first load. */
+    get report(): OtherHoldingsReport | null {
+        return otherResource.value?.report ?? null;
+    },
+    /** The value-over-time series for the last loaded scope, or null before the first load. */
+    get trend(): HoldingsSeries | null {
+        return otherResource.value?.trend ?? null;
+    },
+    get status(): LoadStatus {
+        return otherResource.status;
+    },
+    get error(): Error | null {
+        return otherResource.error;
+    },
+    /** Which branch the page should render — error outranks stale data (FE-5). */
+    get view(): DataView {
+        return otherResource.view;
+    },
+    /** Fetch + decode the report and trend for `scope`; stale responses (superseded by a newer load) are discarded. */
+    load: otherResource.load,
 };

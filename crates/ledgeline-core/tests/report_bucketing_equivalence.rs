@@ -330,11 +330,11 @@ fn parse(text: &str) -> Journal {
 fn scale_hazard_journal() -> Journal {
     parse(
         "\
-account assets:bank ; type: A
-account assets:wallet ; type: A
-account liabilities:card ; type: L
-account expenses:food ; type: X
-account equity:opening ; type: E
+account assets:bank  ; type: A
+account assets:wallet  ; type: A
+account liabilities:card  ; type: L
+account expenses:food  ; type: X
+account equity:opening  ; type: E
 
 2026-03-15 later txn first in file
     assets:bank         $1.500

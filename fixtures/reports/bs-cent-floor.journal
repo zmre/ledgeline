@@ -1,0 +1,62 @@
+; `bs-cost-dust.journal` plus the one thing a REAL journal has that the tidy
+; fixture did not: dollars written finer than a cent.
+;
+; This is the fixture behind the one-hundredth floor under
+; `BalanceSheetReport::balanced`, and it is a regression test for a shipped bug.
+;
+; What went wrong
+; ---------------
+; The first tolerance was "one unit of the commodity's own WRITTEN precision",
+; read off the widest `Dec.places` the journal writes for that commodity. On
+; `bs-cost-dust.journal` every dollar posting is written to the cent, so the
+; threshold came out at `$0.01` and the `$0.00227970` of cost dust was correctly
+; called dust.
+;
+; Patrick's real journal also writes dollars at three and four places —
+; brokerage interest, FX conversions and dividend reinvestments all do — so
+; `p($)` was 4 there, the threshold collapsed to `$0.0001`, and the SAME
+; `$0.00227970` was called an imbalance. The warning fired on a journal hledger
+; accepts. The precision rule made the tolerance a function of the most finely
+; written posting anywhere in the book, which has nothing to do with how large a
+; cost-multiplication residue can get.
+;
+; The third transaction below is that one line, reduced: `$0.0327` of monthly
+; brokerage interest. It balances exactly and so moves the residual not at all —
+; it only moves the PRECISION. Under the old rule this file read
+; `balanced == false`; under the one-hundredth floor it reads `balanced == true`,
+; exactly like the fixture it was built from.
+;
+; Both tools still call the file valid
+; ------------------------------------
+;   $ hledger -f fixtures/reports/bs-cent-floor.journal check
+;   (silent, exit 0)
+;
+; hledger's transaction-balance test tolerates half a unit at the precision each
+; ENTRY was written at, and that is per transaction: the fractional lot is
+; written to the cent, so it is judged against half a cent whatever the interest
+; entry says. hledger carries the same residue and hides it behind display
+; rounding (hledger 1.52):
+;
+;   $ hledger -f fixtures/reports/bs-cent-floor.journal bal -B -c '$1000.00000000'
+;         $2388.03270000  assets
+;       $-10000.03270000  equity, income
+;       ----------------
+;            $0.00227970
+
+account assets:bank:checking   ; type: C
+account assets:broker:cash     ; type: C
+account assets:broker:vti      ; type: A
+account equity:opening         ; type: E
+account income:interest        ; type: R
+
+2026-01-01 opening balance
+    assets:bank:checking        $10,000.00
+    equity:opening             $-10,000.00
+
+2026-02-01 buy a fractional lot
+    assets:broker:vti            26.2690 VTI @ $289.7713
+    assets:bank:checking      $-7,612.00
+
+2026-03-01 monthly brokerage interest
+    assets:broker:cash              $0.0327
+    income:interest                $-0.0327

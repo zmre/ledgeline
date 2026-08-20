@@ -4,8 +4,8 @@
 // collapses into that child, so `assets > bank > checking` renders as one
 // `assets:bank:checking` row (hledger tree-mode presentation).
 
-import {maAdd, maIsZero, maNeg} from "$lib/domain/money";
-import type {PeriodReport, ReportRow} from "$lib/reports/types";
+import {maAdd, maIsZero, maNeg, type MixedAmount} from "$lib/domain/money";
+import type {IsRow, PeriodReport, ReportRow} from "$lib/reports/types";
 
 export interface DisplayRow<T> {
     /** Account segments relative to the displayed parent, e.g. "bank:checking". */
@@ -65,6 +65,26 @@ export function compressSectionRows(rows: readonly ReportRow[]): DisplayRow<Repo
         rows,
         (r) => r.account,
         (parent) => maIsZero(parent.own)
+    );
+}
+
+/**
+ * Grouped income statement (plans/13). Its rows carry ONE rolled-up figure —
+ * `amounts`, not the `own`/`inclusive` pair — because that is what the wire
+ * sends, so "has no postings of its own" is not directly askable. A parent is
+ * boring when its figure equals its only child's, which is the same test
+ * `compressPeriodRows` makes and for the same reason.
+ *
+ * BOTH periods have to match. A parent whose current figure equals its child's
+ * but whose PRIOR does not has postings of its own in the prior window, and
+ * folding it would silently drop them from the comparison column.
+ */
+export function compressIsRows(rows: readonly IsRow[]): DisplayRow<IsRow>[] {
+    const same = (a: MixedAmount | undefined, b: MixedAmount | undefined): boolean => maIsZero(maAdd(a ?? new Map(), maNeg(b ?? new Map())));
+    return compressRows(
+        rows,
+        (r) => r.account,
+        (parent, child) => same(parent.amounts.current, child.amounts.current) && same(parent.amounts.prior, child.amounts.prior)
     );
 }
 

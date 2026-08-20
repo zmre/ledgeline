@@ -346,8 +346,10 @@ fn sample_journal_reports_its_three_deliberate_stock_records() {
     // fixtures/sample.journal plants exactly these (see its header comment):
     // the 2025-08-20 GLD gift with no cost and no price directive, and the
     // 2026-06-22 TSLA sell of a position that was never entered. The positions
-    // are 0-based, so the SPA resolves them to `tindex` 100 and 180 — the same
-    // rows the deleted TypeScript rules flagged.
+    // are 0-based, so the SPA resolves them to `tindex` 103 and 183 — the same
+    // rows the deleted TypeScript rules flagged. (They moved by 3 when WP-14
+    // added the two 2024-07-01 opening positions and the 2025-06-30 vehicle
+    // depreciation, all of which sort ahead of the GLD gift.)
     //
     // web/src/lib/checks/stock-diagnostics.test.ts asserts the other end of this
     // from the captured payload; keeping both means a change to either side
@@ -356,9 +358,9 @@ fn sample_journal_reports_its_three_deliberate_stock_records() {
     assert_eq!(
         found,
         vec![
-            (99, "stock-missing-basis".to_string()),
-            (179, "stock-negative".to_string()),
-            (99, "stock-unpriced".to_string()),
+            (102, "stock-missing-basis".to_string()),
+            (182, "stock-negative".to_string()),
+            (102, "stock-unpriced".to_string()),
         ]
     );
 }

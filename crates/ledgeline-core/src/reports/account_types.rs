@@ -11,8 +11,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
 
-/// A resolved account type. `Cash`/`Conversion` are the two subtypes hledger
-/// tracks beyond the five roots.
+/// A resolved account type. `Cash`, `Conversion` and `Gain` are the subtypes
+/// hledger tracks beyond the five roots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountType {
     /// `A`
@@ -27,7 +27,8 @@ pub enum AccountType {
     Expense,
     /// `C` — a subtype of Asset; what `hledger cashflow` selects on.
     Cash,
-    /// `V`
+    /// `V` — a subtype of Equity (hledger `type:V` accounts also match
+    /// `type:E`, and `bse` files them inside the Equity section).
     Conversion,
     /// `G` — a subtype of Revenue (hledger `type:G` accounts also match
     /// `type:R`).
@@ -36,13 +37,15 @@ pub enum AccountType {
 
 /// Fold two types into the one that describes both, or `None` when they
 /// genuinely disagree. Subtypes collapse into their parent type, mirroring
-/// [`is_account_type`]'s hierarchy (`Cash`→`Asset`, `Gain`→`Revenue`).
+/// [`is_account_type`]'s hierarchy (`Cash`→`Asset`, `Gain`→`Revenue`,
+/// `Conversion`→`Equity`).
 fn unify(a: AccountType, b: AccountType) -> Option<AccountType> {
-    use AccountType::{Asset, Cash, Gain, Revenue};
+    use AccountType::{Asset, Cash, Conversion, Equity, Gain, Revenue};
     match (a, b) {
         _ if a == b => Some(a),
         (Cash, Asset) | (Asset, Cash) => Some(Asset),
         (Gain, Revenue) | (Revenue, Gain) => Some(Revenue),
+        (Conversion, Equity) | (Equity, Conversion) => Some(Equity),
         _ => None,
     }
 }
@@ -228,7 +231,11 @@ pub fn resolve_account_type(
 /// Asset subtype that `cashflow` selects on, and a balance sheet that dropped
 /// every declared `type: C` account would be missing most of its assets.
 /// `Gain` counts as a `Revenue` for the same reason (verified: a `type:G`
-/// account is matched by hledger's `type:R` query).
+/// account is matched by hledger's `type:R` query). `Conversion` counts as an
+/// `Equity` likewise (verified: hledger 1.52's `type:E` query matches a
+/// declared `type: V` account, and `bse` prints `equity:conversion` inside the
+/// Equity section) — a balance sheet that dropped it would leak the whole
+/// multi-commodity conversion residue into its `A − L − E` check line.
 #[must_use]
 pub fn is_account_type(
     account: &str,
@@ -245,6 +252,9 @@ fn is_category(resolved: Option<AccountType>, category: AccountType) -> bool {
     match resolved {
         Some(AccountType::Cash) => matches!(category, AccountType::Asset | AccountType::Cash),
         Some(AccountType::Gain) => matches!(category, AccountType::Revenue | AccountType::Gain),
+        Some(AccountType::Conversion) => {
+            matches!(category, AccountType::Equity | AccountType::Conversion)
+        }
         Some(found) => found == category,
         None => false,
     }
@@ -457,6 +467,46 @@ mod tests {
         assert!(!is_account_type("biz:fx", &declared, AccountType::Expense));
     }
 
+    /// hledger defines `type: V` as a SUBTYPE of equity — its `type:E` query
+    /// matches a declared `type: V` account, and `bse` files it under Equity.
+    /// A `Conversion` that matched no balance-sheet section leaked its whole
+    /// residue into the `A − L − E` check line. The name is deliberately one the
+    /// English heuristic cannot classify, so the declared type does all the work.
+    #[test]
+    fn conversion_is_an_equity_subtype() {
+        let decls = vec![AccountDecl {
+            name: "trading:usd-eur".into(),
+            account_type: Some(AccountType::Conversion),
+        }];
+        let declared = declared_types(&decls);
+        assert!(is_account_type(
+            "trading:usd-eur",
+            &declared,
+            AccountType::Equity
+        ));
+        assert!(is_account_type(
+            "trading:usd-eur",
+            &declared,
+            AccountType::Conversion
+        ));
+        // The subtype folds UP only: an `Equity` account is not a `Conversion`,
+        // exactly as an `Asset` is not a `Cash`.
+        assert!(!is_account_type(
+            "trading:usd-eur",
+            &declared,
+            AccountType::Asset
+        ));
+        let equity = declared_types(&[AccountDecl {
+            name: "patrimonio:inicio".into(),
+            account_type: Some(AccountType::Equity),
+        }]);
+        assert!(!is_account_type(
+            "patrimonio:inicio",
+            &equity,
+            AccountType::Conversion
+        ));
+    }
+
     #[test]
     fn descendant_fallback_requires_declared_descendants_to_agree() {
         let mixed = declared_types(&[
@@ -519,6 +569,24 @@ mod tests {
         assert_eq!(
             resolve_account_type("activo", &cash_and_asset),
             Some(AccountType::Asset)
+        );
+
+        // Conversion is an Equity subtype, so a Conversion+Equity subtree is an
+        // Equity subtree — the mixed declared equity of a journal that books
+        // both `type: E` capital and a `type: V` conversion account.
+        let conversion_and_equity = declared_types(&[
+            AccountDecl {
+                name: "patrimonio:cambio".into(),
+                account_type: Some(AccountType::Conversion),
+            },
+            AccountDecl {
+                name: "patrimonio:inicio".into(),
+                account_type: Some(AccountType::Equity),
+            },
+        ]);
+        assert_eq!(
+            resolve_account_type("patrimonio", &conversion_and_equity),
+            Some(AccountType::Equity)
         );
 
         // Only DESCENDANTS count — a sibling prefix must not leak in.

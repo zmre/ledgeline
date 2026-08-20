@@ -48,12 +48,12 @@ test("insights: is the default reports tab and renders the core metric boxes", a
 
     // Boxes 1-3 headline figures.
     await expect(page.getByTestId("insights-box-revenue-big")).toHaveText("$68,007.50");
-    await expect(page.getByTestId("insights-box-expenses-big")).toHaveText("$44,908.85");
+    await expect(page.getByTestId("insights-box-expenses-big")).toHaveText("$48,408.85");
     await expect(page.getByTestId("insights-box-networth")).toBeVisible();
 
     // Box 4: cost of living is the monthly average EXCLUDING taxes, so it is well
-    // below the raw monthly expense rate ($44,908.85 / 12 = $3,742).
-    await expect(page.getByTestId("insights-box-costofliving-big")).toHaveText("$2,282.40");
+    // below the raw monthly expense rate ($48,408.85 / 12 = $4,034).
+    await expect(page.getByTestId("insights-box-costofliving-big")).toHaveText("$2,574.07");
 
     // Box 6: cash balance at the end of the current period.
     await expect(page.getByTestId("insights-box-cash-big")).toHaveText("$50,277.56");
@@ -128,7 +128,13 @@ test("insights: switching to another tab still renders that report", async ({pag
 
     await page.getByRole("tab", {name: "Balance Sheet"}).click();
     await expect(page.getByTestId("insights-dashboard")).toHaveCount(0);
-    // The balance sheet's sectioned table takes over (account names are row headers).
-    await expect(page.getByRole("rowheader", {name: "assets", exact: true})).toBeVisible();
-    await expect(page.getByRole("rowheader", {name: "Total Assets"})).toBeVisible();
+    // The grouped balance sheet takes over: three boxes, groups collapsed, each
+    // box's total in a `<tfoot>` row header. Account names are NOT visible yet —
+    // they are behind the disclosures (plans/12).
+    await expect(page.getByTestId("balance-sheet")).toBeVisible();
+    const assets = page.getByTestId("bs-section-assets");
+    await expect(assets).toBeVisible();
+    // Scoped to the box: the summary and the tie-out below carry "Total Assets"
+    // too, so the bare role locator matches three rows and fails strict mode.
+    await expect(assets.getByRole("rowheader", {name: "Total Assets"})).toBeVisible();
 });

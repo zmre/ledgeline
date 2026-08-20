@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {ApiUnreachableError} from "./client";
 import {
     ConflictError,
+    EngineRefusalError,
     LedgelineApi,
     MAX_UPLOAD_BYTES,
     NATIVE_UNAVAILABLE_MESSAGE,
@@ -41,6 +42,40 @@ describe("UNIT LedgelineApi — query building", () => {
         vi.stubGlobal("fetch", fetchMock);
         await new LedgelineApi("http://127.0.0.1:5000").balanceSheet({});
         expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/reports/balancesheet");
+    });
+
+    it("builds the grouped income-statement query on its own route, with no depth", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({sections: []}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").incomeStatementGrouped({from: "2026-01-01", to: "2026-07-08"});
+        // A SIBLING of `/api/reports/incomestatement`, which still exists and is
+        // still byte-checked by the hledger parity golden. And no `depth`: this
+        // report has no such control and the endpoint takes no such param.
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08");
+    });
+
+    it("omits value/valueIn/compare so the engine's own defaults apply", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({sections: []}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").incomeStatementGrouped({});
+        // The screen has no control for any of them, and sending them anyway
+        // would pin the SPA to a base commodity it had to guess.
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/reports/incomestatement/grouped");
+    });
+
+    it("passes value/valueIn/compare through when a caller does set them", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({sections: []}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").incomeStatementGrouped({
+            from: "2026-01-01",
+            to: "2026-07-08",
+            value: "cost",
+            valueIn: "€",
+            compare: "none",
+        });
+        expect(lastUrl(fetchMock)).toBe(
+            "http://127.0.0.1:5000/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&value=cost&valueIn=%E2%82%AC&compare=none"
+        );
     });
 
     it("builds the holdings query, dropping an empty accounts set but keeping mode", async () => {
@@ -117,6 +152,51 @@ describe("UNIT LedgelineApi — error taxonomy", () => {
     it("maps other non-2xx (e.g. 500) to ApiUnreachableError", async () => {
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("boom", {status: 500, statusText: "Internal Server Error"})));
         await expect(new LedgelineApi("http://127.0.0.1:5000").cashFlow()).rejects.toBeInstanceOf(ApiUnreachableError);
+    });
+
+    // The read path used to report the STATUS LINE and drop the body unread,
+    // which threw away the only actionable half of a journal-authoring mistake.
+    it("carries the engine's own sentence on a 4xx, so a bad `holdings:` tag reaches the user", async () => {
+        const sentence = "account 'assets:property:house' declares `holdings: hous`, which is not one of stocks, other, none";
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(sentence, {status: 400, statusText: "Bad Request"})));
+
+        await expect(new LedgelineApi("http://127.0.0.1:5000").otherHoldings({asOf: "2026-07-08"})).rejects.toThrow(sentence);
+    });
+
+    // …and it used to wear ApiUnreachableError while doing so, which every
+    // class-branching consumer (editFailure's "network" kind, the setup modal's
+    // launch-command hint) read as connectivity trouble. A 400 is the engine
+    // ANSWERING — it refused the journal, not the connection — so it carries
+    // the same taxonomy the write path gives its 400s.
+    it("types a 400 read refusal as EngineRefusalError, never as an unreachable engine", async () => {
+        const sentence = "account 'assets:x' declares `issection: vibes`, which is not a section";
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(sentence, {status: 400, statusText: "Bad Request"})));
+        const promise = new LedgelineApi("http://127.0.0.1:5000").incomeStatementGrouped();
+
+        await expect(promise).rejects.toBeInstanceOf(EngineRefusalError);
+        await expect(promise).rejects.not.toBeInstanceOf(ApiUnreachableError);
+        await expect(promise).rejects.toThrow(sentence);
+    });
+
+    it("falls back to the status line when the body is empty", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("   ", {status: 503, statusText: "Service Unavailable"})));
+
+        await expect(new LedgelineApi("http://127.0.0.1:5000").otherHoldings()).rejects.toThrow(/responded 503 Service Unavailable/);
+    });
+
+    it("refuses an HTML error page from a proxy rather than putting markup in an alert", async () => {
+        const page = "<!doctype html><html><body><h1>502 Bad Gateway</h1></body></html>";
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(page, {status: 502, statusText: "Bad Gateway"})));
+        const promise = new LedgelineApi("http://127.0.0.1:5000").otherHoldingsSeries();
+
+        await expect(promise).rejects.toThrow(/responded 502 Bad Gateway/);
+        await expect(promise).rejects.not.toThrow(/doctype/);
+    });
+
+    it("refuses a body too long to read, rather than truncating it into a half sentence", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("x".repeat(501), {status: 400, statusText: "Bad Request"})));
+
+        await expect(new LedgelineApi("http://127.0.0.1:5000").otherHoldings()).rejects.toThrow(/responded 400 Bad Request/);
     });
 });
 
@@ -244,6 +324,35 @@ describe("UNIT LedgelineApi — write error taxonomy", () => {
     it("uses the fallback message when the error body is empty", async () => {
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(textResponse("", 400)));
         await expect(new LedgelineApi("http://127.0.0.1:5000").addTransaction(ADD_BODY)).rejects.toThrow("The transaction is invalid.");
+    });
+
+    // The read path's readErrorBody guards, arriving on the write path: a POST
+    // through a misbehaving proxy answers with an HTML 502 document, and a page
+    // of markup in the edit-failure toast is strictly worse than the status line.
+    it("reports the status line, not a proxy's HTML page, when a POST hits a bad gateway", async () => {
+        const page = "<!doctype html><html><body><h1>502 Bad Gateway</h1></body></html>";
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(page, {status: 502, statusText: "Bad Gateway"})));
+        const promise = new LedgelineApi("http://127.0.0.1:5000").addTransaction(ADD_BODY);
+
+        await expect(promise).rejects.toBeInstanceOf(ApiUnreachableError);
+        await expect(promise).rejects.toThrow(/responded 502 Bad Gateway/);
+        await expect(promise).rejects.not.toThrow(/doctype/);
+    });
+
+    it("refuses an over-long write error body rather than truncating it into a half sentence", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("x".repeat(501), {status: 500, statusText: "Internal Server Error"})));
+
+        await expect(new LedgelineApi("http://127.0.0.1:5000").deleteTransaction(1)).rejects.toThrow(/responded 500 Internal Server Error/);
+    });
+
+    it("falls back to the mapped status's own sentence when a proxy's HTML page answers it", async () => {
+        // The guard empties the message; the 400 branch then supplies its
+        // friendly fallback rather than the raw markup.
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<!doctype html><h1>400</h1>", {status: 400, statusText: "Bad Request"})));
+        const promise = new LedgelineApi("http://127.0.0.1:5000").addTransaction(ADD_BODY);
+
+        await expect(promise).rejects.toBeInstanceOf(ValidationError);
+        await expect(promise).rejects.toThrow("The transaction is invalid.");
     });
 });
 

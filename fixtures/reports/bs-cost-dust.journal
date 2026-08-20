@@ -1,0 +1,55 @@
+; A journal that is VALID — hledger accepts it, and so do we, with no
+; diagnostics — and whose at-cost sum is nevertheless not zero.
+;
+; This is the fixture behind `BalanceSheetReport::balanced`. It reproduces the
+; user-reported "assets − liabilities − equity should be zero, but it is
+; $0.00227970" to the digit, and it is NOT a defect in this journal.
+;
+; Where the residue comes from
+; ----------------------------
+; A priced posting is worth `quantity × unit price` at cost, and `Dec`
+; multiplication ADDS the scales: four decimal places of shares times four of
+; price is eight places of dollars.
+;
+;   26.2690 VTI @ $289.7713  =  $7,612.00227970
+;
+; The cash that paid for it can only be written to the cent, so the surplus
+; digits cannot be cancelled by anything a journal is able to say — there is no
+; way to write $0.0022797 into a bank account. The residue is arithmetic, not a
+; mistake, and it is unavoidable for any journal that records fractional lots.
+;
+; Why hledger says the file is fine
+; ---------------------------------
+; hledger's transaction-balance test tolerates half a unit at the precision the
+; ENTRY was written at, which `parse::check_transaction_balances` reproduces
+; (`looks_zero`). $0.0022797 is well under half a cent, so both tools accept it:
+;
+;   $ hledger -f fixtures/reports/bs-cost-dust.journal check
+;   (silent, exit 0)
+;
+; hledger carries exactly the same residue internally and merely hides it behind
+; two-decimal display. Forced to show it (hledger 1.52):
+;
+;   $ hledger -f fixtures/reports/bs-cost-dust.journal bal -B -c '$1000.00000000'
+;         $2388.00000000  assets:bank:checking
+;         $7612.00227970  assets:broker:vti
+;       $-10000.00000000  equity:opening
+;       ----------------
+;            $0.00227970
+;
+; So the grouped balance sheet's `check` is right to report `$0.00227970`, and
+; wrong to conclude from it that the journal does not balance. `check` stays the
+; exact residual; `balanced` is the verdict, and it is true here because the
+; residue is smaller than one cent — smaller than any posting that could exist.
+
+account assets:bank:checking   ; type: C
+account assets:broker:vti      ; type: A
+account equity:opening         ; type: E
+
+2026-01-01 opening balance
+    assets:bank:checking        $10,000.00
+    equity:opening             $-10,000.00
+
+2026-02-01 buy a fractional lot
+    assets:broker:vti            26.2690 VTI @ $289.7713
+    assets:bank:checking      $-7,612.00

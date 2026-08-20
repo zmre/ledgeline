@@ -34,8 +34,8 @@ fn accountnames_match_snapshot() {
 
     assert_eq!(
         expected.as_array().map(Vec::len),
-        Some(42),
-        "snapshot should contain 42 account names"
+        Some(50),
+        "snapshot should contain 50 account names"
     );
     if let Err(message) = compare("$", &expected, &actual) {
         panic!("accountnames parity mismatch at {message}");
@@ -51,7 +51,7 @@ fn commodities_match_snapshot() {
     // `"$"` (0x24) must sort before the alphabetic symbols.
     assert_eq!(
         actual,
-        serde_json::json!(["$", "AAPL", "EUR", "GLD", "NVDA", "TSLA", "VTI"])
+        serde_json::json!(["$", "AAPL", "EUR", "GLD", "HOME", "NVDA", "TSLA", "VTI"])
     );
     if let Err(message) = compare("$", &expected, &actual) {
         panic!("commodities parity mismatch at {message}");
@@ -65,8 +65,8 @@ fn prices_match_snapshot() {
 
     assert_eq!(
         expected.as_array().map(Vec::len),
-        Some(11),
-        "snapshot should contain 11 market prices"
+        Some(14),
+        "snapshot should contain 14 market prices"
     );
     if let Err(message) = compare("$", &expected, &actual) {
         panic!("prices parity mismatch at {message}");
@@ -84,12 +84,12 @@ fn accounts_name_to_tags_contract_matches_snapshot() {
     let expected_contract = account_contract(&expected);
     let actual_contract = account_contract(&actual);
 
-    // 41 posting-referenced accounts + the synthetic root (declared-but-unused
+    // 49 posting-referenced accounts + the synthetic root (declared-but-unused
     // `expenses:shopping` is intentionally absent — it is only in /accountnames).
     assert_eq!(
         expected_contract.len(),
-        42,
-        "snapshot should expose 42 account nodes"
+        50,
+        "snapshot should expose 50 account nodes"
     );
     assert_eq!(
         actual_contract, expected_contract,

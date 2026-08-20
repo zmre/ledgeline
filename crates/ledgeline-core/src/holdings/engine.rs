@@ -37,11 +37,17 @@ use crate::decimal::{Dec, DecError};
 use crate::model::{
     AccountDeclaration, Commodity, Cost, CostKind, PriceDirective, Tindex, Transaction,
 };
-use crate::reports::account_types::{account_decls_from, declared_types, resolve_account_type};
+use crate::reports::account_types::{
+    AccountTypes, account_decls_from, declared_types, resolve_account_type,
+};
 use crate::reports::prices::{div_round_half_even, mul_raw, per_unit_from_total, pow10};
-use crate::reports::{AccountType, PriceDb, ReportError, account_matches};
+use crate::reports::{
+    AccountType, MixedAmount, PostingFilter, PriceDb, ReportError, ValuationMeta, account_matches,
+    account_totals, infer_market_prices, value_at,
+};
 use crate::wire::{account_tag_map, inherited_account_tags};
 
+use super::classify::{HoldingsClass, declared_holdings_classes, resolve_holdings_class};
 use super::commodities::is_currency;
 use super::types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
@@ -634,23 +640,37 @@ struct HoldingsInputs<'a> {
     account_tags: HashMap<&'a str, &'a [(String, String)]>,
     commodity_names: HashMap<&'a str, &'a str>,
     declared: BTreeMap<String, AccountType>,
+    /// Declared `holdings:` classes, read once so [`scope_predicate`] can drop
+    /// the accounts the Other tab owns.
+    classes: BTreeMap<String, HoldingsClass>,
+    /// The scope chooser's option list ([`stock_accounts`]), which depends on
+    /// neither the scope nor `as_of` — so a `count`-point series computes it
+    /// once rather than once per point.
+    accounts: Vec<String>,
 }
 
 impl<'a> HoldingsInputs<'a> {
+    /// # Errors
+    /// Returns [`ReportError::UnknownHoldingsClass`] for an `account` directive
+    /// whose `holdings:` value is outside the closed vocabulary.
     fn build(
         txns: &'a [Transaction],
         prices: &[PriceDirective],
         accounts: &'a [AccountDeclaration],
         commodity_tags: &'a [(Commodity, Vec<(String, String)>)],
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ReportError> {
+        let declared = declared_types(&account_decls_from(accounts));
+        let classes = declared_holdings_classes(accounts)?;
+        Ok(Self {
             txns,
             ordered: journal_order(txns),
             db: PriceDb::build(prices),
             account_tags: account_tag_map(accounts),
             commodity_names: commodity_name_map(commodity_tags),
-            declared: declared_types(&account_decls_from(accounts)),
-        }
+            accounts: stock_accounts(txns, &declared, &classes),
+            declared,
+            classes,
+        })
     }
 }
 
@@ -1122,7 +1142,7 @@ fn latest_cost_prices(
 
 /// The valuation commodity used when the journal declares no prices at all and
 /// the caller names none either.
-const FALLBACK_BASE: &str = "$";
+pub(super) const FALLBACK_BASE: &str = "$";
 
 /// Every non-currency commodity with a POSITIVE net quantity in scope at
 /// `as_of` — exactly the symbols that become rows in the report, and so exactly
@@ -1164,6 +1184,48 @@ fn held_symbols(
         .filter(|(_, shares)| shares.mantissa > 0)
         .map(|(symbol, _)| Commodity(symbol.to_string()))
         .collect())
+}
+
+/// Every account that could ever hold a security — what the Stocks tab's scope
+/// chooser offers.
+///
+/// Neither scope- nor date-filtered, deliberately: an option that vanished the
+/// moment you deselected it could not be reselected, and one that vanished when
+/// you travelled back a month would make a scope impossible to compose. That is
+/// the rule the SPA's `stockAccounts` already followed.
+///
+/// It is engine-side for the same reason [`super::other::candidate_accounts`]
+/// is: a `holdings: other` account is not a stock account however many
+/// non-currency commodities it holds, and the SPA's account feed carries `type:`
+/// but no tags — so a house booked as `1 HOME` would be offered on a tab where
+/// selecting it can only ever produce an empty report.
+fn stock_accounts(
+    txns: &[Transaction],
+    declared: &BTreeMap<String, AccountType>,
+    classes: &BTreeMap<String, HoldingsClass>,
+) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    for txn in txns {
+        for posting in &txn.postings {
+            let account = posting.account.0.as_str();
+            if !is_holding_account(account, declared)
+                || matches!(
+                    resolve_holdings_class(account, classes),
+                    Some(HoldingsClass::Other | HoldingsClass::None)
+                )
+            {
+                continue;
+            }
+            if posting
+                .amounts
+                .iter()
+                .any(|amount| !is_currency(&amount.commodity.0))
+            {
+                out.insert(posting.account.0.clone());
+            }
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// How many of `held` the report could actually put a per-unit price on if it
@@ -1272,9 +1334,9 @@ pub fn valuation_base(
     accounts: &[AccountDeclaration],
     scope: &HoldingsScope,
 ) -> Result<Commodity, ReportError> {
-    let predicate = scope_predicate(scope);
     // No `commodity` directives: choosing a base never reads a security's name.
-    let inputs = HoldingsInputs::build(txns, prices, accounts, &[]);
+    let inputs = HoldingsInputs::build(txns, prices, accounts, &[])?;
+    let predicate = scope_predicate(scope, &inputs.classes);
     choose_base(
         &inputs,
         prices,
@@ -1302,9 +1364,9 @@ pub fn prices_any_held(
     scope: &HoldingsScope,
     target: &Commodity,
 ) -> Result<bool, ReportError> {
-    let predicate = scope_predicate(scope);
     // No `commodity` directives: measuring coverage never reads a security's name.
-    let inputs = HoldingsInputs::build(txns, prices, accounts, &[]);
+    let inputs = HoldingsInputs::build(txns, prices, accounts, &[])?;
+    let predicate = scope_predicate(scope, &inputs.classes);
     let held = held_symbols(txns, &scope.as_of, &predicate, &inputs.declared)?;
     if held.is_empty() {
         return Ok(true);
@@ -1319,9 +1381,147 @@ pub fn prices_any_held(
     )? > 0)
 }
 
+/// [`prices_any_held`]'s admission question, asked about the OTHER tab: true
+/// when valuing this scope's Other-tab rows in `target` prices at least one of
+/// the commodities they hold (vacuously true for a scope holding nothing).
+///
+/// A sibling rather than a flag on [`prices_any_held`] because the two tabs
+/// measure DIFFERENT sets built by different means: [`scope_predicate`] drops
+/// every `holdings: other`/`none` account and [`held_symbols`] nets non-currency
+/// share quantities, while this tab's rows are account balances whose CURRENCY
+/// amounts count too (a dollar-booked van is valued through `$`). Gating an
+/// Other request on the stocks-scoped test measured a portfolio the endpoint
+/// never serves: a commodity pricing every Other row was refused for pricing no
+/// stock, and a journal with no stocks at all vacuously admitted any typo.
+///
+/// The price set (cost-inferred directives, then explicit `P`) and the route
+/// test ([`value_at`]) are exactly the ones [`super::other`] values rows with,
+/// so admission can never disagree with the report it admits.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or an `account` directive whose
+/// `holdings:` value is outside the closed vocabulary.
+pub fn prices_any_held_other(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    scope: &HoldingsScope,
+    target: &Commodity,
+) -> Result<bool, ReportError> {
+    let held = other_held_commodities(txns, accounts, scope)?;
+    if held.is_empty() {
+        return Ok(true);
+    }
+    // Inferred first so an explicit `P` wins a same-date tie — the same set and
+    // order `other::OtherInputs::build` values the rows with.
+    let mut all_prices = infer_market_prices(txns)?;
+    all_prices.extend_from_slice(prices);
+    let db = PriceDb::build(&all_prices);
+    // One unit of each held commodity through the report's own valuation:
+    // whatever `meta` says is unpriced is exactly what the rows will warn about.
+    let units = held
+        .iter()
+        .try_fold(MixedAmount::default(), |mut units, commodity| {
+            units.ma_add_assign(&MixedAmount::single(commodity.clone(), Dec::new(1, 0)))?;
+            Ok::<_, ReportError>(units)
+        })?;
+    let mut meta = ValuationMeta::default();
+    value_at(&units, target, &db, &scope.as_of, Some(&mut meta))?;
+    Ok(meta.unpriced.len() < held.len())
+}
+
+/// Every commodity held at `scope.as_of` by an in-scope account belonging to
+/// the OTHER tab — the set whose price coverage [`prices_any_held_other`]
+/// measures, mirroring the account walk of `other::rows_at`.
+fn other_held_commodities(
+    txns: &[Transaction],
+    accounts: &[AccountDeclaration],
+    scope: &HoldingsScope,
+) -> Result<BTreeSet<Commodity>, ReportError> {
+    let types = AccountTypes::from_declared(declared_types(&account_decls_from(accounts)));
+    let classes = declared_holdings_classes(accounts)?;
+    let in_scope = scope_accounts(scope);
+    let totals = account_totals(
+        txns,
+        &PostingFilter {
+            to: Some(&scope.as_of),
+            ..PostingFilter::default()
+        },
+    )?;
+    Ok(totals.iter().filter(|(account, _)| in_scope(account)).fold(
+        BTreeSet::new(),
+        |mut held, (account, balance)| {
+            let mut commodities = balance.clone();
+            commodities.drop_zeros();
+            if !commodities.is_zero()
+                && is_other_holding_account(account, &commodities, &types, &classes)
+            {
+                held.extend(commodities.iter().map(|(commodity, _)| commodity.clone()));
+            }
+            held
+        },
+    ))
+}
+
+/// The Other tab's membership rule — `other::is_other_holding`, restated over
+/// the same classify/type primitives because that function is private to its
+/// report. Kept in lockstep deliberately: the admission test and the report
+/// must agree about membership, or a request is refused over rows it would
+/// never have served. Exactly [`AccountType::Asset`] (no `Cash` folding), then
+/// the `holdings:` override, then the untagged all-currency default.
+fn is_other_holding_account(
+    account: &str,
+    commodities: &MixedAmount,
+    types: &AccountTypes,
+    classes: &BTreeMap<String, HoldingsClass>,
+) -> bool {
+    types.resolve(account) == Some(AccountType::Asset)
+        && match resolve_holdings_class(account, classes) {
+            Some(HoldingsClass::Other) => true,
+            Some(HoldingsClass::Stocks | HoldingsClass::None) => false,
+            None => commodities
+                .iter()
+                .all(|(commodity, _)| is_currency(&commodity.0)),
+        }
+}
+
 /// Account predicate for a scope: `Include` + empty set = everything;
 /// `account_matches` subtree semantics. Port of the TS `scopePredicate`.
-fn scope_predicate(scope: &HoldingsScope) -> impl Fn(&str) -> bool + '_ {
+///
+/// It also enforces the `holdings:` tag's half of the two-tab split: an account
+/// declared `other` or `none` is not a stock account, whatever commodities it
+/// holds. This is the ONE place that exclusion lives, because `in_scope` is
+/// already threaded to all four places a replay decides whether to look at a
+/// posting — folding it into `is_holding_account` instead would mean carrying
+/// the class map alongside the type map down every one of them.
+///
+/// A house booked as `1 HOUSE` and tagged `holdings: other` must disappear from
+/// here completely, not merely be hidden by the UI: it is counted on the Other
+/// tab, and a position counted on both tabs is worse than one counted on
+/// neither.
+pub(super) fn scope_predicate<'a>(
+    scope: &'a HoldingsScope,
+    classes: &'a BTreeMap<String, HoldingsClass>,
+) -> impl Fn(&str) -> bool + 'a {
+    let selected = scope_accounts(scope);
+    move |account: &str| {
+        !matches!(
+            resolve_holdings_class(account, classes),
+            Some(HoldingsClass::Other | HoldingsClass::None)
+        ) && selected(account)
+    }
+}
+
+/// The account-selection half of [`scope_predicate`], without the `holdings:`
+/// exclusion: `Include` + empty set = everything, `account_matches` subtree
+/// semantics.
+///
+/// Split out because the two Holdings tabs answer the SAME scope question and
+/// then disagree about the tag — [`super::other`] wants precisely the accounts
+/// `scope_predicate` drops. One implementation of "is this account in the user's
+/// scope" means the scope bar cannot mean two different things depending on
+/// which tab is open.
+pub(super) fn scope_accounts(scope: &HoldingsScope) -> impl Fn(&str) -> bool + '_ {
     let selected: Vec<&str> = scope.accounts.iter().map(String::as_str).collect();
     move |account: &str| {
         let matches = selected.iter().any(|&sel| account_matches(sel, account));
@@ -1336,7 +1536,10 @@ fn scope_predicate(scope: &HoldingsScope) -> impl Fn(&str) -> bool + '_ {
 /// no capital to measure against. A zero reference has always been undefined; a
 /// NEGATIVE one (possible once windowed withdrawals exceed the starting value)
 /// would silently flip the sign of the percentage, so it is refused too.
-fn gain_pct(gain: Dec, reference: Dec) -> Option<f64> {
+///
+/// Shared with the account-keyed [`super::other`] report, so "change %" means
+/// the same arithmetic on both Holdings tabs.
+pub(super) fn gain_pct(gain: Dec, reference: Dec) -> Option<f64> {
     if reference.mantissa <= 0 {
         None
     } else {
@@ -1357,8 +1560,8 @@ pub fn compute_holdings(
     commodity_tags: &[(Commodity, Vec<(String, String)>)],
     scope: &HoldingsScope,
 ) -> Result<HoldingsReport, ReportError> {
-    let predicate = scope_predicate(scope);
-    let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags);
+    let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags)?;
+    let predicate = scope_predicate(scope, &inputs.classes);
     let base_commodity = choose_base(
         &inputs,
         prices,
@@ -1396,8 +1599,8 @@ pub(super) fn holdings_at_each(
     scope: &HoldingsScope,
     as_ofs: &[String],
 ) -> Result<(Commodity, Vec<HoldingsReport>), ReportError> {
-    let predicate = scope_predicate(scope);
-    let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags);
+    let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags)?;
+    let predicate = scope_predicate(scope, &inputs.classes);
     let base_commodity = choose_base(
         &inputs,
         prices,
@@ -1774,6 +1977,7 @@ fn assemble_report(
         as_of: as_of.to_string(),
         base,
         holdings,
+        accounts: inputs.accounts.clone(),
         totals: HoldingsTotals {
             market_value,
             basis: basis_total,
@@ -4119,6 +4323,171 @@ mod tests {
         assert!(any(&empty, "NOPE"));
     }
 
+    /// A journal whose two tabs are priced through DISJOINT commodities: the
+    /// stock (VTI) only in `$` via its cost, the house (`holdings: other`) only
+    /// in EUR via an explicit `P`.
+    fn split_tab_journal() -> (
+        Vec<Transaction>,
+        Vec<PriceDirective>,
+        Vec<AccountDeclaration>,
+    ) {
+        let txns = vec![
+            txn(
+                1,
+                "2026-01-05",
+                vec![
+                    buy("assets:broker:vti", "VTI", 10, 10000, true),
+                    posting("equity:opening", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2026-01-10",
+                vec![
+                    posting("assets:house", vec![amt("HOUSE", 1, 0)], &[]),
+                    posting("equity:opening", vec![amt("HOUSE", -1, 0)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = vec![pd("2026-06-01", "HOUSE", 25_000_000, "EUR")];
+        let accounts = vec![account_decl(
+            "assets:house",
+            &[("type", "A"), ("holdings", "other")],
+        )];
+        (txns, prices, accounts)
+    }
+
+    /// The Other tab's admission test measures the OTHER rows, not the stock
+    /// portfolio: on the same journal the two functions answer in exactly
+    /// opposite directions, which is the scoping the HTTP layer relies on.
+    #[test]
+    fn prices_any_held_other_measures_the_other_rows_not_the_stock_portfolio() {
+        let (txns, prices, accounts) = split_tab_journal();
+        let sc = scope("2026-06-30", ScopeMode::Include, &[]);
+        let stocks = |target: &str| {
+            prices_any_held(
+                &txns,
+                &prices,
+                &accounts,
+                &sc,
+                &Commodity(target.to_string()),
+            )
+            .expect("coverage math does not overflow")
+        };
+        let other = |target: &str| {
+            prices_any_held_other(
+                &txns,
+                &prices,
+                &accounts,
+                &sc,
+                &Commodity(target.to_string()),
+            )
+            .expect("coverage math does not overflow")
+        };
+        assert!(other("EUR"), "EUR prices every Other row");
+        assert!(!stocks("EUR"), "…and nothing on the Stocks tab");
+        assert!(stocks("$"), "`$` prices the stock through its cost");
+        assert!(!other("$"), "…and no Other row");
+        assert!(other("HOUSE"), "a commodity always prices itself");
+        assert!(!other("XYZZY"));
+        // Before anything was bought, the Other test is vacuously true too:
+        // there is nothing a target could leave unpriced.
+        let empty = scope("2025-01-01", ScopeMode::Include, &[]);
+        assert!(
+            prices_any_held_other(
+                &txns,
+                &prices,
+                &accounts,
+                &empty,
+                &Commodity("XYZZY".to_string()),
+            )
+            .expect("coverage math does not overflow")
+        );
+    }
+
+    /// Scenario (b) of the endpoint bug, at the engine level: a journal with
+    /// ONLY Other holdings has an EMPTY stocks held-set, so [`prices_any_held`]
+    /// admits any commodity vacuously — which is exactly why it must not gate
+    /// this tab. The Other test still refuses a target pricing no row.
+    #[test]
+    fn an_other_only_journal_is_not_vacuously_admitted() {
+        let (mut txns, prices, accounts) = split_tab_journal();
+        txns.remove(0); // drop the VTI buy: nothing on the Stocks tab remains
+        let sc = scope("2026-06-30", ScopeMode::Include, &[]);
+        let typo = Commodity("XYZZY".to_string());
+        assert!(
+            prices_any_held(&txns, &prices, &accounts, &sc, &typo)
+                .expect("coverage math does not overflow"),
+            "the stocks test is vacuous here — the bug this sibling exists for"
+        );
+        assert!(
+            !prices_any_held_other(&txns, &prices, &accounts, &sc, &typo)
+                .expect("coverage math does not overflow"),
+            "a typo prices no Other row and must be refused"
+        );
+        assert!(
+            prices_any_held_other(
+                &txns,
+                &prices,
+                &accounts,
+                &sc,
+                &Commodity("EUR".to_string())
+            )
+            .expect("coverage math does not overflow")
+        );
+    }
+
+    /// Membership and scope both drive the Other admission test: an untagged
+    /// all-currency asset (a dollar-booked van) IS an Other row, so its own
+    /// currency is admitted — and narrowing the scope away from it changes the
+    /// answer, because admission follows the rows actually in scope.
+    #[test]
+    fn other_admission_follows_membership_and_scope() {
+        let txns = vec![
+            txn(
+                1,
+                "2026-01-10",
+                vec![
+                    posting("assets:vehicles:van", vec![usd(2_450_000)], &[]),
+                    posting("equity:opening", vec![usd(-2_450_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2026-01-15",
+                vec![
+                    posting("assets:house", vec![amt("HOUSE", 1, 0)], &[]),
+                    posting("equity:opening", vec![amt("HOUSE", -1, 0)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = vec![pd("2026-06-01", "HOUSE", 25_000_000, "EUR")];
+        let accounts = vec![account_decl(
+            "assets:house",
+            &[("type", "A"), ("holdings", "other")],
+        )];
+        let other = |sc: &HoldingsScope, target: &str| {
+            prices_any_held_other(
+                &txns,
+                &prices,
+                &accounts,
+                sc,
+                &Commodity(target.to_string()),
+            )
+            .expect("coverage math does not overflow")
+        };
+        let all = scope("2026-06-30", ScopeMode::Include, &[]);
+        assert!(other(&all, "$"), "the van's own currency admits `$`");
+        // Scope down to the house and `$` no longer prices anything in scope.
+        let house_only = scope("2026-06-30", ScopeMode::Include, &["assets:house"]);
+        assert!(!other(&house_only, "$"));
+        assert!(other(&house_only, "EUR"));
+    }
+
     /// The commodity a report will be denominated in, without computing it.
     #[test]
     fn valuation_base_reports_the_choice_the_report_will_make() {
@@ -4256,7 +4625,7 @@ mod tests {
     fn precomputed_sole_symbols_match_the_rescan_at_every_date() {
         let txns = sole_symbol_journal();
         let sc = scope("2025-12-31", ScopeMode::Include, &[]);
-        let predicate = scope_predicate(&sc);
+        let predicate = scope_accounts(&sc);
         let declared = BTreeMap::new();
         let ordered = journal_order(&txns);
         let facts = sole_symbol_facts(&ordered, "2025-12-31", &predicate, &declared);
@@ -4301,7 +4670,7 @@ mod tests {
     fn a_later_facts_cap_does_not_change_an_earlier_answer() {
         let txns = sole_symbol_journal();
         let sc = scope("2025-12-31", ScopeMode::Include, &[]);
-        let predicate = scope_predicate(&sc);
+        let predicate = scope_accounts(&sc);
         let declared = BTreeMap::new();
         let ordered = journal_order(&txns);
         let full = sole_symbol_facts(&ordered, "2025-12-31", &predicate, &declared);

@@ -641,6 +641,32 @@ pub fn value_at(
     Ok(total)
 }
 
+/// How many of `held` a valuation into `target` at `as_of` actually converts —
+/// the numerator of the grouped reports' `valueIn` admission tests
+/// (`balance_sheet::prices_any_on_sheet`,
+/// `income_statement::prices_any_on_statement`). One unit of each commodity is
+/// pushed through [`value_at`] itself — the same routes, at the same date — so
+/// the count can never disagree with the valuation it admits.
+///
+/// # Errors
+/// Returns [`DecError`] on decimal overflow.
+pub(super) fn priced_count(
+    held: &BTreeSet<Commodity>,
+    target: &Commodity,
+    db: &PriceDb,
+    as_of: &str,
+) -> Result<usize, DecError> {
+    let units = held
+        .iter()
+        .try_fold(MixedAmount::new(), |mut units, commodity| {
+            units.accumulate(commodity, Dec::new(1, 0))?;
+            Ok::<_, DecError>(units)
+        })?;
+    let mut meta = ValuationMeta::default();
+    value_at(&units, target, db, as_of, Some(&mut meta))?;
+    Ok(held.len() - meta.unpriced.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{amount, price, txn, usd};

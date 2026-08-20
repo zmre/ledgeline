@@ -13,13 +13,64 @@ I built this because I was dissatisfied with existing GUIs. They often hard code
 - **Reports** — balance sheet, income statement, cash flow, net worth, and budgets (`~` periodic goals vs.
   actuals) — the budget view shows each category as a period-summary envelope bar (year-to-date by default).
   Computed in Rust with exact decimal math and hledger parity. XLSX exports.
-- **Holdings** — average-cost basis, unrealized gain (all-time / year-to-date / trailing-12-months),
-  value-over-time, per-symbol names from `commodity` directives, partial portfolio totals; XLSX export.
+- **Balance sheet** — three boxes (assets / liabilities / equity), every line valued to one number in your
+  base currency so a portfolio reads as money rather than as a column of share counts. Lines are *groups*
+  ("Cash and cash equivalents", "Investments"), collapsed by default and expandable to the accounts behind
+  them. Tag any account with `bsgroup:` to put it on a line of your choosing — the tag inherits to
+  sub-accounts exactly like `type:` does:
+
+  ```journal
+  account assets:property:house    ; type: A, bsgroup: Property
+  account liabilities:mortgage     ; type: L, bsgroup: Long-term debt
+  ```
+
+  Equity carries a computed **Retained earnings** line, so `assets = liabilities + equity` ties out and the
+  balance check is a real journal-integrity signal rather than decoration. See
+  **[docs/balance-sheet.md](docs/balance-sheet.md)** for the grouping rules, valuation, and why the check
+  has a tolerance.
+- **Holdings** — two sub-tabs. **Stocks**: average-cost basis, unrealized gain (all-time /
+  year-to-date / trailing-12-months), value-over-time, per-symbol names from `commodity` directives,
+  partial portfolio totals; XLSX export. **Other**: the assets that are neither securities nor cash —
+  a house, a car, a partnership interest — one row per account with its value, cost and change over
+  the same window. Which tab an account lands on is mechanical (does it hold a non-currency
+  commodity?) and overridable per account:
+
+  ```journal
+  account assets:property:home  ; type: A, holdings: other
+  account assets:receivable     ; type: A, holdings: none
+  ```
+
+  A holding may span several accounts. The common cost/market split is rolled into one row, and
+  `valuation:` says which side each account is on — so Cost stays what you actually paid and the
+  difference is the unrealized gain:
+
+  ```journal
+  account assets:home:cost        ; type: A
+  account assets:home:unrealized  ; type: A, valuation: unrealized
+  ```
+
+  See **[docs/holdings.md](docs/holdings.md)** for both tags, how several accounts become one
+  holding, the ways a non-stock asset changes value, and why the three reports read prices from
+  different places.
 - **Imports** — finds the CSV import rules files (`*.rules`) beside your journal and edits them in a
   friendly form instead of a text box: date format, the CSV column → field mapping (labelled with your
   data file's real headers and sample values), the default accounts, and a reorderable list of `if`
   rules. Anything fancier than a plain OR rule — `if` tables, `&&`/`!` matchers, match groups — is shown
   read-only rather than rewritten, and saving preserves the rest of the file byte for byte.
+- **Which books am I in?** — the app bar names the ledger on screen rather than showing the engine's
+  URL, so someone who keeps several sets of books (a household, an LLC, a trust) can tell at a glance
+  which one they are looking at. The name comes from the journal itself: if the main journal file's
+  first non-empty line is a *short* comment — one to five words, and something more than a row of
+  `=====` — that is the title; otherwise it is the name of the folder the main journal lives in.
+  Nothing to configure, and a journal that says nothing still gets a sensible name.
+
+  ```journal
+  ; Acme Holdings LLC
+  include accounts.journal
+  ```
+
+  Hover the name for the journal's file name and the engine's address — the same connection detail
+  that used to occupy the corner, one hover away.
 - **In-process, same-origin API** exposing both the hledger-web-compatible wire endpoints
   (`/version`, `/transactions`, `/prices`, …) and native report / holdings / budget JSON (`/api/*`) and
   edit endpoints.
@@ -100,6 +151,10 @@ See **[docs/development.md](docs/development.md)** for the Nix + Crane build cac
 `nix build .#{ledgeline,clippy,tests,fmt,macApp}` outputs, CI, and how the SPA is built and embedded.
 See **[docs/imports.md](docs/imports.md)** for the CSV rules-file editor — the format-preserving
 model, what it will and won't edit, and the guards on its write path.
+See **[docs/balance-sheet.md](docs/balance-sheet.md)** for the balance sheet — the `bsgroup:` and
+`bsterm:` tags, how untagged accounts are grouped, valuation, and the balance check's tolerance.
+See **[docs/holdings.md](docs/holdings.md)** for the Holdings tabs — the `holdings:` and
+`valuation:` tags, how several accounts become one holding, and what "change" measures against.
 
 ## Architecture
 
@@ -107,54 +162,39 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
-- feat: import drag/drop
-  - command line options
-  - fix styling of numbers issues; infected the entire ui now
-- feat: create new import rules
-  - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
-- feat: edit budget
-  - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
-- feat: non-stock and cash holdings
-  - i want the holdings tab to have two sub-tabs: Stocks and Other.  Other should show all assets (type:A) excluding stocks and cash (type:C). if we get this right, we'll be able to show things like home, cars, partnerships, etc.  And like with stocks, we want to show the value of each and the change in value over time
-- Better keyboard navigation
-  - tab complete account selection
-  - enter to save transaction edit
+- chore: route bad `issection:` / `holdings:` / `valuation:` / `bsterm:` / `type:` tag values into Problems
+  - a mistyped `issection:` currently fails the whole P&L request with a 400 naming the account and the
+    valid codes, and `holdings:` now does the same to the Holdings tab. Right that it isn't silently
+    dropped, wrong that one typo takes the tab down. Problems
+    entries anchor to a `txnIndex` and an `account` directive has none, so this needs a wire field that
+    allows a directive-anchored diagnostic plus an allow-list entry in the SPA's `normalize.ts`.
+- check security csrf to be sure other apps/browser pages can't fetch financial data
+- **Imports**
+  - feat: quickbooks import handling
+    - transaction matching and skipping
+    - account mapping (prompt for unmapped) (aliases?)
+  - feat: import drag/drop
+    - command line options
+    - fix styling of numbers issues; infected the entire ui now
+  - feat: create new import rules files
+    - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
+* **Editors**
+  - Account List Editor
+    - Most financial apps allow editing of the chart of accounts. We should detect where they live and allow editing. If there aren't any, we should create an accounts.journal and include it from the main file.
+    - For each account, we should provide an editor for comments/notes, type, tags in general, and our special tags used in various reports
+    - Lets put this under a Settings top level tab or gear icon. And lets figure out what else might go in here, like the number format stuff -- basically whatever hledger provides that we might want to set or edit
+      - commodity, decimal-mark, tag list, and we should probably move aliases to here under "settings" too
+  - rules editor ui improvements
+    - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
+    - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
+    - perhaps instead of one giant form, we have display separate from edit and can therefore make this nicer
+  - feat: edit / create budget
+    - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
+    - if they don't exist, make a budget.journal file and include it from the main file (with a button press by user first)
+    - Move Budget from Reports to its own top-level tab
 - chore: Setup releases and builds for download
 - chore: Add screenshots and better descriptions to the readme
-- feat: zillow integration
-  - Need a way to map an asset to an address. Maybe a special comment in the accounts file?
-  - Need a way to map the unrealized gains for that address
-  - Then on some sort of "update" click (how/where on UI?), it fetches the latest value (or launches a page and then prompts for it?), calculates the difference relative to the current asset value and then makes an adjustment to the unrealized account with a comment saying the current zestimate
-- balance sheet ui improvements
-  - this looks a lot like what the command line produces, but it's incredibly ugly and hard to read especially with stocks in the picture
-  - there's a row with "assets" on the left and a long list of stocks and cash on the right, all in one row. It's like rows within a row.  and things sum up oddly.
-  - And it's weird to have summaries and totals at the top above the things they total
-  - We should default to three deep and we should get smarter about how we group things and total them.
-  - We don't need to break things down by stock and we don't need to break them down by specific account, either.  We want to know about "Cash and cash equivalents" but not about how much is in bank account A vs. bank account B.
-    - I realize we may not have all the details we need to group things appropriately, BUT, we know stocks and their value, we know assets and their values, we know cash and their values, and we know liabilities and their values.
-    - We could probably improve things quite a bit through the use of optional extra tags on accounts.  We should look at examples to come up with ideas here, but common lines on a balance sheet include:
-      - accounts receivable
-      - accounts payable
-      - non-current assets
-      - depreciable assets
-      - depreciation of those assets
-      - property
-      - intangible assets
-      - deferred revenue
-      - short-term debt
-      - long-term debt
-      - long-term investments
-      - shareholders equity
-      - retained earnings
-      - inventory
-      - paid in capital
-    - My thinking is that any account can be tagged with a balance sheet group (bsgroup?) that then becomes a line in the balance sheet.
-    - We need proper totals lines, spreadsheet style, showing totla current assets, liabilities, owner equity and net
-    - I think we can make this pretty. Make each box (assets, liabilities, owner equity) pretty separate grids with lines and colored headers.  The downloaded xlsx should be nice and readable, too.
-- rules edit ui improvements
-  - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
-  - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
-  - perhaps instead of one giant form, we have display separate from edit and can therefore make this nicer
+- feat: kelly blue book integration?
 - feat: private AI integration?
 - feat: stock price updates
   - basically my script, maybe ported into rust, for querying yahoo and updating a prices file. should try to figure out where prices already live and if it can't find anything, prompt for location and include a new file from the base file for the purpose.
@@ -165,7 +205,10 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
   - only real way to do this is with some sort of lookback comparing similar descriptions in the past and seeing associated expense or revenue accounts
   - need to remove random numbers from description and maybe do a predominance calculation or a vector comparison rather than full equality.  if we're doing equality and removing numbers, we need to normalize some by lowercasing.  but in a perfect world, "netflix.com" might see a previous "netflix" and guess category based on that.  the more exact the match and the more recent, the higher the sort ranking
   - feat: remember categorization functionality — write a chosen category back into the rules file as a new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
+- feat: File -> New
+  - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and use an empty folder as a starting point and then create a skeleton so someone can start using us to track things. We should have a default chart of accounts for individuals and another for businesses and then we should allow them to start with an empty set of accounts to add their own.
 - feat: saved report filters?
 - feat: planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
   - investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
+

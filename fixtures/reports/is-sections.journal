@@ -1,0 +1,213 @@
+; Income-statement SECTIONS and GROUPS: a tagged SaaS book that exercises all
+; seven `issection:` codes, the full subtotal ladder, a mixed `other`, and an
+; `isgroup:` that merges two unrelated accounts onto one line.
+;
+; `fixtures/sample.journal` cannot test any of this: it carries no `issection:`
+; tag at all, so it only ever produces the SIMPLE two-box statement (which is
+; exactly what it is there to pin). This file is the other half.
+;
+; Two full calendar years, so `compare=previous` over 2026 lands exactly on 2025
+; (`prior_to = from − 1 day`, `prior_from = prior_to − (to − from)`), and so the
+; union merge has something to merge:
+;
+;   - income:grants ............ 2025 AND 2026   (a line in both columns)
+;   - expenses:lawsuit ......... 2026 only       (prior reads zero)
+;   - expenses:marketing:events  2025 only       (current reads zero)
+;
+; Section resolution, one account per rule:
+;
+;   1. own `issection:` .............. cogs, expenses:rent, expenses:interest, …
+;   2. ancestor's `issection:` ....... expenses:salaries:eng inherits `opex`
+;                                      expenses:taxes:federal inherits `tax`
+;   3. type R with no tag ............ (none here — sample.journal covers it)
+;   4. type X with no tag ............ (ditto)
+;
+; Group resolution:
+;
+;   - `isgroup:` tag ......... cogs:hosting → "Cloud hosting"
+;   - MERGED by tag .......... expenses:marketing:ads + expenses:salaries:sales
+;                              → "Growth" (two unrelated accounts, one line)
+;   - shared-prefix fallback . opex members share `expenses` and the shortest
+;                              (`expenses:rent`) has two segments, so the index
+;                              is min(1, 1) = 1 → "Salaries", "Rent", "Marketing"
+;   - shared-prefix, no root . `other` holds `income:grants` and
+;                              `expenses:lawsuit`, which share NOTHING, so the
+;                              index is min(0, 1) = 0 → "Income", "Expenses".
+;                              Ugly on purpose: it is the third row of the plan's
+;                              table, and the rule has to be total.
+;
+; Ground truth — every figure below was read off hledger 1.52, never off our own
+; output, and the commands are quoted in tests/income_statement_grouped.rs:
+;
+;   $ hledger -f fixtures/reports/is-sections.journal is -b 2026-01-01 -e 2027-01-01
+;       Revenues $155,000.00   Expenses $146,700.00   Net $8,300.00
+;   $ hledger -f fixtures/reports/is-sections.journal is -b 2025-01-01 -e 2026-01-01
+;       Revenues $112,000.00   Expenses $116,300.00   Net $-4,300.00
+;
+; `hledger check` passes: every account is declared and every entry balances.
+; hledger itself ignores `issection:`/`isgroup:` — they are Ledgeline tags — so
+; its Revenues/Expenses split is the TYPE split, and the seven boxes are checked
+; against `hledger bal` queries per account instead.
+
+account assets:bank                  ; type: C
+account equity:opening               ; type: E
+
+; ---- revenue ----
+account revenue                      ; type: R, issection: revenue
+account revenue:subscriptions        ; type: R
+account revenue:services             ; type: R
+
+; ---- cost of revenue ----
+; The `issection:` on the root inherits down; each child names its own line.
+account cogs                         ; type: X, issection: cogs
+account cogs:hosting                 ; type: X, isgroup: Cloud hosting
+account cogs:payments                ; type: X, isgroup: Payment processing
+
+; ---- operating expenses ----
+account expenses:salaries            ; type: X, issection: opex
+account expenses:salaries:eng        ; type: X
+account expenses:salaries:sales      ; type: X, isgroup: Growth
+account expenses:marketing           ; type: X, issection: opex
+account expenses:marketing:ads       ; type: X, isgroup: Growth
+account expenses:marketing:events    ; type: X
+account expenses:rent                ; type: X, issection: opex
+
+; ---- the three boxes that only exist because they are tagged ----
+account expenses:depreciation        ; type: X, issection: depreciation
+account expenses:interest            ; type: X, issection: interest
+account expenses:taxes               ; type: X, issection: tax
+account expenses:taxes:federal       ; type: X
+account expenses:taxes:state         ; type: X
+
+; ---- the mixed box: a revenue-type and an expense-type account together ----
+account income:grants                ; type: R, issection: other
+account expenses:lawsuit             ; type: X, issection: other
+
+commodity $1,000.00
+
+; ---------- 2024: opening only, so the 2025 window has a clean start ----------
+
+2024-12-31 * Opening balance
+    assets:bank                $50,000.00
+    equity:opening
+
+; ---------- 2025 (the PRIOR window for a 2026 report) ----------
+
+2025-03-31 * Customers | subscription revenue
+    assets:bank                $90,000.00
+    revenue:subscriptions
+
+2025-03-31 * Customers | professional services
+    assets:bank                $20,000.00
+    revenue:services
+
+2025-04-30 * Cloud | hosting
+    cogs:hosting               $15,000.00
+    assets:bank
+
+2025-04-30 * Stripe | processing fees
+    cogs:payments               $3,300.00
+    assets:bank
+
+2025-06-30 * Payroll | engineering
+    expenses:salaries:eng      $50,000.00
+    assets:bank
+
+2025-06-30 * Payroll | sales
+    expenses:salaries:sales    $15,000.00
+    assets:bank
+
+2025-07-31 * Adwords | campaigns
+    expenses:marketing:ads      $8,000.00
+    assets:bank
+
+; Present in 2025 and NOT in 2026 — the "Marketing" line must still appear, with
+; a zero in the current column.
+2025-08-31 * Conference | booth
+    expenses:marketing:events   $4,000.00
+    assets:bank
+
+2025-09-30 * Landlord | office rent
+    expenses:rent               $9,000.00
+    assets:bank
+
+2025-10-31 * Depreciation | equipment
+    expenses:depreciation       $6,000.00
+    assets:bank
+
+2025-11-30 * Bank | loan interest
+    expenses:interest           $3,500.00
+    assets:bank
+
+2025-12-31 * Innovation agency | research grant
+    assets:bank                 $2,000.00
+    income:grants
+
+2025-12-31 * IRS | federal income tax
+    expenses:taxes:federal      $2,000.00
+    assets:bank
+
+2025-12-31 * State | state income tax
+    expenses:taxes:state          $500.00
+    assets:bank
+
+; ---------- 2026 (the reported window) ----------
+
+2026-03-31 * Customers | subscription revenue
+    assets:bank               $120,000.00
+    revenue:subscriptions
+
+2026-03-31 * Customers | professional services
+    assets:bank                $30,000.00
+    revenue:services
+
+2026-04-30 * Cloud | hosting
+    cogs:hosting               $18,000.00
+    assets:bank
+
+2026-04-30 * Stripe | processing fees
+    cogs:payments               $4,500.00
+    assets:bank
+
+2026-06-30 * Payroll | engineering
+    expenses:salaries:eng      $60,000.00
+    assets:bank
+
+2026-06-30 * Payroll | sales
+    expenses:salaries:sales    $20,000.00
+    assets:bank
+
+2026-07-31 * Adwords | campaigns
+    expenses:marketing:ads     $12,000.00
+    assets:bank
+
+2026-09-30 * Landlord | office rent
+    expenses:rent               $9,000.00
+    assets:bank
+
+2026-10-31 * Depreciation | equipment
+    expenses:depreciation       $6,000.00
+    assets:bank
+
+2026-11-30 * Bank | loan interest
+    expenses:interest           $3,000.00
+    assets:bank
+
+2026-12-01 * Innovation agency | research grant
+    assets:bank                 $5,000.00
+    income:grants
+
+; The other half of the mixed box, and 2026-only: `other` nets to a LOSS here
+; ($5,000 of grants against an $8,000 settlement), which is the case that makes
+; the box signed rather than a positive magnitude.
+2026-12-01 * Settlement | patent suit
+    expenses:lawsuit            $8,000.00
+    assets:bank
+
+2026-12-31 * IRS | federal income tax
+    expenses:taxes:federal      $5,000.00
+    assets:bank
+
+2026-12-31 * State | state income tax
+    expenses:taxes:state        $1,200.00
+    assets:bank

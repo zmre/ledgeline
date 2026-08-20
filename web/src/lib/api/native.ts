@@ -16,6 +16,23 @@ export class NativeApiUnavailableError extends Error {
 /** User-facing copy for the missing-engine case (a 404 or non-JSON on /api/*). */
 export const NATIVE_UNAVAILABLE_MESSAGE = "This server doesn't provide Ledgeline's report API — start the Ledgeline engine.";
 
+/**
+ * 400 on a READ — the engine answered and REFUSED to compute the report,
+ * naming a journal-authoring mistake (an unknown `holdings:` or `issection:`
+ * tag value, and their relatives). The read path's counterpart of the write
+ * path's [`ValidationError`]: the message is the server's own sentence, and
+ * the remedy is editing the journal — never the connection, which is why this
+ * is deliberately NOT an [`ApiUnreachableError`] subclass. Before it existed,
+ * every consumer that branches on class read a journal typo as network
+ * trouble (editFailure.ts mapped it to kind "network").
+ */
+export class EngineRefusalError extends Error {
+    constructor(message: string, options?: ErrorOptions) {
+        super(message, options);
+        this.name = "EngineRefusalError";
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Write-path (edit) error taxonomy. The write endpoints answer with PLAIN-TEXT
 // error bodies (unlike the JSON reports), so each of these carries the server's
@@ -317,6 +334,59 @@ export interface PrefsBody {
     gitAutocommit: boolean | null;
 }
 
+/**
+ * Longest error body worth showing a user. The engine's are single sentences
+ * (~90 characters at their longest); anything past this is a document, not a
+ * message.
+ */
+const MAX_ERROR_BODY_CHARS = 500;
+
+/**
+ * The sentence to report for a failed READ, preferring the engine's own body.
+ *
+ * The read path used to throw `GET …/api/holdings/other?… responded 400 Bad
+ * Request` and drop the body unread, which was fine while every 4xx was a
+ * malformed query the SPA itself had built — nobody could act on those, so there
+ * was nothing to lose. It stopped being fine when the engine started reporting
+ * JOURNAL-authoring mistakes this way: an unknown `holdings:` (or `issection:`)
+ * tag value answers `400` with "account 'assets:x' declares `holdings: y`, which
+ * is not one of stocks, other, none" — a sentence that names the account, the bad
+ * value and the fix, and which the status line replaces with nothing.
+ *
+ * The write path (`send`) has always preferred the body for the same reason, in
+ * its own words. Both paths share `usableErrorBody`'s guards, so neither can
+ * drift into showing a proxy's error page.
+ */
+async function readErrorBody(response: Response, request: string): Promise<string> {
+    const fallback = `${request} responded ${response.status} ${response.statusText}`;
+    let body: string;
+    try {
+        body = await response.text();
+    } catch {
+        return fallback; // a body that cannot be read is not a message
+    }
+    const message = usableErrorBody(body);
+    return message === "" ? fallback : message;
+}
+
+/**
+ * The server's own sentence from an error body, or `""` when the body is not a
+ * message at all — the caller falls back to its own line (the status line, or
+ * a mapped status's friendly sentence).
+ *
+ * Two guards, both REJECTING rather than truncating. A non-engine server (a
+ * proxy, a dev server) answers errors with an HTML DOCUMENT, and a page of
+ * markup in an alert box or an edit-failure toast is strictly worse than the
+ * status line; so is a body long enough to push the Retry button off screen.
+ * Half a sentence from an unknown source is not more useful than "responded
+ * 502", so neither case is trimmed into service.
+ */
+function usableErrorBody(body: string): string {
+    const trimmed = body.trim();
+    if (trimmed === "" || trimmed.length > MAX_ERROR_BODY_CHARS || trimmed.startsWith("<")) return "";
+    return trimmed;
+}
+
 type QueryValue = string | number | undefined;
 
 /** Build a `?a=1&b=2` string, dropping undefined and empty-string values (no leading "?" when empty). */
@@ -335,10 +405,45 @@ export interface BalanceSheetQuery {
     asOf?: string;
     depth?: number;
 }
+/**
+ * The grouped balance sheet's query (plans/12). `value`/`valueIn` are optional
+ * because the engine's defaults — market, valued in `prices.base_commodity()` —
+ * are exactly what the screen wants, and there is no control for either; sending
+ * them anyway would pin the SPA to a base commodity it had to guess.
+ */
+export interface GroupedBalanceSheetQuery {
+    asOf?: string;
+    /**
+     * Account-depth clamp for the rows inside an expanded group. OMIT IT for no
+     * clamp — that is the endpoint's contract, and `0` cannot express it because
+     * `depth=0` already means hledger's totals-only. The reports page omits it.
+     */
+    depth?: number;
+    value?: "market" | "cost" | "none";
+    valueIn?: string;
+}
 export interface IncomeStatementQuery {
     from?: string;
     to?: string;
     depth?: number;
+}
+/**
+ * The grouped income statement's query (plans/13). Note what is NOT here:
+ * `depth`. This report has no depth control and the endpoint takes no such
+ * param — groups are the reading, and the accounts inside one are a drill-down.
+ *
+ * `value`/`valueIn`/`compare` are optional for the same reason they are on the
+ * grouped balance sheet: the engine's defaults (market, valued in
+ * `prices.base_commodity()`, comparing against the previous equal-length window)
+ * are exactly what the screen wants, and there is no control for any of them.
+ * Sending them anyway would pin the SPA to a base commodity it had to guess.
+ */
+export interface GroupedIncomeStatementQuery {
+    from?: string;
+    to?: string;
+    value?: "market" | "cost" | "none";
+    valueIn?: string;
+    compare?: "previous" | "none";
 }
 export interface CashFlowQuery {
     end?: string;
@@ -394,6 +499,23 @@ export interface HoldingsSeriesQuery extends HoldingsQuery {
     interval?: string;
     count?: number;
 }
+/**
+ * The Other-holdings query (plans/14): the stock query's params, verbatim, plus
+ * `valueIn`.
+ *
+ * Same scope, same `mode`, same `gainSince` window — deliberately, because the
+ * scope bar drives both tabs and a window control that meant two things would be
+ * a lie. `valueIn` is optional for the reason the grouped statements give: the
+ * engine's default (value in `prices.base_commodity()`) is exactly what the
+ * screen wants and there is no control for it, so sending one would pin the SPA
+ * to a base commodity it had to guess.
+ */
+export interface OtherHoldingsQuery extends HoldingsQuery {
+    valueIn?: string;
+}
+export interface OtherHoldingsSeriesQuery extends HoldingsSeriesQuery {
+    valueIn?: string;
+}
 
 /** Cancellation + deadline for one client's requests; see `REQUEST_TIMEOUT_MS`. */
 export interface LedgelineApiOptions {
@@ -428,7 +550,17 @@ export class LedgelineApi {
                 throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE);
             }
             if (!response.ok) {
-                throw new ApiUnreachableError(`GET ${url} responded ${response.status} ${response.statusText}`);
+                const message = await readErrorBody(response, `GET ${url}`);
+                // The write path types its 400s as ValidationError; this is the
+                // same fact on a read — the engine is answering fine, and the
+                // JOURNAL is what needs fixing — so it must not wear the class
+                // every consumer reads as "check your connection". Everything
+                // else non-OK (401, 5xx, a proxy) still does mean the engine
+                // cannot usefully be reached from here.
+                if (response.status === 400) {
+                    throw new EngineRefusalError(message);
+                }
+                throw new ApiUnreachableError(message);
             }
             try {
                 return (await response.json()) as unknown;
@@ -452,12 +584,56 @@ export class LedgelineApi {
         return this.getJson("/api/diagnostics");
     }
 
+    /**
+     * WHICH journal this engine has open: `{"title": …, "file": …}`, both
+     * nullable (decode with `decodeJournalInfo`).
+     *
+     * `title` is the engine's own derivation — the journal's first-line comment,
+     * else the containing folder's name — and `file` is the BARE filename of the
+     * main journal file, never a path. The app bar shows the first and hovers the
+     * second, so somebody keeping several entities can see which set of books is
+     * on screen without reading the port number.
+     *
+     * Its own route rather than a field on `/transactions`, for the reason
+     * `diagnostics` has one: that endpoint is a byte-for-byte hledger-web
+     * emulation whose parity comparator rejects any unexpected key. A plain
+     * hledger-web therefore 404s here, which the caller reads as "this server
+     * cannot tell me which ledger it is" and answers by showing no label.
+     */
+    journalInfo(): Promise<unknown> {
+        return this.getJson("/api/journal");
+    }
+
+    /**
+     * The flat, unvalued balance sheet. Still here, and still exercised by the
+     * hledger parity golden — the screen no longer uses it, but
+     * `fixtures/native/v1/balancesheet.json` must stay byte-identical.
+     */
     balanceSheet(query: BalanceSheetQuery = {}): Promise<unknown> {
         return this.getJson(`/api/reports/balancesheet${queryString({asOf: query.asOf, depth: query.depth})}`);
     }
 
+    /** The grouped, market-valued balance sheet the Balance Sheet tab renders (decode with `decodeBalanceSheetReport`). */
+    balanceSheetGrouped(query: GroupedBalanceSheetQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/reports/balancesheet/grouped${queryString({asOf: query.asOf, depth: query.depth, value: query.value, valueIn: query.valueIn})}`
+        );
+    }
+
+    /**
+     * The flat, unvalued income statement. Still here, and still exercised by
+     * the hledger parity golden — the screen no longer uses it, but
+     * `fixtures/native/v1/incomestatement.json` must stay byte-identical.
+     */
     incomeStatement(query: IncomeStatementQuery = {}): Promise<unknown> {
         return this.getJson(`/api/reports/incomestatement${queryString({from: query.from, to: query.to, depth: query.depth})}`);
+    }
+
+    /** The grouped, market-valued income statement the P&L tab renders (decode with `decodeIncomeStatementReport`). */
+    incomeStatementGrouped(query: GroupedIncomeStatementQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/reports/incomestatement/grouped${queryString({from: query.from, to: query.to, value: query.value, valueIn: query.valueIn, compare: query.compare})}`
+        );
     }
 
     cashFlow(query: CashFlowQuery = {}): Promise<unknown> {
@@ -496,6 +672,29 @@ export class LedgelineApi {
     holdingsSeries(query: HoldingsSeriesQuery = {}): Promise<unknown> {
         return this.getJson(
             `/api/holdings/series${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count})}`
+        );
+    }
+
+    /** Non-stock, non-cash assets — a house, a van, a partnership (decode with `decodeOtherHoldingsReport`). */
+    otherHoldings(query: OtherHoldingsQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/holdings/other${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, gainSince: query.gainSince, valueIn: query.valueIn})}`
+        );
+    }
+
+    /**
+     * The Other tab's value-over-time series. The response is the same
+     * `WireHoldingsSeries` the stock series returns, byte for byte, so it decodes
+     * with `decodeHoldingsSeries` and renders through `HoldingsTrend` with no new
+     * chart code — the whole reason the engine reuses the type.
+     *
+     * `gainSince` is not sent, for the reason `holdingsSeries` does not send it:
+     * the series is always all-time, and only the report's change column is
+     * windowed.
+     */
+    otherHoldingsSeries(query: OtherHoldingsSeriesQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/holdings/other/series${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, valueIn: query.valueIn})}`
         );
     }
 
@@ -739,7 +938,19 @@ export class LedgelineApi {
                     throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE, {cause});
                 }
             }
-            const message = text.trim();
+            // The read path's guards (`usableErrorBody`), applied to the write
+            // path too: a POST through a misbehaving proxy answers with an HTML
+            // document or a whole error page, and either one used to land raw
+            // in the edit-failure toast. Guarded to "", every branch below
+            // falls back to its own sentence — the status line for the
+            // unmapped default.
+            // The read path's guards (`usableErrorBody`), applied to the write
+            // path too: a POST through a misbehaving proxy answers with an HTML
+            // document or a whole error page, and either one used to land raw
+            // in the edit-failure toast. Guarded to "", every branch below
+            // falls back to its own sentence — the status line for the
+            // unmapped default.
+            const message = usableErrorBody(text);
             const extra = extraStatuses[response.status];
             if (extra !== undefined) throw extra(message);
             switch (response.status) {

@@ -25,8 +25,10 @@ describe("UNIT dataView (error-as-data branch selection)", () => {
 
     it("treats a payload that answers a DIFFERENT request as not loaded (FE-1)", () => {
         // A loaded balance sheet must not stand in for the P&L tab while the
-        // P&L loads — `bs` and `is` are both SectionedReport, so nothing about
-        // the value itself would object.
+        // P&L loads. The two carry distinct `kind` tags now, but that only
+        // settles which RENDERER to use: two P&Ls over different ranges share a
+        // kind, so nothing about the value itself would object to one standing
+        // in for the other.
         expect(dataView("loading", true, false)).toBe("loading");
         expect(dataView("ready", true, false)).toBe("loading");
     });

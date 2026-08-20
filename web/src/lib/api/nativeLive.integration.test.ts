@@ -19,7 +19,15 @@ import {formatTotals} from "$lib/journal/rowModel";
 import {reportStyles} from "$lib/reports/ui/styles";
 import {HledgerApi} from "./client";
 import {LedgelineApi} from "./native";
-import {decodeHoldingsReport, decodeHoldingsSeries, decodePeriodReport, decodeSectionedReport} from "./nativeDecode";
+import {
+    decodeBalanceSheetReport,
+    decodeHoldingsReport,
+    decodeHoldingsSeries,
+    decodeIncomeStatementReport,
+    decodeJournalInfo,
+    decodePeriodReport,
+    decodeSectionedReport,
+} from "./nativeDecode";
 import {normalizeTransactions} from "./normalize";
 
 const apiUrl = process.env.LEDGELINE_API_URL;
@@ -33,15 +41,22 @@ function dollarLine(ma: MixedAmount, styles: ReadonlyMap<string, import("$lib/do
 describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgeline-server native reports", () => {
     const url = apiUrl ?? "";
 
-    it("balance sheet renders Total Assets $48,402.56 and Net $47,871.41", async () => {
+    // The UNVALUED report (`hledger bs -e 2026-07-09 --depth 2`), so the dollar
+    // line is only the dollar-denominated balances: the stocks, EUR and the
+    // WP-14 home stay as raw commodity balances on their own lines. Assets
+    // include the car at $20,500.00 (its $28,000.00 cost net of accumulated
+    // depreciation); Net is negative because the $336,000.00 mortgage lands in
+    // dollars while the home it bought does not. Figures $20,500.00 lighter are
+    // the stale pre-WP-14 ones — do not "correct" the assertions back to them.
+    it("balance sheet renders Total Assets $68,902.56 and Net $-267,628.59", async () => {
         const styles = reportStyles(normalizeTransactions(await new HledgerApi(url).transactions()));
         const report = decodeSectionedReport(await new LedgelineApi(url).balanceSheet({asOf: AS_OF, depth: 2}));
         expect(report.asOf).toBe(AS_OF);
 
         const assets = report.sections.find((s) => s.title === "Assets");
         expect(assets).toBeDefined();
-        expect(dollarLine(assets!.total, styles)).toBe("$48,402.56");
-        expect(dollarLine(report.grandTotal, styles)).toBe("$47,871.41");
+        expect(dollarLine(assets!.total, styles)).toBe("$68,902.56");
+        expect(dollarLine(report.grandTotal, styles)).toBe("$-267,628.59");
     });
 
     it("income statement totals revenues $34,010.00 over the year to date", async () => {
@@ -50,6 +65,59 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         const revenues = report.sections.find((s) => s.title === "Revenues");
         expect(revenues).toBeDefined();
         expect(dollarLine(revenues!.total, styles)).toBe("$34,010.00");
+    });
+
+    // The two GROUPED statements. These matter more than the flat ones above: the
+    // flat reports are pinned byte-for-byte by a golden, whereas these are the
+    // reports the /reports page actually renders, and their decoders are the ones
+    // carrying the `Amounts`/`prior` present-vs-absent convention that no type
+    // system checks across the language boundary.
+    it("grouped balance sheet ties out and names its unpriced commodities", async () => {
+        const report = decodeBalanceSheetReport(await new LedgelineApi(url).balanceSheetGrouped({asOf: AS_OF}));
+        expect(report.asOf).toBe(AS_OF);
+        expect(report.sections.map((s) => s.kind)).toEqual(["assets", "liabilities", "equity"]);
+        expect(report.balanced).toBe(true);
+        // GLD and TSLA have no `P` directive at any date — the genuinely unpriced path.
+        expect(report.meta?.unpriced).toEqual(["GLD", "TSLA"]);
+    });
+
+    it("grouped P&L groups by segment, valued, against the prior equal-length window", async () => {
+        const styles = reportStyles(normalizeTransactions(await new HledgerApi(url).transactions()));
+        const report = decodeIncomeStatementReport(await new LedgelineApi(url).incomeStatementGrouped({from: "2026-01-01", to: AS_OF}));
+
+        // Untagged journal ⇒ the simple two-box shape, no GAAP ladder.
+        expect(report.multiStep).toBe(false);
+        expect(report.sections.map((s) => s.kind)).toEqual(["revenue", "opex"]);
+        expect(report.sections.map((s) => s.title)).toEqual(["Revenue", "Expenses"]);
+        expect(report.sections.flatMap((s) => s.trailing)).toEqual([]);
+
+        // hledger 1.52: `is -V -b 2026-01-01 -e 2026-07-09 --depth 2`. Expenses
+        // INCLUDE the WP-14 write-downs — `expenses:depreciation` is a declared
+        // expense account, so the 2026-06-30 $3,500.00 vehicle depreciation is
+        // in the current column and the 2025-06-30 $4,000.00 one is in prior.
+        const [revenue, expenses] = report.sections;
+        expect(dollarLine(revenue.total.current, styles)).toBe("$34,010.00");
+        expect(dollarLine(expenses.total.current, styles)).toBe("$28,626.48");
+        expect(dollarLine(report.netIncome.current, styles)).toBe("$5,383.52");
+        expect(revenue.groups.map((g) => g.name)).toEqual(["Dividends", "Salary"]);
+        expect(revenue.groups.every((g) => g.source === "segment")).toBe(true);
+
+        // The prior window is equal-LENGTH, not the prior calendar year:
+        // `is -V -b 2025-06-26 -e 2026-01-01 --depth 2`.
+        expect(report.prior).toEqual({from: "2025-06-26", to: "2025-12-31"});
+        expect(dollarLine(revenue.total.prior!, styles)).toBe("$39,397.50");
+        expect(dollarLine(report.netIncome.prior!, styles)).toBe("$10,880.79");
+    });
+
+    it("omits every prior figure, not just the header, when compare=none", async () => {
+        const report = decodeIncomeStatementReport(await new LedgelineApi(url).incomeStatementGrouped({from: "2026-01-01", to: AS_OF, compare: "none"}));
+        expect(report.prior).toBeNull();
+        expect(report.netIncome.prior).toBeUndefined();
+        expect(
+            report.sections
+                .flatMap((s) => [s.total, ...s.groups.flatMap((g) => [g.total, ...g.rows.map((r) => r.amounts)])])
+                .every((a) => a.prior === undefined)
+        ).toBe(true);
     });
 
     // GLD and TSLA used to land here as unpriced. Since net worth started inferring
@@ -136,5 +204,17 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(series.points).toHaveLength(12);
         expect(series.hasBasis).toBe(true);
         expect(series.points[series.points.length - 1].label).toBe("Jul 2026");
+    });
+
+    // The app bar's label, against the real engine. `/api/journal` is the one
+    // native route with no golden fixture — its manifest requires every pinned
+    // request to fix its own dates, and this route takes no date at all — so
+    // this is where the engine's derivation and the SPA's decoder are checked
+    // against each other. `fixtures/sample.journal` opens with an eight-word
+    // sentence about the file, which is a description and not a name, so the
+    // folder answers instead: both halves of the fallback in one assertion.
+    it("journal info falls back to the fixture folder's name", async () => {
+        const info = decodeJournalInfo(await new LedgelineApi(url).journalInfo());
+        expect(info).toEqual({title: "fixtures", file: "sample.journal"});
     });
 });

@@ -53,6 +53,12 @@ const ASYNC_SECTION = "lib/components/AsyncSection.svelte";
 const SURFACES = [
     {name: "reports route", file: "routes/reports/+page.svelte", testid: "reports-error"},
     {name: "holdings route", file: "routes/holdings/+page.svelte", testid: "holdings-error"},
+    // The Other tab (plans/14) is a SECOND async surface in the same file, on its
+    // own resource: the stock report can be loaded and current while the other
+    // one has just 500'd, so it needs its own reachable error branch — and
+    // registering it here is what stops the split from quietly halving the
+    // guarantee the holdings route already had.
+    {name: "holdings other tab", file: "routes/holdings/+page.svelte", testid: "other-holdings-error"},
     {name: "insights dashboard", file: "lib/reports/ui/insights/InsightsDashboard.svelte", testid: "insights-error"},
     {name: "subscriptions panel", file: "lib/reports/ui/subscriptions/SubscriptionsPanel.svelte", testid: "subscriptions-error"},
     // The rules editor moved out of `routes/imports/+page.svelte` when that

@@ -809,15 +809,11 @@ fn movers(
 }
 
 /// True when `account` is where a bookkeeping entry parks its counterweight:
-/// hledger's `type: E` (equity) or its `type: V` conversion subtype.
-///
-/// The two are tested separately rather than through one `is_type(_, Equity)`
-/// call because `Conversion` is deliberately NOT modelled as an `Equity` subtype
-/// here — only `Cash`→`Asset` and `Gain`→`Revenue` are (see
-/// `account_types::is_category`) — and widening that hierarchy would move
-/// accounts between balance-sheet sections, which is not this fix's business.
+/// hledger's `type: E` (equity) or its `type: V` conversion subtype, which
+/// `account_types::is_category` folds into `Equity` the same way it folds
+/// `Cash`→`Asset` and `Gain`→`Revenue`.
 fn is_equity_leg(account: &str, types: &AccountTypes) -> bool {
-    types.is_type(account, AccountType::Equity) || types.is_type(account, AccountType::Conversion)
+    types.is_type(account, AccountType::Equity)
 }
 
 /// True when `account` is a leg that makes a transaction an economic event:
@@ -1111,6 +1107,7 @@ mod tests {
             commodity_tags: Vec::new(),
             prices,
             default_commodity: None,
+            leading_comment: None,
         }
     }
 

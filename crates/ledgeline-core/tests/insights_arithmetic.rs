@@ -325,7 +325,19 @@ fn insights_movers_price_the_gld_lot() {
 #[test]
 fn insights_net_worth_matches_the_net_worth_report_at_the_period_end() {
     // Box 3 is unchanged by the price-set fix (net_worth already inferred), and
-    // this pins the $61,795.505 figure the holdings boxes now reconcile against.
+    // this pins the figure the holdings boxes reconcile against. It moved to
+    // $214,295.505 when `sample.journal` gained the WP-14 home and car:
+    // +$468,000.00 home, +$20,500.00 car, −$336,000.00 mortgage = +$152,500.00
+    // on the old $61,795.505.
+    //
+    // `hledger bal expr:'type:A or type:L' -V --infer-market-prices -e 2026-07-01`
+    // reports `$213,925.5050, 5.0 GLD, -2.0 TSLA` — $370.00 less, and NOT a
+    // disagreement about arithmetic. hledger leaves those two as bare commodity
+    // counts; we price both from inferred rates, GLD at $1,000.00 (inverting its
+    // `@ 0.005 GLD` conversion leg) and TSLA at −$630.00 (its `@ $315.00` sale),
+    // and −630 + 1000 = +370. That divergence predates this fixture change and is
+    // the same one `sample_unpriced_commodities_are_kept_and_named` documents from
+    // the balance sheet's side, where we deliberately follow hledger instead.
     let journal = fixture_journal();
     let report = insights(
         &journal,
@@ -363,7 +375,8 @@ fn insights_net_worth_matches_the_net_worth_report_at_the_period_end() {
             .get(&usd())
             .expect("base present")
             .floating_point(),
-        61_795.505,
-        "hledger reports $61,795.50 for the same query"
+        214_295.505,
+        "hledger reports $213,925.5050 + 5.0 GLD + -2.0 TSLA for the same query; \
+         we price those two at +$1,000.00 and -$630.00 (see above)"
     );
 }

@@ -1,30 +1,37 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {defaultReportParams} from "$lib/reports/ui/params";
+import {GROUPED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
+import {GROUPED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
 import {budgetSpan, buildReportQuery, reports, sameReportQuery, type ReportQuery} from "./reports.svelte";
 
-/** A minimal engine response for a sectioned (bs/is) report. */
-const sectioned = (title: string) => ({
-    sections: [{title, rows: [], total: {}}],
-    // `grandTotal`, not `total` — the engine's key (reports_api.rs
-    // WireSectionedReport::grand_total). This said `total` until decodeMixed
-    // was made strict (DRY-3): the misspelling decoded to an empty Map and the
-    // stub quietly stood for a report with a zero grand total.
-    grandTotal: {},
-});
+/** A minimal engine response for a period (cf/nw) report. */
+const period = () => ({buckets: ["2026-01"], rows: [], totals: [{}]});
 
-/** Stub the network so `reports.load` decodes a real payload without an engine. */
+/**
+ * Stub the network so `reports.load` decodes a real payload without an engine.
+ *
+ * The handler is routed on the URL rather than answering one canned body,
+ * because the tabs no longer share a wire shape: `bs` goes to
+ * `/balancesheet/grouped` and `is` to `/incomestatement/grouped`, and each
+ * decoder REFUSES the other's body — as it should, and as it did the moment
+ * this file was left serving the old flat report to both.
+ */
 function serve(handler: (url: string) => unknown): void {
     vi.stubGlobal("fetch", (input: string) =>
         Promise.resolve(new Response(JSON.stringify(handler(String(input))), {status: 200, headers: {"Content-Type": "application/json"}}))
     );
 }
 
-const BS: ReportQuery = {tab: "bs", asOf: "2025-12-31", depth: 2};
-const IS: ReportQuery = {tab: "is", from: "2026-01-01", to: "2026-12-31", depth: 2};
+/** The body each report route expects, keyed off the requested path. */
+const engine = (url: string): unknown =>
+    url.includes("/balancesheet/grouped") ? GROUPED_BALANCE_SHEET : url.includes("/incomestatement/grouped") ? GROUPED_INCOME_STATEMENT : period();
+
+const BS: ReportQuery = {tab: "bs", asOf: "2025-12-31"};
+const IS: ReportQuery = {tab: "is", from: "2026-01-01", to: "2026-12-31"};
 
 describe("UNIT reports store tags each report with the query it came from (FE-1)", () => {
     beforeEach(() => {
-        serve(() => sectioned("Assets"));
+        serve(engine);
     });
     afterEach(() => {
         vi.unstubAllGlobals();
@@ -56,7 +63,7 @@ describe("UNIT reports store tags each report with the query it came from (FE-1)
 
 describe("UNIT sameReportQuery gates the export on an exact match", () => {
     it("accepts an identical query", () => {
-        expect(sameReportQuery(BS, {tab: "bs", asOf: "2025-12-31", depth: 2})).toBe(true);
+        expect(sameReportQuery(BS, {tab: "bs", asOf: "2025-12-31"})).toBe(true);
     });
 
     it("rejects a different tab", () => {
@@ -67,11 +74,60 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
         // The export names the file and titles the sheet from the CURRENT
         // controls: `balance-sheet-2026-06-30.xlsx` holding December's figures
         // is exactly the failure this prevents.
-        expect(sameReportQuery(BS, {tab: "bs", asOf: "2026-06-30", depth: 2})).toBe(false);
+        expect(sameReportQuery(BS, {tab: "bs", asOf: "2026-06-30"})).toBe(false);
     });
 
     it("rejects a different depth", () => {
-        expect(sameReportQuery(BS, {tab: "bs", asOf: "2025-12-31", depth: 3})).toBe(false);
+        // Neither statement HAS a depth any more (both ask for an unclamped
+        // report), so this is pinned on cash flow, which still does.
+        const CF: ReportQuery = {tab: "cf", end: "2026-12-31", interval: "monthly", count: 12, depth: 2};
+        expect(sameReportQuery(CF, {...CF, depth: 3})).toBe(false);
+    });
+
+    it("rejects the same P&L tab over a different range", () => {
+        // The export names the file and titles the sheet from the CURRENT
+        // controls: `income-statement-2026-01-01-to-2026-12-31.xlsx` holding last
+        // year's figures is exactly the failure this prevents.
+        expect(sameReportQuery(IS, {tab: "is", from: "2025-01-01", to: "2025-12-31"})).toBe(false);
+    });
+
+    it.each([
+        ["bs", (params: ReturnType<typeof defaultReportParams>) => buildReportQuery({...params, tab: "bs" as const, depth: 3})],
+        ["is", (params: ReturnType<typeof defaultReportParams>) => buildReportQuery({...params, tab: "is" as const, depth: 3})],
+    ])("builds the %s query without a depth, whatever the shared field holds", (_tab, build) => {
+        // Both statements ask the engine for an UNCLAMPED report — expanding a
+        // group has to show all of it — and absent is how those endpoints spell
+        // "no clamp" (`depth=0` is already totals-only). A stale `?depth=` from a
+        // bookmark still lands in the shared param for cf/nw/budget, and must not
+        // leak back into either request.
+        const params = defaultReportParams();
+        expect(build(params)).not.toHaveProperty("depth");
+        expect(build({...params, depth: 1})).toEqual(build({...params, depth: 9}));
+    });
+
+    it("builds the bs and is queries from the params each tab actually shows", () => {
+        const params = defaultReportParams();
+        expect(buildReportQuery({...params, tab: "bs"})).toEqual({tab: "bs", asOf: params.asOf});
+        expect(buildReportQuery({...params, tab: "is"})).toEqual({tab: "is", from: params.from, to: params.to});
+    });
+
+    it("fetches the P&L from the GROUPED endpoint, whose decoder refuses the flat body", async () => {
+        // The two decoders are not interchangeable, and that is the safety net:
+        // pointing this tab at the old `/api/reports/incomestatement` again would
+        // fail loudly here rather than render a flat report under the new view.
+        const seen: string[] = [];
+        serve((url) => {
+            seen.push(url);
+            return engine(url);
+        });
+        await reports.load("http://engine", IS);
+
+        expect(seen.some((url) => url.includes("/api/reports/incomestatement/grouped"))).toBe(true);
+        // No depth, and no `compare`: the engine's default is the previous
+        // equal-length window, which is what the comparison column shows.
+        expect(seen.every((url) => !url.includes("depth="))).toBe(true);
+        expect(reports.report).toMatchObject({kind: "incomeStatement"});
+        vi.unstubAllGlobals();
     });
 
     it("distinguishes budget spans that share an end and a month count", () => {

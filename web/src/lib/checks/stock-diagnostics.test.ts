@@ -71,10 +71,15 @@ const dateOf = (txns: Transaction[], problem: Problem): string => txns.find((t) 
 
 describe("UNIT checks stock diagnostics reach the drawer (fixtures/sample.journal)", () => {
     // These are the EXACT pairs the deleted TS rules produced, captured before
-    // they were removed. `tindex` is 1-based, so the wire's 0-based 99/179
-    // resolve to transactions 100 and 180.
+    // they were removed. `tindex` is 1-based, so the wire's 0-based 102/182
+    // resolve to transactions 103 and 183.
+    //
+    // Both moved by three when plans/14 gave sample.journal two 2024-07-01
+    // opening positions and a 2025-06-30 depreciation entry ahead of them. The
+    // findings themselves are unchanged — same rules, same rows, same journal
+    // defects — so this is a renumbering, not a behaviour change.
     it("anchors every finding to the same transaction the TS rules did", () => {
-        expect(pairs(sample.problems)).toEqual(["100:stock-missing-basis", "100:stock-unpriced", "180:stock-negative"]);
+        expect(pairs(sample.problems)).toEqual(["103:stock-missing-basis", "103:stock-unpriced", "183:stock-negative"]);
     });
 
     it("flags the 2025-08-20 GLD gift as missing basis AND unpriced", () => {
@@ -102,19 +107,19 @@ describe("UNIT checks stock diagnostics reach the drawer (fixtures/sample.journa
         const byTxn = groupByTxn(sample.problems);
         expect(
             byTxn
-                .get(100)
+                .get(103)
                 ?.filter(isStock)
                 .map((p) => p.rule)
         ).toEqual(["stock-missing-basis", "stock-unpriced"]);
         expect(
             byTxn
-                .get(180)
+                .get(183)
                 ?.filter(isStock)
                 .map((p) => p.rule)
         ).toEqual(["stock-negative"]);
         // The 0-based wire positions must NOT survive the translation.
-        expect(byTxn.get(99)?.some(isStock) ?? false).toBe(false);
-        expect(byTxn.get(179)?.some(isStock) ?? false).toBe(false);
+        expect(byTxn.get(102)?.some(isStock) ?? false).toBe(false);
+        expect(byTxn.get(182)?.some(isStock) ?? false).toBe(false);
     });
 });
 

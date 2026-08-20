@@ -1,19 +1,19 @@
 {
     "diagnostics": [
         {
-            "txnIndex": 99,
+            "txnIndex": 102,
             "rule": "stock-missing-basis",
             "severity": "warning",
             "message": "GLD: acquired without a cost annotation — basis unknown"
         },
         {
-            "txnIndex": 179,
+            "txnIndex": 182,
             "rule": "stock-negative",
             "severity": "warning",
             "message": "TSLA: net shares are negative (-2.00 shares) — the opening position was likely never entered, so its basis and gain are unknown; its market value is still counted in the totals"
         },
         {
-            "txnIndex": 99,
+            "txnIndex": 102,
             "rule": "stock-unpriced",
             "severity": "warning",
             "message": "GLD: no market price or usable cost annotation — excluded from totals"
