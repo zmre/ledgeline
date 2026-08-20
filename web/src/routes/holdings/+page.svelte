@@ -142,132 +142,139 @@
     <ScopeBar {accountNames} />
     <HoldingsTabs bind:tab={holdingsTab.value} />
 
-    {#if holdingsTab.value === "stocks"}
-        <!-- Error first — ordered once, inside <AsyncSection>: tested after the data
+    <!-- The tab strip's switched region, completing the WAI-ARIA tabs pattern:
+         every tab's aria-controls points at this id, and aria-labelledby follows
+         the ACTIVE tab's id (see HoldingsTabs.svelte), so a reader entering the
+         panel hears which tab produced it. Same flex/gap as the parent, so the
+         wrapper adds no visual change. -->
+    <div id="holdings-panel" role="tabpanel" aria-labelledby="holdings-tab-{holdingsTab.value}" class="flex flex-col gap-3">
+        {#if holdingsTab.value === "stocks"}
+            <!-- Error first — ordered once, inside <AsyncSection>: tested after the data
              branch and gated on `report === null`, it could never fire once a report
              had loaded, so moving the as-of and hitting a 500 kept the OLD date's
              portfolio on screen (FE-5). -->
-        <AsyncSection
-            view={holdingsData.view}
-            value={report}
-            error={holdingsData.error}
-            testid="holdings-error"
-            label="holdings"
-            loadingLabel="Loading holdings"
-            onRetry={() => void holdingsData.load(settings.serverUrl ?? "", holdingsScope.value)}
-        >
-            {#snippet children(report)}
-                {#if positions.shown.length > 0}
-                    <section class="collapse-arrow bg-base-200 collapse" data-testid="holdings-insights">
-                        <input type="checkbox" bind:checked={insightsOpen} aria-label="Toggle holdings insights" />
-                        <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
-                            <h2 class="text-sm font-semibold tracking-tight">Insights</h2>
-                            <span class="text-sm">
-                                <span class="text-base-content/60 mr-1">Market value</span>
-                                <span class="font-semibold">{format(report.totals.marketValue)}</span>
-                            </span>
-                        </div>
-                        <div class="collapse-content flex flex-col gap-4">
-                            <HoldingsStats totals={report.totals} holdings={positions.shown} {format} {gainPeriod} />
-                            <div class="grid grid-cols-1 items-center gap-4 lg:grid-cols-2">
-                                <div>
-                                    <HoldingsPie holdings={positions.shown} {format} />
-                                </div>
-                                <GainersLosers {report} {format} />
+            <AsyncSection
+                view={holdingsData.view}
+                value={report}
+                error={holdingsData.error}
+                testid="holdings-error"
+                label="holdings"
+                loadingLabel="Loading holdings"
+                onRetry={() => void holdingsData.load(settings.serverUrl ?? "", holdingsScope.value)}
+            >
+                {#snippet children(report)}
+                    {#if positions.shown.length > 0}
+                        <section class="collapse-arrow bg-base-200 collapse" data-testid="holdings-insights">
+                            <input type="checkbox" bind:checked={insightsOpen} aria-label="Toggle holdings insights" />
+                            <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
+                                <h2 class="text-sm font-semibold tracking-tight">Insights</h2>
+                                <span class="text-sm">
+                                    <span class="text-base-content/60 mr-1">Market value</span>
+                                    <span class="font-semibold">{format(report.totals.marketValue)}</span>
+                                </span>
                             </div>
-                            {#if trend !== null}
-                                <HoldingsTrend {trend} formatValue={formatTrendValue} formatAxis={formatTrendAxis} />
-                            {/if}
-                        </div>
-                    </section>
-                {/if}
+                            <div class="collapse-content flex flex-col gap-4">
+                                <HoldingsStats totals={report.totals} holdings={positions.shown} {format} {gainPeriod} />
+                                <div class="grid grid-cols-1 items-center gap-4 lg:grid-cols-2">
+                                    <div>
+                                        <HoldingsPie holdings={positions.shown} {format} />
+                                    </div>
+                                    <GainersLosers {report} {format} />
+                                </div>
+                                {#if trend !== null}
+                                    <HoldingsTrend {trend} formatValue={formatTrendValue} formatAxis={formatTrendAxis} />
+                                {/if}
+                            </div>
+                        </section>
+                    {/if}
 
-                {#if report.warnings.length > 0}
-                    <div class="alert alert-warning rounded-box items-start px-3 py-2 text-sm" role="alert" data-testid="holdings-warnings">
-                        <ul class="list-inside list-disc">
-                            {#each report.warnings as warning (warning.symbol + warning.kind)}
-                                <li>{warning.message}</li>
-                            {/each}
-                        </ul>
-                    </div>
-                {/if}
-
-                {#if positions.shown.length === 0}
-                    <div class="card bg-base-200" data-testid="holdings-empty">
-                        <div class="card-body items-center py-16 text-center">
-                            <h2 class="card-title">No stock holdings in scope</h2>
-                            <p class="text-base-content/60">
-                                No non-currency commodities are held by the selected accounts as of {report.asOf}. Widen the scope or pick a later date.
-                            </p>
+                    {#if report.warnings.length > 0}
+                        <div class="alert alert-warning rounded-box items-start px-3 py-2 text-sm" role="alert" data-testid="holdings-warnings">
+                            <ul class="list-inside list-disc">
+                                {#each report.warnings as warning (warning.symbol + warning.kind)}
+                                    <li>{warning.message}</li>
+                                {/each}
+                            </ul>
                         </div>
-                    </div>
-                {:else}
-                    <div class="flex justify-end">
-                        <!-- The export is the full engine report, short rows included: a spreadsheet whose rows sum to its own totals. -->
-                        <ExportButton
-                            run={() => exportHoldingsXlsx(report, {title: "Holdings", params: `As of ${report.asOf}`}, `holdings-${report.asOf}.xlsx`)}
-                        />
-                    </div>
-                    <HoldingsTable holdings={positions.shown} totals={report.totals} {format} {gainPeriod} />
-                {/if}
-                <!-- Why the visible rows do not add up to the totals row above them. -->
-                {#if hiddenNote !== null}
-                    <p class="text-base-content/60 px-1 text-xs" data-testid="holdings-hidden-note">{hiddenNote}</p>
-                {/if}
-            {/snippet}
-        </AsyncSection>
-    {:else}
-        <!-- Same tri-state, same shared chain, its own testid — see the FE-5 note above. -->
-        <AsyncSection
-            view={otherHoldingsData.view}
-            value={otherReport}
-            error={otherHoldingsData.error}
-            testid="other-holdings-error"
-            label="other holdings"
-            loadingLabel="Loading other holdings"
-            onRetry={() => void otherHoldingsData.load(settings.serverUrl ?? "", holdingsScope.value)}
-        >
-            {#snippet children(report)}
-                {#if report.holdings.length > 0}
-                    <!-- Chart ABOVE the table, matching Stocks. The two tabs sit one
+                    {/if}
+
+                    {#if positions.shown.length === 0}
+                        <div class="card bg-base-200" data-testid="holdings-empty">
+                            <div class="card-body items-center py-16 text-center">
+                                <h2 class="card-title">No stock holdings in scope</h2>
+                                <p class="text-base-content/60">
+                                    No non-currency commodities are held by the selected accounts as of {report.asOf}. Widen the scope or pick a later date.
+                                </p>
+                            </div>
+                        </div>
+                    {:else}
+                        <div class="flex justify-end">
+                            <!-- The export is the full engine report, short rows included: a spreadsheet whose rows sum to its own totals. -->
+                            <ExportButton
+                                run={() => exportHoldingsXlsx(report, {title: "Holdings", params: `As of ${report.asOf}`}, `holdings-${report.asOf}.xlsx`)}
+                            />
+                        </div>
+                        <HoldingsTable holdings={positions.shown} totals={report.totals} {format} {gainPeriod} />
+                    {/if}
+                    <!-- Why the visible rows do not add up to the totals row above them. -->
+                    {#if hiddenNote !== null}
+                        <p class="text-base-content/60 px-1 text-xs" data-testid="holdings-hidden-note">{hiddenNote}</p>
+                    {/if}
+                {/snippet}
+            </AsyncSection>
+        {:else}
+            <!-- Same tri-state, same shared chain, its own testid — see the FE-5 note above. -->
+            <AsyncSection
+                view={otherHoldingsData.view}
+                value={otherReport}
+                error={otherHoldingsData.error}
+                testid="other-holdings-error"
+                label="other holdings"
+                loadingLabel="Loading other holdings"
+                onRetry={() => void otherHoldingsData.load(settings.serverUrl ?? "", holdingsScope.value)}
+            >
+                {#snippet children(report)}
+                    {#if report.holdings.length > 0}
+                        <!-- Chart ABOVE the table, matching Stocks. The two tabs sit one
                          click apart under one scope bar, so a reader moving between
                          them should not find the same two panels in the opposite
                          order. HoldingsTrend itself is unchanged: the Other series is
                          the stock series' wire shape byte for byte, which is exactly
                          why the engine reuses it. -->
-                    {#if otherTrend !== null}
-                        <HoldingsTrend trend={otherTrend} formatValue={formatTrendValue} formatAxis={formatTrendAxis} />
+                        {#if otherTrend !== null}
+                            <HoldingsTrend trend={otherTrend} formatValue={formatTrendValue} formatAxis={formatTrendAxis} />
+                        {/if}
+                        <OtherHoldingsTable holdings={report.holdings} totals={report.totals} base={report.base} {format} {formatUnits} {gainPeriod} />
                     {/if}
-                    <OtherHoldingsTable holdings={report.holdings} totals={report.totals} base={report.base} {format} {formatUnits} {gainPeriod} />
-                {/if}
 
-                <!-- Below the table, not above it: an unpriced asset is a row that
+                    <!-- Below the table, not above it: an unpriced asset is a row that
                      contributes to no total, so the warning explains the em-dashes
                      the reader has just looked at. -->
-                {#if report.warnings.length > 0}
-                    <div class="alert alert-warning rounded-box items-start px-3 py-2 text-sm" role="alert" data-testid="other-holdings-warnings">
-                        <ul class="list-inside list-disc">
-                            {#each report.warnings as warning (warning.account + warning.kind)}
-                                <li>{warning.message}</li>
-                            {/each}
-                        </ul>
-                    </div>
-                {/if}
-
-                {#if report.holdings.length === 0}
-                    <div class="card bg-base-200" data-testid="other-holdings-empty">
-                        <div class="card-body items-center py-16 text-center">
-                            <h2 class="card-title">No other holdings in scope</h2>
-                            <p class="text-base-content/60">
-                                No non-stock, non-cash assets are held by the selected accounts as of {report.asOf}. Tag an account
-                                <code class="text-base-content/80">holdings: other</code> to list it here, or widen the scope.
-                            </p>
+                    {#if report.warnings.length > 0}
+                        <div class="alert alert-warning rounded-box items-start px-3 py-2 text-sm" role="alert" data-testid="other-holdings-warnings">
+                            <ul class="list-inside list-disc">
+                                {#each report.warnings as warning (warning.account + warning.kind)}
+                                    <li>{warning.message}</li>
+                                {/each}
+                            </ul>
                         </div>
-                    </div>
-                {/if}
-            {/snippet}
-        </AsyncSection>
-    {/if}
+                    {/if}
+
+                    {#if report.holdings.length === 0}
+                        <div class="card bg-base-200" data-testid="other-holdings-empty">
+                            <div class="card-body items-center py-16 text-center">
+                                <h2 class="card-title">No other holdings in scope</h2>
+                                <p class="text-base-content/60">
+                                    No non-stock, non-cash assets are held by the selected accounts as of {report.asOf}. Tag an account
+                                    <code class="text-base-content/80">holdings: other</code> to list it here, or widen the scope.
+                                </p>
+                            </div>
+                        </div>
+                    {/if}
+                {/snippet}
+            </AsyncSection>
+        {/if}
+    </div>
 </div>
 
 <ErrorToast message={journal.status === "error" ? journal.error : null} onRetry={() => void journal.refresh({force: true})} />
