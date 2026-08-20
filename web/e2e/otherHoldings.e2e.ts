@@ -115,7 +115,12 @@ test("other holdings: rows carry name, value, cost and change from the engine", 
     // depreciation`, so it counts against value and NOT against cost — which is
     // the whole reason this row can report a loss at all.
     await expect(car).toContainText("$-7,500.00");
-    await expect(car).toContainText("-26.8%");
+    // U+2212, not an ASCII hyphen, and the row really does carry BOTH characters:
+    // money comes from `formatDec` in the domain layer (ASCII, `$-7,500.00`) while
+    // an explicitly-signed percent comes from `fmtSignedPct` (typographic minus,
+    // which aligns with the digits). `lib/format/amounts.ts:12-23` records that
+    // split as a deliberate limit, so this is not a formatting bug to tidy away.
+    await expect(car).toContainText("\u221226.8%");
 });
 
 test("other holdings: the Holding column shows the unit as written, and is blank for a dollar-booked asset", async ({page}) => {
