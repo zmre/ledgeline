@@ -267,6 +267,24 @@ async fn journal_rejects_a_leading_comment_that_is_a_description() {
     );
 }
 
+/// An editor modeline is an instruction to a program, not a name. Stripping
+/// its `-*-` decoration would leave a plausible-looking "mode: ledger", so the
+/// title must instead fall back to the folder's name.
+#[tokio::test]
+async fn journal_rejects_an_editor_modeline_as_the_title() {
+    let body = journal_info_for(
+        "household-books",
+        "main.journal",
+        "; -*- mode: ledger -*-\n\n2026-01-01 t\n    expenses:x   $1.00\n    assets:bank\n",
+    )
+    .await;
+    assert_eq!(
+        body,
+        json!({"title": "household-books", "file": "main.journal"}),
+        "an Emacs file-variables line must not become the journal's title"
+    );
+}
+
 /// SEC-1: the server is same-origin ONLY by default. A cross-origin `Origin`
 /// gets no `access-control-allow-origin`, so a browser refuses to hand the
 /// response to the page that asked for it.

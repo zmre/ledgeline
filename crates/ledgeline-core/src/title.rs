@@ -29,6 +29,14 @@
 //! them fails SAFE: a rejected comment falls to the folder name, never to a
 //! garbled title.
 //!
+//! And not every first-line comment is even addressed to a person. Emacs
+//! file-variable lines (`; -*- mode: ledger -*-`), vim modelines
+//! (`; vim: ft=ledger`) and shebangs (`#!/usr/bin/env hledger`) all claim the
+//! first line of real ledger files, and each is an instruction to a program.
+//! [`is_machine_directed`] rejects those shapes on the RAW comment body, before
+//! decoration stripping launders `-*- mode: ledger -*-` into a
+//! plausible-looking "mode: ledger".
+//!
 //! # A folder name, not a filename
 //!
 //! [`crate::journals`] makes a point of never inspecting a filename, because
@@ -94,12 +102,62 @@ fn main_path(journal: &Journal) -> Option<&Path> {
 
 /// A leading comment as a title, or `None` if it does not read as one.
 ///
-/// The marker is already gone (the parser strips it); what is left is stripped
-/// of decoration at both ends, re-trimmed, and then judged by
-/// [`reads_as_a_title`].
+/// The marker is already gone (the parser strips it); what is left is first
+/// judged RAW by [`is_machine_directed`] — decoration stripping would erase the
+/// very characters that give a machine line away — then stripped of decoration
+/// at both ends, re-trimmed, and judged by [`reads_as_a_title`].
 fn title_from_comment(comment: &str) -> Option<String> {
+    if is_machine_directed(comment) {
+        return None;
+    }
     let candidate = comment.trim_matches(DECORATION).trim();
     reads_as_a_title(candidate).then(|| candidate.to_string())
+}
+
+/// Does `comment` address a PROGRAM rather than a reader?
+///
+/// Editors and interpreters claim the first line of a file for themselves, and
+/// ledger files are no exception — all three of these are common real openers,
+/// and none of them is a name. Judged on the raw comment body, before
+/// decoration stripping: `-*-` is made entirely of [`DECORATION`] characters,
+/// so stripping first would leave nothing to recognise.
+fn is_machine_directed(comment: &str) -> bool {
+    is_emacs_file_variables(comment) || is_vim_modeline(comment) || is_shebang(comment)
+}
+
+/// An Emacs file-local-variables line: a `-*- … -*-` pair, which is exactly
+/// what Emacs itself scans the first line for. An unpaired `-*-` is not a
+/// file-variables line to Emacs either, and is left to the ordinary rules.
+fn is_emacs_file_variables(comment: &str) -> bool {
+    comment
+        .split_once("-*-")
+        .is_some_and(|(_, rest)| rest.contains("-*-"))
+}
+
+/// A vim/vi/ex modeline: the editor's name and a colon up front, then a
+/// set-style payload (`ft=ledger`, `set ft=ledger:`). Requiring the payload is
+/// what keeps this from over-rejecting — a human title that merely contains a
+/// colon (`Walsh Family: Main Ledger`) carries no `option=value` settings. The
+/// prefixes are matched case-sensitively, as vim itself matches them.
+fn is_vim_modeline(comment: &str) -> bool {
+    ["vim:", "vi:", "ex:"]
+        .into_iter()
+        .filter_map(|editor| comment.strip_prefix(editor))
+        .any(is_settings_payload)
+}
+
+/// Does a modeline payload read as editor settings — `option=value` pairs, or
+/// vim's second form, which opens with `set` (or its abbreviation `se`)?
+fn is_settings_payload(payload: &str) -> bool {
+    payload.contains('=') || matches!(payload.split_whitespace().next(), Some("set" | "se"))
+}
+
+/// A shebang remnant. The raw line was `#!/usr/bin/env hledger`; the parser
+/// consumed the `#` as a comment marker, so a comment BODY that opens with `!`
+/// is the evidence that survives. Nothing a person would name a journal starts
+/// with `!` either, so this fails safe.
+fn is_shebang(comment: &str) -> bool {
+    comment.starts_with('!')
 }
 
 /// Does `candidate` read as a journal's name rather than as prose about it?
@@ -219,6 +277,41 @@ mod tests {
             )
             .as_deref(),
             Some("books")
+        );
+    }
+
+    #[test]
+    fn a_machine_directed_first_line_is_not_a_title() {
+        // Every one of these is a real opener for a ledger file, and every one
+        // is addressed to a program: Emacs file-variables, vim/vi/ex modelines,
+        // shebangs. Each must fall to the folder, not become the title —
+        // decoration stripping alone would launder the first into a
+        // plausible-looking "mode: ledger".
+        for line in [
+            "; -*- mode: ledger -*-",
+            ";; -*- mode: ledger; coding: utf-8 -*-",
+            "; vim: ft=ledger",
+            "; vim: set ft=ledger :",
+            "; vi: ft=ledger",
+            "; ex: ts=4",
+            "#!/usr/bin/env hledger",
+            "#!/bin/sh",
+        ] {
+            assert_eq!(
+                titled(&format!("{line}\n"), MAIN).as_deref(),
+                Some("books"),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_human_title_containing_a_colon_is_still_a_title() {
+        // The modeline rule keys on the editor prefix AND a settings payload,
+        // so a name that merely contains a colon is untouched by it.
+        assert_eq!(
+            titled("; Walsh Family: Main Ledger\n", MAIN).as_deref(),
+            Some("Walsh Family: Main Ledger")
         );
     }
 
