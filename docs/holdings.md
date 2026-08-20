@@ -109,8 +109,12 @@ row. Two rules decide where a row begins:
 1. **An explicit `holdings:` tag wins.** The nearest tagged ancestor owns the
    row. Tag the umbrella when the shape below it is unusual.
 2. **Otherwise a purely-container parent is rolled up**: one with no postings of
-   its own whose posting-bearing descendants are *all* direct children, of which
-   there are at least two.
+   its own, whose posting-bearing descendants that could themselves be rows on
+   this tab are *all* direct children — and there are at least two of them.
+   A descendant that can never be an Other-tab row (a cash account, a
+   `holdings: none`/`holdings: stocks` subtree, anything rule 1 already claimed)
+   does not count, so a lone qualifying child beside an excluded sibling keeps
+   its own name and value.
 
 Rule 2 is deliberately shallow — applied once, never repeated — which is what
 keeps two funds apart:

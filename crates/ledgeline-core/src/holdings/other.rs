@@ -155,14 +155,15 @@ impl<'a> OtherInputs<'a> {
         let mut all_prices = infer_market_prices(txns)?;
         all_prices.extend_from_slice(explicit_prices);
         let classes = declared_holdings_classes(accounts)?;
+        let types = AccountTypes::from_declared(declared_types(&account_decls_from(accounts)));
         Ok(Self {
             txns,
             db: PriceDb::build(&all_prices),
-            types: AccountTypes::from_declared(declared_types(&account_decls_from(accounts))),
             roles: declared_valuation_roles(accounts)?,
             account_tags: account_tag_map(accounts),
-            row_roots: row_roots(txns, &classes),
+            row_roots: row_roots(txns, &classes, &types),
             classes,
+            types,
         })
     }
 
@@ -211,8 +212,9 @@ fn parent_of(account: &str) -> Option<&str> {
 ///    owns the row. Tagging is how you say "this subtree is one thing" when the
 ///    shape below is unusual.
 /// 2. **Otherwise, roll up to a parent that is purely a container**: it has no
-///    postings of its own, and its posting-bearing descendants are ALL direct
-///    children, of which there are at least two.
+///    postings of its own, and its posting-bearing descendants that could
+///    themselves be Other-tab rows are ALL direct children, of which there are
+///    at least two.
 ///
 /// Rule 2 is deliberately shallow — applied once, never iterated. That is what
 /// keeps `assets:partnerships:angel-continuity` one row while leaving
@@ -220,9 +222,18 @@ fn parent_of(account: &str) -> Option<&str> {
 /// `assets:partnerships`'s child is not, so the walk stops. And the "at least
 /// two" clause is what stops a lone `assets:vehicles:car` from being relabelled
 /// `assets:vehicles`, which would trade a name for nothing.
+///
+/// Both clauses of rule 2 look ONLY at accounts this tab could show. Merging
+/// exists to reunite the halves of one holding, so a sibling that can never be
+/// a row here — a cash account, a `holdings: none`/`stocks` subtree, a child
+/// rule 1 already claimed — is not a half of anything. Counting one would merge
+/// a LONE qualifying child into a row wearing the container's name, whose value
+/// (the qualifying subtree only) disagrees with the container's real subtree
+/// balance on the balance sheet.
 fn row_roots(
     txns: &[Transaction],
     classes: &BTreeMap<String, HoldingsClass>,
+    types: &AccountTypes,
 ) -> BTreeMap<String, String> {
     let posted: BTreeSet<&str> = txns
         .iter()
@@ -230,10 +241,36 @@ fn row_roots(
         .map(|posting| posting.account.0.as_str())
         .collect();
 
-    // Per candidate parent: how many posting-bearing descendants it has, and
-    // whether every one of them is a direct child.
+    // Accounts that ever post a non-currency amount: untagged, those are the
+    // Stocks tab's material (`is_other_holding`'s commodity rule), so they are
+    // never Other-tab merge material either.
+    let non_currency: BTreeSet<&str> = txns
+        .iter()
+        .flat_map(|txn| txn.postings.iter())
+        .filter(|posting| {
+            posting
+                .amounts
+                .iter()
+                .any(|amount| !is_currency(&amount.commodity.0))
+        })
+        .map(|posting| posting.account.0.as_str())
+        .collect();
+
+    // Whether `account` could be one half of a rule-2 merge: untagged (a tag
+    // anywhere up the chain means rule 1 owns it, or the tab excludes it), an
+    // exact Asset, and never booked in a non-currency commodity. The date-free
+    // counterpart of `is_other_holding`, which rule 2 must approximate here
+    // because the tree shape is precomputed once for every `as_of`.
+    let mergeable = |account: &str| {
+        resolve_holdings_class(account, classes).is_none()
+            && types.resolve(account) == Some(AccountType::Asset)
+            && !non_currency.contains(account)
+    };
+
+    // Per candidate parent: how many MERGEABLE posting-bearing descendants it
+    // has, and whether every one of them is a direct child.
     let mut descendants: BTreeMap<&str, (usize, bool)> = BTreeMap::new();
-    for account in &posted {
+    for account in posted.iter().filter(|account| mergeable(account)) {
         let mut ancestor = parent_of(account);
         while let Some(name) = ancestor {
             let direct = parent_of(account) == Some(name);
@@ -255,8 +292,10 @@ fn row_roots(
                 }
                 name = parent_of(current);
             }
-            // 2 — a container parent, once.
-            let root = parent_of(account)
+            // 2 — a container parent, once, and only for merge material.
+            let root = Some(*account)
+                .filter(|candidate| mergeable(candidate))
+                .and_then(parent_of)
                 .filter(|parent| !posted.contains(*parent))
                 .filter(|parent| {
                     descendants
@@ -350,19 +389,38 @@ fn is_other_holding(inputs: &OtherInputs<'_>, account: &str, commodities: &Mixed
 /// `view.ts`'s `stockAccounts` gives on the Stocks tab: an option that vanishes
 /// the moment you deselect it, or when you travel back a month, cannot be used
 /// to compose a scope.
+///
+/// Membership is per-posting EVER-HELD, the `stock_accounts` semantics, not the
+/// lifetime NET balance. A disposed asset nets to exactly zero over the whole
+/// journal, yet it is still a row at any `as_of` before the disposal — and a
+/// row the table shows that the chooser omits cannot be deselected. Summing
+/// each posting's ABSOLUTE amount gives `is_other_holding` every commodity the
+/// account ever held, not just what survived the netting.
 fn candidate_accounts(inputs: &OtherInputs<'_>) -> Result<Vec<String>, ReportError> {
-    let lifetime = account_totals(inputs.txns, &PostingFilter::default())?;
+    let mut activity: BTreeMap<&str, MixedAmount> = BTreeMap::new();
+    for posting in inputs.txns.iter().flat_map(|txn| txn.postings.iter()) {
+        let entry = activity.entry(posting.account.0.as_str()).or_default();
+        for amount in &posting.amounts {
+            entry.accumulate(&amount.commodity, amount.quantity.abs()?)?;
+        }
+    }
     // Row ROOTS, deduped — the chooser must offer the same thing the table shows
     // it, or a holding the reader can see is one they cannot deselect. `BTreeSet`
     // both dedupes the siblings that share a root and keeps the list sorted.
-    Ok(lifetime
+    Ok(activity
         .iter()
-        .filter(|(account, balance)| {
-            let mut commodities = (*balance).clone();
+        .filter(|(account, gross)| {
+            let mut commodities = (*gross).clone();
             commodities.drop_zeros();
             !commodities.is_zero() && is_other_holding(inputs, account, &commodities)
         })
-        .map(|(account, _)| inputs.row_roots.get(account).unwrap_or(account).clone())
+        .map(|(account, _)| {
+            inputs
+                .row_roots
+                .get(*account)
+                .cloned()
+                .unwrap_or_else(|| (*account).to_string())
+        })
         .collect::<BTreeSet<String>>()
         .into_iter()
         .collect())

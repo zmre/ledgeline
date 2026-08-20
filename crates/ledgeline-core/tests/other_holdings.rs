@@ -436,6 +436,82 @@ fn a_single_child_keeps_its_own_account_as_the_row() {
     assert_eq!(solo.change, Some(Dec::zero()), "nothing has marked it");
 }
 
+/// Rule 2's "at least two children" guard counts only children that could
+/// themselves be rows on this tab. A garage holding one real asset and one
+/// `holdings: none` loaner is not a container of two holdings: merging would
+/// rename the tools to `assets:garage` while the row's value still excluded the
+/// loaner — a row whose name the balance sheet prices at $7,500.00 and whose
+/// figure here would read $6,000.00.
+///
+/// Ground truth (hledger 1.52):
+///   bal assets:garage:tools -e 2026-07-01           ->  $6,000.00
+///   bal assets:garage -e 2026-07-01 --depth 2       ->  $7,500.00
+#[test]
+fn an_excluded_sibling_does_not_merge_the_lone_qualifying_child() {
+    let text = "\
+account assets:garage:tools   ; type: A
+account assets:garage:loaner  ; type: A, holdings: none
+account equity:opening        ; type: E
+
+2026-03-01 Hardware store | workshop fit-out
+    assets:garage:tools    $6,000.00
+    equity:opening
+
+2026-03-02 Neighbor | loaner van parked with us
+    assets:garage:loaner   $1,500.00
+    equity:opening
+";
+    let journal = parse_journal(text, "garage.journal").expect("journal parses");
+    let report = report(&journal, &scope(AS_OF, None));
+
+    let accounts: Vec<&str> = report.holdings.iter().map(|h| h.account.as_str()).collect();
+    assert_eq!(
+        accounts,
+        vec!["assets:garage:tools"],
+        "the lone qualifying child keeps its own name"
+    );
+    assert_eq!(
+        report.holdings[0].value,
+        Some(usd("6000.00")),
+        "and its own value — not the container's $7,500.00 subtree"
+    );
+    assert_eq!(
+        report.accounts,
+        vec!["assets:garage:tools"],
+        "the chooser offers the same root the table shows"
+    );
+}
+
+/// The same guard, where the excluded sibling is one rule 1 already claimed: a
+/// child tagged `holdings: other` is its OWN row, so it cannot also count as
+/// its neighbor's merge partner. Merging the tools into `assets:garage` beside
+/// a separate classic-car row would show two rows whose subtrees overlap.
+#[test]
+fn a_rule_one_sibling_is_not_a_merge_partner() {
+    let text = "\
+account assets:garage:tools        ; type: A
+account assets:garage:classic-car  ; type: A, holdings: other
+account equity:opening             ; type: E
+
+2026-03-01 Hardware store | workshop fit-out
+    assets:garage:tools        $6,000.00
+    equity:opening
+
+2026-03-05 Barn find | classic car
+    assets:garage:classic-car  $25,000.00
+    equity:opening
+";
+    let journal = parse_journal(text, "garage-two.journal").expect("journal parses");
+    let report = report(&journal, &scope(AS_OF, None));
+
+    let accounts: Vec<&str> = report.holdings.iter().map(|h| h.account.as_str()).collect();
+    assert_eq!(
+        accounts,
+        vec!["assets:garage:classic-car", "assets:garage:tools"],
+        "two sibling rows, neither wearing the container's name"
+    );
+}
+
 /// The chooser offers row ROOTS. A holding the reader can see but cannot
 /// deselect is a broken control.
 #[test]
@@ -638,6 +714,60 @@ fn the_candidate_account_list_is_scope_and_date_independent() {
             "{absent} is not an Other holding"
         );
     }
+}
+
+/// A DISPOSED asset stays in the chooser. Its lifetime balance nets to exactly
+/// zero — bought, depreciated, credited away — so a chooser sieved on the net
+/// total would omit an account the table still shows at any `as_of` before the
+/// disposal, the "shown but cannot be deselected" breakage `is_other_holding`'s
+/// contract names. Membership is per-posting ever-held, as on the Stocks tab.
+///
+/// Ground truth (hledger 1.52):
+///   bal assets:vehicles:van -e 2026-06-16  ->  $24,500.00
+///   bal assets:vehicles:van                ->  0
+#[test]
+fn a_disposed_asset_stays_in_the_chooser() {
+    let text = "\
+account assets:vehicles:van   ; type: A, name: Delivery van
+account assets:bank:checking  ; type: C
+account equity:opening        ; type: E
+account expenses:depreciation ; type: X
+
+2026-01-01 Opening balances
+    assets:bank:checking     $40,000.00
+    equity:opening
+
+2026-02-01 Dealer | buy the van
+    assets:vehicles:van      $32,000.00
+    assets:bank:checking
+
+2026-05-31 Depreciate the van
+    expenses:depreciation     $7,500.00
+    assets:vehicles:van
+
+2026-06-30 Dealer | sell the van
+    assets:bank:checking     $24,500.00
+    assets:vehicles:van
+";
+    let journal = parse_journal(text, "disposed.journal").expect("journal parses");
+
+    // Mid-life the van is a row...
+    let before = report(&journal, &scope("2026-06-15", None));
+    let vans: Vec<&str> = before.holdings.iter().map(|h| h.account.as_str()).collect();
+    assert_eq!(vans, vec!["assets:vehicles:van"]);
+    assert_eq!(before.holdings[0].value, Some(usd("24500.00")));
+    // ...so the chooser must offer it at that date.
+    assert_eq!(before.accounts, vec!["assets:vehicles:van"]);
+
+    // After the disposal the ROW is rightly gone — nothing is held — but the
+    // OPTION stays, because the candidate list is date-independent.
+    let after = report(&journal, &scope("2026-12-31", None));
+    assert!(after.holdings.is_empty(), "nothing is held any more");
+    assert_eq!(
+        after.accounts,
+        vec!["assets:vehicles:van"],
+        "ever-held membership survives a zero lifetime net"
+    );
 }
 
 // ---------------------------------------------------------------------------
