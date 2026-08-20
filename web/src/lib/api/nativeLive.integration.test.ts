@@ -41,15 +41,22 @@ function dollarLine(ma: MixedAmount, styles: ReadonlyMap<string, import("$lib/do
 describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgeline-server native reports", () => {
     const url = apiUrl ?? "";
 
-    it("balance sheet renders Total Assets $48,402.56 and Net $47,871.41", async () => {
+    // The UNVALUED report (`hledger bs -e 2026-07-09 --depth 2`), so the dollar
+    // line is only the dollar-denominated balances: the stocks, EUR and the
+    // WP-14 home stay as raw commodity balances on their own lines. Assets
+    // include the car at $20,500.00 (its $28,000.00 cost net of accumulated
+    // depreciation); Net is negative because the $336,000.00 mortgage lands in
+    // dollars while the home it bought does not. Figures $20,500.00 lighter are
+    // the stale pre-WP-14 ones — do not "correct" the assertions back to them.
+    it("balance sheet renders Total Assets $68,902.56 and Net $-267,628.59", async () => {
         const styles = reportStyles(normalizeTransactions(await new HledgerApi(url).transactions()));
         const report = decodeSectionedReport(await new LedgelineApi(url).balanceSheet({asOf: AS_OF, depth: 2}));
         expect(report.asOf).toBe(AS_OF);
 
         const assets = report.sections.find((s) => s.title === "Assets");
         expect(assets).toBeDefined();
-        expect(dollarLine(assets!.total, styles)).toBe("$48,402.56");
-        expect(dollarLine(report.grandTotal, styles)).toBe("$47,871.41");
+        expect(dollarLine(assets!.total, styles)).toBe("$68,902.56");
+        expect(dollarLine(report.grandTotal, styles)).toBe("$-267,628.59");
     });
 
     it("income statement totals revenues $34,010.00 over the year to date", async () => {
@@ -84,11 +91,14 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(report.sections.map((s) => s.title)).toEqual(["Revenue", "Expenses"]);
         expect(report.sections.flatMap((s) => s.trailing)).toEqual([]);
 
-        // hledger 1.52: `is -V -b 2026-01-01 -e 2026-07-09 --depth 2`.
+        // hledger 1.52: `is -V -b 2026-01-01 -e 2026-07-09 --depth 2`. Expenses
+        // INCLUDE the WP-14 write-downs — `expenses:depreciation` is a declared
+        // expense account, so the 2026-06-30 $3,500.00 vehicle depreciation is
+        // in the current column and the 2025-06-30 $4,000.00 one is in prior.
         const [revenue, expenses] = report.sections;
         expect(dollarLine(revenue.total.current, styles)).toBe("$34,010.00");
-        expect(dollarLine(expenses.total.current, styles)).toBe("$25,126.48");
-        expect(dollarLine(report.netIncome.current, styles)).toBe("$8,883.52");
+        expect(dollarLine(expenses.total.current, styles)).toBe("$28,626.48");
+        expect(dollarLine(report.netIncome.current, styles)).toBe("$5,383.52");
         expect(revenue.groups.map((g) => g.name)).toEqual(["Dividends", "Salary"]);
         expect(revenue.groups.every((g) => g.source === "segment")).toBe(true);
 
@@ -96,7 +106,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         // `is -V -b 2025-06-26 -e 2026-01-01 --depth 2`.
         expect(report.prior).toEqual({from: "2025-06-26", to: "2025-12-31"});
         expect(dollarLine(revenue.total.prior!, styles)).toBe("$39,397.50");
-        expect(dollarLine(report.netIncome.prior!, styles)).toBe("$14,880.79");
+        expect(dollarLine(report.netIncome.prior!, styles)).toBe("$10,880.79");
     });
 
     it("omits every prior figure, not just the header, when compare=none", async () => {
