@@ -300,6 +300,37 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("C23").value).toBe("5 GLD");
         });
 
+        it("degrades to the shared text fallback under a bare Amount header when there is no base", async () => {
+            // The same no-base shape the screen's own test mounts: `base` is
+            // `Option<Commodity>` on the wire and arrives null for a journal
+            // with no base commodity. There is then no figure to promote and no
+            // leftovers to demote, so `setBsAmount` hands every cell to
+            // `setAmount` and the header drops the "($)".
+            const ws = await readBack(await build(decodeBalanceSheetReport({...(GROUPED_BALANCE_SHEET as object), base: null})), "Balance Sheet");
+
+            expect([ws.getCell("A4").value, ws.getCell("B4").value]).toEqual(["Account", "Amount"]); // bare: no commodity to parenthesize
+
+            // A single-commodity line is still a real number with its format…
+            expect(ws.getCell("B6").value).toBe(42450.24);
+            expect(ws.getCell("B6").numFmt).toBe('"$"#,##0.00');
+            // …including one whose only commodity is no currency at all — the
+            // sole commodity leads, exactly as the screen's `amountCell`
+            // promotes the first in sort order.
+            expect(ws.getCell("A23").value).toBe("Transfers");
+            expect(ws.getCell("B23").value).toBe(5);
+            expect(ws.getCell("B23").numFmt).toBe('#,##0 "GLD"');
+            // A multi-commodity line joins every commodity in the ONE Amount
+            // cell, sorted, rounded on the Dec — the same figures the screen
+            // renders as headline-plus-footnotes for this fixture.
+            expect(ws.getCell("B11").value).toBe("17162.38 $, 5 GLD, -2 TSLA");
+            expect(ws.getCell("B13").value).toBe("59612.62 $, 5 GLD, -2 TSLA"); // Total Assets
+            expect(ws.getCell("B25").value).toBe("42998.91 $, -933.25 EUR"); // Retained earnings
+            // And the extras column is written NOWHERE: the leftovers are in the
+            // Amount cells, and repeating them would print them twice. (Each of
+            // these C cells carries text when base is "$" — see the tests above.)
+            for (const row of [11, 13, 23, 25, 36]) expect(ws.getCell(row, 3).value, `C${row}`).toBeNull();
+        });
+
         it("writes the computed equity lines, which have a total and no accounts", async () => {
             const ws = await readBack(await build(), "Balance Sheet");
 
@@ -658,6 +689,69 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("B38").value).toBe(5383.52);
             expect(ws.getCell("C38").value).toBe(0.158); // no prior column here, so % is in C
             expect(ws.getCell("D38").value).toBe("5 GLD");
+        });
+
+        it("attributes each period's unconverted commodities to that period's own column", async () => {
+            // 5 GLD unpriced in the current window, 3 GLD in the prior. The
+            // screen hangs each figure's extras under the column the figure is
+            // in (current under Amount, prior under the dated prior column), so
+            // one concatenated cell reading "5 GLD, 3 GLD" said neither which
+            // figure belonged to which window nor that the pair was not a
+            // typo'd duplicate.
+            const unpriced = decodeIncomeStatementReport({
+                ...(GROUPED_INCOME_STATEMENT as object),
+                netIncome: {
+                    current: {$: {mantissa: "538352", places: 2}, GLD: {mantissa: "5", places: 0}},
+                    prior: {$: {mantissa: "1088079", places: 2}, GLD: {mantissa: "3", places: 0}},
+                },
+            });
+            const ws = await readBack(await build(unpriced), "Income Statement");
+
+            expect(ws.getCell("A38").value).toBe("Net income (revenue − expenses)");
+            expect(ws.getCell("E38").value).toBe("5 GLD"); // the current window's, and ONLY the current window's — not "5 GLD, 3 GLD"
+            expect(ws.getCell("F38").value).toBe("3 GLD"); // the prior window's
+            // A line with nothing unconverted writes neither cell.
+            expect(ws.getCell("E10").value).toBeNull();
+            expect(ws.getCell("F10").value).toBeNull();
+
+            // The prior extras column repeats the prior window's DATES, exactly
+            // as the prior amount column does: a second bare "Other commodities"
+            // header would put the ambiguity back one row up.
+            expect(ws.getCell("E4").value).toBe("Other commodities");
+            expect(ws.getCell("F4").value).toBe("Other commodities (2025-06-26 … 2025-12-31)");
+        });
+
+        it("degrades to the shared text fallback under a bare Amount header when there is no base", async () => {
+            // `base` is `Option<Commodity>` on the wire and arrives null for a
+            // journal with no base commodity. There is then no figure to promote
+            // and no leftovers to demote, so `setIsAmounts` hands every cell to
+            // `setAmount` and the header drops the "($)".
+            const noBase = decodeIncomeStatementReport({
+                ...(GROUPED_INCOME_STATEMENT as object),
+                base: null,
+                netIncome: {
+                    current: {$: {mantissa: "538352", places: 2}, GLD: {mantissa: "5", places: 0}},
+                    prior: {$: {mantissa: "1088079", places: 2}, GLD: {mantissa: "3", places: 0}},
+                },
+            });
+            const ws = await readBack(await build(noBase), "Income Statement");
+
+            expect(ws.getCell("B4").value).toBe("Amount"); // bare: there is no commodity to parenthesize
+
+            // A single-commodity line is still a real number with its format…
+            expect(ws.getCell("B10").value).toBe(34010);
+            expect(ws.getCell("B10").numFmt).toBe('"$"#,##0.00');
+            // …and a multi-commodity one joins in ONE cell, per period, sorted
+            // and rounded on the Dec — the same figures the screen renders as
+            // headline-plus-footnotes for a no-base report.
+            expect(ws.getCell("B38").value).toBe("5383.52 $, 5 GLD");
+            expect(ws.getCell("C38").value).toBe("10880.79 $, 3 GLD");
+            // No base: no revenue figure to divide by (`pctOfRevenue` is null,
+            // as on screen) and NO extras column written — the leftovers are in
+            // the Amount cells, and repeating them would print them twice.
+            expect(ws.getCell("D38").value).toBeNull();
+            expect(ws.getCell("E38").value).toBeNull();
+            expect(ws.getCell("F38").value).toBeNull();
         });
     });
 

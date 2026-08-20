@@ -360,11 +360,15 @@ interface IsColumns {
     prior: number | null;
     pct: number;
     extras: number;
+    /** The PRIOR period's unconverted leftovers. Exists exactly when `prior` does. */
+    priorExtras: number | null;
     count: number;
 }
 
 function isColumns(comparing: boolean): IsColumns {
-    return comparing ? {label: 1, amount: 2, prior: 3, pct: 4, extras: 5, count: 5} : {label: 1, amount: 2, prior: null, pct: 3, extras: 4, count: 4};
+    return comparing
+        ? {label: 1, amount: 2, prior: 3, pct: 4, extras: 5, priorExtras: 6, count: 6}
+        : {label: 1, amount: 2, prior: null, pct: 3, extras: 4, priorExtras: null, count: 4};
 }
 
 /**
@@ -407,17 +411,23 @@ function setIsAmounts(ws: Worksheet, rowIx: number, cols: IsColumns, amounts: Am
 
     // What the valuation could NOT convert, in its own column rather than
     // dropped — the rule the whole redesign rests on, and a workbook that quietly
-    // omitted them would be the worst place to break it. Both periods' leftovers
-    // land here, labelled, because there is only one text column for them.
-    const leftovers = [
-        ...sortedEntries(amounts.current).filter(([commodity, qty]) => commodity !== base && qty.m !== 0n),
-        ...sortedEntries(amounts.prior ?? new Map()).filter(([commodity, qty]) => commodity !== base && qty.m !== 0n),
-    ];
-    if (leftovers.length === 0 || base === null) return;
-    const extras = ws.getCell(rowIx, cols.extras);
-    extras.value = amountsText(leftovers);
-    extras.alignment = {...extras.alignment, horizontal: "right"};
-    if (bold) extras.font = {bold: true};
+    // omitted them would be the worst place to break it. Each period's leftovers
+    // land in that period's OWN column, matching the screen, which hangs a
+    // figure's extras under the column the figure is in (current under Amount,
+    // prior under the dated prior column). Concatenating both into one cell read
+    // "5 GLD, 3 GLD" — neither figure attributed to a window, and the pair
+    // indistinguishable from a typo'd duplicate.
+    if (base === null) return;
+    const writeExtras = (col: number, ma: MixedAmount | undefined): void => {
+        const leftovers = sortedEntries(ma ?? new Map()).filter(([commodity, qty]) => commodity !== base && qty.m !== 0n);
+        if (leftovers.length === 0) return;
+        const extras = ws.getCell(rowIx, col);
+        extras.value = amountsText(leftovers);
+        extras.alignment = {...extras.alignment, horizontal: "right"};
+        if (bold) extras.font = {bold: true};
+    };
+    writeExtras(cols.extras, amounts.current);
+    if (cols.priorExtras !== null) writeExtras(cols.priorExtras, amounts.prior);
 }
 
 /**
@@ -650,8 +660,14 @@ export async function buildIncomeStatementWorkbook(report: IncomeStatementReport
     // from the range in the title — and a mislabelled comparison column is worse
     // than none.
     const priorHeader = report.prior === null ? [] : [`${report.prior.from} … ${report.prior.to}`];
-    addTitleRows(ws, meta, ["Account", amountHeader, ...priorHeader, "% of revenue", "Other commodities"]);
+    // Extras split per period exactly as the amounts do (see `setIsAmounts`), so
+    // the prior period's column repeats the prior window's dates — two columns
+    // both headed "Other commodities" would put the ambiguity the split removes
+    // from the cells straight back into the headers.
+    const priorExtrasHeader = report.prior === null ? [] : [`Other commodities (${report.prior.from} … ${report.prior.to})`];
+    addTitleRows(ws, meta, ["Account", amountHeader, ...priorHeader, "% of revenue", "Other commodities", ...priorExtrasHeader]);
     ws.getColumn(cols.extras).width = 24; // "5 GLD, -2 TSLA" needs more room than a money column
+    if (cols.priorExtras !== null) ws.getColumn(cols.priorExtras).width = 24;
     ws.views = [{state: "frozen", ySplit: 4}];
     addIncomeStatement(ws, report, cols);
     return workbook;
