@@ -558,6 +558,119 @@ fn a_sub_cent_entry_imbalance_is_caught_by_the_parser_not_by_the_floor() {
 }
 
 // ---------------------------------------------------------------------------
+// Conversion accounts (`type: V`) — hledger's Equity subtype
+// ---------------------------------------------------------------------------
+
+/// hledger's canonical conversion-account declaration, holding the net residue
+/// of a currency-conversion pair: `$500.00, -450 EUR`.
+///
+/// `type: V` is a SUBTYPE of equity — `hledger accounts type:E` on this journal
+/// lists `equity:conversion` — so the account belongs INSIDE the Equity box,
+/// never outside every box.
+const CONVERSION: &str = "\
+account assets:bank        ; type: C
+account assets:eur         ; type: A
+account equity:conversion  ; type: V
+account equity:opening     ; type: E
+
+2026-01-01 opening
+    assets:bank             $10,000.00
+    equity:opening
+
+2026-02-01 convert dollars to euros
+    assets:bank               $-500.00
+    equity:conversion           $500.00
+    equity:conversion          -450 EUR
+    assets:eur                  450 EUR
+";
+
+/// **Regression, shipped bug.** A declared `type: V` account matched none of the
+/// three sections: it landed in no box, Equity read a flat `$10,000.00`, the
+/// whole `$500.00, -450 EUR` residue leaked into `check`, and `balanced` was
+/// false — on a journal hledger balances. Every assertion below fails without
+/// the `Conversion`→`Equity` subtype in `is_category`.
+///
+/// Ground truth, `hledger -f conv.journal bse -e 2027-01-01` (hledger 1.52):
+/// ```text
+///  assets:bank        ||          $9,500.00
+///  assets:eur         ||            450 EUR
+///  Assets             || $9,500.00, 450 EUR
+///  Liabilities        ||                  0
+///  equity:conversion  ||  $-500.00, 450 EUR
+///  equity:opening     ||         $10,000.00
+///  Equity             || $9,500.00, 450 EUR
+///  Net:               ||                  0
+/// ```
+/// No posting carries a cost annotation and the journal has no `P` directives,
+/// so cost, market and unvalued all coincide with that table — which is why the
+/// loop below may pin every basis (and every depth) to the one command. (hledger
+/// `bse -B` is deliberately NOT the pin: cost mode makes hledger drop the
+/// conversion postings themselves, a different feature entirely; our engine
+/// keeps them, and at cost they are exactly as written here.)
+#[test]
+fn a_declared_conversion_account_files_under_equity() {
+    let journal = parse_journal(CONVERSION, "conv.journal").expect("journal parses");
+    let mut residue = usd(50_000, 2);
+    residue
+        .accumulate(&commodity("EUR"), Dec::new(-450, 0))
+        .unwrap();
+    let mut section = usd(950_000, 2);
+    section
+        .accumulate(&commodity("EUR"), Dec::new(450, 0))
+        .unwrap();
+
+    for value in BASES {
+        for depth in DEPTHS {
+            let report = report(&journal, "2026-12-31", depth, value);
+
+            // The account is inside the Equity box, on its segment-derived line,
+            // displayed sign-flipped exactly as `bse` prints it.
+            let conversion = group(&report, BsSectionKind::Equity, "Conversion");
+            assert_eq!(
+                conversion.source,
+                GroupSource::Segment,
+                "{value:?} d{depth:?}"
+            );
+            assert_eq!(
+                conversion.total,
+                residue.ma_neg().unwrap(),
+                "the row is `$-500.00, 450 EUR`, hledger's own line ({value:?}, d{depth:?})"
+            );
+
+            // The conversion residue is a bookkeeping counterweight, not income:
+            // retained earnings stays Revenue/Expense only, and this journal has
+            // neither.
+            assert_eq!(
+                group(&report, BsSectionKind::Equity, RETAINED_EARNINGS_GROUP).total,
+                MixedAmount::new(),
+                "{value:?} d{depth:?}"
+            );
+
+            // Section totals as `bse` reports them — Equity was $10,000.00 flat
+            // before the fix.
+            assert_eq!(
+                report.sections[0].total, section,
+                "Assets at {value:?}, d{depth:?}"
+            );
+            assert_eq!(
+                report.sections[1].total,
+                MixedAmount::new(),
+                "Liabilities at {value:?}, d{depth:?}"
+            );
+            assert_eq!(
+                report.sections[2].total, section,
+                "Equity at {value:?}, d{depth:?}"
+            );
+
+            // …so `A − L − E` is EMPTY and the verdict is hledger's `Net: 0`.
+            // Before the fix, `check` carried the whole `$500.00, -450 EUR`.
+            assert_eq!(report.check, MixedAmount::new(), "{value:?} d{depth:?}");
+            assert!(report.balanced, "{value:?} d{depth:?}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // fixtures/reports/bs-groups.journal — grouping without a word of English
 // ---------------------------------------------------------------------------
 

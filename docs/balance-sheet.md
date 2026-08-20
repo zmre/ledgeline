@@ -215,6 +215,12 @@ subtraction also absorbs currency revaluation and unpriced holdings, so it can
 legitimately carry several commodities at once — and "933,25 EUR of unrealized
 gains" is not a sentence a balance sheet can say.
 
+Declared equity includes hledger's conversion subtype: an account declared
+`type: V` (conventionally `account equity:conversion ; type: V`) is an equity
+account here, exactly as hledger's `type:E` query treats it, so the residue of a
+currency-conversion pair sits on its own line inside the box. It never enters
+retained earnings — that line is revenues minus expenses only.
+
 ## The balance check
 
 Under the boxes, `Liabilities + Equity` is set against `Total Assets`. When they

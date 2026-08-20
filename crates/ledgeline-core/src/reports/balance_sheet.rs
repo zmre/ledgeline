@@ -217,9 +217,11 @@ pub struct BalanceSheetReport {
 }
 
 /// The three sections, in presentation order: the type each selects, and
-/// whether it is displayed sign-flipped. `Cash` folds into `Asset` and these
-/// three types are mutually exclusive, so every balance-sheet account belongs to
-/// exactly one of them — which is what lets the check below be a sum.
+/// whether it is displayed sign-flipped. `Cash` folds into `Asset`, `Conversion`
+/// folds into `Equity` (hledger's own subtyping — `bse` files a declared
+/// `type: V` account under Equity), and these three types are mutually
+/// exclusive, so every balance-sheet account belongs to exactly one of them —
+/// which is what lets the check below be a sum.
 const SECTIONS: [(BsSectionKind, &str, AccountType, bool); 3] = [
     (BsSectionKind::Assets, "Assets", AccountType::Asset, false),
     (
