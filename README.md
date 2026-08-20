@@ -168,7 +168,7 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
     dropped, wrong that one typo takes the tab down. Problems
     entries anchor to a `txnIndex` and an `account` directive has none, so this needs a wire field that
     allows a directive-anchored diagnostic plus an allow-list entry in the SPA's `normalize.ts`.
-- code review by fable
+- check security csrf to be sure other apps/browser pages can't fetch financial data
 - **Imports**
   - feat: quickbooks import handling
     - transaction matching and skipping
@@ -182,13 +182,16 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
   - Account List Editor
     - Most financial apps allow editing of the chart of accounts. We should detect where they live and allow editing. If there aren't any, we should create an accounts.journal and include it from the main file.
     - For each account, we should provide an editor for comments/notes, type, tags in general, and our special tags used in various reports
+    - Lets put this under a Settings top level tab or gear icon. And lets figure out what else might go in here, like the number format stuff -- basically whatever hledger provides that we might want to set or edit
+      - commodity, decimal-mark, tag list, and we should probably move aliases to here under "settings" too
   - rules editor ui improvements
     - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
     - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
     - perhaps instead of one giant form, we have display separate from edit and can therefore make this nicer
   - feat: edit / create budget
     - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
-    - if they don't exist, make a budget.journal file and include it from the main file
+    - if they don't exist, make a budget.journal file and include it from the main file (with a button press by user first)
+    - Move Budget from Reports to its own top-level tab
 - chore: Setup releases and builds for download
 - chore: Add screenshots and better descriptions to the readme
 - feat: kelly blue book integration?
