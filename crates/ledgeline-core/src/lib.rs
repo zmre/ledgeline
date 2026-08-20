@@ -21,6 +21,7 @@
 //!   tabular extract (Enhanced imports; see `plans/11-enhanced-import.md`)
 //! - `hledger_conf` — the `--alias` options an `hledger.conf` declares, and
 //!   writing one into it (Enhanced imports)
+//! - `title` — the derived "what am I looking at" title for the open journal
 
 pub mod aliases;
 pub mod assertions;
@@ -35,6 +36,7 @@ pub mod parse;
 pub mod reports;
 pub mod rules;
 pub mod sort;
+pub mod title;
 pub mod wire;
 
 pub use decimal::{Dec, DecError};

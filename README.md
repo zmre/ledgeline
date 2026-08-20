@@ -57,6 +57,20 @@ I built this because I was dissatisfied with existing GUIs. They often hard code
   data file's real headers and sample values), the default accounts, and a reorderable list of `if`
   rules. Anything fancier than a plain OR rule — `if` tables, `&&`/`!` matchers, match groups — is shown
   read-only rather than rewritten, and saving preserves the rest of the file byte for byte.
+- **Which books am I in?** — the app bar names the ledger on screen rather than showing the engine's
+  URL, so someone who keeps several sets of books (a household, an LLC, a trust) can tell at a glance
+  which one they are looking at. The name comes from the journal itself: if the main journal file's
+  first non-empty line is a *short* comment — one to five words, and something more than a row of
+  `=====` — that is the title; otherwise it is the name of the folder the main journal lives in.
+  Nothing to configure, and a journal that says nothing still gets a sensible name.
+
+  ```journal
+  ; Acme Holdings LLC
+  include accounts.journal
+  ```
+
+  Hover the name for the journal's file name and the engine's address — the same connection detail
+  that used to occupy the corner, one hover away.
 - **In-process, same-origin API** exposing both the hledger-web-compatible wire endpoints
   (`/version`, `/transactions`, `/prices`, …) and native report / holdings / budget JSON (`/api/*`) and
   edit endpoints.
@@ -148,10 +162,6 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
-- do we need a way to flag "current" vs. "long term" assets and liabilities in the balance sheet?  this is standard and would be subheaders in their respective assets/liabilities boxes.
-- need to remove the URL in the top right. in its place lets put an indication of what we're looking at
-  - Lets make this more interesting. If the first line of the main journal file is a comment with one to five words (not symbols like ======), then we'll take that as the title to use. Otherwise, we'll use the folder name holding the main journal.
-  - We should document this. The idea is to help someone managing many different entities to be aware of what they're looking at
 - chore: route bad `issection:` / `holdings:` / `valuation:` / `bsterm:` / `type:` tag values into Problems
   - a mistyped `issection:` currently fails the whole P&L request with a 400 naming the account and the
     valid codes, and `holdings:` now does the same to the Holdings tab. Right that it isn't silently

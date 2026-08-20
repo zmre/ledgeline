@@ -1111,6 +1111,7 @@ mod tests {
             commodity_tags: Vec::new(),
             prices,
             default_commodity: None,
+            leading_comment: None,
         }
     }
 

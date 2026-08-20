@@ -818,6 +818,13 @@ interface RawPrefs {
     gitAutocommit?: boolean | null;
 }
 
+interface RawJournalInfo {
+    // Both nullable on the wire: the engine says so when it could derive
+    // neither a title nor a main file, rather than inventing one.
+    title?: string | null;
+    file?: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Scalar decoders (shared)
 // ---------------------------------------------------------------------------
@@ -2352,6 +2359,44 @@ export function decodeSortResult(raw: unknown): SortResult {
     const result = raw as RawSortResult;
     if (typeof result !== "object" || result === null) throw new ApiShapeError("sort result: expected an object");
     return Object.freeze({moved: num(result.moved, "sort result moved")});
+}
+
+// ---------------------------------------------------------------------------
+// Journal identity (which ledger is on screen)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which journal the engine has open, as the app bar labels it.
+ *
+ * Declared here rather than in a feature `types.ts` like `HoldingsReport` or
+ * `Prefs`: two nullable strings and one consumer do not make a domain, and there
+ * is no journal-identity module for them to be the domain OF.
+ */
+export interface JournalInfo {
+    /** Display title (the journal's first-line comment, else its folder name); null when the engine derived none. */
+    title: string | null;
+    /** The BARE filename of the main journal file — never a path. */
+    file: string | null;
+}
+
+/**
+ * `GET /api/journal` → which ledger this engine has open.
+ *
+ * Both fields go through `optStr`, so absent and explicitly null decode to the
+ * same fact — "the engine could not derive one" — and the caller falls back to
+ * naming the server URL, which is honest about not knowing. A non-string is
+ * still a throw, and that is the point of decoding two strings at all: a title
+ * that quietly became `"[object Object]"` (or `"null"`) would label the screen
+ * with confident nonsense, and a wrong-but-confident ledger name is precisely
+ * the failure this label exists to prevent.
+ */
+export function decodeJournalInfo(raw: unknown): JournalInfo {
+    const info = raw as RawJournalInfo;
+    if (typeof info !== "object" || info === null) throw new ApiShapeError("journal info: expected an object");
+    return Object.freeze({
+        title: optStr(info.title, "journal info title"),
+        file: optStr(info.file, "journal info file"),
+    });
 }
 
 /** `GET`/`PUT /api/prefs` → the preferences store. */

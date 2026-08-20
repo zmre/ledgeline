@@ -16,6 +16,7 @@
     import {refreshEverything} from "$lib/stores/refreshAll";
     import {onServerReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
+    import {connectionLabel, connectionTooltip, type ConnState} from "$lib/ui/connectionLabel";
 
     let {children} = $props();
 
@@ -38,13 +39,14 @@
 
     // WP-08: connection status dot fed by journal.status (green ready / yellow
     // loading / red error), with a reconnect affordance back to the setup modal.
-    type ConnState = "none" | "idle" | "loading" | "ready" | "error";
     const conn = $derived<ConnState>(settings.serverUrl === null ? "none" : journal.status);
     const dotClass = $derived(
         conn === "ready" ? "status-success" : conn === "loading" ? "status-warning" : conn === "idle" ? "status-neutral" : "status-error"
     );
-    const connLabel = $derived(conn === "none" ? "not connected" : (settings.serverUrl ?? ""));
-    const connTitle = $derived(conn === "error" ? (journal.error ?? "connection error") : (settings.serverUrl ?? "No hledger-web server configured"));
+    // The label names the JOURNAL, not the server — see connectionLabel.ts for
+    // the fallback chain and why the URL is now only its last rung.
+    const connLabel = $derived(connectionLabel(conn, journal.title));
+    const connTitle = $derived(connectionTooltip(conn, journal.file, settings.serverUrl, journal.error));
 
     let reconnectOpen = $state(false);
     let storageNoticeDismissed = $state(false);
@@ -131,7 +133,14 @@
                     {/if}
                     <span id="connection-status" class="flex items-center gap-2 text-sm" title={connTitle}>
                         <span class="status {dotClass}" aria-hidden="true"></span>
-                        <span class="text-base-content/70 hidden sm:inline">{connLabel}</span>
+                        <!-- Rendered only when there is a ledger to name: an
+                             engine that cannot say leaves the dot alone rather
+                             than an empty span holding a `gap-2` open. Capped
+                             and ellipsised because a title runs to 60 characters
+                             and an uncapped one squeezes the centre nav. -->
+                        {#if connLabel !== ""}
+                            <span class="text-base-content/70 hidden max-w-64 truncate sm:inline">{connLabel}</span>
+                        {/if}
                     </span>
                     {#if conn === "error"}
                         <button type="button" class="btn btn-outline btn-error btn-xs" onclick={() => (reconnectOpen = true)}>Reconnect</button>

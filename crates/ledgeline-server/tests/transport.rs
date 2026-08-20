@@ -26,7 +26,7 @@ use ledgeline_server::{AppState, app, router_with_state};
 use tower::ServiceExt;
 
 /// Every route whose body comes out of the snapshot.
-const WIRE_ROUTES: [&str; 7] = [
+const WIRE_ROUTES: [&str; 8] = [
     "/version",
     "/accountnames",
     "/transactions",
@@ -34,6 +34,7 @@ const WIRE_ROUTES: [&str; 7] = [
     "/commodities",
     "/accounts",
     "/api/diagnostics",
+    "/api/journal",
 ];
 
 /// One request against a fresh clone of `state`'s router, with optional extra

@@ -24,6 +24,7 @@ import {
     decodeHoldingsReport,
     decodeHoldingsSeries,
     decodeIncomeStatementReport,
+    decodeJournalInfo,
     decodePeriodReport,
     decodeSectionedReport,
 } from "./nativeDecode";
@@ -193,5 +194,17 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(series.points).toHaveLength(12);
         expect(series.hasBasis).toBe(true);
         expect(series.points[series.points.length - 1].label).toBe("Jul 2026");
+    });
+
+    // The app bar's label, against the real engine. `/api/journal` is the one
+    // native route with no golden fixture — its manifest requires every pinned
+    // request to fix its own dates, and this route takes no date at all — so
+    // this is where the engine's derivation and the SPA's decoder are checked
+    // against each other. `fixtures/sample.journal` opens with an eight-word
+    // sentence about the file, which is a description and not a name, so the
+    // folder answers instead: both halves of the fallback in one assertion.
+    it("journal info falls back to the fixture folder's name", async () => {
+        const info = decodeJournalInfo(await new LedgelineApi(url).journalInfo());
+        expect(info).toEqual({title: "fixtures", file: "sample.journal"});
     });
 });

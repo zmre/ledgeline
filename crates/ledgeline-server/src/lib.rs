@@ -107,6 +107,13 @@ pub(crate) struct Snapshot {
     /// Problems drawer and the Holdings page cannot disagree about the same
     /// journal.
     pub(crate) diagnostics: Bytes,
+    /// The `{"title": …, "file": …}` payload: which journal the user is looking
+    /// at (see `ledgeline_core::title`). Precomputed with the rest so it swaps
+    /// atomically with them — opening a different journal must never leave a
+    /// stale name sitting over fresh numbers — but built INLINE rather than on a
+    /// thread of its own: it is two `Option<String>`s read off data the parse
+    /// already captured, next to no work beside the whole-journal passes above.
+    pub(crate) journal_info: Bytes,
 }
 
 /// The `{"diagnostics": [...]}` envelope. `wire` exposes the array and the
@@ -128,7 +135,7 @@ impl Snapshot {
     /// so any (impossible) `serde_json` error collapses to the JSON body `null`
     /// — the same guarantee Phase 1 relies on in `parse_to_transactions_value`.
     ///
-    /// The seven payloads are independent read-only passes over the same journal,
+    /// The eight payloads are independent read-only passes over the same journal,
     /// and `/transactions` alone is roughly half the work (563 ms of the 1,048 ms
     /// at 200k). Building it on one extra thread while the rest run here overlaps
     /// the two halves almost perfectly, which is what keeps this — the bulk of
@@ -155,6 +162,7 @@ impl Snapshot {
                 json_bytes(&wire::journal_to_prices(&journal)),
                 json_bytes(&wire::journal_to_commodities(&journal)),
                 json_bytes(&wire::journal_to_accounts(&journal)),
+                json_bytes(&wire::journal_to_info(&journal)),
             );
             // The only way a join fails is a panic in the serializer, which would
             // have aborted the request anyway; resume it on this thread so
@@ -167,7 +175,7 @@ impl Snapshot {
             };
             (joined(transactions), joined(diagnostics), rest)
         });
-        let (version, accountnames, prices, commodities, accounts) = rest;
+        let (version, accountnames, prices, commodities, accounts, journal_info) = rest;
         Self {
             etag: next_etag(),
             version,
@@ -177,6 +185,7 @@ impl Snapshot {
             commodities,
             accounts,
             diagnostics,
+            journal_info,
             journal,
         }
     }
@@ -489,6 +498,13 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // byte-parity emulation of hledger-web's endpoint and is a bare JSON
         // array, so it has nowhere to carry a sibling field.
         .route("/api/diagnostics", get(diagnostics))
+        // Which journal is open: its derived title and its main file's bare
+        // name. A NATIVE route for the same reason as `/api/diagnostics` — the
+        // wire routes are byte-parity emulations of hledger-web's and have
+        // nowhere to carry this. Registered above the `route_layer` below so it
+        // is token-gated with everything else: it is the only route that says
+        // anything at all about the journal's own file.
+        .route("/api/journal", get(journal_info))
         .route("/api/reports/balancesheet", get(reports_api::balancesheet))
         // The grouped/valued three-box balance sheet. A SIBLING route, not a
         // mode of the one above: that one is a flat hledger-parity shape with a
@@ -743,6 +759,11 @@ async fn accounts(State(state): State<AppState>, headers: HeaderMap) -> Response
 async fn diagnostics(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let snapshot = state.snapshot();
     serve(&snapshot, &headers, &snapshot.diagnostics)
+}
+
+async fn journal_info(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let snapshot = state.snapshot();
+    serve(&snapshot, &headers, &snapshot.journal_info)
 }
 
 #[cfg(test)]

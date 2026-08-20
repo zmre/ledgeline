@@ -188,6 +188,85 @@ async fn diagnostics_reports_a_broken_journal_without_refusing_to_serve_it() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// `GET /api/journal` — which journal am I looking at
+// ---------------------------------------------------------------------------
+
+/// `GET /api/journal` over a journal written to `<temp>/<folder>/<file>`.
+///
+/// The journal file goes in a subdirectory WE name rather than straight into the
+/// `TempDir`, whose own name is random — the folder-name fallback is half of
+/// what these tests assert, so the folder has to be something we can name.
+async fn journal_info_for(folder: &str, file: &str, text: &str) -> Value {
+    let root = tempfile::TempDir::new().expect("temp dir");
+    let dir = root.path().join(folder);
+    std::fs::create_dir(&dir).expect("journal directory");
+    let path = dir.join(file);
+    std::fs::write(&path, text).expect("journal written");
+    let journal =
+        ledgeline_core::parse_journal(text, &path.to_string_lossy()).expect("journal parses");
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/journal")
+        .body(Body::empty())
+        .expect("request builds");
+    let response = app(&journal)
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collects")
+        .to_bytes();
+    serde_json::from_slice(&bytes).expect("body is JSON")
+}
+
+/// The whole point of the route: a journal that names itself in its first line
+/// is called what it says it is called.
+#[tokio::test]
+async fn journal_serves_the_leading_comment_as_the_title() {
+    let body = journal_info_for(
+        "acme",
+        "2026.journal",
+        "; Acme Books\n\n2026-01-01 t\n    expenses:x   $1.00\n    assets:bank\n",
+    )
+    .await;
+    assert_eq!(body, json!({"title": "Acme Books", "file": "2026.journal"}));
+}
+
+/// A journal that says nothing about itself is named for the folder it lives in.
+/// `file` is the BARE name in both cases — never the path we just wrote to.
+#[tokio::test]
+async fn journal_falls_back_to_the_containing_folders_name() {
+    let body = journal_info_for(
+        "household-books",
+        "main.journal",
+        "2026-01-01 t\n    expenses:x   $1.00\n    assets:bank\n",
+    )
+    .await;
+    assert_eq!(
+        body,
+        json!({"title": "household-books", "file": "main.journal"})
+    );
+}
+
+/// The rejection path, end to end and over the real fixture:
+/// `fixtures/sample.journal` opens with an eight-word sentence describing the
+/// file. That is a description, not a name, so the folder answers instead.
+#[tokio::test]
+async fn journal_rejects_a_leading_comment_that_is_a_description() {
+    let body = body_of("/api/journal").await;
+    assert_eq!(
+        body,
+        json!({"title": "fixtures", "file": "sample.journal"}),
+        "sample.journal's header is prose about the file and must not become a title"
+    );
+}
+
 /// SEC-1: the server is same-origin ONLY by default. A cross-origin `Origin`
 /// gets no `access-control-allow-origin`, so a browser refuses to hand the
 /// response to the page that asked for it.
@@ -276,6 +355,7 @@ async fn wire_and_api_routes_require_the_token() {
         "/api/reports/balancesheet",
         "/api/holdings",
         "/api/diagnostics",
+        "/api/journal",
     ] {
         let (missing, missing_headers) =
             probe(local_security(), "GET", uri, &[(header::HOST, GOOD_HOST)]).await;

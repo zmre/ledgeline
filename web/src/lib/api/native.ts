@@ -546,6 +546,26 @@ export class LedgelineApi {
     }
 
     /**
+     * WHICH journal this engine has open: `{"title": …, "file": …}`, both
+     * nullable (decode with `decodeJournalInfo`).
+     *
+     * `title` is the engine's own derivation — the journal's first-line comment,
+     * else the containing folder's name — and `file` is the BARE filename of the
+     * main journal file, never a path. The app bar shows the first and hovers the
+     * second, so somebody keeping several entities can see which set of books is
+     * on screen without reading the port number.
+     *
+     * Its own route rather than a field on `/transactions`, for the reason
+     * `diagnostics` has one: that endpoint is a byte-for-byte hledger-web
+     * emulation whose parity comparator rejects any unexpected key. A plain
+     * hledger-web therefore 404s here, which the caller reads as "this server
+     * cannot tell me which ledger it is" and answers by showing no label.
+     */
+    journalInfo(): Promise<unknown> {
+        return this.getJson("/api/journal");
+    }
+
+    /**
      * The flat, unvalued balance sheet. Still here, and still exercised by the
      * hledger parity golden — the screen no longer uses it, but
      * `fixtures/native/v1/balancesheet.json` must stay byte-identical.

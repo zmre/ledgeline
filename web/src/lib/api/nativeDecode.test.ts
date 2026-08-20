@@ -10,6 +10,7 @@ import {
     decodeHoldingsSeries,
     decodeIncomeStatementReport,
     decodeInsightsReport,
+    decodeJournalInfo,
     decodeOtherHoldingsReport,
     decodePeriodReport,
     decodeRulesDoc,
@@ -1372,6 +1373,37 @@ describe("UNIT nativeDecode — RulesPreview", () => {
 
     it("throws when rows is missing", () => {
         expect(() => decodeRulesPreview({available: true, separator: ","})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — journal identity (which ledger is on screen)", () => {
+    it("decodes the engine's title and the bare journal file name", () => {
+        expect(decodeJournalInfo({title: "Acme Books", file: "2026.journal"})).toEqual({title: "Acme Books", file: "2026.journal"});
+    });
+
+    it("reads null and absent alike as `the engine derived none`", () => {
+        // The app bar's fallback (name the server URL instead) is driven off
+        // null, so an older engine that omits a key entirely must land in the
+        // same branch as one that sends it as null — not in a decode failure.
+        expect(decodeJournalInfo({title: null, file: null})).toEqual({title: null, file: null});
+        expect(decodeJournalInfo({})).toEqual({title: null, file: null});
+        expect(decodeJournalInfo({title: "Acme Books"})).toEqual({title: "Acme Books", file: null});
+    });
+
+    it("throws rather than labelling the screen with whatever a non-string stringifies to", () => {
+        // The whole feature is "say WHICH ledger this is", so a title of
+        // `"[object Object]"` or `"7"` would be worse than no title at all: the
+        // caller's null branch shows the URL, which at least does not claim.
+        expect(() => decodeJournalInfo({title: {name: "Acme"}, file: "2026.journal"})).toThrow(ApiShapeError);
+        expect(() => decodeJournalInfo({title: "Acme Books", file: 7})).toThrow(ApiShapeError);
+    });
+
+    it("throws on a body that is not an object at all", () => {
+        // What a non-engine server on the same port answers with — an HTML page
+        // is caught earlier as `NativeApiUnavailableError`, but a bare JSON
+        // string or array reaches here.
+        expect(() => decodeJournalInfo(null)).toThrow(ApiShapeError);
+        expect(() => decodeJournalInfo("Acme Books")).toThrow(ApiShapeError);
     });
 });
 

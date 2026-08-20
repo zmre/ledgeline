@@ -1,7 +1,8 @@
-import {describe, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import type {Dec} from "$lib/domain/money";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "$lib/domain/types";
-import {contentFingerprint} from "./journal.svelte";
+import {contentFingerprint, journal} from "./journal.svelte";
+import {settings} from "./settings.svelte";
 
 function posting(account: string): Posting {
     return {account, amounts: [], status: "unmarked", comment: "", tags: []};
@@ -141,5 +142,173 @@ describe("UNIT journal contentFingerprint", () => {
         expect(contentFingerprint(base, ["expenses"], [], asCash)).not.toBe(contentFingerprint(base, ["expenses"], [], asAsset));
         // The default (no decls) stays backward-compatible with the 3-arg call.
         expect(contentFingerprint(base, ["expenses"], [])).toBe(contentFingerprint(base, ["expenses"], [], []));
+    });
+});
+
+// ---------------------------------------------------------------------------
+// The journal's TITLE — what the app bar labels the screen with.
+//
+// Driven through a stubbed `fetch` like journalRefresh.test.ts, because every
+// property here is about WHEN the label is written relative to the round that
+// fetched it: after the supersession guard (so a late older round cannot
+// relabel the screen), before the 304 early return (so an unchanged journal
+// still refreshes the name), and outside the fingerprint that gates the
+// transaction swap.
+// ---------------------------------------------------------------------------
+
+const json = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
+
+/** One wire transaction, enough for normalizeTransactions. */
+const wireTxn = (index: number): unknown => ({
+    tindex: index,
+    tdate: `2026-01-0${index}`,
+    tstatus: "Cleared",
+    tdescription: `txn ${index}`,
+    tpostings: [{paccount: "expenses:food", pamount: []}],
+});
+
+/** A promise with its settle function exposed, for gating a round mid-flight. */
+function deferred<T>(): {promise: Promise<T>; resolve: (value: T) => void} {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => {
+        resolve = res;
+    });
+    return {promise, resolve};
+}
+
+describe("INTEGRATION journal title (which ledger is on screen)", () => {
+    /**
+     * What `/api/journal` answers, one entry per ROUND (the last repeats).
+     *
+     * A string is a title; `null` is a 404 — the answer a plain hledger-web
+     * gives, since `/api/*` is native and it has none of those routes.
+     */
+    let titles: (string | null)[] = ["Acme Books"];
+    let journalHits = 0;
+    /** Answers `/transactions`; replaced by tests that need to gate or supersede a round. */
+    let txnAnswer: (attempt: number) => Promise<Response> = () => Promise.resolve(json([wireTxn(1)]));
+    let txnHits = 0;
+    /** When true, the three conditional journal routes answer 304 (an unchanged journal). */
+    let unchanged = false;
+
+    beforeEach(async () => {
+        titles = ["Acme Books"];
+        journalHits = 0;
+        txnHits = 0;
+        txnAnswer = () => Promise.resolve(json([wireTxn(1)]));
+        unchanged = false;
+        vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith("/api/journal")) {
+                const title = titles[Math.min(journalHits, titles.length - 1)];
+                journalHits += 1;
+                // A 404 is what a server WITHOUT the route says; the client maps
+                // it to NativeApiUnavailableError.
+                return Promise.resolve(title === null ? new Response("no such route", {status: 404}) : json({title, file: "2026.journal"}));
+            }
+            if (url.endsWith("/api/diagnostics")) return Promise.resolve(json({diagnostics: []}));
+            if (url.endsWith("/version")) return Promise.resolve(json("1.52"));
+            if (url.endsWith("/accountnames")) return Promise.resolve(json(["expenses:food"]));
+            if (unchanged && (url.endsWith("/transactions") || url.endsWith("/prices") || url.endsWith("/accounts"))) {
+                return Promise.resolve(new Response(null, {status: 304}));
+            }
+            if (url.endsWith("/transactions")) {
+                const attempt = txnHits;
+                txnHits += 1;
+                return txnAnswer(attempt);
+            }
+            return Promise.resolve(json([]));
+        });
+        await settings.setServerUrl("http://engine-a");
+        // Leave the store loaded and idle, so each test starts from the same
+        // place regardless of what ran before it.
+        await journal.refresh({force: true});
+    });
+
+    afterEach(async () => {
+        titles = ["Acme Books"];
+        unchanged = false;
+        txnAnswer = () => Promise.resolve(json([wireTxn(1)]));
+        // Drain: abort whatever a test left running so it cannot bleed into the next.
+        await journal.refresh({force: true}).catch(() => undefined);
+        vi.unstubAllGlobals();
+    });
+
+    it("exposes the engine's title and journal file after a successful round", () => {
+        expect(journal.title).toBe("Acme Books");
+        expect(journal.file).toBe("2026.journal");
+    });
+
+    it("relabels when the SAME url starts serving a different journal (desktop File→Open)", () => {
+        // The reason this rides the journal round at all. File→Open rebinds the
+        // engine to another journal without changing the address, the nonce or
+        // anything else a once-per-connection fetch would notice — so a title
+        // fetched once would go on naming the previous entity all session.
+        titles = ["Ledger Two"];
+        journalHits = 0;
+        return journal.refresh({force: true}).then(() => {
+            expect(journal.title).toBe("Ledger Two");
+        });
+    });
+
+    it("still loads the journal when the engine has no /api/journal, and names no ledger", async () => {
+        // A plain hledger-web. The route 404s, the app bar shows no label at
+        // all, and — the point — the journal itself loads exactly as before.
+        titles = [null];
+        journalHits = 0;
+        await journal.refresh({force: true});
+
+        expect(journal.status).toBe("ready");
+        expect(journal.error).toBeNull();
+        expect(journal.txns).toHaveLength(1);
+        expect(journal.title).toBeNull();
+        expect(journal.file).toBeNull();
+    });
+
+    it("clears a title it can no longer confirm rather than keeping a stale name", async () => {
+        expect(journal.title).toBe("Acme Books");
+        // Reconnected to something that cannot say which ledger it holds. The
+        // honest label is the URL, not the last entity we happened to know about.
+        titles = [null];
+        journalHits = 0;
+        await journal.refresh({force: true});
+        expect(journal.title).toBeNull();
+    });
+
+    it("refreshes the label on a 304 round, where nothing else is swapped", async () => {
+        // `/api/journal` is not conditional, so an unchanged journal still
+        // answers it. The assignment therefore sits BEFORE the 304 early return:
+        // put it after and a renamed-but-otherwise-unchanged journal would keep
+        // the old name until something in the file happened to change.
+        titles = ["Renamed Books"];
+        journalHits = 0;
+        unchanged = true;
+        await journal.refresh({force: true});
+
+        expect(journal.title).toBe("Renamed Books");
+        expect(journal.status).toBe("ready");
+    });
+
+    it("does not let a superseded round relabel the screen", async () => {
+        // The token guard, for the title. A round that answers after being
+        // superseded describes a journal the app has already moved on from;
+        // writing its name would leave the newest data under the previous
+        // ledger's label — the exact confusion this feature exists to prevent.
+        const gate = deferred<Response>();
+        titles = ["Old Books", "New Books"];
+        journalHits = 0;
+        txnHits = 0;
+        // Deliberately ignores the abort signal: a fetch that had already
+        // completed when the abort landed behaves exactly like this.
+        txnAnswer = (attempt) => (attempt === 0 ? gate.promise : Promise.resolve(json([wireTxn(1), wireTxn(2)])));
+
+        const superseded = journal.refresh({force: true});
+        const winner = journal.refresh({force: true});
+        await winner;
+        expect(journal.title).toBe("New Books");
+
+        gate.resolve(json([wireTxn(1)]));
+        await superseded;
+        expect(journal.title).toBe("New Books");
     });
 });

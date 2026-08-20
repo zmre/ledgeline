@@ -188,6 +188,10 @@ struct Ctx {
     /// How many `include`s have been admitted so far, capped by
     /// [`MAX_INCLUDE_FILES`].
     includes_admitted: usize,
+    /// The MAIN file's leading comment, if it opens with one. Set once, by the
+    /// first [`parse_source`] call; `include`d files never touch it. Feeds
+    /// [`Journal::leading_comment`] — see [`leading_comment`].
+    leading_comment: Option<String>,
     tindex: u32,
 }
 
@@ -210,6 +214,7 @@ impl Ctx {
             include_root: include_root_for(main_source_name),
             include_stack: Vec::new(),
             includes_admitted: 0,
+            leading_comment: None,
             tindex: 0,
         }
     }
@@ -226,6 +231,7 @@ impl Ctx {
             commodity_tags: self.commodity_tags,
             prices: self.prices,
             default_commodity: self.default_commodity.map(|(commodity, _style)| commodity),
+            leading_comment: self.leading_comment,
         }
     }
 }
@@ -293,6 +299,10 @@ fn parse_source(
     overrides: Option<&HashMap<PathBuf, String>>,
 ) -> Result<(), ParseError> {
     let source_file = resolve_source_file(source_name);
+    // Are we the MAIN file? Every parse starts with an empty `source_files`, and
+    // the push below is the first thing that ever writes to it, so "nothing
+    // recorded yet" is exactly "this is the top-level file". Read BEFORE the push.
+    let is_main_file = ctx.source_files.is_empty();
     // Record this file (main or `include`d) so the whole dependency set is known
     // for live-reload watching, even for directive-only includes. Deduplicated to
     // stay stable if the same file is included more than once.
@@ -306,6 +316,14 @@ fn parse_source(
     // file, and Windows/Excel-exported journals routinely carry one. Stripped
     // here (not in `parse_journal`) so an `include`d file is covered too.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    // Retain the main file's opening comment for `crate::title`. AFTER the BOM
+    // strip above, or a Windows-exported journal's title would silently begin
+    // with U+FEFF. `include`d files deliberately do not contribute: the title
+    // names the journal the user opened, and an included file's header describes
+    // that file alone.
+    if is_main_file {
+        ctx.leading_comment = leading_comment(text);
+    }
     let lines: Vec<&str> = text.lines().collect();
 
     let mut i = 0;
@@ -494,6 +512,33 @@ fn parse_source(
         i += 1;
     }
     Ok(())
+}
+
+/// A journal source's LEADING COMMENT: the text of its first non-empty line
+/// when that line is a comment, with the marker and the whitespace around it
+/// stripped. `None` when the file is empty or opens with anything else.
+///
+/// hledger's line-comment markers are `;`, `#` and `*`, and a comment line may
+/// be indented — the same three the parse loop dispatches on. The whole leading
+/// RUN of them is stripped, so the common `;;;;` banner and the org-mode `****`
+/// heading reduce to their text instead of keeping a stray marker.
+///
+/// The parse loop otherwise discards comments outright. This one is kept because
+/// it is where a journal names itself; [`crate::title`] turns it into the title
+/// the UI shows, and owns every judgement about whether it reads as one. Nothing
+/// is rejected here — this reports what the file says, not what it means.
+fn leading_comment(text: &str) -> Option<String> {
+    let first = text.lines().find(|line| !line.trim().is_empty())?;
+    let trimmed = first.trim_start();
+    if !trimmed.starts_with([';', '#', '*']) {
+        return None;
+    }
+    Some(
+        trimmed
+            .trim_start_matches([';', '#', '*'])
+            .trim()
+            .to_string(),
+    )
 }
 
 /// Convert a `usize` line/column index to `u32`, saturating (line counts here

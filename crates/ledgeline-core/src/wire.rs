@@ -10,6 +10,7 @@ use crate::model::{
     AccountDeclaration, AccountName, Amount, CommoditySide, CostKind, Journal, Posting,
     PostingType, PriceDirective, SourcePos, Status, Transaction,
 };
+use crate::title::{journal_title, main_file_name};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -580,6 +581,41 @@ pub fn journal_to_diagnostics_value(
 #[must_use]
 pub fn version_value() -> serde_json::Value {
     serde_json::Value::String(HLEDGER_VERSION.to_string())
+}
+
+// ===========================================================================
+// /api/journal
+// ===========================================================================
+
+/// The `/api/journal` payload: which journal the user is looking at.
+///
+/// A NATIVE route, so the field names are camelCase like the rest of the
+/// `/api/*` wire (both happen to be single words, and the rename is declared
+/// anyway so adding a second-word field cannot silently break the convention).
+///
+/// Both fields are nullable and independently so: a journal can be titled with
+/// no file behind it (an in-memory journal that opens with a comment) and a file
+/// can be there with nothing to call it. `null` is served explicitly rather than
+/// the key being omitted, so the SPA never has to tell "absent" from "unknown".
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireJournalInfo {
+    /// The derived display title — see [`crate::title`] for how, and why.
+    title: Option<String>,
+    /// The BARE filename of the main journal file, never a path.
+    file: Option<String>,
+}
+
+/// The open journal's derived title and the bare name of its main file.
+///
+/// Cheap: both halves read data the parse already captured. No filesystem
+/// access, no pass over the transactions.
+#[must_use]
+pub fn journal_to_info(journal: &Journal) -> WireJournalInfo {
+    WireJournalInfo {
+        title: journal_title(journal),
+        file: main_file_name(journal),
+    }
 }
 
 // ===========================================================================
