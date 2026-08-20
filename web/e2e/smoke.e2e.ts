@@ -2,26 +2,35 @@
 // fixtures/sample.journal on :5099 (see playwright.config.ts webServer) with
 // the built SPA in front of it.
 //
-// Fixture facts, verified against hledger 1.52 CLI (see plans/09):
-//   - 185 transactions total; 27 fall in the last-90 window 2026-04-10..2026-07-08
+// Fixture facts, verified against hledger 1.52 CLI (see plans/09), and
+// re-verified after WP-14 added the home, the car, the mortgage and the
+// depreciation entries to sample.journal — every figure below INCLUDES them:
+//   - 189 transactions total; 28 fall in the last-90 window 2026-04-10..2026-07-08
 //     at the pinned clock (journal spans 2024-07-01..2026-07-04)
-//   - `hledger bal expenses -b 2026-04-10 -e 2026-07-09` → $11,526.62 (+ 228,75 EUR);
-//     the footer shows the negated primary-commodity net, $-11,526.62
+//   - `hledger bal expenses -b 2026-04-10 -e 2026-07-09` → $15,026.62 (+ 228,75 EUR);
+//     the footer shows the negated primary-commodity net, $-15,026.62 (the window
+//     contains the 2026-06-30 $3,500.00 vehicle depreciation)
 //   - deepest account is 4 segments (assets:broker:taxable:vti) → depth-slider max 4
 //     (the slider is on cf/nw/budget only; BOTH statements dropped it and ask the
 //     engine for an unclamped report)
 //   - `hledger is -V -b 2026-01-01 -e 2027-01-01 --depth 2`: the P&L tab is
 //     GROUPED and market-valued since plans/13, and its default range is the
-//     calendar year — Revenue $34,010.00, Expenses $25,126.48, Net $8,883.52.
-//     Its prior column is the previous equal-length window, which for a full
-//     calendar year is the previous calendar year: 2025 reads $66,428.75 /
-//     $44,450.54 / $21,978.21.
+//     calendar year — Revenue $34,010.00, Expenses $28,626.48, Net $5,383.52.
+//     Expenses INCLUDE depreciation: `expenses:depreciation` is a declared
+//     expense account, so the engine's P&L counts the write-down ($3,500.00 in
+//     2026, $4,000.00 in 2025). A figure $3,500/$4,000 lower is the stale
+//     pre-WP-14 number — do not "correct" the assertions to it. Its prior
+//     column is the previous equal-length window, which for a full calendar
+//     year is the previous calendar year: 2025 reads $66,428.75 / $48,450.54 /
+//     $17,978.21.
 //   - `hledger bs -V -e 2026-07-09` (CLI -e is exclusive ≙ our asOf
 //     2026-07-08): the Balance Sheet tab is MARKET-valued since plans/12, so
-//     Total Assets $59,612.615 (+ 5 GLD − 2 TSLA, both unpriced), Liabilities
-//     $531.15, net worth $59,081.465. Unvalued (`hledger bs`) it would read
-//     $48,402.56 / $47,871.41 — that is the OLD tab, and the numbers below are
-//     deliberately not those.
+//     Total Assets $548,112.615 (+ 5 GLD − 2 TSLA, both unpriced), Liabilities
+//     $336,531.15, net worth $211,581.465 — the WP-14 home ($468,000.00), car
+//     ($20,500.00 net of accumulated depreciation) and $336,000.00 mortgage
+//     all included. Unvalued (`hledger bs`) the dollar column alone reads
+//     $68,902.56, with the stocks, EUR and HOME left as raw commodity balances
+//     — that is the OLD tab, and the numbers below are deliberately not those.
 //   - 6 deliberate problem records: pending txn, expenses:unknown, empty description,
 //     GLD missing basis, GLD unpriced, TSLA negative shares (WP-10)
 //
