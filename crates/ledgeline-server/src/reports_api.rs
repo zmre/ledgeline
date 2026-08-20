@@ -33,16 +33,16 @@ use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    Amounts, BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BudgetCell, BudgetOpts,
-    BudgetReport, BudgetRow, Cadence, ChangeKind, ChangeRow, CostOfLiving, DEFAULT_EXCLUDE_DESC,
-    DateRange, GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts, InsightsPeriod,
-    InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection, IsSectionKind,
-    IsSubtotal, IsSubtotalKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts, PerfPoint,
-    PeriodReport, PeriodRow, ReportMeta, ReportRow, Section, SectionedReport, Subscription,
-    SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation, account_decls, account_groups,
-    account_sections, balance_sheet, balance_sheet_grouped, budget_report, cash_flow,
-    cash_predicate, declared_groups, declared_types, detect_subscriptions, income_statement,
-    income_statement_grouped, insights, net_worth,
+    Amounts, BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, BsTerm,
+    BudgetCell, BudgetOpts, BudgetReport, BudgetRow, Cadence, ChangeKind, ChangeRow, CostOfLiving,
+    DEFAULT_EXCLUDE_DESC, DateRange, GroupSource, IS_GROUP_TAG, IncomeStatementReport,
+    InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow,
+    IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, MetricDelta, MixedAmount, MoverRow,
+    NetWorthOpts, PerfPoint, PeriodReport, PeriodRow, ReportMeta, ReportRow, Section,
+    SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
+    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped,
+    bs_terms, budget_report, cash_flow, cash_predicate, declared_groups, declared_types,
+    detect_subscriptions, income_statement, income_statement_grouped, insights, net_worth,
 };
 use serde::{Deserialize, Serialize};
 
@@ -189,6 +189,9 @@ struct WireBsGroup {
     name: String,
     /// `"tag" | "type" | "commodity" | "segment" | "computed"`.
     source: &'static str,
+    /// `"current" | "noncurrent"`, or null when the split is off (and always
+    /// null for the synthetic equity lines).
+    term: Option<&'static str>,
     /// Empty for the `computed` lines, which stand for no accounts.
     rows: Vec<WireReportRow>,
     total: WireMixed,
@@ -198,6 +201,7 @@ impl From<&BsGroup> for WireBsGroup {
     fn from(group: &BsGroup) -> Self {
         Self {
             name: group.name.clone(),
+            term: group.term.map(BsTerm::code),
             source: group_source(group.source),
             rows: group.rows.iter().map(WireReportRow::from).collect(),
             total: wire_mixed(&group.total),
@@ -217,6 +221,32 @@ fn group_source(source: GroupSource) -> &'static str {
     }
 }
 
+/// One half of a box: `{term, heading, label, total}`. `term` is
+/// `"current" | "noncurrent"`.
+///
+/// `heading` and `label` are engine-supplied strings rather than something the
+/// SPA derives from `term`, because that mapping would then exist in the view
+/// AND in the xlsx exporter — the two-copies shape DRY-3 is about.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsSubsection {
+    term: &'static str,
+    heading: String,
+    label: String,
+    total: WireMixed,
+}
+
+impl From<&BsSubsection> for WireBsSubsection {
+    fn from(sub: &BsSubsection) -> Self {
+        Self {
+            term: sub.term.code(),
+            heading: sub.heading.clone(),
+            label: sub.label.clone(),
+            total: wire_mixed(&sub.total),
+        }
+    }
+}
+
 /// One of the three boxes.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -225,6 +255,10 @@ struct WireBsSection {
     kind: &'static str,
     title: String,
     groups: Vec<WireBsGroup>,
+    /// EMPTY when the journal declares no `bsterm:` — the adaptive guarantee, and
+    /// what lets an untagged journal decode to exactly the report it did before
+    /// the current/non-current split existed. Always empty for Equity.
+    subsections: Vec<WireBsSubsection>,
     total: WireMixed,
 }
 
@@ -238,6 +272,11 @@ impl From<&BsSection> for WireBsSection {
             },
             title: section.title.clone(),
             groups: section.groups.iter().map(WireBsGroup::from).collect(),
+            subsections: section
+                .subsections
+                .iter()
+                .map(WireBsSubsection::from)
+                .collect(),
             total: wire_mixed(&section.total),
         }
     }
@@ -1888,6 +1927,7 @@ pub(crate) async fn balancesheet_grouped(
             },
             &declared_types(&account_decls(journal)),
             &account_groups(journal),
+            &bs_terms(journal)?,
         )?;
         Ok(WireBalanceSheetReport::new(&report, label))
     })

@@ -143,7 +143,8 @@ impl From<ReportError> for AppError {
             ReportError::InvalidBucketKey(_)
             | ReportError::UnknownIsSection { .. }
             | ReportError::UnknownHoldingsClass { .. }
-            | ReportError::UnknownValuationRole { .. } => Self::BadRequest(message),
+            | ReportError::UnknownValuationRole { .. }
+            | ReportError::UnknownBsTerm { .. } => Self::BadRequest(message),
             ReportError::Decimal(_) => Self::Internal(message),
         }
     }

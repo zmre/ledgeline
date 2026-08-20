@@ -24,6 +24,7 @@
 //! (`cc` → "Credit cards"), and that is all it may ever do: a cosmetic table
 //! that cannot reach membership cannot cause the reads-zero failure.
 
+use super::ReportError;
 use super::account_types::{AccountType, AccountTypes};
 use super::accounts::ascii_or_lowercased;
 use super::mixed_amount::MixedAmount;
@@ -105,8 +106,132 @@ pub fn group_rank(name: &str, source: GroupSource) -> usize {
 
 /// The account tag naming a BALANCE-SHEET group.
 pub const BS_GROUP_TAG: &str = "bsgroup";
+/// The account tag splitting a balance-sheet box into current and non-current.
+pub const BS_TERM_TAG: &str = "bsterm";
 /// The account tag naming an INCOME-STATEMENT group.
 pub const IS_GROUP_TAG: &str = "isgroup";
+
+/// Which half of a balance-sheet box an account sits in.
+///
+/// The standard current/non-current split, and a THIRD tag rather than a value
+/// of `bsgroup:` for the reason this codebase keeps separating: `bsgroup:` names
+/// the LINE an account prints on, `bsterm:` names the SUBHEADING that line sits
+/// under. `type:` picks the box, `bsterm:` picks the half, `bsgroup:` picks the
+/// line. Three questions, three tags, none of them able to answer another's.
+///
+/// Equity is never split — the distinction is about when an asset converts to
+/// cash or when a debt comes due, and neither question is asked of capital.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BsTerm {
+    /// Realizable (or payable) within the operating cycle — normally a year.
+    Current,
+    /// Everything else: property, long-term investments, the mortgage.
+    NonCurrent,
+}
+
+impl BsTerm {
+    /// The subheading printed above this half of a box.
+    #[must_use]
+    pub fn heading(self) -> &'static str {
+        match self {
+            Self::Current => "Current",
+            Self::NonCurrent => "Non-current",
+        }
+    }
+
+    /// Presentation order: current first, as every statement prints it.
+    #[must_use]
+    pub fn rank(self) -> usize {
+        match self {
+            Self::Current => 0,
+            Self::NonCurrent => 1,
+        }
+    }
+
+    /// The wire spelling.
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::NonCurrent => "noncurrent",
+        }
+    }
+}
+
+/// Parse a `bsterm:` tag value; `None` for anything outside the vocabulary.
+#[must_use]
+pub fn parse_bs_term_tag(value: &str) -> Option<BsTerm> {
+    match value.trim().to_lowercase().as_str() {
+        "current" | "short" | "shortterm" | "short-term" => Some(BsTerm::Current),
+        "noncurrent" | "non-current" | "long" | "longterm" | "long-term" => {
+            Some(BsTerm::NonCurrent)
+        }
+        _ => None,
+    }
+}
+
+/// [`declared_bs_terms`] over a whole parsed journal.
+///
+/// # Errors
+/// Returns [`ReportError::UnknownBsTerm`] for an unrecognized value.
+pub fn bs_terms(journal: &Journal) -> Result<BTreeMap<String, BsTerm>, ReportError> {
+    declared_bs_terms(&journal.accounts)
+}
+
+/// Declared `bsterm:` values per account. Untagged accounts are absent.
+///
+/// # Errors
+/// Returns [`ReportError::UnknownBsTerm`] for a value outside the closed
+/// vocabulary, following `issection:` rather than `type:`: a misspelt term files
+/// the account under the wrong subheading and its balance into the wrong
+/// subtotal, which is a plausible statement rather than a visibly broken one.
+pub fn declared_bs_terms(
+    accounts: &[AccountDeclaration],
+) -> Result<BTreeMap<String, BsTerm>, ReportError> {
+    accounts
+        .iter()
+        .filter_map(|decl| {
+            decl.tags
+                .iter()
+                .find(|(key, _)| key == BS_TERM_TAG)
+                .map(|(_, value)| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    parse_bs_term_tag(value)
+                        .map(|term| (decl.name.0.clone(), term))
+                        .ok_or_else(|| ReportError::UnknownBsTerm {
+                            account: decl.name.0.clone(),
+                            value: value.to_string(),
+                        })
+                })
+        })
+        .collect()
+}
+
+/// The effective term for an account printing on the group named `group_name`.
+///
+/// Its own declared tag, else the nearest declared ancestor's, else a default
+/// taken from the GROUP: [`INVESTMENTS_GROUP`] is non-current and everything
+/// else is current. That default is not invented here — it is the assumption
+/// [`BUILT_IN_ORDER`] has always encoded, now made to mean something.
+///
+/// Untagged custom groups land in `Current` because that is what a journal that
+/// bothers to tag is saying: you tag the house and the mortgage, and leave the
+/// everyday accounts alone.
+#[must_use]
+pub fn resolve_bs_term(
+    account: &str,
+    group_name: &str,
+    declared: &BTreeMap<String, BsTerm>,
+) -> BsTerm {
+    nearest_declared(declared, account).copied().unwrap_or({
+        if group_name == INVESTMENTS_GROUP {
+            BsTerm::NonCurrent
+        } else {
+            BsTerm::Current
+        }
+    })
+}
 
 /// Declared `bsgroup:` values per account, read off a parsed journal's `account`
 /// directives — the group analogue of

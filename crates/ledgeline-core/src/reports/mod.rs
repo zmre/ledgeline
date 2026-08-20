@@ -44,9 +44,10 @@ use crate::decimal::DecError;
 use thiserror::Error;
 
 pub use account_groups::{
-    AccountGroups, BS_GROUP_TAG, CASH_GROUP, GroupSource, INVESTMENTS_GROUP, IS_GROUP_TAG,
-    RETAINED_EARNINGS_GROUP, VALUATION_ADJUSTMENT_GROUP, account_groups, account_groups_from,
-    declared_groups, declared_groups_from, group_rank,
+    AccountGroups, BS_GROUP_TAG, BS_TERM_TAG, BsTerm, CASH_GROUP, GroupSource, INVESTMENTS_GROUP,
+    IS_GROUP_TAG, RETAINED_EARNINGS_GROUP, VALUATION_ADJUSTMENT_GROUP, account_groups,
+    account_groups_from, bs_terms, declared_bs_terms, declared_groups, declared_groups_from,
+    group_rank, parse_bs_term_tag, resolve_bs_term,
 };
 pub use account_types::{
     AccountDecl, AccountType, AccountTypes, account_decls, account_decls_from, cash_predicate,
@@ -55,8 +56,8 @@ pub use account_types::{
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 pub use balance_sheet::{
-    BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, Valuation, balance_sheet,
-    balance_sheet_grouped,
+    BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
+    balance_sheet, balance_sheet_grouped,
 };
 pub use budget::{BudgetCell, BudgetOpts, BudgetReport, BudgetRow, UNBUDGETED, budget_report};
 pub use cash_flow::{cash_flow, is_cash_like};
@@ -150,6 +151,23 @@ pub enum ReportError {
          cost, unrealized, depreciation, adjustment"
     )]
     UnknownValuationRole {
+        /// The declaring account.
+        account: String,
+        /// The value as written, trimmed.
+        value: String,
+    },
+    /// An `account` directive declared a `bsterm:` value outside the closed
+    /// vocabulary — see [`account_groups::parse_bs_term_tag`].
+    ///
+    /// Refused for its siblings' reason: a misspelt term silently files the
+    /// account under the wrong subheading and its balance into the wrong
+    /// subtotal, so the statement stays plausible while the current ratio it
+    /// exists to support is wrong.
+    #[error(
+        "account '{account}' declares `bsterm: {value}`, which is not one of \
+         current, noncurrent"
+    )]
+    UnknownBsTerm {
         /// The declaring account.
         account: String,
         /// The value as written, trimmed.

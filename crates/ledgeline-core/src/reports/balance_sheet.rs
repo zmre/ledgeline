@@ -3,7 +3,8 @@
 
 use super::ReportError;
 use super::account_groups::{
-    AccountGroups, GroupSource, RETAINED_EARNINGS_GROUP, VALUATION_ADJUSTMENT_GROUP, group_rank,
+    AccountGroups, BsTerm, GroupSource, RETAINED_EARNINGS_GROUP, VALUATION_ADJUSTMENT_GROUP,
+    group_rank, resolve_bs_term,
 };
 use super::account_types::{AccountType, AccountTypes};
 use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
@@ -114,6 +115,19 @@ pub enum BsSectionKind {
     Equity,
 }
 
+impl BsSectionKind {
+    /// The lowercase plural used inside a subtotal label ("Total current
+    /// assets"), which is not always the box title lowercased.
+    #[must_use]
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Assets => "assets",
+            Self::Liabilities => "liabilities",
+            Self::Equity => "equity",
+        }
+    }
+}
+
 /// One collapsible group of accounts, plus the two synthetic equity lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BsGroup {
@@ -122,11 +136,34 @@ pub struct BsGroup {
     pub name: String,
     /// Which resolution step named it.
     pub source: GroupSource,
+    /// Which half of the box it prints under, or `None` when the journal
+    /// declares no `bsterm:` at all and the split is therefore switched off.
+    ///
+    /// A group is keyed by (term, name), so one `bsgroup:` spanning both halves
+    /// prints as two lines under two subheadings. That is not a defect: a
+    /// receivable due this year and one due in five is genuinely two lines on a
+    /// real statement.
+    pub term: Option<BsTerm>,
     /// The group's accounts, rolled up and clamped to `depth`. Empty for the
     /// synthetic (`Computed`) lines, which stand for no accounts.
     pub rows: Vec<ReportRow>,
     /// Summed over the group's MEMBERS, not over `rows` — so it is
     /// depth-independent (RPT-1/RPT-4).
+    pub total: MixedAmount,
+}
+
+/// One half of a box: its subheading and its subtotal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BsSubsection {
+    /// Current or non-current.
+    pub term: BsTerm,
+    /// Subheading above the half — `"Current"` / `"Non-current"`.
+    pub heading: String,
+    /// Subtotal label — `"Total current assets"`, and so on. Built here rather
+    /// than in each consumer so the screen and the spreadsheet cannot word it
+    /// differently.
+    pub label: String,
+    /// Summed over this half's MEMBERS, like every other total on the sheet.
     pub total: MixedAmount,
 }
 
@@ -137,8 +174,17 @@ pub struct BsSection {
     pub kind: BsSectionKind,
     /// Display title.
     pub title: String,
-    /// Groups in presentation order (see `account_groups::group_rank`).
+    /// Groups in presentation order: by term (current first), then
+    /// `account_groups::group_rank`, then name.
     pub groups: Vec<BsGroup>,
+    /// The box's halves, current first. EMPTY when the split is off, which is
+    /// the adaptive guarantee: a journal that declares no `bsterm:` gets exactly
+    /// the report it got before this existed. Always empty for Equity.
+    ///
+    /// When non-empty, every group in this section has `Some` term, and groups
+    /// sharing a term are contiguous — so a consumer can walk `groups` once and
+    /// look each term up here.
+    pub subsections: Vec<BsSubsection>,
     /// Summed over the section's MEMBERS, not over `groups`' rows.
     pub total: MixedAmount,
 }
@@ -255,6 +301,7 @@ pub fn balance_sheet_grouped(
     opts: &BsOpts,
     declared: &BTreeMap<String, AccountType>,
     groups: &BTreeMap<String, String>,
+    terms: &BTreeMap<String, BsTerm>,
 ) -> Result<BalanceSheetReport, ReportError> {
     let totals = |at_cost| {
         account_totals(
@@ -320,12 +367,31 @@ pub fn balance_sheet_grouped(
         .ma_neg()?;
     let valuation_adjustment = sum_all(&display)?.ma_add(&sum_all(&sheet_cost)?.ma_neg()?)?;
 
+    // ADAPTIVE: with no `bsterm:` anywhere the split is off entirely and every
+    // group's term is `None`, so the report is byte-identical to the one this
+    // feature did not exist for. A personal ledger is never handed a
+    // classification it did not ask for.
+    let bs_terms = if terms.is_empty() { None } else { Some(terms) };
+
     let mut sections: Vec<BsSection> = Vec::with_capacity(SECTIONS.len());
     for (kind, title, category, flip) in SECTIONS {
         let members = members_of(&display, &types, category);
         let mut total = signed(&sum_all(&members)?, flip)?;
-        let mut section_groups =
-            build_groups(&members, &display, &account_groups, opts.depth, flip)?;
+        // Equity is never split — the question the split asks (when does this
+        // convert to cash, when does this come due) is not asked of capital.
+        let section_terms = if kind == BsSectionKind::Equity {
+            None
+        } else {
+            bs_terms
+        };
+        let mut section_groups = build_groups(
+            &members,
+            &display,
+            &account_groups,
+            opts.depth,
+            flip,
+            section_terms,
+        )?;
         if kind == BsSectionKind::Equity {
             // Retained earnings is a real line even at zero; the valuation
             // adjustment only exists when the display basis moved off cost.
@@ -340,16 +406,23 @@ pub fn balance_sheet_grouped(
                 section_groups.push(BsGroup {
                     name: name.to_string(),
                     source: GroupSource::Computed,
+                    term: None,
                     rows: Vec::new(),
                     total: amount.clone(),
                 });
             }
             sort_groups(&mut section_groups);
         }
+        let subsections = if section_terms.is_some() {
+            build_subsections(kind, &section_groups)?
+        } else {
+            Vec::new()
+        };
         sections.push(BsSection {
             kind,
             title: title.to_string(),
             groups: section_groups,
+            subsections,
             total,
         });
     }
@@ -615,7 +688,15 @@ pub(super) fn signed(ma: &MixedAmount, flip: bool) -> Result<MixedAmount, Report
 /// Known groups in balance-sheet order, then the rest alphabetically, then the
 /// synthetic equity lines.
 fn sort_groups(groups: &mut [BsGroup]) {
-    groups.sort_by_key(|group| (group_rank(&group.name, group.source), group.name.clone()));
+    groups.sort_by_key(|group| {
+        (
+            // Current before non-current; `None` (split off) is one bucket, so
+            // this reduces to the old ordering exactly.
+            group.term.map_or(0, BsTerm::rank),
+            group_rank(&group.name, group.source),
+            group.name.clone(),
+        )
+    });
 }
 
 /// Partition `members` into groups, each rolled up and clamped to `depth`.
@@ -638,13 +719,20 @@ fn build_groups(
     groups: &AccountGroups,
     depth: Option<usize>,
     flip: bool,
+    terms: Option<&BTreeMap<String, BsTerm>>,
 ) -> Result<Vec<BsGroup>, ReportError> {
-    let mut buckets: BTreeMap<String, (GroupSource, BTreeMap<String, MixedAmount>)> =
-        BTreeMap::new();
+    // Keyed by (term, name): with the split ON, one `bsgroup:` whose accounts
+    // straddle the halves prints as two lines under two subheadings, which is
+    // what a statement does with a receivable due this year and one due in five.
+    // With it OFF every key's term is `None` and this is the old grouping
+    // exactly.
+    type Bucket = (GroupSource, BTreeMap<String, MixedAmount>);
+    let mut buckets: BTreeMap<(Option<BsTerm>, String), Bucket> = BTreeMap::new();
     for (account, ma) in members {
         let (name, source) = groups.resolve(account);
+        let term = terms.map(|declared| resolve_bs_term(account, &name, declared));
         buckets
-            .entry(name)
+            .entry((term, name))
             .or_insert_with(|| (source, BTreeMap::new()))
             .1
             .insert(account.clone(), ma.clone());
@@ -653,16 +741,49 @@ fn build_groups(
     let mut out: Vec<BsGroup> = buckets
         .into_iter()
         .filter(|(_, (_, group_members))| group_members.values().any(|ma| !ma.is_zero()))
-        .map(|(name, (source, group_members))| {
+        .map(|((term, name), (source, group_members))| {
             Ok(BsGroup {
                 name,
                 source,
+                term,
                 rows: group_rows(&group_members, sheet, depth, flip)?,
                 total: signed(&sum_all(&group_members)?, flip)?,
             })
         })
         .collect::<Result<_, ReportError>>()?;
     sort_groups(&mut out);
+    Ok(out)
+}
+
+/// The halves of one box, current first, each with its own subtotal.
+///
+/// Summed over the GROUPS' totals, which are themselves summed over members —
+/// so a subtotal is depth-independent for the same reason every other total on
+/// this sheet is, and the halves add to the section total by construction.
+fn build_subsections(
+    kind: BsSectionKind,
+    groups: &[BsGroup],
+) -> Result<Vec<BsSubsection>, ReportError> {
+    let mut out: Vec<BsSubsection> = Vec::new();
+    for term in [BsTerm::Current, BsTerm::NonCurrent] {
+        let mut total = MixedAmount::new();
+        let mut seen = false;
+        for group in groups.iter().filter(|group| group.term == Some(term)) {
+            total = total.ma_add(&group.total)?;
+            seen = true;
+        }
+        // A half with no groups gets no subheading: an empty "Non-current" above
+        // an empty subtotal is the sort of blank scaffolding the adaptive rule
+        // exists to avoid.
+        if seen {
+            out.push(BsSubsection {
+                term,
+                heading: term.heading().to_string(),
+                label: format!("Total {} {}", term.heading().to_lowercase(), kind.noun()),
+                total,
+            });
+        }
+    }
     Ok(out)
 }
 
@@ -1004,6 +1125,7 @@ mod tests {
             },
             &BTreeMap::new(),
             groups,
+            &BTreeMap::new(),
         )
         .expect("grouped balance sheet")
     }
@@ -1218,6 +1340,7 @@ mod tests {
             },
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         )
         .unwrap();
         assert_eq!(report.meta.unpriced, vec![c("STK")]);
@@ -1251,6 +1374,7 @@ mod tests {
                 value: Valuation::Cost,
                 value_in: None,
             },
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
         )
@@ -1311,6 +1435,7 @@ mod tests {
                 value: Valuation::Cost,
                 value_in: None,
             },
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
         )
@@ -1508,6 +1633,7 @@ mod tests {
                         value,
                         value_in: value_in.clone(),
                     },
+                    &BTreeMap::new(),
                     &BTreeMap::new(),
                     &BTreeMap::new(),
                 )

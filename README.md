@@ -137,8 +137,8 @@ See **[docs/development.md](docs/development.md)** for the Nix + Crane build cac
 `nix build .#{ledgeline,clippy,tests,fmt,macApp}` outputs, CI, and how the SPA is built and embedded.
 See **[docs/imports.md](docs/imports.md)** for the CSV rules-file editor — the format-preserving
 model, what it will and won't edit, and the guards on its write path.
-See **[docs/balance-sheet.md](docs/balance-sheet.md)** for the balance sheet — the `bsgroup:` tag,
-how untagged accounts are grouped, valuation, and the balance check's tolerance.
+See **[docs/balance-sheet.md](docs/balance-sheet.md)** for the balance sheet — the `bsgroup:` and
+`bsterm:` tags, how untagged accounts are grouped, valuation, and the balance check's tolerance.
 See **[docs/holdings.md](docs/holdings.md)** for the Holdings tabs — the `holdings:` and
 `valuation:` tags, how several accounts become one holding, and what "change" measures against.
 
@@ -152,7 +152,7 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 - need to remove the URL in the top right. in its place lets put an indication of what we're looking at
   - Lets make this more interesting. If the first line of the main journal file is a comment with one to five words (not symbols like ======), then we'll take that as the title to use. Otherwise, we'll use the folder name holding the main journal.
   - We should document this. The idea is to help someone managing many different entities to be aware of what they're looking at
-- chore: route bad `issection:` / `holdings:` / `valuation:` / `type:` tag values into Problems
+- chore: route bad `issection:` / `holdings:` / `valuation:` / `bsterm:` / `type:` tag values into Problems
   - a mistyped `issection:` currently fails the whole P&L request with a 400 naming the account and the
     valid codes, and `holdings:` now does the same to the Holdings tab. Right that it isn't silently
     dropped, wrong that one typo takes the tab down. Problems
@@ -194,8 +194,6 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
   - feat: remember categorization functionality — write a chosen category back into the rules file as a new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
 - feat: File -> New
   - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and use an empty folder as a starting point and then create a skeleton so someone can start using us to track things. We should have a default chart of accounts for individuals and another for businesses and then we should allow them to start with an empty set of accounts to add their own.
-  - HOWEVER, we don't have any way currently to handle when a new file should be created and used for new imports.  It's common to have a journal file per year included in a main journal file, for example, but do we automatically create that or figure that out?
-    - I guess the user could select a 2027.journal file on import when desired, but can they specify that if it doesn't already exist?
 - feat: saved report filters?
 - feat: planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)

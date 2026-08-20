@@ -267,6 +267,79 @@ test("reports: balance-sheet groups start collapsed and open to their accounts",
     await expect(page.locator('[data-account="assets:bank:wise"]')).toHaveCount(0);
 });
 
+// UNRUN in the sandbox this was written in — no browser could be launched — so
+// every figure below comes from `fixtures/native/v1/balancesheet-grouped.json`,
+// the bytes the engine actually produced for this journal, rather than from our
+// own rendering.
+//
+// The ADAPTIVE half of this feature has no e2e: `fixtures/sample.journal` now
+// carries `bsterm: noncurrent` on the home, the car and the mortgage, so the
+// only journal this stack serves is a classified one. "A journal that tags
+// nothing renders exactly what it rendered before" is pinned instead by
+// `balanceSheetRows.test.ts` and `BalanceSheetView.svelte.test.ts`, which can
+// hold both shapes side by side.
+test("reports: balance sheet bands assets and liabilities into current and non-current", async ({page}) => {
+    await page.goto("/reports?tab=bs&asof=2026-07-08");
+
+    const assets = page.getByTestId("bs-section-assets");
+    const current = page.getByTestId("bs-subsection-assets-current");
+
+    // Both bands, current FIRST — the engine's ordering, which the row model
+    // relies on to know where one band ends and the next begins.
+    await expect(assets.locator('[data-testid^="bs-subsection-"]')).toHaveText(["Current", "Non-current"]);
+
+    // Each band closes on its own subtotal, labelled by the ENGINE — note
+    // "assets" against "liabilities" below, which is why the label is a wire
+    // field and not something composed on this side.
+    //   Current     = cash $49,059.99
+    //   Non-current = investments $10,552.625 + home $468,000 + car $20,500
+    //               = $499,052.625 → $499,052.63 (half away from zero)
+    await expect(page.getByTestId("bs-subtotal-assets-current")).toContainText("Total current assets");
+    await expect(page.getByTestId("bs-subtotal-assets-current")).toContainText("$49,059.99");
+    await expect(page.getByTestId("bs-subtotal-assets-noncurrent")).toContainText("Total non-current assets");
+    await expect(page.getByTestId("bs-subtotal-assets-noncurrent")).toContainText("$499,052.63");
+
+    // The bands are parts; the box footer is still the whole, and still the
+    // figure the tie-out ties to.
+    await expect(assets.locator("tfoot")).toContainText("$548,112.62");
+
+    // A subheading is a heading, not a line: the band's total is on the row that
+    // closes it, and printing it twice would invite a hunt for the difference.
+    await expect(current).toHaveText("Current");
+
+    // Liabilities band on the same axis with their own prose: the $531.15 visa
+    // balance is current, the $336,000.00 mortgage is not.
+    await expect(page.getByTestId("bs-subtotal-liabilities-current")).toContainText("Total current liabilities");
+    await expect(page.getByTestId("bs-subtotal-liabilities-current")).toContainText("$531.15");
+    await expect(page.getByTestId("bs-subtotal-liabilities-noncurrent")).toContainText("$336,000.00");
+
+    // Equity is never banded, in any journal.
+    await expect(page.getByTestId("bs-subsection-equity-current")).toHaveCount(0);
+    await expect(page.getByTestId("bs-subsection-equity-noncurrent")).toHaveCount(0);
+    await expect(page.getByTestId("bs-subtotal-equity-noncurrent")).toHaveCount(0);
+});
+
+test("reports: the balance-sheet cursor walks past the band rows", async ({page}) => {
+    // Bands are not cursorable: neither a subheading nor a subtotal can be
+    // expanded or drilled into, so stopping on one would be a stop where Enter
+    // does nothing. `j` from a fresh load must therefore land on the first GROUP
+    // — Cash and cash equivalents — and not on the "Current" heading above it.
+    await page.goto("/reports?tab=bs&asof=2026-07-08");
+    await expect(page.getByTestId("bs-subsection-assets-current")).toBeVisible();
+
+    await page.keyboard.press("j");
+    await expect(page.locator("[aria-current='true']")).toContainText("Cash and cash equivalents");
+
+    // The next stop is the first group of the NEXT band, walking over that
+    // band's subtotal and its heading both.
+    await page.keyboard.press("j");
+    await expect(page.locator("[aria-current='true']")).toContainText("Investments");
+
+    // And the disclosures still work inside a band.
+    await page.getByTestId("bs-section-assets").getByRole("button", {name: "Property"}).click();
+    await expect(page.locator('[data-account="assets:property:home"]')).toBeVisible();
+});
+
 test("problems badge shows the deliberate problem count", async ({page}) => {
     await page.goto("/");
 

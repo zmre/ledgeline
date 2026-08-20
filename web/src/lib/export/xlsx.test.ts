@@ -9,7 +9,7 @@ import {dec, type MixedAmount} from "$lib/domain/money";
 import type {AccountType} from "$lib/domain/accountTypes";
 import type {Holding, HoldingsReport} from "$lib/holdings/types";
 import type {BudgetCell, BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
-import {GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
+import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
 import {buildBalanceSheetWorkbook, buildBudgetWorkbook, buildHoldingsWorkbook, buildIncomeStatementWorkbook, buildWorkbook, numberFormat} from "./xlsx";
 
@@ -361,6 +361,80 @@ describe("UNIT export/xlsx", () => {
             // rounded into the $0.00 that would read as balanced.
             expect(ws.getCell("B34").value).toBe(0.01);
             expect(ws.getCell("A34").font.bold).toBe(true);
+        });
+
+        // The current/non-current axis. Indentation is the workbook's only
+        // structural language, so it is what has to carry the hierarchy the
+        // screen carries with type: heading over group over account.
+        describe("current / non-current bands", () => {
+            const classified = () => build(decodeBalanceSheetReport(CLASSIFIED_BALANCE_SHEET));
+
+            it("heads each band and closes it with the engine's own subtotal", async () => {
+                const ws = await readBack(await classified(), "Balance Sheet");
+
+                expect(column(ws, 5, 16)).toEqual([
+                    "Assets",
+                    "Current",
+                    "Cash and cash equivalents",
+                    "assets:bank",
+                    "checking",
+                    "savings",
+                    "Accounts receivable",
+                    "assets:ar",
+                    "Total current assets",
+                    "Non-current",
+                    "Property",
+                    // One row, not two: `compressSectionRows` folds the chain
+                    // inside a band exactly as it does outside one.
+                    "assets:property:house",
+                    "Long-term investments",
+                    "assets:broker:ira",
+                    "Total non-current assets",
+                    "Total Assets", // the section total, below both bands
+                ]);
+            });
+
+            it("writes the band subtotals as real numbers, from the engine and not from the group cells", async () => {
+                const ws = await readBack(await classified(), "Balance Sheet");
+
+                expect(ws.getCell("B13").value).toBe(62500); // Total current assets
+                expect(ws.getCell("B19").value).toBe(537500); // Total non-current assets
+                expect(ws.getCell("B20").value).toBe(600000); // the section total, still the whole
+                expect(ws.getCell("A13").font.bold).toBe(true);
+                expect(ws.getCell("A13").border?.top?.style).toBe("thin"); // ruled like a subtotal
+            });
+
+            it("indents the band, then its groups, then their accounts", async () => {
+                const ws = await readBack(await classified(), "Balance Sheet");
+
+                expect(ws.getCell("A6").alignment?.indent).toBe(1); // "Current"
+                expect(ws.getCell("A7").alignment?.indent).toBe(2); // a group inside it
+                expect(ws.getCell("A8").alignment?.indent).toBe(3); // an account inside that
+                expect(ws.getCell("A13").alignment?.indent).toBe(1); // the band's subtotal, back at its heading
+            });
+
+            it("leaves equity unbanded and its groups where they have always been", async () => {
+                const ws = await readBack(await classified(), "Balance Sheet");
+
+                // Equity's groups sit at indent 1 — the unbanded level — in the
+                // same workbook where the other two boxes are at 2.
+                expect(column(ws, 35, 5)).toEqual(["Equity", "Opening", "equity:opening", "Retained earnings", "Total Equity"]);
+                expect(ws.getCell("A36").alignment?.indent).toBe(1);
+                expect(ws.getCell("A37").alignment?.indent).toBe(2);
+            });
+
+            // The adaptive guarantee, in the workbook: the untagged layout is
+            // pinned cell-for-cell by the tests above this describe, which still
+            // pass unchanged. This one states the claim outright.
+            it("writes no band rows at all for a journal that classifies nothing", async () => {
+                const ws = await readBack(await build(), "Balance Sheet");
+                const labels = column(ws, 5, 40);
+
+                expect(labels).not.toContain("Current");
+                expect(labels).not.toContain("Non-current");
+                expect(labels.filter((v) => typeof v === "string" && v.startsWith("Total current"))).toEqual([]);
+                expect(ws.getCell("A6").alignment?.indent).toBe(1); // groups stay at the unbanded level
+            });
         });
 
         it("writes 'Balanced' for sub-cent cost dust, agreeing with the page it came from", async () => {

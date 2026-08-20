@@ -350,6 +350,79 @@ async fn balancesheet_grouped_matches_the_hledger_cli() {
 
 /// The group shape the SPA renders: names, provenance and the two synthetic
 /// equity lines, with `rows` empty on the computed ones.
+/// The current/non-current split reaches the wire: `term` on every group and a
+/// `subsections` array carrying the engine's own headings, labels and subtotals.
+///
+/// `sample.journal` tags the home, the car and the mortgage `bsterm: noncurrent`
+/// and nothing else, so this also pins the two defaults: cash falls to current
+/// without being told, and the built-in Investments group falls to non-current.
+#[tokio::test]
+async fn balancesheet_grouped_splits_current_from_non_current() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08",
+    )
+    .await;
+
+    let section = |kind: &str| -> &Value {
+        body["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .find(|s| s["kind"] == kind)
+            .unwrap_or_else(|| panic!("a {kind} section"))
+    };
+
+    let assets = section("assets");
+    let headings: Vec<&str> = assets["subsections"]
+        .as_array()
+        .expect("subsections")
+        .iter()
+        .map(|sub| sub["heading"].as_str().unwrap())
+        .collect();
+    assert_eq!(headings, ["Current", "Non-current"], "current first");
+    assert_eq!(
+        assets["subsections"][0]["label"], "Total current assets",
+        "the label is the engine's, so screen and spreadsheet cannot word it differently"
+    );
+    assert_eq!(assets["subsections"][0]["term"], "current");
+    assert_eq!(assets["subsections"][1]["term"], "noncurrent");
+
+    // Cash defaults to current; Investments defaults to non-current WITHOUT a
+    // tag; Property and Vehicles are non-current because their accounts say so.
+    let term_of = |kind: &str, name: &str| -> String {
+        section(kind)["groups"]
+            .as_array()
+            .expect("groups")
+            .iter()
+            .find(|g| g["name"] == name)
+            .unwrap_or_else(|| panic!("a {name} group"))["term"]
+            .as_str()
+            .expect("a term")
+            .to_string()
+    };
+    assert_eq!(term_of("assets", "Cash and cash equivalents"), "current");
+    assert_eq!(term_of("assets", "Investments"), "noncurrent");
+    assert_eq!(term_of("assets", "Property"), "noncurrent");
+    assert_eq!(term_of("liabilities", "Mortgage"), "noncurrent");
+    assert_eq!(term_of("liabilities", "Credit cards"), "current");
+
+    // Equity is never split.
+    let equity = section("equity");
+    assert!(
+        equity["subsections"].as_array().expect("array").is_empty(),
+        "equity has no halves"
+    );
+    assert!(
+        equity["groups"]
+            .as_array()
+            .expect("groups")
+            .iter()
+            .all(|g| g["term"].is_null())
+    );
+}
+
 #[tokio::test]
 async fn balancesheet_grouped_reports_groups_and_their_provenance() {
     let journal = sample_journal();

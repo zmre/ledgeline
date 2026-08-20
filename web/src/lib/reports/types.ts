@@ -79,10 +79,55 @@ export type GroupSource = "tag" | "type" | "commodity" | "segment" | "computed";
 /** Which valuation produced the figures. Mirrors the `value=` query parameter. */
 export type BsValuation = "market" | "cost" | "none";
 
+/**
+ * Where a group sits on the standard current / non-current axis.
+ *
+ * A CODE, not prose, and for the same reason `IsSectionKind` is one: it mirrors
+ * the `bsterm:` tag, and a classification that decides which subtotal a balance
+ * lands under must never be a match against English words
+ * ([[account-type-not-name]]). The prose a reader sees — "Current", "Total
+ * non-current assets" — is `BsSubsection`'s, supplied by the engine.
+ */
+export type BsTerm = "current" | "noncurrent";
+
+/**
+ * One current/non-current band inside a section: what to head it with, what to
+ * call its subtotal, and the engine's subtotal.
+ *
+ * `heading` and `label` are ENGINE-SUPPLIED strings, deliberately, even though
+ * both are derivable from `term` plus the section title. Deriving them would put
+ * the same term→prose mapping in the view AND in the xlsx export, which is the
+ * duplication (DRY-3) that has already bitten this repo — and the one place the
+ * two copies would first disagree is the moment a section is renamed.
+ *
+ * `total` is likewise the engine's, summed over MEMBERS. Never re-add the group
+ * lines to make one: they are rounded for display and their exact sum is what
+ * this field already is.
+ */
+export interface BsSubsection {
+    term: BsTerm;
+    /** The subheading printed above the band's first group, e.g. "Non-current". */
+    heading: string;
+    /** The band's subtotal label, e.g. "Total non-current assets". */
+    label: string;
+    total: MixedAmount;
+}
+
 /** One named bucket of accounts within a section, with its own subtotal. */
 export interface BsGroup {
     name: string;
     source: GroupSource;
+    /**
+     * Which band this group belongs to, or null when nothing in the journal
+     * claims one — the adaptive default, and the case that must render exactly
+     * as it did before the axis existed.
+     *
+     * Guaranteed by the engine when the group's section has `subsections`: every
+     * group carries a non-null term, and groups sharing a term are CONTIGUOUS,
+     * current first. That ordering is what lets one pass over the groups decide
+     * where a heading opens and a subtotal closes.
+     */
+    term: BsTerm | null;
     /**
      * The depth-clamped member rows, ancestors included and lexically sorted
      * (as every other report's rows are), so `compressSectionRows` applies.
@@ -99,6 +144,18 @@ export interface BsSection {
     kind: BsSectionKind;
     title: string;
     groups: BsGroup[];
+    /**
+     * The current/non-current bands to print inside this box, in visual order.
+     *
+     * EMPTY is the adaptive default and the common case: a journal that carries
+     * no `bsterm:` tag gets no subheadings, no band subtotals, and a box
+     * identical to the one it got before the axis existed. Always empty on the
+     * equity section — equity is not split by term.
+     *
+     * A term listed here always has at least one group, so a heading can never
+     * be printed over nothing.
+     */
+    subsections: BsSubsection[];
     total: MixedAmount;
 }
 

@@ -1,12 +1,13 @@
-# The balance sheet, and the `bsgroup:` tag
+# The balance sheet, and the `bsgroup:` / `bsterm:` tags
 
 The balance sheet is three boxes — **Assets**, **Liabilities**, **Equity** — whose
 lines are *groups* rather than raw accounts, valued into a single currency so
 every line is one number. Under the boxes is a spreadsheet tie-out that proves the
 statement balances.
 
-This page covers how lines are chosen, how to control them with `bsgroup:`, what
-the equity lines mean, and why the balance check has a tolerance.
+This page covers how lines are chosen, how to control them with `bsgroup:`, how
+`bsterm:` splits each box into current and non-current, what the equity lines
+mean, and why the balance check has a tolerance.
 
 Design notes and the reasoning behind each decision live in
 [`plans/12-balance-sheet-redesign.md`](../plans/12-balance-sheet-redesign.md).
@@ -73,6 +74,76 @@ account assets:art   ; type: A, bsgroup: Art and antiques  ; ✓ group is "Art a
 
 **The tag name is the last word before the colon**, so don't put a space inside
 it — `; balance sheet group: Cash` declares a tag called `group`, not `bsgroup`.
+
+## Current vs non-current (`bsterm:`)
+
+Tag an account `bsterm: noncurrent` and the Assets and Liabilities boxes split
+into the standard subheadings, each with its own subtotal:
+
+```journal
+account assets:property:home  ; type: A, bsterm: noncurrent
+account assets:vehicles:car   ; type: A, bsterm: noncurrent
+account liabilities:mortgage  ; type: L, bsterm: noncurrent
+```
+
+```
+ASSETS
+  CURRENT
+      Cash and cash equivalents      49,059.99
+  Total current assets               49,059.99
+  NON-CURRENT
+      Investments                    10,552.63
+      Property                      468,000.00
+      Vehicles                       20,500.00
+  Total non-current assets          499,052.63
+  Total Assets                      548,112.62
+```
+
+A subheading opens a band and its subtotal closes it, both a step to the left of
+the group lines between them. The subheading carries no figure of its own — the
+band's total is the subtotal, and printing it at both ends would invite you to
+look for a difference between them. The subtotal takes a thin rule where the
+section total below it takes a double rule and a fill, because one is a part and
+the other is the whole.
+
+**It is adaptive.** A journal that declares no `bsterm:` anywhere gets exactly
+the balance sheet it got before this existed — no subheadings, no subtotals,
+nothing to dismiss. The split appears the moment one account asks for it, which
+is the same rule the income statement's GAAP ladder follows.
+
+**Defaults, once it is on.** You tag the long-term things and leave the rest:
+
+| Group                            | Default        |
+|----------------------------------|----------------|
+| `Investments` (the built-in)      | non-current    |
+| everything else untagged          | current        |
+
+So the brokerage above needed no tag. Only three accounts in that example carry
+one.
+
+`bsterm:` **inherits to sub-accounts** like every other tag here, and it is a
+closed vocabulary — `current` and `noncurrent` (plus `short`/`long` spellings) —
+refused by name when misspelt, because a term that quietly falls back files a
+balance into the wrong subtotal and leaves the statement looking fine.
+
+**Equity is never split.** The question the split asks — when does this become
+cash, when does this come due — is not one you ask of capital.
+
+### Three tags, three questions
+
+It is a third tag rather than a value of `bsgroup:` because they answer different
+questions, and one tag cannot answer two:
+
+| Tag        | Question                          |
+|------------|-----------------------------------|
+| `type:`    | Which box?                        |
+| `bsterm:`  | Which half of the box?            |
+| `bsgroup:` | Which line within that half?      |
+
+One consequence worth knowing: a group is keyed by (term, line), so a single
+`bsgroup:` whose accounts straddle the halves prints as **two lines** under two
+subheadings. That is not a defect — a receivable due this year and one due in
+five really are two lines on a real statement.
 
 ## How a line is chosen when there is no tag
 

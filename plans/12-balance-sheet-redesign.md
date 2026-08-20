@@ -340,3 +340,55 @@ Existing tests that will need updating (they assert the old shape/numbers):
 
 Update them to the new correct values; verify every new number against the
 `hledger` binary in the dev shell rather than against our own output.
+
+---
+
+# Added 2026-08-19 — current vs non-current (`bsterm:`)
+
+Standard practice, and asked for directly: "do we have a way to flag current vs.
+long term assets and liabilities? this is standard and would be subheaders in
+their respective assets/liabilities boxes."
+
+We did not. The sheet was two levels — box → group → accounts — with no notion of
+term. What existed was `BUILT_IN_ORDER`, whose comment claimed "current assets
+before non-current, current liabilities before long-term" while only ordering
+five hardcoded names; every custom group tied at one rank and sorted
+alphabetically, so a chart with Property and Mortgage got whatever the alphabet
+gave it. The comment described an intention, not a feature.
+
+## Decisions (locked with Patrick 2026-08-19)
+
+1. **A third tag, `bsterm: current | noncurrent`.** Not a value of `bsgroup:`.
+   `type:` picks the box, `bsterm:` the half, `bsgroup:` the line — three
+   questions, three tags, and this is the same separation the income statement
+   makes with `issection:`/`isgroup:`. Closed vocabulary, refused by name when
+   misspelt: a term that silently falls back files a balance into the wrong
+   subtotal and leaves a plausible statement behind.
+2. **Adaptive.** No `bsterm:` anywhere → the report is byte-identical to the one
+   this feature does not exist for: `subsections` empty, every `term` null, same
+   groups, same order, same totals. The income statement's rule from plans/13,
+   and pinned by `an_untagged_journal_is_completely_unchanged` plus an assertion
+   on the committed golden that removing the two new keys reproduces the previous
+   bytes exactly.
+3. **Defaults once it is on**: the built-in `Investments` group is non-current,
+   everything else untagged is current — you tag the house and the mortgage and
+   leave the everyday accounts alone. `sample.journal` needed exactly three tags.
+4. **Equity is never split.** The question — when does this become cash, when
+   does this come due — is not asked of capital.
+
+## Shape
+
+`BsGroup` gains `term: Option<BsTerm>`; `BsSection` gains
+`subsections: Vec<BsSubsection>`, each carrying its own `heading`, `label` and
+`total`. Groups are keyed by **(term, name)** and ordered term-first, so one
+`bsgroup:` straddling both halves prints as two lines under two subheadings —
+correct, not a defect: a receivable due this year and one due in five are two
+lines on a real statement.
+
+`heading` and `label` are engine-supplied strings rather than something the SPA
+derives from `term`, because that mapping would then live in both the view and
+the xlsx exporter — the two-copies shape DRY-3 exists to prevent.
+
+Subsection totals are summed over group totals, which are themselves summed over
+members, so they stay depth-independent like every other total here and add to
+the section total by construction rather than by luck.

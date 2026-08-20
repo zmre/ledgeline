@@ -10,9 +10,16 @@
 // cannot drift apart — the same discipline `ReportTable.svelte` documents for
 // its own compressed rows. A row that is not in this list is not on screen and
 // is not reachable with `j`.
+//
+// The current/non-current split inside Assets and Liabilities is ADAPTIVE, in
+// the same sense as the income statement's GAAP ladder: a journal that carries
+// no `bsterm:` tag gets no subheadings, no band subtotals, and precisely the
+// rows this module emitted before the axis existed. `bsSectionBlocks` is where
+// that promise is kept — and it is kept by an explicit early return, not by an
+// accident of the walk.
 
 import {maAdd, type MixedAmount} from "$lib/domain/money";
-import type {BalanceSheetReport, BsSection, BsSectionKind} from "$lib/reports/types";
+import type {BalanceSheetReport, BsGroup, BsSection, BsSectionKind, BsSubsection, BsTerm} from "$lib/reports/types";
 import {compressSectionRows} from "./displayRows";
 
 // `amountCell` lives in its own module now that the income statement renders
@@ -21,8 +28,15 @@ import {compressSectionRows} from "./displayRows";
 // primitives it shares with the holdings UI).
 export {amountCell, type AmountCell} from "./amountCell";
 
-/** A group heading (always shown) or one of its accounts (only when expanded). */
-export type BsRowKind = "group" | "account";
+/**
+ * A group heading (always shown), one of its accounts (only when expanded), a
+ * current/non-current SUBHEADING, or that band's SUBTOTAL.
+ *
+ * The last two are ADAPTIVE: they exist only for a section the engine sent
+ * `subsections` for. A journal that tags nothing produces exactly the first two
+ * kinds, in exactly the order it produced them before this axis existed.
+ */
+export type BsRowKind = "group" | "account" | "subsection" | "subtotal";
 
 export interface BsDisplayRow {
     kind: BsRowKind;
@@ -33,14 +47,32 @@ export interface BsDisplayRow {
      * a refetch replaces the report with an equal-but-not-identical one.
      */
     key: string;
-    /** The group's name, or the compressed account label relative to its displayed parent. */
+    /**
+     * The group's name, the compressed account label relative to its displayed
+     * parent, or the engine's own `heading` / `label` for the two band rows —
+     * never a string composed here.
+     */
     label: string;
-    /** 0 for a group heading; 1 + the compression indent for its accounts. */
+    /** 0 for a group heading and for both band rows; 1 + the compression indent for accounts. */
     indent: number;
-    /** The account this row stands for — `data-account` and the journal drill-down. Null for a group. */
+    /** The account this row stands for — `data-account` and the journal drill-down. Null for everything else. */
     account: string | null;
-    /** The figure on the right: a group subtotal, or an account's subaccount-inclusive balance. */
+    /**
+     * The figure on the right: a group subtotal, an account's subaccount-inclusive
+     * balance, or a band's engine-computed subtotal. EMPTY on a subheading row,
+     * which carries no figure of its own — the band's total belongs to the
+     * subtotal row that closes it, and printing it twice would invite the reader
+     * to look for a difference between them.
+     */
     amount: MixedAmount;
+    /**
+     * The band this row belongs to, or null when the journal classifies nothing.
+     *
+     * Non-null on every `subsection`/`subtotal` row (each one IS a band) and on
+     * the groups inside one; always null on an account row, which is read as
+     * part of the group above it rather than as a line of the statement.
+     */
+    term: BsTerm | null;
     /** Group rows: whether the disclosure is currently open. Always false for an account row. */
     expanded: boolean;
     /**
@@ -100,41 +132,174 @@ export function bsSummary(report: BalanceSheetReport): BsSummary {
     };
 }
 
-/** The collapse-set key for one group. Exported so a caller can seed or assert the set. */
-export function bsGroupKey(sectionKind: string, groupName: string): string {
-    return `${sectionKind}/${groupName}`;
+/**
+ * The collapse-set key for one group. Exported so a caller can seed or assert
+ * the set.
+ *
+ * The TERM is part of it, because the engine keys groups by `(term, name)`: one
+ * `bsgroup:` whose accounts are partly current and partly not prints as two
+ * lines under two subheadings — a receivable due this year and one due in five
+ * are two lines on a real statement. Section + name alone would give those two
+ * rows ONE key, and this key is doing three jobs at once: they would share a
+ * collapse state, share a cursor stop, and be a duplicate `{#each}` key.
+ *
+ * An unclassified group keeps the two-segment key it has always had, so an
+ * untagged journal's keys are unchanged along with everything else about it.
+ */
+export function bsGroupKey(sectionKind: string, groupName: string, term: BsTerm | null = null): string {
+    return term === null ? `${sectionKind}/${groupName}` : `${sectionKind}/${term}/${groupName}`;
 }
 
 /**
- * One section's visible rows, in visual order: every group heading, each
- * followed by its depth-clamped accounts when it is expanded.
+ * The row key for a band's subheading.
+ *
+ * The band rows share the group keyspace (`{kind}/{name}`), so they take an `@`
+ * sigil: `bsgroup:` values are free text, and a group named exactly "@current"
+ * is the only way to collide with one. Neither band row is in the collapse set
+ * or the cursor list, so such a collision would cost a duplicate `{#each}` key
+ * and nothing else.
+ */
+export function bsSubsectionKey(sectionKind: string, term: BsTerm): string {
+    return `${sectionKind}/@${term}`;
+}
+
+/** The row key for a band's subtotal. */
+export function bsSubtotalKey(sectionKind: string, term: BsTerm): string {
+    return `${sectionKind}/@${term}/total`;
+}
+
+/**
+ * One group, plus the band that opens before its line and the band that closes
+ * after it — the whole current/non-current layout decision, in one place.
+ *
+ * Shared with the xlsx export rather than walked twice. The strings are the
+ * engine's either way, so what would actually have been duplicated is *where the
+ * boundaries fall*, and a workbook that split its bands one group earlier than
+ * the screen is a subtler wrong than a mislabelled one.
+ */
+export interface BsSectionBlock {
+    /** The band whose subheading prints above this group, or null when the group continues one. */
+    opens: BsSubsection | null;
+    group: BsGroup;
+    /** The band whose subtotal prints below this group, or null when the band runs on. */
+    closes: BsSubsection | null;
+}
+
+/**
+ * Lay a section's groups out into bands.
+ *
+ * `subsections` empty — the untagged journal, and every equity section — returns
+ * each group with no band on either side, which is byte-for-byte the layout this
+ * module produced before the axis existed. That is the whole adaptive guarantee,
+ * and it is one branch rather than an emergent property of the walk below.
+ *
+ * Otherwise the walk leans on the engine's ordering invariant (groups of one
+ * term are contiguous): a band opens at the first group whose term differs from
+ * its predecessor's and closes at the last group whose term differs from its
+ * successor's. Two things the contract says cannot happen are nonetheless
+ * handled in the direction that loses nothing — a group whose term names no
+ * band, and a group with no term at all, both still render their own line, just
+ * without a heading over them. A band with no groups is never emitted, so a
+ * subheading can never stand over nothing.
+ */
+export function bsSectionBlocks(section: BsSection): BsSectionBlock[] {
+    const groups = section.groups;
+    if (section.subsections.length === 0) return groups.map((group) => ({opens: null, group, closes: null}));
+
+    const byTerm = new Map(section.subsections.map((subsection) => [subsection.term, subsection]));
+    const edge = (term: BsTerm | null, neighbour: BsTerm | null): BsSubsection | null =>
+        term === null || term === neighbour ? null : (byTerm.get(term) ?? null);
+
+    return groups.map((group, i) => ({
+        opens: edge(group.term, i === 0 ? null : groups[i - 1].term),
+        group,
+        closes: edge(group.term, i === groups.length - 1 ? null : groups[i + 1].term),
+    }));
+}
+
+/**
+ * One section's visible rows, in visual order: a band subheading where one
+ * opens, every group heading, each followed by its accounts when it is expanded,
+ * and the band's subtotal where one closes.
  *
  * Account rows go through `compressSectionRows`, so a single-child chain
  * (`assets` → `assets:bank`) reads as one row here exactly as it does in every
  * other report table.
+ *
+ * The subtotal closes a band AFTER its last group's accounts, not before them:
+ * an expanded disclosure is part of the group it belongs to, and a subtotal
+ * printed above the accounts it contains would read as excluding them.
  */
 export function sectionDisplayRows(section: BsSection, isExpanded: (key: string) => boolean): BsDisplayRow[] {
     const out: BsDisplayRow[] = [];
-    for (const group of section.groups) {
-        const key = bsGroupKey(section.kind, group.name);
+    for (const {opens, group, closes} of bsSectionBlocks(section)) {
+        if (opens !== null) {
+            out.push({
+                kind: "subsection",
+                key: bsSubsectionKey(section.kind, opens.term),
+                label: opens.heading,
+                indent: 0,
+                account: null,
+                amount: new Map(),
+                term: opens.term,
+                expanded: false,
+                expandable: false,
+            });
+        }
+
+        const key = bsGroupKey(section.kind, group.name, group.term);
         const expandable = group.rows.length > 0;
         const expanded = expandable && isExpanded(key);
-        out.push({kind: "group", key, label: group.name, indent: 0, account: null, amount: group.total, expanded, expandable});
-        if (!expanded) continue;
-        for (const display of compressSectionRows(group.rows)) {
+        out.push({kind: "group", key, label: group.name, indent: 0, account: null, amount: group.total, term: group.term, expanded, expandable});
+        if (expanded) {
+            for (const display of compressSectionRows(group.rows)) {
+                out.push({
+                    kind: "account",
+                    key: `${key}/${display.row.account}`,
+                    label: display.label,
+                    indent: display.indent + 1,
+                    account: display.row.account,
+                    // `inclusive`, not `own`: a displayed row stands for its whole
+                    // subtree, which is what the depth clamp left visible.
+                    amount: display.row.inclusive,
+                    term: null,
+                    expanded: false,
+                    expandable: false,
+                });
+            }
+        }
+
+        if (closes !== null) {
             out.push({
-                kind: "account",
-                key: `${key}/${display.row.account}`,
-                label: display.label,
-                indent: display.indent + 1,
-                account: display.row.account,
-                // `inclusive`, not `own`: a displayed row stands for its whole
-                // subtree, which is what the depth clamp left visible.
-                amount: display.row.inclusive,
+                kind: "subtotal",
+                key: bsSubtotalKey(section.kind, closes.term),
+                label: closes.label,
+                // The engine's own subtotal, passed through by reference. Summing
+                // the group lines here would re-add figures already rounded for
+                // display, which is how a band comes to a cent off the section
+                // total printed under it.
+                amount: closes.total,
+                indent: 0,
+                account: null,
+                term: closes.term,
                 expanded: false,
                 expandable: false,
             });
         }
     }
     return out;
+}
+
+/**
+ * Every cursorable row, in visual order — a filtering of the very arrays the
+ * template iterates, so a row can never be reachable by `j` and absent from the
+ * screen.
+ *
+ * Band rows are deliberately NOT in it, for the reason the income statement
+ * keeps its ladder lines out of `isCursorRows`: neither a subheading nor a
+ * subtotal can be expanded or drilled into, so landing on one is a stop where
+ * Enter does nothing.
+ */
+export function bsCursorRows(rows: readonly BsDisplayRow[]): BsDisplayRow[] {
+    return rows.filter((row) => row.kind === "group" || row.kind === "account");
 }

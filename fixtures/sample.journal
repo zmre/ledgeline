@@ -21,6 +21,10 @@
 ;     The car also demonstrates the contra-asset shape: cost and accumulated
 ;     depreciation are sibling accounts rolled into one holding, with the second
 ;     tagged `valuation: depreciation` so it counts against value and not cost.
+;   - current vs non-current (WP-14b): the home, the car and the mortgage carry
+;     `bsterm: noncurrent`, which switches the balance sheet's Current /
+;     Non-current subheadings on. Everything else defaults: cash is current, and
+;     the built-in Investments group is non-current without being told.
 ;
 ; Deliberate problem records for WP-08/WP-10 (do not "fix" these):
 ;   - 2026-06-20  posting to expenses:unknown (also left undeclared)
@@ -46,13 +50,13 @@ account assets:broker:taxable:vti     ; type: A
 account assets:broker:taxable:gld     ; type: A
 account assets:broker:taxable:nvda    ; type: A
 account assets:broker:taxable:tsla    ; type: A
-account assets:property:home          ; type: A, holdings: other, bsgroup: Property, name: Family home
-account assets:vehicles:car              ; type: A, name: Honda CR-V
+account assets:property:home          ; type: A, holdings: other, bsgroup: Property, bsterm: noncurrent, name: Family home
+account assets:vehicles:car              ; type: A, bsterm: noncurrent, name: Honda CR-V
 account assets:vehicles:car:cost         ; type: A
 account assets:vehicles:car:depreciation  ; type: A, valuation: depreciation
 account liabilities                   ; type: L
 account liabilities:cc:visa           ; type: L
-account liabilities:mortgage          ; type: L
+account liabilities:mortgage          ; type: L, bsterm: noncurrent
 account equity                        ; type: E
 account equity:opening                ; type: E
 account equity:transfers              ; type: E

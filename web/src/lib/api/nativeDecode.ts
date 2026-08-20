@@ -105,6 +105,8 @@ import type {
     BsGroup,
     BsSection,
     BsSectionKind,
+    BsSubsection,
+    BsTerm,
     BsValuation,
     BudgetCell,
     BudgetReport,
@@ -163,7 +165,16 @@ interface RawSectionedReport {
 interface RawBsGroup {
     name?: string;
     source?: string;
+    // `null` = unclassified (the untagged journal); ABSENT is a broken contract.
+    term?: string | null;
     rows?: RawReportRow[];
+    total?: RawMixed;
+}
+
+interface RawBsSubsection {
+    term?: string;
+    heading?: string;
+    label?: string;
     total?: RawMixed;
 }
 
@@ -171,6 +182,7 @@ interface RawBsSection {
     kind?: string;
     title?: string;
     groups?: RawBsGroup[];
+    subsections?: RawBsSubsection[];
     total?: RawMixed;
 }
 
@@ -935,6 +947,7 @@ const BS_SECTION_KINDS: readonly BsSectionKind[] = ["assets", "liabilities", "eq
 /** Shared by both statements — one resolver on the Rust side, one vocabulary here. */
 const GROUP_SOURCES: readonly GroupSource[] = ["tag", "type", "commodity", "segment", "computed"];
 const BS_VALUATIONS: readonly BsValuation[] = ["market", "cost", "none"];
+const BS_TERMS: readonly BsTerm[] = ["current", "noncurrent"];
 
 /**
  * A closed enum off the wire.
@@ -956,6 +969,21 @@ function decodeBoolean(raw: boolean | undefined, context: string): boolean {
     return raw;
 }
 
+/**
+ * A closed enum that may be NULL but may not be ABSENT.
+ *
+ * `null` is a real answer here — "this group is not classified as current or
+ * non-current" — and the engine says it explicitly, which is why an absent key
+ * throws instead of collapsing into it. The two are indistinguishable on screen
+ * (both render a box with no bands), so a renamed Rust field would look exactly
+ * like an untagged journal and nothing would ever report the loss.
+ */
+function decodeNullableEnum<T extends string>(allowed: readonly T[], raw: string | null | undefined, context: string): T | null {
+    if (raw === null) return null;
+    if (raw === undefined) throw new ApiShapeError(`${context}: expected one of ${allowed.join("/")} or null, got nothing`);
+    return decodeEnum(allowed, raw, context);
+}
+
 function decodeBsGroup(raw: RawBsGroup | undefined, context: string): BsGroup {
     // `rows` is demanded even though a computed group's is always `[]`: absent
     // and empty are different facts, and only one of them is safe to render as
@@ -966,19 +994,44 @@ function decodeBsGroup(raw: RawBsGroup | undefined, context: string): BsGroup {
     return Object.freeze({
         name: raw.name,
         source: decodeEnum(GROUP_SOURCES, raw.source, `${context} source`),
+        term: decodeNullableEnum(BS_TERMS, raw.term, `${context} term`),
         rows: frozen(raw.rows.map((row, i) => decodeReportRow(row, `${context} row #${i}`))),
         total: decodeMixed(raw.total, `${context} total`),
     });
 }
 
+/**
+ * One current/non-current band. `heading` and `label` are required STRINGS off
+ * the wire and are never reconstructed here — see `BsSubsection`: the term→prose
+ * mapping living in both the view and the workbook builder is the duplication
+ * this field exists to prevent.
+ */
+function decodeBsSubsection(raw: RawBsSubsection | undefined, context: string): BsSubsection {
+    if (raw === undefined || typeof raw.heading !== "string" || typeof raw.label !== "string") {
+        throw new ApiShapeError(`${context}: missing heading/label`);
+    }
+    return Object.freeze({
+        term: decodeEnum(BS_TERMS, raw.term, `${context} term`),
+        heading: raw.heading,
+        label: raw.label,
+        total: decodeMixed(raw.total, `${context} total`),
+    });
+}
+
 function decodeBsSection(raw: RawBsSection | undefined, context: string): BsSection {
-    if (raw === undefined || typeof raw.title !== "string" || !Array.isArray(raw.groups)) {
-        throw new ApiShapeError(`${context}: missing title/groups`);
+    // `subsections` is demanded even though it is `[]` on every untagged journal
+    // and on every equity section, for the reason `rows` is demanded one
+    // function up: an absent array would render as "this journal classifies
+    // nothing", which is indistinguishable from the honest untagged case and is
+    // therefore the one failure nothing downstream could ever notice.
+    if (raw === undefined || typeof raw.title !== "string" || !Array.isArray(raw.groups) || !Array.isArray(raw.subsections)) {
+        throw new ApiShapeError(`${context}: missing title/groups/subsections`);
     }
     return Object.freeze({
         kind: decodeEnum(BS_SECTION_KINDS, raw.kind, `${context} kind`),
         title: raw.title,
         groups: frozen(raw.groups.map((group, i) => decodeBsGroup(group, `${context} group #${i}`))),
+        subsections: frozen(raw.subsections.map((subsection, i) => decodeBsSubsection(subsection, `${context} subsection #${i}`))),
         total: decodeMixed(raw.total, `${context} total`),
     });
 }

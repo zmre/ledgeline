@@ -21,9 +21,10 @@ mod common;
 
 use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
-    AccountType, BalanceSheetReport, BsGroup, BsOpts, BsSectionKind, CASH_GROUP, GroupSource,
-    INVESTMENTS_GROUP, MixedAmount, RETAINED_EARNINGS_GROUP, VALUATION_ADJUSTMENT_GROUP, Valuation,
-    account_decls, account_groups, balance_sheet_grouped, declared_types,
+    AccountType, BalanceSheetReport, BsGroup, BsOpts, BsSectionKind, BsTerm, CASH_GROUP,
+    GroupSource, INVESTMENTS_GROUP, MixedAmount, RETAINED_EARNINGS_GROUP,
+    VALUATION_ADJUSTMENT_GROUP, Valuation, account_decls, account_groups, balance_sheet_grouped,
+    bs_terms, declared_types,
 };
 use ledgeline_core::{Dec, Journal, parse_journal};
 use std::collections::BTreeMap;
@@ -57,6 +58,7 @@ fn report(
         },
         &declared,
         &account_groups(journal),
+        &bs_terms(journal).expect("`bsterm:` values parse"),
     )
     .expect("grouped balance sheet")
 }
@@ -994,4 +996,195 @@ fn account_groups_reads_only_bsgroup_tags() {
             .collect::<BTreeMap<_, _>>(),
         "`holdings:` and `name:` are not group tags, and the value ends at the comma"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Current / non-current (`bsterm:`)
+// ---------------------------------------------------------------------------
+
+/// Deliberately non-English again, for `bs-groups.journal`'s reason: a split
+/// that secretly matched "current" or "mortgage" in an account NAME would pass
+/// on an English chart and read empty on this one.
+const TERMS: &str = "\
+account activo:banco             ; type: C
+account activo:inmueble          ; type: A, bsterm: noncurrent, bsgroup: Inmuebles
+account activo:cartera           ; type: A, bsgroup: Cartera
+account pasivo:tarjeta           ; type: L
+account pasivo:hipoteca          ; type: L, bsterm: noncurrent, bsgroup: Hipoteca
+account patrimonio:inicio        ; type: E
+
+2026-01-01 apertura
+    activo:banco              $40,000.00
+    patrimonio:inicio
+
+2026-02-01 compra
+    activo:inmueble          $300,000.00
+    pasivo:hipoteca         $-240,000.00
+    activo:banco             $-60,000.00
+
+2026-03-01 corretaje
+    activo:cartera            $25,000.00
+    activo:banco
+
+2026-04-01 tarjeta
+    pasivo:tarjeta            $-1,500.00
+    activo:banco
+";
+
+fn terms_report(text: &str) -> BalanceSheetReport {
+    let journal = parse_journal(text, "terms.journal").expect("journal parses");
+    report(&journal, "2026-12-31", None, Valuation::None)
+}
+
+/// Ground truth (hledger 1.52):
+///   hledger -f terms.journal bal type:A -e 2027-01-01
+///     $-43,500.00 activo:banco   $25,000.00 activo:cartera   $300,000.00 activo:inmueble
+///   ...so current assets are the bank alone and non-current is 325,000.
+#[test]
+fn tagged_accounts_split_each_box_into_current_and_non_current() {
+    let report = terms_report(TERMS);
+
+    let assets = &report.sections[0];
+    let subs: Vec<(&str, &str)> = assets
+        .subsections
+        .iter()
+        .map(|sub| (sub.heading.as_str(), sub.label.as_str()))
+        .collect();
+    assert_eq!(
+        subs,
+        vec![
+            ("Current", "Total current assets"),
+            ("Non-current", "Total non-current assets"),
+        ],
+        "current first, and the labels are the engine's"
+    );
+
+    // The bank is current by default; the tagged property and the untagged
+    // brokerage are... not the same. `Cartera` has no tag and is not the
+    // built-in Investments group, so it defaults to CURRENT.
+    let current = &assets.subsections[0];
+    let non_current = &assets.subsections[1];
+    assert_eq!(current.total, usd(-1_850_000, 2)); // -43,500 + 25,000
+    assert_eq!(non_current.total, usd(30_000_000, 2)); // the property
+
+    // The halves add to the section total, by construction rather than by luck.
+    assert_eq!(
+        current.total.ma_add(&non_current.total).unwrap(),
+        assets.total
+    );
+
+    let liabilities = &report.sections[1];
+    assert_eq!(
+        liabilities
+            .subsections
+            .iter()
+            .map(|sub| sub.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Total current liabilities", "Total non-current liabilities"]
+    );
+    assert_eq!(liabilities.subsections[0].total, usd(150_000, 2)); // the card
+    assert_eq!(liabilities.subsections[1].total, usd(24_000_000, 2)); // the mortgage
+}
+
+/// Groups are ordered current-then-non-current, and each carries its term — the
+/// contract every consumer walks `groups` under.
+#[test]
+fn groups_are_ordered_by_term_and_carry_it() {
+    let report = terms_report(TERMS);
+    let assets = &report.sections[0];
+    let seen: Vec<(&str, Option<BsTerm>)> = assets
+        .groups
+        .iter()
+        .map(|group| (group.name.as_str(), group.term))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            (CASH_GROUP, Some(BsTerm::Current)),
+            ("Cartera", Some(BsTerm::Current)),
+            ("Inmuebles", Some(BsTerm::NonCurrent)),
+        ]
+    );
+}
+
+/// Equity is never split: the question the split asks is not asked of capital.
+#[test]
+fn equity_is_never_split() {
+    let report = terms_report(TERMS);
+    let equity = &report.sections[2];
+    assert!(equity.subsections.is_empty());
+    assert!(equity.groups.iter().all(|group| group.term.is_none()));
+}
+
+/// THE ADAPTIVE GUARANTEE. Strip every `bsterm:` and the report is the one this
+/// feature does not exist for — no subsections, no terms, same groups, same
+/// totals. A personal ledger is never handed a classification it did not ask
+/// for.
+#[test]
+fn an_untagged_journal_is_completely_unchanged() {
+    let tagged = terms_report(TERMS);
+    let untagged = terms_report(&TERMS.replace(", bsterm: noncurrent", ""));
+
+    for section in &untagged.sections {
+        assert!(
+            section.subsections.is_empty(),
+            "{} kept a subsection",
+            section.title
+        );
+        assert!(section.groups.iter().all(|group| group.term.is_none()));
+    }
+
+    // Same money, group for group — only the classification went away.
+    assert_eq!(untagged.sections[0].total, tagged.sections[0].total);
+    assert_eq!(untagged.net_worth, tagged.net_worth);
+    let names = |report: &BalanceSheetReport, at: usize| -> Vec<String> {
+        let mut out: Vec<String> = report.sections[at]
+            .groups
+            .iter()
+            .map(|group| group.name.clone())
+            .collect();
+        out.sort();
+        out
+    };
+    assert_eq!(names(&untagged, 0), names(&tagged, 0));
+}
+
+/// A misspelt term is refused by name rather than silently filing the account
+/// under the wrong subheading, where it would still add up and still be wrong.
+#[test]
+fn an_unknown_term_is_refused() {
+    let bad = TERMS.replace("bsterm: noncurrent", "bsterm: long-ish");
+    let journal = parse_journal(&bad, "bad.journal").expect("journal parses");
+    let err = bs_terms(&journal).expect_err("an unknown term is refused");
+    let text = err.to_string();
+    assert!(text.contains("current"), "{text}");
+    assert!(text.contains("noncurrent"), "{text}");
+}
+
+/// The tag inherits down the tree, like every other tag on this sheet.
+#[test]
+fn the_term_inherits_to_sub_accounts() {
+    let text = "\
+account activo:inmueble        ; type: A, bsterm: noncurrent, bsgroup: Inmuebles
+account activo:banco           ; type: C
+account patrimonio:inicio      ; type: E
+
+2026-01-01 apertura
+    activo:banco             $10,000.00
+    patrimonio:inicio
+
+2026-02-01 compra
+    activo:inmueble:terreno  $80,000.00
+    activo:inmueble:casa    $220,000.00
+    patrimonio:inicio
+";
+    let report = terms_report(text);
+    let assets = &report.sections[0];
+    let non_current = assets
+        .subsections
+        .iter()
+        .find(|sub| sub.term == BsTerm::NonCurrent)
+        .expect("a non-current half");
+    // Neither child restates the tag; both inherit it from `activo:inmueble`.
+    assert_eq!(non_current.total, usd(30_000_000, 2));
 }

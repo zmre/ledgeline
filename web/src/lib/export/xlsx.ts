@@ -38,7 +38,7 @@ import type {
     PeriodReport,
     SectionedReport,
 } from "$lib/reports/types";
-import {bsSummary} from "$lib/reports/ui/balanceSheetRows";
+import {bsSectionBlocks, bsSummary} from "$lib/reports/ui/balanceSheetRows";
 import {compressIsRows, compressPeriodRows, compressSectionRows} from "$lib/reports/ui/displayRows";
 import {isSummary, pctOfRevenue, revenueTotal} from "$lib/reports/ui/incomeStatementRows";
 import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build time
@@ -223,6 +223,13 @@ function ruleAbove(ws: Worksheet, rowIx: number, style: "thin" | "medium"): void
  * `Liabilities + equity` against `Total assets`, the verdict, and net worth as
  * its own figure below.
  *
+ * Assets and Liabilities may be banded CURRENT / NON-CURRENT: a subheading row
+ * above the band's first group, a ruled subtotal below its last. `bsSectionBlocks`
+ * is shared with the view, so the workbook cannot split its bands at a different
+ * group from the page — and the heading and subtotal prose is the engine's, so it
+ * cannot word them differently either. A journal that tags nothing produces
+ * neither row, exactly as it produces neither on screen.
+ *
  * `bsSummary` is shared with the view precisely so a workbook cannot claim a
  * different `Liabilities + equity` (or a different verdict) from the page it was
  * exported from.
@@ -243,15 +250,33 @@ function addBalanceSheet(ws: Worksheet, report: BalanceSheetReport): void {
         ws.getCell(rowIx, 1).value = section.title;
         rowIx += 1;
 
-        for (const group of section.groups) {
-            labelCell(ws, rowIx, group.name, 1, true);
+        // A banded section pushes its groups one level right, so the workbook's
+        // only structural language — indentation — says what typography says on
+        // screen: heading over group over account. An unbanded section is
+        // untouched, and its groups stay exactly where they have always been.
+        const groupIndent = section.subsections.length > 0 ? 2 : 1;
+
+        for (const {opens, group, closes} of bsSectionBlocks(section)) {
+            if (opens !== null) {
+                labelCell(ws, rowIx, opens.heading, 1, true);
+                rowIx += 1;
+            }
+            labelCell(ws, rowIx, group.name, groupIndent, true);
             setBsAmount(ws, rowIx, group.total, report.base, true);
             rowIx += 1;
             // Same compression the screen applies, so a single-child chain is one
             // row in both places.
             for (const {label, indent, row} of compressSectionRows(group.rows)) {
-                labelCell(ws, rowIx, label, indent + 2);
+                labelCell(ws, rowIx, label, indent + groupIndent + 1);
                 setBsAmount(ws, rowIx, row.inclusive, report.base, false);
+                rowIx += 1;
+            }
+            if (closes !== null) {
+                ruleAbove(ws, rowIx, "thin");
+                // The engine's subtotal, at the subheading's own indent so the
+                // band reads as opened and closed by the same level.
+                labelCell(ws, rowIx, closes.label, 1, true);
+                setBsAmount(ws, rowIx, closes.total, report.base, true);
                 rowIx += 1;
             }
         }

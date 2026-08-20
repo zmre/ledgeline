@@ -1,6 +1,6 @@
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
-import {GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
+import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
 import {ApiShapeError} from "./client";
 import {
@@ -178,6 +178,68 @@ describe("UNIT nativeDecode — BalanceSheetReport (grouped)", () => {
         expect(investments.source).toBe("commodity");
     });
 
+    // The current/non-current axis. `term` and `subsections` are both DEMANDED
+    // even though their untagged values (null and []) are the common case: the
+    // two fields describe an absence, so an absent field renders as the very
+    // thing a present one would say, and nothing downstream could tell.
+    describe("current / non-current bands", () => {
+        it("reads an untagged journal as classified-by-nothing, explicitly", () => {
+            expect(report.sections.map((s) => s.subsections)).toEqual([[], [], []]);
+            expect(report.sections.flatMap((s) => s.groups).every((g) => g.term === null)).toBe(true);
+        });
+
+        it("decodes the bands with their term, prose and subtotal", () => {
+            const classified = decodeBalanceSheetReport(CLASSIFIED_BALANCE_SHEET);
+            const [assets, liabilities, equity] = classified.sections;
+
+            expect(assets.subsections.map((s) => [s.term, s.heading, s.label])).toEqual([
+                ["current", "Current", "Total current assets"],
+                ["noncurrent", "Non-current", "Total non-current assets"],
+            ]);
+            expect(assets.subsections[0].total.get("$")).toEqual({m: 6250000n, p: 2});
+            expect(assets.groups.map((g) => g.term)).toEqual(["current", "current", "noncurrent", "noncurrent"]);
+            // The prose is the ENGINE's, per section — "assets" and "liabilities"
+            // are not interchangeable in a subtotal label, and nothing on this
+            // side may compose one.
+            expect(liabilities.subsections.map((s) => s.label)).toEqual(["Total current liabilities", "Total non-current liabilities"]);
+            // Equity is never split, so it arrives banded by nothing even here.
+            expect(equity.subsections).toEqual([]);
+            expect(equity.groups.every((g) => g.term === null)).toBe(true);
+        });
+
+        it("freezes the bands with the rest of the tree", () => {
+            const classified = decodeBalanceSheetReport(CLASSIFIED_BALANCE_SHEET);
+            expect(Object.isFrozen(classified.sections[0].subsections)).toBe(true);
+            expect(Object.isFrozen(classified.sections[0].subsections[0])).toBe(true);
+        });
+
+        it("throws when a section omits `subsections` rather than reading it as unclassified", () => {
+            const patch = {sections: [{kind: "assets", title: "X", groups: [], total: {}}]};
+            expect(() => decodeBalanceSheetReport({...(GROUPED_BALANCE_SHEET as object), ...patch})).toThrow(ApiShapeError);
+            expect(() => decodeBalanceSheetReport({...(GROUPED_BALANCE_SHEET as object), ...patch})).toThrow(/missing title\/groups\/subsections/);
+        });
+
+        it("throws when a group omits `term` — null is how 'unclassified' is said", () => {
+            const patch = {sections: [{kind: "assets", title: "X", groups: [{name: "G", source: "segment", rows: [], total: {}}], subsections: [], total: {}}]};
+            expect(() => decodeBalanceSheetReport({...(GROUPED_BALANCE_SHEET as object), ...patch})).toThrow(
+                /term: expected one of current\/noncurrent or null/
+            );
+        });
+
+        it.each([
+            ["a group's term", {groups: [{name: "G", source: "segment", term: "shortish", rows: [], total: {}}], subsections: []}],
+            ["a band's term", {groups: [], subsections: [{term: "later", heading: "Later", label: "Total later assets", total: {}}]}],
+        ])("throws on an unknown %s rather than guessing one", (_what, section) => {
+            const patch = {sections: [{kind: "assets", title: "X", total: {}, ...section}]};
+            expect(() => decodeBalanceSheetReport({...(GROUPED_BALANCE_SHEET as object), ...patch})).toThrow(ApiShapeError);
+        });
+
+        it("throws when a band omits the prose it exists to carry", () => {
+            const patch = {sections: [{kind: "assets", title: "X", groups: [], subsections: [{term: "current", heading: "Current", total: {}}], total: {}}]};
+            expect(() => decodeBalanceSheetReport({...(GROUPED_BALANCE_SHEET as object), ...patch})).toThrow(/missing heading\/label/);
+        });
+    });
+
     it("keeps a computed group's empty row list as a fact, not as missing data", () => {
         const retained = report.sections[2].groups.find((g) => g.name === "Retained earnings");
         expect(retained?.source).toBe("computed");
@@ -252,15 +314,20 @@ describe("UNIT nativeDecode — BalanceSheetReport (grouped)", () => {
         });
 
         it.each([
-            ["section kind", {sections: [{kind: "profits", title: "X", groups: [], total: {}}]}],
-            ["group source", {sections: [{kind: "assets", title: "X", groups: [{name: "G", source: "vibes", rows: [], total: {}}], total: {}}]}],
+            ["section kind", {sections: [{kind: "profits", title: "X", groups: [], subsections: [], total: {}}]}],
+            [
+                "group source",
+                {sections: [{kind: "assets", title: "X", groups: [{name: "G", source: "vibes", term: null, rows: [], total: {}}], subsections: [], total: {}}]},
+            ],
             ["valuation", {value: "guessed"}],
         ])("throws on an unknown %s rather than guessing one", (_what, patch) => {
             expect(() => decodeBalanceSheetReport(mutate(patch))).toThrow(ApiShapeError);
         });
 
         it("throws when a group omits `rows` — absent and empty are different facts", () => {
-            const patch = {sections: [{kind: "assets", title: "X", groups: [{name: "G", source: "computed", total: {}}], total: {}}]};
+            const patch = {
+                sections: [{kind: "assets", title: "X", groups: [{name: "G", source: "computed", term: null, total: {}}], subsections: [], total: {}}],
+            };
             expect(() => decodeBalanceSheetReport(mutate(patch))).toThrow(/missing name\/rows/);
         });
 

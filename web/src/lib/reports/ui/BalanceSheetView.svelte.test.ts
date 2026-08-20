@@ -16,7 +16,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {decodeBalanceSheetReport} from "$lib/api/nativeDecode";
 import type {AmountStyle} from "$lib/domain/types";
 import {keymap} from "$lib/keys/keymap.svelte";
-import {GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
+import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, STRADDLING_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
 import BalanceSheetView from "./BalanceSheetView.svelte";
 
 // The drill-down navigates, and a router is neither available nor the subject
@@ -207,6 +207,157 @@ describe("COMPONENT BalanceSheetView", () => {
             await press("Escape");
 
             expect(container.querySelector("[aria-current='true']")).toBeNull();
+        });
+    });
+
+    // The current/non-current bands. jsdom has no layout engine, so nothing here
+    // asks how they LOOK — it asks whether they are in the document at all,
+    // whether they say what the engine said, and whether the cursor treats them
+    // as the non-stops they are.
+    describe("current / non-current bands", () => {
+        const CLASSIFIED = decodeBalanceSheetReport(CLASSIFIED_BALANCE_SHEET);
+
+        /**
+         * Every row of a box as `[testid ?? "", label]`, in visual order. The
+         * disclosure triangle is part of a group's button text, so it is stripped
+         * — this is a test about which rows exist and in what order.
+         */
+        const boxRows = (kind: string): [string, string][] =>
+            [...screen.getByTestId(`bs-section-${kind}`).querySelectorAll("tbody tr")].map((tr) => [
+                tr.getAttribute("data-testid") ?? "",
+                (tr.querySelector("th")?.textContent ?? "").replace("▶", "").trim(),
+            ]);
+
+        it("renders nothing at all for a journal that classifies nothing", () => {
+            mount();
+            // The adaptive guarantee, at the level a reader would notice it:
+            // an untagged journal's Assets box is the one it has always been.
+            expect(boxRows("assets")).toEqual([
+                ["", "Cash and cash equivalents"],
+                ["", "Investments"],
+            ]);
+            expect(screen.queryByTestId("bs-subsection-assets-current")).toBeNull();
+            expect(screen.queryByTestId("bs-subtotal-assets-current")).toBeNull();
+        });
+
+        it("heads each band and closes it with its own subtotal", () => {
+            mount(CLASSIFIED);
+
+            expect(boxRows("assets")).toEqual([
+                ["bs-subsection-assets-current", "Current"],
+                ["", "Cash and cash equivalents"],
+                ["", "Accounts receivable"],
+                ["bs-subtotal-assets-current", "Total current assets"],
+                ["bs-subsection-assets-noncurrent", "Non-current"],
+                ["", "Property"],
+                ["", "Long-term investments"],
+                ["bs-subtotal-assets-noncurrent", "Total non-current assets"],
+            ]);
+        });
+
+        it("shows the engine's band subtotal, and the section total still below it", () => {
+            mount(CLASSIFIED);
+
+            // 50,000 + 12,500 and 450,000 + 87,500 — but taken from the engine,
+            // not re-added here (see `sectionDisplayRows`).
+            expect(screen.getByTestId("bs-subtotal-assets-current").textContent).toContain("$62,500.00");
+            expect(screen.getByTestId("bs-subtotal-assets-noncurrent").textContent).toContain("$537,500.00");
+            // The bands are parts; the box footer is still the whole.
+            expect(screen.getByTestId("bs-section-assets").querySelector("tfoot")?.textContent).toContain("$600,000.00");
+        });
+
+        it("gives a subheading no figure, so the band's total appears once", () => {
+            mount(CLASSIFIED);
+            const heading = screen.getByTestId("bs-subsection-assets-current");
+
+            expect(heading.textContent?.trim()).toBe("Current");
+            expect(heading.textContent).not.toContain("$");
+        });
+
+        it("bands liabilities too, with the labels that section's own subtotals carry", () => {
+            mount(CLASSIFIED);
+
+            expect(screen.getByTestId("bs-subtotal-liabilities-current").textContent).toContain("Total current liabilities");
+            expect(screen.getByTestId("bs-subtotal-liabilities-current").textContent).toContain("$12,000.00");
+            expect(screen.getByTestId("bs-subtotal-liabilities-noncurrent").textContent).toContain("$288,000.00");
+        });
+
+        it("never bands equity", () => {
+            mount(CLASSIFIED);
+
+            expect(boxRows("equity")).toEqual([
+                ["", "Opening"],
+                ["", "Retained earnings"],
+            ]);
+        });
+
+        it("keeps the disclosures working inside a band", async () => {
+            const {container} = mount(CLASSIFIED);
+            disclosure("Property").click();
+            await tick();
+
+            // Full depth and chain compression, unchanged by the band around it.
+            expect(container.querySelector('[data-account="assets:property:house"]')).not.toBeNull();
+            expect(container.querySelector('[data-account="assets:property"]')).toBeNull();
+        });
+
+        it("does not stop the cursor on a heading or a subtotal", async () => {
+            const {container} = mount(CLASSIFIED);
+            const current = (): string => container.querySelector("[aria-current='true']")?.textContent?.trim() ?? "";
+
+            // `j` from nowhere lands on the first GROUP, walking straight past
+            // the "Current" heading above it — there is nothing to expand or
+            // drill on a heading, so a stop there is a stop that does nothing.
+            await press("j");
+            expect(current()).toContain("Cash and cash equivalents");
+            await press("j");
+            expect(current()).toContain("Accounts receivable");
+            // …and past "Total current assets" and "Non-current" both.
+            await press("j");
+            expect(current()).toContain("Property");
+        });
+
+        it("puts the cursor on the last group with G, not on the trailing subtotal", async () => {
+            const {container} = mount(CLASSIFIED);
+            await press("G");
+
+            expect(container.querySelector("[aria-current='true']")?.textContent).toContain("Retained earnings");
+        });
+
+        describe("one group name on both sides of the axis", () => {
+            // The engine keys groups by (term, name), so a `bsgroup:` split
+            // across the axis IS two lines. This is the case a display key of
+            // section + group name alone collided on — and a duplicate `{#each}`
+            // key is a mount-time failure, which only a mounted test can see.
+            const STRADDLING = decodeBalanceSheetReport(STRADDLING_BALANCE_SHEET);
+
+            it("renders both lines, each under its own band", () => {
+                mount(STRADDLING);
+
+                expect(boxRows("assets")).toEqual([
+                    ["bs-subsection-assets-current", "Current"],
+                    ["", "Cash and cash equivalents"],
+                    ["", "Accounts receivable"],
+                    ["bs-subtotal-assets-current", "Total current assets"],
+                    ["bs-subsection-assets-noncurrent", "Non-current"],
+                    ["", "Property"],
+                    ["", "Accounts receivable"],
+                    ["bs-subtotal-assets-noncurrent", "Total non-current assets"],
+                ]);
+            });
+
+            it("opens only the disclosure that was clicked", async () => {
+                const {container} = mount(STRADDLING);
+                const [currentAr, noncurrentAr] = screen.getAllByRole("button", {name: "Accounts receivable"});
+
+                noncurrentAr.click();
+                await tick();
+
+                expect(noncurrentAr.getAttribute("aria-expanded")).toBe("true");
+                expect(currentAr.getAttribute("aria-expanded")).toBe("false");
+                // …and the accounts on screen are that line's, not the other's.
+                expect([...container.querySelectorAll("[data-account]")].map((el) => el.getAttribute("data-account"))).toEqual(["assets:broker:ira"]);
+            });
         });
     });
 

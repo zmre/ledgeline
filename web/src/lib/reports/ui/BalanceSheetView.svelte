@@ -13,9 +13,19 @@
      Expanding one shows its depth-clamped accounts, single-child chains
      compressed exactly as every other report table compresses them.
 
-     Keyboard: j/k walk every VISIBLE row — group headings included, so `j` does
-     something on first load rather than nothing — and Enter either opens the
-     disclosure (on a group) or drills into the journal (on an account).
+     Assets and Liabilities may be banded CURRENT / NON-CURRENT, each band with
+     its own subheading and subtotal. It is adaptive, like the P&L's GAAP ladder:
+     a journal that tags nothing gets no bands at all rather than two headings
+     and an empty half. Equity is never banded. The prose in a subheading and in
+     a band's subtotal label is the ENGINE's — deriving "Total non-current
+     assets" from a term and a title here would put that mapping in this file and
+     in the xlsx builder both.
+
+     Keyboard: j/k walk every VISIBLE GROUP AND ACCOUNT row — group headings
+     included, so `j` does something on first load rather than nothing — and Enter
+     either opens the disclosure (on a group) or drills into the journal (on an
+     account). Band rows are skipped: there is nothing to expand or drill on a
+     heading or a subtotal, so stopping there would be a stop that does nothing.
 
      Under the boxes is the spreadsheet tie-out: the three section totals, then
      `Liabilities + equity` set against `Total assets`, which is where the ✓/✗
@@ -34,7 +44,7 @@
     import {PRIORITY} from "$lib/keys/types";
     import type {BalanceSheetReport, BsSectionKind} from "$lib/reports/types";
     import {listCursor} from "$lib/ui/listCursor.svelte";
-    import {amountCell, bsSummary, sectionDisplayRows, type AmountCell, type BsDisplayRow} from "./balanceSheetRows";
+    import {amountCell, bsCursorRows, bsSummary, sectionDisplayRows, type AmountCell, type BsDisplayRow} from "./balanceSheetRows";
 
     let {report, styles}: {report: BalanceSheetReport; styles: ReadonlyMap<string, AmountStyle>} = $props();
 
@@ -57,11 +67,12 @@
     }
 
     // Hoisted out of the `{#each}` into one list per section, as ReportTable
-    // does: the cursor indexes into the FLATTENING of these and the template
+    // does: the cursor indexes into a FILTERING of these and the template
     // iterates the very same arrays, so a row can never be reachable by `j` and
-    // absent from the screen (or the reverse).
+    // absent from the screen. The filter drops the band rows only — see
+    // `bsCursorRows`.
     const sectionRows = $derived(report.sections.map((section) => sectionDisplayRows(section, isExpanded)));
-    const cursorable = $derived<BsDisplayRow[]>(sectionRows.flat());
+    const cursorable = $derived<BsDisplayRow[]>(bsCursorRows(sectionRows.flat()));
 
     const cursor = listCursor(
         () => cursorable,
@@ -155,49 +166,84 @@
             <table class="table-sm table">
                 <tbody>
                     {#each sectionRows[at] ?? [] as row (row.key)}
-                        <tr
-                            class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {row.kind === 'group' ? 'font-medium' : ''}"
-                            aria-current={cursor.key === row.key ? "true" : undefined}
-                            data-bs-row={row.key}
-                            data-account={row.account ?? undefined}
-                        >
-                            <th class="w-full font-normal">
-                                {#if row.kind === "group"}
-                                    {#if row.expandable}
-                                        <button
-                                            type="button"
-                                            class="hover:text-primary flex cursor-pointer items-center gap-1.5 text-left font-medium"
-                                            aria-expanded={row.expanded}
-                                            onclick={() => toggle(row.key)}
-                                        >
-                                            <span
-                                                class="text-base-content/40 inline-block w-3 shrink-0 text-[0.65rem] transition-transform {row.expanded
-                                                    ? 'rotate-90'
-                                                    : ''}"
-                                                aria-hidden="true">▶</span
+                        {#if row.kind === "subsection"}
+                            <!-- A band's subheading. Deliberately between the two
+                                 registers around it: uppercase and letter-spaced like
+                                 the box header so it reads as structure rather than as
+                                 a line item, but smaller, unaccented and only tinted —
+                                 the box header is the louder of the two, and a group
+                                 line is plainly quieter than this.
+
+                                 It also sits a step to the LEFT of the groups under it,
+                                 without any padding of its own: a group line opens with
+                                 the disclosure column, and this one does not. That is
+                                 why nothing here indents the groups — the offset the
+                                 hierarchy needs is already on the screen, and adding to
+                                 it would push every account row further right for it.
+
+                                 No figure: the band's total belongs to the subtotal
+                                 that closes it, and printing it twice would invite the
+                                 reader to look for a difference between them. -->
+                            <tr class="bg-base-200/40" data-bs-row={row.key} data-testid="bs-subsection-{section.kind}-{row.term}">
+                                <th class="text-base-content/60 w-full pt-3 text-[0.7rem] font-semibold tracking-widest uppercase">{row.label}</th>
+                                <td></td>
+                            </tr>
+                        {:else if row.kind === "subtotal"}
+                            <!-- A band's subtotal. A thin rule and semibold, against the
+                                 section total's double rule, fill and bold weight below
+                                 — the two must not be mistakable, because this one is a
+                                 part and that one is the whole. -->
+                            <tr class="border-base-content/20 border-t text-sm" data-bs-row={row.key} data-testid="bs-subtotal-{section.kind}-{row.term}">
+                                <th class="text-base-content/80 w-full font-semibold">{row.label}</th>
+                                <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
+                                    {@render amount(cell(row), "font-semibold")}
+                                </td>
+                            </tr>
+                        {:else}
+                            <tr
+                                class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {row.kind === 'group' ? 'font-medium' : ''}"
+                                aria-current={cursor.key === row.key ? "true" : undefined}
+                                data-bs-row={row.key}
+                                data-account={row.account ?? undefined}
+                            >
+                                <th class="w-full font-normal">
+                                    {#if row.kind === "group"}
+                                        {#if row.expandable}
+                                            <button
+                                                type="button"
+                                                class="hover:text-primary flex cursor-pointer items-center gap-1.5 text-left font-medium"
+                                                aria-expanded={row.expanded}
+                                                onclick={() => toggle(row.key)}
                                             >
-                                            {row.label}
-                                        </button>
+                                                <span
+                                                    class="text-base-content/40 inline-block w-3 shrink-0 text-[0.65rem] transition-transform {row.expanded
+                                                        ? 'rotate-90'
+                                                        : ''}"
+                                                    aria-hidden="true">▶</span
+                                                >
+                                                {row.label}
+                                            </button>
+                                        {:else}
+                                            <!-- A computed group (Retained earnings, Valuation adjustment) has no
+                                                 accounts to open. The spacer keeps its label on the same
+                                                 left edge as the groups that do. -->
+                                            <span class="flex items-center gap-1.5 font-medium">
+                                                <span class="inline-block w-3 shrink-0" aria-hidden="true"></span>{row.label}
+                                            </span>
+                                        {/if}
                                     {:else}
-                                        <!-- A computed group (Retained earnings, Valuation adjustment) has no
-                                             accounts to open. The spacer keeps its label on the same
-                                             left edge as the groups that do. -->
-                                        <span class="flex items-center gap-1.5 font-medium">
-                                            <span class="inline-block w-3 shrink-0" aria-hidden="true"></span>{row.label}
-                                        </span>
+                                        <!-- Inline padding, not a class: the depth is data, and `ReportTable`
+                                             indents its own rows the same way (1rem per level). -->
+                                        <span class="text-base-content/70 whitespace-nowrap" style="padding-left: {row.indent}rem" title={row.account}
+                                            >{row.label}</span
+                                        >
                                     {/if}
-                                {:else}
-                                    <!-- Inline padding, not a class: the depth is data, and `ReportTable`
-                                         indents its own rows the same way (1rem per level). -->
-                                    <span class="text-base-content/70 whitespace-nowrap" style="padding-left: {row.indent}rem" title={row.account}
-                                        >{row.label}</span
-                                    >
-                                {/if}
-                            </th>
-                            <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
-                                {@render amount(cell(row), row.kind === "group" ? "font-medium" : "text-base-content/70")}
-                            </td>
-                        </tr>
+                                </th>
+                                <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
+                                    {@render amount(cell(row), row.kind === "group" ? "font-medium" : "text-base-content/70")}
+                                </td>
+                            </tr>
+                        {/if}
                     {/each}
                     {#if section.groups.length === 0}
                         <tr>
