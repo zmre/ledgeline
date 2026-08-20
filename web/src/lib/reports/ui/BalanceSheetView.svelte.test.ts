@@ -81,6 +81,76 @@ describe("COMPONENT BalanceSheetView", () => {
         expect(foot?.textContent).toContain("5.0 GLD · -2.0 TSLA");
     });
 
+    // The column headers. The tab's old ReportTable named its columns
+    // (`Account` / `Amount`); the grouped redesign dropped the <thead>
+    // entirely, so a screen reader walking the Assets box heard "$42,450.24"
+    // under no column name at all. Every assertion here reads `thead th` —
+    // which matches NOTHING in headerless markup, so each one fails against
+    // the regression it pins.
+    describe("column headers", () => {
+        /** A table's header cells as their text (sr-only included), in column order. */
+        const headers = (root: HTMLElement): string[] => [...root.querySelectorAll("thead th")].map((th) => th.textContent?.trim() ?? "");
+
+        it("names both columns of every section box", () => {
+            mount();
+
+            expect(headers(screen.getByTestId("bs-section-assets"))).toEqual(["Assets line", "Amount"]);
+            expect(headers(screen.getByTestId("bs-section-liabilities"))).toEqual(["Liabilities line", "Amount"]);
+            expect(headers(screen.getByTestId("bs-section-equity"))).toEqual(["Equity line", "Amount"]);
+        });
+
+        it("hides the label header visually, in the income statement's own style", () => {
+            mount();
+            // `sr-only`, not `aria-hidden` and not an empty <th>: the point is a
+            // header a screen reader DOES announce. Only the figure column needs
+            // a visible name; the label column explains itself on sight.
+            const label = screen.getByTestId("bs-section-assets").querySelector("thead th:first-child span");
+            expect(label?.classList.contains("sr-only")).toBe(true);
+        });
+
+        it("keeps the one Amount header over cells that carry an unpriced footnote", () => {
+            mount();
+            // 5 GLD / −2 TSLA render INSIDE the amount cell as a secondary line
+            // (see `amountCell`), not as a column of their own — so the header
+            // row must not grow, and every figure row must line up under it.
+            const assets = screen.getByTestId("bs-section-assets");
+            for (const tr of assets.querySelectorAll("tbody tr, tfoot tr")) {
+                expect(tr.querySelectorAll("th, td")).toHaveLength(headers(assets).length);
+            }
+        });
+
+        it("still shows the same two headers for a no-base report's multi-commodity text", () => {
+            // `base: null`: the headline is just the first commodity in sort
+            // order, but it is still ONE figure per row under one "Amount".
+            mount(decodeBalanceSheetReport({...(GROUPED_BALANCE_SHEET as object), base: null}));
+            expect(headers(screen.getByTestId("bs-section-assets"))).toEqual(["Assets line", "Amount"]);
+        });
+
+        it("never grows a prior column, bands or not: the balance sheet has no compare range", () => {
+            // Unlike the income statement's `comparing` header variant, a
+            // `BalanceSheetReport` carries no prior period — it is an as-of
+            // statement. Pinned so a future compare feature has to come back
+            // here and name its column.
+            mount(decodeBalanceSheetReport(CLASSIFIED_BALANCE_SHEET));
+            for (const kind of ["assets", "liabilities", "equity"]) {
+                expect(headers(screen.getByTestId(`bs-section-${kind}`))).toHaveLength(2);
+            }
+        });
+
+        it("names the tie-out's three columns, the verdict column included", () => {
+            mount();
+            const summary = screen.getByTestId("bs-summary");
+
+            expect(headers(summary)).toEqual(["Total", "Amount", "Balance check"]);
+            // The verdict cell exists on EVERY row (`tieRow`'s third cell keeps
+            // the last row from widening the column), so to a screen reader it
+            // is a real column on every line — three headers, three cells.
+            for (const tr of summary.querySelectorAll("tbody tr, tfoot tr")) {
+                expect(tr.querySelectorAll("th, td")).toHaveLength(3);
+            }
+        });
+    });
+
     describe("groups are collapsed by default", () => {
         it("shows the group headings and none of their accounts", () => {
             const {container} = mount();
@@ -363,12 +433,13 @@ describe("COMPONENT BalanceSheetView", () => {
 
     describe("the tie-out, net worth and the balance check", () => {
         /**
-         * The summary block's rows as `[label, headline figure]`, in visual
-         * order. The headline is the FIRST span in the amount cell — the
+         * The summary block's FIGURE rows as `[label, headline figure]`, in
+         * visual order — tbody and tfoot, not the thead naming the columns.
+         * The headline is the FIRST span in the amount cell — the
          * unpriced-commodity footnote is a second one below it.
          */
         const summaryRows = (): [string, string][] =>
-            [...screen.getByTestId("bs-summary").querySelectorAll("tr")].map((tr) => [
+            [...screen.getByTestId("bs-summary").querySelectorAll("tbody tr, tfoot tr")].map((tr) => [
                 tr.querySelector("th")?.textContent?.trim() ?? "",
                 tr.querySelector("td span")?.textContent?.trim() ?? "",
             ]);

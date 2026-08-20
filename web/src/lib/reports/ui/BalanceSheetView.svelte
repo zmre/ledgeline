@@ -164,6 +164,20 @@
                 {section.title}
             </h3>
             <table class="table-sm table">
+                <!-- Repeated per box rather than printed once above them, exactly
+                     as the income statement's boxes do it: each box is a separate
+                     table, so a single heading strip could not stay aligned with
+                     the columns under it, and a table with no column headers is a
+                     table a screen reader cannot narrate. One "Amount" column
+                     always — the report is valued into one base commodity, and
+                     whatever could not convert is a footnote INSIDE that cell,
+                     never a column of its own. -->
+                <thead>
+                    <tr class="text-base-content/40 text-[0.65rem]">
+                        <th class="w-full font-normal"><span class="sr-only">{section.title} line</span></th>
+                        <th class="text-right font-normal">Amount</th>
+                    </tr>
+                </thead>
                 <tbody>
                     {#each sectionRows[at] ?? [] as row (row.key)}
                         {#if row.kind === "subsection"}
@@ -272,6 +286,17 @@
          reader. The table carries the name instead. -->
     <div class="border-base-content/20 rounded-box overflow-hidden border" data-testid="bs-summary">
         <table class="table-sm table" aria-label="Balance sheet totals">
+            <!-- The boxes' header treatment again, plus a name for the third
+                 column: the verdict cell exists on EVERY row (see `tieRow`), so
+                 to a screen reader it is a real column, and a real column with
+                 no name is the omission this thead exists to prevent. -->
+            <thead>
+                <tr class="text-base-content/40 text-[0.65rem]">
+                    <th class="w-full font-normal"><span class="sr-only">Total</span></th>
+                    <th class="text-right font-normal">Amount</th>
+                    <th class="font-normal"><span class="sr-only">Balance check</span></th>
+                </tr>
+            </thead>
             <tbody>
                 {@render tieRow("Total Assets", summary.assets, "")}
                 {@render tieRow("Total Liabilities", summary.liabilities, "")}
