@@ -68,11 +68,19 @@ pub struct OtherHolding {
     pub change_pct: Option<f64>,
 }
 
-/// Why a row could not be valued.
+/// Why a row could not be valued (or costed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OtherWarningKind {
     /// No chain of prices reaches the base commodity (excluded from totals).
     Unpriced,
+    /// The row's VALUE is fine but its at-cost basis holds a commodity with no
+    /// route to the base, so `cost` and `change` read `None`. The value still
+    /// counts toward the totals; only the cost and change columns go dark.
+    ///
+    /// Never emitted alongside [`Unpriced`](Self::Unpriced) for the same row: an
+    /// unpriceable value already excludes the row wholesale and warns once, and
+    /// a second warning about its cost would restate the first.
+    UnpricedCost,
 }
 
 /// A scope-local warning surfaced alongside the rows.
@@ -314,7 +322,14 @@ struct RowFacts {
     commodities: MixedAmount,
     value: Option<Dec>,
     cost: Option<Dec>,
+    /// Commodities in the row's BALANCE with no route to the base (value is
+    /// `None`).
     unpriced: Vec<Commodity>,
+    /// Commodities in the row's at-cost BASIS with no route to the base (cost
+    /// is `None`). Disjoint failure from `unpriced`: a written-off asset's cost
+    /// residue can be unpriceable while the surviving balance is plain base
+    /// currency.
+    unpriced_cost: Vec<Commodity>,
 }
 
 /// Value `ma` in `base`, refusing a PARTIAL answer: if any commodity has no
@@ -491,10 +506,12 @@ fn rows_at(
         // No cost side at all means the holding is ALL mark — nothing was ever
         // recorded as money in — so its cost is unknown rather than zero, and it
         // drops out of the cost and change totals instead of claiming an
-        // infinite gain.
-        let cost = match basis.get(root) {
-            Some(ma) => value_or_nothing(ma, base, &inputs.db, as_of)?.0,
-            None => None,
+        // infinite gain. A cost side that EXISTS but cannot be priced is the
+        // same `None` with a different cause, so the offending commodities are
+        // kept for the warning rather than discarded.
+        let (cost, unpriced_cost) = match basis.get(root) {
+            Some(ma) => value_or_nothing(ma, base, &inputs.db, as_of)?,
+            None => (None, Vec::new()),
         };
         rows.push(RowFacts {
             account: root.to_string(),
@@ -502,6 +519,7 @@ fn rows_at(
             value,
             cost,
             unpriced,
+            unpriced_cost,
         });
     }
     Ok(rows)
@@ -563,6 +581,22 @@ pub fn other_holdings(
                 kind: OtherWarningKind::Unpriced,
                 message: format!(
                     "{} holds {} with no price in {} as of {} — excluded from totals",
+                    row.account,
+                    names.join(", "),
+                    base.0,
+                    scope.as_of
+                ),
+            });
+        } else if !row.unpriced_cost.is_empty() {
+            // Only when the value itself is priced: an unpriced value already
+            // excluded the row and warned wholesale, and a second warning about
+            // its (equally unpriceable) cost would restate the first.
+            let names: Vec<&str> = row.unpriced_cost.iter().map(|c| c.0.as_str()).collect();
+            warnings.push(OtherHoldingsWarning {
+                account: row.account.clone(),
+                kind: OtherWarningKind::UnpricedCost,
+                message: format!(
+                    "{}'s cost includes {} with no price in {} as of {} — cost and change unknown",
                     row.account,
                     names.join(", "),
                     base.0,

@@ -1162,6 +1162,7 @@ impl From<&OtherHoldingsWarning> for WireOtherWarning {
             account: warning.account.clone(),
             kind: match warning.kind {
                 OtherWarningKind::Unpriced => "unpriced",
+                OtherWarningKind::UnpricedCost => "unpriced-cost",
             },
             message: warning.message.clone(),
         }

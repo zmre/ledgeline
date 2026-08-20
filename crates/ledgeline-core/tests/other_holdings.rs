@@ -20,7 +20,8 @@
 mod common;
 
 use ledgeline_core::holdings::{
-    HoldingsScope, ScopeMode, compute_holdings, other_holdings, other_holdings_series,
+    HoldingsScope, OtherWarningKind, ScopeMode, compute_holdings, other_holdings,
+    other_holdings_series,
 };
 use ledgeline_core::reports::Interval;
 use ledgeline_core::{Dec, Journal, parse_journal};
@@ -640,6 +641,144 @@ fn totals_sum_the_rows_that_carry_the_input() {
     assert!(
         (pct - expected).abs() < 1e-9,
         "55000/499500 = {expected}%, got {pct}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Warnings
+// ---------------------------------------------------------------------------
+
+/// Claim 4's warning half, which nothing else in this file touches: a row whose
+/// commodity has no price route at `as_of` is excluded from `totals.value`,
+/// sorts LAST, and is named in `warnings` — message pinned verbatim, because it
+/// is the sentence the UI shows.
+///
+/// The sculpture's at-cost basis (`1 ART`) is exactly as unpriceable as its
+/// value, and that must NOT produce a second warning: an excluded row is warned
+/// about once, wholesale, not once per failed lookup.
+#[test]
+fn an_unpriced_row_is_excluded_from_totals_sorts_last_and_warns() {
+    let text = "\
+account assets:art:sculpture  ; type: A, holdings: other
+account assets:vehicles:bike  ; type: A
+account assets:tools:mower    ; type: A
+account equity:opening        ; type: E
+
+; No P directive and no cost annotation prices ART anywhere, so the sculpture
+; is genuinely unpriceable at every date.
+2026-02-20 Estate sale | bronze sculpture
+    assets:art:sculpture   1 ART
+    equity:opening
+
+2026-03-10 Bike shop | cargo bike
+    assets:vehicles:bike   $4,000.00
+    equity:opening
+
+2026-03-15 Hardware store | ride-on mower
+    assets:tools:mower     $1,500.00
+    equity:opening
+";
+    let journal = parse_journal(text, "unpriced.journal").expect("journal parses");
+    let report = report(&journal, &scope(AS_OF, None));
+
+    // Priced rows value-desc; the unpriced row last — not sorted as if zero,
+    // which would slot it between the mower and nothing.
+    let accounts: Vec<&str> = report.holdings.iter().map(|h| h.account.as_str()).collect();
+    assert_eq!(
+        accounts,
+        vec![
+            "assets:vehicles:bike",
+            "assets:tools:mower",
+            "assets:art:sculpture",
+        ],
+        "unpriced sorts after every priced row"
+    );
+    assert_eq!(report.holdings[2].value, None, "no route from ART to $");
+
+    // Excluded from the value total: $4,000.00 + $1,500.00 and nothing else.
+    assert_eq!(report.totals.value, usd("5500.00"));
+
+    // ...and warned about — one warning for the row, wholesale.
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    let warning = &report.warnings[0];
+    assert_eq!(warning.account, "assets:art:sculpture");
+    assert_eq!(warning.kind, OtherWarningKind::Unpriced);
+    assert_eq!(
+        warning.message,
+        "assets:art:sculpture holds ART with no price in $ as of 2026-06-30 \
+         — excluded from totals"
+    );
+}
+
+/// **Regression.** An unpriceable COST warns like an unpriceable value does,
+/// instead of silently blanking the cost and change columns.
+///
+/// The shape that produces one — the VALUE must stay priced while the basis is
+/// not, and a cost annotation alone cannot do it, because the annotation itself
+/// prices its commodity (the graph walks reversed edges, so `@@ … THB` links
+/// THB back through the asset to anything the asset reaches). It takes a
+/// write-off: the barn is bought at a THB cost and written off with NO
+/// annotation, so the written BARN nets to zero — the row's value is the plain
+/// insurance dollars — while the at-cost basis still carries the THB paid and
+/// the BARN written off, neither of which any price connects to `$`.
+///
+/// Ground truth (hledger 1.52):
+///   bal assets:farm -e 2026-07-01                     ->  $50,000.00
+///   bal assets:farm -e 2026-07-01 -B                  ->  $50,000.00, -1 BARN, 200,000.00 THB
+///   bal assets:workshop -e 2026-07-01 --value=end,'$' ->  $9,000.00
+#[test]
+fn an_unpriceable_cost_is_warned_about_not_silently_blanked() {
+    let text = "\
+account assets:farm       ; type: A, holdings: other
+account assets:workshop   ; type: A, holdings: other
+account equity:opening    ; type: E
+account expenses:casualty ; type: X
+
+P 2026-06-01 TRACTOR $9,000.00
+
+2026-01-10 Auction | buy the barn
+    assets:farm        1 BARN @@ 200,000.00 THB
+    equity:opening
+
+2026-01-20 Dealer | used tractor
+    assets:workshop    1 TRACTOR
+    equity:opening
+
+2026-02-01 Fire | write the barn off (no cost annotation)
+    expenses:casualty  1 BARN
+    assets:farm
+
+2026-02-15 Insurer | casualty payout
+    assets:farm        $50,000.00
+    equity:opening
+";
+    let journal = parse_journal(text, "farm.journal").expect("journal parses");
+    let report = report(&journal, &scope(AS_OF, None));
+
+    // The farm's value is real and counted; its cost is UNKNOWN, not zero, and
+    // change follows it into the unknown rather than reading as a total gain.
+    let farm = &report.holdings[0];
+    assert_eq!(farm.account, "assets:farm");
+    assert_eq!(farm.value, Some(usd("50000.00")));
+    assert_eq!(farm.cost, None, "the THB basis has no route to $");
+    assert_eq!(farm.change, None);
+    assert_eq!(farm.change_pct, None);
+
+    // Totals stay partial and honest: the value counts, the cost column is the
+    // workshop's alone.
+    assert_eq!(report.totals.value, usd("59000.00"));
+    assert_eq!(report.totals.cost, Some(usd("9000.00")));
+
+    // ...and the blanked columns are EXPLAINED, exactly once, naming both
+    // stranded commodities. This was silent before the fix.
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    let warning = &report.warnings[0];
+    assert_eq!(warning.account, "assets:farm");
+    assert_eq!(warning.kind, OtherWarningKind::UnpricedCost);
+    assert_eq!(
+        warning.message,
+        "assets:farm's cost includes BARN, THB with no price in $ as of 2026-06-30 \
+         — cost and change unknown"
     );
 }
 
