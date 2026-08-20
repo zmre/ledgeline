@@ -18,6 +18,9 @@
 ;     `holdings: other`, or the commodity would file it under Stocks), and a car booked
 ;     in dollars and written down by explicit depreciation entries. Together they cover
 ;     both ways a non-stock asset changes value: the price moves, or the balance does.
+;     The car also demonstrates the contra-asset shape: cost and accumulated
+;     depreciation are sibling accounts rolled into one holding, with the second
+;     tagged `valuation: depreciation` so it counts against value and not cost.
 ;
 ; Deliberate problem records for WP-08/WP-10 (do not "fix" these):
 ;   - 2026-06-20  posting to expenses:unknown (also left undeclared)
@@ -44,7 +47,9 @@ account assets:broker:taxable:gld     ; type: A
 account assets:broker:taxable:nvda    ; type: A
 account assets:broker:taxable:tsla    ; type: A
 account assets:property:home          ; type: A, holdings: other, bsgroup: Property, name: Family home
-account assets:vehicles:car           ; type: A, name: Honda CR-V
+account assets:vehicles:car              ; type: A, name: Honda CR-V
+account assets:vehicles:car:cost         ; type: A
+account assets:vehicles:car:depreciation  ; type: A, valuation: depreciation
 account liabilities                   ; type: L
 account liabilities:cc:visa           ; type: L
 account liabilities:mortgage          ; type: L
@@ -112,8 +117,11 @@ P 2026-06-30 VTI $310.75
     liabilities:mortgage        $-336,000.00
     equity:opening
 
+; Accumulated depreciation is its OWN account — textbook contra-asset, and what
+; lets the Holdings tab report the car at $28,000.00 cost against a $20,500.00
+; value instead of moving both together and calling the loss zero.
 2024-07-01 * Opening vehicle position
-    assets:vehicles:car            $28,000.00
+    assets:vehicles:car:cost       $28,000.00
     equity:opening
 
 2024-07-01 * Oakview Properties | rent
@@ -489,7 +497,7 @@ P 2026-06-30 VTI $310.75
 ; listed as an annual subscription would be the demo journal teaching a wrong thing.
 2025-06-30 * vehicle depreciation FY2025
     expenses:depreciation          $4,000.00
-    assets:vehicles:car
+    assets:vehicles:car:depreciation
 
 2025-07-01 * Oakview Properties | rent
     expenses:housing:rent      $1,800.00
@@ -912,7 +920,7 @@ P 2026-06-30 VTI $310.75
 
 2026-06-30 * vehicle depreciation FY2026
     expenses:depreciation          $3,500.00
-    assets:vehicles:car
+    assets:vehicles:car:depreciation
 
 2026-07-01 Oakview Properties | rent
     expenses:housing:rent      $1,875.00

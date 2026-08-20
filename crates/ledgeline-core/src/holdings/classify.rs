@@ -128,18 +128,32 @@ pub enum ValuationRole {
     /// `valuation: cost` — money actually put in. The default for every untagged
     /// account, so it rarely needs writing.
     Cost,
-    /// `valuation: unrealized` — a mark-to-market or NAV adjustment. Counted in
-    /// the holding's VALUE and excluded from its COST, which is what makes the
-    /// difference between them the unrealized gain.
-    Unrealized,
+    /// `valuation: unrealized` (or `depreciation`, `adjustment`, `mark`) — a
+    /// valuation adjustment rather than money in. Counted in the holding's VALUE
+    /// and excluded from its COST, which is what makes the difference between
+    /// them the gain or loss.
+    ///
+    /// The variant is named for the ROLE rather than for any one of its spellings
+    /// because the same mechanic serves two quite different stories: a house
+    /// marked up to market, and a car written down by accumulated depreciation.
+    /// Calling it `Unrealized` made the depreciation case read as a mistake.
+    Adjustment,
 }
 
 /// Parse a `valuation:` tag value; `None` for anything outside the vocabulary.
+///
+/// Four spellings share the adjustment role. They are not synonyms for tidiness:
+/// `unrealized` is the natural word for a house marked to market, `depreciation`
+/// for a car written down, and `adjustment` for anything else that moves value
+/// without moving basis. Forcing one word on all three would make two of them
+/// read as errors in the journal that declares them.
 #[must_use]
 pub fn parse_valuation_tag(value: &str) -> Option<ValuationRole> {
     match value.trim().to_lowercase().as_str() {
         "cost" | "basis" => Some(ValuationRole::Cost),
-        "unrealized" | "unrealised" | "mark" => Some(ValuationRole::Unrealized),
+        "unrealized" | "unrealised" | "mark" | "depreciation" | "adjustment" => {
+            Some(ValuationRole::Adjustment)
+        }
         _ => None,
     }
 }

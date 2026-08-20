@@ -271,8 +271,8 @@
       ]
     ],
     [
-      "assets:vehicles:car",
-      "assets:vehicles:car",
+      "assets:vehicles:car:cost",
+      "assets:vehicles:car:cost",
       0,
       [
         {
@@ -280,9 +280,39 @@
           "acost": null,
           "acostbasis": null,
           "aquantity": {
-            "decimalMantissa": 2050000,
+            "decimalMantissa": 2800000,
             "decimalPlaces": 2,
-            "floatingPoint": 20500
+            "floatingPoint": 28000
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "assets:vehicles:car:depreciation",
+      "assets:vehicles:car:depreciation",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "acost": null,
+          "acostbasis": null,
+          "aquantity": {
+            "decimalMantissa": -750000,
+            "decimalPlaces": 2,
+            "floatingPoint": -7500
           },
           "astyle": {
             "ascommodityside": "L",

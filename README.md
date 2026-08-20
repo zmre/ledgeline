@@ -148,18 +148,17 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
-- code review by fable
-- do we need a way to flag "current" assets and liabilities in balance sheet?
-- need to remove the URL in the top right. would like to instead put an indication of what file or folder we're looking at
-  - Lets make this more interesting. If the first line of the main journal file is a comment with one to five words (not symbols like ======), then we'll take that as the title to use. Otherwise we'll use the folder name of the parent of the main journal.
+- do we need a way to flag "current" vs. "long term" assets and liabilities in the balance sheet?  this is standard and would be subheaders in their respective assets/liabilities boxes.
+- need to remove the URL in the top right. in its place lets put an indication of what we're looking at
+  - Lets make this more interesting. If the first line of the main journal file is a comment with one to five words (not symbols like ======), then we'll take that as the title to use. Otherwise, we'll use the folder name holding the main journal.
+  - We should document this. The idea is to help someone managing many different entities to be aware of what they're looking at
 - chore: route bad `issection:` / `holdings:` / `valuation:` / `type:` tag values into Problems
   - a mistyped `issection:` currently fails the whole P&L request with a 400 naming the account and the
     valid codes, and `holdings:` now does the same to the Holdings tab. Right that it isn't silently
     dropped, wrong that one typo takes the tab down. Problems
     entries anchor to a `txnIndex` and an `account` directive has none, so this needs a wire field that
     allows a directive-anchored diagnostic plus an allow-list entry in the SPA's `normalize.ts`.
-- feat: non-stock and cash holdings
-  - i want the holdings tab to have two sub-tabs: Stocks and Other.  Other should show all assets (type:A) excluding stocks (stock symbol) and cash (type:C). if we get this right, we'll be able to show things like home, cars, partnerships, etc.  And like with stocks, we want to show the value of each and the change in value over time
+- code review by fable
 - **Imports**
   - feat: quickbooks import handling
     - transaction matching and skipping
@@ -194,7 +193,7 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
   - need to remove random numbers from description and maybe do a predominance calculation or a vector comparison rather than full equality.  if we're doing equality and removing numbers, we need to normalize some by lowercasing.  but in a perfect world, "netflix.com" might see a previous "netflix" and guess category based on that.  the more exact the match and the more recent, the higher the sort ranking
   - feat: remember categorization functionality — write a chosen category back into the rules file as a new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
 - feat: File -> New
-  - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and demand an empty folder as a starting point and the create a skeleton so someone can start using us to track things.
+  - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and use an empty folder as a starting point and then create a skeleton so someone can start using us to track things. We should have a default chart of accounts for individuals and another for businesses and then we should allow them to start with an empty set of accounts to add their own.
   - HOWEVER, we don't have any way currently to handle when a new file should be created and used for new imports.  It's common to have a journal file per year included in a main journal file, for example, but do we automatically create that or figure that out?
     - I guess the user could select a 2027.journal file on import when desired, but can they specify that if it doesn't already exist?
 - feat: saved report filters?

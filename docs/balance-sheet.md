@@ -44,7 +44,24 @@ Group names are free text — use whatever line items your books call for
 (`Inventory`, `Deferred revenue`, `Paid-in capital`, `Intangible assets`,
 `Accumulated depreciation`, …). Accounts that share a name share a line.
 
-### Two gotchas, both inherited from hledger's tag syntax
+### Three gotchas, all inherited from hledger's syntax
+
+**A comment on an `account` directive needs TWO spaces before the `;`.** An
+account name may contain single spaces, so a single space cannot end one — with
+only one, hledger reads the whole rest of the line as the account's NAME and
+there is no comment left to carry your tags:
+
+```journal
+account assets:art ; type: A, bsgroup: Art    ; ✗ declares an account literally
+                                              ;   named "assets:art ; type: A, bsgroup: Art"
+account assets:art  ; type: A, bsgroup: Art   ; ✓ two spaces
+```
+
+This one is nasty because nothing complains. The journal parses, the declaration
+is simply about an account no posting will ever mention, and the real
+`assets:art` quietly has no type and no group. If a tag you definitely wrote
+seems to have no effect, count the spaces first. (Only `account` is affected —
+`commodity` and `payee` values cannot contain spaces, so one is enough there.)
 
 **A tag value ends at the next comma.** This is how hledger parses all tags, and
 it bites here because group names are prose:

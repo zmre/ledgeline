@@ -258,7 +258,7 @@ fn a_window_measures_change_against_the_opening_value() {
 #[test]
 fn an_asset_unpriced_at_the_window_start_has_an_unknown_change() {
     let text = "\
-account assets:art:sculpture ; type: A, holdings: other
+account assets:art:sculpture  ; type: A, holdings: other
 account equity:opening       ; type: E
 
 ; The sculpture's FIRST price lands on the last day, so on 2026-04-01 it is
@@ -291,7 +291,7 @@ P 2026-06-30 ART $9,000.00
 #[test]
 fn an_asset_not_held_at_the_window_start_references_zero() {
     let text = "\
-account assets:vehicles:bike ; type: A
+account assets:vehicles:bike  ; type: A
 account equity:opening       ; type: E
 
 2026-05-10 Bike shop | cargo bike
@@ -334,7 +334,7 @@ const SPLIT_ASSET: &str = "\
 account assets:home             ; type:A, name: Family home
 account assets:home:cost        ; type:A
 account assets:home:unrealized  ; type:A, valuation: unrealized
-account assets:partnerships:angel-continuity:contributed ; type:A
+account assets:partnerships:angel-continuity:contributed  ; type:A
 account assets:partnerships:angel-continuity:unrealized  ; type:A, valuation: unrealized
 account assets:partnerships:second-fund:contributed      ; type:A
 account revenues:unrealized     ; type:R
@@ -493,8 +493,8 @@ fn an_untagged_mark_is_indistinguishable_from_money_in() {
 #[test]
 fn a_holding_that_is_all_mark_has_an_unknown_cost() {
     let text = "\
-account assets:art:unrealized ; type:A, valuation: unrealized
-account revenues:unrealized   ; type:R
+account assets:art:unrealized  ; type:A, valuation: unrealized
+account revenues:unrealized    ; type:R
 
 2025-01-01 appraised upward, never bought
     assets:art:unrealized   $9,000.00

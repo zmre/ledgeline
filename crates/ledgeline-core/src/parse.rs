@@ -520,19 +520,79 @@ fn locate(source_name: &str, line: u32, line_text: &str, err: ParseError) -> Par
 // Directives
 // ---------------------------------------------------------------------------
 
+/// Split an `account` directive's body into the account NAME and any trailing
+/// comment, by hledger's rule rather than at the first `;`.
+///
+/// Verified against the hledger 1.52 binary, not read off the manual:
+///
+/// ```text
+/// account two:space  ; type: A    -> name "two:space",         tag APPLIED
+/// account one:space ; type: A     -> name "one:space ; type: A", tag IGNORED
+/// account a:b is here  ; type: A  -> name "a:b is here",       tag APPLIED
+/// account tab:name<TAB>; type: A  -> name "tab:name ; type: A", tag IGNORED
+/// account two:words  junk         -> parse ERROR
+/// ```
+///
+/// An account name may contain SINGLE spaces, so nothing but a run of two or
+/// more whitespace characters can end one — the same rule that separates a
+/// posting's account from its amount, and the reason a lone tab is part of the
+/// name (normalized to a space) while a space-then-tab is a separator.
+///
+/// Splitting at the first `;`, as [`split_comment`] does for the directives
+/// whose value cannot contain spaces, is wrong here and wrong INVISIBLY: it
+/// turns `account a:b ; type: A` into a declaration of the account literally
+/// named `a:b ; type: A`, which matches no posting and carries no type. The
+/// journal parses, the report is simply missing an account, and nothing says so.
+///
+/// Returns `None` when the text after the separator is neither empty nor a
+/// comment — hledger rejects that outright ("expecting ';', end of input, or
+/// newline") and so do we.
+fn split_account_name(body: &str) -> Option<(String, Option<&str>)> {
+    let mut run_start: Option<usize> = None;
+    let mut separator: Option<usize> = None;
+    for (at, ch) in body.char_indices() {
+        if ch == ' ' || ch == '\t' {
+            match run_start {
+                // The second consecutive whitespace ends the name, which stops
+                // at the FIRST character of the run.
+                Some(start) => {
+                    separator = Some(start);
+                    break;
+                }
+                None => run_start = Some(at),
+            }
+        } else {
+            run_start = None;
+        }
+    }
+
+    let (name_part, rest) = match separator {
+        Some(at) => (&body[..at], body[at..].trim_start()),
+        None => (body, ""),
+    };
+    // A lone tab inside the name reads as a space, matching how hledger prints
+    // the account back.
+    let name = name_part.replace('\t', " ").trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    match rest.strip_prefix(';') {
+        Some(comment) => Some((name, Some(comment))),
+        None if rest.is_empty() => Some((name, None)),
+        None => None,
+    }
+}
+
 fn parse_account_directive(line: &str, line_no: u32) -> Result<AccountDeclaration, ParseError> {
     let after = line
         .strip_prefix("account")
         .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?
         .trim_start();
-    let (name_part, comment) = split_comment(after);
-    let name = name_part.trim();
-    if name.is_empty() {
-        return Err(ParseError::MalformedDirective(line.to_string()));
-    }
+    let (name, comment) = split_account_name(after)
+        .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?;
     let (comment_text, tags) = build_comment(comment);
     Ok(AccountDeclaration {
-        name: AccountName(name.to_string()),
+        name: AccountName(name),
         tags,
         comment: comment_text,
         // `account` directives are always top-level, so the keyword sits at
@@ -2564,6 +2624,102 @@ fn analyze_number(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `account` directive's name/comment boundary, pinned against the
+    /// hledger 1.52 binary rather than the manual. Every expectation below was
+    /// read off `hledger -f … accounts --declared` and a `bal type:A` query.
+    ///
+    /// This diverged silently once already: our parser split at the first `;`,
+    /// so `account a:b ; type: A` declared the account `a:b` with a type while
+    /// hledger declared one literally named `a:b ; type: A` with none. The
+    /// journal parsed on both sides and the reports disagreed.
+    mod account_directive_names {
+        use super::*;
+
+        fn parsed(line: &str) -> (String, Vec<(String, String)>) {
+            let decl = parse_account_directive(line, 1).expect("directive parses");
+            (decl.name.0, decl.tags)
+        }
+
+        #[test]
+        fn two_spaces_separate_the_name_from_its_comment() {
+            let (name, tags) = parsed("account two:space  ; type: A");
+            assert_eq!(name, "two:space");
+            assert_eq!(tags, vec![("type".to_string(), "A".to_string())]);
+        }
+
+        /// ONE space does not. hledger takes the whole rest of the line as the
+        /// account name, tag and all.
+        #[test]
+        fn one_space_leaves_the_comment_inside_the_name() {
+            let (name, tags) = parsed("account one:space ; type: A");
+            assert_eq!(name, "one:space ; type: A");
+            assert!(tags.is_empty(), "no comment was parsed, so no tags");
+        }
+
+        #[test]
+        fn no_space_at_all_leaves_the_comment_inside_the_name() {
+            let (name, tags) = parsed("account no:space; type: A");
+            assert_eq!(name, "no:space; type: A");
+            assert!(tags.is_empty());
+        }
+
+        /// Single spaces are legal INSIDE an account name, which is the whole
+        /// reason a single space cannot end one.
+        #[test]
+        fn a_name_may_contain_single_spaces() {
+            let (name, tags) = parsed("account trailing:words is here  ; type: A");
+            assert_eq!(name, "trailing:words is here");
+            assert_eq!(tags, vec![("type".to_string(), "A".to_string())]);
+        }
+
+        /// A lone tab reads as a single space — part of the name, and printed
+        /// back as a space — while a space-then-tab is two whitespace and does
+        /// separate.
+        #[test]
+        fn a_lone_tab_is_part_of_the_name_but_a_pair_is_a_separator() {
+            let (name, tags) = parsed("account tab:name\t; type: A");
+            assert_eq!(name, "tab:name ; type: A");
+            assert!(tags.is_empty());
+
+            let (name, tags) = parsed("account tabsp:name \t; type: A");
+            assert_eq!(name, "tabsp:name");
+            assert_eq!(tags, vec![("type".to_string(), "A".to_string())]);
+        }
+
+        #[test]
+        fn a_bare_name_needs_no_comment() {
+            let (name, tags) = parsed("account plain:name");
+            assert_eq!(name, "plain:name");
+            assert!(tags.is_empty());
+        }
+
+        /// hledger: "expecting ';', end of input, or newline". Anything else
+        /// after the separator is a hard error, not silently-kept text.
+        #[test]
+        fn text_after_the_separator_that_is_not_a_comment_is_refused() {
+            assert!(parse_account_directive("account two:words  trailing junk", 1).is_err());
+        }
+
+        /// A name-less directive whose body is only a comment is NOT an error:
+        /// with no two-whitespace run there is nothing to separate, so hledger
+        /// declares an account literally named `; type: A`. Checked against the
+        /// binary, which prints exactly that and exits 0 — following it here
+        /// costs nothing and diverging would be one more silent disagreement.
+        #[test]
+        fn a_body_that_is_only_a_comment_becomes_the_name() {
+            let (name, tags) = parsed("account   ; type: A");
+            assert_eq!(name, "; type: A");
+            assert!(tags.is_empty());
+        }
+
+        /// A bare `account` with no body IS an error, as it is in hledger.
+        #[test]
+        fn a_bare_directive_is_refused() {
+            assert!(parse_account_directive("account", 1).is_err());
+            assert!(parse_account_directive("account   ", 1).is_err());
+        }
+    }
 
     fn eur_styles() -> Styles {
         let (commodity, style, _tags) =

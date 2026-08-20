@@ -136,9 +136,9 @@ fn opening_balances_inference_and_assertion() {
     assert_eq!(first["tindex"], serde_json::json!(1));
     assert_eq!(first["tstatus"], serde_json::json!("Cleared"));
     // The WP-14 account/commodity/price declarations pushed the first
-    // transaction down the file: it now opens on line 101 and ends on 106.
-    assert_eq!(first["tsourcepos"][0]["sourceLine"], serde_json::json!(101));
-    assert_eq!(first["tsourcepos"][1]["sourceLine"], serde_json::json!(106));
+    // transaction down the file: it now opens on line 106 and ends on 111.
+    assert_eq!(first["tsourcepos"][0]["sourceLine"], serde_json::json!(106));
+    assert_eq!(first["tsourcepos"][1]["sourceLine"], serde_json::json!(111));
 
     let postings = first["tpostings"].as_array().expect("postings");
 
@@ -163,7 +163,7 @@ fn opening_balances_inference_and_assertion() {
     );
     assert_eq!(
         checking["pbalanceassertion"]["baposition"]["sourceLine"],
-        serde_json::json!(102)
+        serde_json::json!(107)
     );
     assert_eq!(
         checking["pbalanceassertion"]["baposition"]["sourceColumn"],

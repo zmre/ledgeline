@@ -717,17 +717,21 @@ describe("UNIT nativeDecode — OtherHoldingsReport (plans/14)", () => {
         expect(home.change).toEqual({m: 4800000n, p: 2});
         expect(home.changePct).toBeCloseTo(11.4285714, 6);
 
-        // Dollar-booked and depreciated: cost IS value, so all-time change is
-        // honestly zero — the correct answer, not a missing feature.
+        // Dollar-booked, and depreciated through a SIBLING account tagged
+        // `valuation: depreciation`. The two roll into one row, so cost stays
+        // gross at $28,000.00 while value is net at $20,500.00 — which is the
+        // only way this row can report the loss at all. Posted straight at the
+        // asset, the two moved together and the change read $0.00.
         const car = report.holdings[1];
         expect(car.commodities.get("$")).toEqual({m: 2050000n, p: 2});
         expect(car.value).toEqual({m: 2050000n, p: 2});
-        expect(car.change).toEqual({m: 0n, p: 2});
-        expect(car.changePct).toBe(0);
+        expect(car.cost).toEqual({m: 2800000n, p: 2});
+        expect(car.change).toEqual({m: -750000n, p: 2});
+        expect(car.changePct).toBeCloseTo(-26.7857142, 6);
 
         expect(report.totals.value).toEqual({m: 48850000n, p: 2});
-        expect(report.totals.cost).toEqual({m: 44050000n, p: 2});
-        expect(report.totals.changePct).toBeCloseTo(10.8967083, 6);
+        expect(report.totals.cost).toEqual({m: 44800000n, p: 2});
+        expect(report.totals.changePct).toBeCloseTo(9.0401785, 6);
         // Everything in scope is priced, so nothing is refused.
         expect(report.warnings).toEqual([]);
     });

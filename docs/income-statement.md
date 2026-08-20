@@ -50,9 +50,9 @@ account cogs                  ; type: X, issection: cogs
 account cogs:hosting          ; type: X, isgroup: Cloud hosting
 account cogs:payments         ; type: X, isgroup: Payment processing
 account expenses:salaries     ; type: X, issection: opex
-account expenses:depreciation ; type: X, issection: depreciation
+account expenses:depreciation  ; type: X, issection: depreciation
 account expenses:interest     ; type: X, issection: interest
-account expenses:taxes:income ; type: X, issection: tax
+account expenses:taxes:income  ; type: X, issection: tax
 account income:grants         ; type: R, issection: other
 ```
 

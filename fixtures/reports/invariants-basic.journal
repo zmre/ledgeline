@@ -38,7 +38,7 @@ account equity:opening          ; type: E
 account income:salary           ; type: R
 account expenses                ; type: X
 account expenses:food           ; type: X
-account expenses:food:groceries ; type: X
+account expenses:food:groceries  ; type: X
 account expenses:rent           ; type: X
 
 commodity $1,000.00

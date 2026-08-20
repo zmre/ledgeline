@@ -18,12 +18,15 @@
 //       makes a house revalue, which is the whole point of the Change column.
 //
 //   assets:vehicles:car   "Honda CR-V"   (no Holding cell — dollar-booked)
-//       opened 2024-07-01 at $28,000.00 and written down by explicit entries
-//       ($4,000.00 on 2025-06-30, $3,500.00 on 2026-06-30) → value = cost =
-//       $20,500.00, change $0.00, 0.0%. For a dollar-booked asset the all-time
+//       opened 2024-07-01 at $28,000.00 into `…:car:cost`, and written down by
+//       explicit entries into the sibling `…:car:depreciation` (tagged
+//       `valuation: depreciation`): $4,000.00 on 2025-06-30 and $3,500.00 on
+//       2026-06-30. The two roll into ONE row at `assets:vehicles:car` → value
+//       $20,500.00 against cost $28,000.00, change -$7,500.00, -26.8%. Before the
+//       contra-asset split the two moved together and the loss read $0.00. The
 //       change is honestly zero — the correct answer, not a missing feature.
 //
-//   Totals: value $488,500.00, cost $440,500.00, change $48,000.00, +10.9%.
+//   Totals: value $488,500.00, cost $448,000.00, change $40,500.00, +9.0%.
 //
 // Note on formatting, because it is easy to assert the wrong string: the Change
 // column renders through the same money formatter as Value, so a gain reads
@@ -106,10 +109,13 @@ test("other holdings: rows carry name, value, cost and change from the engine", 
 
     const car = page.getByTestId("other-holding-" + CAR);
     await expect(car).toContainText("Honda CR-V");
-    await expect(car).toContainText("$20,500.00");
-    // Dollar-booked: cost IS value, so all-time change is honestly zero and the
-    // percent carries no sign.
-    await expect(car).toContainText("0.0%");
+    await expect(car).toContainText("$20,500.00"); // value, net of depreciation
+    await expect(car).toContainText("$28,000.00"); // cost, gross of it
+    // Accumulated depreciation is a sibling account tagged `valuation:
+    // depreciation`, so it counts against value and NOT against cost — which is
+    // the whole reason this row can report a loss at all.
+    await expect(car).toContainText("$-7,500.00");
+    await expect(car).toContainText("-26.8%");
 });
 
 test("other holdings: the Holding column shows the unit as written, and is blank for a dollar-booked asset", async ({page}) => {
@@ -128,7 +134,7 @@ test("other holdings: the totals row is the engine's, not a sum of the visible r
 
     await expect(totals).toContainText("Total (2 holdings):");
     await expect(totals).toContainText("$488,500.00"); // value
-    await expect(totals).toContainText("$440,500.00"); // cost
+    await expect(totals).toContainText("$448,000.00"); // cost
     // Everything in scope is priced, so nothing is refused and no warning shows.
     await expect(page.getByTestId("other-holdings-warnings")).toHaveCount(0);
 });

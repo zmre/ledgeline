@@ -147,7 +147,7 @@ pub enum ReportError {
     /// as exactly zero — a real number replaced by a plausible wrong one.
     #[error(
         "account '{account}' declares `valuation: {value}`, which is not one of \
-         cost, unrealized"
+         cost, unrealized, depreciation, adjustment"
     )]
     UnknownValuationRole {
         /// The declaring account.

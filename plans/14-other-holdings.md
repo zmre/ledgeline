@@ -68,7 +68,7 @@ account assets:property:house   ; type: A, holdings: other
 account assets:vehicles:van     ; type: A
 account assets:partners:acme    ; type: A
 account assets:broker:taxable   ; type: A
-account assets:receivable:petty ; type: A, holdings: none
+account assets:receivable:petty  ; type: A, holdings: none
 ```
 
 `assets:property:house` may hold `1 HOUSE` priced by `P` directives and still

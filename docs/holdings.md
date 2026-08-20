@@ -63,6 +63,11 @@ Unlike `bsgroup:`, this is a **closed vocabulary**: those three words and nothin
 else. A misspelling is refused with a message naming the alternatives, rather
 than being ignored — see [below](#a-misspelt-value-is-an-error).
 
+> **Two spaces before the `;`.** A comment on an `account` directive needs at
+> least two spaces in front of it, or hledger reads the whole line as the account
+> NAME and none of these tags exist. Nothing warns you. See
+> [docs/balance-sheet.md](balance-sheet.md#three-gotchas-all-inherited-from-hledgers-syntax).
+
 ### When you need `holdings: other`
 
 Mostly for **an asset booked as its own commodity**, which is the only way a
@@ -133,10 +138,18 @@ Two consequences worth knowing:
 
 Within a holding, `valuation:` says what an account CONTRIBUTES:
 
-| Value        | Meaning                                                        |
-|--------------|----------------------------------------------------------------|
-| `cost`       | Money actually put in. The default — you rarely write it.       |
-| `unrealized` | A mark-to-market or NAV adjustment: value, but not money in.    |
+| Value          | Meaning                                                       |
+|----------------|---------------------------------------------------------------|
+| `cost`         | Money actually put in. The default — you rarely write it.      |
+| `unrealized`   | A mark-to-market or NAV adjustment.                            |
+| `depreciation` | Accumulated depreciation. Same behaviour, honest name.         |
+| `adjustment`   | Anything else that moves value without moving basis.           |
+
+The last three are one role under three names. They behave identically —
+counted in Value, excluded from Cost — and exist separately because a car's
+accumulated depreciation is not "unrealized" and a house's mark is not
+"depreciation"; forcing one word on both would make one of them read as a
+mistake in the journal that declares it.
 
 It inherits down the tree like every other tag here, and it is a closed
 vocabulary: an unrecognised value is refused by name rather than ignored.
@@ -162,6 +175,56 @@ tagged         620,000.00  500,000.00  120,000.00     +24.0%
 A holding whose accounts are *all* marks has no cost side at all. Its Cost and
 Change read as em-dashes — unknown, rather than a zero basis and an infinite
 gain — and it drops out of those two totals while still counting in Value.
+
+## Two things that are easy to get wrong
+
+### Book the purchase price, not the down payment
+
+If a holding is leveraged, put the **whole purchase price** in the cost account
+and leave the loan as an ordinary liability:
+
+```journal
+2019-06-01 * buy the house
+    assets:home:cost           $700,000.00   ; the PRICE
+    liabilities:mortgage      $-550,000.00
+    assets:bank:checking      $-150,000.00
+```
+
+It is tempting to book only the cash you put in, since that is what left your
+pocket. Don't: everything the lender funded then has nowhere to live but the
+adjustment account, so Change stops meaning appreciation and starts meaning
+"appreciation plus the mortgage". On the house above, marked to $750,000:
+
+```
+booked at the price:        cost $700,000  change  +$50,000   +7.1%   <- appreciation
+booked at the down payment: cost $150,000  change +$600,000  +400%   <- leverage
+```
+
+The balance sheet is unaffected either way — the mortgage is a liability in both
+— so the error is invisible everywhere except here.
+
+Note the Other tab reports **gross value**, not your equity in it. A house worth
+$750,000 with $530,000 still owed reads $750,000, and the debt against it appears
+under Liabilities as usual.
+
+### Depreciating assets need a contra-asset account
+
+Posting depreciation straight at the asset moves cost and value together, so the
+loss reads as `$0.00`. Split it, which is textbook bookkeeping anyway:
+
+```journal
+account assets:vehicles:car               ; type: A, name: Honda CR-V
+account assets:vehicles:car:cost          ; type: A
+account assets:vehicles:car:depreciation  ; type: A, valuation: depreciation
+
+2026-06-30 * annual depreciation
+    expenses:depreciation                    $3,500.00
+    assets:vehicles:car:depreciation
+```
+
+The two roll into one row (they are a container parent's only children), so you
+get `Honda CR-V — value $20,500.00, cost $28,000.00, change -$7,500.00, -26.8%`
+instead of a $20,500.00 asset that has apparently never lost a penny.
 
 ## The two ways a non-stock asset changes value
 
