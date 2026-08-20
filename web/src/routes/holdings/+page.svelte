@@ -39,9 +39,12 @@
     import {loadJournalWhenReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
-    // Reset the scope and tab from the URL once (fresh visits open at today, on
-    // Stocks), then mirror changes back (debounced replaceState). onMount's
-    // return value is its cleanup.
+    // Reset the scope and tab from the URL (fresh visits open at today, on
+    // Stocks), then mirror changes back (debounced replaceState). The reset
+    // re-runs on every navigation that reuses this component — the app-bar
+    // Holdings link, back/forward between two /holdings entries — because
+    // onMount alone left the store on the old query string (see
+    // startHoldingsUrlSync). onMount's return value is its cleanup.
     onMount(() => startHoldingsUrlSync());
 
     // Load the journal once a server URL is configured (base-commodity styles + the scope-bar account list only).
