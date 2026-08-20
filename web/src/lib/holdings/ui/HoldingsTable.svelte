@@ -123,16 +123,21 @@
 <div class="border-base-content/10 rounded-box overflow-x-auto border">
     <table class="table-zebra table-sm table" data-testid="holdings-table">
         <thead>
+            <!-- Every header is a <th scope="col">, never a <td>: aria-sort is only
+                 valid on a columnheader, so on a <td> the sort state was announced to
+                 nobody, and the numeric cells below had no column association at all.
+                 text-left pins the alignment the old <td> had by default (a bare <th>
+                 centers). OtherHoldingsTable is this header's deliberate twin. -->
             <tr>
-                <th aria-sort={ariaSort("name")}>{@render sortButton("name", "Name")}</th>
-                <th aria-sort={ariaSort("symbol")}>{@render sortButton("symbol", "Symbol")}</th>
-                <td class="text-right" aria-sort={ariaSort("shares")}>{@render sortButton("shares", "Shares")}</td>
-                <td class="text-right" aria-sort={ariaSort("basis")}>{@render sortButton("basis", "Basis")}</td>
-                <td class="text-right" aria-sort={ariaSort("price")}>{@render sortButton("price", "Price")}</td>
-                <td aria-sort={ariaSort("priceDate")}>{@render sortButton("priceDate", "Price date")}</td>
-                <td class="text-right" aria-sort={ariaSort("marketValue")}>{@render sortButton("marketValue", "Market value")}</td>
-                <td class="text-right" aria-sort={ariaSort("gain")}>{@render sortButton("gain", gainHeader)}</td>
-                <td class="text-right" aria-sort={ariaSort("gainPct")}>{@render sortButton("gainPct", "Gain %")}</td>
+                <th scope="col" aria-sort={ariaSort("name")}>{@render sortButton("name", "Name")}</th>
+                <th scope="col" aria-sort={ariaSort("symbol")}>{@render sortButton("symbol", "Symbol")}</th>
+                <th scope="col" class="text-right" aria-sort={ariaSort("shares")}>{@render sortButton("shares", "Shares")}</th>
+                <th scope="col" class="text-right" aria-sort={ariaSort("basis")}>{@render sortButton("basis", "Basis")}</th>
+                <th scope="col" class="text-right" aria-sort={ariaSort("price")}>{@render sortButton("price", "Price")}</th>
+                <th scope="col" class="text-left" aria-sort={ariaSort("priceDate")}>{@render sortButton("priceDate", "Price date")}</th>
+                <th scope="col" class="text-right" aria-sort={ariaSort("marketValue")}>{@render sortButton("marketValue", "Market value")}</th>
+                <th scope="col" class="text-right" aria-sort={ariaSort("gain")}>{@render sortButton("gain", gainHeader)}</th>
+                <th scope="col" class="text-right" aria-sort={ariaSort("gainPct")}>{@render sortButton("gainPct", "Gain %")}</th>
             </tr>
         </thead>
         <tbody>

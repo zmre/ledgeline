@@ -135,14 +135,18 @@
 <div class="border-base-content/10 rounded-box overflow-x-auto border">
     <table class="table-zebra table-sm table" data-testid="other-holdings-table">
         <thead>
+            <!-- Every header is a <th scope="col">, never a <td>: aria-sort is only
+                 valid on a columnheader, so on a <td> the sort state was announced to
+                 nobody, and the numeric cells below had no column association at all.
+                 HoldingsTable is this header's deliberate twin — keep them in lockstep. -->
             <tr>
-                <th aria-sort={ariaSort("name")}>{@render sortButton("name", "Name")}</th>
-                <th aria-sort={ariaSort("account")}>{@render sortButton("account", "Account")}</th>
-                <td class="text-right">Holding</td>
-                <td class="text-right" aria-sort={ariaSort("value")}>{@render sortButton("value", "Value")}</td>
-                <td class="text-right" aria-sort={ariaSort("cost")}>{@render sortButton("cost", "Cost")}</td>
-                <td class="text-right" aria-sort={ariaSort("change")}>{@render sortButton("change", changeHeader)}</td>
-                <td class="text-right" aria-sort={ariaSort("changePct")}>{@render sortButton("changePct", "Change %")}</td>
+                <th scope="col" aria-sort={ariaSort("name")}>{@render sortButton("name", "Name")}</th>
+                <th scope="col" aria-sort={ariaSort("account")}>{@render sortButton("account", "Account")}</th>
+                <th scope="col" class="text-right">Holding</th>
+                <th scope="col" class="text-right" aria-sort={ariaSort("value")}>{@render sortButton("value", "Value")}</th>
+                <th scope="col" class="text-right" aria-sort={ariaSort("cost")}>{@render sortButton("cost", "Cost")}</th>
+                <th scope="col" class="text-right" aria-sort={ariaSort("change")}>{@render sortButton("change", changeHeader)}</th>
+                <th scope="col" class="text-right" aria-sort={ariaSort("changePct")}>{@render sortButton("changePct", "Change %")}</th>
             </tr>
         </thead>
         <tbody>

@@ -109,6 +109,23 @@ describe("COMPONENT OtherHoldingsTable", () => {
         expect(headers).toEqual(["Name", "Account", "Holding", "Value", "Cost", "Change", "Change %"]);
     });
 
+    it("puts all seven headers in <th scope='col'> cells, twinning HoldingsTable's header contract", async () => {
+        mount();
+        const cells = [...screen.getByTestId("other-holdings-table").querySelectorAll("thead tr > *")];
+
+        // aria-sort is only valid on a columnheader/rowheader; as <td>s these
+        // announced no sort state and gave the numeric cells below no column
+        // association. HoldingsTable.svelte.test.ts pins the same claim on the twin.
+        expect(cells.map((cell) => cell.tagName)).toEqual(Array(7).fill("TH"));
+        expect(cells.map((cell) => cell.getAttribute("scope"))).toEqual(Array(7).fill("col"));
+
+        screen.getByRole("button", {name: "Value"}).click();
+        await tick();
+        // The role query IS the assertion: on the old <td> markup no
+        // columnheader named "Value" exists, so this line fails there.
+        expect(screen.getByRole("columnheader", {name: "Value"}).getAttribute("aria-sort")).toBe("descending");
+    });
+
     it("tags the Change header with the active window so a YTD figure isn't read as all-time", () => {
         mount("ytd");
 
