@@ -13,7 +13,7 @@
 // pulls in the whole journal feed; the rules editor has no business doing that).
 
 import {ApiUnreachableError} from "./client";
-import {ConflictError, NativeApiUnavailableError, NotFoundError, ValidationError} from "./native";
+import {ConflictError, EngineRefusalError, NativeApiUnavailableError, NotFoundError, ValidationError} from "./native";
 
 export type EditFailureKind = "conflict" | "validation" | "notFound" | "unavailable" | "network" | "unknown";
 
@@ -29,6 +29,11 @@ export type EditResult = {ok: true} | {ok: false; failure: EditFailure};
 export function classify(error: unknown): EditFailure {
     if (error instanceof ConflictError) return {kind: "conflict", message: error.message};
     if (error instanceof ValidationError) return {kind: "validation", message: error.message};
+    // A read-path refusal (a 400 on a GET, e.g. the refetch after an edit) is
+    // the same fact as a write-path ValidationError: the engine answered with a
+    // sentence about the JOURNAL. Before this branch it fell through to
+    // "network", which sent the user to check their connection instead.
+    if (error instanceof EngineRefusalError) return {kind: "validation", message: error.message};
     if (error instanceof NotFoundError) return {kind: "notFound", message: error.message};
     if (error instanceof NativeApiUnavailableError) return {kind: "unavailable", message: error.message};
     if (error instanceof ApiUnreachableError) return {kind: "network", message: error.message};

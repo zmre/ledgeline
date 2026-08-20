@@ -16,6 +16,23 @@ export class NativeApiUnavailableError extends Error {
 /** User-facing copy for the missing-engine case (a 404 or non-JSON on /api/*). */
 export const NATIVE_UNAVAILABLE_MESSAGE = "This server doesn't provide Ledgeline's report API — start the Ledgeline engine.";
 
+/**
+ * 400 on a READ — the engine answered and REFUSED to compute the report,
+ * naming a journal-authoring mistake (an unknown `holdings:` or `issection:`
+ * tag value, and their relatives). The read path's counterpart of the write
+ * path's [`ValidationError`]: the message is the server's own sentence, and
+ * the remedy is editing the journal — never the connection, which is why this
+ * is deliberately NOT an [`ApiUnreachableError`] subclass. Before it existed,
+ * every consumer that branches on class read a journal typo as network
+ * trouble (editFailure.ts mapped it to kind "network").
+ */
+export class EngineRefusalError extends Error {
+    constructor(message: string, options?: ErrorOptions) {
+        super(message, options);
+        this.name = "EngineRefusalError";
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Write-path (edit) error taxonomy. The write endpoints answer with PLAIN-TEXT
 // error bodies (unlike the JSON reports), so each of these carries the server's
@@ -337,25 +354,37 @@ const MAX_ERROR_BODY_CHARS = 500;
  * value and the fix, and which the status line replaces with nothing.
  *
  * The write path (`send`) has always preferred the body for the same reason, in
- * its own words. This is that rule, arriving on the read path.
- *
- * Two guards, both falling back rather than truncating. A non-engine server (a
- * proxy, a dev server) answers errors with an HTML DOCUMENT, and a page of markup
- * in an alert box is strictly worse than the status line; so is a body long
- * enough to push the Retry button off screen. Half a sentence from an unknown
- * source is not more useful than "responded 502", so neither case is trimmed into
- * service.
+ * its own words. Both paths share `usableErrorBody`'s guards, so neither can
+ * drift into showing a proxy's error page.
  */
 async function readErrorBody(response: Response, request: string): Promise<string> {
     const fallback = `${request} responded ${response.status} ${response.statusText}`;
     let body: string;
     try {
-        body = (await response.text()).trim();
+        body = await response.text();
     } catch {
         return fallback; // a body that cannot be read is not a message
     }
-    if (body === "" || body.length > MAX_ERROR_BODY_CHARS || body.startsWith("<")) return fallback;
-    return body;
+    const message = usableErrorBody(body);
+    return message === "" ? fallback : message;
+}
+
+/**
+ * The server's own sentence from an error body, or `""` when the body is not a
+ * message at all — the caller falls back to its own line (the status line, or
+ * a mapped status's friendly sentence).
+ *
+ * Two guards, both REJECTING rather than truncating. A non-engine server (a
+ * proxy, a dev server) answers errors with an HTML DOCUMENT, and a page of
+ * markup in an alert box or an edit-failure toast is strictly worse than the
+ * status line; so is a body long enough to push the Retry button off screen.
+ * Half a sentence from an unknown source is not more useful than "responded
+ * 502", so neither case is trimmed into service.
+ */
+function usableErrorBody(body: string): string {
+    const trimmed = body.trim();
+    if (trimmed === "" || trimmed.length > MAX_ERROR_BODY_CHARS || trimmed.startsWith("<")) return "";
+    return trimmed;
 }
 
 type QueryValue = string | number | undefined;
@@ -521,7 +550,17 @@ export class LedgelineApi {
                 throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE);
             }
             if (!response.ok) {
-                throw new ApiUnreachableError(await readErrorBody(response, `GET ${url}`));
+                const message = await readErrorBody(response, `GET ${url}`);
+                // The write path types its 400s as ValidationError; this is the
+                // same fact on a read — the engine is answering fine, and the
+                // JOURNAL is what needs fixing — so it must not wear the class
+                // every consumer reads as "check your connection". Everything
+                // else non-OK (401, 5xx, a proxy) still does mean the engine
+                // cannot usefully be reached from here.
+                if (response.status === 400) {
+                    throw new EngineRefusalError(message);
+                }
+                throw new ApiUnreachableError(message);
             }
             try {
                 return (await response.json()) as unknown;
@@ -899,7 +938,19 @@ export class LedgelineApi {
                     throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE, {cause});
                 }
             }
-            const message = text.trim();
+            // The read path's guards (`usableErrorBody`), applied to the write
+            // path too: a POST through a misbehaving proxy answers with an HTML
+            // document or a whole error page, and either one used to land raw
+            // in the edit-failure toast. Guarded to "", every branch below
+            // falls back to its own sentence — the status line for the
+            // unmapped default.
+            // The read path's guards (`usableErrorBody`), applied to the write
+            // path too: a POST through a misbehaving proxy answers with an HTML
+            // document or a whole error page, and either one used to land raw
+            // in the edit-failure toast. Guarded to "", every branch below
+            // falls back to its own sentence — the status line for the
+            // unmapped default.
+            const message = usableErrorBody(text);
             const extra = extraStatuses[response.status];
             if (extra !== undefined) throw extra(message);
             switch (response.status) {

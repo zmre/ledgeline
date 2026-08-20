@@ -137,8 +137,12 @@ export interface OtherHoldingsTotals {
 
 export interface OtherHoldingsWarning {
     account: string;
-    /** One kind today; a union so a second one is a type error rather than a silent string. */
-    kind: "unpriced";
+    /**
+     * `unpriced`: the row's value has no price route, so it is excluded and
+     * sorted last. `unpriced-cost`: the value is fine but the at-cost basis is
+     * not, so cost/change are blank. The engine never emits both for one row.
+     */
+    kind: "unpriced" | "unpriced-cost";
     message: string;
 }
 

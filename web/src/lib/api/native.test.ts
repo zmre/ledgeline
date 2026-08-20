@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {ApiUnreachableError} from "./client";
 import {
     ConflictError,
+    EngineRefusalError,
     LedgelineApi,
     MAX_UPLOAD_BYTES,
     NATIVE_UNAVAILABLE_MESSAGE,
@@ -162,6 +163,21 @@ describe("UNIT LedgelineApi — error taxonomy", () => {
         await expect(new LedgelineApi("http://127.0.0.1:5000").otherHoldings({asOf: "2026-07-08"})).rejects.toThrow(sentence);
     });
 
+    // …and it used to wear ApiUnreachableError while doing so, which every
+    // class-branching consumer (editFailure's "network" kind, the setup modal's
+    // launch-command hint) read as connectivity trouble. A 400 is the engine
+    // ANSWERING — it refused the journal, not the connection — so it carries
+    // the same taxonomy the write path gives its 400s.
+    it("types a 400 read refusal as EngineRefusalError, never as an unreachable engine", async () => {
+        const sentence = "account 'assets:x' declares `issection: vibes`, which is not a section";
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(sentence, {status: 400, statusText: "Bad Request"})));
+        const promise = new LedgelineApi("http://127.0.0.1:5000").incomeStatementGrouped();
+
+        await expect(promise).rejects.toBeInstanceOf(EngineRefusalError);
+        await expect(promise).rejects.not.toBeInstanceOf(ApiUnreachableError);
+        await expect(promise).rejects.toThrow(sentence);
+    });
+
     it("falls back to the status line when the body is empty", async () => {
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("   ", {status: 503, statusText: "Service Unavailable"})));
 
@@ -308,6 +324,35 @@ describe("UNIT LedgelineApi — write error taxonomy", () => {
     it("uses the fallback message when the error body is empty", async () => {
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(textResponse("", 400)));
         await expect(new LedgelineApi("http://127.0.0.1:5000").addTransaction(ADD_BODY)).rejects.toThrow("The transaction is invalid.");
+    });
+
+    // The read path's readErrorBody guards, arriving on the write path: a POST
+    // through a misbehaving proxy answers with an HTML 502 document, and a page
+    // of markup in the edit-failure toast is strictly worse than the status line.
+    it("reports the status line, not a proxy's HTML page, when a POST hits a bad gateway", async () => {
+        const page = "<!doctype html><html><body><h1>502 Bad Gateway</h1></body></html>";
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(page, {status: 502, statusText: "Bad Gateway"})));
+        const promise = new LedgelineApi("http://127.0.0.1:5000").addTransaction(ADD_BODY);
+
+        await expect(promise).rejects.toBeInstanceOf(ApiUnreachableError);
+        await expect(promise).rejects.toThrow(/responded 502 Bad Gateway/);
+        await expect(promise).rejects.not.toThrow(/doctype/);
+    });
+
+    it("refuses an over-long write error body rather than truncating it into a half sentence", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("x".repeat(501), {status: 500, statusText: "Internal Server Error"})));
+
+        await expect(new LedgelineApi("http://127.0.0.1:5000").deleteTransaction(1)).rejects.toThrow(/responded 500 Internal Server Error/);
+    });
+
+    it("falls back to the mapped status's own sentence when a proxy's HTML page answers it", async () => {
+        // The guard empties the message; the 400 branch then supplies its
+        // friendly fallback rather than the raw markup.
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<!doctype html><h1>400</h1>", {status: 400, statusText: "Bad Request"})));
+        const promise = new LedgelineApi("http://127.0.0.1:5000").addTransaction(ADD_BODY);
+
+        await expect(promise).rejects.toBeInstanceOf(ValidationError);
+        await expect(promise).rejects.toThrow("The transaction is invalid.");
     });
 });
 

@@ -991,6 +991,27 @@ function decodeNullableEnum<T extends string>(allowed: readonly T[], raw: string
     return decodeEnum(allowed, raw, context);
 }
 
+/**
+ * A STRING that may be NULL but may not be ABSENT — `decodeNullableEnum` with
+ * the closed vocabulary swapped for free text.
+ *
+ * `base` on the two grouped statements is the caller: `Option<Commodity>` on
+ * the Rust side with no `skip_serializing_if`, so the key is ALWAYS on the
+ * wire and `null` is a real answer — "this journal has no base commodity" —
+ * that the UI renders differently (there is no dominant figure to promote).
+ * Collapsing an absent key into that answer would make a renamed Rust field
+ * indistinguishable from an honest no-base journal under version skew, which
+ * is exactly the silent loss `term`/`check`/`balanced` all throw on. (`optStr`
+ * is the deliberate opposite half: it reads absence itself as the fact, for
+ * keys serde is allowed to omit.)
+ */
+function decodeNullableStr(raw: string | null | undefined, context: string): string | null {
+    if (raw === null) return null;
+    if (raw === undefined) throw new ApiShapeError(`${context}: expected a string or null, got nothing`);
+    if (typeof raw !== "string") throw new ApiShapeError(`${context}: expected a string or null, got ${JSON.stringify(raw)}`);
+    return raw;
+}
+
 function decodeBsGroup(raw: RawBsGroup | undefined, context: string): BsGroup {
     // `rows` is demanded even though a computed group's is always `[]`: absent
     // and empty are different facts, and only one of them is safe to render as
@@ -1049,7 +1070,8 @@ function decodeBsSection(raw: RawBsSection | undefined, context: string): BsSect
  * `base` is `Option<Commodity>` on the Rust side and arrives as `null` for a
  * journal with no base commodity — a fact the UI has to render differently
  * (there is no dominant figure to promote), so it is kept as null rather than
- * coerced to "".
+ * coerced to "". The KEY itself is always sent, so its absence throws — see
+ * `decodeNullableStr`.
  *
  * `kind: "balanceSheet"` is added HERE and is not on the wire: this report and
  * `SectionedReport` both carry a `sections` array, and the page picks its
@@ -1060,13 +1082,10 @@ export function decodeBalanceSheetReport(raw: unknown): BalanceSheetReport {
     if (typeof report !== "object" || report === null || typeof report.asOf !== "string" || !Array.isArray(report.sections)) {
         throw new ApiShapeError("balance sheet: expected asOf and a sections array");
     }
-    if (report.base !== null && report.base !== undefined && typeof report.base !== "string") {
-        throw new ApiShapeError("balance sheet base: expected a commodity string or null");
-    }
     const out: BalanceSheetReport = {
         kind: "balanceSheet",
         asOf: report.asOf as ISODate,
-        base: typeof report.base === "string" ? report.base : null,
+        base: decodeNullableStr(report.base, "balance sheet base"),
         value: decodeEnum(BS_VALUATIONS, report.value, "balance sheet value"),
         sections: frozen(report.sections.map((section, i) => decodeBsSection(section, `balance sheet section #${i}`))),
         netWorth: decodeMixed(report.netWorth, "balance sheet netWorth"),
@@ -1196,9 +1215,6 @@ export function decodeIncomeStatementReport(raw: unknown): IncomeStatementReport
     if (typeof report !== "object" || report === null || typeof report.from !== "string" || typeof report.to !== "string" || !Array.isArray(report.sections)) {
         throw new ApiShapeError("income statement: expected from, to and a sections array");
     }
-    if (report.base !== null && report.base !== undefined && typeof report.base !== "string") {
-        throw new ApiShapeError("income statement base: expected a commodity string or null");
-    }
     // Omitted (or null) for `compare=none`; a window for `compare=previous`.
     const prior = report.prior === undefined || report.prior === null ? null : decodeDateRange(report.prior, "income statement prior");
     const comparing = prior !== null;
@@ -1207,7 +1223,8 @@ export function decodeIncomeStatementReport(raw: unknown): IncomeStatementReport
         from: report.from as ISODate,
         to: report.to as ISODate,
         prior,
-        base: typeof report.base === "string" ? report.base : null,
+        // Null is the no-base answer; absent throws (see `decodeNullableStr`).
+        base: decodeNullableStr(report.base, "income statement base"),
         value: decodeEnum(BS_VALUATIONS, report.value, "income statement value"),
         sections: frozen(report.sections.map((section, i) => decodeIsSection(section, `income statement section #${i}`, comparing))),
         netIncome: decodeAmounts(report.netIncome, "income statement netIncome", comparing),
@@ -1403,9 +1420,9 @@ function decodeOtherWarning(raw: RawOtherWarning | undefined, context: string): 
     if (raw === undefined || typeof raw.account !== "string" || typeof raw.message !== "string") {
         throw new ApiShapeError(`${context}: missing account/message`);
     }
-    // One kind today. Throwing on a new one is the same call `decodeWarning`
-    // makes: a warning we cannot classify is not a warning we should render.
-    if (raw.kind !== "unpriced") {
+    // Throwing on a new kind is the same call `decodeWarning` makes: a warning
+    // we cannot classify is not a warning we should render.
+    if (raw.kind !== "unpriced" && raw.kind !== "unpriced-cost") {
         throw new ApiShapeError(`${context}: unknown warning kind ${JSON.stringify(raw.kind)}`);
     }
     return Object.freeze({account: raw.account, kind: raw.kind, message: raw.message});
@@ -2392,7 +2409,10 @@ export interface JournalInfo {
  */
 export function decodeJournalInfo(raw: unknown): JournalInfo {
     const info = raw as RawJournalInfo;
-    if (typeof info !== "object" || info === null) throw new ApiShapeError("journal info: expected an object");
+    // Arrays are `typeof "object"` too, and `[].title` is undefined — so a JSON
+    // array body used to be absorbed as {title: null, file: null}, an answer no
+    // engine ever gave, instead of the non-engine-server throw it is.
+    if (typeof info !== "object" || info === null || Array.isArray(info)) throw new ApiShapeError("journal info: expected an object");
     return Object.freeze({
         title: optStr(info.title, "journal info title"),
         file: optStr(info.file, "journal info file"),

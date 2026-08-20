@@ -294,6 +294,21 @@ describe("UNIT nativeDecode — BalanceSheetReport (grouped)", () => {
             return copy;
         };
 
+        // `base` is `Option<Commodity>` with no `skip_serializing_if`, so the
+        // key is ALWAYS on the wire and `null` is the real "no base commodity"
+        // answer. An absent key must throw rather than collapse into it —
+        // under version skew a renamed `base` would otherwise silently render
+        // the no-base presentation, exactly the loss `term`/`check`/`balanced`
+        // all throw on (see decodeNullableStr).
+        it("throws when `base` is absent — null is how 'no base commodity' is said", () => {
+            expect(() => decodeBalanceSheetReport(without("base"))).toThrow(ApiShapeError);
+            expect(() => decodeBalanceSheetReport(without("base"))).toThrow(/base: expected a string or null, got nothing/);
+        });
+
+        it("throws when `base` is present but is not a string or null", () => {
+            expect(() => decodeBalanceSheetReport(mutate({base: 7}))).toThrow(/base: expected a string or null/);
+        });
+
         // A MISSING check must never read as "balanced" — that is the single
         // wrong answer this field is capable of giving (DRY-3).
         it("throws when `check` is absent instead of defaulting to balanced", () => {
@@ -489,6 +504,15 @@ describe("UNIT nativeDecode — IncomeStatementReport (grouped)", () => {
             const nulled = {...(UNCOMPARED_INCOME_STATEMENT as object), prior: null, netIncome: {current: {}, prior: null}};
             expect(decodeIncomeStatementReport(nulled).prior).toBeNull();
             expect(decodeIncomeStatementReport(nulled).netIncome.prior).toBeUndefined();
+        });
+
+        // Same strictness as the balance sheet's `base`, and for the same
+        // reason: the Rust struct always sends the key, and null already says
+        // "no base commodity" explicitly.
+        it("throws when `base` is absent — null is how 'no base commodity' is said", () => {
+            expect(() => decodeIncomeStatementReport(without("base"))).toThrow(ApiShapeError);
+            expect(() => decodeIncomeStatementReport(without("base"))).toThrow(/base: expected a string or null, got nothing/);
+            expect(() => decodeIncomeStatementReport(mutate({base: 7}))).toThrow(/base: expected a string or null/);
         });
 
         it("throws when `multiStep` is absent or is not a boolean", () => {
@@ -892,6 +916,13 @@ describe("UNIT nativeDecode — OtherHoldingsReport (plans/14)", () => {
 
     it("rejects an unknown warning kind", () => {
         expect(() => decodeOtherHoldingsReport({...RAW, warnings: [{account: "a", kind: "surprise", message: "?"}]})).toThrow(/unknown warning kind/);
+    });
+
+    it("accepts the engine's unpriced-cost warning kind", () => {
+        // The wire's second kind (a stranded at-cost basis under a priced
+        // value); rejecting it would ApiShapeError the whole report.
+        const warning = {account: "a", kind: "unpriced-cost", message: "cost unknown"};
+        expect(decodeOtherHoldingsReport({...RAW, warnings: [warning]}).warnings[0]).toEqual(warning);
     });
 
     it("throws ApiShapeError when any unconditional key is missing", () => {
@@ -1404,6 +1435,10 @@ describe("UNIT nativeDecode — journal identity (which ledger is on screen)", (
         // string or array reaches here.
         expect(() => decodeJournalInfo(null)).toThrow(ApiShapeError);
         expect(() => decodeJournalInfo("Acme Books")).toThrow(ApiShapeError);
+        // `typeof [] === "object"`, and `[].title` is undefined — an array used
+        // to be absorbed as {title: null, file: null}, an answer no engine gave.
+        expect(() => decodeJournalInfo([])).toThrow(ApiShapeError);
+        expect(() => decodeJournalInfo(["Acme Books"])).toThrow(ApiShapeError);
     });
 });
 
