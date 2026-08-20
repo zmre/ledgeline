@@ -151,21 +151,29 @@ export function bsGroupKey(sectionKind: string, groupName: string, term: BsTerm 
 }
 
 /**
- * The row key for a band's subheading.
+ * The row key for a band's subheading. `occurrence` is which OPENING of the
+ * band this is — 1 everywhere the engine's contiguity contract holds, and
+ * occurrence 1 is unsuffixed on purpose, so a well-formed report's keys are
+ * byte-for-byte what they have always been.
  *
  * The band rows share the group keyspace (`{kind}/{name}`), so they take an `@`
  * sigil: `bsgroup:` values are free text, and a group named exactly "@current"
- * is the only way to collide with one. Neither band row is in the collapse set
- * or the cursor list, so such a collision would cost a duplicate `{#each}` key
- * and nothing else.
+ * is the only way to collide with one. An earlier version of this comment
+ * called such a collision "a duplicate `{#each}` key and nothing else" — wrong:
+ * Svelte 5's keyed `{#each}` throws `each_key_duplicate` in dev and misrenders
+ * in prod, so one duplicated key blanks the whole statement. That severity is
+ * why a band that opens a second time (the non-contiguity break — see
+ * `bsSectionBlocks`) numbers its later openings into the key rather than
+ * reusing the first one.
  */
-export function bsSubsectionKey(sectionKind: string, term: BsTerm): string {
-    return `${sectionKind}/@${term}`;
+export function bsSubsectionKey(sectionKind: string, term: BsTerm, occurrence = 1): string {
+    const key = `${sectionKind}/@${term}`;
+    return occurrence === 1 ? key : `${key}#${occurrence}`;
 }
 
-/** The row key for a band's subtotal. */
-export function bsSubtotalKey(sectionKind: string, term: BsTerm): string {
-    return `${sectionKind}/@${term}/total`;
+/** The row key for a band's subtotal — occurrence-numbered with its subheading. */
+export function bsSubtotalKey(sectionKind: string, term: BsTerm, occurrence = 1): string {
+    return `${bsSubsectionKey(sectionKind, term, occurrence)}/total`;
 }
 
 /**
@@ -196,11 +204,22 @@ export interface BsSectionBlock {
  * Otherwise the walk leans on the engine's ordering invariant (groups of one
  * term are contiguous): a band opens at the first group whose term differs from
  * its predecessor's and closes at the last group whose term differs from its
- * successor's. Two things the contract says cannot happen are nonetheless
- * handled in the direction that loses nothing — a group whose term names no
+ * successor's. Three things the contract says cannot happen are nonetheless
+ * handled in the direction that loses nothing. A group whose term names no
  * band, and a group with no term at all, both still render their own line, just
- * without a heading over them. A band with no groups is never emitted, so a
- * subheading can never stand over nothing.
+ * without a heading over them. And groups of one term arriving NON-CONTIGUOUSLY
+ * — [current, noncurrent, current] — simply RE-OPEN the band: the stray run
+ * gets the heading and the engine's subtotal again, in the engine's own order.
+ * Coalescing the runs into one band would have made each subtotal truthful
+ * about exactly the rows above it, but only by silently REORDERING the engine's
+ * groups — and this module reorders nothing anywhere else, so a band that
+ * visibly opens twice is honest about the broken input where a quietly
+ * relocated group would repair it behind the reader's back. The one thing a
+ * re-opened band must not do is reuse its first opening's row keys, which
+ * Svelte punishes as a blank statement rather than tolerating (see
+ * `bsSubsectionKey`); `sectionDisplayRows` numbers the openings for that.
+ * A band with no groups is never emitted, so a subheading can never stand over
+ * nothing.
  */
 export function bsSectionBlocks(section: BsSection): BsSectionBlock[] {
     const groups = section.groups;
@@ -232,11 +251,19 @@ export function bsSectionBlocks(section: BsSection): BsSectionBlock[] {
  */
 export function sectionDisplayRows(section: BsSection, isExpanded: (key: string) => boolean): BsDisplayRow[] {
     const out: BsDisplayRow[] = [];
+    // Which opening of each band we are inside. Stays at 1 for any section the
+    // engine's contiguity contract holds for; it passes 1 only on the
+    // non-contiguity break (see `bsSectionBlocks`), where the occurrence number
+    // is what keeps a re-opened band's two rows from reusing the first
+    // opening's keys.
+    const openings = new Map<BsTerm, number>();
     for (const {opens, group, closes} of bsSectionBlocks(section)) {
         if (opens !== null) {
+            const occurrence = (openings.get(opens.term) ?? 0) + 1;
+            openings.set(opens.term, occurrence);
             out.push({
                 kind: "subsection",
-                key: bsSubsectionKey(section.kind, opens.term),
+                key: bsSubsectionKey(section.kind, opens.term, occurrence),
                 label: opens.heading,
                 indent: 0,
                 account: null,
@@ -272,7 +299,11 @@ export function sectionDisplayRows(section: BsSection, isExpanded: (key: string)
         if (closes !== null) {
             out.push({
                 kind: "subtotal",
-                key: bsSubtotalKey(section.kind, closes.term),
+                // A subtotal closes the opening it sits inside, so the count at
+                // close time IS this row's occurrence. (`?? 1` satisfies the
+                // types, not a reachable case: a run's first group always fires
+                // `opens` before its last fires `closes`.)
+                key: bsSubtotalKey(section.kind, closes.term, openings.get(closes.term) ?? 1),
                 label: closes.label,
                 // The engine's own subtotal, passed through by reference. Summing
                 // the group lines here would re-add figures already rounded for

@@ -358,6 +358,64 @@ describe("UNIT reports/ui/balanceSheetRows — current / non-current bands", () 
                 ["group", "Retained earnings"],
             ]);
         });
+
+        describe("groups of one term arriving non-contiguously", () => {
+            // Terms [current, noncurrent, current]: the ordering invariant the
+            // one-pass walk leans on, broken. The degradation is to RE-OPEN the
+            // band — same heading, same engine subtotal, in the engine's own
+            // order — never to move the stray group up to "repair" the run:
+            // this module reorders nothing anywhere else, and a band that
+            // visibly opens twice is honest about the input where a quietly
+            // relocated group is not.
+            const [cash, receivable, property] = BANDED_ASSETS.groups;
+            const NONCONTIGUOUS: BsSection = {...BANDED_ASSETS, groups: [cash, property, receivable]};
+
+            it("re-opens the band around the stray group instead of losing or moving it", () => {
+                expect(shape(NONCONTIGUOUS)).toEqual([
+                    ["subsection", "Current"],
+                    ["group", "Cash and cash equivalents"],
+                    ["subtotal", "Total current assets"],
+                    ["subsection", "Non-current"],
+                    ["group", "Property"],
+                    ["subtotal", "Total non-current assets"],
+                    ["subsection", "Current"],
+                    ["group", "Accounts receivable"],
+                    ["subtotal", "Total current assets"],
+                ]);
+            });
+
+            it("keys the re-opened band by occurrence, so no two rows share a key", () => {
+                // Without the occurrence counter both Current bands minted
+                // "assets/@current" (and its "/total"), and a duplicate key is
+                // not the cosmetic flaw an old comment here called it: Svelte 5's
+                // keyed {#each} throws `each_key_duplicate` in dev and misrenders
+                // in prod — the whole statement blanked, a strictly worse outcome
+                // than the contract break that provoked it.
+                const rows = sectionDisplayRows(NONCONTIGUOUS, NONE);
+                const keys = rows.map((r) => r.key);
+
+                expect(new Set(keys).size).toBe(keys.length);
+                expect(rows.filter((r) => r.kind === "subsection").map((r) => r.key)).toEqual(["assets/@current", "assets/@noncurrent", "assets/@current#2"]);
+                expect(rows.filter((r) => r.kind === "subtotal").map((r) => r.key)).toEqual([
+                    "assets/@current/total",
+                    "assets/@noncurrent/total",
+                    "assets/@current#2/total",
+                ]);
+            });
+
+            it("keeps a well-formed report's band keys exactly as they were", () => {
+                // Occurrence 1 is unsuffixed on purpose: the counter exists for a
+                // report that cannot happen, and must cost a contract-keeping one
+                // nothing — not even its key strings.
+                const rows = sectionDisplayRows(BANDED_ASSETS, NONE);
+                expect(rows.filter((r) => r.kind !== "group").map((r) => r.key)).toEqual([
+                    "assets/@current",
+                    "assets/@current/total",
+                    "assets/@noncurrent",
+                    "assets/@noncurrent/total",
+                ]);
+            });
+        });
     });
 
     describe("bsCursorRows", () => {

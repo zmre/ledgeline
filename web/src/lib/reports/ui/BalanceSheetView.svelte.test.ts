@@ -429,6 +429,39 @@ describe("COMPONENT BalanceSheetView", () => {
                 expect([...container.querySelectorAll("[data-account]")].map((el) => el.getAttribute("data-account"))).toEqual(["assets:broker:ira"]);
             });
         });
+
+        describe("groups of one term arriving non-contiguously", () => {
+            // Terms [current, noncurrent, current] — the ordering invariant the
+            // row model's one-pass walk leans on, broken. The row model degrades
+            // by re-opening the band under occurrence-numbered keys; what only a
+            // mounted test can see is the failure that made this contract break
+            // worse than the other two: a duplicate `{#each}` key is a
+            // mount-time `each_key_duplicate` throw in dev and a misrender in
+            // prod — the whole statement blanked, not one heading missing.
+            const [assets, liabilities, equity] = CLASSIFIED.sections;
+            const [cash, receivable, property] = assets.groups;
+            const NONCONTIGUOUS = {...CLASSIFIED, sections: [{...assets, groups: [cash, property, receivable]}, liabilities, equity]};
+
+            it("still mounts, with every group under a heading and the band visibly re-opened", () => {
+                const {container} = mount(NONCONTIGUOUS);
+
+                expect(boxRows("assets")).toEqual([
+                    ["bs-subsection-assets-current", "Current"],
+                    ["", "Cash and cash equivalents"],
+                    ["bs-subtotal-assets-current", "Total current assets"],
+                    ["bs-subsection-assets-noncurrent", "Non-current"],
+                    ["", "Property"],
+                    ["bs-subtotal-assets-noncurrent", "Total non-current assets"],
+                    ["bs-subsection-assets-current", "Current"],
+                    ["", "Accounts receivable"],
+                    ["bs-subtotal-assets-current", "Total current assets"],
+                ]);
+                // The prod-mode failure, pinned where prod would show it: two rows
+                // sharing one key. `data-bs-row` IS the `{#each}` key on every row.
+                const keys = [...container.querySelectorAll("[data-bs-row]")].map((el) => el.getAttribute("data-bs-row"));
+                expect(new Set(keys).size).toBe(keys.length);
+            });
+        });
     });
 
     describe("the tie-out, net worth and the balance check", () => {
