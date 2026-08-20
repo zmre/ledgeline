@@ -1301,3 +1301,124 @@ account patrimonio:inicio      ; type: E
     // Neither child restates the tag; both inherit it from `activo:inmueble`.
     assert_eq!(non_current.total, usd(30_000_000, 2));
 }
+
+/// plans/12, decision 3: once the split is on, the BUILT-IN Investments group —
+/// membership decided by the commodity signal, no tag anywhere near it —
+/// defaults to NON-current. The `TERMS` fixture cannot see this: its only
+/// untagged asset group is a tagged-`bsgroup:` custom one, which pins the
+/// Current default and leaves the Investments branch of `resolve_bs_term`
+/// untested end to end.
+///
+/// Ground truth (hledger 1.52):
+///   hledger -f inv-terms.journal bal type:A -e 2027-01-01 --value=end,'$'
+///     $82,000.00  activo:banco      <- type:C, current by default
+///      $5,500.00  activo:bolsa      <- 100 ACC at the $55.00 quote
+#[test]
+fn the_built_in_investments_group_defaults_to_non_current() {
+    let text = "\
+account activo:banco       ; type: C
+account activo:bolsa       ; type: A
+account pasivo:hipoteca    ; type: L, bsterm: noncurrent
+account patrimonio:inicio  ; type: E
+
+P 2026-06-01 ACC $55.00
+
+2026-01-01 apertura
+    activo:banco             $66,000.00
+    patrimonio:inicio
+
+2026-02-01 corretaje
+    activo:bolsa             100 ACC @@ $4,000.00
+    activo:banco
+
+2026-03-01 hipoteca
+    activo:banco             $20,000.00
+    pasivo:hipoteca
+";
+    let journal = parse_journal(text, "inv-terms.journal").expect("journal parses");
+    // MARKET, not the unvalued basis the other term tests use: with no base
+    // commodity the commodity signal is off and nothing can be Investments.
+    let report = report(&journal, "2026-12-31", None, Valuation::Market);
+
+    let assets = &report.sections[0];
+    let investments = assets
+        .groups
+        .iter()
+        .find(|group| group.name == INVESTMENTS_GROUP)
+        .expect("the securities land in the built-in group");
+    assert_eq!(
+        investments.source,
+        GroupSource::Commodity,
+        "no tag involved"
+    );
+    assert_eq!(
+        investments.term,
+        Some(BsTerm::NonCurrent),
+        "untagged Investments defaults to non-current once the split is on"
+    );
+
+    // ...and the subsection totals agree: the bank alone is current, the
+    // brokerage alone is non-current.
+    let sub_totals: Vec<(&str, &MixedAmount)> = assets
+        .subsections
+        .iter()
+        .map(|sub| (sub.heading.as_str(), &sub.total))
+        .collect();
+    assert_eq!(
+        sub_totals,
+        vec![
+            ("Current", &usd(8_200_000, 2)),
+            ("Non-current", &usd(550_000, 2)),
+        ]
+    );
+}
+
+/// The documented (term, name) straddle: a group is keyed by (term, line), so
+/// ONE `bsgroup:` whose accounts sit in both halves prints as TWO lines, the
+/// same name under each subheading — a receivable due this year and one due in
+/// five really are two lines on a real statement (docs/balance-sheet.md).
+///
+/// Ground truth (hledger 1.52):
+///   hledger -f straddle.journal bal type:A -e 2027-01-01
+///     $2,000.00  activo:deudores:corto     <- untagged, current by default
+///     $5,000.00  activo:deudores:largo     <- bsterm: noncurrent
+#[test]
+fn one_group_straddling_the_halves_prints_as_two_lines() {
+    let text = "\
+account activo:deudores:corto  ; type: A, bsgroup: Deudores
+account activo:deudores:largo  ; type: A, bsgroup: Deudores, bsterm: noncurrent
+account patrimonio:inicio      ; type: E
+
+2026-01-01 apertura
+    activo:deudores:corto   $2,000.00
+    activo:deudores:largo   $5,000.00
+    patrimonio:inicio
+";
+    let report = terms_report(text);
+    let assets = &report.sections[0];
+
+    // One name, two lines, one under each term band — current first.
+    let lines: Vec<(&str, Option<BsTerm>, &MixedAmount)> = assets
+        .groups
+        .iter()
+        .map(|group| (group.name.as_str(), group.term, &group.total))
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            ("Deudores", Some(BsTerm::Current), &usd(200_000, 2)),
+            ("Deudores", Some(BsTerm::NonCurrent), &usd(500_000, 2)),
+        ]
+    );
+
+    // Each half's subtotal is its own line, and the two still sum to the box.
+    assert_eq!(assets.subsections[0].total, usd(200_000, 2));
+    assert_eq!(assets.subsections[1].total, usd(500_000, 2));
+    assert_eq!(
+        assets.subsections[0]
+            .total
+            .ma_add(&assets.subsections[1].total)
+            .unwrap(),
+        assets.total
+    );
+}

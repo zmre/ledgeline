@@ -122,9 +122,16 @@ So the brokerage above needed no tag. Only three accounts in that example carry
 one.
 
 `bsterm:` **inherits to sub-accounts** like every other tag here, and it is a
-closed vocabulary — `current` and `noncurrent` (plus `short`/`long` spellings) —
-refused by name when misspelt, because a term that quietly falls back files a
-balance into the wrong subtotal and leaves the statement looking fine.
+closed vocabulary, refused by name when misspelt, because a term that quietly
+falls back files a balance into the wrong subtotal and leaves the statement
+looking fine. The canonical spellings are `current` and `noncurrent` — the two
+the error message names — and these synonyms are also accepted, matched
+case-insensitively:
+
+| Term        | Accepted spellings                              |
+|-------------|-------------------------------------------------|
+| current     | `current`, `short`, `shortterm`, `short-term`   |
+| non-current | `noncurrent`, `non-current`, `long`, `longterm`, `long-term` |
 
 **Equity is never split.** The question the split asks — when does this become
 cash, when does this come due — is not one you ask of capital.

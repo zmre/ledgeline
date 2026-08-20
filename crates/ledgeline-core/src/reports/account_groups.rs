@@ -159,6 +159,16 @@ impl BsTerm {
 }
 
 /// Parse a `bsterm:` tag value; `None` for anything outside the vocabulary.
+///
+/// The canonical spellings — the wire codes, and the only two
+/// [`ReportError::UnknownBsTerm`] names — are `current` and `noncurrent`.
+/// Accepted on top of them, trimmed and case-insensitively: `short`,
+/// `shortterm` and `short-term` for current; `non-current`, `long`, `longterm`
+/// and `long-term` for non-current. The synonyms are documented in
+/// `docs/balance-sheet.md` and journals rely on them, so "aligning" this match
+/// with the error message's two-word vocabulary is not a cleanup — dropping a
+/// spelling turns every account tagged with it into an [`ReportError::UnknownBsTerm`]
+/// refusal at report time.
 #[must_use]
 pub fn parse_bs_term_tag(value: &str) -> Option<BsTerm> {
     match value.trim().to_lowercase().as_str() {
@@ -665,6 +675,78 @@ mod tests {
         let first: Vec<_> = names.iter().map(|name| groups.resolve(name)).collect();
         let second: Vec<_> = names.iter().map(|name| groups.resolve(name)).collect();
         assert_eq!(first, second);
+    }
+
+    /// Every spelling `parse_bs_term_tag` accepts, pinned one by one. The plan
+    /// locks the vocabulary to `current | noncurrent` — the two the
+    /// `UnknownBsTerm` error names — and the synonyms are accepted on top of
+    /// it, so an "align the parser with the error message" cleanup that
+    /// dropped a spelling would break every journal using it (each tagged
+    /// account becomes an `UnknownBsTerm` refusal). Conversely, nothing
+    /// OUTSIDE this list may ever parse: a lenient fallback would file
+    /// misspellings under `Current` silently.
+    #[test]
+    fn parse_bs_term_accepts_exactly_the_documented_spellings() {
+        for spelling in ["current", "short", "shortterm", "short-term"] {
+            assert_eq!(
+                parse_bs_term_tag(spelling),
+                Some(BsTerm::Current),
+                "{spelling:?}"
+            );
+        }
+        for spelling in ["noncurrent", "non-current", "long", "longterm", "long-term"] {
+            assert_eq!(
+                parse_bs_term_tag(spelling),
+                Some(BsTerm::NonCurrent),
+                "{spelling:?}"
+            );
+        }
+        // Trimmed and case-insensitive, like every tag value on this sheet.
+        assert_eq!(parse_bs_term_tag("  Short-Term "), Some(BsTerm::Current));
+        assert_eq!(parse_bs_term_tag("LONG"), Some(BsTerm::NonCurrent));
+        // Anything else is refused, never defaulted.
+        for outside in ["", "curr", "currentt", "non current", "long-ish"] {
+            assert_eq!(parse_bs_term_tag(outside), None, "{outside:?}");
+        }
+    }
+
+    /// plans/12, decision 3: once the split is on, an untagged account on the
+    /// BUILT-IN Investments group defaults to NON-current, and untagged
+    /// accounts on every other group default to Current. Flipping (or
+    /// deleting) the `INVESTMENTS_GROUP` branch in `resolve_bs_term` fails the
+    /// first assertion.
+    #[test]
+    fn resolve_bs_term_defaults_investments_to_non_current_and_the_rest_to_current() {
+        let untagged = BTreeMap::new();
+        assert_eq!(
+            resolve_bs_term("assets:broker:taxable:aapl", INVESTMENTS_GROUP, &untagged),
+            BsTerm::NonCurrent,
+            "the built-in Investments group is non-current by default"
+        );
+        for group in [CASH_GROUP, "Accounts receivable", "Cartera"] {
+            assert_eq!(
+                resolve_bs_term("assets:whatever", group, &untagged),
+                BsTerm::Current,
+                "group {group:?}"
+            );
+        }
+
+        // A declared tag — own or inherited from the nearest declared
+        // ancestor — beats the group default in BOTH directions.
+        let declared: BTreeMap<String, BsTerm> = BTreeMap::from([
+            ("assets:broker".to_string(), BsTerm::Current),
+            ("assets:vault".to_string(), BsTerm::NonCurrent),
+        ]);
+        assert_eq!(
+            resolve_bs_term("assets:broker:taxable:aapl", INVESTMENTS_GROUP, &declared),
+            BsTerm::Current,
+            "an inherited tag overrides the Investments default"
+        );
+        assert_eq!(
+            resolve_bs_term("assets:vault:gold", CASH_GROUP, &declared),
+            BsTerm::NonCurrent,
+            "an inherited tag overrides the Current default"
+        );
     }
 
     #[test]
