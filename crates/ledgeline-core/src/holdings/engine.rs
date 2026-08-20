@@ -37,9 +37,14 @@ use crate::decimal::{Dec, DecError};
 use crate::model::{
     AccountDeclaration, Commodity, Cost, CostKind, PriceDirective, Tindex, Transaction,
 };
-use crate::reports::account_types::{account_decls_from, declared_types, resolve_account_type};
+use crate::reports::account_types::{
+    AccountTypes, account_decls_from, declared_types, resolve_account_type,
+};
 use crate::reports::prices::{div_round_half_even, mul_raw, per_unit_from_total, pow10};
-use crate::reports::{AccountType, PriceDb, ReportError, account_matches};
+use crate::reports::{
+    AccountType, MixedAmount, PostingFilter, PriceDb, ReportError, ValuationMeta, account_matches,
+    account_totals, infer_market_prices, value_at,
+};
 use crate::wire::{account_tag_map, inherited_account_tags};
 
 use super::classify::{HoldingsClass, declared_holdings_classes, resolve_holdings_class};
@@ -1374,6 +1379,110 @@ pub fn prices_any_held(
         &inputs.db,
         &scope.as_of,
     )? > 0)
+}
+
+/// [`prices_any_held`]'s admission question, asked about the OTHER tab: true
+/// when valuing this scope's Other-tab rows in `target` prices at least one of
+/// the commodities they hold (vacuously true for a scope holding nothing).
+///
+/// A sibling rather than a flag on [`prices_any_held`] because the two tabs
+/// measure DIFFERENT sets built by different means: [`scope_predicate`] drops
+/// every `holdings: other`/`none` account and [`held_symbols`] nets non-currency
+/// share quantities, while this tab's rows are account balances whose CURRENCY
+/// amounts count too (a dollar-booked van is valued through `$`). Gating an
+/// Other request on the stocks-scoped test measured a portfolio the endpoint
+/// never serves: a commodity pricing every Other row was refused for pricing no
+/// stock, and a journal with no stocks at all vacuously admitted any typo.
+///
+/// The price set (cost-inferred directives, then explicit `P`) and the route
+/// test ([`value_at`]) are exactly the ones [`super::other`] values rows with,
+/// so admission can never disagree with the report it admits.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or an `account` directive whose
+/// `holdings:` value is outside the closed vocabulary.
+pub fn prices_any_held_other(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    scope: &HoldingsScope,
+    target: &Commodity,
+) -> Result<bool, ReportError> {
+    let held = other_held_commodities(txns, accounts, scope)?;
+    if held.is_empty() {
+        return Ok(true);
+    }
+    // Inferred first so an explicit `P` wins a same-date tie — the same set and
+    // order `other::OtherInputs::build` values the rows with.
+    let mut all_prices = infer_market_prices(txns)?;
+    all_prices.extend_from_slice(prices);
+    let db = PriceDb::build(&all_prices);
+    // One unit of each held commodity through the report's own valuation:
+    // whatever `meta` says is unpriced is exactly what the rows will warn about.
+    let units = held
+        .iter()
+        .try_fold(MixedAmount::default(), |mut units, commodity| {
+            units.ma_add_assign(&MixedAmount::single(commodity.clone(), Dec::new(1, 0)))?;
+            Ok::<_, ReportError>(units)
+        })?;
+    let mut meta = ValuationMeta::default();
+    value_at(&units, target, &db, &scope.as_of, Some(&mut meta))?;
+    Ok(meta.unpriced.len() < held.len())
+}
+
+/// Every commodity held at `scope.as_of` by an in-scope account belonging to
+/// the OTHER tab — the set whose price coverage [`prices_any_held_other`]
+/// measures, mirroring the account walk of `other::rows_at`.
+fn other_held_commodities(
+    txns: &[Transaction],
+    accounts: &[AccountDeclaration],
+    scope: &HoldingsScope,
+) -> Result<BTreeSet<Commodity>, ReportError> {
+    let types = AccountTypes::from_declared(declared_types(&account_decls_from(accounts)));
+    let classes = declared_holdings_classes(accounts)?;
+    let in_scope = scope_accounts(scope);
+    let totals = account_totals(
+        txns,
+        &PostingFilter {
+            to: Some(&scope.as_of),
+            ..PostingFilter::default()
+        },
+    )?;
+    Ok(totals.iter().filter(|(account, _)| in_scope(account)).fold(
+        BTreeSet::new(),
+        |mut held, (account, balance)| {
+            let mut commodities = balance.clone();
+            commodities.drop_zeros();
+            if !commodities.is_zero()
+                && is_other_holding_account(account, &commodities, &types, &classes)
+            {
+                held.extend(commodities.iter().map(|(commodity, _)| commodity.clone()));
+            }
+            held
+        },
+    ))
+}
+
+/// The Other tab's membership rule — `other::is_other_holding`, restated over
+/// the same classify/type primitives because that function is private to its
+/// report. Kept in lockstep deliberately: the admission test and the report
+/// must agree about membership, or a request is refused over rows it would
+/// never have served. Exactly [`AccountType::Asset`] (no `Cash` folding), then
+/// the `holdings:` override, then the untagged all-currency default.
+fn is_other_holding_account(
+    account: &str,
+    commodities: &MixedAmount,
+    types: &AccountTypes,
+    classes: &BTreeMap<String, HoldingsClass>,
+) -> bool {
+    types.resolve(account) == Some(AccountType::Asset)
+        && match resolve_holdings_class(account, classes) {
+            Some(HoldingsClass::Other) => true,
+            Some(HoldingsClass::Stocks | HoldingsClass::None) => false,
+            None => commodities
+                .iter()
+                .all(|(commodity, _)| is_currency(&commodity.0)),
+        }
 }
 
 /// Account predicate for a scope: `Include` + empty set = everything;
@@ -4212,6 +4321,171 @@ mod tests {
         let empty = scope("2025-01-01", ScopeMode::Include, &[]);
         assert!(any(&empty, "EUR"));
         assert!(any(&empty, "NOPE"));
+    }
+
+    /// A journal whose two tabs are priced through DISJOINT commodities: the
+    /// stock (VTI) only in `$` via its cost, the house (`holdings: other`) only
+    /// in EUR via an explicit `P`.
+    fn split_tab_journal() -> (
+        Vec<Transaction>,
+        Vec<PriceDirective>,
+        Vec<AccountDeclaration>,
+    ) {
+        let txns = vec![
+            txn(
+                1,
+                "2026-01-05",
+                vec![
+                    buy("assets:broker:vti", "VTI", 10, 10000, true),
+                    posting("equity:opening", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2026-01-10",
+                vec![
+                    posting("assets:house", vec![amt("HOUSE", 1, 0)], &[]),
+                    posting("equity:opening", vec![amt("HOUSE", -1, 0)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = vec![pd("2026-06-01", "HOUSE", 25_000_000, "EUR")];
+        let accounts = vec![account_decl(
+            "assets:house",
+            &[("type", "A"), ("holdings", "other")],
+        )];
+        (txns, prices, accounts)
+    }
+
+    /// The Other tab's admission test measures the OTHER rows, not the stock
+    /// portfolio: on the same journal the two functions answer in exactly
+    /// opposite directions, which is the scoping the HTTP layer relies on.
+    #[test]
+    fn prices_any_held_other_measures_the_other_rows_not_the_stock_portfolio() {
+        let (txns, prices, accounts) = split_tab_journal();
+        let sc = scope("2026-06-30", ScopeMode::Include, &[]);
+        let stocks = |target: &str| {
+            prices_any_held(
+                &txns,
+                &prices,
+                &accounts,
+                &sc,
+                &Commodity(target.to_string()),
+            )
+            .expect("coverage math does not overflow")
+        };
+        let other = |target: &str| {
+            prices_any_held_other(
+                &txns,
+                &prices,
+                &accounts,
+                &sc,
+                &Commodity(target.to_string()),
+            )
+            .expect("coverage math does not overflow")
+        };
+        assert!(other("EUR"), "EUR prices every Other row");
+        assert!(!stocks("EUR"), "…and nothing on the Stocks tab");
+        assert!(stocks("$"), "`$` prices the stock through its cost");
+        assert!(!other("$"), "…and no Other row");
+        assert!(other("HOUSE"), "a commodity always prices itself");
+        assert!(!other("XYZZY"));
+        // Before anything was bought, the Other test is vacuously true too:
+        // there is nothing a target could leave unpriced.
+        let empty = scope("2025-01-01", ScopeMode::Include, &[]);
+        assert!(
+            prices_any_held_other(
+                &txns,
+                &prices,
+                &accounts,
+                &empty,
+                &Commodity("XYZZY".to_string()),
+            )
+            .expect("coverage math does not overflow")
+        );
+    }
+
+    /// Scenario (b) of the endpoint bug, at the engine level: a journal with
+    /// ONLY Other holdings has an EMPTY stocks held-set, so [`prices_any_held`]
+    /// admits any commodity vacuously — which is exactly why it must not gate
+    /// this tab. The Other test still refuses a target pricing no row.
+    #[test]
+    fn an_other_only_journal_is_not_vacuously_admitted() {
+        let (mut txns, prices, accounts) = split_tab_journal();
+        txns.remove(0); // drop the VTI buy: nothing on the Stocks tab remains
+        let sc = scope("2026-06-30", ScopeMode::Include, &[]);
+        let typo = Commodity("XYZZY".to_string());
+        assert!(
+            prices_any_held(&txns, &prices, &accounts, &sc, &typo)
+                .expect("coverage math does not overflow"),
+            "the stocks test is vacuous here — the bug this sibling exists for"
+        );
+        assert!(
+            !prices_any_held_other(&txns, &prices, &accounts, &sc, &typo)
+                .expect("coverage math does not overflow"),
+            "a typo prices no Other row and must be refused"
+        );
+        assert!(
+            prices_any_held_other(
+                &txns,
+                &prices,
+                &accounts,
+                &sc,
+                &Commodity("EUR".to_string())
+            )
+            .expect("coverage math does not overflow")
+        );
+    }
+
+    /// Membership and scope both drive the Other admission test: an untagged
+    /// all-currency asset (a dollar-booked van) IS an Other row, so its own
+    /// currency is admitted — and narrowing the scope away from it changes the
+    /// answer, because admission follows the rows actually in scope.
+    #[test]
+    fn other_admission_follows_membership_and_scope() {
+        let txns = vec![
+            txn(
+                1,
+                "2026-01-10",
+                vec![
+                    posting("assets:vehicles:van", vec![usd(2_450_000)], &[]),
+                    posting("equity:opening", vec![usd(-2_450_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2026-01-15",
+                vec![
+                    posting("assets:house", vec![amt("HOUSE", 1, 0)], &[]),
+                    posting("equity:opening", vec![amt("HOUSE", -1, 0)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = vec![pd("2026-06-01", "HOUSE", 25_000_000, "EUR")];
+        let accounts = vec![account_decl(
+            "assets:house",
+            &[("type", "A"), ("holdings", "other")],
+        )];
+        let other = |sc: &HoldingsScope, target: &str| {
+            prices_any_held_other(
+                &txns,
+                &prices,
+                &accounts,
+                sc,
+                &Commodity(target.to_string()),
+            )
+            .expect("coverage math does not overflow")
+        };
+        let all = scope("2026-06-30", ScopeMode::Include, &[]);
+        assert!(other(&all, "$"), "the van's own currency admits `$`");
+        // Scope down to the house and `$` no longer prices anything in scope.
+        let house_only = scope("2026-06-30", ScopeMode::Include, &["assets:house"]);
+        assert!(!other(&house_only, "$"));
+        assert!(other(&house_only, "EUR"));
     }
 
     /// The commodity a report will be denominated in, without computing it.

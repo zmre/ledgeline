@@ -23,6 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::Json;
 use axum::extract::{Query, State};
 use ledgeline_core::Dec;
+use ledgeline_core::holdings::engine::prices_any_held_other;
 use ledgeline_core::holdings::{
     Holding, HoldingPrice, HoldingsPoint, HoldingsReport, HoldingsScope, HoldingsSeries,
     HoldingsTotals, HoldingsWarning, OtherHolding, OtherHoldingsReport, OtherHoldingsTotals,
@@ -1503,6 +1504,23 @@ fn parse_mode(raw: Option<&str>) -> Result<ScopeMode, AppError> {
     }
 }
 
+/// Which Holdings tab a request serves — and so which held set its `valueIn`
+/// (and demoted `D` default) admission test must measure price coverage over.
+///
+/// The two tabs hold DISJOINT rows (`holdings::engine::scope_predicate` drops
+/// every `holdings: other`/`none` account), so `/api/holdings/other[/series]`
+/// validating through the stocks-scoped `prices_any_held` answered a question
+/// about rows those endpoints never serve: a commodity pricing every Other row
+/// was a 400 because it priced no stock, and a journal with no stocks at all
+/// vacuously admitted any typo — the plausible-zero HOLD-3 exists to prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoldingsTab {
+    /// `/api/holdings[/series]` — commodity-keyed securities.
+    Stocks,
+    /// `/api/holdings/other[/series]` — account-keyed everything else.
+    Other,
+}
+
 /// Resolve the commodity a holdings request is valued in, in precedence order:
 /// the explicit `valueIn` param, then the journal's own `D` default-commodity
 /// directive, then `None` — which hands the choice to the engine (see
@@ -1520,19 +1538,33 @@ fn parse_mode(raw: Option<&str>) -> Result<ScopeMode, AppError> {
 /// happens not to price its securities falls through to the engine's own choice
 /// instead of being refused. `scope` is the request's scope with `value_in` not
 /// yet filled in; only its accounts/mode/`as_of` are read.
+///
+/// `tab` picks WHICH held set the test (and the `D` demotion, which is the same
+/// test) measures coverage over — see [`HoldingsTab`].
 fn resolve_value_in(
     journal: &Journal,
     scope: &HoldingsScope,
+    tab: HoldingsTab,
     raw: Option<&str>,
 ) -> Result<Option<Commodity>, AppError> {
     let prices_anything = |target: &Commodity| -> Result<bool, AppError> {
-        Ok(prices_any_held(
-            &journal.transactions,
-            &journal.prices,
-            &journal.accounts,
-            scope,
-            target,
-        )?)
+        let admits = match tab {
+            HoldingsTab::Stocks => prices_any_held(
+                &journal.transactions,
+                &journal.prices,
+                &journal.accounts,
+                scope,
+                target,
+            )?,
+            HoldingsTab::Other => prices_any_held_other(
+                &journal.transactions,
+                &journal.prices,
+                &journal.accounts,
+                scope,
+                target,
+            )?,
+        };
+        Ok(admits)
     };
     match raw.map(str::trim).filter(|value| !value.is_empty()) {
         Some(symbol) => {
@@ -1553,10 +1585,12 @@ fn resolve_value_in(
     }
 }
 
-/// The scope shared by `/api/holdings` and `/api/holdings/series`: the same
-/// account selection, date and valuation commodity, validated the same way.
+/// The scope shared by a tab's report and series endpoints: the same account
+/// selection, date and valuation commodity, validated the same way — with the
+/// `valueIn` admission test measured over `tab`'s own rows.
 fn holdings_scope(
     journal: &Journal,
+    tab: HoldingsTab,
     accounts: Option<&str>,
     mode: Option<&str>,
     as_of: Option<String>,
@@ -1571,7 +1605,7 @@ fn holdings_scope(
         value_in: None,
     };
     Ok(HoldingsScope {
-        value_in: resolve_value_in(journal, &scope, value_in)?,
+        value_in: resolve_value_in(journal, &scope, tab, value_in)?,
         ..scope
     })
 }
@@ -2207,6 +2241,7 @@ pub(crate) async fn holdings(
         // a price route, so it belongs on the blocking side with the report.
         let scope = holdings_scope(
             &snapshot.journal,
+            HoldingsTab::Stocks,
             query.accounts.as_deref(),
             query.mode.as_deref(),
             query.as_of,
@@ -2238,6 +2273,7 @@ pub(crate) async fn holdings_series_report(
     compute(move || {
         let scope = holdings_scope(
             &snapshot.journal,
+            HoldingsTab::Stocks,
             query.accounts.as_deref(),
             query.mode.as_deref(),
             query.as_of,
@@ -2263,9 +2299,10 @@ pub(crate) async fn holdings_series_report(
 /// nor cash: a house, a car, a partnership interest.
 ///
 /// Same scope, same `asOf`/`gainSince`/`valueIn` contract as `/api/holdings`, so
-/// the page's one scope bar drives both tabs. What differs is the KEY: rows here
-/// are accounts, not commodities — see `holdings::other` for why that cannot be
-/// a filter over the stock engine.
+/// the page's one scope bar drives both tabs — but `valueIn` is admitted against
+/// THIS tab's rows, not the stock portfolio's (see [`HoldingsTab`]). What differs
+/// is the KEY: rows here are accounts, not commodities — see `holdings::other`
+/// for why that cannot be a filter over the stock engine.
 pub(crate) async fn other_holdings_report(
     State(state): State<AppState>,
     Query(query): Query<HoldingsQuery>,
@@ -2274,6 +2311,7 @@ pub(crate) async fn other_holdings_report(
     compute(move || {
         let scope = holdings_scope(
             &snapshot.journal,
+            HoldingsTab::Other,
             query.accounts.as_deref(),
             query.mode.as_deref(),
             query.as_of,
@@ -2306,6 +2344,7 @@ pub(crate) async fn other_holdings_series_report(
     compute(move || {
         let scope = holdings_scope(
             &snapshot.journal,
+            HoldingsTab::Other,
             query.accounts.as_deref(),
             query.mode.as_deref(),
             query.as_of,

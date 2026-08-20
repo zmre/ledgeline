@@ -237,6 +237,110 @@ async fn other_series_matches_the_stock_series_shape() {
     assert_eq!(canon(&points[4]["marketValue"]), (554_500, 0));
 }
 
+// ===========================================================================
+// `valueIn` — admitted against THIS tab's rows (HOLD-3, Other-scoped)
+// ===========================================================================
+
+/// A journal whose two tabs are priced through DISJOINT commodities: the stock
+/// (VTI) only in `$` via its cost, the house (`holdings: other`) only in EUR
+/// via an explicit `P` — so a stocks-scoped admission test and an Other-scoped
+/// one answer in exactly opposite directions.
+fn split_priced_journal() -> Journal {
+    let text = "\
+account assets:broker  ; type: A
+account assets:house   ; type: A, holdings: other
+
+P 2026-06-01 HOUSE 250000.00 EUR
+
+2026-01-05 buy VTI
+    assets:broker    10 VTI @ $100.00
+    equity:opening
+
+2026-01-10 buy house
+    assets:house    1 HOUSE
+    equity:opening
+";
+    parse_journal(text, "split-priced.journal").expect("journal parses")
+}
+
+/// `valueIn` is admitted against the rows THIS endpoint serves, not the Stocks
+/// tab's portfolio. EUR prices every Other row here and no stock: the old
+/// stocks-scoped test answered 400 for a report that values perfectly well.
+#[tokio::test]
+async fn value_in_is_validated_against_other_rows_not_the_stock_portfolio() {
+    let journal = split_priced_journal();
+
+    let body = body_ok(
+        &journal,
+        &format!("/api/holdings/other?asOf={AS_OF}&valueIn=EUR"),
+    )
+    .await;
+    assert_eq!(body["base"], "EUR");
+    assert_eq!(canon(&row(&body, "assets:house")["value"]), (250_000, 0));
+
+    // The series endpoint shares the admission test.
+    let series = body_ok(
+        &journal,
+        &format!("/api/holdings/other/series?asOf={AS_OF}&valueIn=EUR&count=1"),
+    )
+    .await;
+    assert_eq!(series["base"], "EUR");
+
+    // The mirror image: `$` prices the stock and NO Other row, so this tab
+    // refuses it rather than serving an all-null table over a zero total…
+    let (status, _) = get_on(
+        &journal,
+        &format!("/api/holdings/other?asOf={AS_OF}&valueIn=$"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // …while the stocks endpoints keep their own admission test byte-for-byte:
+    // `$` (prices VTI) is served, EUR (prices no stock) is still refused.
+    let stocks = body_ok(&journal, &format!("/api/holdings?asOf={AS_OF}&valueIn=$")).await;
+    assert_eq!(stocks["base"], "$");
+    let (status, _) = get_on(&journal, &format!("/api/holdings?asOf={AS_OF}&valueIn=EUR")).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "the stocks admission test still measures the stock portfolio"
+    );
+}
+
+/// A journal with ONLY Other holdings: the stocks-scoped held-set is empty, and
+/// its vacuous accept used to serve `valueIn=XYZZY` a 200 with `base:"XYZZY"`,
+/// zero totals and every row null — the exact plausible-zero HOLD-3 exists to
+/// prevent. Both endpoints refuse it; a commodity that DOES price the rows is
+/// still served.
+#[tokio::test]
+async fn a_value_in_pricing_no_other_row_is_refused_even_with_no_stocks_at_all() {
+    let text = "\
+account assets:house   ; type: A, holdings: other
+
+P 2026-06-01 HOUSE 250000.00 EUR
+
+2026-01-10 buy house
+    assets:house    1 HOUSE
+    equity:opening
+";
+    let journal = parse_journal(text, "other-only.journal").expect("journal parses");
+    for route in ["/api/holdings/other", "/api/holdings/other/series"] {
+        let (status, _) = get_on(&journal, &format!("{route}?asOf={AS_OF}&valueIn=XYZZY")).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{route}?valueIn=XYZZY must be refused, not answered with zeros"
+        );
+    }
+    let body = body_ok(
+        &journal,
+        &format!("/api/holdings/other?asOf={AS_OF}&valueIn=EUR"),
+    )
+    .await;
+    assert_eq!(body["base"], "EUR");
+    assert_eq!(canon(&body["totals"]["value"]), (250_000, 0));
+}
+
 /// A misspelt `holdings:` code is refused by name rather than silently filing
 /// the account back on the tab the user was trying to move it off.
 #[tokio::test]
