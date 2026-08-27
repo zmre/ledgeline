@@ -113,7 +113,8 @@ that's where File → Open journal…, Open Recent and Quit live.
 
 Shortcuts work in either state: <kbd>Ctrl</kbd>+<kbd>O</kbd> to open a journal,
 <kbd>Ctrl</kbd>+<kbd>R</kbd> to reload, <kbd>Alt</kbd>+<kbd>←</kbd> /
-<kbd>Alt</kbd>+<kbd>→</kbd> to go back and forward.
+<kbd>Alt</kbd>+<kbd>→</kbd> to go back and forward, and <kbd>Ctrl</kbd>+<kbd>Q</kbd>
+to quit.
 
 The Linux package wraps the binary so that nixpkgs' Mesa is available as a
 **last-resort** EGL driver, appended to the search path and never substituted for
@@ -185,7 +186,8 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
-- fix: display issue where pie chart is not round, but oval when the window narrows (at least on linux, need to check on macos)
+- fix: display issue where pie chart is not round, but oval when the window narrows horizontally or vertically.  Update: seems to be specific to linux as I can't reproduce on mac.
+- test: lets try to understand performance on large repos by making a fixture with 10k transactions per year, 15 years, and around 200 commodities and 75 accounts
 - chore: route bad `issection:` / `holdings:` / `valuation:` / `bsterm:` / `type:` tag values into Problems
   - a mistyped `issection:` currently fails the whole P&L request with a 400 naming the account and the
     valid codes, and `holdings:` now does the same to the Holdings tab. Right that it isn't silently

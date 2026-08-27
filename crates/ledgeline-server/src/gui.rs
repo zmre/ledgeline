@@ -163,6 +163,11 @@ struct AppMenu {
     reload: MenuItem,
     back: MenuItem,
     forward: MenuItem,
+    /// Linux only: muda's predefined Quit is inert on GTK, so we dispatch our
+    /// own. Elsewhere the native predefined item handles it and there is
+    /// nothing to match against.
+    #[cfg(target_os = "linux")]
+    quit: MenuItem,
 }
 
 // Referenced only by the macOS app menu's About item, so it does not exist on
@@ -208,6 +213,37 @@ enum Shortcut {
     Reload,
     Back,
     Forward,
+    /// Linux only — see `quit` in [`build_menu`] for why this is not
+    /// `PredefinedMenuItem::quit`.
+    Quit,
+}
+
+/// Kill the WebKit web process instead of letting it exit on its own.
+///
+/// The web process is a separate OS process. When the UI process goes away it
+/// notices the IPC connection close and calls `exit()`, which runs `_dl_fini`
+/// and the atexit handlers — and that unwind races the compositor/EGL threads
+/// that are still live if the page has not finished loading. Observed aborting
+/// there in two shapes, both heap corruption reported by glibc:
+///
+/// ```text
+/// abort ← malloc_printerr ← _int_free ← __eglFini ← _dl_fini ← exit
+/// abort ← malloc_printerr ← _int_free ← _dl_deallocate_tls ← __nptl_free_stacks
+/// ```
+///
+/// `webkit_web_view_terminate_web_process()` SIGKILLs it instead, so those
+/// handlers never run and the abort is impossible BY CONSTRUCTION rather than
+/// by winning a race. Nothing is lost by being abrupt: we only call this once
+/// the user has asked to quit, at which point the page is being thrown away.
+///
+/// Not a fix for the underlying WebKitGTK/glvnd bug, which also shows up in
+/// other apps on this stack — just a refusal to walk into it.
+#[cfg(target_os = "linux")]
+fn stop_web_process(webview: &wry::WebView) {
+    use webkit2gtk::WebViewExt;
+    use wry::WebViewExtUnix;
+
+    webview.webview().terminate_web_process();
 }
 
 /// Map a key press to an action, for the Linux keyboard route used while the
@@ -232,6 +268,13 @@ fn linux_shortcut_for(key: &Key<'_>, modifiers: ModifiersState) -> Option<Shortc
         }
         Key::Character(character) if ctrl && character.eq_ignore_ascii_case("r") => {
             Some(Shortcut::Reload)
+        }
+        // Needed here as well as on the menu item: with the bar hidden the
+        // menu's accelerator is dead, and the title bar's close button is
+        // hidden too, so this is the only way out short of asking the
+        // compositor to close the window.
+        Key::Character(character) if ctrl && character.eq_ignore_ascii_case("q") => {
+            Some(Shortcut::Quit)
         }
         Key::ArrowLeft if alt => Some(Shortcut::Back),
         Key::ArrowRight if alt => Some(Shortcut::Forward),
@@ -337,14 +380,21 @@ fn build_menu() -> AppMenu {
     let recent = Submenu::new("Open &Recent", true);
     log_menu(
         "file menu",
-        file_menu.append_items(&[
-            &open,
-            &recent,
-            &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::close_window(Some("Close Window")),
-        ]),
+        file_menu.append_items(&[&open, &recent, &PredefinedMenuItem::separator()]),
     );
-    #[cfg(not(target_os = "macos"))]
+    // muda implements only Separator/Copy/Cut/Paste/SelectAll/About on GTK —
+    // `close_window` and `quit` are BOTH documented "Linux: Unsupported" and
+    // are silently inert there. Shipping them on Linux put two dead entries in
+    // the File menu and left the window-manager close button as the only way
+    // out of the app, which stopped being obvious once the title bar was
+    // hidden by default. So Linux gets a real menu item we dispatch ourselves,
+    // and macOS/Windows keep the native ones that do work.
+    #[cfg(not(target_os = "linux"))]
+    log_menu(
+        "file menu close",
+        file_menu.append(&PredefinedMenuItem::close_window(Some("Close Window"))),
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     log_menu(
         "file menu quit",
         file_menu.append_items(&[
@@ -352,6 +402,17 @@ fn build_menu() -> AppMenu {
             &PredefinedMenuItem::quit(None),
         ]),
     );
+    #[cfg(target_os = "linux")]
+    let quit = {
+        let quit = MenuItem::with_id(
+            "quit",
+            "&Quit",
+            true,
+            Some(Accelerator::new(Some(COMMAND_MODIFIER), Code::KeyQ)),
+        );
+        log_menu("file menu quit", file_menu.append(&quit));
+        quit
+    };
 
     // Standard clipboard items so Cmd/Ctrl+C/V/X work inside the webview.
     let edit_menu = Submenu::new("&Edit", true);
@@ -413,6 +474,8 @@ fn build_menu() -> AppMenu {
         reload,
         back,
         forward,
+        #[cfg(target_os = "linux")]
+        quit,
     }
 }
 
@@ -622,6 +685,8 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
     let back_id = menu.back.id().clone();
     let forward_id = menu.forward.id().clone();
     let recent_submenu = menu.recent.clone();
+    #[cfg(target_os = "linux")]
+    let quit_id = menu.quit.id().clone();
 
     // Linux: the in-window GtkMenuBar looks out of place on a modern desktop,
     // and under a tiling Wayland compositor there is no global menu bar to move
@@ -704,22 +769,34 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
 
         // The ONE implementation of each action. Both the menu route and (on
         // Linux) the keyboard route call this, so the two cannot drift.
-        let perform_shortcut = |shortcut: Shortcut| match shortcut {
-            Shortcut::Open => spawn_file_picker(picker_proxy.clone()),
-            Shortcut::Reload => {
-                let _ = webview.load_url(&url);
+        //
+        // Returns whether the app should exit, rather than touching
+        // `control_flow` itself: `control_flow` is a `&mut` borrowed by the
+        // enclosing `FnMut`, and capturing it here as well would not compile.
+        let perform_shortcut = |shortcut: Shortcut| -> bool {
+            match shortcut {
+                Shortcut::Open => spawn_file_picker(picker_proxy.clone()),
+                Shortcut::Reload => {
+                    let _ = webview.load_url(&url);
+                }
+                Shortcut::Back => {
+                    let _ = webview.evaluate_script("history.back()");
+                }
+                Shortcut::Forward => {
+                    let _ = webview.evaluate_script("history.forward()");
+                }
+                Shortcut::Quit => return true,
             }
-            Shortcut::Back => {
-                let _ = webview.evaluate_script("history.back()");
-            }
-            Shortcut::Forward => {
-                let _ = webview.evaluate_script("history.forward()");
-            }
+            false
         };
 
         // Which action, if any, a muda menu id stands for. `None` means it may
         // still be an Open Recent item, which the caller resolves.
         let menu_shortcut = |id: &MenuId| {
+            #[cfg(target_os = "linux")]
+            if *id == quit_id {
+                return Some(Shortcut::Quit);
+            }
             if *id == open_id {
                 Some(Shortcut::Open)
             } else if *id == reload_id {
@@ -736,7 +813,11 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
         match event {
             Event::UserEvent(UserEvent::Menu(menu_event)) => {
                 if let Some(shortcut) = menu_shortcut(&menu_event.id) {
-                    perform_shortcut(shortcut);
+                    if perform_shortcut(shortcut) {
+                        #[cfg(target_os = "linux")]
+                        stop_web_process(&webview);
+                        *control_flow = ControlFlow::Exit;
+                    }
                 } else {
                     // Maybe an Open Recent item; the borrow is released before we
                     // open (which re-borrows the map to rebuild the submenu).
@@ -852,8 +933,11 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
                     // Gated. With the bar VISIBLE its GtkAccelGroup already fires
                     // these, so an ungated arm would run every shortcut twice the
                     // moment the bar came back.
-                    if let Some(shortcut) = linux_shortcut_for(&key.logical_key, modifiers.get()) {
-                        perform_shortcut(shortcut);
+                    if let Some(shortcut) = linux_shortcut_for(&key.logical_key, modifiers.get())
+                        && perform_shortcut(shortcut)
+                    {
+                        stop_web_process(&webview);
+                        *control_flow = ControlFlow::Exit;
                     }
                 }
             }
@@ -861,6 +945,8 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
+                #[cfg(target_os = "linux")]
+                stop_web_process(&webview);
                 *control_flow = ControlFlow::Exit;
             }
             _ => {}
@@ -894,6 +980,10 @@ mod linux_keyboard_tests {
         assert_eq!(
             linux_shortcut_for(&Key::ArrowRight, ALT),
             Some(Shortcut::Forward)
+        );
+        assert_eq!(
+            linux_shortcut_for(&Key::Character("q"), CTRL),
+            Some(Shortcut::Quit)
         );
     }
 
