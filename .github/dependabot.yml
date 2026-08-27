@@ -1,0 +1,37 @@
+# Dependabot VERSION updates (routine dependency bumps).
+#
+# Dependabot SECURITY updates are a separate, repo-level feature (Settings →
+# Code security → "Dependabot security updates"). They are already enabled and
+# need no entry in this file; they open a PR on their own whenever an alert has
+# a version to move to.
+#
+# Only `github-actions` is listed here. The other two ecosystems are absent on
+# purpose:
+#
+#   * cargo — Cargo.lock is pinned hard against the GTK3 stack: wry/tao/muda
+#     bind gtk 0.18, which pins glib 0.18. Most routine bumps in that subtree
+#     simply cannot be merged, and `Cargo audit (RUSTSEC)` in ci.yml already
+#     reports the advisories that matter with per-advisory reasoning. Adding
+#     cargo here would trade real signal for a stream of unmergeable PRs.
+#
+#   * bun — GitHub classifies Bun as its OWN ecosystem (yaml value `bun`), and
+#     it supports version updates but NOT security updates. A bun entry would
+#     therefore produce routine churn while adding no security coverage. The
+#     `SPA audit (bun)` job in ci.yml is what actually covers web/bun.lock, and
+#     it exists precisely because Dependabot cannot.
+#
+# Stale action pins are a genuine supply-chain risk and there are only a
+# handful of them, so this is high value and low volume — grouped into a single
+# PR per week rather than one PR per action.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
