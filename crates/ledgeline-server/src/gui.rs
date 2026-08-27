@@ -215,6 +215,12 @@ enum Shortcut {
     Forward,
     /// Linux only — see `quit` in [`build_menu`] for why this is not
     /// `PredefinedMenuItem::quit`.
+    ///
+    /// The variant itself is `cfg`-gated, not just its construction sites:
+    /// macOS and Windows quit through muda's native predefined item, which
+    /// works there, so nothing on those platforms ever builds a `Quit` and an
+    /// ungated variant is dead code under `-D warnings`.
+    #[cfg(target_os = "linux")]
     Quit,
 }
 
@@ -785,6 +791,7 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
                 Shortcut::Forward => {
                     let _ = webview.evaluate_script("history.forward()");
                 }
+                #[cfg(target_os = "linux")]
                 Shortcut::Quit => return true,
             }
             false
