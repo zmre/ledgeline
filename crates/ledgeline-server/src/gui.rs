@@ -179,6 +179,19 @@ fn log_menu(what: &str, result: Result<(), muda::Error>) {
     }
 }
 
+/// The modifier that means "the app's command key": Cmd on macOS, Ctrl on Linux
+/// and Windows.
+///
+/// [`Modifiers::SUPER`] is Cmd on macOS but the **Super/Windows key** elsewhere,
+/// which belongs to the desktop rather than to us — a tiling compositor such as
+/// Hyprland binds nearly the whole Super range, so a `Super+O` accelerator does
+/// not merely render as a wrong-looking "Meta+O" in the menu, it never fires at
+/// all. Every accelerator that is Cmd-something on macOS goes through this.
+#[cfg(target_os = "macos")]
+const COMMAND_MODIFIER: Modifiers = Modifiers::SUPER;
+#[cfg(not(target_os = "macos"))]
+const COMMAND_MODIFIER: Modifiers = Modifiers::CONTROL;
+
 /// Build the application menu bar (macOS app menu + File/Edit/View).
 fn build_menu() -> AppMenu {
     let menu_bar = Menu::new();
@@ -208,7 +221,7 @@ fn build_menu() -> AppMenu {
         "open",
         "&Open journal…",
         true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)),
+        Some(Accelerator::new(Some(COMMAND_MODIFIER), Code::KeyO)),
     );
     // Populated on demand by `rebuild_recent` (empty until then).
     let recent = Submenu::new("Open &Recent", true);
@@ -250,20 +263,23 @@ fn build_menu() -> AppMenu {
         "reload",
         "&Reload",
         true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyR)),
+        Some(Accelerator::new(Some(COMMAND_MODIFIER), Code::KeyR)),
     );
-    let back = MenuItem::with_id(
-        "back",
-        "&Back",
-        true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::BracketLeft)),
+    // Back/Forward are the one pair where the platforms disagree about the KEY
+    // and not just the modifier: macOS browsers use Cmd+[ / Cmd+], while Linux
+    // and Windows use Alt+← / Alt+→. So this is not a COMMAND_MODIFIER swap.
+    #[cfg(target_os = "macos")]
+    let (back_accel, forward_accel) = (
+        Accelerator::new(Some(COMMAND_MODIFIER), Code::BracketLeft),
+        Accelerator::new(Some(COMMAND_MODIFIER), Code::BracketRight),
     );
-    let forward = MenuItem::with_id(
-        "forward",
-        "&Forward",
-        true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::BracketRight)),
+    #[cfg(not(target_os = "macos"))]
+    let (back_accel, forward_accel) = (
+        Accelerator::new(Some(Modifiers::ALT), Code::ArrowLeft),
+        Accelerator::new(Some(Modifiers::ALT), Code::ArrowRight),
     );
+    let back = MenuItem::with_id("back", "&Back", true, Some(back_accel));
+    let forward = MenuItem::with_id("forward", "&Forward", true, Some(forward_accel));
     log_menu(
         "view menu",
         view_menu.append_items(&[&reload, &PredefinedMenuItem::separator(), &back, &forward]),
