@@ -16,7 +16,7 @@ path = "src/main.rs"
 # builds a headless, server-only binary with no windowing/native-UI stack — the
 # shape CI and Linux servers build.
 default = ["gui"]
-gui = ["dep:wry", "dep:tao", "dep:muda", "dep:rfd", "dep:url"]
+gui = ["dep:wry", "dep:tao", "dep:muda", "dep:rfd", "dep:url", "dep:gtk"]
 
 [dependencies]
 ledgeline-core = { workspace = true }
@@ -62,6 +62,13 @@ rfd = { version = "0.17", optional = true }
 # the percent-encoding — journal paths with spaces are common). This is already
 # in the tree as a tao dependency, so cargo unifies it and it costs no new build.
 url = { version = "2", optional = true }
+
+# Linux hides the in-window GtkMenuBar by default (F10 toggles it), which needs
+# to name `gtk::Settings` and `gtk::Widget` directly. gtk 0.18 is ALREADY in the
+# tree via tao/muda/webkit2gtk, so cargo unifies it and this adds no crate to the
+# graph — only a direct path to types we were already linking.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
