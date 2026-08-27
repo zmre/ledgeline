@@ -538,13 +538,14 @@
             playwright-driver.browsers # browsers for playwright e2e (version must match web/package.json @playwright/test)
           ];
 
-          # Desktop GUI (wry/tao) native deps. Linux links webkitgtk/gtk/libsoup;
-          # macOS uses the system WKWebView, so nothing extra is needed there.
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux (with pkgs; [
-            webkitgtk_4_1
-            gtk3
-            libsoup_3
-          ]);
+          # Desktop GUI (wry/tao) native deps — the SAME list the package builds
+          # against, rather than a hand-maintained subset. The subset that used
+          # to be here was missing `xdotool`, so `cargo build` in this shell died
+          # at link time with `unable to find library -lxdo` (tao links libxdo)
+          # and the GUI could only ever be built through `nix build`. Sharing the
+          # one list is what stops the two drifting apart again.
+          # macOS uses the system WKWebView, so this is empty there.
+          inherit buildInputs;
 
           shellHook = ''
             export LEDGELINE_FIXTURE="$PWD/fixtures/sample.journal"
