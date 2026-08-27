@@ -98,6 +98,48 @@
           preBuild = spaPlaceholder;
         };
 
+        # --- Linux EGL: keep WebKit's web process from aborting -----------------
+        # WebKitGTK 2.52 calls `eglGetDisplay` while constructing a page and
+        # `CRASH()`es outright when it gets EGL_NO_DISPLAY, so a blank window and
+        # a `WebKitWebProcess` SIGABRT is what a non-NixOS host gets today.
+        # libglvnd looks for an EGL vendor ICD in the three directories below, in
+        # order. On NixOS the first exists; on Arch (or any other distro) only
+        # the third does, and the vendor it names cannot be dlopen'd from a Nix
+        # process — `/usr/lib/libEGL_mesa.so.0` needs the host's `libgallium`,
+        # which is built against a different glibc and so is not (and must not
+        # be) on a Nix binary's search path. glvnd therefore finds no vendor at
+        # all and the web process dies before the first paint.
+        #
+        # No environment variable avoids this. Both WEBKIT_DISABLE_DMABUF_RENDERER
+        # and WEBKIT_DISABLE_COMPOSITING_MODE were tried upstream; the abort is in
+        # `initializePlatformDisplayIfNeeded`, ahead of either switch.
+        #
+        # The fix is to ship nixpkgs' own Mesa as a LAST-RESORT vendor: appended
+        # to the search path, never substituted for it, so a working host driver
+        # still wins wherever there is one. That is what nixGL does, minus the
+        # extra tool. `--set-default` then `--suffix` is the whole trick (see
+        # `linuxDist`): unset → the platform defaults go in first and the store
+        # path lands after them; already set → the user's value is kept and the
+        # store path still lands last. Both variables are colon-separated lists.
+        #
+        # GBM_BACKENDS_PATH matters more than it looks: without it Mesa logs
+        #   MESA-LOADER: failed to open dri: /run/opengl-driver/lib/gbm/dri_gbm.so
+        # which is not fatal but drops WebKit off the DMA-BUF path onto a slower
+        # one. The ordering rule is load-bearing here too — on a NixOS box with a
+        # proprietary driver the host's gbm backend is the only correct one.
+        #
+        # THE COST IS REAL: `pkgs.mesa`'s closure is ~1.0 GiB (most of it LLVM,
+        # which every Gallium driver links) on a host whose store has no Mesa
+        # already; on NixOS it is close to free. It is therefore paid ONLY by the
+        # wrapped `linuxDist` below — `ledgeline` itself stays bare, so `checks`,
+        # CI and any release artefact are untouched by this.
+        glvndVendorDefaults =
+          "/run/opengl-driver/share/glvnd/egl_vendor.d:/etc/glvnd/egl_vendor.d:/usr/share/glvnd/egl_vendor.d";
+        mesaEglVendorDir = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
+        mesaDriDir = "${pkgs.mesa}/lib/dri";
+        mesaGbmDir = "${pkgs.mesa}/lib/gbm";
+        gbmBackendsDefault = "/run/opengl-driver/lib/gbm";
+
         # Imports shell out to `hledger`, which must therefore be findable at
         # RUN time. `hledger::resolve` tries, in order: the user's preference,
         # $LEDGELINE_HLEDGER, this baked path, then $PATH.
@@ -395,6 +437,34 @@
           '';
           meta = ledgeline.meta;
         };
+
+        # --- Linux desktop install (`.#linuxDist`, and `default` on Linux) ------
+        # The runnable Linux artefact: `bin/ledgeline` wrapped with the EGL/GBM
+        # search-path suffixes documented above, so the WebKit web process finds
+        # a loadable vendor ICD and stops aborting on a non-NixOS host.
+        #
+        # This is deliberately a SEPARATE output rather than a `postInstall` on
+        # `ledgeline`. `ledgeline` is what `checks` and CI build and what a
+        # release artefact should ship: keeping it bare keeps ~1 GiB of Mesa out
+        # of the CI closure and off any published tarball, while everyone who
+        # installs the app gets the wrapper. `nix run .` and `nix profile
+        # install` both resolve here.
+        #
+        # runCommand, not symlinkJoin: the wrapper must REPLACE `bin/ledgeline`,
+        # and a symlinkJoin of the unwrapped package would collide with it.
+        linuxDist = pkgs.runCommand "ledgeline-${version}"
+          {
+            nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+            meta = ledgeline.meta;
+          } ''
+          mkdir -p "$out/bin"
+          makeBinaryWrapper ${ledgeline}/bin/ledgeline "$out/bin/ledgeline" \
+            --set-default __EGL_VENDOR_LIBRARY_DIRS "${glvndVendorDefaults}" \
+            --suffix      __EGL_VENDOR_LIBRARY_DIRS : "${mesaEglVendorDir}" \
+            --suffix      LIBGL_DRIVERS_PATH        : "${mesaDriDir}" \
+            --set-default GBM_BACKENDS_PATH         "${gbmBackendsDefault}" \
+            --suffix      GBM_BACKENDS_PATH         : "${mesaGbmDir}"
+        '';
       in
       {
         # Buildable outputs. `nix build .#ledgeline` proves the GUI deps resolve
@@ -403,6 +473,14 @@
         packages = {
           inherit ledgeline clippy fmt tests;
           default = ledgeline;
+        }
+        # Linux-only: the wrapped desktop install. `default` is OVERRIDDEN to it
+        # so `nix build` / `nix profile install` give a `bin/ledgeline` whose
+        # WebKit web process can actually create an EGL display off NixOS.
+        # `.#ledgeline` stays the bare binary on every system (CI + releases).
+        // lib.optionalAttrs pkgs.stdenv.isLinux {
+          inherit linuxDist;
+          default = linuxDist;
         }
         # macOS-only: the app bundle, the combined `macDist` install, and the
         # SPA-in-Nix pieces they are assembled from. Guarded so `nix flake check`
@@ -438,10 +516,11 @@
         # to all systems with a per-system outputHash; see docs/development.md).
         # Nix laziness means the `else` branch keeps `ledgelineWithSpa` from ever
         # being forced on Linux, so the darwin-only FOD hash never trips a Linux
-        # eval/build. Only `apps.default` changes here — packages.default /
-        # .#ledgeline / checks / macApp are untouched.
+        # eval/build. On Linux it runs `linuxDist` — the EGL-wrapped binary —
+        # because an unwrapped `nix run` aborts in the WebKit web process on any
+        # host without /run/opengl-driver.
         apps.default = flake-utils.lib.mkApp {
-          drv = if pkgs.stdenv.isDarwin then ledgelineWithSpa else ledgeline;
+          drv = if pkgs.stdenv.isDarwin then ledgelineWithSpa else linuxDist;
         };
 
         # Dev shell — preserved from the pre-crane flake. Every tool the team and
@@ -471,6 +550,18 @@
             export LEDGELINE_FIXTURE="$PWD/fixtures/sample.journal"
             export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
             export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
+            ${lib.optionalString pkgs.stdenv.isLinux ''
+            # `cargo run` in this shell links the SAME Nix WebKitGTK as the
+            # packaged binary and hits the same EGL abort, so the dev shell needs
+            # the same last-resort Mesa vendor that `linuxDist` wraps in. The
+            # `''${VAR:-…}` / `''${VAR:+…}` forms reproduce the wrapper's
+            # `--set-default` + `--suffix` ordering: a value the user (or nixGL)
+            # already exported is kept, and the store path is still appended
+            # LAST so a working host driver keeps winning.
+            export __EGL_VENDOR_LIBRARY_DIRS="''${__EGL_VENDOR_LIBRARY_DIRS:-${glvndVendorDefaults}}:${mesaEglVendorDir}"
+            export LIBGL_DRIVERS_PATH="''${LIBGL_DRIVERS_PATH:+''${LIBGL_DRIVERS_PATH}:}${mesaDriDir}"
+            export GBM_BACKENDS_PATH="''${GBM_BACKENDS_PATH:-${gbmBackendsDefault}}:${mesaGbmDir}"
+            ''}
             echo "ledgeline dev shell: node $(node --version), bun $(bun --version), $(hledger --version | head -1), $(rustc --version)"
           '';
         };
