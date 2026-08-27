@@ -98,6 +98,48 @@
           preBuild = spaPlaceholder;
         };
 
+        # --- Linux EGL: keep WebKit's web process from aborting -----------------
+        # WebKitGTK 2.52 calls `eglGetDisplay` while constructing a page and
+        # `CRASH()`es outright when it gets EGL_NO_DISPLAY, so a blank window and
+        # a `WebKitWebProcess` SIGABRT is what a non-NixOS host gets today.
+        # libglvnd looks for an EGL vendor ICD in the three directories below, in
+        # order. On NixOS the first exists; on Arch (or any other distro) only
+        # the third does, and the vendor it names cannot be dlopen'd from a Nix
+        # process — `/usr/lib/libEGL_mesa.so.0` needs the host's `libgallium`,
+        # which is built against a different glibc and so is not (and must not
+        # be) on a Nix binary's search path. glvnd therefore finds no vendor at
+        # all and the web process dies before the first paint.
+        #
+        # No environment variable avoids this. Both WEBKIT_DISABLE_DMABUF_RENDERER
+        # and WEBKIT_DISABLE_COMPOSITING_MODE were tried upstream; the abort is in
+        # `initializePlatformDisplayIfNeeded`, ahead of either switch.
+        #
+        # The fix is to ship nixpkgs' own Mesa as a LAST-RESORT vendor: appended
+        # to the search path, never substituted for it, so a working host driver
+        # still wins wherever there is one. That is what nixGL does, minus the
+        # extra tool. `--set-default` then `--suffix` is the whole trick (see
+        # `linuxDist`): unset → the platform defaults go in first and the store
+        # path lands after them; already set → the user's value is kept and the
+        # store path still lands last. Both variables are colon-separated lists.
+        #
+        # GBM_BACKENDS_PATH matters more than it looks: without it Mesa logs
+        #   MESA-LOADER: failed to open dri: /run/opengl-driver/lib/gbm/dri_gbm.so
+        # which is not fatal but drops WebKit off the DMA-BUF path onto a slower
+        # one. The ordering rule is load-bearing here too — on a NixOS box with a
+        # proprietary driver the host's gbm backend is the only correct one.
+        #
+        # THE COST IS REAL: `pkgs.mesa`'s closure is ~1.0 GiB (most of it LLVM,
+        # which every Gallium driver links) on a host whose store has no Mesa
+        # already; on NixOS it is close to free. It is therefore paid ONLY by the
+        # wrapped `linuxDist` below — `ledgeline` itself stays bare, so `checks`,
+        # CI and any release artefact are untouched by this.
+        glvndVendorDefaults =
+          "/run/opengl-driver/share/glvnd/egl_vendor.d:/etc/glvnd/egl_vendor.d:/usr/share/glvnd/egl_vendor.d";
+        mesaEglVendorDir = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
+        mesaDriDir = "${pkgs.mesa}/lib/dri";
+        mesaGbmDir = "${pkgs.mesa}/lib/gbm";
+        gbmBackendsDefault = "/run/opengl-driver/lib/gbm";
+
         # Imports shell out to `hledger`, which must therefore be findable at
         # RUN time. `hledger::resolve` tries, in order: the user's preference,
         # $LEDGELINE_HLEDGER, this baked path, then $PATH.
@@ -182,6 +224,12 @@
         #    fails, on an unrelated commit, whenever the eviction happens — which
         #    is exactly how it went: the `@testing-library/svelte` + `jsdom` bump
         #    landed weeks before the build that reported it.
+        # See `outputHash` below for why this is keyed by system.
+        spaNodeModulesHashes = {
+          aarch64-darwin = "sha256-wwx0uWSFgAI2tuZWj89ZORMIQ8uMVQZVHklANqLhzEQ=";
+          x86_64-linux = "sha256-+ibyfS34nA4G/W1CvJQ0cA3LRkrdHvAkRZlwdLsGlXY=";
+        };
+
         spaNodeModules = pkgs.stdenv.mkDerivation {
           pname = "ledgeline-spa-node-modules";
           inherit version;
@@ -200,7 +248,13 @@
           dontFixup = true;
           outputHashMode = "recursive";
           outputHashAlgo = "sha256";
-          outputHash = "sha256-wwx0uWSFgAI2tuZWj89ZORMIQ8uMVQZVHklANqLhzEQ=";
+          # PER-SYSTEM by necessity: the tree contains platform-specific native
+          # binaries (esbuild, rollup, @tailwindcss/oxide), so the recursive
+          # hash differs on every system and can only be produced by building
+          # there. A system with no entry gets a build-time error naming itself,
+          # rather than a confusing hash mismatch against someone else's platform.
+          outputHash = spaNodeModulesHashes.${system} or (throw
+            "ledgeline: no spaNodeModules outputHash pinned for ${system}. Build it there and add the hash to `spaNodeModulesHashes` in flake.nix.");
         };
 
         # 2. The static SPA (`web/build`). Pure/offline: reuses the pinned
@@ -210,12 +264,27 @@
           pname = "ledgeline-spa";
           inherit version;
           src = ./web;
-          nativeBuildInputs = [ pkgs.bun ];
+          # nodejs is here for `patchShebangs` below, not to run the build (bun
+          # does that) — it is what the rewritten shebangs point AT.
+          nativeBuildInputs = [ pkgs.bun pkgs.nodejs_22 ];
           dontConfigure = true;
           buildPhase = ''
             export HOME="$TMPDIR"
             cp -R ${spaNodeModules}/node_modules ./node_modules
             chmod -R u+w node_modules
+            # The `.bin` shims npm/bun generate carry `#!/usr/bin/env node`, and
+            # the LINUX build sandbox has no /usr/bin/env — so `svelte-kit` and
+            # `vite` died with "bad interpreter". The darwin sandbox does have
+            # it, which is the only reason this ever worked there. Repoint them
+            # at the nodejs in this build. Done on the COPY, never on the
+            # fixed-output `spaNodeModules` itself, whose contents must stay
+            # exactly what the pinned hash covers.
+            #
+            # The WHOLE tree, not just `.bin`: the entries there are SYMLINKS
+            # into the packages and `patchShebangs` only rewrites regular files,
+            # so pointing it at `.bin` alone reported success and changed
+            # nothing.
+            patchShebangs node_modules
             bun run prepare
             bun run build
           '';
@@ -395,6 +464,126 @@
           '';
           meta = ledgeline.meta;
         };
+
+        # --- Linux desktop entry + MIME type -----------------------------------
+        # Without an XDG desktop entry a launcher has only the bare binary to go
+        # on, cannot tell a GUI program from a command-line one, and runs it
+        # through a terminal — which is where the "two windows when launched from
+        # a launcher" report comes from. `Terminal=false` is the line that fixes
+        # it. Nothing here is a code change; Linux has no console-subsystem flag.
+        #
+        # `MimeType` only does something if some type actually maps to a journal
+        # file, and shared-mime-info ships none, so we declare one. Installed to
+        # share/mime/packages/, which is where `update-desktop-database` /
+        # `update-mime-database` pick it up when the package lands in a profile.
+        # `sub-class-of text/plain` keeps journals opening in a text editor for
+        # everyone who has not chosen Ledgeline.
+        ledgelineMimeXml = pkgs.writeText "ledgeline-mime.xml" ''
+          <?xml version="1.0" encoding="UTF-8"?>
+          <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+            <mime-type type="text/x-hledger-journal">
+              <comment>hledger journal</comment>
+              <sub-class-of type="text/plain"/>
+              <glob pattern="*.journal"/>
+              <glob pattern="*.hledger"/>
+              <glob pattern="*.ledger"/>
+            </mime-type>
+          </mime-info>
+        '';
+
+        # `@out@` becomes the store path in `linuxDist`: an absolute Exec works
+        # whether or not the install put `bin/` on $PATH.
+        #
+        # `StartupWMClass` is what Hyprland/sway/GNOME match a window back to its
+        # launcher with. tao sets the app_id to the binary name; MEASURED with
+        # `hyprctl clients -j`, which reports `"class": "ledgeline"`.
+        #
+        # NO `Path=` here, deliberately. mbr needs one because its path argument
+        # defaults to the working directory and a launcher's cwd is arbitrary.
+        # Ledgeline's `journal` argument is optional and `resolve_journal` falls
+        # back to $LEDGELINE_FIXTURE → the most-recently-opened journal that
+        # still exists → a relative dev fixture, so a bare launch reopens the
+        # user's last journal regardless of cwd and no `Path=` would improve the
+        # final fallback anyway.
+        #
+        # Exactly ONE main category (`Office`); `Finance` is an additional
+        # category. Two main categories would list the app twice in menus.
+        ledgelineDesktopItem = pkgs.writeText "ledgeline.desktop.in" ''
+          [Desktop Entry]
+          Type=Application
+          Version=1.0
+          Name=Ledgeline
+          GenericName=Accounting
+          Comment=Local hledger GUI — reports, journal editing and CSV imports
+          Exec=@out@/bin/ledgeline %f
+          Icon=ledgeline
+          Terminal=false
+          StartupWMClass=ledgeline
+          Categories=Office;Finance;
+          MimeType=text/x-hledger-journal;
+          Keywords=hledger;ledger;accounting;journal;finance;bookkeeping;
+        '';
+
+        # --- Linux desktop install (`.#linuxDist`, and `default` on Linux) ------
+        # The runnable Linux artefact, and the counterpart of `macDist`: it wraps
+        # `ledgelineWithSpa` — the binary with the REAL SvelteKit UI embedded —
+        # with the EGL/GBM search-path suffixes documented above, so the WebKit
+        # web process finds a loadable vendor ICD and stops aborting on a
+        # non-NixOS host.
+        #
+        # `ledgelineWithSpa`, NOT `ledgeline`: `.#ledgeline` embeds the CI
+        # PLACEHOLDER SPA (web/build is absent in the crane sandbox), so a
+        # `nix run` off it opened a window reading "Ledgeline SPA not built".
+        # That was fine while the real-SPA path was darwin-only, and stopped
+        # being fine once this became the Linux install path.
+        #
+        # This is deliberately a SEPARATE output rather than a `postInstall` on
+        # `ledgeline`. `ledgeline` is what `checks` and CI build and what a
+        # release artefact should ship: keeping it bare keeps ~1 GiB of Mesa AND
+        # the whole bun/SPA build out of the CI closure, while everyone who
+        # installs the app gets the wrapper. `nix run .` and `nix profile
+        # install` both resolve here.
+        #
+        # runCommand, not symlinkJoin: the wrapper must REPLACE `bin/ledgeline`,
+        # and a symlinkJoin of the unwrapped package would collide with it.
+        linuxDist = pkgs.runCommand "ledgeline-${version}"
+          {
+            nativeBuildInputs = [
+              pkgs.makeBinaryWrapper
+              pkgs.imagemagick
+              pkgs.desktop-file-utils
+            ];
+            meta = ledgeline.meta;
+          } ''
+          mkdir -p "$out/bin"
+          makeBinaryWrapper ${ledgelineWithSpa}/bin/ledgeline "$out/bin/ledgeline" \
+            --set-default __EGL_VENDOR_LIBRARY_DIRS "${glvndVendorDefaults}" \
+            --suffix      __EGL_VENDOR_LIBRARY_DIRS : "${mesaEglVendorDir}" \
+            --suffix      LIBGL_DRIVERS_PATH        : "${mesaDriDir}" \
+            --set-default GBM_BACKENDS_PATH         "${gbmBackendsDefault}" \
+            --suffix      GBM_BACKENDS_PATH         : "${mesaGbmDir}"
+
+          # assets/ledgeline.png is 2048². Downsize into each hicolor slot rather
+          # than dropping the original into one and claiming a size it is not;
+          # 48x48 is the slot menus actually require.
+          for s in 32 48 64 128 256 512; do
+            dir="$out/share/icons/hicolor/''${s}x''${s}/apps"
+            mkdir -p "$dir"
+            magick ${./assets/ledgeline.png} -resize "''${s}x''${s}" "$dir/ledgeline.png"
+          done
+
+          mkdir -p "$out/share/mime/packages"
+          cp ${ledgelineMimeXml} "$out/share/mime/packages/ledgeline.xml"
+
+          mkdir -p "$out/share/applications"
+          substitute ${ledgelineDesktopItem} "$out/share/applications/ledgeline.desktop" \
+            --subst-var out
+
+          # Catches a bad Categories= list, a missing trailing semicolon and the
+          # rest of the entry's sharp edges at BUILD time rather than as an app
+          # that silently never appears in a menu.
+          desktop-file-validate "$out/share/applications/ledgeline.desktop"
+        '';
       in
       {
         # Buildable outputs. `nix build .#ledgeline` proves the GUI deps resolve
@@ -403,6 +592,16 @@
         packages = {
           inherit ledgeline clippy fmt tests;
           default = ledgeline;
+        }
+        # Linux-only: the wrapped desktop install, plus the SPA-in-Nix pieces it
+        # is built from. `default` is OVERRIDDEN to it so `nix build` /
+        # `nix profile install` give a `bin/ledgeline` that (a) embeds the REAL
+        # SvelteKit UI and (b) has a WebKit web process that can actually create
+        # an EGL display off NixOS. `.#ledgeline` stays the bare,
+        # placeholder-SPA binary on every system (CI + releases).
+        // lib.optionalAttrs pkgs.stdenv.isLinux {
+          inherit linuxDist spaNodeModules spaBuild ledgelineWithSpa;
+          default = linuxDist;
         }
         # macOS-only: the app bundle, the combined `macDist` install, and the
         # SPA-in-Nix pieces they are assembled from. Guarded so `nix flake check`
@@ -426,22 +625,29 @@
           inherit ledgeline clippy fmt tests;
         };
 
-        # `nix run .` → the REAL app. On darwin `apps.default` runs
-        # `ledgelineWithSpa` — the binary with the ACTUAL SvelteKit UI baked in —
-        # so `nix run github:zmre/ledgeline -- ~/finance/2026.journal` opens the
-        # real GUI on that journal. On non-darwin it runs `ledgeline` (the
-        # PLACEHOLDER-SPA binary): the real-SPA path pulls in the `spaNodeModules`
-        # fixed-output derivation whose `outputHash` is PER-PLATFORM and is
-        # currently pinned for aarch64-darwin only — the Linux hash can only be
-        # produced by building on Linux, so a real-SPA `nix run` on Linux is a
-        # documented follow-up (promote spaNodeModules/spaBuild/ledgelineWithSpa
-        # to all systems with a per-system outputHash; see docs/development.md).
-        # Nix laziness means the `else` branch keeps `ledgelineWithSpa` from ever
-        # being forced on Linux, so the darwin-only FOD hash never trips a Linux
-        # eval/build. Only `apps.default` changes here — packages.default /
-        # .#ledgeline / checks / macApp are untouched.
+        # `nix run .` → the REAL app on BOTH platforms, so
+        # `nix run github:zmre/ledgeline -- ~/finance/2026.journal` opens the real
+        # GUI on that journal anywhere. darwin runs `ledgelineWithSpa` directly;
+        # Linux runs `linuxDist`, which wraps that same real-SPA binary with the
+        # EGL/GBM suffixes — an unwrapped `nix run` aborts in the WebKit web
+        # process on any host without /run/opengl-driver.
+        #
+        # Linux used to run the PLACEHOLDER-SPA `ledgeline` here, because the
+        # `spaNodeModules` FOD hash was pinned for aarch64-darwin only. It is now
+        # keyed by system (see `spaNodeModulesHashes`), so both platforms get the
+        # actual SvelteKit UI.
+        #
+        # `name` is passed EXPLICITLY and is load-bearing. `mkApp` defaults it to
+        # `drv.pname or drv.name`, and only the crane outputs carry a `pname` —
+        # `linuxDist` is a `runCommand`, which has just `name =
+        # "ledgeline-${version}"`. Leaving it to infer therefore pointed
+        # `nix run` at `bin/ledgeline-0.1.0`, a path that does not exist, and it
+        # failed for everyone on Linux while `nix build` / `nix profile install`
+        # stayed fine. Nothing in `nix flake check` builds an app's program path,
+        # so this is not caught by the gate; say the name out loud instead.
         apps.default = flake-utils.lib.mkApp {
-          drv = if pkgs.stdenv.isDarwin then ledgelineWithSpa else ledgeline;
+          drv = if pkgs.stdenv.isDarwin then ledgelineWithSpa else linuxDist;
+          name = "ledgeline";
         };
 
         # Dev shell — preserved from the pre-crane flake. Every tool the team and
@@ -459,18 +665,31 @@
             playwright-driver.browsers # browsers for playwright e2e (version must match web/package.json @playwright/test)
           ];
 
-          # Desktop GUI (wry/tao) native deps. Linux links webkitgtk/gtk/libsoup;
-          # macOS uses the system WKWebView, so nothing extra is needed there.
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux (with pkgs; [
-            webkitgtk_4_1
-            gtk3
-            libsoup_3
-          ]);
+          # Desktop GUI (wry/tao) native deps — the SAME list the package builds
+          # against, rather than a hand-maintained subset. The subset that used
+          # to be here was missing `xdotool`, so `cargo build` in this shell died
+          # at link time with `unable to find library -lxdo` (tao links libxdo)
+          # and the GUI could only ever be built through `nix build`. Sharing the
+          # one list is what stops the two drifting apart again.
+          # macOS uses the system WKWebView, so this is empty there.
+          inherit buildInputs;
 
           shellHook = ''
             export LEDGELINE_FIXTURE="$PWD/fixtures/sample.journal"
             export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
             export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
+            ${lib.optionalString pkgs.stdenv.isLinux ''
+            # `cargo run` in this shell links the SAME Nix WebKitGTK as the
+            # packaged binary and hits the same EGL abort, so the dev shell needs
+            # the same last-resort Mesa vendor that `linuxDist` wraps in. The
+            # `''${VAR:-…}` / `''${VAR:+…}` forms reproduce the wrapper's
+            # `--set-default` + `--suffix` ordering: a value the user (or nixGL)
+            # already exported is kept, and the store path is still appended
+            # LAST so a working host driver keeps winning.
+            export __EGL_VENDOR_LIBRARY_DIRS="''${__EGL_VENDOR_LIBRARY_DIRS:-${glvndVendorDefaults}}:${mesaEglVendorDir}"
+            export LIBGL_DRIVERS_PATH="''${LIBGL_DRIVERS_PATH:+''${LIBGL_DRIVERS_PATH}:}${mesaDriDir}"
+            export GBM_BACKENDS_PATH="''${GBM_BACKENDS_PATH:-${gbmBackendsDefault}}:${mesaGbmDir}"
+            ''}
             echo "ledgeline dev shell: node $(node --version), bun $(bun --version), $(hledger --version | head -1), $(rustc --version)"
           '';
         };

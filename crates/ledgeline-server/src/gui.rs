@@ -35,6 +35,11 @@ use tao::{
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
     window::WindowBuilder,
 };
+#[cfg(target_os = "linux")]
+use tao::{
+    event::ElementState,
+    keyboard::{Key, ModifiersState},
+};
 use url::Url;
 use wry::WebViewBuilder;
 
@@ -158,6 +163,11 @@ struct AppMenu {
     reload: MenuItem,
     back: MenuItem,
     forward: MenuItem,
+    /// Linux only: muda's predefined Quit is inert on GTK, so we dispatch our
+    /// own. Elsewhere the native predefined item handles it and there is
+    /// nothing to match against.
+    #[cfg(target_os = "linux")]
+    quit: MenuItem,
 }
 
 // Referenced only by the macOS app menu's About item, so it does not exist on
@@ -177,6 +187,168 @@ fn log_menu(what: &str, result: Result<(), muda::Error>) {
     if let Err(error) = result {
         eprintln!("ledgeline: failed to build {what}: {error}");
     }
+}
+
+/// The modifier that means "the app's command key": Cmd on macOS, Ctrl on Linux
+/// and Windows.
+///
+/// [`Modifiers::SUPER`] is Cmd on macOS but the **Super/Windows key** elsewhere,
+/// which belongs to the desktop rather than to us — a tiling compositor such as
+/// Hyprland binds nearly the whole Super range, so a `Super+O` accelerator does
+/// not merely render as a wrong-looking "Meta+O" in the menu, it never fires at
+/// all. Every accelerator that is Cmd-something on macOS goes through this.
+#[cfg(target_os = "macos")]
+const COMMAND_MODIFIER: Modifiers = Modifiers::SUPER;
+#[cfg(not(target_os = "macos"))]
+const COMMAND_MODIFIER: Modifiers = Modifiers::CONTROL;
+
+/// An action reachable from more than one route.
+///
+/// The menu route and (on Linux) the keyboard route both resolve to one of
+/// these and both funnel into a single `perform_shortcut`, so each action has
+/// exactly one implementation and the two routes cannot drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shortcut {
+    Open,
+    Reload,
+    Back,
+    Forward,
+    /// Linux only — see `quit` in [`build_menu`] for why this is not
+    /// `PredefinedMenuItem::quit`.
+    ///
+    /// The variant itself is `cfg`-gated, not just its construction sites:
+    /// macOS and Windows quit through muda's native predefined item, which
+    /// works there, so nothing on those platforms ever builds a `Quit` and an
+    /// ungated variant is dead code under `-D warnings`.
+    #[cfg(target_os = "linux")]
+    Quit,
+}
+
+/// Kill the WebKit web process instead of letting it exit on its own.
+///
+/// The web process is a separate OS process. When the UI process goes away it
+/// notices the IPC connection close and calls `exit()`, which runs `_dl_fini`
+/// and the atexit handlers — and that unwind races the compositor/EGL threads
+/// that are still live if the page has not finished loading. Observed aborting
+/// there in two shapes, both heap corruption reported by glibc:
+///
+/// ```text
+/// abort ← malloc_printerr ← _int_free ← __eglFini ← _dl_fini ← exit
+/// abort ← malloc_printerr ← _int_free ← _dl_deallocate_tls ← __nptl_free_stacks
+/// ```
+///
+/// `webkit_web_view_terminate_web_process()` SIGKILLs it instead, so those
+/// handlers never run and the abort is impossible BY CONSTRUCTION rather than
+/// by winning a race. Nothing is lost by being abrupt: we only call this once
+/// the user has asked to quit, at which point the page is being thrown away.
+///
+/// Not a fix for the underlying WebKitGTK/glvnd bug, which also shows up in
+/// other apps on this stack — just a refusal to walk into it.
+#[cfg(target_os = "linux")]
+fn stop_web_process(webview: &wry::WebView) {
+    use webkit2gtk::WebViewExt;
+    use wry::WebViewExtUnix;
+
+    webview.webview().terminate_web_process();
+}
+
+/// Map a key press to an action, for the Linux keyboard route used while the
+/// menu bar is hidden.
+///
+/// Pure, and takes the modifier state as a parameter rather than reading it
+/// from a window, so the whole table is unit-testable without standing up an
+/// event loop.
+///
+/// The modifier tests are exact rather than "contains": `Ctrl+Alt+O` is a
+/// different chord from `Ctrl+O` and must not be mistaken for it. Shift is
+/// deliberately not examined — it is already folded into `logical_key`, so a
+/// shifted `o` simply arrives as `Key::Character("O")`, which is why the
+/// character comparison is ASCII-case-insensitive.
+#[cfg(target_os = "linux")]
+fn linux_shortcut_for(key: &Key<'_>, modifiers: ModifiersState) -> Option<Shortcut> {
+    let ctrl = modifiers.control_key() && !modifiers.alt_key() && !modifiers.super_key();
+    let alt = modifiers.alt_key() && !modifiers.control_key() && !modifiers.super_key();
+    match key {
+        Key::Character(character) if ctrl && character.eq_ignore_ascii_case("o") => {
+            Some(Shortcut::Open)
+        }
+        Key::Character(character) if ctrl && character.eq_ignore_ascii_case("r") => {
+            Some(Shortcut::Reload)
+        }
+        // Needed here as well as on the menu item: with the bar hidden the
+        // menu's accelerator is dead, and the title bar's close button is
+        // hidden too, so this is the only way out short of asking the
+        // compositor to close the window.
+        Key::Character(character) if ctrl && character.eq_ignore_ascii_case("q") => {
+            Some(Shortcut::Quit)
+        }
+        Key::ArrowLeft if alt => Some(Shortcut::Back),
+        Key::ArrowRight if alt => Some(Shortcut::Forward),
+        _ => None,
+    }
+}
+
+/// Stop GTK from swallowing `F10` for menu-bar traversal.
+///
+/// `gtk-menu-bar-accel` defaults to `F10`, and a *visible* menu bar consumes
+/// that key to move keyboard focus into itself — so without this the toggle
+/// works in one direction only: `F10` reveals the bar, and the next `F10` opens
+/// the File menu instead of hiding it again.
+///
+/// `find_property` first because `set_property` PANICS on a name the object does
+/// not have, and this property has been deprecated since GTK 3.10 — so it may
+/// simply be gone in a future GTK. What is given up is GTK's keyboard route
+/// *into* a visible bar; every item still has its own accelerator.
+#[cfg(target_os = "linux")]
+fn disable_gtk_menu_bar_accel() {
+    use gtk::prelude::*;
+
+    if let Some(settings) = gtk::Settings::default()
+        && settings.find_property("gtk-menu-bar-accel").is_some()
+    {
+        settings.set_property("gtk-menu-bar-accel", None::<String>);
+    }
+}
+
+/// Show or hide the desktop chrome: the in-window `GtkMenuBar` *and* the window
+/// decorations (title bar with its close/minimise buttons).
+///
+/// Both are hidden by default on Linux and both come back together on `F10`.
+/// They are toggled as ONE unit deliberately: the SPA already draws its own
+/// header with the app name, so the title bar is duplicate furniture under a
+/// tiling compositor — but a window with neither decorations nor a menu bar has
+/// no close button and no File→Quit on a *floating* desktop, which would be a
+/// trap. Tying them together guarantees there is always one key that brings
+/// back a way out.
+///
+/// `gtk_widget_show_all` recurses the whole widget tree, so any later
+/// `show_all()` on the window would undo a plain `hide()`. `set_no_show_all` is
+/// what makes the hide stick; it has to be cleared again before showing, or the
+/// bar would refuse to come back.
+///
+/// `gtk_menubar_for_gtk_window` takes `self` by value, but `Menu` is a `Clone`
+/// handle around a shared inner, so the clone is a refcount bump rather than a
+/// second menu.
+#[cfg(target_os = "linux")]
+fn set_window_chrome_visible(menu_bar: &Menu, window: &tao::window::Window, visible: bool) {
+    use gtk::prelude::*;
+    use tao::platform::unix::WindowExtUnix;
+
+    if let Some(bar) = menu_bar
+        .clone()
+        .gtk_menubar_for_gtk_window(window.gtk_window())
+    {
+        bar.set_no_show_all(!visible);
+    }
+    log_menu(
+        "menu bar visibility",
+        if visible {
+            menu_bar.show_for_gtk_window(window.gtk_window())
+        } else {
+            menu_bar.hide_for_gtk_window(window.gtk_window())
+        },
+    );
+    window.set_decorations(visible);
 }
 
 /// Build the application menu bar (macOS app menu + File/Edit/View).
@@ -208,20 +380,27 @@ fn build_menu() -> AppMenu {
         "open",
         "&Open journal…",
         true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)),
+        Some(Accelerator::new(Some(COMMAND_MODIFIER), Code::KeyO)),
     );
     // Populated on demand by `rebuild_recent` (empty until then).
     let recent = Submenu::new("Open &Recent", true);
     log_menu(
         "file menu",
-        file_menu.append_items(&[
-            &open,
-            &recent,
-            &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::close_window(Some("Close Window")),
-        ]),
+        file_menu.append_items(&[&open, &recent, &PredefinedMenuItem::separator()]),
     );
-    #[cfg(not(target_os = "macos"))]
+    // muda implements only Separator/Copy/Cut/Paste/SelectAll/About on GTK —
+    // `close_window` and `quit` are BOTH documented "Linux: Unsupported" and
+    // are silently inert there. Shipping them on Linux put two dead entries in
+    // the File menu and left the window-manager close button as the only way
+    // out of the app, which stopped being obvious once the title bar was
+    // hidden by default. So Linux gets a real menu item we dispatch ourselves,
+    // and macOS/Windows keep the native ones that do work.
+    #[cfg(not(target_os = "linux"))]
+    log_menu(
+        "file menu close",
+        file_menu.append(&PredefinedMenuItem::close_window(Some("Close Window"))),
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     log_menu(
         "file menu quit",
         file_menu.append_items(&[
@@ -229,6 +408,17 @@ fn build_menu() -> AppMenu {
             &PredefinedMenuItem::quit(None),
         ]),
     );
+    #[cfg(target_os = "linux")]
+    let quit = {
+        let quit = MenuItem::with_id(
+            "quit",
+            "&Quit",
+            true,
+            Some(Accelerator::new(Some(COMMAND_MODIFIER), Code::KeyQ)),
+        );
+        log_menu("file menu quit", file_menu.append(&quit));
+        quit
+    };
 
     // Standard clipboard items so Cmd/Ctrl+C/V/X work inside the webview.
     let edit_menu = Submenu::new("&Edit", true);
@@ -250,20 +440,23 @@ fn build_menu() -> AppMenu {
         "reload",
         "&Reload",
         true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyR)),
+        Some(Accelerator::new(Some(COMMAND_MODIFIER), Code::KeyR)),
     );
-    let back = MenuItem::with_id(
-        "back",
-        "&Back",
-        true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::BracketLeft)),
+    // Back/Forward are the one pair where the platforms disagree about the KEY
+    // and not just the modifier: macOS browsers use Cmd+[ / Cmd+], while Linux
+    // and Windows use Alt+← / Alt+→. So this is not a COMMAND_MODIFIER swap.
+    #[cfg(target_os = "macos")]
+    let (back_accel, forward_accel) = (
+        Accelerator::new(Some(COMMAND_MODIFIER), Code::BracketLeft),
+        Accelerator::new(Some(COMMAND_MODIFIER), Code::BracketRight),
     );
-    let forward = MenuItem::with_id(
-        "forward",
-        "&Forward",
-        true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::BracketRight)),
+    #[cfg(not(target_os = "macos"))]
+    let (back_accel, forward_accel) = (
+        Accelerator::new(Some(Modifiers::ALT), Code::ArrowLeft),
+        Accelerator::new(Some(Modifiers::ALT), Code::ArrowRight),
     );
+    let back = MenuItem::with_id("back", "&Back", true, Some(back_accel));
+    let forward = MenuItem::with_id("forward", "&Forward", true, Some(forward_accel));
     log_menu(
         "view menu",
         view_menu.append_items(&[&reload, &PredefinedMenuItem::separator(), &back, &forward]),
@@ -287,6 +480,8 @@ fn build_menu() -> AppMenu {
         reload,
         back,
         forward,
+        #[cfg(target_os = "linux")]
+        quit,
     }
 }
 
@@ -383,9 +578,27 @@ fn build_webview(window: &tao::window::Window, url: &str) -> Result<wry::WebView
         use tao::platform::unix::WindowExtUnix;
         // `build_gtk` lives on this extension trait; it must be in scope (Linux).
         use wry::WebViewBuilderExtUnix;
-        builder
-            .build_gtk(window.gtk_window())
-            .map_err(|error| AppError::Gui(format!("creating webview: {error}")))?
+        // The WebView goes in the window's DEFAULT VBOX, not in the window.
+        // A GtkApplicationWindow is a GtkBin — exactly one child — and tao has
+        // already put a GtkBox there, which is also where muda's menu bar goes
+        // (`init_for_gtk_window`). Handing the WebView to the window instead
+        // makes GTK refuse it and silently drop it, leaving a menu bar with no
+        // page under it plus a `Gtk-WARNING: … can only contain one widget at a
+        // time; it already contains a widget of type GtkBox`. Ordering is no
+        // escape: the vbox exists from window creation, so whichever widget is
+        // offered to the window loses.
+        //
+        // Packing works out because the two crates agree on the box: wry
+        // recognises a `gtk::Box` and uses `pack_start(webview, true, true, 0)`
+        // so the page expands, while muda packs the bar `(false, false)` and
+        // reorders it to position 0. The `None` arm is unreachable unless the
+        // window was built `with_default_vbox(false)`, and keeps the match
+        // total without a panic.
+        match window.default_vbox() {
+            Some(vbox) => builder.build_gtk(vbox),
+            None => builder.build_gtk(window.gtk_window()),
+        }
+        .map_err(|error| AppError::Gui(format!("creating webview: {error}")))?
     };
     Ok(webview)
 }
@@ -439,10 +652,19 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
     // Open at a comfortable desktop size (mbr leaves this to the platform
     // default, which is too small for a data-dense GUI); clamp the floor so the
     // report layout never collapses.
-    let window = WindowBuilder::new()
+    let window_builder = WindowBuilder::new()
         .with_title("Ledgeline")
         .with_inner_size(LogicalSize::new(1280.0, 832.0))
-        .with_min_inner_size(LogicalSize::new(800.0, 600.0))
+        .with_min_inner_size(LogicalSize::new(800.0, 600.0));
+    // Linux opens with no title bar — the SPA draws its own header with the app
+    // name, so the decorations are duplicate furniture under a tiling
+    // compositor. Asked for HERE rather than switched off after creation so
+    // there is no visible flash of chrome at startup; `F10` brings it back
+    // together with the menu bar (see `set_window_chrome_visible`).
+    // macOS and Windows keep their native decorations.
+    #[cfg(target_os = "linux")]
+    let window_builder = window_builder.with_decorations(false);
+    let window = window_builder
         .build(&event_loop)
         .map_err(|error| AppError::Gui(format!("creating window: {error}")))?;
 
@@ -469,6 +691,38 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
     let back_id = menu.back.id().clone();
     let forward_id = menu.forward.id().clone();
     let recent_submenu = menu.recent.clone();
+    #[cfg(target_os = "linux")]
+    let quit_id = menu.quit.id().clone();
+
+    // Linux: the in-window GtkMenuBar looks out of place on a modern desktop,
+    // and under a tiling Wayland compositor there is no global menu bar to move
+    // it to — so it starts HIDDEN, together with the window decorations, and
+    // F10 toggles both.
+    //
+    // THE TRAP, and it is the opposite of what the obvious reading suggests:
+    // hiding the bar disables every accelerator attached to it. muda adds its
+    // GtkAccelGroup to the WINDOW, not to the bar, and `hide_for_gtk_window`
+    // only calls `hide()` on the bar, so the shortcuts look like they must
+    // survive. They do not — `gtk_menu_item_can_activate_accel` chains up the
+    // widget ancestry and refuses when any ancestor is invisible. The accel
+    // group stays attached and nothing on it activates. Measured both ways on a
+    // running window; see the keyboard arm in the loop for the other half.
+    //
+    // Hence the keyboard route below, and hence it is gated on the bar being
+    // hidden: exactly one route is live at a time.
+    #[cfg(target_os = "linux")]
+    let menu_bar = menu.menu_bar.clone();
+    #[cfg(target_os = "linux")]
+    let chrome_visible = std::cell::Cell::new(false);
+    // tao reports modifiers as a separate event, so the keyboard arm needs the
+    // last state rather than being able to read it off the key event.
+    #[cfg(target_os = "linux")]
+    let modifiers = std::cell::Cell::new(ModifiersState::empty());
+    #[cfg(target_os = "linux")]
+    {
+        disable_gtk_menu_bar_accel();
+        set_window_chrome_visible(&menu_bar, &window, false);
+    }
 
     let picker_proxy = event_loop.create_proxy();
 
@@ -519,16 +773,58 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
             }
         };
 
+        // The ONE implementation of each action. Both the menu route and (on
+        // Linux) the keyboard route call this, so the two cannot drift.
+        //
+        // Returns whether the app should exit, rather than touching
+        // `control_flow` itself: `control_flow` is a `&mut` borrowed by the
+        // enclosing `FnMut`, and capturing it here as well would not compile.
+        let perform_shortcut = |shortcut: Shortcut| -> bool {
+            match shortcut {
+                Shortcut::Open => spawn_file_picker(picker_proxy.clone()),
+                Shortcut::Reload => {
+                    let _ = webview.load_url(&url);
+                }
+                Shortcut::Back => {
+                    let _ = webview.evaluate_script("history.back()");
+                }
+                Shortcut::Forward => {
+                    let _ = webview.evaluate_script("history.forward()");
+                }
+                #[cfg(target_os = "linux")]
+                Shortcut::Quit => return true,
+            }
+            false
+        };
+
+        // Which action, if any, a muda menu id stands for. `None` means it may
+        // still be an Open Recent item, which the caller resolves.
+        let menu_shortcut = |id: &MenuId| {
+            #[cfg(target_os = "linux")]
+            if *id == quit_id {
+                return Some(Shortcut::Quit);
+            }
+            if *id == open_id {
+                Some(Shortcut::Open)
+            } else if *id == reload_id {
+                Some(Shortcut::Reload)
+            } else if *id == back_id {
+                Some(Shortcut::Back)
+            } else if *id == forward_id {
+                Some(Shortcut::Forward)
+            } else {
+                None
+            }
+        };
+
         match event {
             Event::UserEvent(UserEvent::Menu(menu_event)) => {
-                if menu_event.id == open_id {
-                    spawn_file_picker(picker_proxy.clone());
-                } else if menu_event.id == reload_id {
-                    let _ = webview.load_url(&url);
-                } else if menu_event.id == back_id {
-                    let _ = webview.evaluate_script("history.back()");
-                } else if menu_event.id == forward_id {
-                    let _ = webview.evaluate_script("history.forward()");
+                if let Some(shortcut) = menu_shortcut(&menu_event.id) {
+                    if perform_shortcut(shortcut) {
+                        #[cfg(target_os = "linux")]
+                        stop_web_process(&webview);
+                        *control_flow = ControlFlow::Exit;
+                    }
                 } else {
                     // Maybe an Open Recent item; the borrow is released before we
                     // open (which re-borrows the map to rebuild the submenu).
@@ -602,15 +898,158 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
                     }
                 }
             }
+            // tao delivers modifier state as its own event, so it has to be
+            // remembered for the key arm below to consult.
+            #[cfg(target_os = "linux")]
+            Event::WindowEvent {
+                event: WindowEvent::ModifiersChanged(state),
+                ..
+            } => {
+                modifiers.set(state);
+            }
+            // The Linux keyboard route. Two decisions here were MEASURED on this
+            // stack rather than reasoned about, and both are easy to get wrong:
+            //
+            // * Act on `Released`, NOT `Pressed`. WebKitGTK hands a key press to
+            //   the web process and, when the page leaves it unhandled,
+            //   RE-DISPATCHES the same press to the toplevel so that window
+            //   accelerators still work. So a `Pressed` arm fires TWICE for
+            //   exactly the keys nothing in the page claims — which is precisely
+            //   the set this arm wants. The release arrives exactly once either
+            //   way.
+            //
+            // * Match on `logical_key`, NOT `physical_key`. `logical_key` is the
+            //   key's meaning — what the user reads off the keycap, and what
+            //   survives a remapped layout. `physical_key` is tao's mapping of
+            //   the raw hardware keycode, and any input source that synthesises
+            //   events on a keymap of its own fills it with whatever slot it
+            //   happened to use (`wtype` reports `Escape` for both `F10` and
+            //   `f`, while `logical_key` stays correct for both).
+            #[cfg(target_os = "linux")]
+            Event::WindowEvent {
+                event: WindowEvent::KeyboardInput { event: key, .. },
+                ..
+            } if key.state == ElementState::Released => {
+                if key.logical_key == Key::F10 {
+                    // Deliberately NOT gated on visibility: the toggle is the one
+                    // key that has to work in both states, so it gets its own arm.
+                    let visible = !chrome_visible.get();
+                    set_window_chrome_visible(&menu_bar, &window, visible);
+                    chrome_visible.set(visible);
+                } else if !chrome_visible.get() {
+                    // Gated. With the bar VISIBLE its GtkAccelGroup already fires
+                    // these, so an ungated arm would run every shortcut twice the
+                    // moment the bar came back.
+                    if let Some(shortcut) = linux_shortcut_for(&key.logical_key, modifiers.get())
+                        && perform_shortcut(shortcut)
+                    {
+                        stop_web_process(&webview);
+                        *control_flow = ControlFlow::Exit;
+                    }
+                }
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
+                #[cfg(target_os = "linux")]
+                stop_web_process(&webview);
                 *control_flow = ControlFlow::Exit;
             }
             _ => {}
         }
     });
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_keyboard_tests {
+    use super::{Shortcut, linux_shortcut_for};
+    use tao::keyboard::{Key, ModifiersState};
+
+    const CTRL: ModifiersState = ModifiersState::CONTROL;
+    const ALT: ModifiersState = ModifiersState::ALT;
+    const SHIFT: ModifiersState = ModifiersState::SHIFT;
+
+    #[test]
+    fn the_bound_chords_map_to_their_actions() {
+        assert_eq!(
+            linux_shortcut_for(&Key::Character("o"), CTRL),
+            Some(Shortcut::Open)
+        );
+        assert_eq!(
+            linux_shortcut_for(&Key::Character("r"), CTRL),
+            Some(Shortcut::Reload)
+        );
+        assert_eq!(
+            linux_shortcut_for(&Key::ArrowLeft, ALT),
+            Some(Shortcut::Back)
+        );
+        assert_eq!(
+            linux_shortcut_for(&Key::ArrowRight, ALT),
+            Some(Shortcut::Forward)
+        );
+        assert_eq!(
+            linux_shortcut_for(&Key::Character("q"), CTRL),
+            Some(Shortcut::Quit)
+        );
+    }
+
+    #[test]
+    fn the_modifier_must_match_exactly() {
+        // Unmodified keys belong to the page, not to us.
+        assert_eq!(
+            linux_shortcut_for(&Key::Character("o"), ModifiersState::empty()),
+            None
+        );
+        assert_eq!(
+            linux_shortcut_for(&Key::ArrowLeft, ModifiersState::empty()),
+            None
+        );
+
+        // The two modifiers are not interchangeable.
+        assert_eq!(linux_shortcut_for(&Key::Character("o"), ALT), None);
+        assert_eq!(linux_shortcut_for(&Key::ArrowLeft, CTRL), None);
+
+        // A SUPERset is a different chord: Ctrl+Alt+O must not fire Open, or a
+        // desktop-level binding would be shadowed by ours.
+        assert_eq!(linux_shortcut_for(&Key::Character("o"), CTRL | ALT), None);
+        assert_eq!(linux_shortcut_for(&Key::ArrowLeft, ALT | CTRL), None);
+        assert_eq!(
+            linux_shortcut_for(&Key::Character("o"), CTRL | ModifiersState::SUPER),
+            None
+        );
+    }
+
+    #[test]
+    fn shift_is_folded_into_the_logical_key_rather_than_examined() {
+        // tao reports the SHIFTED meaning in `logical_key`, so Ctrl+Shift+O
+        // arrives as an uppercase character with SHIFT still in the mask. It is
+        // the same action, which is why the comparison is case-insensitive and
+        // why SHIFT is not part of the exactness test.
+        assert_eq!(
+            linux_shortcut_for(&Key::Character("O"), CTRL | SHIFT),
+            Some(Shortcut::Open)
+        );
+        assert_eq!(
+            linux_shortcut_for(&Key::Character("R"), CTRL | SHIFT),
+            Some(Shortcut::Reload)
+        );
+    }
+
+    #[test]
+    fn unbound_keys_are_left_to_the_page() {
+        // F10 is handled by its OWN arm (it must work whether the menu bar is
+        // shown or hidden), so it must not appear in this table.
+        assert_eq!(linux_shortcut_for(&Key::F10, ModifiersState::empty()), None);
+        // The SPA binds Ctrl+D / Ctrl+U for half-page scrolling; a native
+        // accelerator here would take them away from the page.
+        assert_eq!(linux_shortcut_for(&Key::Character("d"), CTRL), None);
+        assert_eq!(linux_shortcut_for(&Key::Character("u"), CTRL), None);
+        assert_eq!(
+            linux_shortcut_for(&Key::Escape, ModifiersState::empty()),
+            None
+        );
+    }
 }
 
 #[cfg(test)]
