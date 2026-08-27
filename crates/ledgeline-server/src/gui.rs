@@ -383,9 +383,27 @@ fn build_webview(window: &tao::window::Window, url: &str) -> Result<wry::WebView
         use tao::platform::unix::WindowExtUnix;
         // `build_gtk` lives on this extension trait; it must be in scope (Linux).
         use wry::WebViewBuilderExtUnix;
-        builder
-            .build_gtk(window.gtk_window())
-            .map_err(|error| AppError::Gui(format!("creating webview: {error}")))?
+        // The WebView goes in the window's DEFAULT VBOX, not in the window.
+        // A GtkApplicationWindow is a GtkBin — exactly one child — and tao has
+        // already put a GtkBox there, which is also where muda's menu bar goes
+        // (`init_for_gtk_window`). Handing the WebView to the window instead
+        // makes GTK refuse it and silently drop it, leaving a menu bar with no
+        // page under it plus a `Gtk-WARNING: … can only contain one widget at a
+        // time; it already contains a widget of type GtkBox`. Ordering is no
+        // escape: the vbox exists from window creation, so whichever widget is
+        // offered to the window loses.
+        //
+        // Packing works out because the two crates agree on the box: wry
+        // recognises a `gtk::Box` and uses `pack_start(webview, true, true, 0)`
+        // so the page expands, while muda packs the bar `(false, false)` and
+        // reorders it to position 0. The `None` arm is unreachable unless the
+        // window was built `with_default_vbox(false)`, and keeps the match
+        // total without a panic.
+        match window.default_vbox() {
+            Some(vbox) => builder.build_gtk(vbox),
+            None => builder.build_gtk(window.gtk_window()),
+        }
+        .map_err(|error| AppError::Gui(format!("creating webview: {error}")))?
     };
     Ok(webview)
 }
