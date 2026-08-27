@@ -438,6 +438,65 @@
           meta = ledgeline.meta;
         };
 
+        # --- Linux desktop entry + MIME type -----------------------------------
+        # Without an XDG desktop entry a launcher has only the bare binary to go
+        # on, cannot tell a GUI program from a command-line one, and runs it
+        # through a terminal — which is where the "two windows when launched from
+        # a launcher" report comes from. `Terminal=false` is the line that fixes
+        # it. Nothing here is a code change; Linux has no console-subsystem flag.
+        #
+        # `MimeType` only does something if some type actually maps to a journal
+        # file, and shared-mime-info ships none, so we declare one. Installed to
+        # share/mime/packages/, which is where `update-desktop-database` /
+        # `update-mime-database` pick it up when the package lands in a profile.
+        # `sub-class-of text/plain` keeps journals opening in a text editor for
+        # everyone who has not chosen Ledgeline.
+        ledgelineMimeXml = pkgs.writeText "ledgeline-mime.xml" ''
+          <?xml version="1.0" encoding="UTF-8"?>
+          <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+            <mime-type type="text/x-hledger-journal">
+              <comment>hledger journal</comment>
+              <sub-class-of type="text/plain"/>
+              <glob pattern="*.journal"/>
+              <glob pattern="*.hledger"/>
+              <glob pattern="*.ledger"/>
+            </mime-type>
+          </mime-info>
+        '';
+
+        # `@out@` becomes the store path in `linuxDist`: an absolute Exec works
+        # whether or not the install put `bin/` on $PATH.
+        #
+        # `StartupWMClass` is what Hyprland/sway/GNOME match a window back to its
+        # launcher with. tao sets the app_id to the binary name; MEASURED with
+        # `hyprctl clients -j`, which reports `"class": "ledgeline"`.
+        #
+        # NO `Path=` here, deliberately. mbr needs one because its path argument
+        # defaults to the working directory and a launcher's cwd is arbitrary.
+        # Ledgeline's `journal` argument is optional and `resolve_journal` falls
+        # back to $LEDGELINE_FIXTURE → the most-recently-opened journal that
+        # still exists → a relative dev fixture, so a bare launch reopens the
+        # user's last journal regardless of cwd and no `Path=` would improve the
+        # final fallback anyway.
+        #
+        # Exactly ONE main category (`Office`); `Finance` is an additional
+        # category. Two main categories would list the app twice in menus.
+        ledgelineDesktopItem = pkgs.writeText "ledgeline.desktop.in" ''
+          [Desktop Entry]
+          Type=Application
+          Version=1.0
+          Name=Ledgeline
+          GenericName=Accounting
+          Comment=Local hledger GUI — reports, journal editing and CSV imports
+          Exec=@out@/bin/ledgeline %f
+          Icon=ledgeline
+          Terminal=false
+          StartupWMClass=ledgeline
+          Categories=Office;Finance;
+          MimeType=text/x-hledger-journal;
+          Keywords=hledger;ledger;accounting;journal;finance;bookkeeping;
+        '';
+
         # --- Linux desktop install (`.#linuxDist`, and `default` on Linux) ------
         # The runnable Linux artefact: `bin/ledgeline` wrapped with the EGL/GBM
         # search-path suffixes documented above, so the WebKit web process finds
@@ -454,7 +513,11 @@
         # and a symlinkJoin of the unwrapped package would collide with it.
         linuxDist = pkgs.runCommand "ledgeline-${version}"
           {
-            nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+            nativeBuildInputs = [
+              pkgs.makeBinaryWrapper
+              pkgs.imagemagick
+              pkgs.desktop-file-utils
+            ];
             meta = ledgeline.meta;
           } ''
           mkdir -p "$out/bin"
@@ -464,6 +527,27 @@
             --suffix      LIBGL_DRIVERS_PATH        : "${mesaDriDir}" \
             --set-default GBM_BACKENDS_PATH         "${gbmBackendsDefault}" \
             --suffix      GBM_BACKENDS_PATH         : "${mesaGbmDir}"
+
+          # assets/ledgeline.png is 2048². Downsize into each hicolor slot rather
+          # than dropping the original into one and claiming a size it is not;
+          # 48x48 is the slot menus actually require.
+          for s in 32 48 64 128 256 512; do
+            dir="$out/share/icons/hicolor/''${s}x''${s}/apps"
+            mkdir -p "$dir"
+            magick ${./assets/ledgeline.png} -resize "''${s}x''${s}" "$dir/ledgeline.png"
+          done
+
+          mkdir -p "$out/share/mime/packages"
+          cp ${ledgelineMimeXml} "$out/share/mime/packages/ledgeline.xml"
+
+          mkdir -p "$out/share/applications"
+          substitute ${ledgelineDesktopItem} "$out/share/applications/ledgeline.desktop" \
+            --subst-var out
+
+          # Catches a bad Categories= list, a missing trailing semicolon and the
+          # rest of the entry's sharp edges at BUILD time rather than as an app
+          # that silently never appears in a menu.
+          desktop-file-validate "$out/share/applications/ledgeline.desktop"
         '';
       in
       {
