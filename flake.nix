@@ -709,5 +709,19 @@
         devShells.audit = pkgs.mkShell {
           nativeBuildInputs = [ pkgs.cargo-audit ];
         };
+
+        # Minimal shell for the `spa-audit` CI job: bun ALONE, for exactly the
+        # reason `devShells.audit` above is minimal — `devShells.default` would
+        # drag in the Rust toolchain, hledger, hledger-web and the Playwright
+        # browser bundle, none of which a lockfile scan has any use for.
+        #
+        # Also deliberately NOT a `checks.` derivation, same as the Rust audit:
+        # `bun audit` queries the GitHub advisory API over the network at run
+        # time and the Nix build sandbox has none, so it can only run in a
+        # shell. It needs no `bun install` — it reads web/package.json and
+        # web/bun.lock directly, with no node_modules present.
+        devShells.spaAudit = pkgs.mkShell {
+          nativeBuildInputs = [ pkgs.bun ];
+        };
       });
 }
