@@ -224,6 +224,12 @@
         #    fails, on an unrelated commit, whenever the eviction happens — which
         #    is exactly how it went: the `@testing-library/svelte` + `jsdom` bump
         #    landed weeks before the build that reported it.
+        # See `outputHash` below for why this is keyed by system.
+        spaNodeModulesHashes = {
+          aarch64-darwin = "sha256-wwx0uWSFgAI2tuZWj89ZORMIQ8uMVQZVHklANqLhzEQ=";
+          x86_64-linux = "sha256-+ibyfS34nA4G/W1CvJQ0cA3LRkrdHvAkRZlwdLsGlXY=";
+        };
+
         spaNodeModules = pkgs.stdenv.mkDerivation {
           pname = "ledgeline-spa-node-modules";
           inherit version;
@@ -242,7 +248,13 @@
           dontFixup = true;
           outputHashMode = "recursive";
           outputHashAlgo = "sha256";
-          outputHash = "sha256-wwx0uWSFgAI2tuZWj89ZORMIQ8uMVQZVHklANqLhzEQ=";
+          # PER-SYSTEM by necessity: the tree contains platform-specific native
+          # binaries (esbuild, rollup, @tailwindcss/oxide), so the recursive
+          # hash differs on every system and can only be produced by building
+          # there. A system with no entry gets a build-time error naming itself,
+          # rather than a confusing hash mismatch against someone else's platform.
+          outputHash = spaNodeModulesHashes.${system} or (throw
+            "ledgeline: no spaNodeModules outputHash pinned for ${system}. Build it there and add the hash to `spaNodeModulesHashes` in flake.nix.");
         };
 
         # 2. The static SPA (`web/build`). Pure/offline: reuses the pinned
@@ -252,12 +264,27 @@
           pname = "ledgeline-spa";
           inherit version;
           src = ./web;
-          nativeBuildInputs = [ pkgs.bun ];
+          # nodejs is here for `patchShebangs` below, not to run the build (bun
+          # does that) — it is what the rewritten shebangs point AT.
+          nativeBuildInputs = [ pkgs.bun pkgs.nodejs_22 ];
           dontConfigure = true;
           buildPhase = ''
             export HOME="$TMPDIR"
             cp -R ${spaNodeModules}/node_modules ./node_modules
             chmod -R u+w node_modules
+            # The `.bin` shims npm/bun generate carry `#!/usr/bin/env node`, and
+            # the LINUX build sandbox has no /usr/bin/env — so `svelte-kit` and
+            # `vite` died with "bad interpreter". The darwin sandbox does have
+            # it, which is the only reason this ever worked there. Repoint them
+            # at the nodejs in this build. Done on the COPY, never on the
+            # fixed-output `spaNodeModules` itself, whose contents must stay
+            # exactly what the pinned hash covers.
+            #
+            # The WHOLE tree, not just `.bin`: the entries there are SYMLINKS
+            # into the packages and `patchShebangs` only rewrites regular files,
+            # so pointing it at `.bin` alone reported success and changed
+            # nothing.
+            patchShebangs node_modules
             bun run prepare
             bun run build
           '';
@@ -498,14 +525,22 @@
         '';
 
         # --- Linux desktop install (`.#linuxDist`, and `default` on Linux) ------
-        # The runnable Linux artefact: `bin/ledgeline` wrapped with the EGL/GBM
-        # search-path suffixes documented above, so the WebKit web process finds
-        # a loadable vendor ICD and stops aborting on a non-NixOS host.
+        # The runnable Linux artefact, and the counterpart of `macDist`: it wraps
+        # `ledgelineWithSpa` — the binary with the REAL SvelteKit UI embedded —
+        # with the EGL/GBM search-path suffixes documented above, so the WebKit
+        # web process finds a loadable vendor ICD and stops aborting on a
+        # non-NixOS host.
+        #
+        # `ledgelineWithSpa`, NOT `ledgeline`: `.#ledgeline` embeds the CI
+        # PLACEHOLDER SPA (web/build is absent in the crane sandbox), so a
+        # `nix run` off it opened a window reading "Ledgeline SPA not built".
+        # That was fine while the real-SPA path was darwin-only, and stopped
+        # being fine once this became the Linux install path.
         #
         # This is deliberately a SEPARATE output rather than a `postInstall` on
         # `ledgeline`. `ledgeline` is what `checks` and CI build and what a
-        # release artefact should ship: keeping it bare keeps ~1 GiB of Mesa out
-        # of the CI closure and off any published tarball, while everyone who
+        # release artefact should ship: keeping it bare keeps ~1 GiB of Mesa AND
+        # the whole bun/SPA build out of the CI closure, while everyone who
         # installs the app gets the wrapper. `nix run .` and `nix profile
         # install` both resolve here.
         #
@@ -521,7 +556,7 @@
             meta = ledgeline.meta;
           } ''
           mkdir -p "$out/bin"
-          makeBinaryWrapper ${ledgeline}/bin/ledgeline "$out/bin/ledgeline" \
+          makeBinaryWrapper ${ledgelineWithSpa}/bin/ledgeline "$out/bin/ledgeline" \
             --set-default __EGL_VENDOR_LIBRARY_DIRS "${glvndVendorDefaults}" \
             --suffix      __EGL_VENDOR_LIBRARY_DIRS : "${mesaEglVendorDir}" \
             --suffix      LIBGL_DRIVERS_PATH        : "${mesaDriDir}" \
@@ -558,12 +593,14 @@
           inherit ledgeline clippy fmt tests;
           default = ledgeline;
         }
-        # Linux-only: the wrapped desktop install. `default` is OVERRIDDEN to it
-        # so `nix build` / `nix profile install` give a `bin/ledgeline` whose
-        # WebKit web process can actually create an EGL display off NixOS.
-        # `.#ledgeline` stays the bare binary on every system (CI + releases).
+        # Linux-only: the wrapped desktop install, plus the SPA-in-Nix pieces it
+        # is built from. `default` is OVERRIDDEN to it so `nix build` /
+        # `nix profile install` give a `bin/ledgeline` that (a) embeds the REAL
+        # SvelteKit UI and (b) has a WebKit web process that can actually create
+        # an EGL display off NixOS. `.#ledgeline` stays the bare,
+        # placeholder-SPA binary on every system (CI + releases).
         // lib.optionalAttrs pkgs.stdenv.isLinux {
-          inherit linuxDist;
+          inherit linuxDist spaNodeModules spaBuild ledgelineWithSpa;
           default = linuxDist;
         }
         # macOS-only: the app bundle, the combined `macDist` install, and the
@@ -588,23 +625,29 @@
           inherit ledgeline clippy fmt tests;
         };
 
-        # `nix run .` → the REAL app. On darwin `apps.default` runs
-        # `ledgelineWithSpa` — the binary with the ACTUAL SvelteKit UI baked in —
-        # so `nix run github:zmre/ledgeline -- ~/finance/2026.journal` opens the
-        # real GUI on that journal. On non-darwin it runs `ledgeline` (the
-        # PLACEHOLDER-SPA binary): the real-SPA path pulls in the `spaNodeModules`
-        # fixed-output derivation whose `outputHash` is PER-PLATFORM and is
-        # currently pinned for aarch64-darwin only — the Linux hash can only be
-        # produced by building on Linux, so a real-SPA `nix run` on Linux is a
-        # documented follow-up (promote spaNodeModules/spaBuild/ledgelineWithSpa
-        # to all systems with a per-system outputHash; see docs/development.md).
-        # Nix laziness means the `else` branch keeps `ledgelineWithSpa` from ever
-        # being forced on Linux, so the darwin-only FOD hash never trips a Linux
-        # eval/build. On Linux it runs `linuxDist` — the EGL-wrapped binary —
-        # because an unwrapped `nix run` aborts in the WebKit web process on any
-        # host without /run/opengl-driver.
+        # `nix run .` → the REAL app on BOTH platforms, so
+        # `nix run github:zmre/ledgeline -- ~/finance/2026.journal` opens the real
+        # GUI on that journal anywhere. darwin runs `ledgelineWithSpa` directly;
+        # Linux runs `linuxDist`, which wraps that same real-SPA binary with the
+        # EGL/GBM suffixes — an unwrapped `nix run` aborts in the WebKit web
+        # process on any host without /run/opengl-driver.
+        #
+        # Linux used to run the PLACEHOLDER-SPA `ledgeline` here, because the
+        # `spaNodeModules` FOD hash was pinned for aarch64-darwin only. It is now
+        # keyed by system (see `spaNodeModulesHashes`), so both platforms get the
+        # actual SvelteKit UI.
+        #
+        # `name` is passed EXPLICITLY and is load-bearing. `mkApp` defaults it to
+        # `drv.pname or drv.name`, and only the crane outputs carry a `pname` —
+        # `linuxDist` is a `runCommand`, which has just `name =
+        # "ledgeline-${version}"`. Leaving it to infer therefore pointed
+        # `nix run` at `bin/ledgeline-0.1.0`, a path that does not exist, and it
+        # failed for everyone on Linux while `nix build` / `nix profile install`
+        # stayed fine. Nothing in `nix flake check` builds an app's program path,
+        # so this is not caught by the gate; say the name out loud instead.
         apps.default = flake-utils.lib.mkApp {
           drv = if pkgs.stdenv.isDarwin then ledgelineWithSpa else linuxDist;
+          name = "ledgeline";
         };
 
         # Dev shell — preserved from the pre-crane flake. Every tool the team and

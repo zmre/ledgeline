@@ -60,32 +60,45 @@ The bare attribute (`.#clippy`, `.#tests`, …) resolves to the current system
 automatically (`x86_64-linux`, `aarch64-darwin`, …), which is how CI invokes
 them on each runner.
 
-### `nix run` runs the real app (darwin)
+### `nix run` runs the real app (both platforms)
 
 `apps.default` — what `nix run .` and `nix run github:zmre/ledgeline` execute —
-resolves per platform:
+builds the SPA (the `bun install` FOD → `vite build`) and opens the real desktop
+window on the given journal:
 
-- **macOS** → `ledgelineWithSpa`, the binary with the actual SvelteKit UI baked
-  in. So `nix run github:zmre/ledgeline -- ~/finance/2026.journal` builds the SPA
-  (the `bun install` FOD → `vite build`) and opens the real desktop window on
-  that journal. (`.#ledgeline` still embeds the CI placeholder SPA; `apps.default`
-  deliberately does **not** use it on darwin.)
-- **Linux** → `ledgeline`, the placeholder-SPA binary. The real-SPA path pulls the
-  `spaNodeModules` fixed-output derivation, whose `outputHash` is pinned
-  per-platform (aarch64-darwin today); the Linux hash can only be produced by
-  building on Linux. Nix laziness keeps `ledgelineWithSpa` from ever being forced
-  on Linux, so the darwin-only FOD hash never trips a Linux eval/build.
+- **macOS** → `ledgelineWithSpa`, the binary with the actual SvelteKit UI baked in.
+- **Linux** → `linuxDist`, which wraps that **same** real-SPA binary with the
+  EGL/GBM search-path suffixes and ships the desktop entry + icons. The wrapper is
+  not optional: an unwrapped run aborts in the WebKit web process on any host
+  without `/run/opengl-driver`.
 
-Only `apps.default` is platform-conditional here — `packages.default`,
-`.#ledgeline`, the `checks`, and `.#macApp` are unchanged.
+`.#ledgeline` still embeds the CI placeholder SPA on every platform; `apps.default`
+deliberately does **not** use it. The `checks` keep using it, which is what holds
+Mesa and the whole bun/SPA build out of the CI closure.
 
-**Follow-up — real-SPA `nix run` on Linux.** Promote `spaNodeModules` /
-`spaBuild` / `ledgelineWithSpa` (and the currently darwin-guarded `packages`) to
-all systems with a **per-system** `outputHash` — the Linux hash pinned from a
-Linux/CI build (build once with a fake hash; Nix prints the real one), the way
-`spaNodeModules.outputHash` is pinned for aarch64-darwin today. Until then,
-`nix build .#ledgeline` gives the working **headless** binary on Linux
-(`./result/bin/ledgeline --server`).
+#### The `spaNodeModules` hash is per-system
+
+`spaNodeModules` is a fixed-output derivation, and its tree contains
+platform-specific native binaries (esbuild, rollup, `@tailwindcss/oxide`), so the
+recursive hash differs per system. `spaNodeModulesHashes` in `flake.nix` maps
+system → hash; a system with no entry throws a build-time error naming itself
+rather than failing as a confusing mismatch against someone else's platform.
+
+To add one: build on that system with a placeholder hash and copy the `got:` value
+Nix prints.
+
+```sh
+nix build .#spaNodeModules   # → error: ... specified: sha256-AAAA…  got: sha256-<real>
+```
+
+Two Linux-specific traps live in `spaBuild`, both already handled:
+
+- `patchShebangs node_modules` is required. The `.bin` shims carry
+  `#!/usr/bin/env node`, and the **Linux** build sandbox has no `/usr/bin/env`
+  (the darwin one does, which is the only reason this path worked there first).
+- It must patch the **whole tree**, not `node_modules/.bin`: those entries are
+  symlinks and `patchShebangs` only rewrites regular files, so aiming it at `.bin`
+  reports success and changes nothing.
 
 ## The embedded SPA and the Nix sandbox
 
