@@ -148,6 +148,33 @@ jobs:
         if: runner.os == 'macOS'
         run: nix build -L --no-link .#macDist
 
+      # The Linux mirror of the step above, and for the same reason: `.#ledgeline`
+      # is NOT what a Linux user ends up with either. On Linux `packages.default`
+      # AND `apps.default` are both `linuxDist` — the real-SPA binary wrapped
+      # with the Mesa/EGL vendor paths, plus the .desktop entry, the MIME type
+      # and the hicolor icons. So `nix build github:zmre/ledgeline`,
+      # `nix profile install` and `nix run` all resolve here, and NONE of it was
+      # built by CI until now: naming `.#ledgeline` explicitly routes around
+      # `default`.
+      #
+      # That gap is not theoretical. `spaNodeModules`' outputHash is per-system
+      # and can only be generated ON the system it describes, so the x86_64-linux
+      # entry silently went stale the moment the JS toolchain was bumped on a
+      # Mac — and nothing here noticed, because nothing here built the
+      # derivation. This step is what makes that a red CI run with the correct
+      # hash in the log instead of a broken `nix profile install` for a user.
+      #
+      # It also covers `desktop-file-validate`, the MIME XML and the six icon
+      # sizes, none of which any other job touches.
+      #
+      # NOT free: this is a second full Rust compile (ledgelineWithSpa shares no
+      # artifacts with the placeholder-SPA `.#ledgeline`), a bun install + vite
+      # build, and pkgs.mesa's ~1 GiB closure. All cached after the first green
+      # run — see the Cachix pin below, which is what keeps it that way.
+      - name: Build linuxDist (Linux distributable)
+        if: runner.os == 'Linux'
+        run: nix build -L --no-link .#linuxDist
+
       # Push the freshly built store paths to our Cachix cache. Only on pushes
       # (not PRs); the in-script guard skips cleanly when the token is absent
       # (forks / before the user sets the secret), so the job never fails.
@@ -169,9 +196,17 @@ jobs:
           # is additionally what `nix run` resolves to on darwin;
           # `bundledHledger` is a 53 MiB download from github.com that we would
           # otherwise re-fetch on every build that cannot substitute macApp.
+          #
+          # On Linux `linuxDist` is `packages.default`, so it is the path a user
+          # actually substitutes; `ledgelineWithSpa` is listed alongside it
+          # because linuxDist WRAPS that binary (makeBinaryWrapper references it
+          # by store path, so it IS in the closure — but naming it explicitly
+          # keeps the pin below honest and costs nothing).
           attrs=(.#ledgeline)
           if [ "$RUNNER_OS" = "macOS" ]; then
             attrs+=(.#macDist .#ledgelineWithSpa .#bundledHledger)
+          else
+            attrs+=(.#linuxDist .#ledgelineWithSpa)
           fi
           nix build --json "${attrs[@]}" | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 
@@ -211,8 +246,15 @@ jobs:
             cachix pin zmre "ledgeline-cli-$sys" \
               "$(nix build --no-link --print-out-paths .#ledgelineWithSpa)" --keep-revisions 2
           else
-            cachix pin zmre "ledgeline-$sys" \
-              "$(nix build --no-link --print-out-paths .#ledgeline)" --keep-revisions 2
+            # `linuxDist`, not `.#ledgeline`: pin what `packages.default`
+            # resolves to, which is what an unpinned `nix profile install`
+            # fetches. Pinning the placeholder-SPA build instead would keep the
+            # one artifact no user ever asks for alive while the real one is
+            # evicted.
+            cachix pin zmre "ledgeline-linuxdist-$sys" \
+              "$(nix build --no-link --print-out-paths .#linuxDist)" --keep-revisions 2
+            cachix pin zmre "ledgeline-cli-$sys" \
+              "$(nix build --no-link --print-out-paths .#ledgelineWithSpa)" --keep-revisions 2
           fi
 
   # TypeScript / SvelteKit side: build the SPA and run its unit + type checks.
