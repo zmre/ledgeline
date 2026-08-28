@@ -31,13 +31,13 @@
     } = $props();
 </script>
 
-<div class="card bg-base-200/50 border-base-content/10 border border-dashed opacity-80" data-testid="imports-locked-item">
+<div class="card border border-dashed border-base-content/10 bg-base-200/50 opacity-80" data-testid="imports-locked-item">
     <div class="card-body gap-2 p-3">
         <div class="flex items-center gap-2">
             <div class="join">
                 <button
                     type="button"
-                    class="btn btn-xs join-item"
+                    class="btn join-item btn-xs"
                     disabled={disabled || position === 1}
                     onclick={onMoveUp}
                     aria-label="Move item {position} up"
@@ -46,7 +46,7 @@
                 </button>
                 <button
                     type="button"
-                    class="btn btn-xs join-item"
+                    class="btn join-item btn-xs"
                     disabled={disabled || position === total}
                     onclick={onMoveDown}
                     aria-label="Move item {position} down"
@@ -54,21 +54,21 @@
                     ↓
                 </button>
             </div>
-            <span class="text-base-content/60 truncate font-mono text-xs">{summary.title}</span>
+            <span class="truncate font-mono text-xs text-base-content/60">{summary.title}</span>
             {#if summary.advanced}
-                <span class="badge badge-ghost badge-sm gap-1 whitespace-nowrap" data-testid="imports-locked-badge">🔒 advanced — edit in terminal</span>
+                <span class="badge gap-1 badge-ghost badge-sm whitespace-nowrap" data-testid="imports-locked-badge">🔒 advanced — edit in terminal</span>
             {:else}
                 <span class="badge badge-ghost badge-sm whitespace-nowrap">kept as-is</span>
             {/if}
         </div>
         {#if summary.detail !== ""}
-            <p class="text-base-content/60 text-xs">{summary.detail}</p>
+            <p class="text-xs text-base-content/60">{summary.detail}</p>
         {/if}
         {#if summary.text !== ""}
-            <pre class="bg-base-300/40 max-h-40 overflow-auto rounded p-2 text-xs"><code>{summary.text.replace(/\n+$/, "")}</code></pre>
+            <pre class="max-h-40 overflow-auto rounded bg-base-300/40 p-2 text-xs"><code>{summary.text.replace(/\n+$/, "")}</code></pre>
         {/if}
         {#if summary.truncated}
-            <p class="text-base-content/50 text-xs">Only the first part is shown; the whole item is kept.</p>
+            <p class="text-xs text-base-content/50">Only the first part is shown; the whole item is kept.</p>
         {/if}
     </div>
 </div>

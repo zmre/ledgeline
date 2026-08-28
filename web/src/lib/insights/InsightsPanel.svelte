@@ -30,7 +30,7 @@
     const max = $derived(maxAccountDepth(txns, accounts));
 </script>
 
-<section class="collapse-arrow bg-base-200 collapse" data-testid="insights-panel">
+<section class="collapse-arrow collapse bg-base-200" data-testid="insights-panel">
     <input
         type="checkbox"
         checked={settings.insightsOpen}
@@ -40,7 +40,7 @@
     <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
         <h2 class="text-sm font-semibold tracking-tight">Insights</h2>
         <span class="text-sm">
-            <span class="text-base-content/60 mr-1">Net</span>
+            <span class="mr-1 text-base-content/60">Net</span>
             <span class="font-semibold {signClass(toNumber(net))}">{netFormatted}</span>
         </span>
     </div>

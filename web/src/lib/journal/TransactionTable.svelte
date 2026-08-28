@@ -236,7 +236,7 @@
 <section class="flex min-h-0 grow flex-col">
     <div class="flex items-center justify-between gap-2 pb-1">
         {#if editing.canEdit}
-            <button type="button" class="btn btn-primary btn-sm gap-1" onclick={() => txnModal.openAdd()}>
+            <button type="button" class="btn gap-1 btn-primary btn-sm" onclick={() => txnModal.openAdd()}>
                 <span class="text-base leading-none">+</span> Add transaction
             </button>
         {:else}
@@ -248,7 +248,7 @@
              gives keyboard delete a mouse path for free — there was no delete
              affordance outside the transaction popup at all. -->
         {#if armedDelete !== null}
-            <div class="border-error/40 flex items-center gap-2 rounded border px-2 py-1 text-sm" role="alert">
+            <div class="flex items-center gap-2 rounded border border-error/40 px-2 py-1 text-sm" role="alert">
                 <span>
                     Delete <span class="font-mono">{armedDelete.date}</span>
                     {armedDelete.description || "(no description)"}?
@@ -268,12 +268,12 @@
         bind:clientWidth={containerWidth}
         onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)}
         onfocusin={(event) => syncCursorFromTarget(event.target)}
-        class="border-base-300 min-h-0 grow overflow-y-auto rounded-lg border"
+        class="min-h-0 grow overflow-y-auto rounded-lg border border-base-300"
     >
         {#if txns.length === 0}
-            <div class="text-base-content/60 p-8 text-center text-sm">No transactions match the current filters.</div>
+            <div class="p-8 text-center text-sm text-base-content/60">No transactions match the current filters.</div>
         {:else if mode === "table"}
-            <table class="table-sm table table-fixed">
+            <table class="table table-fixed table-sm">
                 <colgroup>
                     {#if columns.date}<col class="w-24" />{/if}
                     {#if columns.status}<col class="w-16" />{/if}
@@ -281,7 +281,7 @@
                     {#if columns.accounts}<col />{/if}
                     {#if columns.amount}<col class="w-36" />{/if}
                 </colgroup>
-                <thead class="bg-base-200 sticky top-0 z-10" bind:clientHeight={headHeight}>
+                <thead class="sticky top-0 z-10 bg-base-200" bind:clientHeight={headHeight}>
                     <tr class="text-base-content/70">
                         {#if columns.date}<th class="text-left">Date</th>{/if}
                         {#if columns.status}<th class="text-left">Status</th>{/if}

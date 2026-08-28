@@ -253,7 +253,7 @@
         id={listId}
         role="listbox"
         aria-label="Account suggestions"
-        class="menu bg-base-200 rounded-box border-base-300 fixed z-[1001] flex-nowrap overflow-y-auto border p-1 shadow-lg"
+        class="menu fixed z-[1001] flex-nowrap overflow-y-auto rounded-box border border-base-300 bg-base-200 p-1 shadow-lg"
         style="top: {placement.top}px; left: {placement.left}px; width: {placement.width}px; max-height: {placement.maxHeight}px"
         {...{[TYPING_ATTRIBUTE]: ""}}
     >

@@ -74,13 +74,13 @@
             <!-- Cost of living is averaged at the display boundary (engine keeps totals exact). -->
             {@const colCur = monthlyAverage(report.costOfLiving.currentTotal.get(base), report.costOfLiving.monthsCurrent)}
             {@const colPrev = monthlyAverage(report.costOfLiving.previousTotal.get(base), report.costOfLiving.monthsPrevious)}
-            <div class="text-base-content/60 text-xs">
-                Current <span class="text-base-content/80 font-medium">{period.currStart} → {period.currEnd}</span>
-                vs previous <span class="text-base-content/80 font-medium">{period.prevStart} → {period.prevEnd}</span>
+            <div class="text-xs text-base-content/60">
+                Current <span class="font-medium text-base-content/80">{period.currStart} → {period.currEnd}</span>
+                vs previous <span class="font-medium text-base-content/80">{period.prevStart} → {period.prevEnd}</span>
             </div>
 
             {#if coverage !== null}
-                <div class="alert alert-warning rounded-box px-3 py-2 text-sm" role="alert" data-testid="insights-coverage-warning">
+                <div class="alert rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="insights-coverage-warning">
                     <span>{coverage}</span>
                 </div>
             {/if}

@@ -19,7 +19,7 @@
     const selectedAccounts = $derived([...filters.value.accounts].sort());
 </script>
 
-<div class="bg-base-200 rounded-box flex flex-col gap-2 p-2">
+<div class="flex flex-col gap-2 rounded-box bg-base-200 p-2">
     <div class="flex flex-wrap items-center gap-2">
         <DateRangePicker />
         <!-- `a`, not `/`: on this page `/` belongs to the free-text SearchInput
@@ -38,20 +38,20 @@
     {#if hasChips}
         <div class="flex flex-wrap items-center gap-1">
             {#if rangeChanged}
-                <span class="badge badge-outline gap-1">
+                <span class="badge gap-1 badge-outline">
                     {rangeLabel}
                     <button type="button" class="cursor-pointer" aria-label="Reset date range" onclick={() => filters.setRange(dflt.from, dflt.to)}>✕</button>
                 </span>
             {/if}
             {#each selectedAccounts as name (name)}
-                <span class="badge badge-outline max-w-full gap-1">
+                <span class="badge max-w-full gap-1 badge-outline">
                     <span class="truncate">{name}</span>
                     <button type="button" class="cursor-pointer" aria-label="Remove account filter {name}" onclick={() => filters.toggleAccount(name)}>✕</button
                     >
                 </span>
             {/each}
             {#if filters.value.query !== ""}
-                <span class="badge badge-outline max-w-full gap-1">
+                <span class="badge max-w-full gap-1 badge-outline">
                     <span class="truncate">“{filters.value.query}”</span>
                     <button type="button" class="cursor-pointer" aria-label="Clear search filter" onclick={() => filters.setQuery("")}>✕</button>
                 </span>

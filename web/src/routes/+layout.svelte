@@ -75,10 +75,10 @@
 <div class="drawer drawer-end">
     <input id="problems-drawer" type="checkbox" class="drawer-toggle" bind:checked={problems.drawerOpen} />
     <div class="drawer-content">
-        <div class="bg-base-100 text-base-content flex min-h-screen flex-col">
-            <header class="navbar bg-base-200 min-h-12 shadow-sm">
+        <div class="flex min-h-screen flex-col bg-base-100 text-base-content">
+            <header class="navbar min-h-12 bg-base-200 shadow-sm">
                 <div class="navbar-start">
-                    <a href={resolve("/")} class="btn btn-ghost gap-2 px-2 text-lg font-semibold tracking-tight">
+                    <a href={resolve("/")} class="btn gap-2 btn-ghost px-2 text-lg font-semibold tracking-tight">
                         <img src="/ledgeline-icon.png" alt="Ledgeline" class="h-7 w-7 rounded" />
                         Ledgeline
                     </a>
@@ -112,7 +112,7 @@
                              each. -->
                         <button
                             type="button"
-                            class="btn btn-ghost btn-xs btn-circle"
+                            class="btn btn-circle btn-ghost btn-xs"
                             title="Refresh everything on screen now"
                             aria-label="Refresh everything on screen now"
                             disabled={conn === "loading"}
@@ -139,7 +139,7 @@
                              and ellipsised because a title runs to 60 characters
                              and an uncapped one squeezes the centre nav. -->
                         {#if connLabel !== ""}
-                            <span class="text-base-content/70 hidden max-w-64 truncate sm:inline">{connLabel}</span>
+                            <span class="hidden max-w-64 truncate text-base-content/70 sm:inline">{connLabel}</span>
                         {/if}
                     </span>
                     {#if conn === "error"}
@@ -163,9 +163,9 @@
      preference in silence, so the app just reappeared at first-run setup. -->
 {#if settings.storageError !== null && !storageNoticeDismissed}
     <div class="toast toast-start z-40">
-        <div class="alert alert-warning max-w-md" data-testid="settings-storage-error">
+        <div class="alert max-w-md alert-warning" data-testid="settings-storage-error">
             <span class="grow break-words">{settings.storageError}</span>
-            <button type="button" class="btn btn-sm shrink-0" onclick={() => (storageNoticeDismissed = true)}>Dismiss</button>
+            <button type="button" class="btn shrink-0 btn-sm" onclick={() => (storageNoticeDismissed = true)}>Dismiss</button>
         </div>
     </div>
 {/if}
@@ -177,7 +177,7 @@
              as a reconnect affordance the user must be able to bail out. -->
         <button
             type="button"
-            class="btn btn-sm btn-circle fixed top-4 right-4 z-[1000]"
+            class="btn fixed top-4 right-4 z-[1000] btn-circle btn-sm"
             aria-label="Close server setup"
             onclick={() => (reconnectOpen = false)}
         >

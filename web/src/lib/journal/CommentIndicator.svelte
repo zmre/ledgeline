@@ -12,7 +12,7 @@
 
 {#if comments.length > 0}
     <span class="tooltip tooltip-left shrink-0 before:max-w-64 before:whitespace-normal" data-tip={comments.join(" · ")}>
-        <button type="button" class="text-base-content/50 hover:text-base-content flex cursor-help items-center align-middle" aria-label="Show comments">
+        <button type="button" class="flex cursor-help items-center align-middle text-base-content/50 hover:text-base-content" aria-label="Show comments">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5" aria-hidden="true">
                 <path
                     fill-rule="evenodd"

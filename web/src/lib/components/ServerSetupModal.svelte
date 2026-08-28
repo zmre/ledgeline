@@ -44,7 +44,7 @@
 <div class="modal modal-open" role="dialog" aria-labelledby="server-setup-title" aria-modal="true">
     <div class="modal-box max-w-lg">
         <h3 id="server-setup-title" class="text-lg font-bold">Connect to hledger-web</h3>
-        <p class="text-base-content/70 py-2 text-sm">
+        <p class="py-2 text-sm text-base-content/70">
             Ledgeline reads your journal from a locally running <code>hledger-web</code> JSON API. Enter its URL to get started.
         </p>
         <form onsubmit={verify}>
@@ -52,7 +52,7 @@
                 <span class="label-text pb-1 text-sm">Server URL</span>
                 <input
                     type="url"
-                    class="input input-bordered w-full"
+                    class="input-bordered input w-full"
                     bind:value={url}
                     placeholder="http://127.0.0.1:5000"
                     required
@@ -65,30 +65,30 @@
                 <span class="label-text pb-1 text-sm">Access token <span class="text-base-content/50">(Ledgeline engine at another origin only)</span></span>
                 <input
                     type="password"
-                    class="input input-bordered w-full"
+                    class="input-bordered input w-full"
                     bind:value={token}
                     placeholder="leave blank for hledger-web"
                     autocomplete="off"
                     disabled={verifying}
                 />
-                <span class="text-base-content/60 pt-1 text-xs">
+                <span class="pt-1 text-xs text-base-content/60">
                     The engine prints this at startup, or set <code>LEDGELINE_TOKEN</code> before launching it. The packaged app needs nothing here.
                 </span>
             </label>
 
             {#if errorMessage !== null}
-                <div class="alert alert-error mt-3 text-sm" role="alert">
+                <div class="mt-3 alert text-sm alert-error" role="alert">
                     <span>{errorMessage}</span>
                 </div>
                 {#if unreachable}
-                    <div class="bg-base-200 mt-3 rounded-lg p-3">
-                        <p class="text-base-content/70 pb-2 text-sm">Is hledger-web running? Launch it with CORS enabled for this page's origin only:</p>
-                        <p class="text-warning pb-2 text-xs">
+                    <div class="mt-3 rounded-lg bg-base-200 p-3">
+                        <p class="pb-2 text-sm text-base-content/70">Is hledger-web running? Launch it with CORS enabled for this page's origin only:</p>
+                        <p class="pb-2 text-xs text-warning">
                             Never use <code>--cors='*'</code>: it lets any website you visit read — and, with <code>--allow=edit</code>, rewrite — your journal.
                         </p>
                         <div class="flex items-center gap-2">
-                            <code class="bg-base-300 grow overflow-x-auto rounded p-2 text-xs whitespace-nowrap select-all">{launchCommand}</code>
-                            <button type="button" class="btn btn-sm shrink-0" onclick={copyCommand}>
+                            <code class="grow overflow-x-auto rounded bg-base-300 p-2 text-xs whitespace-nowrap select-all">{launchCommand}</code>
+                            <button type="button" class="btn shrink-0 btn-sm" onclick={copyCommand}>
                                 {copied ? "Copied!" : "Copy"}
                             </button>
                         </div>
@@ -99,7 +99,7 @@
             <div class="modal-action">
                 <button type="submit" class="btn btn-primary" disabled={verifying || url.trim() === ""}>
                     {#if verifying}
-                        <span class="loading loading-spinner loading-sm"></span>
+                        <span class="loading loading-sm loading-spinner"></span>
                         Verifying…
                     {:else}
                         Verify &amp; connect

@@ -39,11 +39,11 @@
 </script>
 
 <div class="w-full">
-    <h3 class="text-base-content/70 mb-1 text-xs font-semibold tracking-tight">
-        Value over time <span class="text-base-content/40 font-normal">· last 12 months</span>
+    <h3 class="mb-1 text-xs font-semibold tracking-tight text-base-content/70">
+        Value over time <span class="font-normal text-base-content/40">· last 12 months</span>
     </h3>
     {#if allZero}
-        <p class="text-base-content/60 py-8 text-center text-sm">No priced holdings in the last 12 months.</p>
+        <p class="py-8 text-center text-sm text-base-content/60">No priced holdings in the last 12 months.</p>
     {:else}
         <div class="h-56 w-full sm:h-64" data-testid="holdings-trend">
             <LineChart

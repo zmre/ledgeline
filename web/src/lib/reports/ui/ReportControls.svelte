@@ -28,20 +28,20 @@
 
 {#snippet dateField(label: string, key: "asOf" | "from" | "to" | "end")}
     <label class="form-control">
-        <span class="label-text text-base-content/70 mb-1 block text-xs">{label}</span>
-        <input type="date" class="input input-sm w-40" value={params[key]} onchange={(e) => setDate(key, e.currentTarget.value)} aria-label={label} />
+        <span class="label-text mb-1 block text-xs text-base-content/70">{label}</span>
+        <input type="date" class="input w-40 input-sm" value={params[key]} onchange={(e) => setDate(key, e.currentTarget.value)} aria-label={label} />
     </label>
 {/snippet}
 
-<div class="bg-base-200 rounded-box flex flex-wrap items-end gap-x-4 gap-y-2 px-3 py-2">
+<div class="flex flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2">
     {#if config.budgetPreset}
         <div class="form-control">
-            <span class="label-text text-base-content/70 mb-1 block text-xs">Period</span>
+            <span class="label-text mb-1 block text-xs text-base-content/70">Period</span>
             <div class="join" role="group" aria-label="Budget period">
                 {#each BUDGET_PRESETS as preset (preset.id)}
                     <button
                         type="button"
-                        class="btn btn-sm join-item {activePreset === preset.id ? 'btn-active btn-primary' : ''}"
+                        class="btn join-item btn-sm {activePreset === preset.id ? 'btn-active btn-primary' : ''}"
                         aria-pressed={activePreset === preset.id}
                         onclick={() => applyPreset(preset.id)}
                     >
@@ -63,8 +63,8 @@
     {/if}
     {#if config.interval}
         <label class="form-control">
-            <span class="label-text text-base-content/70 mb-1 block text-xs">Interval</span>
-            <select class="select select-sm w-32" bind:value={params.interval} aria-label="Interval">
+            <span class="label-text mb-1 block text-xs text-base-content/70">Interval</span>
+            <select class="select w-32 select-sm" bind:value={params.interval} aria-label="Interval">
                 <option value="monthly">Monthly</option>
                 <option value="quarterly">Quarterly</option>
                 <option value="yearly">Yearly</option>
@@ -73,10 +73,10 @@
     {/if}
     {#if config.count}
         <label class="form-control">
-            <span class="label-text text-base-content/70 mb-1 block text-xs">Periods</span>
+            <span class="label-text mb-1 block text-xs text-base-content/70">Periods</span>
             <input
                 type="number"
-                class="input input-sm w-20"
+                class="input w-20 input-sm"
                 min="1"
                 max={MAX_COUNT}
                 value={params.count}

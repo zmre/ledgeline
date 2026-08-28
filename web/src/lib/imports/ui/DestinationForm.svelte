@@ -41,14 +41,14 @@
     const unwritable = $derived(journals.filter((journal) => !journal.writable));
 </script>
 
-<section class="border-base-content/10 rounded-box flex flex-col gap-3 border p-3" aria-label="Destinations" data-testid="imports-destinations">
+<section class="flex flex-col gap-3 rounded-box border border-base-content/10 p-3" aria-label="Destinations" data-testid="imports-destinations">
     <h2 class="text-sm font-semibold tracking-tight">Where it goes</h2>
 
     <label class="form-control w-full">
         <span class="label-text text-xs">CSV file</span>
         <input
             type="text"
-            class="input input-sm w-full font-mono {problems.length > 0 ? 'input-error' : ''}"
+            class="input w-full font-mono input-sm {problems.length > 0 ? 'input-error' : ''}"
             value={csvPath}
             {disabled}
             spellcheck="false"
@@ -56,19 +56,19 @@
             data-testid="imports-csv-path"
             oninput={(event) => onCsvPath(event.currentTarget.value)}
         />
-        <span class="label-text-alt text-base-content/50 text-xs"
+        <span class="label-text-alt text-xs text-base-content/50"
             >Relative to the folder your journal is in. hledger keeps its import state beside this file.</span
         >
     </label>
     {#each problems as problem (problem)}
-        <p class="text-error text-xs" role="alert">{problem}</p>
+        <p class="text-xs text-error" role="alert">{problem}</p>
     {/each}
 
     {#if needsJournal}
         <label class="form-control w-full">
             <span class="label-text text-xs">Import into</span>
             <select
-                class="select select-sm w-full"
+                class="select w-full select-sm"
                 value={journalId ?? ""}
                 {disabled}
                 data-testid="imports-journal"
@@ -81,12 +81,12 @@
             </select>
         </label>
         {#if selectable.length === 0}
-            <p class="text-warning text-xs" role="alert">
+            <p class="text-xs text-warning" role="alert">
                 None of the files Ledgeline can see are writable, so there is nowhere to import to. Saving the CSV still works.
             </p>
         {/if}
         {#each unwritable as journal (journal.id)}
-            <p class="text-base-content/50 text-xs">
+            <p class="text-xs text-base-content/50">
                 {journal.label} can't be written to — it isn't a plain file inside the folder your journal is in.
             </p>
         {/each}

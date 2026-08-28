@@ -78,7 +78,7 @@
         <label class="form-control">
             <span class="label-text text-xs">Date format</span>
             <select
-                class="select select-sm w-full"
+                class="select w-full select-sm"
                 {disabled}
                 aria-label="Date format"
                 value={customDate ? CUSTOM_OPTION : dateFormat}
@@ -93,7 +93,7 @@
             {#if customDate}
                 <input
                     type="text"
-                    class="input input-sm mt-1 w-full font-mono"
+                    class="input mt-1 w-full font-mono input-sm"
                     {disabled}
                     aria-label="Custom date format"
                     placeholder="%d %b %Y"
@@ -101,7 +101,7 @@
                     oninput={(event) => set("date-format", event.currentTarget.value)}
                 />
             {/if}
-            <span class="label-text-alt text-base-content/60 mt-1 text-xs">
+            <span class="label-text-alt mt-1 text-xs text-base-content/60">
                 {#if dateFormat === ""}
                     Set this when the import mis-files dates — <code>03/04</code> is March 4th to some banks and April 3rd to others.
                 {:else}
@@ -116,7 +116,7 @@
                 <input
                     type="number"
                     min="0"
-                    class="input input-sm w-full"
+                    class="input w-full input-sm"
                     {disabled}
                     aria-label="Header lines to skip"
                     value={settingText(items, "skip") ?? ""}
@@ -126,7 +126,7 @@
             <label class="form-control">
                 <span class="label-text text-xs">Separator</span>
                 <select
-                    class="select select-sm w-full"
+                    class="select w-full select-sm"
                     {disabled}
                     aria-label="Separator"
                     value={customSeparator ? CUSTOM_OPTION : separator}
@@ -143,7 +143,7 @@
                 {#if customSeparator}
                     <input
                         type="text"
-                        class="input input-sm mt-1 w-full font-mono"
+                        class="input mt-1 w-full font-mono input-sm"
                         {disabled}
                         aria-label="Custom separator"
                         value={separator}
@@ -154,7 +154,7 @@
             <label class="form-control">
                 <span class="label-text text-xs">Decimal mark</span>
                 <select
-                    class="select select-sm w-full"
+                    class="select w-full select-sm"
                     {disabled}
                     aria-label="Decimal mark"
                     value={settingText(items, "decimal-mark") ?? ""}
@@ -168,7 +168,7 @@
             <label class="form-control">
                 <span class="label-text text-xs">Balance assertion</span>
                 <select
-                    class="select select-sm w-full"
+                    class="select w-full select-sm"
                     {disabled}
                     aria-label="Balance assertion type"
                     value={settingText(items, "balance-type") ?? ""}
@@ -214,7 +214,7 @@
                     <span class="label-text text-xs">{key}</span>
                     <input
                         type="text"
-                        class="input input-sm w-full"
+                        class="input w-full input-sm"
                         {disabled}
                         aria-label={key}
                         value={settingText(items, key) ?? ""}
@@ -226,13 +226,13 @@
     {/if}
 
     {#if source !== null}
-        <div class="border-base-content/10 rounded-box border p-3" data-testid="imports-source">
+        <div class="rounded-box border border-base-content/10 p-3" data-testid="imports-source">
             <div class="mb-1 flex items-center gap-2">
                 <span class="badge badge-ghost badge-sm">read-only</span>
                 <span class="text-xs font-medium">source</span>
             </div>
-            <code class="text-base-content/80 block break-all text-xs">{source.value}</code>
-            <p class="text-base-content/60 mt-2 text-xs">
+            <code class="block text-xs break-all text-base-content/80">{source.value}</code>
+            <p class="mt-2 text-xs text-base-content/60">
                 {#if source.executesShellCommand}
                     This <code>source</code> is a shell command: on <code>hledger import</code>, hledger runs it through your shell and reads what it prints.
                     Ledgeline never runs it, and will not write or change a <code>source</code> line — edit it in a terminal if you need to.

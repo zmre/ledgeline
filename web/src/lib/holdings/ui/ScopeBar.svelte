@@ -21,7 +21,7 @@
     const selectedAccounts = $derived([...holdingsScope.value.accounts].sort());
 </script>
 
-<div class="bg-base-200 rounded-box flex flex-col gap-2 p-2" data-testid="holdings-scope-bar">
+<div class="flex flex-col gap-2 rounded-box bg-base-200 p-2" data-testid="holdings-scope-bar">
     <div class="flex flex-wrap items-center gap-2">
         <!-- `/` here: holdings has no free-text search box, so the account tree
              is the search on this page. -->
@@ -53,9 +53,9 @@
             </button>
         </div>
         <label class="ml-auto flex items-center gap-2">
-            <span class="text-base-content/70 text-xs">Gain</span>
+            <span class="text-xs text-base-content/70">Gain</span>
             <select
-                class="select select-sm w-44"
+                class="select w-44 select-sm"
                 value={gainPeriod}
                 onchange={(e) => holdingsScope.setGainPeriod(e.currentTarget.value as GainPeriod)}
                 aria-label="Gain period"
@@ -67,10 +67,10 @@
             </select>
         </label>
         <label class="flex items-center gap-2">
-            <span class="text-base-content/70 text-xs">As of</span>
+            <span class="text-xs text-base-content/70">As of</span>
             <input
                 type="date"
-                class="input input-sm w-40"
+                class="input w-40 input-sm"
                 value={holdingsScope.value.asOf}
                 onchange={(e) => setAsOf(e.currentTarget.value)}
                 aria-label="As of date"
@@ -79,9 +79,9 @@
     </div>
     {#if selectedAccounts.length > 0}
         <div class="flex flex-wrap items-center gap-1">
-            <span class="text-base-content/60 text-xs">{mode === "include" ? "Only:" : "All except:"}</span>
+            <span class="text-xs text-base-content/60">{mode === "include" ? "Only:" : "All except:"}</span>
             {#each selectedAccounts as name (name)}
-                <span class="badge badge-outline max-w-full gap-1">
+                <span class="badge max-w-full gap-1 badge-outline">
                     <span class="truncate">{name}</span>
                     <button type="button" class="cursor-pointer" aria-label="Remove account {name} from scope" onclick={() => holdingsScope.toggleAccount(name)}
                         >✕</button

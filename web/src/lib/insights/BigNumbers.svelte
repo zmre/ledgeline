@@ -40,7 +40,7 @@
     });
 </script>
 
-<div class="stats stats-vertical sm:stats-horizontal bg-base-200 w-full shadow-none">
+<div class="stats w-full stats-vertical bg-base-200 shadow-none sm:stats-horizontal">
     {#each stats as stat (stat.label)}
         <div class="stat px-4 py-3">
             <div class="stat-title text-xs">{stat.label}</div>

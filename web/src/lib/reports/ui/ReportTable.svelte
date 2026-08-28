@@ -93,8 +93,8 @@
     {/if}
 {/snippet}
 
-<div class="border-base-content/10 rounded-box max-h-[70vh] overflow-auto border">
-    <table class="table-zebra table-pin-rows table-pin-cols table-sm table">
+<div class="max-h-[70vh] overflow-auto rounded-box border border-base-content/10">
+    <table class="table table-pin-rows table-pin-cols table-zebra table-sm">
         {#if sectioned !== null}
             <thead>
                 <tr>
@@ -105,7 +105,7 @@
             {#each sectioned.sections as section, at (section.title)}
                 <tbody>
                     <tr>
-                        <th class="text-base-content/60 pt-3 text-xs font-semibold tracking-wide uppercase">{section.title}</th>
+                        <th class="pt-3 text-xs font-semibold tracking-wide text-base-content/60 uppercase">{section.title}</th>
                         <td></td>
                     </tr>
                     {#each sectionRows[at] ?? [] as display (display.row.account)}
@@ -123,14 +123,14 @@
                             <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render amount(display.row.inclusive)}</td>
                         </tr>
                     {/each}
-                    <tr class="border-base-content/20 border-t font-semibold">
+                    <tr class="border-t border-base-content/20 font-semibold">
                         <th>Total {section.title}</th>
                         <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render amount(section.total)}</td>
                     </tr>
                 </tbody>
             {/each}
             <tbody>
-                <tr class="border-base-content/40 border-t-2 text-base font-bold">
+                <tr class="border-t-2 border-base-content/40 text-base font-bold">
                     <th>Net</th>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render amount(sectioned.grandTotal)}</td>
                 </tr>
@@ -161,13 +161,13 @@
                 {/each}
                 {#if period.rows.length === 0}
                     <tr>
-                        <th class="text-base-content/50 font-normal">No matching accounts</th>
+                        <th class="font-normal text-base-content/50">No matching accounts</th>
                         {#each period.buckets as bucket (bucket)}
                             <td></td>
                         {/each}
                     </tr>
                 {/if}
-                <tr class="border-base-content/40 border-t-2 font-bold">
+                <tr class="border-t-2 border-base-content/40 font-bold">
                     <th>Net</th>
                     {#each period.totals as total, i (period.buckets[i])}
                         <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render amount(total)}</td>

@@ -129,7 +129,7 @@
 {#snippet amount(c: AmountCell, size: string)}
     <span class="{size} {c.negative ? 'text-error' : ''}">{c.text}</span>
     {#if c.extras.length > 0}
-        <span class="text-base-content/50 block text-xs font-normal">{c.extras.join(" · ")}</span>
+        <span class="block text-xs font-normal text-base-content/50">{c.extras.join(" · ")}</span>
     {/if}
 {/snippet}
 
@@ -140,28 +140,28 @@
 {#snippet figures(amounts: Amounts, pct: number | null, emphasis: string)}
     <td class="w-32 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(amounts.current), emphasis)}</td>
     {#if comparing}
-        <td class="text-base-content/60 w-32 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(amounts.prior), "")}</td>
+        <td class="w-32 text-right align-top font-mono whitespace-nowrap text-base-content/60 tabular-nums">{@render amount(cell(amounts.prior), "")}</td>
     {/if}
-    <td class="text-base-content/60 w-20 text-right align-top font-mono whitespace-nowrap tabular-nums">{fmtPct(pct)}</td>
+    <td class="w-20 text-right align-top font-mono whitespace-nowrap text-base-content/60 tabular-nums">{fmtPct(pct)}</td>
 {/snippet}
 
 <div class="flex flex-col gap-4" data-testid="income-statement">
-    <p class="text-base-content/50 -mb-1 text-xs">
+    <p class="-mb-1 text-xs text-base-content/50">
         {valuationLabel} for {report.from} to {report.to}{#if report.prior !== null}, against {report.prior.from} to {report.prior.to}{/if}
     </p>
 
     {#each model.boxes as box (box.kind)}
-        <section class="border-base-content/10 rounded-box overflow-hidden border" data-testid="is-section-{box.kind}">
+        <section class="overflow-hidden rounded-box border border-base-content/10" data-testid="is-section-{box.kind}">
             <h3 class="bg-base-200 {ACCENT[box.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[box.kind].text}">
                 {box.title}
             </h3>
-            <table class="table-sm table">
+            <table class="table table-sm">
                 <!-- Repeated per box rather than printed once above them: each box
                      is a separate table, so a single heading strip could not stay
                      aligned with the columns under it, and a table with no column
                      headers is a table a screen reader cannot narrate. -->
                 <thead>
-                    <tr class="text-base-content/40 text-[0.65rem]">
+                    <tr class="text-[0.65rem] text-base-content/40">
                         <th class="w-full font-normal"><span class="sr-only">{box.title} line</span></th>
                         <th class="w-32 text-right font-normal">Amount</th>
                         {#if comparing}<th class="w-32 text-right font-normal">Prior</th>{/if}
@@ -181,12 +181,12 @@
                                     {#if row.expandable}
                                         <button
                                             type="button"
-                                            class="hover:text-primary flex cursor-pointer items-center gap-1.5 text-left font-medium"
+                                            class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary"
                                             aria-expanded={row.expanded}
                                             onclick={() => toggle(row.key)}
                                         >
                                             <span
-                                                class="text-base-content/40 inline-block w-3 shrink-0 text-[0.65rem] transition-transform {row.expanded
+                                                class="inline-block w-3 shrink-0 text-[0.65rem] text-base-content/40 transition-transform {row.expanded
                                                     ? 'rotate-90'
                                                     : ''}"
                                                 aria-hidden="true">▶</span
@@ -203,7 +203,7 @@
                                 {:else}
                                     <!-- Inline padding, not a class: the depth is data, and `ReportTable`
                                          indents its own rows the same way (1rem per level). -->
-                                    <span class="text-base-content/70 whitespace-nowrap" style="padding-left: {row.indent}rem" title={row.account}
+                                    <span class="whitespace-nowrap text-base-content/70" style="padding-left: {row.indent}rem" title={row.account}
                                         >{row.label}</span
                                     >
                                 {/if}
@@ -213,13 +213,13 @@
                     {/each}
                     {#if box.rows.length === 0}
                         <tr>
-                            <th class="text-base-content/50 w-full font-normal">No {box.title.toLowerCase()}</th>
+                            <th class="w-full font-normal text-base-content/50">No {box.title.toLowerCase()}</th>
                             <td colspan={comparing ? 3 : 2}></td>
                         </tr>
                     {/if}
                 </tbody>
                 <tfoot>
-                    <tr class="border-base-content/20 bg-base-200 text-base-content border-t-2 text-sm font-bold">
+                    <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
                         <th class="w-full font-bold">Total {box.title}</th>
                         {@render figures(box.total, box.totalPct, "font-bold")}
                     </tr>
@@ -230,8 +230,8 @@
         <!-- The ladder. Between the boxes, ruled top and bottom, and outside every
              box's border precisely so it cannot be read as part of one. -->
         {#each box.trailing as subtotal (subtotal.kind)}
-            <div class="border-base-content/30 -my-1 border-y-2" data-testid="is-subtotal-{subtotal.kind}">
-                <table class="table-sm table">
+            <div class="-my-1 border-y-2 border-base-content/30" data-testid="is-subtotal-{subtotal.kind}">
+                <table class="table table-sm">
                     <tbody>
                         <tr>
                             <th class="w-full text-sm font-semibold">{subtotal.label}</th>
@@ -255,12 +255,12 @@
 
          What is left is the one figure that appears nowhere else on the page. -->
     <div
-        class="border-base-content/20 rounded-box bg-base-200 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border px-4 py-3"
+        class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-box border border-base-content/20 bg-base-200 px-4 py-3"
         data-testid="is-net-income"
     >
         <span class="text-sm font-semibold tracking-wide uppercase">
             Net income
-            <span class="text-base-content/50 ml-1 text-xs font-normal tracking-normal normal-case">(revenue − expenses)</span>
+            <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(revenue − expenses)</span>
         </span>
         <!-- Current, THEN prior, then the percentage — the same left-to-right order
              as the Amount / Prior / % of revenue columns in every box above, and
@@ -274,11 +274,11 @@
                 {@render amount(cell(summary.netIncome.current), "")}
             </span>
             {#if comparing}
-                <span class="text-base-content/60 text-right font-mono tabular-nums" data-testid="is-net-income-prior">
+                <span class="text-right font-mono text-base-content/60 tabular-nums" data-testid="is-net-income-prior">
                     {@render amount(cell(summary.netIncome.prior), "")}
                 </span>
             {/if}
-            <span class="text-base-content/60 w-20 text-right font-mono tabular-nums">{fmtPct(summary.netPct)}</span>
+            <span class="w-20 text-right font-mono text-base-content/60 tabular-nums">{fmtPct(summary.netPct)}</span>
         </span>
     </div>
 </div>

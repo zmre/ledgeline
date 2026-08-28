@@ -55,7 +55,7 @@
 </script>
 
 <div class="flex flex-col gap-1" data-testid="holdings-stats-block">
-    <div class="stats stats-vertical sm:stats-horizontal bg-base-200 w-full shadow-none" data-testid="holdings-stats">
+    <div class="stats w-full stats-vertical bg-base-200 shadow-none sm:stats-horizontal" data-testid="holdings-stats">
         {#each stats as stat (stat.label)}
             <div class="stat px-4 py-3">
                 <div class="stat-title text-xs">{stat.label}</div>
@@ -64,6 +64,6 @@
         {/each}
     </div>
     {#if excludedNote !== null}
-        <p class="text-base-content/60 px-4 text-xs" data-testid="holdings-basis-note">{excludedNote}</p>
+        <p class="px-4 text-xs text-base-content/60" data-testid="holdings-basis-note">{excludedNote}</p>
     {/if}
 </div>

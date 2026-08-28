@@ -120,8 +120,8 @@
     {/if}
 {/snippet}
 
-<div class="border-base-content/10 rounded-box overflow-x-auto border">
-    <table class="table-zebra table-sm table" data-testid="holdings-table">
+<div class="overflow-x-auto rounded-box border border-base-content/10">
+    <table class="table table-zebra table-sm" data-testid="holdings-table">
         <thead>
             <!-- Every header is a <th scope="col">, never a <td>: aria-sort is only
                  valid on a columnheader, so on a <td> the sort state was announced to
@@ -165,7 +165,7 @@
                         {:else}
                             {format(h.price.qty)}
                             {#if h.price.source === "cost"}
-                                <span class="badge badge-ghost badge-xs align-middle" title="No P price directive — inferred from the latest cost annotation"
+                                <span class="badge badge-ghost align-middle badge-xs" title="No P price directive — inferred from the latest cost annotation"
                                     >inferred</span
                                 >
                             {/if}
@@ -187,7 +187,7 @@
             {/each}
         </tbody>
         <tfoot>
-            <tr class="border-base-content/20 bg-base-200 text-base-content border-t text-sm font-bold" data-testid="holdings-totals">
+            <tr class="border-t border-base-content/20 bg-base-200 text-sm font-bold text-base-content" data-testid="holdings-totals">
                 <th class="font-bold whitespace-nowrap">Total ({holdings.length} holdings):</th>
                 <th></th>
                 <td></td>

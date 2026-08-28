@@ -41,7 +41,7 @@
 
 <AsyncSection {view} value={result} {error} testid="imports-commit-error" label="the import" loadingLabel="Writing the import" {onRetry}>
     {#snippet children(commit)}
-        <section class="border-success/40 rounded-box flex flex-col gap-3 border p-3" aria-label="Import result" data-testid="imports-result">
+        <section class="flex flex-col gap-3 rounded-box border border-success/40 p-3" aria-label="Import result" data-testid="imports-result">
             <h2 class="text-sm font-semibold tracking-tight">Done</h2>
             <ul class="list-inside list-disc text-sm">
                 {#each writtenLines(commit) as line (line)}
@@ -54,7 +54,7 @@
                      `grid-auto-flow:column`, so without it the sentence, the
                      list of moved lines and the button become three thin
                      side-by-side columns. See `routes/alertStacking.test.ts`. -->
-                <div class="alert alert-warning rounded-box flex flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-out-of-order">
+                <div class="alert flex flex-col items-start gap-2 rounded-box py-2 text-sm alert-warning" role="alert" data-testid="imports-out-of-order">
                     <span>{reorderOffer(commit)}</span>
                     <ul class="max-h-48 overflow-auto font-mono text-xs">
                         {#each commit.ordering.moves as move (`${move.fromLine}-${move.toLine}`)}
@@ -62,19 +62,19 @@
                         {/each}
                     </ul>
                     <button type="button" class="btn btn-sm" disabled={sorting} onclick={onSort} data-testid="imports-sort">
-                        {#if sorting}<span class="loading loading-spinner loading-xs"></span>{/if}
+                        {#if sorting}<span class="loading loading-xs loading-spinner"></span>{/if}
                         Re-sort by date
                     </button>
                 </div>
             {/if}
 
             {#if sortMoved !== null}
-                <p class="text-success text-sm" data-testid="imports-sorted">
+                <p class="text-sm text-success" data-testid="imports-sorted">
                     Re-sorted: {sortMoved} transaction{sortMoved === 1 ? "" : "s"} moved. Directives, includes and comments are untouched.
                 </p>
             {/if}
             {#if sortError !== null}
-                <p class="text-error text-sm" role="alert" data-testid="imports-sort-error">{sortError}</p>
+                <p class="text-sm text-error" role="alert" data-testid="imports-sort-error">{sortError}</p>
             {/if}
         </section>
     {/snippet}

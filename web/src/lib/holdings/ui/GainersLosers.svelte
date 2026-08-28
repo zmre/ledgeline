@@ -29,7 +29,7 @@
 
 {#snippet list(title: string, entries: Holding[], testid: string)}
     <div class="min-w-0 flex-1" data-testid={testid}>
-        <h3 class="text-base-content/60 mb-1 text-xs font-semibold tracking-wide uppercase">{title}</h3>
+        <h3 class="mb-1 text-xs font-semibold tracking-wide text-base-content/60 uppercase">{title}</h3>
         <ul class="flex flex-col gap-1">
             {#each entries as h (h.symbol)}
                 <li class="flex items-baseline gap-2 text-sm">

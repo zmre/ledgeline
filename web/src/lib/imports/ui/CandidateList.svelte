@@ -36,11 +36,11 @@
     <h2 class="px-1 text-sm font-semibold tracking-tight">Read it with</h2>
 
     {#if candidates.length === 0}
-        <div class="border-base-content/10 rounded-box flex flex-col items-start gap-2 border p-3" data-testid="imports-no-candidates">
+        <div class="flex flex-col items-start gap-2 rounded-box border border-base-content/10 p-3" data-testid="imports-no-candidates">
             <p class="text-sm">
                 None of the <code>*.rules</code> files beside your journal fit this data, so Ledgeline has nothing to read it through.
             </p>
-            <p class="text-base-content/60 text-sm">
+            <p class="text-sm text-base-content/60">
                 You can still save the converted CSV — the destination below is where it goes — and write the rules file by hand next to it. The
                 <strong>Edit Rules</strong> tab will pick it up as soon as it exists.
             </p>
@@ -57,11 +57,11 @@
         {#each cards as card (card.candidate.id)}
             {@const chosen = card.candidate.id === selectedId}
             <label
-                class="rounded-box flex cursor-pointer gap-3 border p-3 transition-colors {chosen ? 'border-primary bg-primary/5' : 'border-base-content/10'}"
+                class="flex cursor-pointer gap-3 rounded-box border p-3 transition-colors {chosen ? 'border-primary bg-primary/5' : 'border-base-content/10'}"
             >
                 <input
                     type="radio"
-                    class="radio radio-sm mt-1 shrink-0"
+                    class="radio mt-1 shrink-0 radio-sm"
                     name="import-rules-candidate"
                     checked={chosen}
                     {disabled}
@@ -72,14 +72,14 @@
                         <span class="grow truncate font-medium">{card.candidate.label}</span>
                         <span class="badge badge-{scoreTone(card.candidate.score)} badge-sm">{formatScore(card.candidate.score)}</span>
                     </span>
-                    <span class="text-base-content/50 truncate text-xs">{card.candidate.id}</span>
+                    <span class="truncate text-xs text-base-content/50">{card.candidate.id}</span>
                     <ul class="text-xs">
                         {#each signalLines(card.candidate.signals) as line (line.text)}
                             <li class={line.bad ? "text-warning" : "text-base-content/60"}>{line.text}</li>
                         {/each}
                     </ul>
                     {#if card.sample.length > 0}
-                        <span class="bg-base-200 rounded p-2 font-mono text-xs whitespace-pre-wrap"
+                        <span class="rounded bg-base-200 p-2 font-mono text-xs whitespace-pre-wrap"
                             >{card.sample
                                 .map((txn) => [`${txn.date} ${txn.description}`, ...txn.postings.map((posting) => `    ${posting}`)].join("\n"))
                                 .join("\n\n")}</span
@@ -90,13 +90,13 @@
         {/each}
 
         <label
-            class="rounded-box flex cursor-pointer items-center gap-3 border p-3 {selectedId === null
+            class="flex cursor-pointer items-center gap-3 rounded-box border p-3 {selectedId === null
                 ? 'border-primary bg-primary/5'
                 : 'border-base-content/10'}"
         >
             <input
                 type="radio"
-                class="radio radio-sm shrink-0"
+                class="radio shrink-0 radio-sm"
                 name="import-rules-candidate"
                 checked={selectedId === null}
                 {disabled}
@@ -104,7 +104,7 @@
             />
             <span class="flex flex-col">
                 <span class="font-medium">Don't import — just save the CSV</span>
-                <span class="text-base-content/60 text-xs">Writes the converted file to the destination below and leaves your journal alone.</span>
+                <span class="text-xs text-base-content/60">Writes the converted file to the destination below and leaves your journal alone.</span>
             </span>
         </label>
     {/if}

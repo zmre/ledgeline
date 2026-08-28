@@ -59,7 +59,7 @@
          the `auto` one, which is where a long error message goes to be
          unreadable. This is every error banner in the app.
          See `routes/alertStacking.test.ts`. -->
-    <div class="alert alert-error rounded-box flex flex-col items-start gap-2 px-3 py-3 text-sm" role="alert" data-testid={testid}>
+    <div class="alert flex flex-col items-start gap-2 rounded-box px-3 py-3 text-sm alert-error" role="alert" data-testid={testid}>
         <span>{message}</span>
         {#if !nativeUnavailable}
             <button type="button" class="btn btn-sm" onclick={onRetry}>Retry</button>
@@ -69,6 +69,6 @@
     {@render children(value)}
 {:else}
     <div class="flex items-center justify-center py-24" aria-label={loadingLabel}>
-        <span class="loading loading-spinner loading-lg"></span>
+        <span class="loading loading-lg loading-spinner"></span>
     </div>
 {/if}

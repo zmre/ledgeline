@@ -23,7 +23,7 @@
 </script>
 
 {#if slices.length === 0}
-    <p class="text-base-content/60 py-10 text-center text-sm">No priced holdings to chart.</p>
+    <p class="py-10 text-center text-sm text-base-content/60">No priced holdings to chart.</p>
 {:else}
     <div class="h-56 w-full sm:h-64" data-testid="holdings-pie">
         <PieChart data={slices} key="symbol" label="symbol" value={(d) => d.value} cRange={slices.map(colorOf)} padAngle={0.02}>
@@ -42,7 +42,7 @@
         </PieChart>
     </div>
     <!-- always-visible legend: symbol + % share (identity is never color-alone) -->
-    <ul class="text-base-content/70 mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs" data-testid="holdings-pie-legend">
+    <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70" data-testid="holdings-pie-legend">
         {#each slices as slice, i (slice.symbol)}
             <li class="flex items-center gap-1" title="{slice.name} — {slice.formatted}">
                 <span class="inline-block h-2 w-2 rounded-full" style="background:{colorOf(slice, i)}"></span>

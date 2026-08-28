@@ -139,7 +139,7 @@
 {#snippet amount(c: AmountCell, size: string)}
     <span class="{size} {c.negative ? 'text-error' : ''}">{c.text}</span>
     {#if c.extras.length > 0}
-        <span class="text-base-content/50 block text-xs font-normal">{c.extras.join(" · ")}</span>
+        <span class="block text-xs font-normal text-base-content/50">{c.extras.join(" · ")}</span>
     {/if}
 {/snippet}
 
@@ -154,16 +154,16 @@
 {/snippet}
 
 <div class="flex flex-col gap-4" data-testid="balance-sheet">
-    <p class="text-base-content/50 -mb-1 text-xs">{valuationLabel} as of {report.asOf}</p>
+    <p class="-mb-1 text-xs text-base-content/50">{valuationLabel} as of {report.asOf}</p>
 
     {#each report.sections as section, at (section.kind)}
-        <section class="border-base-content/10 rounded-box overflow-hidden border" data-testid="bs-section-{section.kind}">
+        <section class="overflow-hidden rounded-box border border-base-content/10" data-testid="bs-section-{section.kind}">
             <h3
                 class="bg-base-200 {ACCENT[section.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[section.kind].text}"
             >
                 {section.title}
             </h3>
-            <table class="table-sm table">
+            <table class="table table-sm">
                 <!-- Repeated per box rather than printed once above them, exactly
                      as the income statement's boxes do it: each box is a separate
                      table, so a single heading strip could not stay aligned with
@@ -173,7 +173,7 @@
                      whatever could not convert is a footnote INSIDE that cell,
                      never a column of its own. -->
                 <thead>
-                    <tr class="text-base-content/40 text-[0.65rem]">
+                    <tr class="text-[0.65rem] text-base-content/40">
                         <th class="w-full font-normal"><span class="sr-only">{section.title} line</span></th>
                         <th class="text-right font-normal">Amount</th>
                     </tr>
@@ -199,7 +199,7 @@
                                  that closes it, and printing it twice would invite the
                                  reader to look for a difference between them. -->
                             <tr class="bg-base-200/40" data-bs-row={row.key} data-testid="bs-subsection-{section.kind}-{row.term}">
-                                <th class="text-base-content/60 w-full pt-3 text-[0.7rem] font-semibold tracking-widest uppercase">{row.label}</th>
+                                <th class="w-full pt-3 text-[0.7rem] font-semibold tracking-widest text-base-content/60 uppercase">{row.label}</th>
                                 <td></td>
                             </tr>
                         {:else if row.kind === "subtotal"}
@@ -207,8 +207,8 @@
                                  section total's double rule, fill and bold weight below
                                  — the two must not be mistakable, because this one is a
                                  part and that one is the whole. -->
-                            <tr class="border-base-content/20 border-t text-sm" data-bs-row={row.key} data-testid="bs-subtotal-{section.kind}-{row.term}">
-                                <th class="text-base-content/80 w-full font-semibold">{row.label}</th>
+                            <tr class="border-t border-base-content/20 text-sm" data-bs-row={row.key} data-testid="bs-subtotal-{section.kind}-{row.term}">
+                                <th class="w-full font-semibold text-base-content/80">{row.label}</th>
                                 <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
                                     {@render amount(cell(row), "font-semibold")}
                                 </td>
@@ -225,12 +225,12 @@
                                         {#if row.expandable}
                                             <button
                                                 type="button"
-                                                class="hover:text-primary flex cursor-pointer items-center gap-1.5 text-left font-medium"
+                                                class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary"
                                                 aria-expanded={row.expanded}
                                                 onclick={() => toggle(row.key)}
                                             >
                                                 <span
-                                                    class="text-base-content/40 inline-block w-3 shrink-0 text-[0.65rem] transition-transform {row.expanded
+                                                    class="inline-block w-3 shrink-0 text-[0.65rem] text-base-content/40 transition-transform {row.expanded
                                                         ? 'rotate-90'
                                                         : ''}"
                                                     aria-hidden="true">▶</span
@@ -248,7 +248,7 @@
                                     {:else}
                                         <!-- Inline padding, not a class: the depth is data, and `ReportTable`
                                              indents its own rows the same way (1rem per level). -->
-                                        <span class="text-base-content/70 whitespace-nowrap" style="padding-left: {row.indent}rem" title={row.account}
+                                        <span class="whitespace-nowrap text-base-content/70" style="padding-left: {row.indent}rem" title={row.account}
                                             >{row.label}</span
                                         >
                                     {/if}
@@ -261,13 +261,13 @@
                     {/each}
                     {#if section.groups.length === 0}
                         <tr>
-                            <th class="text-base-content/50 w-full font-normal">No {section.title.toLowerCase()}</th>
+                            <th class="w-full font-normal text-base-content/50">No {section.title.toLowerCase()}</th>
                             <td></td>
                         </tr>
                     {/if}
                 </tbody>
                 <tfoot>
-                    <tr class="border-base-content/20 bg-base-200 text-base-content border-t-2 text-sm font-bold">
+                    <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
                         <th class="w-full font-bold">Total {section.title}</th>
                         <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
                             {@render amount(amountCell(section.total, report.base, styles), "font-bold")}
@@ -284,14 +284,14 @@
     <!-- A `div`, not a `section`: the three boxes above are named landmarks by
          their `h3`, and an unnamed one here would just be noise to a screen
          reader. The table carries the name instead. -->
-    <div class="border-base-content/20 rounded-box overflow-hidden border" data-testid="bs-summary">
-        <table class="table-sm table" aria-label="Balance sheet totals">
+    <div class="overflow-hidden rounded-box border border-base-content/20" data-testid="bs-summary">
+        <table class="table table-sm" aria-label="Balance sheet totals">
             <!-- The boxes' header treatment again, plus a name for the third
                  column: the verdict cell exists on EVERY row (see `tieRow`), so
                  to a screen reader it is a real column, and a real column with
                  no name is the omission this thead exists to prevent. -->
             <thead>
-                <tr class="text-base-content/40 text-[0.65rem]">
+                <tr class="text-[0.65rem] text-base-content/40">
                     <th class="w-full font-normal"><span class="sr-only">Total</span></th>
                     <th class="text-right font-normal">Amount</th>
                     <th class="font-normal"><span class="sr-only">Balance check</span></th>
@@ -302,8 +302,8 @@
                 {@render tieRow("Total Liabilities", summary.liabilities, "")}
                 {@render tieRow("Total Equity", summary.equity, "")}
             </tbody>
-            <tfoot class="text-base-content text-sm">
-                <tr class="border-base-content/20 border-t-2">
+            <tfoot class="text-sm text-base-content">
+                <tr class="border-t-2 border-base-content/20">
                     <th class="w-full font-semibold">Liabilities + Equity</th>
                     <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
                         {@render amount(amountCell(summary.liabilitiesPlusEquity, report.base, styles), "font-semibold")}
@@ -329,12 +329,12 @@
          `A − L` is identically Total equity, so closing the statement on it
          printed one number twice under two names. -->
     <div
-        class="border-base-content/20 rounded-box bg-base-200 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border px-4 py-3"
+        class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-box border border-base-content/20 bg-base-200 px-4 py-3"
         data-testid="bs-net-worth"
     >
         <span class="text-sm font-semibold tracking-wide uppercase">
             Net worth
-            <span class="text-base-content/50 ml-1 text-xs font-normal tracking-normal normal-case">(assets − liabilities)</span>
+            <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(assets − liabilities)</span>
         </span>
         <span class="text-right font-mono text-xl font-semibold tabular-nums">
             {@render amount(amountCell(summary.netWorth, report.base, styles), "")}
@@ -342,7 +342,7 @@
     </div>
 
     {#if !summary.balanced}
-        <div class="alert alert-warning rounded-box px-3 py-2 text-sm" role="alert" data-testid="bs-check">
+        <div class="alert rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="bs-check">
             <span>
                 This journal doesn't balance: assets − liabilities − equity should be zero, but it is
                 <span class="font-mono tabular-nums">{check.text}{check.extras.length > 0 ? ` (${check.extras.join(", ")})` : ""}</span>. Look for a transaction

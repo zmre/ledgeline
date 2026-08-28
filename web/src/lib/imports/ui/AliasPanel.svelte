@@ -158,20 +158,20 @@
 >
     {#snippet children(loaded)}
         <div class="flex flex-col gap-4" data-testid="imports-aliases">
-            <p class="text-base-content/70 max-w-3xl text-sm">{ALIAS_EXPLAINER}</p>
+            <p class="max-w-3xl text-sm text-base-content/70">{ALIAS_EXPLAINER}</p>
 
             {#if !loaded.editable}
-                <div class="alert alert-info rounded-box items-start py-2 text-sm" role="status" data-testid="imports-aliases-read-only">
+                <div class="alert items-start rounded-box py-2 text-sm alert-info" role="status" data-testid="imports-aliases-read-only">
                     <span>This server has no journal open for editing, so these are shown but cannot be changed.</span>
                 </div>
             {/if}
 
             {#if loaded.files.length > 1}
-                <div role="tablist" class="tabs tabs-box tabs-sm w-fit">
+                <div role="tablist" class="tabs tabs-box w-fit tabs-sm">
                     {#each loaded.files as file (file.journalId)}
                         <button type="button" role="tab" class="tab {file.journalId === selectedId ? 'tab-active' : ''}" onclick={() => select(file.journalId)}>
                             {file.label}
-                            {#if file.aliases.length > 0}<span class="badge badge-ghost badge-xs ml-1">{file.aliases.length}</span>{/if}
+                            {#if file.aliases.length > 0}<span class="ml-1 badge badge-ghost badge-xs">{file.aliases.length}</span>{/if}
                         </button>
                     {/each}
                 </div>
@@ -182,7 +182,7 @@
                      `display:grid; grid-auto-flow:column`, so `flex-col` alone
                      is inert and the button lands beside the sentence in a
                      column of its own. See `routes/alertStacking.test.ts`. -->
-                <div class="alert alert-warning rounded-box flex flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-aliases-conflict">
+                <div class="alert flex flex-col items-start gap-2 rounded-box py-2 text-sm alert-warning" role="alert" data-testid="imports-aliases-conflict">
                     <span>
                         {form?.label ?? "This journal"} changed on disk since you opened it, so nothing was written. Reload it and re-apply your edit — saving over
                         it would discard whatever the other change was.
@@ -195,14 +195,14 @@
                 <div class="flex flex-col gap-2">
                     {#each form.rows as row, at (at)}
                         {@const entry = baseFile?.aliases.find((alias) => alias.index === row.index) ?? null}
-                        <div class="border-base-content/10 rounded-box flex flex-col gap-2 border p-3" class:opacity-60={row.deleted}>
+                        <div class="flex flex-col gap-2 rounded-box border border-base-content/10 p-3" class:opacity-60={row.deleted}>
                             <div class="flex flex-wrap items-center gap-2">
                                 {#if entry !== null}
                                     {#each aliasBadges(entry) as badge (badge.text)}
                                         <span class="badge badge-sm {badge.tone === 'warning' ? 'badge-warning' : 'badge-ghost'}">{badge.text}</span>
                                     {/each}
                                 {/if}
-                                <span class="text-base-content/50 ml-auto text-xs">
+                                <span class="ml-auto text-xs text-base-content/50">
                                     {#if row.index === null}new{:else}line {entry?.line ?? "?"}{/if}
                                 </span>
                             </div>
@@ -210,7 +210,7 @@
                             {#if row.locked}
                                 <!-- Read-only: shown exactly as written, with the engine's own reason. -->
                                 <code class="text-xs break-all" data-testid="imports-alias-locked">{entry === null ? "" : aliasText(entry)}</code>
-                                <p class="text-base-content/60 text-xs">
+                                <p class="text-xs text-base-content/60">
                                     Ledgeline will not rewrite this line because {entry?.lockMessage ?? "it is not modelled"}.
                                 </p>
                             {:else}
@@ -219,7 +219,7 @@
                                         <span class="label-text text-xs">What the bank calls it</span>
                                         <input
                                             type="text"
-                                            class="input input-sm input-bordered w-full font-mono"
+                                            class="input-bordered input w-full font-mono input-sm"
                                             value={row.pattern}
                                             disabled={disabled || row.deleted}
                                             oninput={(event) => update(at, {pattern: event.currentTarget.value})}
@@ -229,7 +229,7 @@
                                         <span class="label-text text-xs">Your account</span>
                                         <input
                                             type="text"
-                                            class="input input-sm input-bordered w-full font-mono"
+                                            class="input-bordered input w-full font-mono input-sm"
                                             value={row.replacement}
                                             disabled={disabled || row.deleted}
                                             oninput={(event) => update(at, {replacement: event.currentTarget.value})}
@@ -251,7 +251,7 @@
                             {#if !row.deleted}
                                 {@const problems = validateForm({...form, rows: [row]})}
                                 {#if problems.length > 0}
-                                    <ul class="text-error list-inside list-disc text-xs">
+                                    <ul class="list-inside list-disc text-xs text-error">
                                         {#each problems as problem (problem)}
                                             <li>{problem.replace(/^Alias 1: /, "")}</li>
                                         {/each}
@@ -268,30 +268,30 @@
                     {/each}
 
                     {#if form.rows.length === 0}
-                        <p class="text-base-content/60 text-sm">This journal declares no aliases yet.</p>
+                        <p class="text-sm text-base-content/60">This journal declares no aliases yet.</p>
                     {/if}
                 </div>
 
                 <div class="flex flex-wrap items-center gap-2">
                     <button type="button" class="btn btn-sm" {disabled} onclick={addRow} data-testid="imports-alias-add">Add an alias</button>
                     <button type="button" class="btn btn-primary btn-sm" disabled={disabled || !dirty} onclick={save} data-testid="imports-alias-save">
-                        {#if aliasStore.saving}<span class="loading loading-spinner loading-xs"></span>{/if}
+                        {#if aliasStore.saving}<span class="loading loading-xs loading-spinner"></span>{/if}
                         Save
                     </button>
-                    {#if dirty}<span class="badge badge-warning badge-sm" data-testid="imports-alias-dirty">unsaved</span>{/if}
-                    {#if savedAt !== null && !dirty}<span class="badge badge-success badge-sm" data-testid="imports-alias-saved">saved</span>{/if}
-                    <span class="text-base-content/50 text-xs">A new alias is added at the end of {form.label}.</span>
+                    {#if dirty}<span class="badge badge-sm badge-warning" data-testid="imports-alias-dirty">unsaved</span>{/if}
+                    {#if savedAt !== null && !dirty}<span class="badge badge-sm badge-success" data-testid="imports-alias-saved">saved</span>{/if}
+                    <span class="text-xs text-base-content/50">A new alias is added at the end of {form.label}.</span>
                 </div>
 
                 {#if clientErrors.length > 0}
-                    <ul class="alert alert-error rounded-box list-inside list-disc py-2 text-sm" data-testid="imports-alias-client-errors">
+                    <ul class="alert list-inside list-disc rounded-box py-2 text-sm alert-error" data-testid="imports-alias-client-errors">
                         {#each clientErrors as problem (problem)}
                             <li>{problem}</li>
                         {/each}
                     </ul>
                 {/if}
                 {#if serverError !== null}
-                    <div class="alert alert-error rounded-box items-start py-2 text-sm" role="alert" data-testid="imports-alias-server-error">
+                    <div class="alert items-start rounded-box py-2 text-sm alert-error" role="alert" data-testid="imports-alias-server-error">
                         <span>{serverError}</span>
                     </div>
                 {/if}

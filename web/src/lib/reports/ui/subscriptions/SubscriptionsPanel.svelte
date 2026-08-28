@@ -36,8 +36,8 @@
         onRetry={() => void subscriptions.load(serverUrl ?? "", today())}
     >
         {#snippet children(report)}
-            <div class="text-base-content/60 text-xs">
-                Recurring charges detected in <span class="text-base-content/80 font-medium">{report.lookbackStart} → {report.asOf}</span>
+            <div class="text-xs text-base-content/60">
+                Recurring charges detected in <span class="font-medium text-base-content/80">{report.lookbackStart} → {report.asOf}</span>
             </div>
 
             <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -61,13 +61,13 @@
                 />
             </div>
 
-            <p class="text-base-content/50 text-xs">
+            <p class="text-xs text-base-content/50">
                 A charge is counted when it repeats at a steady price on a consistent day — so variable bills (utilities, groceries), one-off purchases, and
                 anything matching <code class="text-base-content/70">mortgage</code> are left out. A charge that stops is treated as cancelled and dropped, but only
                 once the account paying it has newer activity — so an account you haven't imported lately keeps its subscriptions. Click any row to see its transactions
                 in the journal.
             </p>
-            <p class="text-base-content/50 text-xs">
+            <p class="text-xs text-base-content/50">
                 To overrule any of that, tag a transaction's comment: <code class="text-base-content/70">subscription:true</code> puts that payee on the list
                 whatever the amounts do, and <code class="text-base-content/70">subscription:false</code> takes it off. If the comment already has a tag,
                 separate them with a comma (<code class="text-base-content/70">category:infra, subscription:true</code>) — a tag's value runs to the next comma,

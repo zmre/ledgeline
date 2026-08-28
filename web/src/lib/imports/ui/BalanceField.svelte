@@ -42,9 +42,9 @@
     const prefilled = $derived(statement?.ledgerBalance !== null && statement?.ledgerBalance !== undefined);
 </script>
 
-<section class="border-base-content/10 rounded-box flex flex-col gap-3 border p-3" aria-label="Statement balance" data-testid="imports-balance">
-    <h2 class="text-sm font-semibold tracking-tight">Statement balance <span class="text-base-content/50 font-normal">(optional)</span></h2>
-    <p class="text-base-content/60 text-xs">
+<section class="flex flex-col gap-3 rounded-box border border-base-content/10 p-3" aria-label="Statement balance" data-testid="imports-balance">
+    <h2 class="text-sm font-semibold tracking-tight">Statement balance <span class="font-normal text-base-content/50">(optional)</span></h2>
+    <p class="text-xs text-base-content/60">
         {#if prefilled}
             Taken from the statement itself{statement?.balanceAsOf === null || statement?.balanceAsOf === undefined ? "" : `, as of ${statement.balanceAsOf}`}.
             Ledgeline checks it against what your journal plus these transactions comes to, before writing anything.
@@ -58,7 +58,7 @@
             <span class="label-text text-xs">Balance</span>
             <input
                 type="text"
-                class="input input-sm w-full font-mono"
+                class="input w-full font-mono input-sm"
                 value={balance}
                 {disabled}
                 inputmode="decimal"

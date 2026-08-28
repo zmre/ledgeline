@@ -156,14 +156,14 @@
             </button>
         </div>
         {#if mode === "line"}
-            <select class="select select-xs w-28" bind:value={interval} aria-label="Interval">
+            <select class="select w-28 select-xs" bind:value={interval} aria-label="Interval">
                 <option value="daily">Daily</option>
                 <option value="weekly">Weekly</option>
                 <option value="monthly">Monthly</option>
             </select>
         {/if}
         {#if commodities.length > 1}
-            <select class="select select-xs w-24" value={commodity} onchange={(e) => (chosenCommodity = e.currentTarget.value)} aria-label="Commodity">
+            <select class="select w-24 select-xs" value={commodity} onchange={(e) => (chosenCommodity = e.currentTarget.value)} aria-label="Commodity">
                 {#each commodities as c (c)}
                     <option value={c}>{c}</option>
                 {/each}
@@ -171,7 +171,7 @@
         {/if}
         {#if groups.length > 1}
             <select
-                class="select select-xs w-32"
+                class="select w-32 select-xs"
                 value={group}
                 onchange={(e) => (chosenGroup = e.currentTarget.value as RootCategory | "all")}
                 aria-label="Category"
@@ -186,7 +186,7 @@
 
     {#if mode === "pie"}
         {#if pieSlices.length === 0}
-            <p class="text-base-content/60 py-10 text-center text-sm">
+            <p class="py-10 text-center text-sm text-base-content/60">
                 {#if pieCredits.length === 0}
                     No {commodity} activity in the filtered period.
                 {:else}
@@ -219,7 +219,7 @@
                 </PieChart>
             </div>
             <!-- legend fallback for narrow screens (identity is never color-alone) -->
-            <ul class="text-base-content/70 mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs sm:hidden">
+            <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70 sm:hidden">
                 {#each pieSlices as d (d.account)}
                     <li class="flex items-center gap-1">
                         <span class="inline-block h-2 w-2 rounded-full" style="background:{colorOf[d.account] ?? OTHER_COLOR}"></span>
@@ -230,12 +230,12 @@
         {/if}
         <!-- Categories that net to a credit have no area in a pie; name them instead of drawing them positive. -->
         {#if pieCredits.length > 0}
-            <p class="text-base-content/60 mt-1 px-1 text-xs" data-testid="insights-pie-credits">
+            <p class="mt-1 px-1 text-xs text-base-content/60" data-testid="insights-pie-credits">
                 Not shown (net credit in this period): {pieCredits.map((d) => `${d.account} ${d.formatted}`).join(", ")}.
             </p>
         {/if}
     {:else if rows.length === 0}
-        <p class="text-base-content/60 py-10 text-center text-sm">No {commodity} activity in the filtered period.</p>
+        <p class="py-10 text-center text-sm text-base-content/60">No {commodity} activity in the filtered period.</p>
     {:else}
         <div class="h-64 w-full sm:h-72" data-testid="insights-line">
             <LineChart

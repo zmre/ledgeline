@@ -40,7 +40,7 @@
     } = $props();
 </script>
 
-<ul class="menu bg-base-200 rounded-box w-full gap-1 p-2" aria-label="Rules files">
+<ul class="menu w-full gap-1 rounded-box bg-base-200 p-2" aria-label="Rules files">
     {#each files as file (file.id)}
         {@const row = fileRow(file)}
         <li class="tooltip tooltip-right w-full" data-tip={row.detail}>
@@ -58,13 +58,13 @@
                 <span class="flex w-full items-center gap-2">
                     <span class="grow truncate font-medium">{file.label}</span>
                     {#if file.warnings.length > 0 || !file.parsed}
-                        <span class="badge badge-warning badge-xs shrink-0" title={file.warnings.join("\n") || "Ledgeline could not read this file"}>!</span>
+                        <span class="badge shrink-0 badge-xs badge-warning" title={file.warnings.join("\n") || "Ledgeline could not read this file"}>!</span>
                     {/if}
                 </span>
                 {#if row.directory !== ""}
                     <!-- Truncated from the END: the folders that differ between two
                          same-named files are the ones nearest the root. -->
-                    <span class="text-base-content/60 w-full truncate text-xs">{row.directory}</span>
+                    <span class="w-full truncate text-xs text-base-content/60">{row.directory}</span>
                 {/if}
                 <!-- A tooltip built from `data-tip` is a pseudo-element, so assistive
                      technology never sees it. This keeps the same detail in the
@@ -74,7 +74,7 @@
             {#if file.id === pendingId}
                 <!-- Two-step confirm, inline: the click that would discard the
                      edit is never the click that asked to switch. -->
-                <div class="border-warning/40 mt-1 flex flex-col gap-1 rounded border p-2" role="alert">
+                <div class="mt-1 flex flex-col gap-1 rounded border border-warning/40 p-2" role="alert">
                     <span class="text-xs">Discard your unsaved changes?</span>
                     <div class="flex gap-1">
                         <button type="button" class="btn btn-warning btn-xs" onclick={onConfirmSwitch}>Discard</button>

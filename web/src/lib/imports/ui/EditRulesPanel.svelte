@@ -303,13 +303,13 @@
                     <h2 class="card-title">No CSV import rules yet</h2>
                     <!-- By LABEL, never a path: the engine deliberately
                          never sends one, so there is none to show. -->
-                    <p class="text-base-content/60 max-w-lg">
+                    <p class="max-w-lg text-base-content/60">
                         Ledgeline looked through <code>{index.rootLabel}</code>, the folder your journal is in, and found no
                         <code>*.rules</code> files. hledger keeps a CSV's import rules in a file beside it — create
                         <code>statement.csv.rules</code> next to <code>statement.csv</code> and it will show up here.
                     </p>
                     {#each index.warnings as warning (warning)}
-                        <p class="text-base-content/50 max-w-lg text-xs">{warning}</p>
+                        <p class="max-w-lg text-xs text-base-content/50">{warning}</p>
                     {/each}
                 </div>
             </div>
@@ -325,12 +325,12 @@
                         onConfirmSwitch={confirmSwitch}
                         onCancelSwitch={() => (pendingId = null)}
                     />
-                    <p class="text-base-content/50 px-1 text-xs">Found in <code>{index.rootLabel}</code>, the folder your journal is in.</p>
+                    <p class="px-1 text-xs text-base-content/50">Found in <code>{index.rootLabel}</code>, the folder your journal is in.</p>
                     {#if index.truncated}
-                        <p class="text-warning px-1 text-xs">There are more rules files than Ledgeline will list; this is a subset.</p>
+                        <p class="px-1 text-xs text-warning">There are more rules files than Ledgeline will list; this is a subset.</p>
                     {/if}
                     {#each index.warnings as warning (warning)}
-                        <p class="text-base-content/50 px-1 text-xs">{warning}</p>
+                        <p class="px-1 text-xs text-base-content/50">{warning}</p>
                     {/each}
                 </aside>
 
@@ -345,22 +345,22 @@
                 >
                     {#snippet children(form)}
                         <div class="flex flex-col gap-3">
-                            <div class="border-base-content/10 bg-base-200 rounded-box flex flex-wrap items-center gap-2 border px-3 py-2">
+                            <div class="flex flex-wrap items-center gap-2 rounded-box border border-base-content/10 bg-base-200 px-3 py-2">
                                 <h2 class="grow truncate text-sm font-semibold tracking-tight" data-testid="imports-open-file">{form.label}</h2>
                                 {#if dirty}
-                                    <span class="badge badge-warning badge-sm" data-testid="imports-dirty">unsaved</span>
+                                    <span class="badge badge-sm badge-warning" data-testid="imports-dirty">unsaved</span>
                                 {:else if savedAt !== null}
-                                    <span class="badge badge-success badge-sm" data-testid="imports-saved">saved</span>
+                                    <span class="badge badge-sm badge-success" data-testid="imports-saved">saved</span>
                                 {/if}
                                 <button type="button" class="btn btn-ghost btn-sm" disabled={!dirty || rulesStore.saving} onclick={revert}>Revert</button>
                                 <button type="button" class="btn btn-primary btn-sm" disabled={!dirty || disabled} onclick={save}>
-                                    {#if rulesStore.saving}<span class="loading loading-spinner loading-xs"></span>{/if}
+                                    {#if rulesStore.saving}<span class="loading loading-xs loading-spinner"></span>{/if}
                                     Save
                                 </button>
                             </div>
 
                             {#if !canEdit}
-                                <div class="alert alert-info rounded-box py-2 text-sm" role="status" data-testid="imports-read-only">
+                                <div class="alert rounded-box py-2 text-sm alert-info" role="status" data-testid="imports-read-only">
                                     <span>
                                         This file is read-only here. Ledgeline only writes rules files when it was started with a journal file bound to an
                                         editor — everything below still shows exactly what the file says.
@@ -373,7 +373,7 @@
                                      `display:grid; grid-auto-flow:column`, so `flex-col` alone
                                      leaves the button beside the text, not under it. -->
                                 <div
-                                    class="alert alert-warning rounded-box flex flex-col items-start gap-2 py-2 text-sm"
+                                    class="alert flex flex-col items-start gap-2 rounded-box py-2 text-sm alert-warning"
                                     role="alert"
                                     data-testid="imports-conflict"
                                 >
@@ -386,7 +386,7 @@
                             {/if}
 
                             {#if warnings.length}
-                                <div class="alert alert-warning rounded-box items-start px-3 py-2 text-sm" role="alert" data-testid="imports-warnings">
+                                <div class="alert items-start rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="imports-warnings">
                                     <ul class="list-inside list-disc">
                                         {#each warnings as warning (warning.line + warning.message)}
                                             <li>{warning.line > 0 ? `Line ${warning.line}: ` : ""}{warning.message}</li>
@@ -402,7 +402,7 @@
                                  custom for the file you just left. Deliberately not keyed on the
                                  revision: a save must not reset what the user is looking at. -->
                             {#key `${form.id}#${formEpoch}`}
-                                <div class="border-base-content/10 rounded-box border">
+                                <div class="rounded-box border border-base-content/10">
                                     <div role="tablist" class="tabs tabs-border px-2 pt-1" aria-label="Rules file settings">
                                         {#each TABS as entry (entry.id)}
                                             <button
@@ -438,14 +438,14 @@
                             {/key}
 
                             {#if clientErrors.length > 0}
-                                <ul class="text-error list-inside list-disc text-sm" role="alert" data-testid="imports-client-errors">
+                                <ul class="list-inside list-disc text-sm text-error" role="alert" data-testid="imports-client-errors">
                                     {#each clientErrors as message (message)}
                                         <li>{message}</li>
                                     {/each}
                                 </ul>
                             {/if}
                             {#if serverError !== null}
-                                <div class="alert alert-error py-2 text-sm" role="alert" data-testid="imports-server-error">
+                                <div class="alert py-2 text-sm alert-error" role="alert" data-testid="imports-server-error">
                                     <span class="break-words">{serverError}</span>
                                 </div>
                             {/if}

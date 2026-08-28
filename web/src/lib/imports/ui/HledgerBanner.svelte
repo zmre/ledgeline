@@ -48,7 +48,7 @@
     const path = $derived(typed ?? initialPath ?? "");
 </script>
 
-<section class="alert alert-error rounded-box flex flex-col items-start gap-3 py-3 text-sm" role="alert" data-testid="imports-hledger-missing">
+<section class="alert flex flex-col items-start gap-3 rounded-box py-3 text-sm alert-error" role="alert" data-testid="imports-hledger-missing">
     <div class="flex flex-col gap-1">
         <span class="font-semibold">{copy.headline}</span>
         <span>{copy.detail}</span>
@@ -63,7 +63,7 @@
                 <span class="label-text text-xs">Path to hledger</span>
                 <input
                     type="text"
-                    class="input input-sm w-full font-mono"
+                    class="input w-full font-mono input-sm"
                     value={path}
                     placeholder="/usr/local/bin/hledger"
                     spellcheck="false"
@@ -73,7 +73,7 @@
                 />
             </label>
             <button type="button" class="btn btn-sm" disabled={saving} onclick={() => onSave(path)} data-testid="imports-hledger-save">
-                {#if saving}<span class="loading loading-spinner loading-xs"></span>{/if}
+                {#if saving}<span class="loading loading-xs loading-spinner"></span>{/if}
                 Use this
             </button>
             <button type="button" class="btn btn-ghost btn-sm" disabled={saving} onclick={onRecheck}>Check again</button>

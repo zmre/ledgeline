@@ -132,8 +132,8 @@
     {/if}
 {/snippet}
 
-<div class="border-base-content/10 rounded-box overflow-x-auto border">
-    <table class="table-zebra table-sm table" data-testid="other-holdings-table">
+<div class="overflow-x-auto rounded-box border border-base-content/10">
+    <table class="table table-zebra table-sm" data-testid="other-holdings-table">
         <thead>
             <!-- Every header is a <th scope="col">, never a <td>: aria-sort is only
                  valid on a columnheader, so on a <td> the sort state was announced to
@@ -157,7 +157,7 @@
                     aria-current={cursor.key === h.account ? "true" : undefined}
                 >
                     <th class="font-normal whitespace-nowrap" title={h.account}>{h.name}</th>
-                    <th class="text-base-content/70 font-normal whitespace-nowrap">{h.account}</th>
+                    <th class="font-normal whitespace-nowrap text-base-content/70">{h.account}</th>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums" data-testid="held-{h.account}">
                         {formatHeldCommodities(h.commodities, base, formatUnits)}
                     </td>
@@ -171,7 +171,7 @@
             {/each}
         </tbody>
         <tfoot>
-            <tr class="border-base-content/20 bg-base-200 text-base-content border-t text-sm font-bold" data-testid="other-holdings-totals">
+            <tr class="border-t border-base-content/20 bg-base-200 text-sm font-bold text-base-content" data-testid="other-holdings-totals">
                 <th class="font-bold whitespace-nowrap">Total ({holdings.length} holdings):</th>
                 <th></th>
                 <td></td>

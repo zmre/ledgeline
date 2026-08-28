@@ -220,7 +220,7 @@
     {/if}
 
     {#if unpriced.length > 0}
-        <div class="alert alert-warning rounded-box px-3 py-2 text-sm" role="alert" data-testid="unpriced-warning">
+        <div class="alert rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="unpriced-warning">
             <span>Some holdings are not valued — no market price for: {unpriced.join(", ")}</span>
         </div>
     {/if}
