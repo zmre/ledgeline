@@ -24,6 +24,12 @@
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay.url = "github:oxalica/rust-overlay";
     crane.url = "github:ipetkov/crane";
+    # Formatting gate for `git push` — see `gitHooks` below. `follows` so it
+    # shares our nixpkgs instead of pinning a second full copy.
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
@@ -32,6 +38,7 @@
     flake-utils,
     rust-overlay,
     crane,
+    git-hooks,
     ...
   }:
     flake-utils.lib.eachDefaultSystem (system: let
@@ -707,6 +714,57 @@
           # that silently never appears in a menu.
           desktop-file-validate "$out/share/applications/ledgeline.desktop"
         '';
+      # --- Formatting gate, on PUSH rather than on commit ---------------------
+      # Both formatters CI cares about, run against the whole tree before a
+      # push leaves the machine. Entering `nix develop` installs the hook into
+      # `.git/hooks/pre-push`; there is nothing to run by hand.
+      #
+      # PRE-PUSH, NOT PRE-COMMIT, deliberately. A pre-commit hook fires on every
+      # WIP and fixup commit, where half-formatted code is normal and being
+      # blocked is just friction — and friction is what teaches people to reach
+      # for `--no-verify`, which disables the hook for the one case it exists to
+      # catch. Pushing is the moment the code stops being private, and it is
+      # also the last moment before CI spends 20 minutes telling you the same
+      # thing.
+      #
+      # What this catches, concretely: renaming `ledgeline-server` to
+      # `ledgeline` reordered `use` statements (rustfmt sorts them, and
+      # `ledgeline` sorts before `ledgeline_core` where `ledgeline_server`
+      # sorted after). `cargo check` and `cargo test` both pass on mis-sorted
+      # imports, so it reached CI and failed there instead.
+      gitHooks = git-hooks.lib.${system}.run {
+        src = ./.;
+        # Every hook below, at push time. Setting it here rather than per-hook
+        # means a hook added later cannot silently default back to pre-commit.
+        default_stages = ["pre-push"];
+        hooks = {
+          # NOT the built-in `rustfmt` hook: it runs `cargo fmt` from nixpkgs'
+          # cargo, and this repo pins its toolchain in rust-toolchain.toml. Two
+          # rustfmt versions disagree about enough to fail a push over a file
+          # CI is perfectly happy with, which is the worst possible failure for
+          # a hook -- it trains people to bypass it.
+          #
+          # `--all` because this is a VIRTUAL workspace (no root bin or lib).
+          # Bare `cargo fmt` happens to walk the members correctly on the
+          # current toolchain, but it has not always, and `--all` is what
+          # crane's `cargoFmt` -- the `.#fmt` derivation CI builds -- passes.
+          # Matching CI exactly is the whole point.
+          rustfmt-workspace = {
+            enable = true;
+            name = "rustfmt (workspace)";
+            entry = "${rustToolchain}/bin/cargo fmt --all -- --check";
+            files = "\\.rs$";
+            # One workspace-wide invocation, not one per changed file: rustfmt
+            # resolves modules through Cargo, so handing it a bare path is both
+            # slower and subtly different from what CI does.
+            pass_filenames = false;
+          };
+          # flake.nix is the only .nix file today, but it is also the file most
+          # likely to be edited by someone who is not set up for Nix. Nothing in
+          # CI checks Nix formatting, so this hook is the only thing that does.
+          alejandra.enable = true;
+        };
+      };
     in {
       # Buildable outputs. `nix build .#ledgeline` proves the GUI deps resolve
       # (webkitgtk on Linux, system WebKit on macOS); the checks reuse the
@@ -779,17 +837,23 @@
       # Dev shell — preserved from the pre-crane flake. Every tool the team and
       # the SPA tests depend on stays available; only crane's inputs are new.
       devShells.default = pkgs.mkShell {
-        nativeBuildInputs = with pkgs; [
-          rustToolchain # Rust engine: crates/ledgeline-{core,server}
-          cargo-audit # RUSTSEC advisory scan of Cargo.lock (SEC-14; see the `audit` CI job)
-          pkg-config # locates the Linux GUI libs below (no-op on macOS)
-          nodejs_22 # runtime for vite/svelte tooling
-          bun # package manager + script runner
-          hledger # CLI: golden fixture generation, journal validation, differential oracle
-          hledger-web # JSON API server for local dev + e2e + wire-parity oracle
-          just # task runner (see justfile)
-          playwright-driver.browsers # browsers for playwright e2e (version must match web/package.json @playwright/test — asserted in shellHook)
-        ];
+        nativeBuildInputs =
+          (with pkgs; [
+            rustToolchain # Rust engine: crates/ledgeline-{core,server}
+            cargo-audit # RUSTSEC advisory scan of Cargo.lock (SEC-14; see the `audit` CI job)
+            pkg-config # locates the Linux GUI libs below (no-op on macOS)
+            nodejs_22 # runtime for vite/svelte tooling
+            bun # package manager + script runner
+            hledger # CLI: golden fixture generation, journal validation, differential oracle
+            hledger-web # JSON API server for local dev + e2e + wire-parity oracle
+            just # task runner (see justfile)
+            playwright-driver.browsers # browsers for playwright e2e (version must match web/package.json @playwright/test — asserted in shellHook)
+            alejandra # Nix formatter — also what the pre-push hook runs, so it
+            # is here for `alejandra .` by hand too
+          ])
+          # `pre-commit` itself plus every tool the hooks invoke. Without this
+          # the installed hook exists but cannot run.
+          ++ gitHooks.enabledPackages;
 
         # Desktop GUI (wry/tao) native deps — the SAME list the package builds
         # against, rather than a hand-maintained subset. The subset that used
@@ -801,6 +865,10 @@
         inherit buildInputs;
 
         shellHook = ''
+          # Writes .git/hooks/pre-push (and the pre-commit config it reads).
+          # Idempotent, and it warns rather than fails outside a git checkout.
+          ${gitHooks.shellHook}
+
           export LEDGELINE_FIXTURE="$PWD/fixtures/sample.journal"
           export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
           export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true

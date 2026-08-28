@@ -33,6 +33,42 @@ Linux GUI libraries (`webkitgtk_4_1`, `gtk3`, `libsoup_3`). It also exports
 nix develop path:. --command bash -c 'cargo --version && node --version && bun --version && hledger --version'
 ```
 
+### The pre-push formatting hook
+
+Entering the dev shell installs a `pre-push` hook (`git-hooks.nix`, configured
+in `flake.nix` under `gitHooks`). It runs the two formatters CI cares about
+against the whole tree:
+
+| Hook | Runs | Fires when |
+| --- | --- | --- |
+| `rustfmt (workspace)` | `cargo fmt --all -- --check`, from the **pinned** toolchain | any `.rs` file changed |
+| `alejandra` | `alejandra` | any `.nix` file changed |
+
+Push-time rather than commit-time on purpose: a pre-commit hook fires on every
+WIP and fixup commit, where half-formatted code is normal, and that friction is
+what teaches people to reach for `--no-verify` — which then disables the hook
+for the one case it existed to catch. Pushing is both the moment code stops
+being private and the last moment before CI spends twenty minutes reporting the
+same thing.
+
+`rustfmt` deliberately comes from `rust-toolchain.toml` rather than nixpkgs'
+`cargo`. Two rustfmt versions disagree about enough to reject a push over a file
+CI is perfectly happy with, and a hook that cries wolf gets bypassed.
+
+It is not a substitute for CI — a hook lives on one machine and `--no-verify`
+skips it — but it catches the mechanical cases before they cost a CI round trip.
+The kind of thing it is for: renaming `ledgeline-server` to `ledgeline` changed
+how rustfmt sorts `use` statements (`ledgeline` sorts *before* `ledgeline_core`
+where `ledgeline_server` sorted after), and `cargo check` and `cargo test` both
+pass happily on mis-sorted imports.
+
+The generated `.pre-commit-config.yaml` is a symlink into `/nix/store` and is
+git-ignored; edit `flake.nix` to change the hooks. To bypass once:
+
+```sh
+git push --no-verify
+```
+
 ## The crane caching model (why rebuilds/retests are fast)
 
 `flake.nix` uses [crane](https://github.com/ipetkov/crane). The key idea:

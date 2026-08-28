@@ -1,5 +1,9 @@
 # Nix / direnv
 .direnv/
+# Written by `nix develop` (git-hooks.nix) as a SYMLINK INTO /nix/store, so
+# committing it would pin a store path that exists on exactly one machine. The
+# hook definitions live in flake.nix; this is only their compiled form.
+.pre-commit-config.yaml
 # `result` plus the named output links our recipes create (`just package-mac`
 # builds `result-macapp`), which a bare `result` pattern would not match.
 result
