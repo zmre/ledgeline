@@ -22,11 +22,11 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use clap::Parser;
-use ledgeline_core::{Journal, parse_journal};
 use ledgeline::{
     AppState, ProcessToken, Security, SecurityError, TOKEN_ENV, router_with_security,
     token_from_env_or_random,
 };
+use ledgeline_core::{Journal, parse_journal};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 const DEFAULT_HOST: &str = "127.0.0.1";
