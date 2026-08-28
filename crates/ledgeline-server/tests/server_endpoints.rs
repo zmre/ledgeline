@@ -18,7 +18,7 @@ use axum::body::Body;
 use axum::http::{HeaderName, Request, StatusCode, header};
 use common::{account_contract, compare, fixture_journal, read_snapshot};
 use http_body_util::BodyExt;
-use ledgeline_server::{AccessToken, AppState, Security, app, router_with_security};
+use ledgeline::{AccessToken, AppState, Security, app, router_with_security};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

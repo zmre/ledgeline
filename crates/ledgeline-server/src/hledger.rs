@@ -83,9 +83,37 @@
 //!    so the Nix flake can pin the exact store path it built against. Note that
 //!    without a `build.rs` emitting `cargo:rerun-if-env-changed`, changing this
 //!    variable does not by itself force a rebuild.
-//! 4. `hledger` on `$PATH`.
+//! 4. An `hledger` sitting NEXT TO our own executable — see below.
+//! 5. `hledger` on `$PATH`.
 //!
-//! Steps 1–3 are explicit paths and are stat-checked
+//! # Why a sibling binary is a resolution step at all (step 4)
+//!
+//! This is what makes the shipped `Ledgeline.app` work, and it exists because
+//! the two steps around it BOTH miss in a downloaded release:
+//!
+//!   * The baked path (step 3) is a `/nix/store/…` path. It is correct on the
+//!     machine that built it and is meaningless on a user's Mac, where the stat
+//!     check drops it.
+//!   * `$PATH` (step 5) is not what you think it is inside a `.app`. A process
+//!     launched from Finder or the Dock inherits `launchd`'s environment, NOT the
+//!     one your shell exports from `.zshrc`. A user who has `hledger` installed
+//!     via Homebrew and working in their terminal still gets "hledger was not
+//!     found" from a double-clicked Ledgeline, because `/opt/homebrew/bin` is
+//!     simply not on the PATH the app was handed.
+//!
+//! The release DMG therefore ships `hledger` inside the bundle, as a sibling of
+//! our own binary in `Contents/MacOS/`, and this step is how it is found.
+//! `current_exe()` resolves symlinks, which is what makes it work for the Nix
+//! `macDist` layout too: `bin/ledgeline` there is a symlink INTO
+//! `Ledgeline.app/Contents/MacOS/`, so the sibling lookup lands in the bundle
+//! rather than in `bin/`.
+//!
+//! It is deliberately BELOW the baked path: an explicitly pinned binary is a more
+//! specific answer than "whatever happens to be next to me". It is deliberately
+//! ABOVE `$PATH` for the reason above — inside a bundle, the sibling is the one
+//! we shipped and verified, and `$PATH` is a coin flip.
+//!
+//! Steps 1–4 are explicit paths and are stat-checked
 //! ([`prefs::is_executable_file`](crate::prefs::is_executable_file)) before we
 //! try to run them; a candidate that is missing or unrunnable falls through to
 //! the next. That fall-through is deliberate: a Nix garbage-collect can delete
@@ -124,8 +152,28 @@ const HLEDGER_ENV: &str = "LEDGELINE_HLEDGER";
 /// flake to pin its own store path. `None` in an ordinary `cargo build`.
 const BAKED_HLEDGER: Option<&str> = option_env!("LEDGELINE_HLEDGER_PATH");
 
-/// Bare name looked up on `$PATH` (resolution step 4).
+/// Bare name looked up on `$PATH` (resolution step 5), and — because they are
+/// the same file name — what a bundled sibling is called (step 4).
 const PATH_LOOKUP: &str = "hledger";
+
+/// An `hledger` shipped alongside our own executable (resolution step 4): the
+/// one inside `Ledgeline.app/Contents/MacOS/`. See the module docs for why a
+/// downloaded app cannot rely on either the baked path or `$PATH`.
+///
+/// `current_exe()` is deliberately allowed to fail into `None` rather than being
+/// unwrapped: it is documented as being able to error, and on some platforms it
+/// can return a path that no longer exists (a binary deleted or replaced while
+/// running). Every caller here already treats a missing candidate as "try the
+/// next one", so there is nothing to report and nothing to abort — a failure
+/// simply means this step contributes no candidate.
+///
+/// The result is NOT stat-checked here; [`Hledger::candidates`] runs the same
+/// [`prefs::is_executable_file`] filter over this that it does over the other
+/// explicit sources, so a bundle without a sibling falls through to `$PATH`.
+fn sibling_hledger() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join(PATH_LOOKUP))
+}
 
 /// The flag that stops hledger reading a config file nobody in this process
 /// chose. Prepended to **every** argv by [`Invocation::argv`]; see the module
@@ -298,7 +346,7 @@ impl Hledger {
 
     /// The candidate paths, best-first and lazily produced.
     ///
-    /// The three explicit sources are stat-checked here so a stale preference
+    /// The four explicit sources are stat-checked here so a stale preference
     /// costs a `stat` rather than a failed `fork`/`exec`, and so a path that
     /// names a directory or a FIFO is dropped before `Command` ever sees it. The
     /// `$PATH` fallback is a bare name by definition and cannot be checked
@@ -309,6 +357,7 @@ impl Hledger {
             prefs.hledger_path.clone(),
             std::env::var_os(HLEDGER_ENV).map(PathBuf::from),
             BAKED_HLEDGER.map(PathBuf::from),
+            sibling_hledger(),
         ];
         explicit
             .into_iter()

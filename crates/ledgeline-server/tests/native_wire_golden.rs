@@ -48,7 +48,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{fixture_journal, fixtures_dir};
 use http_body_util::BodyExt;
-use ledgeline_server::app;
+use ledgeline::app;
 use serde_json::Value;
 use tower::ServiceExt;
 

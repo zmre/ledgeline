@@ -20,7 +20,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 itertools = "0.14"
-ledgeline-core = { path = "crates/ledgeline-core" }
+# `version` alongside `path` is what makes `ledgeline-server` PUBLISHABLE:
+# `cargo publish` rejects a path dependency with no version, because a consumer
+# downloading the .crate has no `crates/ledgeline-core` to point at. Inside the
+# workspace `path` still wins, so this changes nothing about local builds.
+#
+# It is a literal because cargo has no `version.workspace` inheritance for a
+# dependency's own version field — which makes it the one place the version is
+# duplicated. `scripts/release.sh` owns keeping it in step, and
+# `scripts/release.sh check` (a CI job) fails if it ever drifts.
+ledgeline-core = { path = "crates/ledgeline-core", version = "0.1.0" }
 
 # Phase 5 write path: `ropey` is the text-rope over the journal file. Pinned to
 # the stable 1.6 line — 1.6.1 (2023-10-18) is the latest stable release and the

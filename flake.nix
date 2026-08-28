@@ -225,8 +225,16 @@
         #    is exactly how it went: the `@testing-library/svelte` + `jsdom` bump
         #    landed weeks before the build that reported it.
         # See `outputHash` below for why this is keyed by system.
+        # Re-pinned for the toolchain bump two commits back (svelte 5.56.9,
+        # vite 8.2.2, playwright 1.61.1 and the rest): the FOD hash covers the
+        # resolved `node_modules`, so any dependency change invalidates it.
+        #
+        # An FOD hash can only be produced ON the platform it describes, and the
+        # bump was made on aarch64-darwin. THE x86_64-linux HASH BELOW IS STALE
+        # and its first build will fail with a hash mismatch that names the
+        # correct value — put that value here. See docs/development.md.
         spaNodeModulesHashes = {
-          aarch64-darwin = "sha256-wwx0uWSFgAI2tuZWj89ZORMIQ8uMVQZVHklANqLhzEQ=";
+          aarch64-darwin = "sha256-2Ubynne5AlCQkD/dcMWL2UE96Pzy41LgSntwBgUtW/k=";
           x86_64-linux = "sha256-+ibyfS34nA4G/W1CvJQ0cA3LRkrdHvAkRZlwdLsGlXY=";
         };
 
@@ -321,7 +329,85 @@
             icon_256.png icon_512.png icon_1024.png
         '';
 
-        # 5. Assemble Ledgeline.app in the STANDARD nix-darwin app layout:
+        # 5. The `hledger` the DMG SHIPS, so a downloaded Ledgeline can import
+        #    without the user installing anything.
+        #
+        #    WHY BUNDLE AT ALL: imports shell out to hledger, and neither of the
+        #    other ways to find one survives distribution. The baked
+        #    `LEDGELINE_HLEDGER_PATH` is a `/nix/store/…` path that does not
+        #    exist on a user's Mac, and `$PATH` inside a Finder-launched `.app`
+        #    is launchd's, not the one their shell exports — so a user with
+        #    Homebrew hledger working in their terminal still gets "hledger was
+        #    not found". `hledger::sibling_hledger` (resolution step 4) is what
+        #    finds this copy.
+        #
+        #    WHY THE UPSTREAM RELEASE BINARY rather than `pkgs.hledger`: the Nix
+        #    one links five non-system dylibs (libz, libncursesw, libiconv,
+        #    libgmp, libffi) out of the store, so shipping it would mean
+        #    vendoring all five into Contents/Frameworks with @rpath install
+        #    names — the very de-nixing dance `macApp` does below, five times
+        #    over, across every nixpkgs bump. The binary hledger's own project
+        #    publishes links ONLY `/usr/lib/*` and system frameworks, verified by
+        #    the assertion below rather than assumed. It is also 83 MiB against
+        #    the Nix build's 158 MiB closure.
+        #
+        #    The asset is per-system so a local `nix build .#macApp` still works
+        #    on an Intel Mac; the RELEASE workflow only ever builds aarch64.
+        #    Pinned by version + hash, so this is reproducible and offline after
+        #    the first fetch — a `fetchurl` is a fixed-output derivation, and the
+        #    hash is over the tarball, not over a moving "latest".
+        bundledHledgerVersion = "1.52.1";
+        hledgerAsset = {
+          aarch64-darwin = {
+            file = "hledger-mac-arm64.tar.gz";
+            hash = "sha256-zS/aAeiz5f3TEsTKyi5VxT8+lmdHtcokWDiTH5xKRQ8=";
+          };
+          x86_64-darwin = {
+            file = "hledger-mac-x64.tar.gz";
+            hash = "sha256-FulUy7eS/CS0JxRt9jvthNnUSQ97titR2CRyAxfdMDc=";
+          };
+        }.${system} or null;
+
+        bundledHledger = pkgs.runCommand "hledger-bundled-${bundledHledgerVersion}" {
+          src = pkgs.fetchurl {
+            url = "https://github.com/simonmichael/hledger/releases/download/"
+              + "${bundledHledgerVersion}/${hledgerAsset.file}";
+            inherit (hledgerAsset) hash;
+          };
+          nativeBuildInputs = [ pkgs.darwin.cctools ];
+        } ''
+          mkdir -p "$out/bin"
+          # The archive holds hledger, hledger-ui and hledger-web plus man/info
+          # pages. We run exactly one of them, so extract exactly one — the other
+          # two are ~50 MiB of download the user would carry for nothing.
+          tar xzf "$src" -C "$TMPDIR" hledger
+          install -m 0555 "$TMPDIR/hledger" "$out/bin/hledger"
+
+          # The premise this whole choice rests on, asserted rather than trusted:
+          # every library it names must resolve on a stock Mac. If hledger's
+          # release build ever starts linking something else, this fails HERE —
+          # in the build that introduced it — instead of in dyld on a user's
+          # machine after they have downloaded the DMG. `for`, not a piped
+          # `while read`: a piped loop body runs in a subshell where `exit 1`
+          # would kill only the subshell and let the build go green.
+          for lib in $(otool -L "$out/bin/hledger" | awk 'NR > 1 { print $1 }'); do
+            case "$lib" in
+              /usr/lib/*|/System/Library/*) ;;
+              *)
+                echo "ERROR: bundled hledger ${bundledHledgerVersion} links a non-system library:" >&2
+                echo "         $lib" >&2
+                echo "  Ledgeline.app ships this binary to Macs with no Nix and no" >&2
+                echo "  Homebrew, so every load command has to resolve from the" >&2
+                echo "  base OS. Vendor the library into Contents/Frameworks with" >&2
+                echo "  an @rpath install name, or go back to a build that does" >&2
+                echo "  not need it." >&2
+                exit 1
+                ;;
+            esac
+          done
+        '';
+
+        # 6. Assemble Ledgeline.app in the STANDARD nix-darwin app layout:
         #    `$out/Applications/Ledgeline.app` (mirrors zmre/mbr-markdown-browser,
         #    which installs `$out/Applications/MBR.app`). `nix build .#macApp`
         #    therefore yields `result/Applications/Ledgeline.app` — the location
@@ -365,6 +451,13 @@
           substitute ${./assets/Info.plist.in} "$app/Contents/Info.plist" \
             --subst-var-by version "${version}"
           cp ${ledgelineIcns} "$app/Contents/Resources/ledgeline.icns"
+
+          # The bundled hledger, as a SIBLING of our binary in Contents/MacOS/ —
+          # which is precisely where `hledger::sibling_hledger` looks. Not
+          # Contents/Resources: `codesign --deep` and notarization both expect
+          # executable code under MacOS/, and Resources/ is for data.
+          cp ${bundledHledger}/bin/hledger "$app/Contents/MacOS/hledger"
+          chmod u+w "$app/Contents/MacOS/hledger"
 
           # `for`, NOT `otool | while read`: a piped while-loop body runs in a
           # SUBSHELL, so the `exit 1` below would kill only the subshell and the
@@ -434,15 +527,21 @@
           # install_name_tool just broke the ad-hoc signature the linker gave it.
           codesign -f -s - "$bin"
 
-          # The guarantee, asserted rather than assumed.
-          if otool -L "$bin" | tail -n +2 | grep -q /nix/store; then
-            echo "ERROR: Nix store paths survived de-nixing:" >&2
-            otool -L "$bin" >&2
-            exit 1
-          fi
+          # The guarantee, asserted rather than assumed. Covers the bundled
+          # hledger too: `bundledHledger` already made the same assertion, but
+          # this is the check that speaks for the ARTIFACT rather than for one of
+          # its inputs, so it is the one that keeps holding if the bundle later
+          # grows a third Mach-O.
+          for macho in "$bin" "$app/Contents/MacOS/hledger"; do
+            if otool -L "$macho" | tail -n +2 | grep -q /nix/store; then
+              echo "ERROR: Nix store paths survived de-nixing in $macho:" >&2
+              otool -L "$macho" >&2
+              exit 1
+            fi
+          done
         '';
 
-        # 6. Combined darwin install: the `Applications/Ledgeline.app` bundle PLUS
+        # 7. Combined darwin install: the `Applications/Ledgeline.app` bundle PLUS
         #    a `bin/ledgeline` that is a SYMLINK INTO the bundle
         #    (`Contents/MacOS/ledgeline`) rather than a second, standalone copy of
         #    the binary. Launching the CLI symlink resolves (via `realpath`) to a
@@ -614,7 +713,7 @@
         # headless `ledgeline` binary. `.#ledgeline` remains the binary on every
         # system (CI); `apps.default` / `nix run .` run it.
         // lib.optionalAttrs pkgs.stdenv.isDarwin {
-          inherit macApp macDist spaNodeModules spaBuild ledgelineWithSpa ledgelineIcns;
+          inherit macApp macDist spaNodeModules spaBuild ledgelineWithSpa ledgelineIcns bundledHledger;
           default = macDist;
         };
 
@@ -662,7 +761,7 @@
             hledger # CLI: golden fixture generation, journal validation, differential oracle
             hledger-web # JSON API server for local dev + e2e + wire-parity oracle
             just # task runner (see justfile)
-            playwright-driver.browsers # browsers for playwright e2e (version must match web/package.json @playwright/test)
+            playwright-driver.browsers # browsers for playwright e2e (version must match web/package.json @playwright/test — asserted in shellHook)
           ];
 
           # Desktop GUI (wry/tao) native deps — the SAME list the package builds
@@ -690,6 +789,38 @@
             export LIBGL_DRIVERS_PATH="''${LIBGL_DRIVERS_PATH:+''${LIBGL_DRIVERS_PATH}:}${mesaDriDir}"
             export GBM_BACKENDS_PATH="''${GBM_BACKENDS_PATH:-${gbmBackendsDefault}}:${mesaGbmDir}"
             ''}
+
+            # The e2e BROWSERS come from nixpkgs (above) while the RUNNER comes
+            # from web/package.json, and Playwright refuses to launch a browser
+            # build its runner does not expect — so these two have to move
+            # together. `@playwright/test` is pinned EXACTLY (no caret) for that
+            # reason.
+            #
+            # This is asserted rather than merely documented because the failure
+            # is remote from the cause and reads like a broken checkout: a
+            # `nix flake update` bumps playwright-driver, and every one of the 65
+            # e2e specs then fails in about a millisecond with "Executable
+            # doesn't exist at /nix/store/…", telling you to run
+            # `npx playwright install` — which is the one thing that must not be
+            # done here. Exactly that happened on 2026-08-20 (driver 1.60.0 →
+            # 1.61.1). CI never sees it: the e2e job installs its own browsers
+            # with `bunx playwright install`, so this is a dev-shell-only trap.
+            #
+            # A warning, not an error: a mismatched shell is still perfectly good
+            # for everything that is not e2e, and refusing to open would be worse
+            # than saying so.
+            if [ -f web/package.json ]; then
+              pinnedPlaywright=$(sed -n -E 's/.*"@playwright\/test": "([^"]+)".*/\1/p' web/package.json | head -1)
+              if [ -n "$pinnedPlaywright" ] \
+                 && [ "$pinnedPlaywright" != "${pkgs.playwright-driver.version}" ]; then
+                echo "WARNING: Playwright version drift — e2e will fail."
+                echo "  web/package.json @playwright/test : $pinnedPlaywright"
+                echo "  nixpkgs playwright-driver         : ${pkgs.playwright-driver.version}"
+                echo "  Fix: set @playwright/test to ${pkgs.playwright-driver.version} in web/package.json,"
+                echo "       run 'bun install', then re-pin spaNodeModules' outputHash in flake.nix."
+              fi
+            fi
+
             echo "ledgeline dev shell: node $(node --version), bun $(bun --version), $(hledger --version | head -1), $(rustc --version)"
           '';
         };

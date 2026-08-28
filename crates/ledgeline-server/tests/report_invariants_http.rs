@@ -16,7 +16,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use ledgeline_core::{Dec, Journal};
-use ledgeline_server::app;
+use ledgeline::app;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use tower::ServiceExt;

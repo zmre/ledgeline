@@ -6,6 +6,14 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords = ["hledger", "accounting", "ledger", "finance"]
+categories = ["parser-implementations", "finance"]
+# `benches/` is included because `[[bench]]` below names a path, and cargo fails
+# to LOAD a manifest whose declared target file is missing — so a package that
+# dropped them could not even be verified. `examples/` and the fixture corpus are
+# excluded: they are measurement tools that generate their own inputs into
+# `target/`, and no consumer of the library needs either.
+exclude = ["examples/**"]
 # `benches/corpus.rs` is a SHARED MODULE (the deterministic journal generator),
 # not a bench target: `benches/engine.rs` and the `examples/` measurement
 # binaries `#[path]`-include it. Auto-discovery would try to build it as its own

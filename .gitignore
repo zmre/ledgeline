@@ -11,6 +11,13 @@ result-*
 # scratch — see docs/perf-baseline.md — so neither belongs in git.
 /target/
 
+# The embedded SPA, mirrored out of `web/build` by
+# `crates/ledgeline-server/build.rs`. A build artifact, so it is not committed —
+# it would churn on every UI change. `cargo publish` still ships it, because
+# the `ledgeline` manifest names an explicit `include` list that overrides
+# this file. See that build.rs for why the directory lives inside the crate.
+/crates/ledgeline-server/spa/
+
 # JS / SvelteKit (web/)
 node_modules/
 .svelte-kit/

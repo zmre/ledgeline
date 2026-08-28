@@ -14,6 +14,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The version lives in four places (see scripts/release.sh for why each one
+  # exists and how each drifts). Three of them fail SILENTLY: a stale
+  # `ledgeline-core` dependency version only breaks `cargo publish`, at the very
+  # end of a release; a stale `web/package.json` breaks nothing at all and had
+  # already drifted to 0.0.1 against a 0.1.0 workspace before this job existed.
+  # Pure bash and no Nix, so it costs seconds and gates nothing else.
+  versions:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: scripts/release.sh check
+        run: ./scripts/release.sh check
+
   # Fast, cheap gate — runs first and fails early on formatting.
   format-check:
     name: Format Check
@@ -148,13 +162,16 @@ jobs:
           fi
           # The darwin-only attrs are guarded by `lib.optionalAttrs
           # stdenv.isDarwin` in flake.nix, so only ask for them there.
-          # `ledgelineWithSpa` is listed SEPARATELY from `macDist`: macApp
-          # `cp`s the binary into the bundle rather than symlinking it, so the
-          # binary's own store path is not in macDist's closure — and it is
-          # what `nix run` resolves to on darwin.
+          # `ledgelineWithSpa` and `bundledHledger` are listed SEPARATELY from
+          # `macDist` for the SAME reason: macApp `cp`s both binaries into the
+          # bundle rather than symlinking them, so neither store path is in
+          # macDist's closure and neither would ride along. `ledgelineWithSpa`
+          # is additionally what `nix run` resolves to on darwin;
+          # `bundledHledger` is a 53 MiB download from github.com that we would
+          # otherwise re-fetch on every build that cannot substitute macApp.
           attrs=(.#ledgeline)
           if [ "$RUNNER_OS" = "macOS" ]; then
-            attrs+=(.#macDist .#ledgelineWithSpa)
+            attrs+=(.#macDist .#ledgelineWithSpa .#bundledHledger)
           fi
           nix build --json "${attrs[@]}" | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 
@@ -373,7 +390,7 @@ jobs:
       #   WHY IGNORED — unreachable at run time AND unfixable from this repo:
       #     * The only path is
       #         quick-xml -> wayland-scanner (PROC-MACRO) -> wayland-client
-      #         -> rfd -> ledgeline-server
+      #         -> rfd -> ledgeline
       #       wayland-scanner is a build-time proc macro, so quick-xml parses
       #       the vendored wayland protocol .xml files during compilation. It
       #       never sees a journal file, an HTTP request, or any other runtime

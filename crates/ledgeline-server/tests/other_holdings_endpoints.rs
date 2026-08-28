@@ -13,7 +13,7 @@ mod common;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use ledgeline_core::{Journal, parse_journal};
-use ledgeline_server::app;
+use ledgeline::app;
 use serde_json::Value;
 use tower::ServiceExt;
 

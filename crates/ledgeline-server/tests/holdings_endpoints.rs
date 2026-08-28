@@ -11,7 +11,7 @@ mod common;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use ledgeline_core::Journal;
-use ledgeline_server::app;
+use ledgeline::app;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -373,7 +373,7 @@ async fn holdings_value_in_that_prices_nothing_is_rejected() {
         .uri(format!("/api/holdings?{FX_AS_OF}&valueIn=NOPE"))
         .body(Body::empty())
         .expect("request builds");
-    let response = ledgeline_server::app(&journal)
+    let response = ledgeline::app(&journal)
         .oneshot(request)
         .await
         .expect("router responds");

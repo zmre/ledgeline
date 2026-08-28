@@ -6,7 +6,7 @@
 //! Both are private modules of the library (`mod prefs;` / `mod hledger;` in
 //! `lib.rs`), which is correct — their public surface is the `/api/prefs` and
 //! `/api/import/capabilities` routes, not a Rust API — but it means an
-//! integration test crate cannot `use ledgeline_server::prefs`. Compiling the
+//! integration test crate cannot `use ledgeline::prefs`. Compiling the
 //! sources into this test binary is the standard way out, and it keeps `lib.rs`
 //! unchanged. `crate::prefs` inside `hledger.rs` resolves to the `prefs` module
 //! declared below, because this file is the root of the test crate.
@@ -110,6 +110,44 @@ fn run_child(test_name: &str, env: &[(&str, &Path)]) {
     let output = command
         .output()
         .expect("re-run this test binary as a child");
+    assert!(
+        output.status.success(),
+        "child test `{test_name}` failed\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// As [`run_child`], but runs a COPY of this test binary placed in `dir`, so the
+/// child's `std::env::current_exe()` resolves inside `dir`.
+///
+/// This is what makes the sibling-`hledger` step testable. [`run_child`] runs the
+/// binary out of `target/…/deps/`, so exercising that step through it would mean
+/// writing a stub `hledger` into the build directory — where every other test in
+/// this binary would then resolve it too, and where it would be left behind
+/// afterwards. Copying into the per-test `TempDir` keeps the assertion hermetic
+/// and order-independent, which is the same reason the rest of this file uses
+/// child processes at all.
+///
+/// A Rust test binary links libstd statically, so the copy runs standalone with
+/// no `@rpath` fixups.
+fn run_child_beside(test_name: &str, dir: &Path, env: &[(&str, &Path)]) {
+    let exe = std::env::current_exe().expect("locate this test binary");
+    let copy = dir.join("ledgeline-test-harness");
+    std::fs::copy(&exe, &copy).expect("copy this test binary into the scratch dir");
+    make_executable(&copy);
+
+    let mut command = Command::new(&copy);
+    command.args([test_name, "--exact", "--ignored", "--test-threads=1"]);
+    command.env_remove("LEDGELINE_CONFIG_DIR");
+    command.env_remove("LEDGELINE_HLEDGER");
+    command.env_remove(CHILD_DIR_ENV);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command
+        .output()
+        .expect("re-run the copied test binary as a child");
     assert!(
         output.status.success(),
         "child test `{test_name}` failed\n--- stdout ---\n{}\n--- stderr ---\n{}",
@@ -850,6 +888,89 @@ fn child_too_old_is_terminal() {
     assert!(
         matches!(error, HledgerError::TooOld { found, .. } if found.minor == 30),
         "expected TooOld(1.30), got {error:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// hledger: the sibling binary (resolution step 4) — what makes the shipped
+// Ledgeline.app able to import at all
+// ---------------------------------------------------------------------------
+
+/// An `hledger` sitting next to our own executable is found with NO preference,
+/// NO `$LEDGELINE_HLEDGER` and nothing useful on `$PATH`.
+///
+/// This is the release DMG's whole import story: the bundle ships `hledger` in
+/// `Contents/MacOS/` beside the app binary, because a Finder-launched app
+/// inherits launchd's `$PATH` rather than the user's shell one, and the baked
+/// `/nix/store/…` path does not exist on their Mac.
+///
+/// The assertion is on the resolved PATH, not merely on success, so the test
+/// still proves the sibling was used on a developer machine that has a real
+/// hledger installed and on `$PATH`.
+#[test]
+fn resolve_finds_an_hledger_next_to_the_executable() {
+    let dir = TempDir::new().expect("temp dir");
+    write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
+    run_child_beside(
+        "child_resolve_uses_the_sibling",
+        dir.path(),
+        &[(CHILD_DIR_ENV, dir.path())],
+    );
+}
+
+#[test]
+#[ignore = "child process: driven by resolve_finds_an_hledger_next_to_the_executable"]
+fn child_resolve_uses_the_sibling() {
+    let Some(dir) = child_dir() else { return };
+
+    let resolved = Hledger::resolve(&Prefs::default()).expect("the sibling stub must resolve");
+    assert_eq!(
+        resolved.path(),
+        dir.join("hledger"),
+        "the binary beside the executable must win over anything on $PATH"
+    );
+    assert_eq!(resolved.version().minor, 52);
+}
+
+/// The documented precedence: `$LEDGELINE_HLEDGER` (step 2) outranks a sibling
+/// (step 4). Both stubs are current and report DIFFERENT versions, so the
+/// assertion identifies which one actually ran.
+///
+/// This direction is the one worth pinning. A bundled app carries a sibling
+/// *always*, so if the sibling outranked the explicit sources, a user who set a
+/// path in the settings form to work around a bad bundled hledger would be
+/// silently ignored — and "I set the path and it used a different one" is
+/// exactly the failure the resolution order exists to prevent.
+#[test]
+fn an_explicit_path_outranks_a_sibling() {
+    let dir = TempDir::new().expect("temp dir");
+    write_stub(dir.path(), "hledger", "hledger 1.44, mac-aarch64");
+    let elsewhere = TempDir::new().expect("temp dir");
+    write_stub(elsewhere.path(), "chosen", "hledger 1.52, mac-aarch64");
+    run_child_beside(
+        "child_explicit_outranks_the_sibling",
+        dir.path(),
+        &[
+            ("LEDGELINE_HLEDGER", &elsewhere.path().join("chosen")),
+            (CHILD_DIR_ENV, dir.path()),
+        ],
+    );
+}
+
+#[test]
+#[ignore = "child process: driven by an_explicit_path_outranks_a_sibling"]
+fn child_explicit_outranks_the_sibling() {
+    let Some(dir) = child_dir() else { return };
+
+    // Sanity: the sibling IS present and usable — so the assertion below is
+    // about precedence, not about the sibling having failed to resolve.
+    assert!(dir.join("hledger").is_file(), "the sibling stub must exist");
+
+    let resolved = Hledger::resolve(&Prefs::default()).expect("a stub must resolve");
+    assert_eq!(
+        resolved.version().minor,
+        52,
+        "$LEDGELINE_HLEDGER must win over the binary beside the executable"
     );
 }
 

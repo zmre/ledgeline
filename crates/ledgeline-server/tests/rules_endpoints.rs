@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use axum::body::Body;
 use axum::http::{HeaderName, Request, StatusCode, header};
 use common::fixtures_dir;
-use ledgeline_server::{AccessToken, AppState, Security, router_with_security, router_with_state};
+use ledgeline::{AccessToken, AppState, Security, router_with_security, router_with_state};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

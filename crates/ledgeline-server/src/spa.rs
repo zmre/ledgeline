@@ -34,11 +34,17 @@ use rust_embed::RustEmbed;
 
 use crate::security::{self, AccessToken};
 
-/// The built SPA. Resolved relative to this crate so the workspace layout
-/// (`crates/ledgeline-server` → `web/build`) is explicit; `build.rs` guarantees
-/// the folder exists even on a fresh checkout.
+/// The built SPA, embedded from a directory INSIDE this crate.
+///
+/// `build.rs` populates `spa/` — mirroring `web/build` in a workspace checkout,
+/// leaving the shipped copy alone in a published crate, and writing a
+/// placeholder when there is neither. It is deliberately not
+/// `$CARGO_MANIFEST_DIR/../../web/build`: `cargo package` refuses to include
+/// files outside the package root, so pointing at the workspace path would make
+/// this crate unpublishable and `cargo install ledgeline-server` would serve the
+/// placeholder page to every user. See `build.rs` for the three cases.
 #[derive(RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/../../web/build"]
+#[folder = "$CARGO_MANIFEST_DIR/spa"]
 struct SpaAssets;
 
 /// Marker injected into the served `index.html`. The SPA reads
