@@ -6,7 +6,7 @@ members = ["crates/ledgeline-core", "crates/ledgeline-server"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Patrick Walsh"]
 license = "MIT"
@@ -29,7 +29,7 @@ itertools = "0.14"
 # dependency's own version field — which makes it the one place the version is
 # duplicated. `scripts/release.sh` owns keeping it in step, and
 # `scripts/release.sh check` (a CI job) fails if it ever drifts.
-ledgeline-core = { path = "crates/ledgeline-core", version = "0.1.0" }
+ledgeline-core = { path = "crates/ledgeline-core", version = "0.2.0" }
 
 # Phase 5 write path: `ropey` is the text-rope over the journal file. Pinned to
 # the stable 1.6 line — 1.6.1 (2023-10-18) is the latest stable release and the
