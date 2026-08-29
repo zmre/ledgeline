@@ -10,11 +10,10 @@
 # that cannot be tested locally, and finding out it is misconfigured while cutting
 # a real release is the worst time to find out.
 #
-# ARM64 ONLY, deliberately. Apple stopped selling Intel Macs in 2023 and GitHub
-# retires its last x86_64 macOS runner in Fall 2027. If Intel support is ever
-# wanted, the shape is: add a `macos-15-intel` job, pin an `x86_64-darwin`
-# `spaNodeModules` hash in flake.nix (the FOD hash is per-platform), and `lipo
-# -create` the two `ledgelineWithSpa` binaries before assembling the bundle.
+# TWO DMGs per tag, arm64 and x86_64, both built on Apple Silicon runners — the
+# Intel one through Rosetta, because no Intel runner can install Nix any more.
+# See the `package` job for why, and docs/releasing.md for the dates that bound
+# how long the Intel half is worth keeping.
 name: Release
 
 on:
@@ -71,14 +70,31 @@ jobs:
   # per-arch anyway. Two independent legs are simpler and each is exactly what
   # its users need.
   #
-  # Intel is on borrowed time and that is fine: Apple stopped selling Intel Macs
-  # in 2023 and GitHub retires this runner in Fall 2027. When it goes, delete the
-  # x86_64 line from the matrix — everything else here is arch-agnostic and will
-  # keep working untouched. That is the reason nothing below hardcodes `arm64`.
+  # Retiring Intel later is a one-line deletion from the matrix: nothing below
+  # hardcodes an architecture, it all reads `matrix.arch` / `matrix.nixSystem`.
+  #
+  # BOTH legs run on an Apple Silicon runner; the x86_64 one cross-builds
+  # through Rosetta. There is no Intel runner here on purpose:
+  #
+  #   Error: Determinate Nix Installer no longer supports macOS on Intel.
+  #   Please migrate to Apple Silicon, and use Nix's built-in Rosetta support
+  #   to build for Intel.
+  #
+  # `macos-15-intel` still exists as a runner, but nothing can install Nix on
+  # it, and this whole pipeline is `nix build`. Rosetta is the path the
+  # installer itself points at, and it is the one that OUTLIVES the runner:
+  # when GitHub retires x86_64 macOS hardware in Fall 2027, an arm64 runner can
+  # still emit an Intel DMG. Tying the Intel build to Intel hardware would mean
+  # losing it twice.
+  #
+  # The cost is real: the x86_64 leg runs an x86_64 rustc under emulation.
+  # Everything from nixpkgs substitutes as a prebuilt x86_64-darwin binary, so
+  # what is actually emulated is our own crates — bounded, cached in Cachix
+  # afterwards, and paid only on releases.
   package:
     name: macOS DMG (${{ matrix.arch }})
     needs: verify
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest
     permissions:
       contents: write
     strategy:
@@ -89,9 +105,9 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-latest
+            nixSystem: aarch64-darwin
           - arch: x86_64
-            runner: macos-15-intel
+            nixSystem: x86_64-darwin
     env:
       # Was a workflow-level `env` when there was only one architecture.
       DMG_ARCH: ${{ matrix.arch }}
@@ -104,8 +120,28 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Rosetta 2 is what lets an arm64 runner execute the x86_64 compiler and
+      # build tools Nix is about to fetch. Idempotent and a no-op where it is
+      # already present, so it is cheap to run rather than to guess at the
+      # runner image's contents — GitHub does not promise Rosetta is
+      # preinstalled, and finding out it is not, mid-release, is not a
+      # discovery worth saving thirty seconds for.
+      - name: Install Rosetta 2
+        if: matrix.arch == 'x86_64'
+        run: softwareupdate --install-rosetta --agree-to-license
+
+      # `extra-platforms` is the switch that makes an aarch64-darwin machine
+      # willing to REALIZE x86_64-darwin derivations rather than refuse them as
+      # foreign. Without it the x86_64 leg fails with "a 'x86_64-darwin' with
+      # features {} is required to build ... but I am a 'aarch64-darwin'".
+      #
+      # Set on both legs: it is inert on the arm64 one, and a conditional here
+      # would be a second place for the two legs to drift apart.
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            extra-platforms = x86_64-darwin
 
       - name: Setup Cachix
         uses: cachix/cachix-action@v17
@@ -146,8 +182,13 @@ jobs:
       # bundled beside the binary in Contents/MacOS/. The flake asserts that no
       # Nix store path survives in either Mach-O, so this cannot silently produce
       # a bundle that only launches on the build machine.
+      # `.#packages.<system>.macApp`, not `.#macApp`: the bare attribute resolves
+      # against the RUNNER's system, which is aarch64-darwin for both legs now.
+      # Naming it is what makes the x86_64 leg produce an Intel bundle instead
+      # of a second identical arm64 one — a mistake that would sail through
+      # every check here and only surface as a DMG that will not launch.
       - name: Build Ledgeline.app
-        run: nix build -L .#macApp -o result-macapp
+        run: nix build -L .#packages.${{ matrix.nixSystem }}.macApp -o result-macapp
 
       - name: Stage the bundle
         run: |
@@ -156,6 +197,35 @@ jobs:
           cp -RL result-macapp/Applications/Ledgeline.app dist/Ledgeline.app
           # The Nix store is read-only; codesign has to rewrite these files.
           chmod -R u+w dist/Ledgeline.app
+
+      # THE check that makes the Rosetta build trustworthy. Both legs now run on
+      # the same arm64 hardware and differ only by the `nixSystem` they name, so
+      # the failure mode is no longer "the Intel build broke" — it is "the Intel
+      # build silently produced a second arm64 bundle". Nothing else here would
+      # notice: it would sign, notarize, staple and publish, and the first
+      # symptom would be an Intel user's "Ledgeline quit unexpectedly".
+      #
+      # `lipo -archs` reports what is actually in the Mach-O, so this is the
+      # artifact speaking for itself rather than an inference from the matrix.
+      # Covers the bundled hledger too — it is fetched per-system from a
+      # different upstream tarball, an independent chance to get it wrong.
+      - name: Assert the bundle is really ${{ matrix.arch }}
+        env:
+          WANT: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          for macho in dist/Ledgeline.app/Contents/MacOS/ledgeline \
+                       dist/Ledgeline.app/Contents/MacOS/hledger; do
+            got=$(lipo -archs "$macho")
+            echo "$macho: $got"
+            if [ "$got" != "$WANT" ]; then
+              echo "::error::$macho is '$got', expected '$WANT'" >&2
+              echo "  A DMG named -$WANT holding $got binaries will not launch" >&2
+              echo "  for the users it is named after. Check that the build step" >&2
+              echo "  names .#packages.<system>.macApp rather than .#macApp." >&2
+              exit 1
+            fi
+          done
 
       # --- Signing -------------------------------------------------------------
       # Everything from here to stapling is skipped on a dry run. The guard is a

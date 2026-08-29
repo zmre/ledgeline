@@ -30,14 +30,45 @@ user downloads only what they need.
 The matrix is the only place the architecture is named:
 
 ```yaml
+runs-on: macos-latest        # BOTH legs
 matrix:
   include:
-    - {arch: arm64,  runner: macos-latest}
-    - {arch: x86_64, runner: macos-15-intel}
+    - {arch: arm64,  nixSystem: aarch64-darwin}
+    - {arch: x86_64, nixSystem: x86_64-darwin}
 ```
 
-Everything downstream reads `matrix.arch`, so retiring Intel is a one-line
-deletion.
+Everything downstream reads `matrix.arch` / `matrix.nixSystem`, so retiring
+Intel is a one-line deletion.
+
+### Both legs run on Apple Silicon; Intel goes through Rosetta
+
+There is no Intel runner, and there cannot be one:
+
+```
+Error: Determinate Nix Installer no longer supports macOS on Intel.
+Please migrate to Apple Silicon, and use Nix's built-in Rosetta support
+to build for Intel.
+```
+
+`macos-15-intel` still exists as a GitHub runner, but nothing can install Nix
+on it, and this pipeline is `nix build` end to end. So the x86_64 leg runs on
+`macos-latest` with `extra-platforms = x86_64-darwin` in `nix.conf` and Rosetta
+2 installed, and builds `.#packages.x86_64-darwin.macApp` explicitly.
+
+Two consequences worth internalising:
+
+- **Name the system, never `.#macApp`.** The bare attribute resolves against
+  the *runner's* system, which is now aarch64-darwin on both legs — so it would
+  quietly produce a second arm64 bundle, sign it, notarize it, and publish it
+  as `-x86_64.dmg`. The job asserts `lipo -archs` on both Mach-Os for exactly
+  this reason; that assertion is the thing standing between you and a DMG that
+  cannot launch for the users it is named after.
+- **The x86_64 leg is slow.** Its rustc runs emulated. Everything from nixpkgs
+  substitutes as a prebuilt x86_64-darwin binary, so what is actually emulated
+  is our own crates — bounded, and cached in Cachix afterwards.
+
+This is also the arrangement that *outlives* the Intel runner: when GitHub
+retires x86_64 macOS hardware, an arm64 runner can still emit an Intel DMG.
 
 ### The Intel leg is on a separate nixpkgs, and it has an expiry date
 
@@ -58,6 +89,7 @@ Three dates bound this, and none of them are ours to move:
 
 | | |
 | --- | --- |
+| Determinate dropped its Intel macOS installer | already done |
 | Nixpkgs 26.05 security fixes end | end of 2026 |
 | GitHub retires its last x86_64 macOS runner | Fall 2027 |
 | Apple stopped selling Intel Macs | 2023 |
