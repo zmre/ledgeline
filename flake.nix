@@ -285,14 +285,10 @@
       spaNodeModulesHashes = {
         aarch64-darwin = "sha256-2Ubynne5AlCQkD/dcMWL2UE96Pzy41LgSntwBgUtW/k=";
         x86_64-linux = "sha256-Qj0FDLGw6fBKUY7Z3oL6tWEo3Gu2e7OhfTmbHRFRoeI=";
-        # Intel Macs, for the x86_64 half of the release matrix. Still
-        # `lib.fakeHash` because no Intel runner has built it yet — the release
-        # workflow's dry run is what produces the real value (see
-        # docs/releasing.md). `lib.fakeHash` rather than a hand-typed
-        # placeholder: it is the value nix documents for exactly this, so the
-        # mismatch reads "specified: <fake>" instead of looking like a corrupted
-        # real hash.
-        x86_64-darwin = lib.fakeHash;
+        # Intel Macs, for the x86_64 half of the release matrix. Produced by a
+        # release-workflow dry run under Rosetta, which is the only machine that
+        # can generate it — see docs/releasing.md.
+        x86_64-darwin = "sha256-vpLc7VMnDaYUNfdh6i6SsP8dK/+fu13c2X1+xeSskJI=";
       };
 
       spaNodeModules = pkgs.stdenv.mkDerivation {

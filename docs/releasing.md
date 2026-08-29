@@ -98,25 +98,37 @@ When the Intel leg goes, delete the `nixpkgs-x86-darwin` input, `hostNixpkgs`,
 the `x86_64-darwin` entries in `spaNodeModulesHashes` and `hledgerAsset`, and
 the matrix line. Nothing else is Intel-aware.
 
-### The `x86_64-darwin` SPA hash starts out wrong, on purpose
+### Re-pinning `spaNodeModulesHashes` after a JS dependency bump
 
 `spaNodeModules` is a fixed-output derivation whose hash covers the resolved
 `node_modules`, including the native `esbuild` / `rollup` /
-`@tailwindcss/oxide` binaries — so it is per-platform, and **a hash can only be
-generated on the platform it describes**. There is no Intel Mac here, so
-`flake.nix` ships `lib.fakeHash` for `x86_64-darwin`.
+`@tailwindcss/oxide` binaries. It is therefore per-platform, and **a hash can
+only be generated on the platform it describes**:
 
-The first Intel run therefore fails with a mismatch that prints the real value.
-Paste it into `spaNodeModulesHashes.x86_64-darwin` and re-run. This is expected
-once, and the same applies to `x86_64-linux` whenever the JS toolchain is bumped
-from a Mac.
+```nix
+spaNodeModulesHashes = {
+  aarch64-darwin = "sha256-…";   # your Mac, or the arm64 runner
+  x86_64-linux   = "sha256-…";   # the CI `build` job
+  x86_64-darwin  = "sha256-…";   # the release matrix, under Rosetta
+};
+```
 
-**Get that hash from a dry run, not from a tag.** The `release` job needs *both*
-legs, so an Intel hash mismatch fails the whole release — after the arm64 leg
-has already signed, notarized and stapled, which spends a notarization round
-trip and leaves a tag with no GitHub Release. A `workflow_dispatch` run with
-**dry_run** checked builds and packages both architectures and stops before
-signing, so it surfaces the hash for free:
+All three are currently correct. Any change to `web/package.json` or
+`web/bun.lock` invalidates **all three at once**, and you can only fix the one
+you are standing on — the other two come back as failures from CI and from a
+release dry run. Budget for that: a dependency bump is a three-round-trip
+change, not a one-liner.
+
+Nothing catches a stale entry except building it, which is why the CI `build`
+job builds `linuxDist` and the release matrix builds both Macs. Every system
+with an entry above is built by something.
+
+**Get the x86_64-darwin one from a dry run, never from a tag.** The `release`
+job needs *both* legs, so a hash mismatch there fails the whole release — after
+the arm64 leg has already signed, notarized and stapled, which spends a
+notarization round trip and leaves a tag with no GitHub Release. A
+`workflow_dispatch` run with **dry_run** checked builds and packages both
+architectures and stops before signing, so it surfaces the hash for free:
 
 1. Actions → Release → Run workflow, `dry_run` checked.
 2. The x86_64 leg fails; copy the `got: sha256-…` value out of its log.
