@@ -271,24 +271,27 @@
       # vite 8.2.2, playwright 1.61.1 and the rest): the FOD hash covers the
       # resolved `node_modules`, so any dependency change invalidates it.
       #
-      # An FOD hash can only be produced ON the platform it describes, and the
-      # bump was made on aarch64-darwin — so the other two entries below are
-      # STALE until a runner of that architecture regenerates them. Each one's
-      # first build fails with a mismatch that names the correct value; paste it
-      # in. This is expected on the run that introduces the architecture, and it
-      # is a red CI job rather than a broken install precisely because the
-      # `build` job now builds `linuxDist` and the release job builds both Macs.
+      # An FOD hash can only be produced ON the platform it describes, so an
+      # entry here can only be refreshed by a runner of that architecture: the
+      # build fails with a mismatch naming the correct value, and that value
+      # gets pasted in. That is a red CI job rather than a broken
+      # `nix profile install` only because the `build` job builds `linuxDist`
+      # and the release matrix builds both Macs — every system that has an entry
+      # below is built by something.
       #
       # This is not a corner: `spaNodeModules` is reached from `packages.default`
       # on EVERY system (macDist on darwin, linuxDist on Linux), so a stale hash
       # here breaks `nix build github:zmre/ledgeline` with no attribute at all.
       spaNodeModulesHashes = {
         aarch64-darwin = "sha256-2Ubynne5AlCQkD/dcMWL2UE96Pzy41LgSntwBgUtW/k=";
-        x86_64-linux = "sha256-+ibyfS34nA4G/W1CvJQ0cA3LRkrdHvAkRZlwdLsGlXY=";
-        # Intel Macs, for the x86_64 half of the release matrix. `lib.fakeHash`
-        # rather than a hand-typed placeholder: it is the value nix documents
-        # for exactly this, so the mismatch error reads "specified: <fake>"
-        # instead of looking like a corrupted real hash.
+        x86_64-linux = "sha256-Qj0FDLGw6fBKUY7Z3oL6tWEo3Gu2e7OhfTmbHRFRoeI=";
+        # Intel Macs, for the x86_64 half of the release matrix. Still
+        # `lib.fakeHash` because no Intel runner has built it yet — the release
+        # workflow's dry run is what produces the real value (see
+        # docs/releasing.md). `lib.fakeHash` rather than a hand-typed
+        # placeholder: it is the value nix documents for exactly this, so the
+        # mismatch reads "specified: <fake>" instead of looking like a corrupted
+        # real hash.
         x86_64-darwin = lib.fakeHash;
       };
 
