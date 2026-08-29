@@ -36,10 +36,6 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  # One place to bump when a newer Xcode/macOS runner is wanted.
-  DMG_ARCH: arm64
-
 jobs:
   # A tag can be cut from any commit, including one that never passed CI. This
   # gate is cheap when the Cachix layer is warm (it is the same store paths the
@@ -68,13 +64,37 @@ jobs:
       - name: Clippy
         run: nix build -L .#clippy
 
+  # ONE DMG PER ARCHITECTURE, not a universal binary. `lipo -create` over the
+  # two `ledgelineWithSpa` binaries would give a single fatter download, but it
+  # needs both slices present on one runner — which means shipping an x86_64
+  # build across to the arm64 job, and the whole bundle (hledger included) is
+  # per-arch anyway. Two independent legs are simpler and each is exactly what
+  # its users need.
+  #
+  # Intel is on borrowed time and that is fine: Apple stopped selling Intel Macs
+  # in 2023 and GitHub retires this runner in Fall 2027. When it goes, delete the
+  # x86_64 line from the matrix — everything else here is arch-agnostic and will
+  # keep working untouched. That is the reason nothing below hardcodes `arm64`.
   package:
-    name: macOS DMG (arm64)
+    name: macOS DMG (${{ matrix.arch }})
     needs: verify
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
+    strategy:
+      # An Intel failure must NOT cancel a working Apple Silicon build: arm64 is
+      # the release the overwhelming majority of users download, and holding it
+      # hostage to the legacy leg is backwards.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x86_64
+            runner: macos-15-intel
     env:
+      # Was a workflow-level `env` when there was only one architecture.
+      DMG_ARCH: ${{ matrix.arch }}
       # Computed ONCE, because getting it wrong in either direction is bad: a
       # silently unsigned release, or a dry run that burns a notarization slot.
       # On a `push` the `inputs` context is empty, so `!inputs.dry_run` alone
@@ -361,13 +381,18 @@ jobs:
           spctl --assess --type exec -vvv "$mount/Ledgeline.app" 2>&1 | tee /tmp/spctl-mounted.txt
           grep -q "source=Notarized Developer ID" /tmp/spctl-mounted.txt
 
+      # Per-architecture filename. Both legs write into their own artifact, but
+      # the `release` job below downloads them into ONE directory and
+      # concatenates — a shared `SHA256SUMS.txt` would have the second leg
+      # silently overwrite the first, leaving a release whose checksum file
+      # covers one of its two DMGs.
       - name: Checksums
         env:
           DMG: ${{ steps.dmg.outputs.path }}
         run: |
           set -euo pipefail
-          ( cd dist && shasum -a 256 "$(basename "$DMG")" > SHA256SUMS.txt )
-          cat dist/SHA256SUMS.txt
+          ( cd dist && shasum -a 256 "$(basename "$DMG")" > "SHA256SUMS-${DMG_ARCH}.txt" )
+          cat "dist/SHA256SUMS-${DMG_ARCH}.txt"
 
       # Always uploaded, including on a dry run — this is how the packaging is
       # inspected without publishing anything.
@@ -377,31 +402,97 @@ jobs:
           name: ledgeline-macos-${{ env.DMG_ARCH }}
           path: |
             ${{ steps.dmg.outputs.path }}
-            dist/SHA256SUMS.txt
+            dist/SHA256SUMS-${{ env.DMG_ARCH }}.txt
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish the GitHub Release
-        if: ${{ github.event_name == 'push' && env.SIGN == 'true' }}
+      # `always()`: a failed signing or notarization step must not leave a
+      # Developer ID private key sitting in a keychain on a reusable runner.
+      - name: Remove the signing keychain
+        if: ${{ always() && env.SIGN == 'true' }}
+        run: |
+          security list-keychains -d user -s login.keychain-db || true
+          security delete-keychain "$RUNNER_TEMP/ledgeline-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
+
+  # ONE GitHub Release carrying BOTH DMGs. This is a separate job rather than a
+  # step in `package` because `gh release create` is not idempotent: run once per
+  # matrix leg, the first would create the release and the second would fail with
+  # "already exists" — or, worse, win a race and publish a release holding only
+  # one architecture. Creating it exactly once, after both legs have finished, is
+  # the only shape that cannot half-publish.
+  #
+  # `needs: package` waits for EVERY leg. Combined with `fail-fast: false`, a
+  # broken Intel build therefore blocks the release rather than shipping an
+  # arm64-only one under a tag that claims both — which is the right trade for a
+  # signed artifact, and is why the matrix does not set `continue-on-error`.
+  release:
+    name: Publish the GitHub Release
+    needs: package
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Version
+        id: version
+        run: echo "version=$(./scripts/release.sh current)" >> "$GITHUB_OUTPUT"
+
+      # Both legs' artifacts into ONE flat directory. `merge-multiple` is what
+      # flattens them; without it each lands under its own artifact-name
+      # subdirectory and the globs below find nothing.
+      - name: Download every architecture's DMG
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ledgeline-macos-*
+          path: dist
+          merge-multiple: true
+
+      # Fails loudly on a partial release. `needs:` already guarantees both legs
+      # succeeded, but an artifact that failed to upload, or a matrix entry added
+      # without a corresponding upload step, would otherwise publish silently
+      # short — and a GitHub Release, unlike a DMG, is what users actually see.
+      - name: Assert both architectures are present
+        run: |
+          set -euo pipefail
+          ls -la dist
+          for arch in arm64 x86_64; do
+            n=$(find dist -name "Ledgeline-*-$arch.dmg" | wc -l | tr -d ' ')
+            [ "$n" = "1" ] || { echo "::error::expected 1 $arch DMG, found $n"; exit 1; }
+          done
+          # One checksum file for the release, in the order users read them.
+          cat dist/SHA256SUMS-arm64.txt dist/SHA256SUMS-x86_64.txt > dist/SHA256SUMS.txt
+          cat dist/SHA256SUMS.txt
+
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          DMG: ${{ steps.dmg.outputs.path }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           notes=$(cat <<'EOF'
           ### Install
 
-          Download the DMG, open it, and drag **Ledgeline** to Applications.
+          Download the DMG for your Mac, open it, and drag **Ledgeline** to
+          Applications.
 
-          The app is signed with a Developer ID certificate and notarized by
-          Apple, so it opens normally — no right-click-Open workaround needed.
+          | Your Mac | Download |
+          | --- | --- |
+          | Apple Silicon (M1 and later) | `Ledgeline-<version>-arm64.dmg` |
+          | Intel | `Ledgeline-<version>-x86_64.dmg` |
+
+          Not sure? Apple menu → About This Mac. "Apple M1" or later means
+          arm64; anything naming an Intel processor means x86_64. Picking the
+          wrong one does not damage anything — it simply will not launch.
+
+          Both are signed with a Developer ID certificate and notarized by
+          Apple, so they open normally — no right-click-Open workaround needed.
 
           `hledger` is bundled inside the app, so CSV/statement imports work with
           nothing else installed. If you prefer your own build, point at it in
           Settings.
-
-          Requires an Apple Silicon Mac (M1 or later).
 
           ### Linux and other platforms
 
@@ -413,24 +504,21 @@ jobs:
           cargo install ledgeline
           ```
 
+          Nix users can skip all of that:
+
+          ```sh
+          nix profile install github:zmre/ledgeline
+          ```
+
           Install `hledger` yourself for imports; everything else works without it.
           EOF
           )
           gh release create "$GITHUB_REF_NAME" \
             --title "Ledgeline $VERSION" \
             --notes "$notes" \
-            "$DMG" dist/SHA256SUMS.txt
+            dist/Ledgeline-*.dmg dist/SHA256SUMS.txt
 
-      # `always()`: a failed signing or notarization step must not leave a
-      # Developer ID private key sitting in a keychain on a reusable runner.
-      - name: Remove the signing keychain
-        if: ${{ always() && env.SIGN == 'true' }}
-        run: |
-          security list-keychains -d user -s login.keychain-db || true
-          security delete-keychain "$RUNNER_TEMP/ledgeline-signing.keychain-db" || true
-          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
-
-  # crates.io, which is how everyone who is not on an Apple Silicon Mac installs
+  # crates.io, which is how everyone who is not on a Mac installs
   # Ledgeline: `cargo install ledgeline`.
   #
   # AFTER `package`, deliberately. A crates.io release cannot be withdrawn, only
@@ -438,13 +526,17 @@ jobs:
   # version number attached to a release that never shipped. The DMG, by
   # contrast, can simply be rebuilt.
   #
-  # macOS runner because `spaBuild` is guarded by `lib.optionalAttrs
-  # stdenv.isDarwin` in flake.nix (its `spaNodeModules` FOD hash is pinned for
-  # aarch64-darwin only). That is the same follow-up flake.nix already flags; if
-  # the Linux hash is ever pinned, this job can move to ubuntu-latest.
+  # `needs: release`, not `needs: package`: the point above is that crates.io is
+  # the one irreversible step, so it must come after everything that can still
+  # fail. `package` succeeding but `release` failing (a missing artifact, a
+  # half-populated matrix) would otherwise still publish an unyankable version
+  # for a GitHub Release that does not exist.
+  #
+  # macOS runner because `spaBuild` needs a `spaNodeModules` FOD hash for the
+  # runner's system, and aarch64-darwin is the one that is definitely current.
   publish:
     name: Publish to crates.io
-    needs: package
+    needs: release
     if: ${{ github.event_name == 'push' }}
     runs-on: macos-latest
     steps:

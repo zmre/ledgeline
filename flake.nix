@@ -21,6 +21,21 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Intel Macs ONLY. Nixpkgs 26.11 (what nixos-unstable now is) DROPPED
+    # x86_64-darwin outright: it does not merely fail to build, it refuses to
+    # evaluate, with "Nixpkgs 26.11 has dropped support for x86_64-darwin".
+    # 26.05 is the last release that supports it and is stated to receive
+    # security fixes until the end of 2026.
+    #
+    # Nothing else uses this input — see `hostNixpkgs` below. Every other system
+    # stays on unstable, so this is not a second toolchain for the project, only
+    # for the one architecture that has no other option.
+    #
+    # THIS IS A DEAD END WITH A DATE ON IT, and that is an accepted trade: Apple
+    # stopped selling Intel Macs in 2023 and GitHub retires its last x86_64
+    # macOS runner in Fall 2027. When the Intel leg of the release matrix goes,
+    # delete this input and `hostNixpkgs` with it.
+    nixpkgs-x86-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay.url = "github:oxalica/rust-overlay";
     crane.url = "github:ipetkov/crane";
@@ -35,6 +50,7 @@
   outputs = {
     self,
     nixpkgs,
+    nixpkgs-x86-darwin,
     flake-utils,
     rust-overlay,
     crane,
@@ -43,7 +59,15 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       overlays = [(import rust-overlay)];
-      pkgs = import nixpkgs {inherit system overlays;};
+      # Per-system nixpkgs, for the one system unstable no longer evaluates on.
+      # Chosen by `system` rather than by `stdenv.hostPlatform`, because working
+      # that out would require importing nixpkgs first — which is the very thing
+      # that throws on x86_64-darwin.
+      hostNixpkgs =
+        if system == "x86_64-darwin"
+        then nixpkgs-x86-darwin
+        else nixpkgs;
+      pkgs = import hostNixpkgs {inherit system overlays;};
       inherit (pkgs) lib;
 
       # Rust toolchain for the journal engine (crates/); pinned in rust-toolchain.toml.
@@ -248,12 +272,24 @@
       # resolved `node_modules`, so any dependency change invalidates it.
       #
       # An FOD hash can only be produced ON the platform it describes, and the
-      # bump was made on aarch64-darwin. THE x86_64-linux HASH BELOW IS STALE
-      # and its first build will fail with a hash mismatch that names the
-      # correct value — put that value here. See docs/development.md.
+      # bump was made on aarch64-darwin — so the other two entries below are
+      # STALE until a runner of that architecture regenerates them. Each one's
+      # first build fails with a mismatch that names the correct value; paste it
+      # in. This is expected on the run that introduces the architecture, and it
+      # is a red CI job rather than a broken install precisely because the
+      # `build` job now builds `linuxDist` and the release job builds both Macs.
+      #
+      # This is not a corner: `spaNodeModules` is reached from `packages.default`
+      # on EVERY system (macDist on darwin, linuxDist on Linux), so a stale hash
+      # here breaks `nix build github:zmre/ledgeline` with no attribute at all.
       spaNodeModulesHashes = {
         aarch64-darwin = "sha256-2Ubynne5AlCQkD/dcMWL2UE96Pzy41LgSntwBgUtW/k=";
         x86_64-linux = "sha256-+ibyfS34nA4G/W1CvJQ0cA3LRkrdHvAkRZlwdLsGlXY=";
+        # Intel Macs, for the x86_64 half of the release matrix. `lib.fakeHash`
+        # rather than a hand-typed placeholder: it is the value nix documents
+        # for exactly this, so the mismatch error reads "specified: <fake>"
+        # instead of looking like a corrupted real hash.
+        x86_64-darwin = lib.fakeHash;
       };
 
       spaNodeModules = pkgs.stdenv.mkDerivation {

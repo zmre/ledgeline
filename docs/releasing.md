@@ -7,7 +7,9 @@ notarization says no.
 
 ## What ships
 
-A single `Ledgeline-X.Y.Z-arm64.dmg` containing `Ledgeline.app`, which is:
+Two DMGs — `Ledgeline-X.Y.Z-arm64.dmg` and `Ledgeline-X.Y.Z-x86_64.dmg` — built
+by a two-leg matrix and attached to one GitHub Release. Each contains a
+`Ledgeline.app` which is:
 
 - **Self-contained.** Every load command in both Mach-O files resolves against
   the base OS (`/usr/lib/*` and system frameworks). `flake.nix` asserts this at
@@ -18,21 +20,76 @@ A single `Ledgeline-X.Y.Z-arm64.dmg` containing `Ledgeline.app`, which is:
 - **Signed and notarized**, with the ticket stapled into *both* the app and the
   DMG — so a downloaded copy opens normally, including offline.
 
-### Apple Silicon only
+### Two DMGs, not a universal binary
 
-Deliberate. Apple stopped selling Intel Macs in 2023 and GitHub retires its last
-x86_64 macOS runner in Fall 2027. Intel users get nothing; an arm64 binary will
-not start on Intel at all.
+`lipo -create` over the two `ledgelineWithSpa` binaries would give one fatter
+download, but it needs both slices on one runner — and the bundle is per-arch
+anyway, `hledger` included. Two independent matrix legs are simpler, and each
+user downloads only what they need.
 
-If that ever needs to change, the shape is:
+The matrix is the only place the architecture is named:
 
-1. Add a `macos-15-intel` build job.
-2. Pin an `x86_64-darwin` `spaNodeModules` `outputHash` in `flake.nix` — the FOD
-   hash is per-platform (it captures the native `esbuild`/`rollup`/
-   `@tailwindcss/oxide` binaries), and the Intel hash can only be produced on an
-   Intel machine. `bundledHledger` already has its Intel asset pinned.
-3. `lipo -create` the two `ledgelineWithSpa` binaries before assembling the
-   bundle.
+```yaml
+matrix:
+  include:
+    - {arch: arm64,  runner: macos-latest}
+    - {arch: x86_64, runner: macos-15-intel}
+```
+
+Everything downstream reads `matrix.arch`, so retiring Intel is a one-line
+deletion.
+
+### The Intel leg is on a separate nixpkgs, and it has an expiry date
+
+**Nixpkgs 26.11 — what `nixos-unstable` now is — dropped `x86_64-darwin`
+entirely.** Not "fails to build": it refuses to *evaluate*, with
+
+```
+error: Nixpkgs 26.11 has dropped support for x86_64-darwin.
+```
+
+So the Intel leg cannot use the same nixpkgs as everything else. `flake.nix`
+carries a second input, `nixpkgs-x86-darwin`, pinned to `nixpkgs-26.05-darwin`
+— the last release that supports Intel Macs, security-fixed until the end of
+2026 — and `hostNixpkgs` selects it for that one system. No other system sees
+it.
+
+Three dates bound this, and none of them are ours to move:
+
+| | |
+| --- | --- |
+| Nixpkgs 26.05 security fixes end | end of 2026 |
+| GitHub retires its last x86_64 macOS runner | Fall 2027 |
+| Apple stopped selling Intel Macs | 2023 |
+
+When the Intel leg goes, delete the `nixpkgs-x86-darwin` input, `hostNixpkgs`,
+the `x86_64-darwin` entries in `spaNodeModulesHashes` and `hledgerAsset`, and
+the matrix line. Nothing else is Intel-aware.
+
+### The `x86_64-darwin` SPA hash starts out wrong, on purpose
+
+`spaNodeModules` is a fixed-output derivation whose hash covers the resolved
+`node_modules`, including the native `esbuild` / `rollup` /
+`@tailwindcss/oxide` binaries — so it is per-platform, and **a hash can only be
+generated on the platform it describes**. There is no Intel Mac here, so
+`flake.nix` ships `lib.fakeHash` for `x86_64-darwin`.
+
+The first Intel run therefore fails with a mismatch that prints the real value.
+Paste it into `spaNodeModulesHashes.x86_64-darwin` and re-run. This is expected
+once, and the same applies to `x86_64-linux` whenever the JS toolchain is bumped
+from a Mac.
+
+**Get that hash from a dry run, not from a tag.** The `release` job needs *both*
+legs, so an Intel hash mismatch fails the whole release — after the arm64 leg
+has already signed, notarized and stapled, which spends a notarization round
+trip and leaves a tag with no GitHub Release. A `workflow_dispatch` run with
+**dry_run** checked builds and packages both architectures and stops before
+signing, so it surfaces the hash for free:
+
+1. Actions → Release → Run workflow, `dry_run` checked.
+2. The x86_64 leg fails; copy the `got: sha256-…` value out of its log.
+3. Put it in `spaNodeModulesHashes.x86_64-darwin`, commit, re-run the dry run.
+4. Both legs green → tag for real.
 
 ## Cutting a release
 
