@@ -528,7 +528,7 @@ impl Windows {
 /// calendar year (`2026-01-01..2026-12-31` → `2025-01-01..2025-12-31`), and
 /// every other range gets an honest apples-to-apples duration whose dates the
 /// caller can put in the column header.
-fn prior_window(current: &DateRange) -> DateRange {
+pub(super) fn prior_window(current: &DateRange) -> DateRange {
     let to = add_days(&current.from, -1);
     let span = days_between(&current.from, &current.to);
     DateRange {
@@ -642,6 +642,46 @@ fn resolve_group(
     }
 }
 
+/// The line each of a box's accounts prints on, resolved once for the whole box.
+///
+/// [`build_groups`] inverts this into the box's lines and [`super::flows`] reads
+/// it to name a Sankey node, so a group cannot be called one thing in the table
+/// and another in the diagram above it.
+pub(super) fn section_groups(
+    members: &BTreeSet<String>,
+    declared: &BTreeMap<String, String>,
+) -> BTreeMap<String, (String, GroupSource)> {
+    let index = group_segment_index(members);
+    members
+        .iter()
+        .map(|account| (account.clone(), resolve_group(account, declared, index)))
+        .collect()
+}
+
+/// The box an account prints in, or `None` when it is not on this statement at
+/// all. This is the five-step resolution [`income_statement_grouped`] documents.
+///
+/// A function rather than a closure inside that report because [`super::flows`]
+/// draws the same accounts and must partition them identically; two copies of
+/// this walk is two answers to "is this account revenue", and the diagram would
+/// disagree with the box beneath it about what is in it.
+pub(super) fn section_resolver<'a>(
+    sections: &'a BTreeMap<String, IsSectionKind>,
+    types: &'a AccountTypes,
+) -> impl Fn(&str) -> Option<IsSectionKind> + 'a {
+    move |account: &str| {
+        nearest_declared(sections, account).copied().or_else(|| {
+            if types.is_type(account, AccountType::Revenue) {
+                Some(IsSectionKind::Revenue)
+            } else if types.is_type(account, AccountType::Expense) {
+                Some(IsSectionKind::Opex)
+            } else {
+                None
+            }
+        })
+    }
+}
+
 /// One box's lines, sorted by name (a `BTreeMap` of buckets, so the sort is the
 /// collection).
 ///
@@ -657,15 +697,13 @@ fn build_groups(
     windows: &Windows,
     flip: bool,
 ) -> Result<Vec<IsGroup>, ReportError> {
-    let index = group_segment_index(members);
     let mut buckets: BTreeMap<String, (GroupSource, BTreeSet<String>)> = BTreeMap::new();
-    for account in members {
-        let (name, source) = resolve_group(account, declared, index);
+    for (account, (name, source)) in section_groups(members, declared) {
         buckets
             .entry(name)
             .or_insert_with(|| (source, BTreeSet::new()))
             .1
-            .insert(account.clone());
+            .insert(account);
     }
     buckets
         .into_iter()
@@ -750,17 +788,7 @@ pub fn income_statement_grouped(
     groups: &BTreeMap<String, String>,
 ) -> Result<IncomeStatementReport, ReportError> {
     let types = AccountTypes::from_declared(declared.clone());
-    let resolve_section = |account: &str| -> Option<IsSectionKind> {
-        nearest_declared(sections, account).copied().or_else(|| {
-            if types.is_type(account, AccountType::Revenue) {
-                Some(IsSectionKind::Revenue)
-            } else if types.is_type(account, AccountType::Expense) {
-                Some(IsSectionKind::Opex)
-            } else {
-                None
-            }
-        })
-    };
+    let resolve_section = section_resolver(sections, &types);
     let on_statement = |account: &str| resolve_section(account).is_some();
 
     let prices = PriceDb::build(explicit_prices);

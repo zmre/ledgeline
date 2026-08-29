@@ -186,6 +186,8 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
+- sankey: i want sankey diagrams to understand spending. how money is flowing from cash accounts through to expenses. i want to model it somewhat on monarch.com's stuff.  and i want to put it at the top of the P&L report (not to be included in excel downloads).  actually, lets do one above revenue showing flows into cash accounts from different sources and a separate one above expenses showing flows out of cash accounts to expenses. these sections should be collapsible and should reflect the date range for the report.
+- refactor: right now we bundle the spa stuff separately, but i'd rather build it and then include it in the binary. which might mean commiting the built files into the tree so cargo install is smooth?  need to understand options here or consider switching svelte for something that is purely rust.
 - fix: display issue where pie chart is not round, but oval when the window narrows horizontally or vertically.  Update: seems to be specific to linux as I can't reproduce on mac.
 - test: lets try to understand performance on large repos by making a fixture with 10k transactions per year, 15 years, and around 200 commodities and 75 accounts
 - chore: route bad `issection:` / `holdings:` / `valuation:` / `bsterm:` / `type:` tag values into Problems

@@ -523,6 +523,13 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             "/api/reports/incomestatement/grouped",
             get(reports_api::incomestatement_grouped),
         )
+        // The two money-flow graphs the P&L tab draws above its boxes. Its own
+        // route rather than fields on the grouped report: it is a second pass
+        // over every posting, and the panels that show it are collapsible.
+        .route(
+            "/api/reports/incomestatement/flows",
+            get(reports_api::incomestatement_flows),
+        )
         .route("/api/reports/cashflow", get(reports_api::cashflow))
         .route("/api/reports/networth", get(reports_api::networth))
         .route("/api/insights", get(reports_api::insights_report))

@@ -423,6 +423,26 @@ pub(super) fn humanized_segment(segment: &str) -> String {
     alias(segment).map_or_else(|| capitalized(segment), str::to_string)
 }
 
+/// A whole account name as a LABEL: every segment below the root, humanized and
+/// joined with `": "`. A single-segment account keeps its root, so nothing
+/// resolves to the empty string.
+///
+/// The root is dropped because [`super::flows`] draws accounts from all five
+/// roots side by side, where `assets:` on three of six nodes is the one word on
+/// them that carries no information. Segments BELOW the root are all kept: this
+/// names a specific account rather than a group, and `assets:bank:checking`
+/// against `assets:broker:taxable:cash` differ only there.
+pub(super) fn humanized_path(account: &str) -> String {
+    let mut segments = account.split(':').filter(|segment| !segment.is_empty());
+    let root = segments.next().unwrap_or_default();
+    let below: Vec<String> = segments.map(humanized_segment).collect();
+    if below.is_empty() {
+        humanized_segment(root)
+    } else {
+        below.join(": ")
+    }
+}
+
 /// Cosmetic label aliases for conventional abbreviations.
 ///
 /// This table renames and NOTHING else. Membership was already decided by
