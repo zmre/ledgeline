@@ -136,8 +136,33 @@ cmd_set() {
 
     # Only enforced for --commit: rewriting files in a dirty tree is a normal
     # thing to do while preparing a release, but committing one is not.
-    if [ "$commit" = "--commit" ] && [ -n "$(git status --porcelain)" ]; then
-        die "working tree is dirty; commit or stash before 'set $version --commit'"
+    #
+    # "Dirty" DELIBERATELY EXCLUDES the three files this script owns. They are
+    # the ones `set X.Y.Z` just wrote, and the documented flow is:
+    #
+    #     scripts/release.sh set 0.2.0            # writes them, stops
+    #     git diff                                # review
+    #     scripts/release.sh set 0.2.0 --commit   # commit + tag
+    #
+    # A blanket `git status --porcelain` check makes that flow IMPOSSIBLE — step
+    # one dirties the tree and step three then refuses to run — which is exactly
+    # what it did until this was fixed. The guard is meant to catch unrelated
+    # work in the tree, not the work it was just asked to do.
+    #
+    # `-uno` so an untracked scratch file cannot block a release either: only
+    # the three paths below are ever committed, so nothing untracked can ride
+    # along in the release commit.
+    if [ "$commit" = "--commit" ]; then
+        local foreign
+        foreign=$(git status --porcelain -uno -- \
+            ":(exclude)$CARGO_TOML" \
+            ":(exclude)Cargo.lock" \
+            ":(exclude)$PACKAGE_JSON")
+        if [ -n "$foreign" ]; then
+            echo "$foreign" >&2
+            die "working tree has changes outside the version files (above);
+  commit or stash them before 'set $version --commit'"
+        fi
     fi
 
     local previous
@@ -168,8 +193,58 @@ cmd_set() {
     if [ "$commit" = "--commit" ]; then
         echo
         git add "$CARGO_TOML" Cargo.lock "$PACKAGE_JSON"
-        git commit -m "Release $version"
-        git tag "v$version"
+
+        # IDEMPOTENT, because the tag is the half that matters and it used to be
+        # the half that got lost. If the bump was already committed — by a
+        # previous run, or by hand — `git commit` exits 1 with "nothing to
+        # commit, working tree clean", and under `set -euo pipefail` that killed
+        # the script BEFORE `git tag`. The message reads like success, so the
+        # first sign of trouble was `git push` answering "src refspec v0.2.0
+        # does not match any".
+        #
+        # The version files are staged and `check` has already passed, so an
+        # empty diff here means HEAD's tree ALREADY carries this version —
+        # tagging it is correct, not a workaround.
+        if git diff --cached --quiet; then
+            echo "Version files already committed at $version — nothing new to commit."
+        else
+            git commit -m "Release $version"
+        fi
+
+        # Tagging is likewise re-runnable, but only when the existing tag agrees
+        # with HEAD. A tag pointing somewhere else is a genuine ambiguity — the
+        # tag is what the release workflow builds from — so say so and stop
+        # rather than moving it silently.
+        if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            local existing head
+            # `^{commit}` PEELS the ref. These tags are annotated (see below),
+            # so a bare `git rev-parse refs/tags/v0.2.0` returns the tag OBJECT's
+            # sha, which never equals a commit sha — making every re-run look
+            # like a tag pointing somewhere else.
+            existing=$(git rev-parse "refs/tags/v$version^{commit}")
+            head=$(git rev-parse "HEAD^{commit}")
+            if [ "$existing" = "$head" ]; then
+                echo "Tag v$version already exists and points at HEAD."
+            else
+                die "tag v$version already exists but points at ${existing:0:12}, not HEAD (${head:0:12}).
+  Delete it with 'git tag -d v$version' if it is wrong, or check out the
+  commit it names. Refusing to move a release tag."
+            fi
+        else
+            # `-m`, always. A BARE `git tag v0.2.0` is lightweight only until
+            # someone has `tag.gpgsign = true` in their git config — which this
+            # project's maintainer does — and a signed tag is an annotated tag,
+            # which needs a message. With no `-m` git opens an editor, and from
+            # a script that is:
+            #
+            #     fatal: no tag message?
+            #
+            # An annotated tag is the better artifact anyway: it records who
+            # tagged and when, `git describe` prefers it, and `git tag -v` can
+            # check the signature of what was released.
+            git tag -m "Ledgeline $version" "v$version"
+        fi
+
         echo
         echo "Committed and tagged v$version. Nothing has been pushed."
         echo "Push it — which is what starts the release build — with:"
