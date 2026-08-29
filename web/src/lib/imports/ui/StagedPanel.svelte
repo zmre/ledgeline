@@ -112,15 +112,15 @@
             {#if shows(sections, "actions")}
                 <div class="flex flex-wrap items-center gap-3" data-testid="imports-actions">
                     <button type="button" class="btn btn-primary" disabled={blocker !== null || busy} onclick={onSubmit} data-testid="imports-submit">
-                        {#if busy}<span class="loading loading-spinner loading-xs"></span>{/if}
+                        {#if busy}<span class="loading loading-xs loading-spinner"></span>{/if}
                         {actionLabel(action)}
                     </button>
                     <!-- A disabled button with no explanation is how a form
                          dead-ends. Every blocker names a field just above it. -->
                     {#if blocker !== null}
-                        <span class="text-warning text-sm" role="status">{blocker}</span>
+                        <span class="text-sm text-warning" role="status">{blocker}</span>
                     {:else if action === "saveAndImport"}
-                        <span class="text-base-content/60 text-sm">Nothing is written until you have seen what it proposes.</span>
+                        <span class="text-sm text-base-content/60">Nothing is written until you have seen what it proposes.</span>
                     {/if}
                 </div>
             {/if}

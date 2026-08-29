@@ -122,16 +122,16 @@
     <div class="flex flex-wrap items-baseline justify-between gap-2">
         <div>
             <h2 class="text-sm font-semibold tracking-tight">Rules</h2>
-            <p class="text-base-content/60 text-xs">
+            <p class="text-xs text-base-content/60">
                 Read top to bottom — <strong>later matches win</strong>, so a rule further down overrides one above it.
             </p>
         </div>
-        <button type="button" class="btn btn-sm gap-1" {disabled} onclick={add}>+ Add rule</button>
+        <button type="button" class="btn gap-1 btn-sm" {disabled} onclick={add}>+ Add rule</button>
     </div>
 
     {#if entries.length === 0}
-        <div class="border-base-content/10 rounded-box border border-dashed p-6 text-center" data-testid="imports-no-rules">
-            <p class="text-base-content/70 text-sm">No rules yet. Add one to send matching rows somewhere other than the fallback category.</p>
+        <div class="rounded-box border border-dashed border-base-content/10 p-6 text-center" data-testid="imports-no-rules">
+            <p class="text-sm text-base-content/70">No rules yet. Add one to send matching rows somewhere other than the fallback category.</p>
         </div>
     {:else}
         <div class="flex flex-col gap-2">
@@ -140,7 +140,7 @@
                      so neither card component has to know the list has a cursor. -->
                 <div
                     data-rule={at}
-                    class="rounded-box scroll-mt-2 {cursor.index === at ? 'ring-primary ring-2 ring-offset-0' : ''}"
+                    class="scroll-mt-2 rounded-box {cursor.index === at ? 'ring-2 ring-primary ring-offset-0' : ''}"
                     aria-current={cursor.index === at ? "true" : undefined}
                 >
                     {#if item.kind === "ifBlock"}

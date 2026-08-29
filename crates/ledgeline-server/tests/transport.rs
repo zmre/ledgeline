@@ -1,7 +1,7 @@
 //! HTTP transport behaviour added by Phase 6 (PERF-1, PERF-2).
 //!
 //! The wire endpoints serve bytes that were serialized once into the
-//! [`Snapshot`](ledgeline_server) rather than a `serde_json::Value` re-rendered
+//! [`Snapshot`](ledgeline) rather than a `serde_json::Value` re-rendered
 //! per request, and each response carries an `ETag` so the SPA's 30-second poll
 //! costs a `304` until the journal actually changes.
 //!
@@ -22,7 +22,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use common::fixture_journal;
 use http_body_util::BodyExt;
-use ledgeline_server::{AppState, app, router_with_state};
+use ledgeline::{AppState, app, router_with_state};
 use tower::ServiceExt;
 
 /// Every route whose body comes out of the snapshot.

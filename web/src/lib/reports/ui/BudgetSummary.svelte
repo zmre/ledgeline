@@ -130,30 +130,30 @@
     {#if b.geom !== null}
         {@const g = b.geom}
         <!-- Each segment is a DIRECT child of the sized track, so its %-width/left resolves against the full width. -->
-        <div class="bg-base-300 relative w-full overflow-hidden rounded-full {big ? 'h-3.5' : 'h-2.5'}" aria-hidden="true">
-            <div class="bg-success absolute inset-y-0 left-0" style="width: {g.underPct}%"></div>
-            <div class="bg-error absolute inset-y-0" style="left: {g.underPct}%; width: {g.overPct}%"></div>
+        <div class="relative w-full overflow-hidden rounded-full bg-base-300 {big ? 'h-3.5' : 'h-2.5'}" aria-hidden="true">
+            <div class="absolute inset-y-0 left-0 bg-success" style="width: {g.underPct}%"></div>
+            <div class="absolute inset-y-0 bg-error" style="left: {g.underPct}%; width: {g.overPct}%"></div>
             <!-- goal marker -->
-            <div class="bg-base-content/70 absolute inset-y-0 w-0.5" style="left: {g.markerPct}%"></div>
+            <div class="absolute inset-y-0 w-0.5 bg-base-content/70" style="left: {g.markerPct}%"></div>
         </div>
     {/if}
 {/snippet}
 
 <div class="flex flex-col gap-6" data-testid="budget-summary">
     {#if sections.length === 0}
-        <div class="border-base-content/10 rounded-box border px-4 py-10 text-center" data-testid="budget-empty">
+        <div class="rounded-box border border-base-content/10 px-4 py-10 text-center" data-testid="budget-empty">
             <p class="font-medium">No income or expense budget goals for this period.</p>
-            <p class="text-base-content/60 mt-1 text-sm">
-                Add periodic rules (lines starting with <code class="bg-base-200 rounded px-1">~</code>) to your journal. Accounts that aren't named
-                <code class="bg-base-200 rounded px-1">expenses…</code>/<code class="bg-base-200 rounded px-1">income…</code> need an
-                <code class="bg-base-200 rounded px-1">account … ; type: X</code> directive to be classified.
+            <p class="mt-1 text-sm text-base-content/60">
+                Add periodic rules (lines starting with <code class="rounded bg-base-200 px-1">~</code>) to your journal. Accounts that aren't named
+                <code class="rounded bg-base-200 px-1">expenses…</code>/<code class="rounded bg-base-200 px-1">income…</code> need an
+                <code class="rounded bg-base-200 px-1">account … ; type: X</code> directive to be classified.
             </p>
         </div>
     {:else}
-        {#if periodLabel !== ""}<span class="text-base-content/50 -mb-2 text-xs">{periodLabel}</span>{/if}
+        {#if periodLabel !== ""}<span class="-mb-2 text-xs text-base-content/50">{periodLabel}</span>{/if}
         {#each sections as section (section.title)}
             <div class="flex flex-col gap-2">
-                <div class="bg-base-200 rounded-box flex flex-col gap-2 px-4 py-3">
+                <div class="flex flex-col gap-2 rounded-box bg-base-200 px-4 py-3">
                     <div class="flex flex-wrap items-baseline justify-between gap-x-3">
                         <span class="text-sm font-semibold">
                             {section.title} · {section.verbSpent}
@@ -170,7 +170,7 @@
                     {#each section.bars as b (b.account)}
                         <button
                             type="button"
-                            class="border-base-content/5 hover:bg-base-200/60 flex w-full cursor-pointer flex-col gap-1.5 rounded border-b px-1 py-2.5 text-left transition-colors last:border-b-0"
+                            class="flex w-full cursor-pointer flex-col gap-1.5 rounded border-b border-base-content/5 px-1 py-2.5 text-left transition-colors last:border-b-0 hover:bg-base-200/60"
                             title="View {b.account} in the journal"
                             onclick={() => openInJournal(b.account)}
                         >
@@ -179,7 +179,7 @@
                                 <span class="flex items-baseline gap-2 text-sm whitespace-nowrap">
                                     <span class="font-mono tabular-nums">{b.spentText} / {b.budgetText}</span>
                                     <span class="font-medium {stateText[b.state]}">{b.remainderText}</span>
-                                    {#if b.pct !== null}<span class="text-base-content/40 w-10 text-right tabular-nums">{b.pct}%</span>{/if}
+                                    {#if b.pct !== null}<span class="w-10 text-right text-base-content/40 tabular-nums">{b.pct}%</span>{/if}
                                 </span>
                             </div>
                             {@render bar(b, false)}

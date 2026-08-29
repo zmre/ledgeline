@@ -70,20 +70,20 @@
 
 <AsyncSection {view} value={result} {error} testid="imports-dry-run-error" label="the dry run" loadingLabel="Running the import as a dry run" {onRetry}>
     {#snippet children(run)}
-        <section class="border-base-content/10 rounded-box flex flex-col gap-3 border p-3" aria-label="Dry run" data-testid="imports-dry-run">
+        <section class="flex flex-col gap-3 rounded-box border border-base-content/10 p-3" aria-label="Dry run" data-testid="imports-dry-run">
             {#if !run.ok}
-                <h2 class="text-error text-sm font-semibold tracking-tight">hledger refused this import.</h2>
-                <p class="text-base-content/60 text-xs">This is hledger's own output, unedited — it usually names the row it choked on.</p>
+                <h2 class="text-sm font-semibold tracking-tight text-error">hledger refused this import.</h2>
+                <p class="text-xs text-base-content/60">This is hledger's own output, unedited — it usually names the row it choked on.</p>
                 <!-- VERBATIM. See (1) at the head of this file. -->
                 <pre
-                    class="bg-base-300 rounded-box max-h-96 overflow-auto p-3 text-xs whitespace-pre-wrap"
+                    class="max-h-96 overflow-auto rounded-box bg-base-300 p-3 text-xs whitespace-pre-wrap"
                     data-testid="imports-dry-run-stderr">{run.stderr}</pre>
             {:else}
                 <h2 class="text-sm font-semibold tracking-tight">Nothing has been written yet</h2>
                 <p class="font-mono text-xs" data-testid="imports-dry-run-status">{run.status}</p>
 
                 {#if skippedWarning(run.skipped) !== null}
-                    <div class="alert alert-warning rounded-box items-start py-2 text-sm" role="alert" data-testid="imports-skipped">
+                    <div class="alert items-start rounded-box py-2 text-sm alert-warning" role="alert" data-testid="imports-skipped">
                         <span>{skippedWarning(run.skipped)}</span>
                     </div>
                 {/if}
@@ -102,7 +102,7 @@
                          the three amounts under it sit in two columns.
                          See `routes/alertStacking.test.ts`. -->
                     <div
-                        class="alert rounded-box flex flex-col items-start gap-1 py-2 text-sm {verdict.tone === 'success' ? 'alert-success' : 'alert-error'}"
+                        class="alert flex flex-col items-start gap-1 rounded-box py-2 text-sm {verdict.tone === 'success' ? 'alert-success' : 'alert-error'}"
                         role="status"
                         data-testid="imports-balance-check"
                     >
@@ -116,7 +116,7 @@
                          `grid-auto-flow:column`, so without it the sentence and
                          the list of blocked paths become two thin columns.
                          See `routes/alertStacking.test.ts`. -->
-                    <div class="alert alert-warning rounded-box flex flex-col items-start gap-2 py-2 text-sm" role="alert" data-testid="imports-git-blocked">
+                    <div class="alert flex flex-col items-start gap-2 rounded-box py-2 text-sm alert-warning" role="alert" data-testid="imports-git-blocked">
                         <span>{gitBlockMessage(run.blockedByGit)}</span>
                         <ul class="list-inside list-disc font-mono text-xs break-all">
                             {#each run.blockedByGit as path (path)}
@@ -130,7 +130,7 @@
                     <h3 class="mb-1 text-xs font-semibold tracking-tight">
                         {run.count} transaction{run.count === 1 ? "" : "s"} would be added
                     </h3>
-                    <pre class="bg-base-300 rounded-box max-h-96 overflow-auto p-3 text-xs" data-testid="imports-dry-run-entries">{run.entries}</pre>
+                    <pre class="max-h-96 overflow-auto rounded-box bg-base-300 p-3 text-xs" data-testid="imports-dry-run-entries">{run.entries}</pre>
                 </div>
 
                 <div class="flex items-center gap-2">
@@ -141,11 +141,11 @@
                         onclick={onWrite}
                         data-testid="imports-write-changes"
                     >
-                        {#if writing}<span class="loading loading-spinner loading-xs"></span>{/if}
+                        {#if writing}<span class="loading loading-xs loading-spinner"></span>{/if}
                         Write changes
                     </button>
                     {#if run.count === 0}
-                        <span class="text-base-content/60 text-xs">There is nothing new to import — every row is already in your journal.</span>
+                        <span class="text-xs text-base-content/60">There is nothing new to import — every row is already in your journal.</span>
                     {/if}
                 </div>
             {/if}

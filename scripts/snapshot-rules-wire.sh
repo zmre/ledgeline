@@ -26,7 +26,7 @@ journal=fixtures/rules/tree/main.journal
 # server only ever sees a committed fixture on loopback.
 export LEDGELINE_TOKEN=ledgeline-rules-fixture-token
 
-cargo build -p ledgeline-server
+cargo build -p ledgeline
 ./target/debug/ledgeline --server "$journal" --port "$port" &
 server=$!
 trap 'kill "$server" 2>/dev/null || true' EXIT

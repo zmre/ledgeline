@@ -680,7 +680,7 @@ no transaction, so routing it through a reload would cost a full reparse for not
 just rules-check           # every fixture is a rules file REAL hledger accepts
 cargo test -p ledgeline-core --test rules            # round-trip + isolation + properties
 cargo test -p ledgeline-core --test rules_security   # the scan's guards
-cargo test -p ledgeline-server --test rules_endpoints
+cargo test -p ledgeline --test rules_endpoints
 just snapshot-rules-wire   # ONLY when the wire contract changed on purpose
 
 # New Transactions
@@ -689,9 +689,9 @@ cargo test -p ledgeline-core --test convert_tabular  # delimited + spreadsheet
 cargo test -p ledgeline-core --test matching         # rules-file scoring
 cargo test -p ledgeline-core --test sort             # format-preserving date sort
 cargo test -p ledgeline-core --test journals         # target ranking, by content only
-cargo test -p ledgeline-server --test prefs          # prefs store + hledger resolution
-cargo test -p ledgeline-server --test git_commit     # the git safety net
-cargo test -p ledgeline-server --test import_endpoints  # the /api/import/* routes
+cargo test -p ledgeline --test prefs          # prefs store + hledger resolution
+cargo test -p ledgeline --test git_commit     # the git safety net
+cargo test -p ledgeline --test import_endpoints  # the /api/import/* routes
 ```
 
 Five opt-in checks shell out to a real binary and are therefore **not** part of `cargo test`,
@@ -702,7 +702,7 @@ LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledg
 LEDGELINE_HLEDGER_MATCH_CHECK=1  cargo test -p ledgeline-core --test matching
 LEDGELINE_HLEDGER_SORT_CHECK=1   cargo test -p ledgeline-core --test sort
 LEDGELINE_HLEDGER_LAYOUT_CHECK=1 cargo test -p ledgeline-core --test journals
-LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline-server --test import_endpoints
+LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_endpoints
 ```
 
 `import_endpoints`' gated half is where the whole import *sequence* is proved: that the

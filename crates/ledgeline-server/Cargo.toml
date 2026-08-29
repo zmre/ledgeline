@@ -1,11 +1,37 @@
 [package]
-name = "ledgeline-server"
-description = "Ledgeline local HTTP API server: wire-compatible hledger-web replacement + native endpoints."
+# The PACKAGE is `ledgeline` but the DIRECTORY is `crates/ledgeline-server/`,
+# deliberately. Cargo does not tie the two together, and the name is what a user
+# types (`cargo install ledgeline`) while the directory is only ever seen by us.
+# The directory keeps its name so that the paths cited throughout `docs/` and
+# `flake.nix` stay valid.
+name = "ledgeline"
+description = "Ledgeline: a local-first UI for hledger journals — desktop app and HTTP server."
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords = ["hledger", "accounting", "ledger", "finance"]
+categories = ["command-line-utilities", "finance"]
+
+# An EXPLICIT allowlist, because `spa/` (the built SvelteKit UI that `build.rs`
+# populates and `spa.rs` embeds) is git-ignored — it is a build artifact, and
+# committing it would churn the repo on every UI change. Cargo's default
+# packaging honours .gitignore and would therefore publish a crate with no UI.
+# Naming `include` overrides that, and it is also why the publish workflow
+# asserts the SPA is real before pushing: a placeholder would package just as
+# happily as the genuine article.
+#
+# `tests/` is deliberately absent. Those suites read the repo's `fixtures/` tree
+# at RUNTIME through `../../fixtures`, which does not exist for anyone who
+# installed this from crates.io, so shipping them would only ever produce
+# confusing failures.
+include = [
+    "src/**/*",
+    "spa/**/*",
+    "build.rs",
+    "Cargo.toml",
+]
 
 [[bin]]
 name = "ledgeline"

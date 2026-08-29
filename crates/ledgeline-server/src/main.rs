@@ -22,11 +22,11 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use clap::Parser;
-use ledgeline_core::{Journal, parse_journal};
-use ledgeline_server::{
+use ledgeline::{
     AppState, ProcessToken, Security, SecurityError, TOKEN_ENV, router_with_security,
     token_from_env_or_random,
 };
+use ledgeline_core::{Journal, parse_journal};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -166,7 +166,7 @@ fn is_loopback_host(host: &str) -> bool {
 /// we ACTUALLY bound, and `--port 0` (the GUI's default) only reveals that at
 /// bind time — so the plan is made early and [`SecurityPlan::build`] finishes it.
 pub(crate) struct SecurityPlan {
-    token: ledgeline_server::AccessToken,
+    token: ledgeline::AccessToken,
     /// Whether `--host` resolved to loopback; drives the `Host` guard.
     loopback: bool,
     /// Exact origins from `--allow-origin`, already validated.

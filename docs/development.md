@@ -2,9 +2,16 @@
 
 Ledgeline is a single-binary app: `ledgeline` = an axum HTTP server + a
 wry/tao desktop webview (default-on `gui` cargo feature), with the built
-SvelteKit SPA (`web/build`) embedded into the binary via `rust-embed`. Build
+SvelteKit SPA embedded into the binary via `rust-embed`. Build
 `--no-default-features` for a headless, server-only binary (the shape Linux
 servers and CI build).
+
+You build the SPA into `web/build`; `crates/ledgeline-server/build.rs` mirrors
+that into `crates/ledgeline-server/spa/`, and *that* is what `rust-embed`
+embeds. The indirection exists so the crate is publishable — `cargo package`
+will not include files outside the package root — and it is why
+`cargo install ledgeline` gets a real UI. See that build.rs for the three
+cases it handles, and [releasing.md](releasing.md) for the rest.
 
 The whole toolchain is provided by Nix. Do not install anything globally.
 
@@ -24,6 +31,42 @@ Linux GUI libraries (`webkitgtk_4_1`, `gtk3`, `libsoup_3`). It also exports
 
 ```sh
 nix develop path:. --command bash -c 'cargo --version && node --version && bun --version && hledger --version'
+```
+
+### The pre-push formatting hook
+
+Entering the dev shell installs a `pre-push` hook (`git-hooks.nix`, configured
+in `flake.nix` under `gitHooks`). It runs the two formatters CI cares about
+against the whole tree:
+
+| Hook | Runs | Fires when |
+| --- | --- | --- |
+| `rustfmt (workspace)` | `cargo fmt --all -- --check`, from the **pinned** toolchain | any `.rs` file changed |
+| `alejandra` | `alejandra` | any `.nix` file changed |
+
+Push-time rather than commit-time on purpose: a pre-commit hook fires on every
+WIP and fixup commit, where half-formatted code is normal, and that friction is
+what teaches people to reach for `--no-verify` — which then disables the hook
+for the one case it existed to catch. Pushing is both the moment code stops
+being private and the last moment before CI spends twenty minutes reporting the
+same thing.
+
+`rustfmt` deliberately comes from `rust-toolchain.toml` rather than nixpkgs'
+`cargo`. Two rustfmt versions disagree about enough to reject a push over a file
+CI is perfectly happy with, and a hook that cries wolf gets bypassed.
+
+It is not a substitute for CI — a hook lives on one machine and `--no-verify`
+skips it — but it catches the mechanical cases before they cost a CI round trip.
+The kind of thing it is for: renaming `ledgeline-server` to `ledgeline` changed
+how rustfmt sorts `use` statements (`ledgeline` sorts *before* `ledgeline_core`
+where `ledgeline_server` sorted after), and `cargo check` and `cargo test` both
+pass happily on mis-sorted imports.
+
+The generated `.pre-commit-config.yaml` is a symlink into `/nix/store` and is
+git-ignored; edit `flake.nix` to change the hooks. To bypass once:
+
+```sh
+git push --no-verify
 ```
 
 ## The crane caching model (why rebuilds/retests are fast)
@@ -147,9 +190,26 @@ cd .. && cargo build --release # embeds web/build/ into target/release/ledgeline
 `nix build .#macApp` (macOS only) produces `result/Applications/Ledgeline.app`
 — the standard nix-darwin app layout, so it can be dragged to `/Applications`
 or picked up by home-manager / nix-darwin. The bundle holds
-`Contents/MacOS/ledgeline` (the binary), `Contents/Info.plist` (version taken
-from the workspace `Cargo.toml`), and `Contents/Resources/ledgeline.icns`
-(generated from `assets/ledgeline.png`).
+`Contents/MacOS/ledgeline` (the binary), `Contents/MacOS/hledger` (see below),
+`Contents/Info.plist` (version taken from the workspace `Cargo.toml`), and
+`Contents/Resources/ledgeline.icns` (generated from `assets/ledgeline.png`).
+
+### The bundled `hledger`
+
+The bundle ships hledger's own macOS release binary (`bundledHledger` in
+`flake.nix`, pinned by version + hash) as a **sibling** of our binary, which is
+where `hledger::sibling_hledger` — resolution step 4 — looks for it.
+
+It has to be bundled because the two steps around it both miss in a downloaded
+app: the baked `LEDGELINE_HLEDGER_PATH` is a `/nix/store/…` path that does not
+exist on a user's Mac, and a Finder-launched app inherits *launchd's* `$PATH`
+rather than the one your shell exports — so a user with Homebrew hledger working
+in their terminal still gets "hledger was not found".
+
+The upstream release binary rather than `pkgs.hledger` because it links only
+`/usr/lib/*` and system frameworks; the Nix build pulls five dylibs out of the
+store that would each need vendoring. `flake.nix` asserts that rather than
+assuming it. See [releasing.md](releasing.md) for how to bump the pin.
 
 On macOS the **default** package — a bare `nix build` (or `nix profile install`)
 — is the combined `result/{bin/ledgeline, Applications/Ledgeline.app}`, so an
@@ -158,6 +218,10 @@ home-manager link it (via `Applications/`); both use the same real-SPA binary.
 On Linux the default is the headless `ledgeline` binary.
 
 `just package-mac` wraps `.#macApp` and copies a writable copy to `dist/Ledgeline.app`.
+`just package-dmg` goes one step further and builds an **unsigned**
+`dist/Ledgeline-<version>-arm64.dmg` for inspecting the packaging locally. The
+signed, notarized, distributable DMG is built only by the release workflow —
+see [releasing.md](releasing.md).
 
 ### Opening journals from Finder
 

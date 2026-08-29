@@ -152,15 +152,15 @@
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-4">
                 <label class="form-control sm:col-span-1">
                     <span class="label-text text-xs">Date</span>
-                    <input bind:this={dateField} type="date" class="input input-sm w-full" bind:value={form.date} disabled={submitting} aria-label="Date" />
+                    <input bind:this={dateField} type="date" class="input w-full input-sm" bind:value={form.date} disabled={submitting} aria-label="Date" />
                 </label>
                 <label class="form-control sm:col-span-1">
                     <span class="label-text text-xs">Secondary date</span>
-                    <input type="date" class="input input-sm w-full" bind:value={form.date2} disabled={submitting} aria-label="Secondary date" />
+                    <input type="date" class="input w-full input-sm" bind:value={form.date2} disabled={submitting} aria-label="Secondary date" />
                 </label>
                 <label class="form-control sm:col-span-1">
                     <span class="label-text text-xs">Status</span>
-                    <select class="select select-sm w-full" bind:value={form.status} disabled={submitting} aria-label="Status">
+                    <select class="select w-full select-sm" bind:value={form.status} disabled={submitting} aria-label="Status">
                         <option value="unmarked">Unmarked</option>
                         <option value="pending">Pending (!)</option>
                         <option value="cleared">Cleared (*)</option>
@@ -168,7 +168,7 @@
                 </label>
                 <label class="form-control sm:col-span-1">
                     <span class="label-text text-xs">Code</span>
-                    <input type="text" class="input input-sm w-full" bind:value={form.code} disabled={submitting} placeholder="opt." aria-label="Code" />
+                    <input type="text" class="input w-full input-sm" bind:value={form.code} disabled={submitting} placeholder="opt." aria-label="Code" />
                 </label>
             </div>
 
@@ -177,7 +177,7 @@
                     <span class="label-text text-xs">Description</span>
                     <input
                         type="text"
-                        class="input input-sm w-full"
+                        class="input w-full input-sm"
                         bind:value={form.description}
                         disabled={submitting}
                         placeholder="payee | note"
@@ -188,13 +188,13 @@
                     <span class="label-text text-xs">Comment / tags</span>
                     <input
                         type="text"
-                        class="input input-sm w-full"
+                        class="input w-full input-sm"
                         bind:value={form.comment}
                         disabled={submitting}
                         placeholder="note; key:value adds a tag"
                         aria-label="Comment or tags"
                     />
-                    <span class="label-text-alt text-base-content/50 mt-1 text-xs"
+                    <span class="label-text-alt mt-1 text-xs text-base-content/50"
                         >A <code>key:value</code> pair (e.g. <code>category:food</code>) becomes a tag.</span
                     >
                 </label>
@@ -203,7 +203,7 @@
             <div class="mt-4">
                 <div class="mb-1 flex items-center justify-between">
                     <span class="label-text text-xs font-medium">Postings</span>
-                    <span class="text-base-content/50 text-xs">Leave an amount blank for the inferred leg</span>
+                    <span class="text-xs text-base-content/50">Leave an amount blank for the inferred leg</span>
                 </div>
                 <div class="flex flex-col gap-3">
                     {#each form.postings as posting, index (index)}
@@ -220,7 +220,7 @@
                                 <input
                                     type="text"
                                     inputmode="decimal"
-                                    class="input input-sm min-w-0 grow-[2] basis-0 text-right font-mono"
+                                    class="input min-w-0 grow-[2] basis-0 text-right font-mono input-sm"
                                     bind:value={posting.amount}
                                     disabled={submitting}
                                     placeholder="auto"
@@ -228,7 +228,7 @@
                                 />
                                 <input
                                     type="text"
-                                    class="input input-sm w-16 shrink-0"
+                                    class="input w-16 shrink-0 input-sm"
                                     bind:value={posting.commodity}
                                     disabled={submitting}
                                     placeholder="$"
@@ -236,7 +236,7 @@
                                 />
                                 <button
                                     type="button"
-                                    class="btn btn-ghost btn-sm btn-square shrink-0"
+                                    class="btn btn-square shrink-0 btn-ghost btn-sm"
                                     onclick={() => removeRow(index)}
                                     disabled={submitting || form.postings.length <= 1}
                                     aria-label="Remove posting {index + 1}"
@@ -247,26 +247,26 @@
                             </div>
                             <input
                                 type="text"
-                                class="input input-xs ml-1 w-full"
+                                class="input ml-1 w-full input-xs"
                                 bind:value={posting.comment}
                                 disabled={submitting}
                                 placeholder="posting comment (optional)"
                                 aria-label="Comment for posting {index + 1}"
                             />
                             {#if posting.cost !== null}
-                                <div class="text-base-content/50 pl-1 text-xs">
+                                <div class="pl-1 text-xs text-base-content/50">
                                     {posting.cost.kind === "unit" ? "@" : "@@"}
                                     {posting.cost.amount.commodity} cost preserved on save
                                 </div>
                             {/if}
                             {#if posting.type !== "regular"}
-                                <div class="text-base-content/50 pl-1 text-xs">
+                                <div class="pl-1 text-xs text-base-content/50">
                                     {postingTypeLabel(posting.type)} posting — written as
                                     <code>{posting.type === "virtual" ? `(${posting.account || "account"})` : `[${posting.account || "account"}]`}</code>
                                 </div>
                             {/if}
                             {#if posting.balanceAssertion !== null}
-                                <div class="text-base-content/50 flex items-center gap-2 pl-1 text-xs">
+                                <div class="flex items-center gap-2 pl-1 text-xs text-base-content/50">
                                     <span>
                                         Balance assertion <code>{assertionLabel(posting.balanceAssertion)}</code> preserved on save
                                     </span>
@@ -284,20 +284,20 @@
                         </div>
                     {/each}
                 </div>
-                <button type="button" class="btn btn-ghost btn-xs mt-2 gap-1" onclick={addRow} disabled={submitting}>
+                <button type="button" class="btn mt-2 gap-1 btn-ghost btn-xs" onclick={addRow} disabled={submitting}>
                     <span class="text-base leading-none">+</span> Add posting
                 </button>
             </div>
 
             {#if clientErrors.length > 0}
-                <ul class="text-error mt-3 list-inside list-disc text-sm" role="alert">
+                <ul class="mt-3 list-inside list-disc text-sm text-error" role="alert">
                     {#each clientErrors as message (message)}
                         <li>{message}</li>
                     {/each}
                 </ul>
             {/if}
             {#if serverError !== null}
-                <div class="alert alert-error mt-3 py-2 text-sm" role="alert">
+                <div class="mt-3 alert py-2 text-sm alert-error" role="alert">
                     <span class="break-words">{serverError}</span>
                 </div>
             {/if}
@@ -307,7 +307,7 @@
                     {#if txnModal.mode === "edit"}
                         {#if confirmingDelete}
                             <span class="text-xs">Delete this transaction?</span>
-                            <button type="button" class="btn btn-error btn-sm ml-2" onclick={confirmDelete} disabled={submitting}>Confirm delete</button>
+                            <button type="button" class="btn ml-2 btn-error btn-sm" onclick={confirmDelete} disabled={submitting}>Confirm delete</button>
                             <button type="button" class="btn btn-ghost btn-sm" onclick={() => (confirmingDelete = false)} disabled={submitting}>Keep</button>
                         {:else}
                             <button type="button" class="btn btn-outline btn-error btn-sm" onclick={() => (confirmingDelete = true)} disabled={submitting}
@@ -319,7 +319,7 @@
                 <div class="flex gap-2">
                     <button type="button" class="btn btn-ghost btn-sm" onclick={() => txnModal.close()} disabled={submitting}>Cancel</button>
                     <button type="submit" class="btn btn-primary btn-sm" disabled={submitting}>
-                        {#if submitting}<span class="loading loading-spinner loading-xs"></span>{/if}
+                        {#if submitting}<span class="loading loading-xs loading-spinner"></span>{/if}
                         {submitLabel}
                     </button>
                 </div>

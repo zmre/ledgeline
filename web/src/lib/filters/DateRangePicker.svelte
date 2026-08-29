@@ -50,7 +50,7 @@
                 <path d="m6 9 6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
         </summary>
-        <ul class="menu dropdown-content bg-base-200 rounded-box z-20 mt-1 w-44 p-2 shadow-lg">
+        <ul class="menu dropdown-content z-20 mt-1 w-44 rounded-box bg-base-200 p-2 shadow-lg">
             {#each presets as preset (preset.id)}
                 <li>
                     <button type="button" class={activePreset?.id === preset.id ? "menu-active" : ""} onclick={() => applyPreset(preset.id)}>
@@ -61,8 +61,8 @@
         </ul>
     </details>
     <div class="flex items-center gap-1">
-        <input type="date" class="input input-sm w-36" value={filters.value.from ?? ""} onchange={setFrom} aria-label="From date" />
+        <input type="date" class="input w-36 input-sm" value={filters.value.from ?? ""} onchange={setFrom} aria-label="From date" />
         <span class="text-base-content/60" aria-hidden="true">–</span>
-        <input type="date" class="input input-sm w-36" value={filters.value.to ?? ""} onchange={setTo} aria-label="To date" />
+        <input type="date" class="input w-36 input-sm" value={filters.value.to ?? ""} onchange={setTo} aria-label="To date" />
     </div>
 </div>

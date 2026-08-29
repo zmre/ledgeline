@@ -14,6 +14,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The version lives in four places (see scripts/release.sh for why each one
+  # exists and how each drifts). Three of them fail SILENTLY: a stale
+  # `ledgeline-core` dependency version only breaks `cargo publish`, at the very
+  # end of a release; a stale `web/package.json` breaks nothing at all and had
+  # already drifted to 0.0.1 against a 0.1.0 workspace before this job existed.
+  # Pure bash and no Nix, so it costs seconds and gates nothing else.
+  versions:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: scripts/release.sh check
+        run: ./scripts/release.sh check
+
   # Fast, cheap gate — runs first and fails early on formatting.
   format-check:
     name: Format Check
@@ -134,6 +148,33 @@ jobs:
         if: runner.os == 'macOS'
         run: nix build -L --no-link .#macDist
 
+      # The Linux mirror of the step above, and for the same reason: `.#ledgeline`
+      # is NOT what a Linux user ends up with either. On Linux `packages.default`
+      # AND `apps.default` are both `linuxDist` — the real-SPA binary wrapped
+      # with the Mesa/EGL vendor paths, plus the .desktop entry, the MIME type
+      # and the hicolor icons. So `nix build github:zmre/ledgeline`,
+      # `nix profile install` and `nix run` all resolve here, and NONE of it was
+      # built by CI until now: naming `.#ledgeline` explicitly routes around
+      # `default`.
+      #
+      # That gap is not theoretical. `spaNodeModules`' outputHash is per-system
+      # and can only be generated ON the system it describes, so the x86_64-linux
+      # entry silently went stale the moment the JS toolchain was bumped on a
+      # Mac — and nothing here noticed, because nothing here built the
+      # derivation. This step is what makes that a red CI run with the correct
+      # hash in the log instead of a broken `nix profile install` for a user.
+      #
+      # It also covers `desktop-file-validate`, the MIME XML and the six icon
+      # sizes, none of which any other job touches.
+      #
+      # NOT free: this is a second full Rust compile (ledgelineWithSpa shares no
+      # artifacts with the placeholder-SPA `.#ledgeline`), a bun install + vite
+      # build, and pkgs.mesa's ~1 GiB closure. All cached after the first green
+      # run — see the Cachix pin below, which is what keeps it that way.
+      - name: Build linuxDist (Linux distributable)
+        if: runner.os == 'Linux'
+        run: nix build -L --no-link .#linuxDist
+
       # Push the freshly built store paths to our Cachix cache. Only on pushes
       # (not PRs); the in-script guard skips cleanly when the token is absent
       # (forks / before the user sets the secret), so the job never fails.
@@ -148,13 +189,24 @@ jobs:
           fi
           # The darwin-only attrs are guarded by `lib.optionalAttrs
           # stdenv.isDarwin` in flake.nix, so only ask for them there.
-          # `ledgelineWithSpa` is listed SEPARATELY from `macDist`: macApp
-          # `cp`s the binary into the bundle rather than symlinking it, so the
-          # binary's own store path is not in macDist's closure — and it is
-          # what `nix run` resolves to on darwin.
+          # `ledgelineWithSpa` and `bundledHledger` are listed SEPARATELY from
+          # `macDist` for the SAME reason: macApp `cp`s both binaries into the
+          # bundle rather than symlinking them, so neither store path is in
+          # macDist's closure and neither would ride along. `ledgelineWithSpa`
+          # is additionally what `nix run` resolves to on darwin;
+          # `bundledHledger` is a 53 MiB download from github.com that we would
+          # otherwise re-fetch on every build that cannot substitute macApp.
+          #
+          # On Linux `linuxDist` is `packages.default`, so it is the path a user
+          # actually substitutes; `ledgelineWithSpa` is listed alongside it
+          # because linuxDist WRAPS that binary (makeBinaryWrapper references it
+          # by store path, so it IS in the closure — but naming it explicitly
+          # keeps the pin below honest and costs nothing).
           attrs=(.#ledgeline)
           if [ "$RUNNER_OS" = "macOS" ]; then
-            attrs+=(.#macDist .#ledgelineWithSpa)
+            attrs+=(.#macDist .#ledgelineWithSpa .#bundledHledger)
+          else
+            attrs+=(.#linuxDist .#ledgelineWithSpa)
           fi
           nix build --json "${attrs[@]}" | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 
@@ -194,8 +246,15 @@ jobs:
             cachix pin zmre "ledgeline-cli-$sys" \
               "$(nix build --no-link --print-out-paths .#ledgelineWithSpa)" --keep-revisions 2
           else
-            cachix pin zmre "ledgeline-$sys" \
-              "$(nix build --no-link --print-out-paths .#ledgeline)" --keep-revisions 2
+            # `linuxDist`, not `.#ledgeline`: pin what `packages.default`
+            # resolves to, which is what an unpinned `nix profile install`
+            # fetches. Pinning the placeholder-SPA build instead would keep the
+            # one artifact no user ever asks for alive while the real one is
+            # evicted.
+            cachix pin zmre "ledgeline-linuxdist-$sys" \
+              "$(nix build --no-link --print-out-paths .#linuxDist)" --keep-revisions 2
+            cachix pin zmre "ledgeline-cli-$sys" \
+              "$(nix build --no-link --print-out-paths .#ledgelineWithSpa)" --keep-revisions 2
           fi
 
   # TypeScript / SvelteKit side: build the SPA and run its unit + type checks.
@@ -373,7 +432,7 @@ jobs:
       #   WHY IGNORED — unreachable at run time AND unfixable from this repo:
       #     * The only path is
       #         quick-xml -> wayland-scanner (PROC-MACRO) -> wayland-client
-      #         -> rfd -> ledgeline-server
+      #         -> rfd -> ledgeline
       #       wayland-scanner is a build-time proc macro, so quick-xml parses
       #       the vendored wayland protocol .xml files during compilation. It
       #       never sees a journal file, an HTTP request, or any other runtime

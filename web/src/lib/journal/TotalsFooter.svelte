@@ -18,18 +18,18 @@
     } = $props();
 </script>
 
-<footer class="bg-base-200 rounded-box flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-2">
-    <div class="text-base-content/70 flex items-center gap-3 text-sm">
-        <span class="whitespace-nowrap"><span class="text-base-content font-medium">{count}</span> {count === 1 ? "transaction" : "transactions"}</span>
+<footer class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-box bg-base-200 px-4 py-2">
+    <div class="flex items-center gap-3 text-sm text-base-content/70">
+        <span class="whitespace-nowrap"><span class="font-medium text-base-content">{count}</span> {count === 1 ? "transaction" : "transactions"}</span>
         <span class="whitespace-nowrap">{period}</span>
     </div>
     <div class="ml-auto flex items-baseline gap-2 text-sm">
-        <span class="text-base-content/60 whitespace-nowrap">Visible Journal Total</span>
+        <span class="whitespace-nowrap text-base-content/60">Visible Journal Total</span>
         <span class="text-right font-mono font-semibold tabular-nums">
             {#each total as amount (amount.commodity)}
                 <span class={["block whitespace-nowrap", amount.qty.m < 0n && "text-error"]}>{formatAmount(amount)}</span>
             {:else}
-                <span class="text-base-content/40 block">&mdash;</span>
+                <span class="block text-base-content/40">&mdash;</span>
             {/each}
         </span>
     </div>

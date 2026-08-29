@@ -87,7 +87,7 @@
 </script>
 
 <div
-    class="rounded-box flex flex-col items-center gap-3 border-2 border-dashed px-4 py-10 text-center transition-colors {over
+    class="flex flex-col items-center gap-3 rounded-box border-2 border-dashed px-4 py-10 text-center transition-colors {over
         ? 'border-primary bg-primary/10'
         : 'border-base-content/25 bg-base-200'}"
     role="presentation"
@@ -98,11 +98,11 @@
     ondrop={onDrop}
 >
     {#if busy}
-        <span class="loading loading-spinner loading-lg" aria-label="Reading the file"></span>
-        <p class="text-base-content/70 text-sm">Reading the file…</p>
+        <span class="loading loading-lg loading-spinner" aria-label="Reading the file"></span>
+        <p class="text-sm text-base-content/70">Reading the file…</p>
     {:else}
         <h2 class="text-base font-semibold tracking-tight">Drop a statement here</h2>
-        <p class="text-base-content/60 max-w-lg text-sm">
+        <p class="max-w-lg text-sm text-base-content/60">
             Ledgeline reads {formatList(formats)}. It converts whatever you drop to one CSV, offers the rules file that fits it, and shows you every transaction
             it proposes before anything is written.
         </p>
@@ -112,7 +112,7 @@
 </div>
 
 {#if rejection !== null}
-    <div class="alert alert-warning rounded-box items-start py-2 text-sm" role="alert" data-testid="imports-file-rejected">
+    <div class="alert items-start rounded-box py-2 text-sm alert-warning" role="alert" data-testid="imports-file-rejected">
         <span>{rejection}</span>
     </div>
 {/if}

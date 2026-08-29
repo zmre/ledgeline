@@ -81,7 +81,7 @@
             {/if}
 
             {#if shows(sections, "readOnlyBanner")}
-                <div class="alert alert-info rounded-box items-start py-3 text-sm" role="status" data-testid="imports-read-only">
+                <div class="alert items-start rounded-box py-3 text-sm alert-info" role="status" data-testid="imports-read-only">
                     <span>
                         Ledgeline has no journal file bound to an editor here, so there is nowhere for an import to go. Start the engine with a journal file and
                         this screen becomes usable — everything else on the Imports tab still works read-only.

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use ledgeline_server::{AppState, router_with_state};
+use ledgeline::{AppState, router_with_state};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

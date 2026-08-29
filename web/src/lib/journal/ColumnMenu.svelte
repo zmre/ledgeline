@@ -65,7 +65,7 @@
         </svg>
         Columns
     </summary>
-    <ul class="dropdown-content menu bg-base-200 rounded-box border-base-300 z-20 w-44 border p-2 shadow-lg">
+    <ul class="menu dropdown-content z-20 w-44 rounded-box border border-base-300 bg-base-200 p-2 shadow-lg">
         {#each defs as def (def.key)}
             <li>
                 <label class="label cursor-pointer justify-start gap-2 py-1">

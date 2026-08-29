@@ -1,0 +1,609 @@
+# Tagged releases: build, sign, notarize and publish the macOS DMG.
+#
+# Trigger: pushing a `v*` tag (e.g. `v0.1.0`). The tag must match the workspace
+# version in Cargo.toml — see the "Verify the tag" step for why that is enforced
+# rather than trusted.
+#
+# `workflow_dispatch` with `dry_run: true` runs the whole pipeline EXCEPT signing,
+# notarization and publishing, so the packaging can be exercised without cutting a
+# tag or holding the signing secrets. That matters: notarization is the one step
+# that cannot be tested locally, and finding out it is misconfigured while cutting
+# a real release is the worst time to find out.
+#
+# ARM64 ONLY, deliberately. Apple stopped selling Intel Macs in 2023 and GitHub
+# retires its last x86_64 macOS runner in Fall 2027. If Intel support is ever
+# wanted, the shape is: add a `macos-15-intel` job, pin an `x86_64-darwin`
+# `spaNodeModules` hash in flake.nix (the FOD hash is per-platform), and `lipo
+# -create` the two `ledgelineWithSpa` binaries before assembling the bundle.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and package, but skip signing, notarization and publishing"
+        type: boolean
+        default: true
+
+# `contents: write` is what lets the publish step create the GitHub Release.
+# Nothing else here needs a token.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # A tag can be cut from any commit, including one that never passed CI. This
+  # gate is cheap when the Cachix layer is warm (it is the same store paths the
+  # `main` CI run built) and is the difference between "we ship what main
+  # tested" and "we ship whatever was tagged".
+  verify:
+    name: Verify (tests + clippy)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: zmre
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+          pushFilter: "-(source|vendor)$"
+
+      - name: Tests
+        run: nix build -L .#tests
+
+      - name: Clippy
+        run: nix build -L .#clippy
+
+  # ONE DMG PER ARCHITECTURE, not a universal binary. `lipo -create` over the
+  # two `ledgelineWithSpa` binaries would give a single fatter download, but it
+  # needs both slices present on one runner — which means shipping an x86_64
+  # build across to the arm64 job, and the whole bundle (hledger included) is
+  # per-arch anyway. Two independent legs are simpler and each is exactly what
+  # its users need.
+  #
+  # Intel is on borrowed time and that is fine: Apple stopped selling Intel Macs
+  # in 2023 and GitHub retires this runner in Fall 2027. When it goes, delete the
+  # x86_64 line from the matrix — everything else here is arch-agnostic and will
+  # keep working untouched. That is the reason nothing below hardcodes `arm64`.
+  package:
+    name: macOS DMG (${{ matrix.arch }})
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      # An Intel failure must NOT cancel a working Apple Silicon build: arm64 is
+      # the release the overwhelming majority of users download, and holding it
+      # hostage to the legacy leg is backwards.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x86_64
+            runner: macos-15-intel
+    env:
+      # Was a workflow-level `env` when there was only one architecture.
+      DMG_ARCH: ${{ matrix.arch }}
+      # Computed ONCE, because getting it wrong in either direction is bad: a
+      # silently unsigned release, or a dry run that burns a notarization slot.
+      # On a `push` the `inputs` context is empty, so `!inputs.dry_run` alone
+      # would be relying on a null coercion to mean "sign" — true today, but not
+      # something a reader should have to derive. Spelled out instead.
+      SIGN: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: zmre
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+          pushFilter: "-(source|vendor)$"
+
+      # Two distinct failure modes, both caught here by the one script that owns
+      # the version (`scripts/release.sh`, which CI also runs on every PR):
+      #
+      #   * The TAG disagreeing with the tree. Info.plist's
+      #     CFBundleShortVersionString is substituted from Cargo.toml, not from
+      #     the tag, so a `v0.2.0` tag on a 0.1.0 tree would publish
+      #     `Ledgeline-0.2.0.dmg` containing an app that reports 0.1.0 in About
+      #     and in every crash report forever.
+      #   * The tree disagreeing with ITSELF — `web/package.json` or the
+      #     `ledgeline-core` dependency version drifting from
+      #     `[workspace.package]`. The second of those breaks `cargo publish`,
+      #     which would otherwise fail at the very end of a release.
+      - name: Verify the tag and every version reference
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(./scripts/release.sh current)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            ./scripts/release.sh check "$GITHUB_REF_NAME"
+          else
+            echo "Manual run — no tag to check."
+            ./scripts/release.sh check
+          fi
+
+      # Produces result/Applications/Ledgeline.app: the real SvelteKit SPA baked
+      # in, the phantom libiconv link retargeted at /usr/lib, and `hledger`
+      # bundled beside the binary in Contents/MacOS/. The flake asserts that no
+      # Nix store path survives in either Mach-O, so this cannot silently produce
+      # a bundle that only launches on the build machine.
+      - name: Build Ledgeline.app
+        run: nix build -L .#macApp -o result-macapp
+
+      - name: Stage the bundle
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp -RL result-macapp/Applications/Ledgeline.app dist/Ledgeline.app
+          # The Nix store is read-only; codesign has to rewrite these files.
+          chmod -R u+w dist/Ledgeline.app
+
+      # --- Signing -------------------------------------------------------------
+      # Everything from here to stapling is skipped on a dry run. The guard is a
+      # step-level `if` rather than a second job so the artifact path stays the
+      # same in both modes.
+
+      - name: Check signing secrets are present
+        if: ${{ env.SIGN == 'true' }}
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          # A string rather than an array: macOS still ships bash 3.2 as
+          # /bin/bash, where `${#arr[@]}` on an EMPTY array is an unbound-variable
+          # error under `set -u` — so the array version fails exactly in the case
+          # where everything is fine.
+          missing=""
+          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD \
+                      APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
+            [ -n "${!name:-}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required repository secrets:$missing"
+            echo "See docs/releasing.md for how to produce each one." >&2
+            exit 1
+          fi
+          echo "All five signing secrets are present."
+
+      # A dedicated, throwaway keychain rather than the login one: the runner's
+      # login keychain is shared with everything else on the box, and a build
+      # that leaves a Developer ID private key in it is a key that outlives the
+      # job. This one is created here, unlocked for this job only, and destroyed
+      # in the always() cleanup step below. The password is generated rather than
+      # stored as a secret — nothing outside this job ever needs it.
+      - name: Import the Developer ID certificate
+        if: ${{ env.SIGN == 'true' }}
+        id: keychain
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/ledgeline-signing.keychain-db"
+          password=$(openssl rand -base64 24)
+          cert="$RUNNER_TEMP/certificate.p12"
+
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$cert"
+
+          security create-keychain -p "$password" "$keychain"
+          # No auto-lock timeout: notarization can take several minutes and a
+          # keychain that re-locks mid-job fails the DMG signing with a useless
+          # "User interaction is not allowed".
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$cert" -k "$keychain" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$cert"
+          # Without this, codesign prompts for keychain access and hangs forever
+          # on a headless runner.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain" > /dev/null
+          # Put it on the search list so `codesign -s` can find the identity.
+          security list-keychains -d user -s "$keychain" login.keychain-db
+
+          # Derive the identity rather than storing it as a sixth secret: the
+          # certificate itself is the source of truth for its own common name,
+          # and a hand-typed "Developer ID Application: ..." string that drifts
+          # from the cert fails with an unhelpful "no identity found".
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | grep "Developer ID Application" \
+            | sed -E 's/^[[:space:]]*[0-9]+\)[[:space:]]*[0-9A-F]+[[:space:]]"(.*)"$/\1/')
+          count=$(printf '%s\n' "$identity" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Expected exactly one Developer ID Application identity, found $count."
+            security find-identity -v -p codesigning "$keychain" >&2
+            exit 1
+          fi
+          echo "Signing as: $identity"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+          # The password is deliberately NOT exported as a step output: the
+          # keychain is unlocked with no auto-lock timeout for the life of this
+          # job, so no later step needs it, and a step output is readable by
+          # every subsequent step in the job.
+
+      # INSIDE-OUT, and explicitly rather than with `--deep`. Apple has
+      # deprecated `--deep` for signing (it is a verification convenience that
+      # applies the SAME options to nested code, which is rarely what you want)
+      # and it silently misses code it does not recognise. Listing the Mach-O
+      # files means a future addition to the bundle has to be added here, which
+      # is the failure mode we want: an unsigned nested binary fails
+      # notarization with a report that names it.
+      #
+      # `--options runtime` (the hardened runtime) is REQUIRED for notarization.
+      # No entitlements are passed: the app is not sandboxed, and wry drives
+      # WKWebView, whose JIT lives in the out-of-process com.apple.WebKit.WebContent
+      # system service rather than in our address space — so `allow-jit` and
+      # friends are not needed. If notarization ever rejects this for entitlement
+      # reasons, that is the first thing to revisit.
+      #
+      # `--timestamp` contacts Apple's timestamp server; without it the signature
+      # expires when the certificate does and notarization refuses it outright.
+      - name: Sign the app bundle
+        if: ${{ env.SIGN == 'true' }}
+        env:
+          IDENTITY: ${{ steps.keychain.outputs.identity }}
+          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+        run: |
+          set -euo pipefail
+          sign() {
+            codesign --force --options runtime --timestamp \
+              --keychain "$KEYCHAIN" --sign "$IDENTITY" "$@"
+          }
+          # Nested code first, the bundle last — a signature over the bundle
+          # seals its contents, so signing a nested binary afterwards invalidates
+          # the outer one.
+          sign dist/Ledgeline.app/Contents/MacOS/hledger
+          sign dist/Ledgeline.app/Contents/MacOS/ledgeline
+          sign dist/Ledgeline.app
+
+          codesign --verify --strict --verbose=2 dist/Ledgeline.app
+
+      # Notarize the APP before building the DMG, and staple the ticket into the
+      # bundle. Stapling the DMG alone (the common shortcut) leaves the app
+      # itself ticketless, so a user who drags it to /Applications and first
+      # launches it offline gets a Gatekeeper failure. Two round trips is the
+      # price of the app working without a network.
+      - name: Notarize and staple the app
+        if: ${{ env.SIGN == 'true' }}
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          # notarytool takes a zip/dmg/pkg, never a bare .app directory.
+          # `ditto -c -k --keepParent` is the archiver Apple documents as
+          # preserving the signature; `zip` mangles symlinks and extended
+          # attributes, and the submission is rejected for it.
+          ditto -c -k --keepParent dist/Ledgeline.app "$RUNNER_TEMP/Ledgeline.zip"
+
+          ./scripts/notarize.sh "$RUNNER_TEMP/Ledgeline.zip"
+
+          # Staples the ticket INTO the bundle, so first launch works offline.
+          xcrun stapler staple dist/Ledgeline.app
+          xcrun stapler validate dist/Ledgeline.app
+
+      # --- DMG -----------------------------------------------------------------
+
+      # Plain `hdiutil`, no `create-dmg` dependency. The `/Applications` symlink
+      # is what makes the mounted volume the familiar drag-to-install window.
+      # UDZO is the compressed read-only format every macOS since 10.4 mounts.
+      - name: Build the DMG
+        id: dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="Ledgeline-${VERSION}-${DMG_ARCH}.dmg"
+          staging="$RUNNER_TEMP/dmg-root"
+          mkdir -p "$staging"
+          # `ditto`, not `cp -R`: the app has just been signed and stapled, and
+          # ditto is the copier Apple documents as preserving everything that
+          # carries — extended attributes and resource forks included. `cp -R`
+          # drops xattrs, which is the kind of thing that produces a DMG whose
+          # app is mysteriously un-notarized on the user's machine only.
+          ditto dist/Ledgeline.app "$staging/Ledgeline.app"
+          ln -s /Applications "$staging/Applications"
+
+          hdiutil create -volname "Ledgeline $VERSION" \
+            -srcfolder "$staging" -ov -format UDZO "dist/$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "path=dist/$name" >> "$GITHUB_OUTPUT"
+
+      # The DMG is a separate artifact from the app and needs its own signature
+      # and its own ticket — Gatekeeper checks the disk image the user
+      # double-clicks, not just what is inside it.
+      - name: Sign, notarize and staple the DMG
+        if: ${{ env.SIGN == 'true' }}
+        env:
+          IDENTITY: ${{ steps.keychain.outputs.identity }}
+          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+          DMG: ${{ steps.dmg.outputs.path }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          codesign --force --timestamp --keychain "$KEYCHAIN" \
+            --sign "$IDENTITY" "$DMG"
+
+          ./scripts/notarize.sh "$DMG"
+
+          xcrun stapler staple "$DMG"
+
+      # The end-to-end assertion, made against the artifact we are about to
+      # publish rather than against any step that produced it. `source=Notarized
+      # Developer ID` is the exact string that means a downloaded copy opens with
+      # no right-click-Open dance; anything else (`Unnotarized Developer ID`, a
+      # rejection) fails the release here instead of on a user's Mac.
+      - name: Verify Gatekeeper accepts the result
+        if: ${{ env.SIGN == 'true' }}
+        env:
+          DMG: ${{ steps.dmg.outputs.path }}
+        run: |
+          set -euo pipefail
+          echo "--- app ---"
+          codesign --verify --deep --strict --verbose=2 dist/Ledgeline.app
+          spctl --assess --type exec -vvv dist/Ledgeline.app 2>&1 | tee /tmp/spctl-app.txt
+          grep -q "source=Notarized Developer ID" /tmp/spctl-app.txt
+
+          echo "--- dmg ---"
+          xcrun stapler validate "$DMG"
+
+          echo "--- staple survives a mount+copy (what the user actually does) ---"
+          mount=$(hdiutil attach "$DMG" -nobrowse -readonly | awk -F'\t' 'END { print $NF }')
+          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+          spctl --assess --type exec -vvv "$mount/Ledgeline.app" 2>&1 | tee /tmp/spctl-mounted.txt
+          grep -q "source=Notarized Developer ID" /tmp/spctl-mounted.txt
+
+      # Per-architecture filename. Both legs write into their own artifact, but
+      # the `release` job below downloads them into ONE directory and
+      # concatenates — a shared `SHA256SUMS.txt` would have the second leg
+      # silently overwrite the first, leaving a release whose checksum file
+      # covers one of its two DMGs.
+      - name: Checksums
+        env:
+          DMG: ${{ steps.dmg.outputs.path }}
+        run: |
+          set -euo pipefail
+          ( cd dist && shasum -a 256 "$(basename "$DMG")" > "SHA256SUMS-${DMG_ARCH}.txt" )
+          cat "dist/SHA256SUMS-${DMG_ARCH}.txt"
+
+      # Always uploaded, including on a dry run — this is how the packaging is
+      # inspected without publishing anything.
+      - name: Upload the DMG as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledgeline-macos-${{ env.DMG_ARCH }}
+          path: |
+            ${{ steps.dmg.outputs.path }}
+            dist/SHA256SUMS-${{ env.DMG_ARCH }}.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      # `always()`: a failed signing or notarization step must not leave a
+      # Developer ID private key sitting in a keychain on a reusable runner.
+      - name: Remove the signing keychain
+        if: ${{ always() && env.SIGN == 'true' }}
+        run: |
+          security list-keychains -d user -s login.keychain-db || true
+          security delete-keychain "$RUNNER_TEMP/ledgeline-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
+
+  # ONE GitHub Release carrying BOTH DMGs. This is a separate job rather than a
+  # step in `package` because `gh release create` is not idempotent: run once per
+  # matrix leg, the first would create the release and the second would fail with
+  # "already exists" — or, worse, win a race and publish a release holding only
+  # one architecture. Creating it exactly once, after both legs have finished, is
+  # the only shape that cannot half-publish.
+  #
+  # `needs: package` waits for EVERY leg. Combined with `fail-fast: false`, a
+  # broken Intel build therefore blocks the release rather than shipping an
+  # arm64-only one under a tag that claims both — which is the right trade for a
+  # signed artifact, and is why the matrix does not set `continue-on-error`.
+  release:
+    name: Publish the GitHub Release
+    needs: package
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Version
+        id: version
+        run: echo "version=$(./scripts/release.sh current)" >> "$GITHUB_OUTPUT"
+
+      # Both legs' artifacts into ONE flat directory. `merge-multiple` is what
+      # flattens them; without it each lands under its own artifact-name
+      # subdirectory and the globs below find nothing.
+      - name: Download every architecture's DMG
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ledgeline-macos-*
+          path: dist
+          merge-multiple: true
+
+      # Fails loudly on a partial release. `needs:` already guarantees both legs
+      # succeeded, but an artifact that failed to upload, or a matrix entry added
+      # without a corresponding upload step, would otherwise publish silently
+      # short — and a GitHub Release, unlike a DMG, is what users actually see.
+      - name: Assert both architectures are present
+        run: |
+          set -euo pipefail
+          ls -la dist
+          for arch in arm64 x86_64; do
+            n=$(find dist -name "Ledgeline-*-$arch.dmg" | wc -l | tr -d ' ')
+            [ "$n" = "1" ] || { echo "::error::expected 1 $arch DMG, found $n"; exit 1; }
+          done
+          # One checksum file for the release, in the order users read them.
+          cat dist/SHA256SUMS-arm64.txt dist/SHA256SUMS-x86_64.txt > dist/SHA256SUMS.txt
+          cat dist/SHA256SUMS.txt
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes=$(cat <<'EOF'
+          ### Install
+
+          Download the DMG for your Mac, open it, and drag **Ledgeline** to
+          Applications.
+
+          | Your Mac | Download |
+          | --- | --- |
+          | Apple Silicon (M1 and later) | `Ledgeline-<version>-arm64.dmg` |
+          | Intel | `Ledgeline-<version>-x86_64.dmg` |
+
+          Not sure? Apple menu → About This Mac. "Apple M1" or later means
+          arm64; anything naming an Intel processor means x86_64. Picking the
+          wrong one does not damage anything — it simply will not launch.
+
+          Both are signed with a Developer ID certificate and notarized by
+          Apple, so they open normally — no right-click-Open workaround needed.
+
+          `hledger` is bundled inside the app, so CSV/statement imports work with
+          nothing else installed. If you prefer your own build, point at it in
+          Settings.
+
+          ### Linux and other platforms
+
+          ```sh
+          # Headless: serves the UI over HTTP, open it in your own browser.
+          cargo install ledgeline --no-default-features
+
+          # With the desktop window (needs webkitgtk-4.1, gtk3, libsoup-3, libxdo).
+          cargo install ledgeline
+          ```
+
+          Nix users can skip all of that:
+
+          ```sh
+          nix profile install github:zmre/ledgeline
+          ```
+
+          Install `hledger` yourself for imports; everything else works without it.
+          EOF
+          )
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Ledgeline $VERSION" \
+            --notes "$notes" \
+            dist/Ledgeline-*.dmg dist/SHA256SUMS.txt
+
+  # crates.io, which is how everyone who is not on a Mac installs
+  # Ledgeline: `cargo install ledgeline`.
+  #
+  # AFTER `package`, deliberately. A crates.io release cannot be withdrawn, only
+  # yanked — so publishing before the DMG is known good would leave a permanent
+  # version number attached to a release that never shipped. The DMG, by
+  # contrast, can simply be rebuilt.
+  #
+  # `needs: release`, not `needs: package`: the point above is that crates.io is
+  # the one irreversible step, so it must come after everything that can still
+  # fail. `package` succeeding but `release` failing (a missing artifact, a
+  # half-populated matrix) would otherwise still publish an unyankable version
+  # for a GitHub Release that does not exist.
+  #
+  # macOS runner because `spaBuild` needs a `spaNodeModules` FOD hash for the
+  # runner's system, and aarch64-darwin is the one that is definitely current.
+  publish:
+    name: Publish to crates.io
+    needs: release
+    if: ${{ github.event_name == 'push' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: zmre
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+          pushFilter: "-(source|vendor)$"
+
+      - name: Verify the tag and every version reference
+        run: ./scripts/release.sh check "$GITHUB_REF_NAME"
+
+      # `crates/ledgeline-server/spa/` is git-ignored, so a fresh checkout has
+      # none — and `build.rs` would happily write its placeholder there and
+      # cargo would package THAT. Building the real SPA and copying it in is
+      # what makes the published crate usable.
+      - name: Build the SPA and stage it into the crate
+        run: |
+          set -euo pipefail
+          nix build -L .#spaBuild -o result-spa
+          rm -rf crates/ledgeline-server/spa
+          mkdir -p crates/ledgeline-server/spa
+          cp -RL result-spa/. crates/ledgeline-server/spa/
+          chmod -R u+w crates/ledgeline-server/spa
+
+      # The assertion that stops the quiet failure. A placeholder SPA packages
+      # exactly as happily as the real one — same file name, same manifest, no
+      # warning anywhere — and the result is a published, unyankable version
+      # whose UI is a single line of text saying it was not built.
+      - name: Assert the staged SPA is real
+        run: |
+          set -euo pipefail
+          index=crates/ledgeline-server/spa/index.html
+          [ -f "$index" ] || { echo "::error::$index is missing"; exit 1; }
+          if grep -q "SPA not built" "$index"; then
+            echo "::error::The staged SPA is the build.rs PLACEHOLDER, not the real UI."
+            echo "  Publishing this would ship a crate whose entire UI is an error page." >&2
+            exit 1
+          fi
+          echo "Staged SPA looks real ($(find crates/ledgeline-server/spa -type f | wc -l | tr -d ' ') files)."
+
+      # Sequential and explicit: `ledgeline` depends on `ledgeline-core`,
+      # so core has to exist on the registry first. `cargo publish` has waited
+      # for its own upload to appear in the index since 1.66, so the second
+      # command does not race the first.
+      #
+      # `--allow-dirty` is load-bearing rather than lazy: `spa/` was just written
+      # into the tree by the step above and is git-ignored by design, so cargo
+      # would otherwise refuse to package the very files that make the crate
+      # worth publishing. The checkout is a tag, so nothing else can be dirty.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::notice::No CARGO_REGISTRY_TOKEN secret — skipping the crates.io publish."
+            echo "The DMG release is unaffected. Add the secret to enable this step;" >&2
+            echo "see docs/releasing.md → 'Publishing to crates.io'." >&2
+            exit 0
+          fi
+          nix develop path:. --command cargo publish -p ledgeline-core --allow-dirty
+          nix develop path:. --command cargo publish -p ledgeline --allow-dirty

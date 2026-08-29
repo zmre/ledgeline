@@ -88,22 +88,22 @@
         {#if canEdit}
             <button
                 type="button"
-                class="badge badge-ghost badge-sm hover:badge-outline min-w-0 cursor-pointer"
+                class="badge min-w-0 cursor-pointer badge-ghost badge-sm hover:badge-outline"
                 title="Edit category · {flow.source}"
                 onclick={() => startEdit(flow.source)}
                 ><AccountLabel name={flow.source} title="Edit category · {flow.source}" maxWidth={chipRooms?.[0]} /></button
             >
-            <span class="text-base-content/50 shrink-0" aria-label="to">&rarr;</span>
+            <span class="shrink-0 text-base-content/50" aria-label="to">&rarr;</span>
             <button
                 type="button"
-                class="badge badge-ghost badge-sm hover:badge-outline min-w-0 cursor-pointer"
+                class="badge min-w-0 cursor-pointer badge-ghost badge-sm hover:badge-outline"
                 title="Edit category · {flow.dest}"
                 onclick={() => startEdit(flow.dest)}><AccountLabel name={flow.dest} title="Edit category · {flow.dest}" maxWidth={chipRooms?.[1]} /></button
             >
         {:else}
-            <span class="badge badge-ghost badge-sm min-w-0" title={flow.source}><AccountLabel name={flow.source} maxWidth={chipRooms?.[0]} /></span>
-            <span class="text-base-content/50 shrink-0" aria-label="to">&rarr;</span>
-            <span class="badge badge-ghost badge-sm min-w-0" title={flow.dest}><AccountLabel name={flow.dest} maxWidth={chipRooms?.[1]} /></span>
+            <span class="badge min-w-0 badge-ghost badge-sm" title={flow.source}><AccountLabel name={flow.source} maxWidth={chipRooms?.[0]} /></span>
+            <span class="shrink-0 text-base-content/50" aria-label="to">&rarr;</span>
+            <span class="badge min-w-0 badge-ghost badge-sm" title={flow.dest}><AccountLabel name={flow.dest} maxWidth={chipRooms?.[1]} /></span>
         {/if}
     </div>
 {:else}
@@ -115,12 +115,12 @@
             {#if canEdit}
                 <button
                     type="button"
-                    class="badge badge-ghost badge-sm hover:badge-outline min-w-0 max-w-full cursor-pointer"
+                    class="badge max-w-full min-w-0 cursor-pointer badge-ghost badge-sm hover:badge-outline"
                     title="Edit category · {account}"
                     onclick={() => startEdit(account)}><AccountLabel name={account} title="Edit category · {account}" maxWidth={chipRooms?.[index]} /></button
                 >
             {:else}
-                <span class="badge badge-ghost badge-sm min-w-0 max-w-full" title={account}><AccountLabel name={account} maxWidth={chipRooms?.[index]} /></span>
+                <span class="badge max-w-full min-w-0 badge-ghost badge-sm" title={account}><AccountLabel name={account} maxWidth={chipRooms?.[index]} /></span>
             {/if}
         {/each}
     </div>

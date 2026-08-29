@@ -59,7 +59,7 @@ use axum::http::{HeaderName, HeaderValue, Request, StatusCode, header};
 use common::fixtures_dir;
 use hledger::Hledger;
 use http_body_util::BodyExt;
-use ledgeline_server::{AccessToken, AppState, Security, router_with_security, router_with_state};
+use ledgeline::{AccessToken, AppState, Security, router_with_security, router_with_state};
 use prefs::Prefs;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -641,7 +641,7 @@ async fn capabilities_describes_what_the_screen_may_offer() {
 #[tokio::test]
 async fn capabilities_reports_a_read_only_server() {
     let journal = ledgeline_core::parse_journal(OPENING, "memory.journal").expect("parses");
-    let router = ledgeline_server::app(&journal);
+    let router = ledgeline::app(&journal);
     let request = Request::builder()
         .uri("/api/import/capabilities")
         .body(Body::empty())

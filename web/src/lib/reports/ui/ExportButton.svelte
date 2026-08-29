@@ -23,7 +23,7 @@
 
 <button type="button" class="btn btn-primary btn-sm" onclick={() => void onExport()} disabled={busy} aria-label="Export report as xlsx">
     {#if busy}
-        <span class="loading loading-spinner loading-xs"></span>
+        <span class="loading loading-xs loading-spinner"></span>
     {/if}
     Export .xlsx
 </button>

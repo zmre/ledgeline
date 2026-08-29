@@ -6,9 +6,9 @@
 </script>
 
 {#if status === "cleared"}
-    <span class="badge badge-success badge-outline badge-xs font-mono" title="cleared">*</span>
+    <span class="badge badge-outline font-mono badge-xs badge-success" title="cleared">*</span>
 {:else if status === "pending"}
-    <span class="badge badge-warning badge-outline badge-xs font-mono" title="pending">!</span>
+    <span class="badge badge-outline font-mono badge-xs badge-warning" title="pending">!</span>
 {:else}
-    <span class="badge badge-ghost badge-xs font-mono" title="unmarked">&middot;</span>
+    <span class="badge badge-ghost font-mono badge-xs" title="unmarked">&middot;</span>
 {/if}

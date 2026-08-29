@@ -57,14 +57,14 @@
 
 <div class="drawer-side z-40">
     <label for="problems-drawer" aria-label="Close problems drawer" class="drawer-overlay"></label>
-    <aside class="bg-base-200 text-base-content flex min-h-full w-80 max-w-[85vw] flex-col gap-3 p-4">
+    <aside class="flex min-h-full w-80 max-w-[85vw] flex-col gap-3 bg-base-200 p-4 text-base-content">
         <header class="flex items-center justify-between">
             <h2 class="text-base font-semibold">Problems</h2>
-            <span class="text-base-content/60 text-sm">{problems.count === 1 ? "1 finding" : `${problems.count} findings`}</span>
+            <span class="text-sm text-base-content/60">{problems.count === 1 ? "1 finding" : `${problems.count} findings`}</span>
         </header>
 
         {#if problems.count === 0}
-            <p class="text-base-content/60 text-sm">No problems found. All checks pass.</p>
+            <p class="text-sm text-base-content/60">No problems found. All checks pass.</p>
         {:else}
             {#each groups as [rule, list] (rule)}
                 <section>
@@ -76,9 +76,9 @@
                         {#each list as problem (problem.txnIndex + problem.message)}
                             {@const txn = txnByIndex.get(problem.txnIndex)}
                             <li>
-                                <button type="button" class="hover:bg-base-300 w-full rounded-lg p-2 text-left" onclick={() => void jumpTo(problem)}>
+                                <button type="button" class="w-full rounded-lg p-2 text-left hover:bg-base-300" onclick={() => void jumpTo(problem)}>
                                     <span class="flex items-baseline gap-2">
-                                        <span class="text-base-content/70 shrink-0 font-mono text-xs">{txn?.date ?? "—"}</span>
+                                        <span class="shrink-0 font-mono text-xs text-base-content/70">{txn?.date ?? "—"}</span>
                                         <span class="truncate text-sm" title={txn?.description}>
                                             {txn === undefined || txn.description === "" ? "(no description)" : txn.description}
                                         </span>
@@ -88,9 +88,9 @@
                                          destroy it) and the narrow drawer scrolls sideways instead of truncating.
                                          Single-line messages keep the original wrapping treatment. -->
                                     {#if problem.message.includes("\n")}
-                                        <span class="text-base-content/60 block overflow-x-auto font-mono text-xs whitespace-pre">{problem.message}</span>
+                                        <span class="block overflow-x-auto font-mono text-xs whitespace-pre text-base-content/60">{problem.message}</span>
                                     {:else}
-                                        <span class="text-base-content/60 block text-xs">{problem.message}</span>
+                                        <span class="block text-xs text-base-content/60">{problem.message}</span>
                                     {/if}
                                 </button>
                             </li>

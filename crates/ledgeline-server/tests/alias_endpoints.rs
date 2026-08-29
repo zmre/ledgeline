@@ -26,7 +26,7 @@ mod common;
 use axum::body::Body;
 use axum::http::{HeaderName, Request, StatusCode, header};
 use http_body_util::BodyExt;
-use ledgeline_server::{AccessToken, AppState, Security, router_with_security, router_with_state};
+use ledgeline::{AccessToken, AppState, Security, router_with_security, router_with_state};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -10,7 +10,7 @@
 
 <button
     type="button"
-    class="btn btn-ghost btn-sm btn-square indicator"
+    class="btn indicator btn-square btn-ghost btn-sm"
     aria-label={label}
     title={label}
     onclick={() => (problems.drawerOpen = !problems.drawerOpen)}

@@ -255,7 +255,7 @@ struct DiagnosticsBody<'a> {
     diagnostics: &'a [wire::WireDiagnostic],
 }
 
-/// What `ledgeline_server::Snapshot::from_journal` builds, replicated.
+/// What `ledgeline::Snapshot::from_journal` builds, replicated.
 ///
 /// Post-PERF-1 this is seven `serde_json::to_vec` calls and NO journal clone —
 /// the snapshot shares the editor's `Arc<Journal>` (PERF-1b), which is O(1) and

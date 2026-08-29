@@ -60,7 +60,7 @@
     }
 </script>
 
-<label class="input input-sm flex w-full items-center gap-2">
+<label class="input flex w-full items-center gap-2 input-sm">
     <svg
         class="h-4 w-4 opacity-60"
         xmlns="http://www.w3.org/2000/svg"
@@ -86,6 +86,6 @@
         autocomplete="off"
     />
     {#if text !== ""}
-        <button type="button" class="btn btn-ghost btn-xs btn-circle shrink-0" onclick={clear} aria-label="Clear search">✕</button>
+        <button type="button" class="btn btn-circle shrink-0 btn-ghost btn-xs" onclick={clear} aria-label="Clear search">✕</button>
     {/if}
 </label>

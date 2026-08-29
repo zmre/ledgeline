@@ -23,7 +23,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use ledgeline_server::{AppState, router_with_security};
+use ledgeline::{AppState, router_with_security};
 use muda::{
     Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
     accelerator::{Accelerator, Code, Modifiers},

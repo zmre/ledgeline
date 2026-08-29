@@ -22,30 +22,30 @@
     const anyEstimated = $derived(rows.some((row) => row.startEstimated));
 </script>
 
-<div class="card bg-base-200 border-base-content/5 border shadow-sm" data-testid={testid}>
+<div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
     <div class="card-body gap-2 p-4">
-        <div class="text-base-content/60 text-xs font-semibold tracking-wide uppercase">Biggest Movers</div>
+        <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">Biggest Movers</div>
         {#if rows.length === 0}
-            <div class="text-base-content/50 text-sm">No priced holdings</div>
+            <div class="text-sm text-base-content/50">No priced holdings</div>
         {:else}
             <ul class="flex flex-col gap-1.5">
                 {#each rows as row (row.symbol)}
                     <li class="flex items-center justify-between gap-3 text-sm">
                         <span class="truncate font-medium" title={row.name}>
                             {row.symbol}{#if row.startEstimated}<span
-                                    class="text-warning ml-1"
+                                    class="ml-1 text-warning"
                                     title="No market price before {periodStart} — measured from purchase cost">*</span
                                 >{/if}
                         </span>
                         <span class="flex items-center gap-2 whitespace-nowrap">
-                            <span class="text-base-content/70 font-mono tabular-nums">{fmtSignedAmount(row.gain, base, styles)}</span>
+                            <span class="font-mono text-base-content/70 tabular-nums">{fmtSignedAmount(row.gain, base, styles)}</span>
                             <span class="{signClass(row.gainPct)} w-16 text-right font-medium">{fmtSignedPct(row.gainPct)}</span>
                         </span>
                     </li>
                 {/each}
             </ul>
             {#if anyEstimated}
-                <div class="text-warning/80 mt-1 text-xs" data-testid="movers-estimated-note">
+                <div class="mt-1 text-xs text-warning/80" data-testid="movers-estimated-note">
                     * No market price before {periodStart} — measured from purchase cost, so this is closer to an all-time gain. Add <code>P</code> price directives
                     for true period returns.
                 </div>

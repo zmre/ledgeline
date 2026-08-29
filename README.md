@@ -218,10 +218,16 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
     - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
     - if they don't exist, make a budget.journal file and include it from the main file (with a button press by user first)
     - Move Budget from Reports to its own top-level tab
-- chore: Setup releases and builds for download
 - chore: Add screenshots and better descriptions to the readme
-- feat: kelly blue book integration?
-- feat: private AI integration?
+- feat: private AI integration
+  - Need to make use of a per-user preference specifying the url for the AI and any necessary api keys or whatever
+  - Need to make a way for the user to edit this in the app
+  - Only show an AI icon if we have a successful connection; or maybe there's an AI chat icon that has a red dot over it if the configured url doesn't work, a green dot if it is working, and the icon is hidden if this isn't setup (under settings tab)
+  - clicking the chat slides over a drawer
+  - we need to build out a system prompt with information about the files in the folder. i think we need to allow a tool call to fetch files in the folder, but nothing else. and a tool call that could write to files, but with strict user approval checks.
+  - i have mostly used ai functionality on my hledger repos when i want to use an external file -- often a pdf -- and produce some specific journal entries from it such as balance checks or setting up a partnership or doing fair value / nav adjustments
+  - ultimately, the AI should interact with the user through the chat drawer. the user should allow it to see specific files or all files as they desire. user should be able to clear history.  ai should be able to request reading of files and propose changes to files.
+  - i don't want to reinvent too much here.  and i'd like to use our API endpoints rather than any direct writing. maybe that's what we offer as tools is our api endpoints, but with per-session user approval?  i mean, if the AI is private, it's probably fine to offer up the read-only endpoints. the main thing is to gate writes, not reads.
 - feat: stock price updates
   - basically my script, maybe ported into rust, for querying yahoo and updating a prices file. should try to figure out where prices already live and if it can't find anything, prompt for location and include a new file from the base file for the purpose.
   - this should all be on the holdings tab

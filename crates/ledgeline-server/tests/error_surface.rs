@@ -33,7 +33,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use common::{fixture_journal, fixture_journal_path};
 use http_body_util::BodyExt;
-use ledgeline_server::{AppState, app, router_with_state};
+use ledgeline::{AppState, app, router_with_state};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

@@ -17,7 +17,7 @@
     const columns = $derived(staged.preview.header ?? []);
 </script>
 
-<section class="border-base-content/10 rounded-box flex flex-col gap-3 border p-3" aria-label="Converted file" data-testid="imports-preview">
+<section class="flex flex-col gap-3 rounded-box border border-base-content/10 p-3" aria-label="Converted file" data-testid="imports-preview">
     <header class="flex flex-wrap items-center gap-2">
         <h2 class="grow text-sm font-semibold tracking-tight">{previewSummary(staged)}</h2>
         {#each facts as fact (fact.label)}
@@ -31,14 +31,14 @@
         </p>
     {/each}
     {#if staged.unknownNoteCount > 0}
-        <p class="text-base-content/50 text-xs">
+        <p class="text-xs text-base-content/50">
             {staged.unknownNoteCount}
             note{staged.unknownNoteCount === 1 ? "" : "s"} from the engine that this build of Ledgeline doesn't understand — it is newer than this page.
         </p>
     {/if}
 
     <div class="overflow-x-auto">
-        <table class="table-zebra table-xs table">
+        <table class="table table-zebra table-xs">
             {#if columns.length > 0}
                 <thead>
                     <tr>
@@ -61,6 +61,6 @@
     </div>
 
     {#if staged.preview.rows.length === 0}
-        <p class="text-base-content/60 text-sm">The conversion produced no rows at all — there is nothing here to import.</p>
+        <p class="text-sm text-base-content/60">The conversion produced no rows at all — there is nothing here to import.</p>
     {/if}
 </section>

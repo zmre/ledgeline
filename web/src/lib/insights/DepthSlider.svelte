@@ -6,11 +6,11 @@
 </script>
 
 <label class="block w-full max-w-xs">
-    <span class="label-text text-base-content/70 mb-1 block text-xs">Account depth</span>
-    <input type="range" min="1" max={Math.max(1, max)} step="1" bind:value={depth} class="range range-primary range-xs w-full" aria-label="Account depth" />
-    <div class="text-base-content/60 mt-1 flex justify-between px-0.5 font-mono text-[0.65rem]" aria-hidden="true">
+    <span class="label-text mb-1 block text-xs text-base-content/70">Account depth</span>
+    <input type="range" min="1" max={Math.max(1, max)} step="1" bind:value={depth} class="range w-full range-primary range-xs" aria-label="Account depth" />
+    <div class="mt-1 flex justify-between px-0.5 font-mono text-[0.65rem] text-base-content/60" aria-hidden="true">
         {#each ticks as t (t)}
-            <span class={t === depth ? "text-base-content font-bold" : ""}>{t}</span>
+            <span class={t === depth ? "font-bold text-base-content" : ""}>{t}</span>
         {/each}
     </div>
 </label>

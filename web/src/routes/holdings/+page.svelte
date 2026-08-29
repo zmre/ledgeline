@@ -164,12 +164,12 @@
             >
                 {#snippet children(report)}
                     {#if positions.shown.length > 0}
-                        <section class="collapse-arrow bg-base-200 collapse" data-testid="holdings-insights">
+                        <section class="collapse-arrow collapse bg-base-200" data-testid="holdings-insights">
                             <input type="checkbox" bind:checked={insightsOpen} aria-label="Toggle holdings insights" />
                             <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
                                 <h2 class="text-sm font-semibold tracking-tight">Insights</h2>
                                 <span class="text-sm">
-                                    <span class="text-base-content/60 mr-1">Market value</span>
+                                    <span class="mr-1 text-base-content/60">Market value</span>
                                     <span class="font-semibold">{format(report.totals.marketValue)}</span>
                                 </span>
                             </div>
@@ -189,7 +189,7 @@
                     {/if}
 
                     {#if report.warnings.length > 0}
-                        <div class="alert alert-warning rounded-box items-start px-3 py-2 text-sm" role="alert" data-testid="holdings-warnings">
+                        <div class="alert items-start rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="holdings-warnings">
                             <ul class="list-inside list-disc">
                                 {#each report.warnings as warning (warning.symbol + warning.kind)}
                                     <li>{warning.message}</li>
@@ -218,7 +218,7 @@
                     {/if}
                     <!-- Why the visible rows do not add up to the totals row above them. -->
                     {#if hiddenNote !== null}
-                        <p class="text-base-content/60 px-1 text-xs" data-testid="holdings-hidden-note">{hiddenNote}</p>
+                        <p class="px-1 text-xs text-base-content/60" data-testid="holdings-hidden-note">{hiddenNote}</p>
                     {/if}
                 {/snippet}
             </AsyncSection>
@@ -251,7 +251,7 @@
                      contributes to no total, so the warning explains the em-dashes
                      the reader has just looked at. -->
                     {#if report.warnings.length > 0}
-                        <div class="alert alert-warning rounded-box items-start px-3 py-2 text-sm" role="alert" data-testid="other-holdings-warnings">
+                        <div class="alert items-start rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="other-holdings-warnings">
                             <ul class="list-inside list-disc">
                                 {#each report.warnings as warning (warning.account + warning.kind)}
                                     <li>{warning.message}</li>

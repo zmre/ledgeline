@@ -30,7 +30,7 @@ test-integration port="5055":
     # suite both have to know it. Every wire and /api route is token-gated, so an
     # unauthenticated probe gets a 401 and `curl -fsS` exits 22.
     export LEDGELINE_TOKEN=ledgeline-integration-token
-    cargo build -p ledgeline-server
+    cargo build -p ledgeline
     ./target/debug/ledgeline --server fixtures/sample.journal --port {{port}} &
     server=$!
     trap 'kill "$server" 2>/dev/null || true' EXIT
@@ -49,7 +49,7 @@ test-integration port="5055":
 # point at the Nix-built binary).
 # Run e2e tests (playwright)
 e2e:
-    cargo build -p ledgeline-server
+    cargo build -p ledgeline
     cd web && bun run test:e2e
 
 # Typecheck + svelte-check
@@ -82,7 +82,7 @@ hledger-checks:
     LEDGELINE_HLEDGER_MATCH_CHECK=1 cargo test -p ledgeline-core --test matching
     LEDGELINE_HLEDGER_SORT_CHECK=1 cargo test -p ledgeline-core --test sort
     LEDGELINE_HLEDGER_LAYOUT_CHECK=1 cargo test -p ledgeline-core --test journals
-    LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline-server --test import_endpoints
+    LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_endpoints
 
 # Snapshot raw hledger-web JSON API responses into fixtures/api/vVERSION/
 snapshot-api:
@@ -103,7 +103,7 @@ snapshot-native port="5078":
     # this server only ever sees fixtures/sample.journal on loopback.
     export LEDGELINE_TOKEN=ledgeline-native-fixture-token
     out=fixtures/native/v1
-    cargo build -p ledgeline-server
+    cargo build -p ledgeline
     ./target/debug/ledgeline --server fixtures/sample.journal --port {{port}} &
     server=$!
     trap 'kill "$server" 2>/dev/null || true' EXIT
@@ -140,14 +140,61 @@ snapshot-rules-wire port="5079":
 build:
     cd web && bun run build
 
-# Build the macOS app bundle (Ledgeline.app) with the real SPA embedded, via Nix.
-# The SPA is built inside Nix, so no prior `just build` is needed.
+# The SPA is built inside Nix, so no prior `just build` is needed. The bundle
+# also carries its own `hledger` in Contents/MacOS/ (see docs/releasing.md).
+# Build the macOS app bundle (Ledgeline.app) with the real SPA embedded, via Nix
 package-mac:
     nix build .#macApp --accept-flake-config -o result-macapp
     mkdir -p dist
     cp -RL result-macapp/Applications/Ledgeline.app dist/Ledgeline.app
     chmod -R u+w dist/Ledgeline.app
     @echo "Built dist/Ledgeline.app — run it with: open dist/Ledgeline.app"
+
+# Local twin of the release workflow's DMG step, MINUS signing and notarization
+# (both need the Apple secrets, which only CI holds). Use it to eyeball the
+# mounted volume's layout after changing the packaging; use the workflow's
+# `dry_run` for a faithful rehearsal. The result is NOT distributable: an
+# unsigned DMG is refused by Gatekeeper on any Mac that downloads it.
+# Build an UNSIGNED dmg locally for inspecting the packaging
+package-dmg: package-mac
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(nix eval --raw .#ledgeline.version)
+    staging=$(mktemp -d)
+    trap 'rm -rf "$staging"' EXIT
+    cp -R dist/Ledgeline.app "$staging/Ledgeline.app"
+    # What makes the mounted volume the familiar drag-to-install window.
+    ln -s /Applications "$staging/Applications"
+    hdiutil create -volname "Ledgeline $version" \
+        -srcfolder "$staging" -ov -format UDZO "dist/Ledgeline-$version-arm64.dmg"
+    echo "Built dist/Ledgeline-$version-arm64.dmg (UNSIGNED — local inspection only)"
+
+# --- Releases (see docs/releasing.md) ---
+
+# Print the workspace version
+version:
+    @./scripts/release.sh current
+
+# Three of the four places the version lives fail SILENTLY when they drift,
+# which is why this is a CI job rather than a thing to remember. See
+# scripts/release.sh for what each one breaks.
+# Assert every version reference agrees (Cargo.toml, Cargo.lock, package.json)
+version-check:
+    ./scripts/release.sh check
+
+# Writes the files and stops, so you can review the diff; run the script itself
+# with `--commit` to commit and tag.
+# Bump every version reference at once, e.g. `just version-set 0.2.0`
+version-set version:
+    ./scripts/release.sh set {{version}}
+
+# Builds the SPA, packages both crates, and proves the real UI — not build.rs's
+# placeholder — is inside the .crate. Publishes NOTHING.
+# Rehearse the crates.io package locally
+package-crates:
+    cd web && bun run build
+    cargo package --workspace --allow-dirty
+    @echo "spa files in the packaged crate: $(tar tzf target/package/ledgeline-[0-9]*.crate | grep -c '/spa/')"
 
 # --- Rust engine (crates/) ---
 
@@ -169,7 +216,7 @@ engine-check:
 
 # Run the local engine server (Phase 2+): `just serve-engine ~/finance/2026.journal`
 serve-engine file="fixtures/sample.journal":
-    cargo run -p ledgeline-server -- {{file}}
+    cargo run -p ledgeline -- {{file}}
 
 # --- Performance (see docs/perf-baseline.md) ---
 

@@ -32,7 +32,7 @@
             <div class="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
                 {#each keymap.help as section (section.group)}
                     <section>
-                        <h4 class="text-base-content/60 pb-1 text-xs font-medium tracking-wide uppercase">{section.group}</h4>
+                        <h4 class="pb-1 text-xs font-medium tracking-wide text-base-content/60 uppercase">{section.group}</h4>
                         <ul class="flex flex-col gap-1">
                             {#each section.rows as row (row.keys)}
                                 <li class="flex items-baseline justify-between gap-4">
@@ -48,7 +48,7 @@
                     </section>
                 {/each}
             </div>
-            <p class="text-base-content/60 mt-4 text-xs">Shortcuts are off while you're typing in a field.</p>
+            <p class="mt-4 text-xs text-base-content/60">Shortcuts are off while you're typing in a field.</p>
         </div>
         <button type="button" class="modal-backdrop" aria-label="Close" onclick={() => keymap.closeHelp()}>close</button>
     </div>

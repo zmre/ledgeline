@@ -86,7 +86,7 @@
 
 {#if effect !== null && showsAliasEffect(effect)}
     <div
-        class="alert rounded-box flex flex-col items-start gap-3 py-3 text-sm {tone === 'warning' ? 'alert-warning' : 'alert-info'}"
+        class="alert flex flex-col items-start gap-3 rounded-box py-3 text-sm {tone === 'warning' ? 'alert-warning' : 'alert-info'}"
         role={tone === "warning" ? "alert" : "status"}
         data-testid="imports-alias-effect"
     >
@@ -178,7 +178,7 @@
                         onclick={() => onInstallConf(parity.revision)}
                         data-testid="imports-cli-parity-fix"
                     >
-                        {#if confWriting}<span class="loading loading-spinner loading-xs"></span>{/if}
+                        {#if confWriting}<span class="loading loading-xs loading-spinner"></span>{/if}
                         {parityFixLabel(parity)}
                     </button>
                 {/if}
@@ -190,7 +190,7 @@
                     </p>
                 {/if}
                 {#if confError !== null}
-                    <p class="text-error text-xs" data-testid="imports-cli-parity-error">{confError}</p>
+                    <p class="text-xs text-error" data-testid="imports-cli-parity-error">{confError}</p>
                 {/if}
             </div>
         {/if}

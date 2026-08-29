@@ -102,7 +102,7 @@
         {#if editingDesc}
             <input
                 type="text"
-                class="input input-xs w-full min-w-0"
+                class="input w-full min-w-0 input-xs"
                 bind:value={draft}
                 aria-label="Edit description"
                 autocomplete="off"
@@ -117,7 +117,7 @@
             <CommentIndicator {txn} />
             <button
                 type="button"
-                class="btn btn-ghost btn-xs btn-square shrink-0 opacity-0 group-hover/desc:opacity-100 focus:opacity-100"
+                class="btn btn-square shrink-0 btn-ghost opacity-0 btn-xs group-hover/desc:opacity-100 focus:opacity-100"
                 title="Edit whole transaction"
                 aria-label="Edit whole transaction"
                 onclick={() => txnModal.openEdit(txn)}
@@ -139,7 +139,7 @@
          across a <tbody> that also contains aria-hidden spacer rows. -->
     <tr class="h-10 {rowClass}" aria-current={cursor ? "true" : undefined} data-txn={txn.index}>
         {#if columns.date}
-            <td class="text-base-content/80 py-1 font-mono text-xs whitespace-nowrap">{txn.date}</td>
+            <td class="py-1 font-mono text-xs whitespace-nowrap text-base-content/80">{txn.date}</td>
         {/if}
         {#if columns.status}
             <td class="py-1"><StatusCell {txn} /></td>
@@ -156,7 +156,7 @@
     </tr>
 {:else}
     <!-- A ring, not a background: the card already has `bg-base-200`. -->
-    <article class="card bg-base-200 mb-2 h-24 overflow-hidden {cardClass}" aria-current={cursor ? "true" : undefined} data-txn={txn.index}>
+    <article class="card mb-2 h-24 overflow-hidden bg-base-200 {cardClass}" aria-current={cursor ? "true" : undefined} data-txn={txn.index}>
         <div class="card-body gap-1 p-3">
             <div class="flex items-center justify-between gap-2">
                 <div class="flex min-w-0 items-center gap-1.5">
@@ -170,7 +170,7 @@
                     <div class="min-w-0 overflow-hidden"><AccountsCell {txn} /></div>
                 {/if}
                 {#if columns.date}
-                    <span class="text-base-content/60 shrink-0 font-mono text-xs whitespace-nowrap">{txn.date}</span>
+                    <span class="shrink-0 font-mono text-xs whitespace-nowrap text-base-content/60">{txn.date}</span>
                 {/if}
             </div>
         </div>
