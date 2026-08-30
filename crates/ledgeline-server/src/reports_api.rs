@@ -36,15 +36,16 @@ use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
     Amounts, BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, BsTerm,
     BudgetCell, BudgetOpts, BudgetReport, BudgetRow, Cadence, ChangeKind, ChangeRow, CostOfLiving,
-    DEFAULT_EXCLUDE_DESC, DateRange, GroupSource, IS_GROUP_TAG, IncomeStatementReport,
-    InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow,
-    IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, MetricDelta, MixedAmount, MoverRow,
-    NetWorthOpts, PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, Section,
-    SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
-    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped,
-    bs_terms, budget_report, cash_flow, cash_predicate, declared_groups, declared_types,
-    detect_subscriptions, income_statement, income_statement_grouped, insights, net_worth,
-    prices_any_on_sheet, prices_any_on_statement,
+    DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide,
+    GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts, InsightsPeriod, InsightsReport,
+    Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection, IsSectionKind, IsSubtotal,
+    IsSubtotalKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts, PerfPoint, PeriodReport,
+    PeriodRow, ReportError, ReportMeta, ReportRow, Section, SectionedReport, Subscription,
+    SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation, account_decls, account_groups,
+    account_sections, balance_sheet, balance_sheet_grouped, bs_terms, budget_report, cash_flow,
+    cash_predicate, declared_groups, declared_types, detect_subscriptions, income_statement,
+    income_statement_flows, income_statement_grouped, insights, net_worth, prices_any_on_sheet,
+    prices_any_on_statement,
 };
 use serde::{Deserialize, Serialize};
 
@@ -522,6 +523,118 @@ impl WireIncomeStatementReport {
             multi_step: report.multi_step,
             sections: report.sections.iter().map(WireIsSection::from).collect(),
             net_income: WireAmounts::from(&report.net_income),
+            meta: WireReportMeta::from(&report.meta),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Income-statement flow graphs (the Sankey diagrams above Revenue and Expenses)
+// ---------------------------------------------------------------------------
+
+/// One end of a link.
+///
+/// `total` is a bare [`WireDec`] rather than a [`WireMixed`], and so is every
+/// other figure in this subtree. It is the one place the native wire narrows a
+/// money field to a single commodity, and the reason is geometry: a link's WIDTH
+/// is one number, so a second commodity beside it has nowhere to go. Whatever the
+/// valuation could not reach is named in `meta.unpriced`, exactly as on the
+/// statement, rather than silently folded in.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireFlowNode {
+    key: String,
+    label: String,
+    /// `"source" | "target"`.
+    side: &'static str,
+    /// The account this node stands for, or `null` for a statement line.
+    account: Option<String>,
+    total: WireDec,
+}
+
+impl From<&FlowNode> for WireFlowNode {
+    fn from(node: &FlowNode) -> Self {
+        Self {
+            key: node.key.clone(),
+            label: node.label.clone(),
+            side: match node.side {
+                FlowSide::Source => "source",
+                FlowSide::Target => "target",
+            },
+            account: node.account.clone(),
+            total: WireDec::from(node.total),
+        }
+    }
+}
+
+/// One link, by [`WireFlowNode::key`] at each end.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireFlowLink {
+    source: String,
+    target: String,
+    value: WireDec,
+}
+
+impl From<&FlowLink> for WireFlowLink {
+    fn from(link: &FlowLink) -> Self {
+        Self {
+            source: link.source.clone(),
+            target: link.target.clone(),
+            value: WireDec::from(link.value),
+        }
+    }
+}
+
+/// One diagram.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireFlowGraph {
+    nodes: Vec<WireFlowNode>,
+    links: Vec<WireFlowLink>,
+    /// Summed over `links`.
+    total: WireDec,
+    /// The statement figure `links` decompose. Sent even when it equals `total`,
+    /// which it does on any ordinary journal: the client shows the two side by
+    /// side, and a client that had to infer "these agree" from an absent key
+    /// could not tell that from a renamed one.
+    section_total: WireDec,
+}
+
+impl From<&FlowGraph> for WireFlowGraph {
+    fn from(graph: &FlowGraph) -> Self {
+        Self {
+            nodes: graph.nodes.iter().map(WireFlowNode::from).collect(),
+            links: graph.links.iter().map(WireFlowLink::from).collect(),
+            total: WireDec::from(graph.total),
+            section_total: WireDec::from(graph.section_total),
+        }
+    }
+}
+
+/// Both flow graphs over one window.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireFlowReport {
+    from: String,
+    to: String,
+    /// The commodity every width is in, or `null` when the journal has several
+    /// and nothing prices them against each other. Both graphs are then empty.
+    base: Option<String>,
+    inflows: WireFlowGraph,
+    outflows: WireFlowGraph,
+    /// Always present, because the unpriced banner keys off it on every request.
+    meta: WireReportMeta,
+}
+
+impl From<&FlowReport> for WireFlowReport {
+    fn from(report: &FlowReport) -> Self {
+        Self {
+            from: report.from.clone(),
+            to: report.to.clone(),
+            base: report.base.as_ref().map(|base| base.0.clone()),
+            inflows: WireFlowGraph::from(&report.inflows),
+            outflows: WireFlowGraph::from(&report.outflows),
             meta: WireReportMeta::from(&report.meta),
         }
     }
@@ -1795,6 +1908,22 @@ pub(crate) struct IncomeStatementGroupedQuery {
     compare: Option<String>,
 }
 
+/// `?from=&to=&valueIn=` for the income statement's flow graphs.
+///
+/// No `depth` for [`IncomeStatementGroupedQuery`]'s reason, no `compare` because
+/// neither graph has a comparison column, and no `value` because a link's width
+/// is one number: see [`WireFlowNode`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IncomeStatementFlowsQuery {
+    from: Option<String>,
+    to: Option<String>,
+    /// Commodity to draw the widths in; same trim and admission contract as
+    /// [`IncomeStatementGroupedQuery`]'s, measured over the same accounts, so the
+    /// diagram and the statement cannot be refused for different reasons.
+    value_in: Option<String>,
+}
+
 /// `?end=&interval=&count=&depth=` — cash flow.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2141,6 +2270,84 @@ pub(crate) async fn incomestatement_grouped(
             &declared_groups(journal, IS_GROUP_TAG),
         )?;
         Ok(WireIncomeStatementReport::new(&report, label))
+    })
+    .await
+}
+
+/// `GET /api/reports/incomestatement/flows` returns the two money-flow graphs the
+/// P&L tab draws above its Revenue and Expenses boxes.
+///
+/// - `from=YYYY-MM-DD` (default: Jan 1 of the current year)
+/// - `to=YYYY-MM-DD` (default: today), both INCLUSIVE
+/// - `valueIn=$` (default: the journal's `D` commodity when it prices something
+///   on the statement, else the price table's base commodity, else the one
+///   commodity the window is written in). A `valueIn` pricing NOTHING is a `400`,
+///   the same refusal on the same test as the statement's.
+///
+/// **Money in** decomposes Revenue: each revenue line to the accounts its money
+/// landed in. **Money out** decomposes the cost boxes: the accounts that funded
+/// the spending, to the lines they funded. Each graph carries `total` (what its
+/// links draw) beside `sectionTotal` (the figure they decompose), so a client can
+/// say whether the picture is complete instead of implying it.
+///
+/// A SIBLING of `/api/reports/incomestatement/grouped`, not a field on it: this
+/// is a second pass over every posting, and the panels are collapsible, so a
+/// reader who has them shut should not pay for them.
+///
+/// A `400` here can come from the JOURNAL as well as the query, exactly as on the
+/// grouped statement: this reads the same `issection:` tags.
+pub(crate) async fn incomestatement_flows(
+    State(state): State<AppState>,
+    Query(query): Query<IncomeStatementFlowsQuery>,
+) -> Result<Json<WireFlowReport>, AppError> {
+    let snapshot = state.snapshot();
+    let today = today_utc();
+    let from = parse_date("from", query.from, || {
+        format!("{}-01-01", periods::bucket_key(&today, Interval::Yearly))
+    })?;
+    let to = parse_date("to", query.to, || today)?;
+    let raw_value_in = query.value_in;
+
+    compute(move || {
+        let journal = &snapshot.journal;
+        let declared = declared_types(&account_decls(journal));
+        let sections = account_sections(journal)?;
+        let window = DateRange {
+            from: from.clone(),
+            to: to.clone(),
+        };
+        // The statement's own admission test, over the statement's own windows.
+        // Asking a different question here would let the diagram be refused for a
+        // `valueIn` the table beside it accepts.
+        let value_in = resolve_grouped_value_in(
+            journal,
+            "this income statement",
+            raw_value_in.as_deref(),
+            |target| {
+                prices_any_on_statement(
+                    &journal.transactions,
+                    &journal.prices,
+                    &window,
+                    true,
+                    &declared,
+                    &sections,
+                    target,
+                )
+            },
+        )?;
+        let report = income_statement_flows(
+            &journal.transactions,
+            &journal.prices,
+            &FlowOpts {
+                from: &from,
+                to: &to,
+                value_in,
+            },
+            &declared,
+            &sections,
+            &declared_groups(journal, IS_GROUP_TAG),
+        )?;
+        Ok(WireFlowReport::from(&report))
     })
     .await
 }

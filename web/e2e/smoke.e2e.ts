@@ -201,6 +201,38 @@ test("reports: P&L shows grouped boxes with known fixture numbers", async ({page
     await expect(page.getByTestId("income-statement").getByText("$28,626.48", {exact: true})).toHaveCount(1);
 });
 
+test("reports: P&L flow panels print their total only while shut", async ({page}) => {
+    await page.goto("/");
+    await page.getByRole("link", {name: "Reports"}).click();
+    await page.getByRole("tab", {name: "P&L"}).click();
+
+    // Both panels default to open (settings.flowsInOpen / flowsOutOpen), and the
+    // beforeEach rewrites the whole settings key on every page load, so the
+    // collapse below cannot reach the next test.
+    const moneyIn = page.getByTestId("sankey-panel-money-in");
+    const moneyOut = page.getByTestId("sankey-panel-money-out");
+    await expect(moneyIn.getByTestId("sankey-legend-money-in")).toHaveCount(1);
+    await expect(moneyOut.getByTestId("sankey-legend-money-out")).toHaveCount(1);
+
+    // "Money out" decomposes the Expenses box, so its graph total IS the figure
+    // that box's footer prints. Open, the panel must not repeat it: the node
+    // labels carry the detail and the footer below carries the total. This is the
+    // other half of the one-and-only-one count above.
+    const outTotal = moneyOut.getByText("$28,626.48", {exact: true});
+    await expect(outTotal).toHaveCount(0);
+
+    // Shut, the header figure is the only number the panel has left, and it is
+    // the reason the arrow is worth clicking. "Money in" stays open, which is
+    // what keeps the flows fetched at all: stores/flows asks for nothing while
+    // both flags are false, and a shut panel with no report shows no figure.
+    await moneyOut.getByRole("checkbox", {name: "Toggle Money out"}).uncheck();
+    await expect(outTotal).toHaveCount(1);
+    await expect(moneyOut.locator(".collapse-title")).toContainText("$28,626.48");
+    await expect(page.getByTestId("income-statement").getByText("$28,626.48", {exact: true})).toHaveCount(2);
+    // The open panel's header carries a title and an arrow and no figure of any kind.
+    await expect(moneyIn.locator(".collapse-title")).not.toContainText("$");
+});
+
 test("reports: P&L groups start collapsed and open to their accounts", async ({page}) => {
     // The range the plan's ground-truth table pins, rather than the default
     // calendar year, so the figures below are the ones hledger printed for it.

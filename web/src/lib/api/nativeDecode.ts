@@ -112,6 +112,11 @@ import type {
     BudgetReport,
     BudgetRow,
     DateRange,
+    FlowGraph,
+    FlowLink,
+    FlowNode,
+    FlowReport,
+    FlowSide,
     GroupSource,
     IncomeStatementReport,
     IsGroup,
@@ -121,6 +126,7 @@ import type {
     IsSubtotal,
     IsSubtotalKind,
     PeriodReport,
+    ReportMeta,
     ReportRow,
     Section,
     SectionedReport,
@@ -244,6 +250,36 @@ interface RawIncomeStatementReport {
     sections?: RawIsSection[];
     netIncome?: RawAmounts;
     multiStep?: boolean;
+    meta?: RawReportMeta | null;
+}
+
+interface RawFlowNode {
+    key?: string;
+    label?: string;
+    side?: string;
+    account?: string | null;
+    total?: RawDec;
+}
+
+interface RawFlowLink {
+    source?: string;
+    target?: string;
+    value?: RawDec;
+}
+
+interface RawFlowGraph {
+    nodes?: RawFlowNode[];
+    links?: RawFlowLink[];
+    total?: RawDec;
+    sectionTotal?: RawDec;
+}
+
+interface RawFlowReport {
+    from?: string;
+    to?: string;
+    base?: string | null;
+    inflows?: RawFlowGraph;
+    outflows?: RawFlowGraph;
     meta?: RawReportMeta | null;
 }
 
@@ -904,6 +940,22 @@ function decodeStrings(raw: unknown[] | undefined, context: string): string[] {
     });
 }
 
+/**
+ * `{unpriced}`, the meta block every valued report carries.
+ *
+ * The BLOCK is optional (serde omits it on the reports that declare it
+ * `Option`), but `unpriced` inside a block that IS present is required. All
+ * four `WireReportMeta` sites are one plain `Vec<String>` with no
+ * `skip_serializing_if`, so the key is always on the wire, and defaulting it to
+ * `[]` made a renamed Rust field indistinguishable from a fully-priced journal.
+ * The rename sweep in nativeDecode.test.ts had to tolerate exactly that on
+ * `incomestatement-grouped`.
+ */
+function decodeReportMeta(raw: RawReportMeta, context: string): ReportMeta {
+    if (!Array.isArray(raw.unpriced)) throw new ApiShapeError(`${context}: expected an unpriced array`);
+    return Object.freeze({unpriced: frozen(decodeStrings(raw.unpriced, `${context}.unpriced`))});
+}
+
 // ---------------------------------------------------------------------------
 // SectionedReport (balance sheet / income statement)
 // ---------------------------------------------------------------------------
@@ -1102,7 +1154,7 @@ export function decodeBalanceSheetReport(raw: unknown): BalanceSheetReport {
     };
     // Omitted (`skip_serializing_if = "Option::is_none"`) when nothing is unpriced.
     if (report.meta !== undefined && report.meta !== null) {
-        out.meta = Object.freeze({unpriced: frozen(decodeStrings(report.meta.unpriced, "balance sheet meta.unpriced"))});
+        out.meta = decodeReportMeta(report.meta, "balance sheet meta");
     }
     return Object.freeze(out);
 }
@@ -1234,7 +1286,86 @@ export function decodeIncomeStatementReport(raw: unknown): IncomeStatementReport
     };
     // Omitted (`skip_serializing_if = "Option::is_none"`) when nothing is unpriced.
     if (report.meta !== undefined && report.meta !== null) {
-        out.meta = Object.freeze({unpriced: frozen(decodeStrings(report.meta.unpriced, "income statement meta.unpriced"))});
+        out.meta = decodeReportMeta(report.meta, "income statement meta");
+    }
+    return Object.freeze(out);
+}
+
+// ---------------------------------------------------------------------------
+// FlowReport (the income statement's two Sankey diagrams)
+// ---------------------------------------------------------------------------
+
+const FLOW_SIDES: readonly FlowSide[] = ["source", "target"];
+
+function decodeFlowNode(raw: RawFlowNode | undefined, context: string): FlowNode {
+    if (raw === undefined || typeof raw.key !== "string" || typeof raw.label !== "string") {
+        throw new ApiShapeError(`${context}: missing key/label`);
+    }
+    return Object.freeze({
+        key: raw.key,
+        label: raw.label,
+        // Which column the node lands in. An invented default would put a
+        // revenue line where the accounts it fed belong.
+        side: decodeEnum(FLOW_SIDES, raw.side, `${context} side`),
+        // Null is the real answer for a statement line; absent throws, because
+        // that reading decides whether the node takes a palette colour at all.
+        account: decodeNullableStr(raw.account, `${context} account`),
+        total: decodeDec(raw.total, `${context} total`),
+    });
+}
+
+function decodeFlowLink(raw: RawFlowLink | undefined, context: string): FlowLink {
+    if (raw === undefined || typeof raw.source !== "string" || typeof raw.target !== "string") {
+        throw new ApiShapeError(`${context}: missing source/target`);
+    }
+    return Object.freeze({source: raw.source, target: raw.target, value: decodeDec(raw.value, `${context} value`)});
+}
+
+/**
+ * One diagram. `nodes` and `links` are demanded even when empty, for the reason
+ * `decodeBsGroup` gives: a journal with no priced side really does send `[]`,
+ * and that is a different fact from a key this decoder could not find.
+ *
+ * `total` and `sectionTotal` are separate required figures rather than one with
+ * the other inferred: the panel prints "Showing X of Y" when they differ, and a
+ * client that had to read agreement out of an absent key could not tell that
+ * from a renamed one.
+ */
+function decodeFlowGraph(raw: RawFlowGraph | undefined, context: string): FlowGraph {
+    if (raw === undefined || raw === null || !Array.isArray(raw.nodes) || !Array.isArray(raw.links)) {
+        throw new ApiShapeError(`${context}: missing nodes/links`);
+    }
+    return Object.freeze({
+        nodes: frozen(raw.nodes.map((node, i) => decodeFlowNode(node, `${context} node #${i}`))),
+        links: frozen(raw.links.map((link, i) => decodeFlowLink(link, `${context} link #${i}`))),
+        total: decodeDec(raw.total, `${context} total`),
+        sectionTotal: decodeDec(raw.sectionTotal, `${context} sectionTotal`),
+    });
+}
+
+/**
+ * `GET /api/reports/incomestatement/flows` → the two money-flow graphs.
+ *
+ * No `kind` tag, unlike the three `sections`-carrying reports: this one has its
+ * own store and never joins the `AnyReport` union, so nothing has to tell it
+ * apart from anything.
+ */
+export function decodeFlowReport(raw: unknown): FlowReport {
+    const report = raw as RawFlowReport;
+    if (typeof report !== "object" || report === null || typeof report.from !== "string" || typeof report.to !== "string") {
+        throw new ApiShapeError("flow report: expected from and to");
+    }
+    const out: FlowReport = {
+        from: report.from as ISODate,
+        to: report.to as ISODate,
+        // Null is the no-base answer, and it is the one that makes both graphs
+        // empty; absent throws (see `decodeNullableStr`).
+        base: decodeNullableStr(report.base, "flow report base"),
+        inflows: decodeFlowGraph(report.inflows, "flow report inflows"),
+        outflows: decodeFlowGraph(report.outflows, "flow report outflows"),
+    };
+    if (report.meta !== undefined && report.meta !== null) {
+        out.meta = decodeReportMeta(report.meta, "flow report meta");
     }
     return Object.freeze(out);
 }
@@ -1265,7 +1396,7 @@ export function decodePeriodReport(raw: unknown): PeriodReport {
         totals: frozen(report.totals.map((total, i) => decodeMixed(total, `report totals[${i}]`))),
     };
     if (report.meta !== undefined && report.meta !== null) {
-        out.meta = Object.freeze({unpriced: frozen(decodeStrings(report.meta.unpriced, "report meta.unpriced"))});
+        out.meta = decodeReportMeta(report.meta, "report meta");
     }
     return Object.freeze(out);
 }

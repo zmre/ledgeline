@@ -32,7 +32,9 @@
         type ReportParams,
         type ReportTab,
     } from "$lib/reports/ui/params";
+    import type {FlowsPanel} from "$lib/reports/ui/sankeyModel";
     import {reportStyles} from "$lib/reports/ui/styles";
+    import {flows, loadFlowsWhenWatched} from "$lib/stores/flows.svelte";
     import {dataView} from "$lib/stores/loadState";
     import {budgetSpan, buildReportQuery, reports, sameReportQuery, type AnyReport} from "$lib/stores/reports.svelte";
     import {journal} from "$lib/stores/journal.svelte";
@@ -119,6 +121,33 @@
     const loadedTab = $derived(reports.query?.tab ?? null);
     const view = $derived(dataView(reports.status, report !== null, loadedTab === params.tab));
     const shown = $derived(view === "data" ? report : null);
+
+    /**
+     * The two Sankey diagrams above the P&L's boxes.
+     *
+     * Fetched only on the `is` tab, and shown only alongside a statement
+     * answering the SAME window: the same FE-1 discipline `exportable` applies
+     * to the workbook, for the same reason. The graphs decompose the very
+     * figures in the boxes below them, so a diagram drawn for June under a
+     * statement reading December is not stale, it is wrong.
+     */
+    const flowsQuery = $derived({from: params.from, to: params.to});
+    // The gate (a configured server, the P&L tab, and at least one panel
+    // expanded) lives in `loadFlowsWhenWatched`. It reads the open flags and
+    // the reconnect nonce itself, so expanding a panel after both were shut
+    // fetches immediately and a reconnect retries.
+    loadFlowsWhenWatched(() => ({tab: params.tab, query: flowsQuery}));
+    const flowsPanel = $derived.by((): FlowsPanel | null => {
+        if (params.tab !== "is") return null;
+        const held = flows.query;
+        const matches = held !== null && held.from === flowsQuery.from && held.to === flowsQuery.to;
+        return {
+            view: dataView(flows.status, flows.value !== null, matches),
+            report: flows.value,
+            error: flows.error,
+            retry: () => void flows.load(settings.serverUrl ?? "", flowsQuery),
+        };
+    });
 
     // Discriminate the report shape by its decoder-applied `kind` tag:
     // "budget" → BudgetSummary, "balanceSheet" → BalanceSheetView,
@@ -260,7 +289,7 @@
                     {:else if current.kind === "balanceSheet"}
                         <BalanceSheetView report={current} {styles} />
                     {:else}
-                        <IncomeStatementView report={current} {styles} />
+                        <IncomeStatementView report={current} {styles} flows={flowsPanel} />
                     {/if}
                 {:else}
                     <ReportTable report={current} {styles} />

@@ -15,6 +15,7 @@ balancesheet	/api/reports/balancesheet?asOf=2026-07-08&depth=2
 balancesheet-grouped	/api/reports/balancesheet/grouped?asOf=2026-07-08
 incomestatement	/api/reports/incomestatement?from=2026-01-01&to=2026-07-08&depth=2
 incomestatement-grouped	/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08
+incomestatement-flows	/api/reports/incomestatement/flows?from=2026-01-01&to=2026-07-08
 cashflow	/api/reports/cashflow?end=2026-07-08&interval=monthly&count=3&depth=2
 networth	/api/reports/networth?end=2026-07-08&interval=monthly&count=3&depth=2
 budget	/api/budget?end=2026-07-08&interval=monthly&count=3&depth=2

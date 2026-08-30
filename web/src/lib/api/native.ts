@@ -445,6 +445,20 @@ export interface GroupedIncomeStatementQuery {
     valueIn?: string;
     compare?: "previous" | "none";
 }
+/**
+ * The flow graphs' query (the Sankey diagrams above the P&L's boxes). Note what
+ * is NOT here: `value` and `compare`. A link's width is one number, so the
+ * graphs are always market-valued, and neither has a comparison column.
+ *
+ * `valueIn` is optional for the reason it is on the statement: the engine
+ * defaults to `prices.base_commodity()`, which is exactly what the screen wants,
+ * and sending one would pin the SPA to a base commodity it had to guess.
+ */
+export interface IncomeStatementFlowsQuery {
+    from?: string;
+    to?: string;
+    valueIn?: string;
+}
 export interface CashFlowQuery {
     end?: string;
     interval?: string;
@@ -634,6 +648,11 @@ export class LedgelineApi {
         return this.getJson(
             `/api/reports/incomestatement/grouped${queryString({from: query.from, to: query.to, value: query.value, valueIn: query.valueIn, compare: query.compare})}`
         );
+    }
+
+    /** The two money-flow graphs the P&L tab draws above its boxes (decode with `decodeFlowReport`). */
+    incomeStatementFlows(query: IncomeStatementFlowsQuery = {}): Promise<unknown> {
+        return this.getJson(`/api/reports/incomestatement/flows${queryString({from: query.from, to: query.to, valueIn: query.valueIn})}`);
     }
 
     cashFlow(query: CashFlowQuery = {}): Promise<unknown> {

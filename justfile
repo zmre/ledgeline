@@ -56,6 +56,38 @@ e2e:
 check:
     cd web && bun run check
 
+# Gated by NO CI job. `bun run lint` is in web/package.json and no workflow ever
+# calls it, so prettier and eslint over web/ are held clean by whoever remembers
+# to run this. That is why it is in `pre-push` below.
+# prettier --check + eslint over the SPA
+lint:
+    cd web && bun run lint
+
+# The local twin of what a PR is gated on. Every job in .github/workflows/ci.yml
+# runs on `pull_request` with no `if:` and no `continue-on-error`, so all nine of
+# them gate, and the recipes below are the ones a laptop can stand in for.
+#
+# Ordered cheapest-first so it fails fast. Measured at 1m54s on a warm cargo
+# cache, roughly half of that `engine-test`; cold, or after a Cargo.lock bump, it
+# is a full workspace compile and several minutes. Type it before pushing.
+# Deliberately NOT a pre-push hook: .pre-commit-config.yaml is generated, and a
+# two-minute hook is a hook people learn to pass --no-verify to.
+#
+# `test` AND `test-integration`, because CI runs vitest twice: once with no
+# engine (the `spa` job, which is what proves the suite is self-contained) and
+# once against a live one (the `e2e` job, which un-skips the 25 `runIf` contract
+# suites). Only the second would let an accidental hard dependency on a live
+# engine through.
+#
+# No `build` step: playwright.config.ts's second webServer already runs
+# `bun run build && bun run preview`, so `e2e` builds the SPA for us.
+#
+# `nix build .#linuxDist` is absent and stays absent. spaNodeModules' outputHash
+# is per-system and can only be generated ON the system it describes, so a Mac
+# cannot rehearse it and only the CI `build` job can.
+# Everything a PR is gated on that a laptop can run
+pre-push: version-check engine-check lint check test test-integration engine-test e2e
+
 # Regenerate golden report fixtures from fixtures/sample.journal via hledger CLI
 golden:
     ./scripts/gen-golden.sh

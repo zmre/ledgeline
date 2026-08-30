@@ -27,6 +27,7 @@ pub mod aggregate;
 pub mod balance_sheet;
 pub mod budget;
 pub mod cash_flow;
+pub mod flows;
 pub mod income_statement;
 pub mod insights;
 pub mod mixed_amount;
@@ -61,6 +62,9 @@ pub use balance_sheet::{
 };
 pub use budget::{BudgetCell, BudgetOpts, BudgetReport, BudgetRow, UNBUDGETED, budget_report};
 pub use cash_flow::{cash_flow, is_cash_like};
+pub use flows::{
+    FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide, income_statement_flows,
+};
 pub use income_statement::{
     Amounts, DateRange, IS_SECTION_TAG, IncomeStatementReport, IsGroup, IsOpts, IsRow, IsSection,
     IsSectionKind, IsSubtotal, IsSubtotalKind, account_sections, account_sections_from,
