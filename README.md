@@ -169,6 +169,7 @@ direnv allow          # or: nix develop path:.
 just --list           # available tasks
 just engine-test      # cargo test over the workspace
 just check            # SPA type-check + unit tests
+just pre-push         # everything CI gates on, under 2 min warm; run before you push
 cd web && bun run build && cd .. && cargo build --release && ./target/release/ledgeline ~/.../Ledger/main.journal
 ```
 

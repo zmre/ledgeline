@@ -384,9 +384,13 @@ too). Jobs:
 | `spa` | ubuntu | `bun install --frozen-lockfile && bun run build && bun run test:unit && bun run check` |
 
 `clippy`, `tests`, and `build` depend on `format-check` and share the crane
-dependency layer (populated once, then pulled from Cachix on later runs).
-Playwright e2e is not part of this workflow yet.
+dependency layer (populated once, then pulled from Cachix on later runs). The
+`e2e` job builds `.#ledgeline`, runs the vitest contract suites against it, then
+runs the Playwright specs; `versions`, `audit` and `spa-audit` round out the nine
+jobs. All of them run on `pull_request`, none is conditional, so all of them gate.
 
 `bun run test:unit` runs BOTH of the SPA's vitest projects — `unit` (node, pure
 functions) and `components` (jsdom, mounted `*.svelte.test.ts`). Neither needs an
 engine or a browser. See `web/README.md` for which to write and why.
+
+`just pre-push` is the local twin of that gate: `version-check`, `engine-check`, `lint`, `check`, `test`, `test-integration`, `engine-test` and `e2e`, cheapest-first so it fails fast. Under two minutes on a warm cargo cache and several minutes on a cold one, which is the price of not learning the same thing from a red PR twenty minutes after pushing. It is a command to type deliberately, not a hook. It is also the only thing that runs `just lint` (prettier plus eslint over `web/`), which no CI job calls at all.
