@@ -21,6 +21,38 @@ if (typeof Element !== "undefined" && Element.prototype.scrollIntoView === undef
     Element.prototype.scrollIntoView = function scrollIntoView(): void {};
 }
 
+// jsdom leaves `matchMedia` out too, and Svelte's `MediaQuery` calls it at
+// MODULE scope: `svelte/motion` builds a prefers-reduced-motion query on
+// import, so any test importing a LayerChart component dies before its first
+// assertion. Reporting "no preference" is the honest stub, and it is what the
+// app assumes on a surface that has never asked.
+if (typeof window !== "undefined" && window.matchMedia === undefined) {
+    window.matchMedia = (query: string): MediaQueryList =>
+        ({
+            matches: false,
+            media: query,
+            onchange: null,
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            addListener: () => {},
+            removeListener: () => {},
+            dispatchEvent: () => false,
+        }) as MediaQueryList;
+}
+
+// `bind:clientWidth` compiles to a ResizeObserver, which jsdom does not
+// implement either. The stub never fires, so a measured dimension stays 0 and
+// anything gated on one declines to draw. That is the correct outcome, not a
+// workaround: with no layout engine there is no width to report, and a
+// fabricated one would let a test assert geometry that nothing computed.
+if (typeof globalThis.ResizeObserver === "undefined") {
+    globalThis.ResizeObserver = class {
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+    };
+}
+
 // Testing Library only auto-registers its own teardown when `afterEach` is a
 // GLOBAL, and this suite runs with vitest's default `globals: false`. Without
 // this line every mounted component stays in the document and the next test's

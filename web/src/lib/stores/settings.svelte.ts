@@ -26,9 +26,22 @@ interface PersistedSettings {
     serverToken: string | null;
     columns: ColumnConfig;
     insightsOpen: boolean;
+    /**
+     * The P&L tab's two Sankey panels, one flag each. They collapse
+     * independently: one flag made both arrows move together.
+     */
+    flowsInOpen: boolean;
+    flowsOutOpen: boolean;
 }
 
-const defaults = (): PersistedSettings => ({serverUrl: null, serverToken: null, columns: defaultColumns(), insightsOpen: true});
+const defaults = (): PersistedSettings => ({
+    serverUrl: null,
+    serverToken: null,
+    columns: defaultColumns(),
+    insightsOpen: true,
+    flowsInOpen: true,
+    flowsOutOpen: true,
+});
 
 /**
  * When the SPA is served in-process by the `ledgeline` binary, that binary
@@ -67,6 +80,8 @@ function load(): PersistedSettings {
             serverToken: typeof parsed.serverToken === "string" ? parsed.serverToken : null,
             columns: {...defaultColumns(), ...(typeof parsed.columns === "object" && parsed.columns !== null ? parsed.columns : {})},
             insightsOpen: typeof parsed.insightsOpen === "boolean" ? parsed.insightsOpen : true,
+            flowsInOpen: typeof parsed.flowsInOpen === "boolean" ? parsed.flowsInOpen : true,
+            flowsOutOpen: typeof parsed.flowsOutOpen === "boolean" ? parsed.flowsOutOpen : true,
         };
     } catch (cause) {
         storageError = `Saved settings couldn't be read (${cause instanceof Error ? cause.message : String(cause)}) — starting from defaults.`;
@@ -92,7 +107,14 @@ function persist(): void {
     if (typeof localStorage === "undefined") return;
     localStorage.setItem(
         SETTINGS_STORAGE_KEY,
-        JSON.stringify({serverUrl: state.serverUrl, serverToken: state.serverToken, columns: state.columns, insightsOpen: state.insightsOpen})
+        JSON.stringify({
+            serverUrl: state.serverUrl,
+            serverToken: state.serverToken,
+            columns: state.columns,
+            insightsOpen: state.insightsOpen,
+            flowsInOpen: state.flowsInOpen,
+            flowsOutOpen: state.flowsOutOpen,
+        })
     );
 }
 
@@ -121,6 +143,22 @@ export const settings = {
     },
     set insightsOpen(open: boolean) {
         state.insightsOpen = open;
+        persist();
+    },
+    /** Whether "Money in" is expanded. Also part of what decides the flows are worth fetching. */
+    get flowsInOpen(): boolean {
+        return state.flowsInOpen;
+    },
+    set flowsInOpen(open: boolean) {
+        state.flowsInOpen = open;
+        persist();
+    },
+    /** Whether "Money out" is expanded. */
+    get flowsOutOpen(): boolean {
+        return state.flowsOutOpen;
+    },
+    set flowsOutOpen(open: boolean) {
+        state.flowsOutOpen = open;
         persist();
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */

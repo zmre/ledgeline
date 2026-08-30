@@ -32,10 +32,16 @@
     import {registerKeys} from "$lib/keys/keymap.svelte";
     import {PRIORITY} from "$lib/keys/types";
     import type {Amounts, IncomeStatementReport, IsSectionKind} from "$lib/reports/types";
+    import {settings} from "$lib/stores/settings.svelte";
     import {listCursor} from "$lib/ui/listCursor.svelte";
     import {amountCell, fmtPct, isCursorRows, isDisplayModel, type AmountCell, type IsDisplayRow} from "./incomeStatementRows";
+    import SankeyPanel from "./SankeyPanel.svelte";
+    import {type FlowsPanel} from "./sankeyModel";
 
-    let {report, styles}: {report: IncomeStatementReport; styles: ReadonlyMap<string, AmountStyle>} = $props();
+    // `flows` is OPTIONAL with a null default deliberately: it keeps
+    // IncomeStatementView.svelte.test.ts scoped exactly as it was written, and
+    // the panels carry their own tests.
+    let {report, styles, flows = null}: {report: IncomeStatementReport; styles: ReadonlyMap<string, AmountStyle>; flows?: FlowsPanel | null} = $props();
 
     /**
      * Which groups are open, keyed by `IsDisplayRow.key`.
@@ -124,6 +130,15 @@
     const valuationLabel = $derived(
         report.value === "market" ? `Market value${report.base === null ? "" : ` in ${report.base}`}` : report.value === "cost" ? "At cost" : "Unvalued"
     );
+
+    /**
+     * The kind of the first COST box this report actually prints, or null when
+     * it prints none. "Money out" hangs off it rather than off `opex`, because
+     * an adaptive statement may open its cost side with `cogs` instead, and a
+     * diagram of the spending has to sit above the first box of it.
+     */
+    const COST_KINDS: readonly IsSectionKind[] = ["cogs", "opex", "depreciation", "interest", "tax"];
+    const firstCost = $derived(model.boxes.find((box) => COST_KINDS.includes(box.kind))?.kind ?? null);
 </script>
 
 {#snippet amount(c: AmountCell, size: string)}
@@ -145,12 +160,36 @@
     <td class="w-20 text-right align-top font-mono whitespace-nowrap text-base-content/60 tabular-nums">{fmtPct(pct)}</td>
 {/snippet}
 
+<!-- One Sankey, outside the statement's boxes the way the ladder subtotals are.
+
+     The whole async slice goes down, not a resolved graph: `SankeyPanel` owns
+     its own <AsyncSection> so its header and collapse arrow exist before the
+     data does. Each panel has its OWN persisted flag; one flag made both arrows
+     move together. -->
+{#snippet flowPanel(panel: FlowsPanel, title: string, caption: string, inbound: boolean)}
+    <SankeyPanel
+        {title}
+        {caption}
+        {panel}
+        {inbound}
+        {styles}
+        open={inbound ? settings.flowsInOpen : settings.flowsOutOpen}
+        onToggle={(next) => (inbound ? (settings.flowsInOpen = next) : (settings.flowsOutOpen = next))}
+    />
+{/snippet}
+
 <div class="flex flex-col gap-4" data-testid="income-statement">
     <p class="-mb-1 text-xs text-base-content/50">
         {valuationLabel} for {report.from} to {report.to}{#if report.prior !== null}, against {report.prior.from} to {report.prior.to}{/if}
     </p>
 
     {#each model.boxes as box (box.kind)}
+        {#if flows !== null && box.kind === "revenue"}
+            {@render flowPanel(flows, "Money in", "Where the period's income came from, and which accounts it landed in.", true)}
+        {/if}
+        {#if flows !== null && box.kind === firstCost}
+            {@render flowPanel(flows, "Money out", "Which accounts paid, and what the period spent it on.", false)}
+        {/if}
         <section class="overflow-hidden rounded-box border border-base-content/10" data-testid="is-section-{box.kind}">
             <h3 class="bg-base-200 {ACCENT[box.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[box.kind].text}">
                 {box.title}

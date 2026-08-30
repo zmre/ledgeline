@@ -40,14 +40,31 @@
 //!      Allocating a known statement amount across proportions is indifferent to
 //!      that; pairing debit totals against credit totals would not be.
 //!
-//! # Why this is always market-valued into one commodity
+//! # What the widths are denominated in
 //!
 //! A Sankey is geometry, and a link's width is one number. There is no
 //! `value=cost|none` here for that reason: the widths would have no defined
-//! meaning across a multi-commodity journal. `valueIn` is honored, and defaults
-//! exactly as the statement's does, so the diagram and the table agree on their
-//! basis. A commodity no price reaches is left out of the widths and named in
-//! [`ReportMeta::unpriced`], the same as on the statement.
+//! meaning across a multi-commodity journal. Everything is market-valued into
+//! ONE commodity, resolved in three steps, first hit wins:
+//!
+//!   1. `value_in`, when the request named a commodity. It is honored so the
+//!      diagram and the table above it agree on their basis, and it defaults
+//!      exactly as the statement's does.
+//!   2. [`PriceDb::base_commodity`], the journal's own answer to what everything
+//!      is worth in. This is the normal path for a book carrying `P` directives.
+//!   3. [`sole_commodity`] over the window: the single commodity every figure in
+//!      range is already written in, when there is exactly one.
+//!
+//! Step 3 is not a nicety, it is what makes the commonest book there is draw at
+//! all. A single-currency journal with no `P` directive has no price table, so
+//! the first two steps are both `None` and without the third there would be no
+//! diagram whatsoever. It invents no rate: it converts nothing, because there is
+//! nothing to convert.
+//!
+//! Only when all three miss (several commodities, and nothing pricing them
+//! against each other) is there no honest width to draw, and both graphs come
+//! back empty. A commodity no price reaches is left out of the widths and named
+//! in [`ReportMeta::unpriced`], the same as on the statement.
 //!
 //! # What is NOT drawn
 //!

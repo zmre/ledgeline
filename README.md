@@ -13,6 +13,7 @@ I built this because I was dissatisfied with existing GUIs. They often hard code
 - **Reports** — balance sheet, income statement, cash flow, net worth, and budgets (`~` periodic goals vs.
   actuals) — the budget view shows each category as a period-summary envelope bar (year-to-date by default).
   Computed in Rust with exact decimal math and hledger parity. XLSX exports.
+- **Money-flow diagrams** on the income statement: one Sankey above Revenue showing where the period's income came from and which accounts it landed in, one above the expenses showing which accounts paid and what each category was spent on, so card spending shows the card. Each is a decomposition of the box below it, not a second calculation: the ribbon widths add up to the figures already printed there, and where they cannot, the panel says `Showing $X of $Y` rather than implying they do. Withheld tax is attributed to gross pay and not to the bank account, which is the case a naive debit-against-credit pairing gets wrong. Both panels are collapsible, follow the report's date range, and are absent from the XLSX export. See **[docs/income-statement.md](docs/income-statement.md)** for the attribution rule, the links that are not drawn, and why colour tracks the account.
 - **Balance sheet** — three boxes (assets / liabilities / equity), every line valued to one number in your
   base currency so a portfolio reads as money rather than as a column of share counts. Lines are *groups*
   ("Cash and cash equivalents", "Investments"), collapsed by default and expandable to the accounts behind
@@ -186,7 +187,6 @@ This spins up a local tokio axum API server and uses the native OS browser as a 
 
 ## TODO
 
-- sankey: i want sankey diagrams to understand spending. how money is flowing from cash accounts through to expenses. i want to model it somewhat on monarch.com's stuff.  and i want to put it at the top of the P&L report (not to be included in excel downloads).  actually, lets do one above revenue showing flows into cash accounts from different sources and a separate one above expenses showing flows out of cash accounts to expenses. these sections should be collapsible and should reflect the date range for the report.
 - refactor: right now we bundle the spa stuff separately, but i'd rather build it and then include it in the binary. which might mean commiting the built files into the tree so cargo install is smooth?  need to understand options here or consider switching svelte for something that is purely rust.
 - fix: display issue where pie chart is not round, but oval when the window narrows horizontally or vertically.  Update: seems to be specific to linux as I can't reproduce on mac.
 - test: lets try to understand performance on large repos by making a fixture with 10k transactions per year, 15 years, and around 200 commodities and 75 accounts

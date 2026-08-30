@@ -9,7 +9,7 @@
 //   income statement:  grandTotal = revenues(displayed) − expenses
 // PeriodReport values (cash flow, net worth) keep natural signs.
 
-import type {MixedAmount} from "../domain/money";
+import type {Dec, MixedAmount} from "../domain/money";
 import type {ISODate} from "../domain/types";
 
 export interface ReportRow {
@@ -341,6 +341,69 @@ export interface IncomeStatementReport {
      */
     multiStep: boolean;
     /** Present only when something noteworthy happened (commodities with no price to `base`). */
+    meta?: ReportMeta;
+}
+
+// --- Income-statement money flows (the two Sankey diagrams) ------------------
+// A DECOMPOSITION of the statement above, not a second statement. `inflows` is
+// "Money in": revenue lines on the source side, the accounts the money landed in
+// on the target side. `outflows` is "Money out", the same two columns swapped:
+// the accounts that funded the spending are sources and the cost lines targets.
+//
+// Every figure is a bare `Dec`, not a `MixedAmount`. This is the one report on
+// the native wire that narrows money to a single commodity, because a link's
+// WIDTH is one number and a second commodity beside it has nowhere to go.
+// Commodities the valuation could not reach are named in `meta.unpriced`.
+//
+// No `kind` discriminator: this report has its own store and never enters the
+// `AnyReport` union, so there is nothing to tell it apart from.
+
+/** Which column a node sits in. Source is the left column, target the right. */
+export type FlowSide = "source" | "target";
+
+/**
+ * One end of a link. `account` is a full colon-delimited account name, or null
+ * when the node is a statement line (a group of the P&L).
+ *
+ * `key` is namespaced `g:<group>` / `a:<account>`: a group may be named after
+ * the very account it holds, and `links` reference these keys.
+ */
+export interface FlowNode {
+    key: string;
+    label: string;
+    side: FlowSide;
+    account: string | null;
+    total: Dec;
+}
+
+/** One link, by `FlowNode.key` at each end. */
+export interface FlowLink {
+    source: string;
+    target: string;
+    value: Dec;
+}
+
+/** One diagram. Nodes arrive ordered by `total` descending, links by `value` descending. */
+export interface FlowGraph {
+    nodes: FlowNode[];
+    links: FlowLink[];
+    /** Summed over the drawn `links`. */
+    total: Dec;
+    /**
+     * The statement figure those links decompose. Equal to `total` on an
+     * ordinary journal; smaller when a statement posting had no counterparty, or
+     * a line netted negative over the window and so has no width to draw.
+     */
+    sectionTotal: Dec;
+}
+
+/** Both graphs over one window. `base: null` means nothing prices the journal's commodities against each other, and both graphs are then empty. */
+export interface FlowReport {
+    from: ISODate;
+    to: ISODate;
+    base: string | null;
+    inflows: FlowGraph;
+    outflows: FlowGraph;
     meta?: ReportMeta;
 }
 

@@ -6,6 +6,7 @@ import {ApiShapeError} from "./client";
 import {
     decodeBalanceSheetReport,
     decodeBudgetReport,
+    decodeFlowReport,
     decodeHoldingsReport,
     decodeHoldingsSeries,
     decodeIncomeStatementReport,
@@ -1448,6 +1449,7 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         ["balancesheet-grouped", decodeBalanceSheetReport],
         ["incomestatement", decodeSectionedReport],
         ["incomestatement-grouped", decodeIncomeStatementReport],
+        ["incomestatement-flows", decodeFlowReport],
         ["cashflow", decodePeriodReport],
         ["networth", decodePeriodReport],
         ["budget", decodeBudgetReport],
@@ -1490,15 +1492,13 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         // sample.journal (an insurance premium, a domain renewal).
         "subscriptions $.annual",
         "holdings $.topLosers", // nothing is down as of 2026-07-08 → [] either way
-        // No income or expense account in sample.journal holds an unpriced
-        // commodity at ANY range — its only foreign postings are EUR, and every
-        // one of them falls after the first `P EUR` directive — so this is [] on
-        // both sides of the rename. Closing it needs journal data we don't have.
-        // The rename it would hide is still caught: `unpriced` is one shared
-        // `WireReportMeta` (reports_api.rs:510), and the sweep proves the very
-        // same key IS load-bearing on `balancesheet-grouped`, where GLD and TSLA
-        // are genuinely unpriced.
-        "incomestatement-grouped $.meta.unpriced",
+        // `incomestatement-grouped $.meta.unpriced` used to sit here: no income
+        // or expense account in sample.journal holds an unpriced commodity at
+        // ANY range, so the list is `[]` on both sides of that rename. It is
+        // closed now, and by the decoder rather than by the fixture:
+        // `decodeReportMeta` DEMANDS `unpriced` inside a meta block that is
+        // present, because all four `WireReportMeta` sites are one plain
+        // `Vec<String>` that serde always writes.
     ]);
 
     /** Rename every key of every golden in turn; report the ones nothing noticed. */

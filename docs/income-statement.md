@@ -191,6 +191,42 @@ the balance sheet's **Valuation adjustment** line absorbs, which is why that lin
 exists and why `assets = liabilities + equity` still ties out. Ask for
 `?value=cost` and the two figures agree.
 
+## The money-flow diagrams
+
+Two Sankey diagrams sit in the statement: **Money in** immediately above the Revenue box, **Money out** immediately above the first cost box that prints. Each is a *decomposition* of the side of the statement below it, not a second statement.
+
+**Money in** puts the revenue lines on the left and the accounts the money landed in on the right, so you can see that a salary arrived partly as cash in the bank and partly as tax withheld before you ever saw it. **Money out** swaps the columns: the accounts that funded the spending are on the left and the cost lines on the right, so you can see which card or account each category was actually paid from.
+
+### How a posting is attributed
+
+A statement line is one side of a transaction; the other side is where the money came from or went to. With two postings that is unambiguous. With more, each statement posting is allocated across the postings on the **opposite side of the ledger in its own transaction**, in proportion to their size. A paycheck:
+
+```journal
+2026-01-27 * Acme Corp | January salary
+    income:salary             $-5,660.00
+    expenses:taxes:federal     $1,150.00
+    expenses:taxes:state         $310.00
+    assets:bank:checking       $4,200.00
+```
+
+draws Salary to Taxes: Federal at `$1,150.00`, to Taxes: State at `$310.00` and to Bank: Checking at `$4,200.00` in **Money in**, and Salary to Taxes at `$1,460.00` in **Money out**. The withheld tax was funded by gross pay and not by the cash account, and both diagrams say so.
+
+Allocating the *statement* side rather than the account side is what makes each statement posting split exactly (integer mantissa arithmetic, last share takes the remainder) and what makes market valuation harmless: a transaction balances at cost, not at market, so a valued transaction's debits and credits may differ, and allocating a known statement amount across proportions is indifferent to that.
+
+**Other income & expense is in neither diagram.** It is the one box the statement lets print negative, because a grant and a lawsuit settlement can share it, so it has no single direction to flow in.
+
+### When the picture is not the whole story
+
+Links whose net over the window is zero or negative are not drawn. A category refunded more than it was charged has no width, and a Sankey cannot render a negative one; the same goes for a statement posting with no counterparty to attribute it to.
+
+Whatever that removes shows up as a line under the diagram reading **`Showing $X of $Y`**: `$X` is what the ribbons carry, `$Y` is the statement figure they decompose. On an ordinary journal the two agree and the line is absent entirely. It is never hidden, because the gap is the only place that missing money can be seen.
+
+### Reading the picture
+
+Colour identifies the **account**, and an account keeps its colour in *both* diagrams: `assets:bank:checking` is the same blue wherever it appears. The palette has eight slots; accounts past the eighth fold into one grey `(other)` bar, with their links merged. Statement lines never fold and never take a colour, because folding them would hide exactly the spending categories the diagram exists to show; the panel grows taller instead. Every bar carries its own label and figure, and a legend under each diagram names every account, so identity is never colour alone.
+
+Both panels are collapsible and each remembers its own state across reloads. A collapsed panel is not merely hidden: the diagrams are a separate endpoint and a second pass over every posting in the window, so with both panels shut nothing is fetched at all. Expanding one fetches immediately.
+
 ## Export
 
 The XLSX export mirrors the screen: filled section headers, bold group rows,
@@ -199,6 +235,8 @@ percentage columns alongside. Because every line is valued into one commodity, t
 amount cells hold real numbers with a number format rather than text, so the
 workbook is arithmetic you can build on. Groups are written expanded regardless of
 what is collapsed on screen.
+
+The two diagrams are deliberately **not** in the workbook. A picture of the flows is not arithmetic anyone can build on, and the numbers behind it are already in the boxes it decomposes.
 
 ## API
 
@@ -211,5 +249,14 @@ GET /api/reports/incomestatement/grouped
       &compare=previous|none  (default: previous)
 ```
 
-The older `GET /api/reports/incomestatement` returns the flat, unvalued,
-`hledger is`-shaped report and is unchanged — it backs the hledger parity golden.
+The older `GET /api/reports/incomestatement` returns the flat, unvalued, `hledger is`-shaped report and is unchanged, backing the hledger parity golden.
+
+```
+GET /api/reports/incomestatement/flows
+      ?from=YYYY-MM-DD        (default: Jan 1 of the current year)
+      &to=YYYY-MM-DD          (default: today; both ends inclusive)
+      &valueIn=$              (default: the journal's base commodity, else the
+                               single commodity the window is written in)
+```
+
+No `value=` and no `compare=`: a link's width is one number, so the widths are always market-valued, and neither diagram has a comparison column. The response carries both graphs, each with its `nodes`, its `links`, the `total` they carry and the `sectionTotal` they decompose. `base` is `null` when the journal has several commodities and nothing prices them against each other, and both graphs are then empty.
