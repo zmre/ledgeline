@@ -227,6 +227,8 @@ Colour identifies the **account**, and an account keeps its colour in *both* dia
 
 Both panels are collapsible and each remembers its own state across reloads. A collapsed panel is not merely hidden: the diagrams are a separate endpoint and a second pass over every posting in the window, so with both panels shut nothing is fetched at all. Expanding one fetches immediately.
 
+A **shut** panel prints its graph total beside the title, since that figure is the whole of what the panel can still say and the reason the arrow is worth clicking. An **open** one does not: the bars carry the detail and the box directly below carries the total, so a header figure there would be the same string printed twice on one screen, which is the complaint this report exists to fix. Where the ribbons and the statement disagree, the open panel says so in `Showing $X of $Y` instead.
+
 ## Export
 
 The XLSX export mirrors the screen: filled section headers, bold group rows,

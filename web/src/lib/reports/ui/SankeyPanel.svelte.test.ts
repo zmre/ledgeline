@@ -5,8 +5,9 @@
 // to draw a diagram into a box it has no width for. What is left is exactly
 // what a reader needs to be able to find without the picture, and that is what
 // this file asserts: the legend names every account, the collapsed state
-// follows the prop, the shortfall note appears only when there is a shortfall,
-// and each empty state gives its own reason.
+// follows the prop, the header total appears only while the panel is shut, the
+// shortfall note appears only when there is a shortfall, and each empty state
+// gives its own reason.
 //
 // It also pins the reason `AsyncSection` moved INSIDE this component. Wrapped
 // from outside, a loading or failed fetch erased the whole panel, so a user who
@@ -80,11 +81,23 @@ describe("COMPONENT SankeyPanel", () => {
         expect(legend.querySelectorAll("li").length).toBe(8);
     });
 
-    it("keeps the total in the header, where it stays visible when collapsed", () => {
+    it("keeps the total in the header while shut, where it is the only figure there is", () => {
         mount({open: false});
 
         expect(toggle("Toggle Money out").checked).toBe(false);
         expect(screen.getByRole("heading", {name: "Money out"}).parentElement?.textContent).toContain("$10,350.00");
+    });
+
+    it("drops the header total once the panel is open, because the box below repeats it", () => {
+        // The duplicate-total complaint plans/13 exists to fix: expanded, the
+        // node labels hold the detail and the statement footer below holds the
+        // same figure, so the header adds a second copy of it to one screen.
+        // Guarded end to end by smoke.e2e.ts's one-and-only-one count on
+        // $28,626.48 inside `income-statement`.
+        mount({open: true});
+
+        expect(screen.getByRole("heading", {name: "Money out"}).parentElement?.textContent?.trim()).toBe("Money out");
+        expect(screen.getByTestId("sankey-legend-money-out")).toBeDefined();
     });
 
     it("follows the open prop and reports a toggle back to the caller", () => {

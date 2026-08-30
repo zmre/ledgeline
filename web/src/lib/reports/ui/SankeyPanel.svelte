@@ -2,9 +2,13 @@
      the other, ribbons in between.
 
      Collapsible in the house style (daisyUI `collapse collapse-arrow` driven by
-     a checkbox, state persisted by the caller), with the header row and the
-     graph's total staying visible when shut, exactly as InsightsPanel does with
-     its net.
+     a checkbox, state persisted by the caller). The header row always shows the
+     title and the arrow; the graph's total joins it ONLY while the panel is
+     shut, the same job InsightsPanel's net does. Expanded, the node labels
+     below carry the detail and the statement box below that carries the total,
+     so a figure in the header would be the duplicate total this report was
+     redesigned to remove. On an ordinary journal it is the very same string as
+     the box footer, one screen apart.
 
      THE SHELL IS STABLE ACROSS LOAD STATES, and that is why `AsyncSection` is
      inside this component rather than around it. Wrapped from outside, there
@@ -65,6 +69,9 @@
     // The header figure, and only when there IS one. `AsyncSection`'s own
     // condition, mirrored: a zero standing in for an unknown total would be a
     // number the engine never sent.
+    //
+    // Note both panels shut means nothing is fetched at all (stores/flows), so a
+    // shut panel shows a figure only while its sibling is open.
     const shown = $derived(panel.view === "data" ? panel.report : null);
     const total = $derived(shown === null ? null : viewOf(shown).total);
 
@@ -94,7 +101,7 @@
     <input type="checkbox" checked={open} onchange={(e) => onToggle(e.currentTarget.checked)} aria-label="Toggle {title}" />
     <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
         <h3 class="text-sm font-semibold tracking-tight">{title}</h3>
-        {#if total !== null}
+        {#if total !== null && !open}
             <span class="font-mono text-sm font-semibold tabular-nums">{total}</span>
         {/if}
     </div>
