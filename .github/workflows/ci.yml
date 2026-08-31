@@ -24,7 +24,7 @@ jobs:
     name: Version consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: scripts/release.sh check
         run: ./scripts/release.sh check
 
