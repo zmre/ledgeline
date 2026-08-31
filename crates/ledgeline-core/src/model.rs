@@ -378,6 +378,11 @@ pub struct PriceDirective {
     pub commodity: Commodity,
     /// The price amount.
     pub price: Amount,
+    /// The resolved file this was declared in, like [`Transaction::source_file`].
+    /// For a directive INFERRED from a cost annotation (never written to disk,
+    /// never part of [`Journal::prices`]) this is the transaction's own file —
+    /// the natural owner of a price it implies.
+    pub source_file: PathBuf,
 }
 
 /// A fully-parsed, balanced journal.

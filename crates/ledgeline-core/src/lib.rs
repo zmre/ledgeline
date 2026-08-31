@@ -43,7 +43,9 @@ pub mod title;
 pub mod wire;
 
 pub use decimal::{Dec, DecError};
-pub use edit::{EditError, Fingerprint, InsertPosition, JournalEditor, format_transaction};
+pub use edit::{
+    EditError, Fingerprint, InsertPosition, JournalEditor, format_transaction, render_amount,
+};
 pub use model::Journal;
 pub use parse::{ParseError, parse_journal};
 pub use reports::ReportError;

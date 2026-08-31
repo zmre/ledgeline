@@ -1752,11 +1752,12 @@ fn push_comment(line: &mut String, comment: &str) {
 
 /// Render one amount exactly as a journal line writes it.
 ///
-/// `pub(crate)` for [`crate::periodic`], which splices amounts into `~` rule
-/// lines and must render them the same way a transaction edit does — two
-/// renderers would eventually disagree about a decimal mark, and the difference
-/// would land in someone's books.
-pub(crate) fn render_amount(amount: &Amount) -> String {
+/// `pub` for [`crate::periodic`] and `ledgeline-server`'s `prices_api`, both of
+/// which splice amounts into hand-assembled lines (a `~` rule, a `P` directive)
+/// and must render them the same way a transaction edit does — two renderers
+/// would eventually disagree about a decimal mark, and the difference would
+/// land in someone's books.
+pub fn render_amount(amount: &Amount) -> String {
     let mut rendered = render_priced(&amount.commodity, amount.quantity, &amount.style);
     if let Some(cost) = &amount.cost {
         let op = match cost.kind {

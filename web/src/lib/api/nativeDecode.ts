@@ -38,6 +38,7 @@ import type {
     OtherHoldingsTotals,
     OtherHoldingsWarning,
 } from "$lib/holdings/types";
+import type {CreatedPricesFile, PriceOutcome, PriceResult, PricesFile, PricesStatus, PricesUpdateResponse} from "$lib/holdings/pricesTypes";
 import type {
     AliasEffect,
     AliasEntry,
@@ -2767,5 +2768,128 @@ export function decodeAccountReference(raw: unknown): AccountReference {
                 });
             })
         ),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Stock price updates (`/api/prices/status`, `/api/prices/file`, `/api/prices/update`)
+//
+// The Holdings tab's "Update prices" button — see `$lib/holdings/pricesTypes.ts`.
+// ---------------------------------------------------------------------------
+
+interface RawPriceSymbol {
+    symbol?: string;
+    yahooTicker?: string;
+}
+
+interface RawPricesFile {
+    journalId?: string;
+    label?: string;
+    writable?: boolean;
+    priceCount?: number;
+}
+
+interface RawPricesStatus {
+    editable?: boolean;
+    quoteCommodity?: string;
+    symbols?: RawPriceSymbol[];
+    defaultTarget?: string;
+    canCreateFile?: boolean;
+    createFileName?: string;
+    files?: RawPricesFile[];
+}
+
+interface RawCreatedPricesFile {
+    journalId?: string;
+    label?: string;
+    includedAs?: string;
+    mainJournalId?: string;
+}
+
+interface RawPriceResult {
+    symbol?: string;
+    yahooTicker?: string;
+    outcome?: string;
+    date?: string;
+    price?: RawDec;
+}
+
+interface RawPricesUpdateResponse {
+    file?: RawPricesFile;
+    results?: RawPriceResult[];
+}
+
+const PRICE_OUTCOMES: PriceOutcome[] = ["updated", "duplicate", "not-found", "fetch-error"];
+
+function priceOutcome(value: unknown, context: string): PriceOutcome {
+    if (typeof value === "string" && (PRICE_OUTCOMES as string[]).includes(value)) return value as PriceOutcome;
+    throw new ApiShapeError(`${context}: expected one of ${PRICE_OUTCOMES.join(", ")}, got ${JSON.stringify(value)}`);
+}
+
+function decodePricesFile(raw: RawPricesFile | undefined, context: string): PricesFile {
+    if (raw === undefined) throw new ApiShapeError(`${context}: missing file`);
+    return Object.freeze({
+        journalId: str(raw.journalId, `${context} journalId`),
+        label: str(raw.label, `${context} label`),
+        writable: raw.writable === true,
+        priceCount: num(raw.priceCount, `${context} priceCount`),
+    });
+}
+
+/** `GET /api/prices/status` → which symbols need a quote and where prices can go. */
+export function decodePricesStatus(raw: unknown): PricesStatus {
+    const status = raw as RawPricesStatus;
+    if (typeof status !== "object" || status === null || !Array.isArray(status.symbols) || !Array.isArray(status.files)) {
+        throw new ApiShapeError("prices status: expected symbols and files arrays");
+    }
+    return Object.freeze({
+        editable: status.editable === true,
+        quoteCommodity: str(status.quoteCommodity, "prices status quoteCommodity"),
+        symbols: frozen(
+            status.symbols.map((symbol, i) =>
+                Object.freeze({
+                    symbol: str(symbol.symbol, `prices status symbols[${i}] symbol`),
+                    yahooTicker: str(symbol.yahooTicker, `prices status symbols[${i}] yahooTicker`),
+                })
+            )
+        ),
+        defaultTarget: optStr(status.defaultTarget, "prices status defaultTarget"),
+        canCreateFile: status.canCreateFile === true,
+        createFileName: optStr(status.createFileName, "prices status createFileName") ?? "prices.journal",
+        files: frozen(status.files.map((file, i) => decodePricesFile(file, `prices status files[${i}]`))),
+    });
+}
+
+/** `POST /api/prices/file` → the file it created and the include it wrote. */
+export function decodeCreatedPricesFile(raw: unknown): CreatedPricesFile {
+    const created = raw as RawCreatedPricesFile;
+    if (typeof created !== "object" || created === null) throw new ApiShapeError("prices file: expected an object");
+    return Object.freeze({
+        journalId: str(created.journalId, "prices file journalId"),
+        label: str(created.label, "prices file label"),
+        includedAs: str(created.includedAs, "prices file includedAs"),
+        mainJournalId: str(created.mainJournalId, "prices file mainJournalId"),
+    });
+}
+
+function decodePriceResult(raw: RawPriceResult, context: string): PriceResult {
+    return Object.freeze({
+        symbol: str(raw.symbol, `${context} symbol`),
+        yahooTicker: str(raw.yahooTicker, `${context} yahooTicker`),
+        outcome: priceOutcome(raw.outcome, `${context} outcome`),
+        date: optStr(raw.date, `${context} date`),
+        price: decodeOptDec(raw.price, `${context} price`),
+    });
+}
+
+/** `POST /api/prices/update` → the target file's new state and every symbol's outcome. */
+export function decodePricesUpdateResponse(raw: unknown): PricesUpdateResponse {
+    const response = raw as RawPricesUpdateResponse;
+    if (typeof response !== "object" || response === null || !Array.isArray(response.results)) {
+        throw new ApiShapeError("prices update: expected a results array");
+    }
+    return Object.freeze({
+        file: decodePricesFile(response.file, "prices update file"),
+        results: frozen(response.results.map((result, i) => decodePriceResult(result, `prices update results[${i}]`))),
     });
 }

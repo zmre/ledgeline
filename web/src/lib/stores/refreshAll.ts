@@ -17,7 +17,12 @@
 //     aliases but not the rules file": neither was reloaded, the aliases had
 //     simply never been loaded before;
 //   - the import capabilities probe, which is what decides whether the New
-//     Transactions screen is usable at all.
+//     Transactions screen is usable at all;
+//   - the Holdings tab's report and trend, and the price status beside them.
+//     Both are keyed on `(nonce, url[, scope])`, none of which a press moves,
+//     and they are the surface most likely to be stale: the prices under them
+//     change from outside this screen — this app's own "Update prices" button,
+//     or the user's own script against the same journal.
 //
 // A refresh that renews some of what is on screen and not the rest is worse than
 // one that renews nothing, because it teaches the user to trust it.
@@ -42,11 +47,13 @@
 import {aliasStore} from "$lib/imports/aliasStore.svelte";
 import {importStore} from "$lib/imports/importStore.svelte";
 import {openRules, rulesStore} from "$lib/imports/rulesStore.svelte";
+import {holdingsData, holdingsScope, otherHoldingsData} from "./holdings.svelte";
 import {journal} from "./journal.svelte";
+import {pricesStore} from "./prices.svelte";
 import {settings} from "./settings.svelte";
 
 /** Every server resource a global refresh re-reads. See the note above before editing. */
-export const REFRESH_TARGETS = ["journal", "importCapabilities", "rulesIndex", "openRules", "aliases"] as const;
+export const REFRESH_TARGETS = ["journal", "importCapabilities", "rulesIndex", "openRules", "aliases", "prices", "holdings"] as const;
 
 export type RefreshTargetName = (typeof REFRESH_TARGETS)[number];
 
@@ -117,6 +124,25 @@ async function reload(name: RefreshTargetName, serverUrl: string, state: Refresh
             return;
         case "aliases":
             return aliasStore.reload(serverUrl);
+        case "prices":
+            // Which symbols need a quote, and where prices already live. Its
+            // own `ensureStatus` key is set the first time /holdings is
+            // opened and cannot change again while the app is running — the
+            // exact shape of the aliases bug described above.
+            return pricesStore.reloadStatus(serverUrl);
+        case "holdings":
+            // The report and trend behind the Stocks table. Keyed on
+            // `(url, nonce, scope)` in `holdings/+page.svelte`, and a refresh
+            // moves none of the three, so nothing else re-reads it — while
+            // it is the surface most likely to have gone stale, since a price
+            // update (this app's own button, or the user's own script) changes
+            // every market value on it. The Other tab only once it has been
+            // opened; see `pricesStore.afterWrite`.
+            await Promise.all([
+                holdingsData.load(serverUrl, holdingsScope.value),
+                otherHoldingsData.report === null ? Promise.resolve() : otherHoldingsData.load(serverUrl, holdingsScope.value),
+            ]);
+            return;
     }
 }
 

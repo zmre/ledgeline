@@ -17,6 +17,7 @@ use super::mixed_amount::MixedAmount;
 use crate::decimal::{Dec, DecError, MAX_PARSE_PLACES};
 use crate::model::{Amount, Commodity, CostKind, PriceDirective, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 /// A market-price lookup table built from `P` directives.
 #[derive(Debug, Clone)]
@@ -595,7 +596,9 @@ pub fn infer_market_prices(txns: &[Transaction]) -> Result<Vec<PriceDirective>, 
 ///
 /// Handing these out instead of a built [`PriceDirective`] is what lets
 /// [`base_target`] tally the price targets without allocating a `String` per
-/// inference — [`Inferred::to_directive`] is the only place that pays.
+/// inference — [`Inferred::to_directive`] is the only place that pays. That is
+/// also why `source_file` is a `&Path` here: counting targets must not pay for
+/// a `PathBuf` clone it will throw away.
 struct Inferred<'a> {
     date: &'a str,
     /// The commodity being priced.
@@ -604,6 +607,9 @@ struct Inferred<'a> {
     priced_in: &'a Amount,
     /// The per-unit rate.
     quantity: Dec,
+    /// The transaction's own file — see [`PriceDirective::source_file`], which
+    /// documents why an inferred directive belongs to the file that implied it.
+    source_file: &'a Path,
 }
 
 impl Inferred<'_> {
@@ -617,6 +623,7 @@ impl Inferred<'_> {
                 style: self.priced_in.style.clone(),
                 cost: None,
             },
+            source_file: self.source_file.to_path_buf(),
         }
     }
 }
@@ -652,6 +659,7 @@ fn infer_from_txn<'a>(
                 commodity: &amount.commodity,
                 priced_in: &cost.amount,
                 quantity: unit,
+                source_file: &txn.source_file,
             });
             // Reverse (only when 1/unit terminates): lets a commodity that
             // appears solely as a cost denominator still be valued.
@@ -661,6 +669,7 @@ fn infer_from_txn<'a>(
                     commodity: &cost.amount.commodity,
                     priced_in: amount,
                     quantity: reciprocal,
+                    source_file: &txn.source_file,
                 });
             }
         }
