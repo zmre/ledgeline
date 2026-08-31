@@ -291,17 +291,8 @@ fn all_prices(journal: &Journal) -> Result<Vec<PriceDirective>, ReportError> {
     Ok(all)
 }
 
-/// The base valuation commodity: the combined explicit + inferred price set's
-/// base, or `$` when the journal declares no prices.
-pub(super) fn base_commodity(journal: &Journal) -> Result<Commodity, ReportError> {
-    Ok(PriceDb::build(&all_prices(journal)?)
-        .base_commodity()
-        .cloned()
-        .unwrap_or_else(|| Commodity("$".to_string())))
-}
-
 /// The valuation commodity for this dashboard's holdings boxes: the price set's
-/// most-frequent target, exactly as [`base_commodity`] picks it.
+/// most-frequent target.
 ///
 /// Pinned EXPLICITLY, per price set, because the holdings engine now chooses a
 /// base that actually prices the portfolio (HOLD-3) while this dashboard still

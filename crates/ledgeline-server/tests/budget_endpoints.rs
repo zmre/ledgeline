@@ -494,6 +494,108 @@ async fn adding_a_rule_appends_it_at_the_end() {
     );
 }
 
+/// Two goals added in a row share ONE rule.
+///
+/// The bug this pins: every `addRule` opened a block of its own, so a journal
+/// edited from the tab grew a `~ monthly  monthly budget` header per goal —
+///
+/// ```journal
+/// ~ monthly  monthly budget
+///     (expenses:whatever)    $5
+///
+/// ~ monthly  monthly budget
+///     (expenses:other)    $10
+/// ```
+///
+/// The first goal opens the rule (nothing states that recurrence under that name
+/// yet); the second joins it. `docs/budget.md`: "adding a goal puts it in the
+/// existing rule of that period, creating one only if there is none".
+#[tokio::test]
+async fn two_added_goals_share_one_rule() {
+    let tree = Tree::budgeted();
+    for (account, mantissa) in [("expenses:whatever", "500"), ("expenses:other", "1000")] {
+        let revision = revision(&tree).await;
+        let (status, body) = send_json(
+            &tree,
+            "PUT",
+            "/api/budget/lines/main.journal",
+            json!({
+                "revision": revision,
+                "change": {"kind": "addRule", "period": "monthly",
+                           "description": "monthly budget", "account": account,
+                           "value": {"mantissa": mantissa, "places": 2}}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    let after = tree.read("main.journal");
+    assert_eq!(
+        after.matches("~ monthly  monthly budget").count(),
+        1,
+        "the second goal opened a second rule\n{after}"
+    );
+    assert!(
+        after.ends_with(concat!(
+            "~ monthly  monthly budget\n",
+            "    (expenses:whatever)  $5.00\n",
+            "    (expenses:other)    $10.00\n",
+        )),
+        "{after}"
+    );
+    // And the rest of the file is exactly as it was: the rule that was already
+    // there, its alignment, its comments and the ledger below it.
+    assert!(after.starts_with(JOURNAL), "{after}");
+
+    // The same fact read back through the listing: three rules, and the one that
+    // was created holds both goals.
+    let (status, body) = get(&tree, "/api/budget/lines").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rules = main_file(&body)["rules"].as_array().expect("rules");
+    assert_eq!(rules.len(), 3, "{body}");
+    let added = rules
+        .iter()
+        .find(|rule| rule["description"] == json!("monthly budget"))
+        .expect("the created rule");
+    let lines = added["lines"].as_array().expect("lines");
+    assert_eq!(lines.len(), 2, "{added}");
+    assert_eq!(lines[0]["account"], json!("expenses:whatever"));
+    assert_eq!(lines[1]["account"], json!("expenses:other"));
+}
+
+/// A goal for an account the joined rule already budgets is refused — as the
+/// caller's mistake, with a sentence, and without writing anything.
+///
+/// Worth an endpoint test rather than only a unit one because the STATUS is the
+/// point: this is reachable by clicking "Add a budget goal" and picking a
+/// category that is already budgeted, and a `500` would tell the user their
+/// journal engine is broken when the answer is "edit the goal you have".
+#[tokio::test]
+async fn a_second_goal_for_a_budgeted_account_is_refused() {
+    let tree = Tree::budgeted();
+    let revision = revision(&tree).await;
+    let before = tree.snapshot();
+    let (status, body) = send_json(
+        &tree,
+        "PUT",
+        "/api/budget/lines/main.journal",
+        json!({
+            "revision": revision,
+            "change": {"kind": "addRule", "period": "monthly",
+                       "description": "household budget", "account": "expenses:food",
+                       "value": {"mantissa": "500", "places": 0}}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string().contains("expenses:food"),
+        "the refusal must name the goal to change instead: {body}"
+    );
+    assert_eq!(tree.snapshot(), before, "nothing may be written");
+}
+
 /// Removing a rule's only goal removes the rule; removing one of several removes
 /// just its line.
 #[tokio::test]

@@ -31,8 +31,8 @@
 
 use super::ReportError;
 use super::account_types::{AccountType, account_decls, declared_types, resolve_account_type};
-use super::insights::base_commodity;
 use super::periods::{add_months, days_between, parts};
+use super::prices::base_target;
 use crate::decimal::Dec;
 use crate::model::{Commodity, Journal, Transaction};
 use std::collections::BTreeMap;
@@ -443,7 +443,15 @@ pub fn detect_subscriptions(
     journal: &Journal,
     opts: &SubscriptionOpts,
 ) -> Result<SubscriptionsReport, ReportError> {
-    let base = base_commodity(journal)?;
+    // The most frequent price target, `$` when the journal prices nothing —
+    // the same commodity `insights::base_commodity` used to hand back, but
+    // COUNTED rather than derived from a freshly built price database.
+    // Detection reads one string off it and nothing else, while
+    // `infer_market_prices` + `PriceDb::build` charged a sort of the whole
+    // journal plus a deep clone of every directive to produce it (11.5 ms +
+    // 1.7 ms on the 200k corpus).
+    let base = base_target(&journal.transactions, &journal.prices)?
+        .unwrap_or_else(|| Commodity("$".to_string()));
     let lookback_start = add_months(opts.as_of, -opts.lookback_months);
     let horizons = account_horizons(&journal.transactions, opts.as_of);
     // Effective account types, so costs booked outside an `expenses:` root still

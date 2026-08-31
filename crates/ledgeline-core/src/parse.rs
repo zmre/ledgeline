@@ -136,6 +136,24 @@ const MAX_INCLUDE_DEPTH: usize = 20;
 /// to real journals, which split into tens of files, not thousands.
 const MAX_INCLUDE_FILES: usize = 1000;
 
+/// Hard cap on the number of digit-group sizes kept in an [`AmountStyle`].
+///
+/// **Why a cap at all.** A `commodity` directive's style is cloned into every
+/// amount of that commodity (see [`parse_amount`]), so the group vector is
+/// retained once per *amount* while the directive that declared it is charged
+/// once against the file size. `commodity $1,1,…,1.00` with 20k separators
+/// across 2k postings turned a 127 KB journal into 80 MB of retained group
+/// entries, and the ratio grows with both factors without bound.
+///
+/// **Why 39 loses nothing.** Group sizes describe the INTEGER digits, and every
+/// quantity the engine can hold is an `i128` mantissa — 39 decimal digits at the
+/// very widest, since `i128::MAX` is `1.7 × 10^38`. A renderer walks the sizes
+/// right-to-left consuming at least one digit each (`groupDigits` in
+/// `web/src/lib/domain/money.ts` stops outright on a non-positive size), so it
+/// runs out of digits before it can reach a 40th entry. Real groupings are one
+/// or two entries: `[3]` for thousands, `[3,2]` for the Indian lakh.
+const MAX_DIGIT_GROUPS: usize = 39;
+
 /// Canonical display style per commodity, built from `commodity` directives (or
 /// first occurrence).
 type Styles = HashMap<Commodity, AmountStyle>;
@@ -950,6 +968,40 @@ pub fn confine(path: &Path, root: &Path) -> Option<PathBuf> {
     path.starts_with(root).then_some(path)
 }
 
+/// The first HIDDEN component of `path` below `root` — the one thing an
+/// `include` may not reach into, on top of confinement.
+///
+/// # Why only hidden entries
+/// `rules::discovery` skips two classes when it scans this same directory:
+/// hidden entries, and a `SKIP_DIRS` list of routinely-enormous tool
+/// directories. Only the first belongs here, and the difference is what
+/// each class holds rather than where it sits. A dot-entry in a journal
+/// directory is `.git/config`, `.env`, `.netrc`, `.ssh/` — credentials, and the
+/// whole reason this guard exists. `build/`, `dist/`, `target/` and `vendor/`
+/// hold none of that; for a *scan* they are a cost worth avoiding, but an
+/// `include` is a path the user typed deliberately, so refusing
+/// `include build/2026.journal` would be a regression that buys no security.
+///
+/// # Measured below the root, never on it
+/// A journal that lives in `~/.finance` or `~/.config/ledgeline` is an ordinary
+/// choice, and the user naming their own journal directory is not the case this
+/// guards — an `include` reaching sideways into a hidden sibling of their
+/// journals is. Components are read from the CANONICAL path, so a symlink
+/// pointing into `.git` is caught after resolution rather than by its spelling.
+fn hidden_component<'a>(path: &'a Path, root: &Path) -> Option<&'a str> {
+    path.strip_prefix(root)
+        .ok()?
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => name.to_str(),
+            // A non-`Normal` component below an already-canonicalized root is
+            // not a name this test can vouch for; `confine` has already had its
+            // say about traversal, so leave it alone rather than guess.
+            _ => None,
+        })
+        .find(|name| name.starts_with('.'))
+}
+
 /// Decide whether an `include` target may be parsed, returning its canonical
 /// path. Rejects, in order:
 ///
@@ -960,10 +1012,18 @@ pub fn confine(path: &Path, root: &Path) -> Option<PathBuf> {
 ///    GUI's error dialog — and anything that DOES parse is absorbed into the
 ///    journal and served over HTTP. hledger permits all three; we deliberately
 ///    do not (see the module docs).
-/// 2. **Cycles** (SEC-4) — the target is the including file itself or one of its
+/// 2. **Hidden entries.** Confinement bounds the *tree* an include may read, but
+///    journals routinely live inside a git repo, so that tree contains
+///    `.git/config`, `.env` and `.netrc`. `include .git/config` was admitted,
+///    read, and — because [`ParseError::Located`] quotes the first line that
+///    failed to parse — echoed back to stderr and the GUI error dialog, which is
+///    the same file-read oracle SEC-6 closed for paths outside the tree,
+///    reopened for paths inside it. Refusing BEFORE the read is what makes the
+///    refusal disclose nothing.
+/// 3. **Cycles** (SEC-4) — the target is the including file itself or one of its
 ///    ancestors. Unbounded recursion here overflows the stack, which aborts the
 ///    process with `SIGABRT` and cannot be caught.
-/// 3. **Depth / total-file budget** — bounds an acyclic include bomb, which
+/// 4. **Depth / total-file budget** — bounds an acyclic include bomb, which
 ///    cycle detection alone does not.
 fn admit_include(
     target: &Path,
@@ -978,6 +1038,12 @@ fn admit_include(
             ctx.include_root.display()
         ))
     })?;
+    if let Some(hidden) = hidden_component(&path, &ctx.include_root) {
+        return Err(ParseError::Include(format!(
+            "'{as_written}' resolves into the hidden entry '{hidden}', which \
+             includes may not read; a hidden entry is not a journal file"
+        )));
+    }
     if path == includer || ctx.include_stack.contains(&path) {
         return Err(ParseError::Include(format!(
             "this included file forms a cycle: {}",
@@ -1933,6 +1999,19 @@ fn balance_postings(raw: Vec<RawPosting>, line_no: u32) -> Result<Vec<Posting>, 
 /// first-seen order, the maximum contributing precision, and the first-seen
 /// style. Errors if more than one posting in the group is elided (only one can
 /// be inferred).
+///
+/// # Why the index map
+/// The lookup used to be `sums.iter_mut().find(...)`, a linear scan of the
+/// running list per posting — quadratic in the number of distinct commodities in
+/// one transaction. That is reachable from a journal (a single transaction with
+/// 8k commodities took 16x the time of one with 2k, on a file that grew 4x), and
+/// a journal is attacker-influenced input. [`group_residual`] already solves the
+/// same shape with a `BTreeMap`, so this uses one too.
+///
+/// The map holds an INDEX rather than the sum itself, because first-seen order
+/// is observable: [`finalize_posting`] emits the inferred leg's amounts in
+/// `sums` order, and `C10` sorts before `C2`. Keeping the `Vec` keeps the order;
+/// the map only replaces the scan.
 fn group_sums(
     raw: &[RawPosting],
     ptype: PostingType,
@@ -1944,20 +2023,27 @@ fn group_sums(
     }
 
     let mut sums: Vec<CommoditySum> = Vec::new();
+    let mut index: BTreeMap<Commodity, usize> = BTreeMap::new();
     for posting in group() {
         if let Some(amount) = &posting.amount {
             let (commodity, quantity, precision, style) = cost_contribution(amount)?;
-            match sums.iter_mut().find(|entry| entry.commodity == commodity) {
-                Some(entry) => {
+            match index.get(&commodity).copied() {
+                Some(at) => {
+                    let entry = &mut sums[at];
                     entry.total = entry.total.add(quantity)?;
                     entry.precision = entry.precision.max(precision);
                 }
-                None => sums.push(CommoditySum {
-                    commodity,
-                    total: quantity,
-                    precision,
-                    style,
-                }),
+                None => {
+                    // Cloned only on first sight, so this is one extra clone per
+                    // distinct commodity, not per posting.
+                    index.insert(commodity.clone(), sums.len());
+                    sums.push(CommoditySum {
+                        commodity,
+                        total: quantity,
+                        precision,
+                        style,
+                    });
+                }
             }
         }
     }
@@ -2684,6 +2770,13 @@ fn analyze_number(
         if !leading_is_full {
             sizes.pop();
         }
+        // Unreachable sizes are dropped HERE rather than earlier, so the rule
+        // above still sees the whole list and no real literal changes shape.
+        // `sizes` runs right-to-left, so what survives is exactly what a
+        // renderer reaches first. `shrink_to_fit` so the style that gets cloned
+        // into every amount does not carry the original capacity with it.
+        sizes.truncate(MAX_DIGIT_GROUPS);
+        sizes.shrink_to_fit();
         DigitGroups { mark, sizes }
     });
 

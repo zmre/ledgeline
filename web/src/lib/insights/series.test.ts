@@ -16,6 +16,7 @@ import {
     pieData,
     rankedAccounts,
     categoryOf,
+    signConventions,
     styleFor,
     visibleNet,
 } from "./series";
@@ -609,5 +610,56 @@ describe("UNIT series categoryOf (declared types beat names)", () => {
         const typed = bigNumbers(txns, "$", undefined, undefined, declared);
         expect(typed.income).toEqual(dec(400000n, 2));
         expect(typed.expenses).toEqual(dec(60000n, 2));
+    });
+});
+
+// `signConventions` is memoized on argument identity (see `signCache`), because
+// five call sites each re-derive it over the WHOLE journal on every filter
+// change — 6 passes measured 191-202 ms at 150k transactions before the memo,
+// 37 ms after. A memo is only worth having if it cannot answer the wrong
+// question, so this pins both halves: the hit, and every miss that must still
+// recompute.
+describe("UNIT signConventions memoization", () => {
+    // hledger's standard signs: revenue negative, expenses positive.
+    const standard = [txn("2026-01-05", posting("revenue:salary", usd(-500_00)), posting("assets:bank", usd(500_00)))];
+    // A bank-sign import: revenue arrives POSITIVE, so the convention must flip.
+    const inverted = [txn("2026-01-05", posting("revenue:salary", usd(500_00)), posting("assets:bank", usd(-500_00)))];
+
+    it("returns the identical object for a repeated call, so the scan runs once", () => {
+        const first = signConventions(standard, "$");
+        const second = signConventions(standard, "$");
+        expect(second).toBe(first);
+    });
+
+    it("recomputes for a DIFFERENT array, even one that wants the opposite answer", () => {
+        expect(signConventions(standard, "$").revenue).toBe(-1);
+        expect(signConventions(inverted, "$").revenue).toBe(1);
+        // ...and the first answer is still the first answer.
+        expect(signConventions(standard, "$").revenue).toBe(-1);
+    });
+
+    it("keys on the commodity, so a second currency is not served the first's answer", () => {
+        const mixed = [
+            txn("2026-01-05", posting("revenue:salary", usd(-500_00)), posting("assets:bank", usd(500_00))),
+            txn("2026-01-06", posting("revenue:salary", eur(500_00)), posting("assets:bank", eur(-500_00))),
+        ];
+        expect(signConventions(mixed, "$").revenue).toBe(-1);
+        expect(signConventions(mixed, "EUR").revenue).toBe(1);
+    });
+
+    it("keys on the declared-type map, so `type:` declarations are not cached away", () => {
+        // `cogs:` is `other` to the name heuristic and `expense` once declared,
+        // so the two calls must not share an entry.
+        const cogs = [txn("2026-01-05", posting("cogs:parts", usd(-100_00)), posting("assets:bank", usd(100_00)))];
+        const declared = new Map<string, AccountType>([["cogs", "expense"]]);
+        expect(signConventions(cogs, "$").expense).toBe(1); // nothing classified as an expense at all
+        expect(signConventions(cogs, "$", declared).expense).toBe(-1); // now it is, and it is negative-dominant
+    });
+
+    it("is transparent to the functions built on it", () => {
+        // pieData/lineData/bigNumbers all route through the memo; a stale hit
+        // would show up here as a sign flip rather than as a timing difference.
+        expect(bigNumbers(standard, "$").income).toEqual(dec(50000n, 2));
+        expect(bigNumbers(inverted, "$").income).toEqual(dec(50000n, 2));
     });
 });

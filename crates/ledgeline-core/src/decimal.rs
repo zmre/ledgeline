@@ -294,7 +294,8 @@ impl Dec {
 
     /// Round to `target` fractional places using round-half-to-even (banker's
     /// rounding), matching `Data.Decimal`. Returns `self` unchanged when
-    /// `target >= places`.
+    /// `target >= places`, and otherwise **always** returns a value at scale
+    /// `target` — see the closed-cap argument below.
     #[must_use]
     fn rounded_half_even(self, target: u32) -> Self {
         if target >= self.places {
@@ -302,7 +303,25 @@ impl Dec {
         }
         let drop = self.places - target;
         let Ok(divisor) = pow10(drop) else {
-            return self;
+            // `pow10` has no answer from `drop == 39` up, and this arm used to
+            // `return self` — so the scales the cap exists to refuse were exactly
+            // the ones that skipped it. `1e-2147483648` parsed to
+            // `places = 2_147_483_648`, which rode out as `style.precision` on the
+            // wire and as a `"0".repeat(places)` allocation in every renderer
+            // downstream. The cap has to fail CLOSED.
+            //
+            // Zero at `target` is not a fallback here, it is the exact answer.
+            // The mantissa is an `i128`, so `|mantissa| <= 2^127 < 5 × 10^38`,
+            // i.e. strictly under `10^39 / 2 <= 10^drop / 2`. Dividing by
+            // `10^places` gives `|self| < 10^-target / 2`: strictly less than half
+            // a unit in the last place we are keeping. Half-even rounds that to
+            // zero, which is precisely what the arithmetic below would compute if
+            // `i128` could hold `10^drop`.
+            //
+            // So no magnitude is being discarded. A bounded mantissa spread over a
+            // scale this large IS a vanishing value; the problem was never a large
+            // number wearing the wrong scale, because `i128` cannot hold one.
+            return Self::new(0, target);
         };
         let quotient = self.mantissa / divisor;
         let remainder = (self.mantissa % divisor).abs();
@@ -328,6 +347,24 @@ impl Dec {
 /// produced, instead of letting it through to be rendered and then bounced by
 /// the round-trip guard with a misleading message (SEC-5).
 pub const MAX_PARSE_PLACES: u32 = 10;
+
+/// The widest fractional precision any renderer of a [`Dec`] will lay out.
+///
+/// Every exact renderer in the engine pads the integer side with
+/// `"0".repeat(places)`, so an unclamped `places` turns a handful of input bytes
+/// into a proportional allocation — `1e-2147483648` asks for 2.1 GB. Clamping is
+/// what makes those renderers total.
+///
+/// Nothing the engine itself produces comes close: [`Dec::parse`] caps at
+/// [`MAX_PARSE_PLACES`] and [`Dec::mul`] at most sums its operands' scales. Only a
+/// [`Dec`] built directly from unvalidated input — a wire payload, a bank
+/// statement's `BALAMT` — can exceed it. 255 is hledger's own maximum displayed
+/// precision, so the clamp cannot truncate a value hledger could have written.
+///
+/// Lives here, beside the type it bounds, because three renderers need it
+/// (`edit::render_dec`, `assertions::render_dec`, `convert::ofx::render`) and two
+/// of them had grown their own copy of the number while the third had none.
+pub const MAX_RENDER_PLACES: u32 = 255;
 
 /// `10^exp` as an `i128`, checked for overflow.
 fn pow10(exp: u32) -> Result<i128, DecError> {
@@ -660,6 +697,85 @@ mod tests {
             Dec::new(1_123_456_789, 9)
         );
         assert_eq!(Dec::parse("5.00", '.').unwrap(), Dec::new(500, 2));
+    }
+
+    #[test]
+    fn the_parse_scale_cap_fails_closed_past_what_pow10_can_build() {
+        // `pow10` has no answer from `drop == 39` up, and the cap used to
+        // `return self` there — so the scales it exists to refuse were exactly
+        // the ones that skipped it. The resulting `places` became
+        // `style.precision` on the wire and a `"0".repeat(places)` allocation in
+        // every renderer downstream.
+        let poisoned = Dec::parse("1e-2147483648", '.').expect("a well-formed literal");
+        assert_eq!(poisoned.places, MAX_PARSE_PLACES);
+        assert_eq!(poisoned.mantissa, 0);
+
+        // The same thing spelled without an exponent: 49 written fractional
+        // digits is the first scale whose drop to ten places exceeds 38.
+        let literal = format!("0.{}1", "0".repeat(48));
+        let boundary = Dec::parse(&literal, '.').expect("49 fractional digits is well-formed");
+        assert_eq!((boundary.mantissa, boundary.places), (0, MAX_PARSE_PLACES));
+    }
+
+    #[test]
+    fn the_closed_scale_cap_is_the_arithmetically_correct_answer() {
+        // Zero at the target is not a compromise; it is what half-even rounding
+        // computes. The premise is the mantissa's own bound: an `i128` cannot
+        // reach half of 10^39, so with `drop >= 39` the value is strictly under
+        // half a unit in the last kept place, whatever the mantissa.
+        //
+        // Checked as `|m| / 10^38 < 5` rather than `|m| < 5 × 10^38` because
+        // 5 × 10^38 does not fit in a `u128` either. The two are the same claim:
+        // 5 × 10^38 is a multiple of 10^38, so the floor division is exact here.
+        assert!(i128::MAX.unsigned_abs() / 10u128.pow(38) < 5);
+        assert!(i128::MIN.unsigned_abs() / 10u128.pow(38) < 5);
+        for mantissa in [i128::MAX, i128::MIN, 1, -1] {
+            let capped = Dec::new(mantissa, 49).rounded_half_even(10);
+            assert_eq!((capped.mantissa, capped.places), (0, 10), "{mantissa}");
+        }
+
+        // One place shallower the divisor still fits, so the ordinary path runs
+        // — and it does NOT collapse to zero. That is what shows the closed arm
+        // draws the line where the arithmetic does, rather than early: it takes
+        // over exactly when the correct answer has become zero anyway.
+        let widest = Dec::new(i128::MAX, 48).rounded_half_even(10);
+        assert_eq!((widest.mantissa, widest.places), (2, 10));
+    }
+
+    proptest! {
+        /// The cap is TOTAL: past the target, the result is AT the target for
+        /// every scale a `u32` can express. This is the property the old
+        /// `return self` broke, and it breaks it for ~99.9999% of the `places`
+        /// range — every value from 49 up — so a uniform generator finds it
+        /// immediately.
+        #[test]
+        fn rounding_never_returns_a_scale_wider_than_its_target(
+            mantissa: i128,
+            places: u32,
+            target in 0u32..=MAX_PARSE_PLACES,
+        ) {
+            let rounded = Dec::new(mantissa, places).rounded_half_even(target);
+            prop_assert_eq!(rounded.places, places.min(target));
+        }
+
+        /// And nothing that reaches the closed arm was a value worth keeping:
+        /// its magnitude is under half a unit in the last kept place, so the
+        /// zero it becomes is the correctly rounded value and not a lost one.
+        #[test]
+        fn a_capped_value_was_already_smaller_than_half_an_ulp(
+            mantissa: i128,
+            extra in 39u32..=200,
+            target in 0u32..=MAX_PARSE_PLACES,
+        ) {
+            let value = Dec::new(mantissa, target + extra);
+            prop_assert_eq!(value.rounded_half_even(target).mantissa, 0);
+            // Zero because the value really was under half a unit in the last
+            // kept place, not because the cap gave up. `|m| < 10^39 / 2` holds
+            // for EVERY `i128`, and a larger `extra` only shrinks the value
+            // further, so the tightest case is the one checked. Spelled as a
+            // division because neither 10^39 nor 5 x 10^38 fits in a `u128`.
+            prop_assert!(mantissa.unsigned_abs() / 10u128.pow(38) < 5);
+        }
     }
 
     #[test]

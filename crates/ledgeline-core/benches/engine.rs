@@ -71,6 +71,7 @@ const DEPTH: usize = 4;
 /// Everything derived from one corpus, computed once and shared by every bench
 /// so setup cost never lands inside a measurement.
 struct Fixture {
+    id: String,
     txns: usize,
     text: String,
     journal: Journal,
@@ -89,8 +90,9 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn load(txns: usize) -> Self {
-        let path = corpus::ensure_journal(txns);
+    fn load(shape: &corpus::Shape) -> Self {
+        let txns = shape.txns;
+        let path = corpus::ensure_journal_for(shape);
         let source = path.to_string_lossy().into_owned();
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
@@ -119,6 +121,7 @@ impl Fixture {
         };
 
         Self {
+            id: corpus::shape_id(shape),
             txns,
             text,
             journal,
@@ -133,20 +136,19 @@ impl Fixture {
     }
 
     fn id(&self) -> String {
-        match self.txns {
-            n if n % 1000 == 0 => format!("{}k", n / 1000),
-            n => n.to_string(),
-        }
+        self.id.clone()
     }
 }
 
 /// Load every requested corpus once. Parsing 200k costs ~200 ms and building the
 /// derived tables costs seconds; doing it per group would dominate the run.
+///
+/// Defaults to the v1 sizes, so a plain `cargo bench` still produces exactly the
+/// benchmark ids every recorded baseline holds. `LEDGELINE_BENCH_SHAPES=v2,v2fx`
+/// swaps in the large-repo fixtures, whose ids carry their own prefix and so
+/// cannot be confused with a v1 number.
 fn fixtures() -> Vec<Fixture> {
-    corpus::bench_sizes()
-        .into_iter()
-        .map(Fixture::load)
-        .collect()
+    corpus::bench_shapes().iter().map(Fixture::load).collect()
 }
 
 /// Criterion's defaults (100 samples × 5 s warm-up) are unusable for a bench that
@@ -532,6 +534,19 @@ fn bench_prices(c: &mut Criterion, fixtures: &[Fixture]) {
             fixture,
             |b, fixture| {
                 b.iter(|| PriceDb::build(black_box(&fixture.all_prices)));
+            },
+        );
+
+        // The other half of "build the whole price database": an N-transaction
+        // sort plus a `PriceDirective` (three `String` clones) per cost
+        // annotation. `infer_market_prices` + `PriceDb_build` is what a caller
+        // that only wants the base commodity — `subscriptions` — used to pay,
+        // so the pair bounds what skipping the build can possibly win.
+        group.bench_with_input(
+            BenchmarkId::new("infer_market_prices", &id),
+            fixture,
+            |b, fixture| {
+                b.iter(|| infer_market_prices(black_box(&fixture.journal.transactions)).unwrap());
             },
         );
 

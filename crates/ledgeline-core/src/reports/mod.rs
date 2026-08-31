@@ -52,8 +52,8 @@ pub use account_groups::{
     group_rank, parse_bs_term_tag, resolve_bs_term,
 };
 pub use account_types::{
-    AccountDecl, AccountType, AccountTypes, account_decls, account_decls_from, cash_predicate,
-    declared_types, is_account_type, resolve_account_type,
+    ACCOUNT_TYPE_TAG, AccountDecl, AccountType, AccountTypes, account_decls, account_decls_from,
+    cash_predicate, declared_types, is_account_type, parse_account_type_tag, resolve_account_type,
 };
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
@@ -101,82 +101,4 @@ pub enum ReportError {
     /// from `bucketStart`/`bucketEnd`).
     #[error("unrecognized bucket key: '{0}'")]
     InvalidBucketKey(String),
-    /// An `account` directive declared an `issection:` value outside the closed
-    /// vocabulary — see [`income_statement::parse_is_section_tag`].
-    ///
-    /// This and [`Self::UnknownHoldingsClass`] are the only pieces of journal
-    /// content the report engine refuses outright, and it is deliberate.
-    /// Everything else it reads from a tag has a
-    /// total fallback, because a fallback there is harmless; here it is not.
-    /// `issection:` decides section MEMBERSHIP, so a silent `None` would drop
-    /// the account back to its type-inferred section and the box the user
-    /// spelled would read zero with nothing on screen to say why — the exact
-    /// `account-type-not-name` failure `parse_account_type_tag` had to be
-    /// corrected for (`account_types.rs:91-113`). A misspelt code is a typo in a
-    /// closed seven-word vocabulary; naming it and its alternatives is the only
-    /// answer that leads anywhere.
-    #[error(
-        "account '{account}' declares `issection: {value}`, which is not one of \
-         revenue, cogs, opex, depreciation, interest, tax, other"
-    )]
-    UnknownIsSection {
-        /// The declaring account.
-        account: String,
-        /// The value as written, trimmed.
-        value: String,
-    },
-    /// An `account` directive declared a `holdings:` value outside the closed
-    /// vocabulary — see [`crate::holdings::parse_holdings_tag`].
-    ///
-    /// Refused for [`Self::UnknownIsSection`]'s reason, one step milder in its
-    /// consequence and identical in its shape: `holdings:` decides which
-    /// Holdings TAB an account appears on, so a silent `None` returns it to the
-    /// mechanical default — and the user who tagged a commodity-booked house to
-    /// move it off Stocks finds it still sitting on Stocks, with nothing on
-    /// screen to say why. Three-word vocabulary, so a miss is a typo.
-    #[error(
-        "account '{account}' declares `holdings: {value}`, which is not one of \
-         stocks, other, none"
-    )]
-    UnknownHoldingsClass {
-        /// The declaring account.
-        account: String,
-        /// The value as written, trimmed.
-        value: String,
-    },
-    /// An `account` directive declared a `valuation:` value outside the closed
-    /// vocabulary — see [`crate::holdings::parse_valuation_tag`].
-    ///
-    /// Refused for the same reason as its two siblings above, with the sharpest
-    /// consequence of the three: `valuation:` decides whether an account is
-    /// money-in or a mark-to-market adjustment, so a silent fallback to `cost`
-    /// folds a holding's unrealized gain into its own basis and reports the gain
-    /// as exactly zero — a real number replaced by a plausible wrong one.
-    #[error(
-        "account '{account}' declares `valuation: {value}`, which is not one of \
-         cost, unrealized, depreciation, adjustment"
-    )]
-    UnknownValuationRole {
-        /// The declaring account.
-        account: String,
-        /// The value as written, trimmed.
-        value: String,
-    },
-    /// An `account` directive declared a `bsterm:` value outside the closed
-    /// vocabulary — see [`account_groups::parse_bs_term_tag`].
-    ///
-    /// Refused for its siblings' reason: a misspelt term silently files the
-    /// account under the wrong subheading and its balance into the wrong
-    /// subtotal, so the statement stays plausible while the current ratio it
-    /// exists to support is wrong.
-    #[error(
-        "account '{account}' declares `bsterm: {value}`, which is not one of \
-         current, noncurrent"
-    )]
-    UnknownBsTerm {
-        /// The declaring account.
-        account: String,
-        /// The value as written, trimmed.
-        value: String,
-    },
 }

@@ -217,8 +217,17 @@ export function normalizeTransactions(raw: unknown): Transaction[] {
  *
  * The three `stock-*` rules arrived when the SPA stopped computing them from its
  * own copy of the holdings engine (DRY-1) and started reading the engine's.
+ * `account-tag` arrived when the four closed-vocabulary `account` tags stopped
+ * answering a typo with a 400 that took the whole tab down.
+ *
+ * MUST STAY ON ONE PHYSICAL LINE. The parity test reads this file as TEXT and
+ * takes the first line whose text declares this set, then pulls the quoted
+ * strings out of it — so a prettier reflow across lines, or any prose above that
+ * repeats the declaration verbatim, silently reduces it to an empty list.
+ * Hence the `prettier-ignore`, and hence this paragraph not spelling the name.
  */
-const DIAGNOSTIC_RULES: ReadonlySet<string> = new Set(["unbalanced", "assertion", "stock-missing-basis", "stock-negative", "stock-unpriced"]);
+// prettier-ignore
+const DIAGNOSTIC_RULES: ReadonlySet<string> = new Set(["unbalanced", "assertion", "account-tag", "stock-missing-basis", "stock-negative", "stock-unpriced"]);
 /** Valid `Severity` values (the domain enum); anything else is junk we refuse to hand the UI. */
 const DIAGNOSTIC_SEVERITIES: ReadonlySet<string> = new Set<Severity>(["error", "warning", "info"]);
 
@@ -236,6 +245,12 @@ const DIAGNOSTIC_SEVERITIES: ReadonlySet<string> = new Set<Severity>(["error", "
  * drawer's date/description lookup and `problems.requestFocus`. So the position
  * is resolved through `txns` to the transaction's own index. A position outside
  * the array cannot be anchored to a row at all, so it is dropped.
+ *
+ * An entry may instead be anchored to an ACCOUNT (the `account-tag` rule): a
+ * finding about an `account` DIRECTIVE, which has no transaction. It carries
+ * `account` and no `txnIndex`, and survives with `txnIndex: null`. What is
+ * dropped is an entry with NEITHER anchor — the drawer could show it but nothing
+ * could say what it was about, which is worse than losing the one finding.
  */
 function toDiagnostic(raw: unknown, txns: readonly Transaction[]): Problem | null {
     if (typeof raw !== "object" || raw === null) return null;
@@ -243,10 +258,26 @@ function toDiagnostic(raw: unknown, txns: readonly Transaction[]): Problem | nul
     if (typeof entry.rule !== "string" || !DIAGNOSTIC_RULES.has(entry.rule)) return null;
     if (typeof entry.severity !== "string" || !DIAGNOSTIC_SEVERITIES.has(entry.severity)) return null;
     if (typeof entry.message !== "string" || entry.message.trim() === "") return null;
+
     const position = entry.txnIndex;
-    if (position === undefined || !Number.isInteger(position) || position < 0 || position >= txns.length) return null;
+    // `undefined` is "not anchored to a transaction"; anything else present must
+    // be a real in-range position, so a junk txnIndex is still refused rather
+    // than quietly demoted to an account anchor.
+    if (position !== undefined) {
+        if (!Number.isInteger(position) || position < 0 || position >= txns.length) return null;
+        return Object.freeze({
+            txnIndex: txns[position].index,
+            rule: entry.rule,
+            severity: entry.severity as Severity,
+            message: entry.message,
+        });
+    }
+
+    const account = entry.account;
+    if (typeof account !== "string" || account.trim() === "") return null;
     return Object.freeze({
-        txnIndex: txns[position].index,
+        txnIndex: null,
+        account,
         rule: entry.rule,
         severity: entry.severity as Severity,
         message: entry.message,
@@ -275,7 +306,7 @@ export function normalizeDiagnostics(raw: unknown, txns: readonly Transaction[])
     for (const item of list) {
         const problem = toDiagnostic(item, txns);
         if (problem === null) continue;
-        const key = `${problem.txnIndex} ${problem.rule} ${problem.message}`;
+        const key = `${problem.txnIndex}\u0000${problem.rule}\u0000${problem.message}`;
         if (seen.has(key)) continue;
         seen.add(key);
         problems.push(problem);

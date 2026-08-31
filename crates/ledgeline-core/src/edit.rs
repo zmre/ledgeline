@@ -1809,12 +1809,11 @@ fn render_priced(commodity: &Commodity, quantity: Dec, style: &AmountStyle) -> S
 
 /// The widest fractional precision [`render_dec`] will lay out.
 ///
-/// Nothing the engine itself produces comes close: [`Dec::parse`] caps at 10
-/// places and [`Dec::mul`] at most sums its operands' scales. Only a [`Dec`]
-/// built directly from unvalidated wire input can exceed this. 255 is hledger's
-/// own maximum displayed precision, so the clamp cannot truncate a value hledger
-/// could have written.
-const MAX_RENDER_PLACES: u32 = 255;
+/// Re-exported from [`crate::decimal`] rather than restated: this file and
+/// `assertions.rs` each carried their own `255`, and `convert::ofx` carried none
+/// at all, which is how the OFX diagnostic renderer ended up able to allocate a
+/// gigabyte from a 400-byte statement.
+use crate::decimal::MAX_RENDER_PLACES;
 
 /// Render a [`Dec`] using `mark` as the decimal separator, exactly (no rounding,
 /// no grouping): `Dec::new(180_000, 2)` → `1800.00`, `Dec::new(5, 3)` → `0.005`.

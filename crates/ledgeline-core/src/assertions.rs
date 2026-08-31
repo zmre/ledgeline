@@ -204,10 +204,11 @@ impl std::fmt::Display for AssertionFailure {
 
 impl std::error::Error for AssertionFailure {}
 
-/// The widest fractional precision [`render_dec`] will lay out. Matches the
-/// clamp in `edit.rs`: 255 is hledger's own maximum displayed precision, so this
-/// cannot truncate a value hledger could have written.
-const MAX_RENDER_PLACES: u32 = 255;
+/// The widest fractional precision [`render_dec`] will lay out. Shared with
+/// `edit.rs` and `convert::ofx` rather than restated here — this comment used to
+/// say "matches the clamp in `edit.rs`", which is a duplicate wearing a promise
+/// instead of a compiler check.
+use crate::decimal::MAX_RENDER_PLACES;
 
 /// Render a [`Dec`] exactly, using `mark` as the decimal separator:
 /// `Dec::new(-100, 2)` → `-1.00`, `Dec::new(5, 3)` → `0.005`.

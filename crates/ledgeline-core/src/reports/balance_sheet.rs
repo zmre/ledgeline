@@ -700,9 +700,7 @@ pub(super) fn valued_keeping_unpriced(
         if let Some(qty) = ma.get(&commodity) {
             out.accumulate(&commodity, qty)?;
         }
-        if !meta.unpriced.contains(&commodity) {
-            meta.unpriced.push(commodity);
-        }
+        meta.note_unpriced(&commodity);
     }
     out.drop_zeros();
     Ok(out)

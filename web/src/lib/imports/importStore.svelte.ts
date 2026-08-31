@@ -518,7 +518,16 @@ export const importStore = {
         sorting = true;
         sortError = null;
         try {
-            sortMoved = decodeSortResult(await client.importSort(target)).moved;
+            const sorted = decodeSortResult(await client.importSort(target));
+            sortMoved = sorted.moved;
+            // A re-sort git did not take leaves the journal rewritten and
+            // uncommitted — which dismantles the safety net the import's own
+            // commit established moments earlier: `git revert` of the import no
+            // longer restores the file. Reported through the same line a failed
+            // sort uses, because what the user has to do about it is the same.
+            if (sorted.git !== null && !sorted.git.committed) {
+                sortError = `The journal was re-sorted, but git did not commit the change. Commit ${target} yourself — until you do, this import can no longer be undone with \`git revert\`.`;
+            }
         } catch (error) {
             sortError = failureMessage(error);
         } finally {

@@ -24,7 +24,6 @@
 //! (`cc` → "Credit cards"), and that is all it may ever do: a cosmetic table
 //! that cannot reach membership cannot cause the reads-zero failure.
 
-use super::ReportError;
 use super::account_types::{AccountType, AccountTypes};
 use super::accounts::ascii_or_lowercased;
 use super::mixed_amount::MixedAmount;
@@ -160,15 +159,15 @@ impl BsTerm {
 
 /// Parse a `bsterm:` tag value; `None` for anything outside the vocabulary.
 ///
-/// The canonical spellings — the wire codes, and the only two
-/// [`ReportError::UnknownBsTerm`] names — are `current` and `noncurrent`.
-/// Accepted on top of them, trimmed and case-insensitively: `short`,
-/// `shortterm` and `short-term` for current; `non-current`, `long`, `longterm`
-/// and `long-term` for non-current. The synonyms are documented in
-/// `docs/balance-sheet.md` and journals rely on them, so "aligning" this match
-/// with the error message's two-word vocabulary is not a cleanup — dropping a
-/// spelling turns every account tagged with it into an [`ReportError::UnknownBsTerm`]
-/// refusal at report time.
+/// The canonical spellings — the wire codes, and the only two the `account-tag`
+/// diagnostic names — are `current` and `noncurrent`. Accepted on top of them,
+/// trimmed and case-insensitively: `short`, `shortterm` and `short-term` for
+/// current; `non-current`, `long`, `longterm` and `long-term` for non-current.
+/// The synonyms are documented in `docs/balance-sheet.md` and journals rely on
+/// them, so "aligning" this match with the diagnostic's two-word vocabulary is
+/// not a cleanup — dropping a spelling turns every account tagged with it into
+/// an account whose `bsterm:` is silently ignored, plus a warning in the
+/// Problems drawer for a journal that was correct.
 #[must_use]
 pub fn parse_bs_term_tag(value: &str) -> Option<BsTerm> {
     match value.trim().to_lowercase().as_str() {
@@ -181,23 +180,22 @@ pub fn parse_bs_term_tag(value: &str) -> Option<BsTerm> {
 }
 
 /// [`declared_bs_terms`] over a whole parsed journal.
-///
-/// # Errors
-/// Returns [`ReportError::UnknownBsTerm`] for an unrecognized value.
-pub fn bs_terms(journal: &Journal) -> Result<BTreeMap<String, BsTerm>, ReportError> {
+#[must_use]
+pub fn bs_terms(journal: &Journal) -> BTreeMap<String, BsTerm> {
     declared_bs_terms(&journal.accounts)
 }
 
-/// Declared `bsterm:` values per account. Untagged accounts are absent.
+/// Declared `bsterm:` values per account. Untagged accounts are absent, and so
+/// are accounts whose value is empty or outside the closed vocabulary: both read
+/// as no declaration, leaving the account on
+/// [`resolve_bs_term`]'s group-derived default.
 ///
-/// # Errors
-/// Returns [`ReportError::UnknownBsTerm`] for a value outside the closed
-/// vocabulary, following `issection:` rather than `type:`: a misspelt term files
-/// the account under the wrong subheading and its balance into the wrong
-/// subtotal, which is a plausible statement rather than a visibly broken one.
-pub fn declared_bs_terms(
-    accounts: &[AccountDeclaration],
-) -> Result<BTreeMap<String, BsTerm>, ReportError> {
+/// A misspelt term therefore files the account under the DEFAULT subheading
+/// rather than the wrong one, and the typo is reported as an `account-tag`
+/// diagnostic by [`journal_to_tag_diagnostics`](crate::wire::journal_to_tag_diagnostics)
+/// rather than by refusing the balance sheet outright.
+#[must_use]
+pub fn declared_bs_terms(accounts: &[AccountDeclaration]) -> BTreeMap<String, BsTerm> {
     accounts
         .iter()
         .filter_map(|decl| {
@@ -206,14 +204,8 @@ pub fn declared_bs_terms(
                 .find(|(key, _)| key == BS_TERM_TAG)
                 .map(|(_, value)| value.trim())
                 .filter(|value| !value.is_empty())
-                .map(|value| {
-                    parse_bs_term_tag(value)
-                        .map(|term| (decl.name.0.clone(), term))
-                        .ok_or_else(|| ReportError::UnknownBsTerm {
-                            account: decl.name.0.clone(),
-                            value: value.to_string(),
-                        })
-                })
+                .and_then(parse_bs_term_tag)
+                .map(|term| (decl.name.0.clone(), term))
         })
         .collect()
 }
@@ -699,12 +691,14 @@ mod tests {
 
     /// Every spelling `parse_bs_term_tag` accepts, pinned one by one. The plan
     /// locks the vocabulary to `current | noncurrent` — the two the
-    /// `UnknownBsTerm` error names — and the synonyms are accepted on top of
-    /// it, so an "align the parser with the error message" cleanup that
+    /// `account-tag` diagnostic names — and the synonyms are accepted on top of
+    /// it, so an "align the parser with the diagnostic" cleanup that
     /// dropped a spelling would break every journal using it (each tagged
-    /// account becomes an `UnknownBsTerm` refusal). Conversely, nothing
-    /// OUTSIDE this list may ever parse: a lenient fallback would file
-    /// misspellings under `Current` silently.
+    /// account silently loses its term AND collects a warning). Conversely,
+    /// nothing OUTSIDE this list may ever parse: this is the boundary that
+    /// decides which values are DECLARED and which merely take the group
+    /// default, and widening it here would file misspellings under a real term
+    /// with no diagnostic to say so.
     #[test]
     fn parse_bs_term_accepts_exactly_the_documented_spellings() {
         for spelling in ["current", "short", "shortterm", "short-term"] {

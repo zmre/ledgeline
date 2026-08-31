@@ -16,19 +16,24 @@
 //! value over time". Without the tag, the price history that makes a house
 //! interesting is exactly what would file it under Stocks.
 //!
-//! An unknown value is REFUSED, following `issection:` rather than `type:`
-//! (`reports/mod.rs:97-113`). Both are closed vocabularies that decide
-//! membership, and the argument recorded there transfers: a silent fallback
-//! drops the account back to the mechanical default, so the user who wrote
-//! `holdings: real-estate` to move their house sees it sitting on the Stocks tab
-//! exactly as before, with nothing on screen to say why. A misspelt code in a
-//! three-word vocabulary is a typo, and naming the alternatives is the only
-//! answer that leads anywhere.
+//! An unknown value falls back to the mechanical default, exactly as an absent
+//! one does, and is REPORTED as an `account-tag` diagnostic — see
+//! [`journal_to_tag_diagnostics`](crate::wire::journal_to_tag_diagnostics).
+//!
+//! It used to be refused outright, following `issection:` rather than `type:`,
+//! on the argument that a silent fallback leaves the user who wrote
+//! `holdings: real-estate` staring at their house on the Stocks tab with nothing
+//! on screen to say why. The "nothing on screen" half was the real point and the
+//! diagnostic keeps it — naming the account, the value and the alternatives.
+//! Refusing was the wrong lever for it: `compute_holdings` feeds BOTH Holdings
+//! tabs, the Insights tab and the drawer's own `stock-*` findings, so one typo
+//! in one `account` directive blanked all four — including, through
+//! `wire::journal_to_stock_diagnostics`'s `let Ok(..) else` fallback, the very
+//! drawer that was supposed to explain it.
 
 use std::collections::BTreeMap;
 
 use crate::model::AccountDeclaration;
-use crate::reports::ReportError;
 
 /// The account-directive tag that decides WHICH TAB an account appears on.
 pub const HOLDINGS_TAG: &str = "holdings";
@@ -55,7 +60,8 @@ pub enum HoldingsClass {
 /// Case- and whitespace-insensitive, and the singular spellings are accepted
 /// alongside the plural ones: `stock` and `stocks` are the same instruction, and
 /// the vocabulary is small enough that admitting both costs nothing. Anything
-/// else is a typo, and [`declared_holdings_classes`] refuses it.
+/// else is a typo, and [`declared_holdings_classes`] ignores it while the
+/// `account-tag` diagnostic names it.
 #[must_use]
 pub fn parse_holdings_tag(value: &str) -> Option<HoldingsClass> {
     match value.trim().to_lowercase().as_str() {
@@ -73,14 +79,12 @@ pub fn parse_holdings_tag(value: &str) -> Option<HoldingsClass> {
 /// [`account_sections_from`](crate::reports::account_sections_from) and
 /// `declared_groups_from` treat one: `; holdings:` with nothing after it names
 /// no tab, and three tag readers answering differently about the same syntax
-/// would be its own trap.
-///
-/// # Errors
-/// Returns [`ReportError::UnknownHoldingsClass`] for a value outside the closed
-/// vocabulary.
+/// would be its own trap. An UNRECOGNISED value reads the same way — see the
+/// module docs for why that is a diagnostic rather than a refusal.
+#[must_use]
 pub fn declared_holdings_classes(
     accounts: &[AccountDeclaration],
-) -> Result<BTreeMap<String, HoldingsClass>, ReportError> {
+) -> BTreeMap<String, HoldingsClass> {
     accounts
         .iter()
         .filter_map(|decl| {
@@ -89,14 +93,8 @@ pub fn declared_holdings_classes(
                 .find(|(key, _)| key == HOLDINGS_TAG)
                 .map(|(_, value)| value.trim())
                 .filter(|value| !value.is_empty())
-                .map(|value| {
-                    parse_holdings_tag(value)
-                        .map(|class| (decl.name.0.clone(), class))
-                        .ok_or_else(|| ReportError::UnknownHoldingsClass {
-                            account: decl.name.0.clone(),
-                            value: value.to_string(),
-                        })
-                })
+                .and_then(parse_holdings_tag)
+                .map(|class| (decl.name.0.clone(), class))
         })
         .collect()
 }
@@ -161,15 +159,17 @@ pub fn parse_valuation_tag(value: &str) -> Option<ValuationRole> {
 /// The `valuation:` role declared per account. Untagged accounts are absent and
 /// read as [`ValuationRole::Cost`].
 ///
-/// # Errors
-/// Returns [`ReportError::UnknownValuationRole`] for a value outside the closed
-/// vocabulary — [`declared_holdings_classes`]' reasoning, and for a sharper
-/// consequence: a misspelt role silently reverts the account to `cost`, which
-/// makes a holding's unrealized gain vanish into its basis and reports a real
-/// gain as zero.
+/// An empty or unrecognised value reads as no declaration, so the account keeps
+/// the [`ValuationRole::Cost`] default — [`declared_holdings_classes`]'
+/// reasoning, and with the sharpest consequence of the four tags: a misspelt
+/// role reverts the account to `cost`, which makes a holding's unrealized gain
+/// vanish into its basis and reports a real gain as zero. That is precisely why
+/// the `account-tag` diagnostic exists; the gain is wrong either way if the tag
+/// cannot be read, and a warning that names the account beats a blank tab.
+#[must_use]
 pub fn declared_valuation_roles(
     accounts: &[AccountDeclaration],
-) -> Result<BTreeMap<String, ValuationRole>, ReportError> {
+) -> BTreeMap<String, ValuationRole> {
     accounts
         .iter()
         .filter_map(|decl| {
@@ -178,14 +178,8 @@ pub fn declared_valuation_roles(
                 .find(|(key, _)| key == VALUATION_TAG)
                 .map(|(_, value)| value.trim())
                 .filter(|value| !value.is_empty())
-                .map(|value| {
-                    parse_valuation_tag(value)
-                        .map(|role| (decl.name.0.clone(), role))
-                        .ok_or_else(|| ReportError::UnknownValuationRole {
-                            account: decl.name.0.clone(),
-                            value: value.to_string(),
-                        })
-                })
+                .and_then(parse_valuation_tag)
+                .map(|role| (decl.name.0.clone(), role))
         })
         .collect()
 }
@@ -251,7 +245,7 @@ mod tests {
     }
 
     fn classes(decls: &[AccountDeclaration]) -> BTreeMap<String, HoldingsClass> {
-        declared_holdings_classes(decls).expect("declared classes parse")
+        declared_holdings_classes(decls)
     }
 
     #[test]
@@ -263,26 +257,22 @@ mod tests {
         assert_eq!(parse_holdings_tag("none"), Some(HoldingsClass::None));
     }
 
-    /// The `issection:` rule, not the `type:` rule: a membership code that falls
-    /// back silently leaves the user staring at the tab they tried to move the
-    /// account off.
+    /// An unknown value is IGNORED here rather than refused, so the Holdings and
+    /// Insights tabs still render from the mechanical default.
+    ///
+    /// The user is not left guessing: `wire::journal_to_tag_diagnostics` names
+    /// the account, the value and the three alternatives as an `account-tag`
+    /// warning. That half of the contract is pinned in
+    /// `tests/tag_diagnostics.rs`, which is where the vocabularies meet the
+    /// wire; all this side owes is the fallback.
     #[test]
-    fn an_unknown_value_is_refused_by_name() {
-        let err =
-            declared_holdings_classes(&[decl("assets:house", &[("holdings", "real-estate")])])
-                .expect_err("an unknown code is refused");
-        assert_eq!(
-            err,
-            ReportError::UnknownHoldingsClass {
-                account: "assets:house".to_string(),
-                value: "real-estate".to_string(),
-            }
+    fn an_unknown_value_is_ignored_not_refused() {
+        assert!(
+            classes(&[decl("assets:house", &[("holdings", "real-estate")])]).is_empty(),
+            "an unrecognised code must read as no declaration"
         );
-        // The message has to name the alternatives, or it leads nowhere.
-        let text = err.to_string();
-        assert!(text.contains("stocks"), "{text}");
-        assert!(text.contains("other"), "{text}");
-        assert!(text.contains("none"), "{text}");
+        // ...and it must not be coerced into one of the real classes on the way.
+        assert_eq!(parse_holdings_tag("real-estate"), None);
     }
 
     /// `; holdings:` with nothing after it names no tab — the same reading

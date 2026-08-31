@@ -2,7 +2,18 @@
 // plumbing the badge/drawer/table share (drawer visibility and "scroll to this
 // txn" focus requests). Re-running checks is O(txns) and the journal store
 // only swaps state on real changes (fingerprint skip), so a plain $derived is
-// cheap here — no requestIdleCallback scheduling needed at MVP journal sizes.
+// cheap here — no requestIdleCallback scheduling needed.
+//
+// That claim used to be hedged with "at MVP journal sizes"; it has now been
+// measured past them. At 150k transactions `runChecks` is 30-46 ms and yields
+// 21,429 findings, and — the part worth stating, because it is easy to assume
+// otherwise — `all` is a MEMOIZED $derived, so that cost is paid once per
+// journal swap and NOT once per navigation. ProblemsBadge is mounted by the
+// layout and never unmounts, and reading `problems.count` five times over five
+// tab visits recomputes nothing (`lib/checks/problemsMemo.svelte.test.ts`).
+//
+// What is NOT cheap is rendering these 21k findings, which is why
+// ProblemsDrawer only builds its rows when the drawer is actually open.
 
 import {groupByTxn, maxSeverity, runChecks, type Problem, type Severity} from "$lib/checks/engine";
 import {journal} from "$lib/stores/journal.svelte";

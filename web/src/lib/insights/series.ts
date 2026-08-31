@@ -109,6 +109,40 @@ export interface SignConventions {
 }
 
 /**
+ * Memo for [`signConventions`], keyed on the IDENTITY of the three things it is
+ * a pure function of: the transaction array, the declared-type map, the
+ * commodity.
+ *
+ * Why it has to exist. `signConventions` deliberately takes the WHOLE journal
+ * (see its doc below), and five call sites each re-derive it on every filter
+ * change — `pieData`, `lineData`, `bigNumbers` (twice: the insights header and
+ * the big-number tiles), and `visibleNet` for the footer. That is 5-7 full
+ * passes over every transaction per keystroke: 6 passes measured 191-202 ms at
+ * 150k transactions in node, and the shipping app runs in WKWebView, which is
+ * slower again. Nothing about the ANSWER changes between those calls; only the
+ * filtered view they are each summarizing does.
+ *
+ * A `$derived` cannot express this: the answer is per-commodity, and
+ * `BigNumbers` asks for every commodity in use. So the memo lives here, in the
+ * pure module, where every caller — including future ones — gets it for free.
+ *
+ * WeakMap, twice over, and NOT a plain cache: the outer key is a 150k-element
+ * array and the middle key is the declared-type map. A strong cache would pin
+ * the previous journal (and its whole object graph) in memory for as long as the
+ * process lived, which is precisely the retention problem this pass is trying to
+ * reduce. Weak keys mean an entry dies with the journal it describes.
+ *
+ * Correctness rests on the arrays being immutable, which they are: `normalize.ts`
+ * deep-freezes what it builds, the journal store replaces its payloads wholesale
+ * (`$state.raw`), and `filterTxns`/`sortTxnsDesc` return new arrays rather than
+ * reordering their input. An in-place mutation of a transaction array anywhere
+ * would make this memo lie.
+ */
+const signCache = new WeakMap<object, WeakMap<object, Map<string, SignConventions>>>();
+/** Stand-in key for `declared === undefined`, so the middle WeakMap always has an object to key on. */
+const NO_DECLARED = {};
+
+/**
  * Detect the journal's sign conventions for revenue and expense postings, per
  * commodity. Display rule: each category shows with the sign that makes its
  * DOMINANT money flow positive — income displays positive when money came in,
@@ -119,8 +153,30 @@ export interface SignConventions {
  * dominant, i.e. don't flip), so a few large outliers or refunds can't fool a
  * count-based majority. Pass the WHOLE journal, not the filtered period, so
  * the detected convention is stable across filter changes.
+ *
+ * Memoized on argument identity — see `signCache` for why, and for the
+ * immutability this relies on.
  */
 export function signConventions(txns: Transaction[], commodity: string, declared?: DeclaredTypes): SignConventions {
+    let byDeclared = signCache.get(txns);
+    if (byDeclared === undefined) {
+        byDeclared = new WeakMap();
+        signCache.set(txns, byDeclared);
+    }
+    let byCommodity = byDeclared.get(declared ?? NO_DECLARED);
+    if (byCommodity === undefined) {
+        byCommodity = new Map();
+        byDeclared.set(declared ?? NO_DECLARED, byCommodity);
+    }
+    const hit = byCommodity.get(commodity);
+    if (hit !== undefined) return hit;
+    const computed = computeSignConventions(txns, commodity, declared);
+    byCommodity.set(commodity, computed);
+    return computed;
+}
+
+/** The actual detection pass; `signConventions` is the memoized front door. */
+function computeSignConventions(txns: Transaction[], commodity: string, declared?: DeclaredTypes): SignConventions {
     const flows = {
         revenue: {pos: ZERO, neg: ZERO},
         expense: {pos: ZERO, neg: ZERO},
@@ -138,7 +194,9 @@ export function signConventions(txns: Transaction[], commodity: string, declared
         }
     }
     const factor = (flow: {pos: Dec; neg: Dec}): SignFactor => (cmp(flow.neg, flow.pos) > 0 ? -1 : 1);
-    return {revenue: factor(flows.revenue), expense: factor(flows.expense)};
+    // Frozen because the memo hands the SAME object to every caller now; a
+    // consumer that mutated it would silently retune every other chart.
+    return Object.freeze({revenue: factor(flows.revenue), expense: factor(flows.expense)});
 }
 
 /** Display sign for a posting amount per the detected conventions; non-revenue/expense categories are raw. */
@@ -181,6 +239,28 @@ function foldTail(ranked: string[], max: number): Map<string, string> {
     const keep = ranked.length > max ? max - 1 : ranked.length;
     ranked.forEach((account, i) => out.set(account, i < keep ? account : OTHER));
     return out;
+}
+
+/** The distinct groups `ranked` folds into, in rank order — the display order of a chart's slices/series. */
+function orderOf(ranked: string[], groupOf: Map<string, string>): string[] {
+    return [...new Set(ranked.map((account) => groupOf.get(account) ?? OTHER))];
+}
+
+/**
+ * The chart group order for a ranking: `rankedAccounts` folded to at most `max`
+ * groups, deduped, still in magnitude order. This is exactly the order
+ * `pieData` and `lineData` emit their output in.
+ *
+ * Exported so the chart widget can assign COLOURS from the ranking alone. It
+ * used to derive them from the pie and line datasets together, which meant
+ * computing both no matter which one was on screen (111 ms each at 150k
+ * transactions). Keying the palette on the shared ranking instead makes an
+ * account's hue mode-independent by construction — a stronger guarantee than
+ * the old "iterate line, then pie" order gave — and lets the widget compute only
+ * the dataset it is about to draw.
+ */
+export function groupOrder(ranked: string[], max: number): string[] {
+    return orderOf(ranked, foldTail(ranked, Math.max(1, max)));
 }
 
 /** Display style for a commodity: the first style seen on a matching posting amount. */
@@ -228,10 +308,17 @@ export function pieData(
         conventionTxns?: Transaction[];
         category?: RootCategory;
         declared?: DeclaredTypes;
+        /**
+         * Precomputed `rankedAccounts` for EXACTLY these arguments, when the caller
+         * already has one; omit it and it is computed here. See [`groupOrder`] for
+         * who does and why. Passing a ranking computed for different arguments
+         * silently mislabels the chart, so this is opt-in and not a cache.
+         */
+        ranked?: string[];
     }
 ): PieDatum[] {
     const {depth, commodity, maxSlices = 6, accounts, conventionTxns, category: categoryScope, declared} = opts;
-    const ranked = rankedAccounts(txns, depth, commodity, accounts, categoryScope, declared);
+    const ranked = opts.ranked ?? rankedAccounts(txns, depth, commodity, accounts, categoryScope, declared);
     const groupOf = foldTail(ranked, Math.max(1, maxSlices));
     const signs = signConventions(conventionTxns ?? txns, commodity, declared);
     const totals = new Map<string, Dec>();
@@ -247,7 +334,7 @@ export function pieData(
         }
     }
     const style = styleFor(txns, commodity);
-    const order = [...new Set(ranked.map((account) => groupOf.get(account) ?? OTHER))];
+    const order = orderOf(ranked, groupOf);
     const out: PieDatum[] = [];
     for (const account of order) {
         const total = totals.get(account);
@@ -275,10 +362,17 @@ export function lineData(
         conventionTxns?: Transaction[];
         category?: RootCategory;
         declared?: DeclaredTypes;
+        /**
+         * Precomputed `rankedAccounts` for EXACTLY these arguments, when the caller
+         * already has one; omit it and it is computed here. See [`groupOrder`] for
+         * who does and why. Passing a ranking computed for different arguments
+         * silently mislabels the chart, so this is opt-in and not a cache.
+         */
+        ranked?: string[];
     }
 ): LineSeries[] {
     const {depth, commodity, interval, maxSeries = 6, accounts, conventionTxns, category: categoryScope, declared} = opts;
-    const ranked = rankedAccounts(txns, depth, commodity, accounts, categoryScope, declared);
+    const ranked = opts.ranked ?? rankedAccounts(txns, depth, commodity, accounts, categoryScope, declared);
     const groupOf = foldTail(ranked, Math.max(1, maxSeries));
     const signs = signConventions(conventionTxns ?? txns, commodity, declared);
     const sums = new Map<string, Map<string, Dec>>();
@@ -306,7 +400,7 @@ export function lineData(
     if (minBucket === null || maxBucket === null) return [];
     const buckets: string[] = [];
     for (let b = minBucket; b <= maxBucket; b = nextBucket(b, interval)) buckets.push(b);
-    const order = [...new Set(ranked.map((account) => groupOf.get(account) ?? OTHER))];
+    const order = orderOf(ranked, groupOf);
     return order
         .filter((account) => sums.has(account))
         .map((account) => {

@@ -27,6 +27,7 @@
         styles,
         saving,
         error,
+        isBudgeted,
         onAccountChange,
         onSubmit,
         onCancel,
@@ -39,6 +40,13 @@
         saving: boolean;
         /** The engine's own sentence for a refused save, or null. */
         error: string | null;
+        /**
+         * Whether the rule this goal would join already budgets this account, in
+         * which case the engine will refuse the save. Asked as a function rather
+         * than passed as a list because the answer depends on the period, and the
+         * period is a field of THIS form — the parent cannot know it in advance.
+         */
+        isBudgeted: (account: string, period: BudgetPeriod) => boolean;
         /** Called whenever the account or period settles, so the strip can refetch. */
         onAccountChange: (account: string, period: BudgetPeriod) => void;
         onSubmit: (submission: GoalSubmission) => void;
@@ -63,7 +71,11 @@
 
     const parsed = $derived(parseAmountInput(amount));
     const accountValid = $derived(account.trim() !== "");
-    const canSubmit = $derived(accountValid && parsed !== null && !saving);
+    // A goal this rule already states. Not an error in the form — nothing typed
+    // here is wrong — but a save the engine would refuse, so it is said here and
+    // the button is held rather than letting the user find out afterwards.
+    const duplicate = $derived(!editing && accountValid && isBudgeted(account.trim(), period));
+    const canSubmit = $derived(accountValid && parsed !== null && !saving && !duplicate);
 
     // The strip follows the two fields it is a function of. Debounce-free: the
     // account field commits on blur/selection rather than on every keystroke, so
@@ -139,6 +151,12 @@
                          positioned against a modal that is still animating into
                          place — see AccountInput's `onInput`. -->
                     <AccountInput bind:value={account} {accountNames} placeholder="expenses:food" autofocus />
+                    {#if duplicate}
+                        <span class="mt-1 text-xs text-warning" data-testid="goal-duplicate">
+                            This category already has a {periodLabel.toLowerCase()} goal. Close this and edit that goal instead — a rule states an account's goal
+                            once.
+                        </span>
+                    {/if}
                 {/if}
             </label>
 

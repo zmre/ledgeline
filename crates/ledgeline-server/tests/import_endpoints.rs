@@ -1155,6 +1155,213 @@ async fn a_row_dropped_by_dedup_is_reported_rather_than_vanishing() {
     assert_eq!(body["skipped"], json!(null));
 }
 
+/// A statement whose newest date carries **two** rows, so `.latest.NAME` is a
+/// multi-line file rather than a single date.
+const SAME_DAY_STATEMENT: &str = "Date,Description,Withdrawal,Deposit\n\
+                                  01/15/2026,ACME PAYROLL,,3000.00\n\
+                                  01/20/2026,LANDLORD LLC,1850.00,\n\
+                                  01/20/2026,PEETS,3.25,\n\
+                                  01/22/2026,STARBUCKS,6.45,\n";
+
+/// **`.latest.NAME` holds one line per already-imported record on its date, and
+/// the repeat COUNT decides which rows are new.**
+///
+/// This is the regression test for the whole class. `hledger import --catchup`
+/// writes the newest date *repeated once per record sharing it* — verified
+/// against hledger 1.52 — so a `.latest` this module truncates, drops or
+/// rewrites does not merely lose precision: it re-proposes a row that is already
+/// in the journal. One repeat and two repeats of the same date must therefore
+/// produce different answers, and the file must reach the run directory byte for
+/// byte.
+#[tokio::test]
+async fn the_repeat_count_in_latest_decides_which_rows_are_new() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let (_, staged) = upload(&tree, "bank.csv", SAME_DAY_STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+
+    // One record on the 20th consumed: LANDLORD is spent, PEETS and STARBUCKS
+    // are not.
+    std::fs::write(tree.path("import/.latest.bank.csv"), "2026-01-20\n").expect("marker");
+    let (status, one) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{one}");
+    assert_eq!(one["count"], json!(2), "one repeat consumes one row: {one}");
+    assert_eq!(
+        one["skipped"],
+        json!({"olderThan": "2026-01-20", "count": 2})
+    );
+
+    // Both records on the 20th consumed: only STARBUCKS is new. A `.latest`
+    // whose repeats were lost would answer 2 here and duplicate PEETS.
+    std::fs::write(
+        tree.path("import/.latest.bank.csv"),
+        "2026-01-20\n2026-01-20\n",
+    )
+    .expect("marker");
+    let (status, two) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{two}");
+    assert_eq!(
+        two["count"],
+        json!(1),
+        "two repeats consume two rows: {two}"
+    );
+    assert_eq!(
+        two["skipped"],
+        json!({"olderThan": "2026-01-20", "count": 3})
+    );
+    let entries = as_text(&two["entries"]);
+    assert!(
+        !entries.contains("PEETS"),
+        "the second row on the newest date is already imported: {entries}"
+    );
+}
+
+/// A statement whose **newest** date carries enough records that the `.latest`
+/// hledger writes for it is over a kilobyte.
+///
+/// 95 same-day rows is not a stress test: it is one busy day on a business
+/// account. hledger writes one 11-byte line per record, so the state file is
+/// 1045 bytes — and the old 1024-byte cap in `stage.rs` dropped it silently.
+fn a_busy_day(rows: usize) -> String {
+    let busy: String = (0..rows)
+        .map(|n| format!("01/20/2026,STARBUCKS,{}.45,\n", n + 1))
+        .collect();
+    format!("Date,Description,Withdrawal,Deposit\n01/15/2026,ACME PAYROLL,,3000.00\n{busy}")
+}
+
+/// **A `.latest` hledger itself wrote, re-read for the next import.**
+///
+/// The end-to-end shape of the bug the owner reported: commit a statement, let
+/// hledger record its own dedup state, then drop the same statement again. The
+/// second dry-run must find nothing new, and a statement with one extra row must
+/// propose exactly that row. Both answered "everything is new" while `stage.rs`
+/// refused to copy a state file larger than a kilobyte, which is what 94 records
+/// sharing one date costs.
+#[tokio::test]
+async fn a_large_dedup_state_written_by_hledger_is_still_honoured() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let statement = a_busy_day(95);
+
+    let (_, staged) = upload(&tree, "bank.csv", statement.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let mut request = dry_run_body(&id, "import/bank.csv.rules");
+    request["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", request).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["imported"], json!(96), "{response}");
+
+    // hledger's own state file, and it is over the old cap.
+    let marker = std::fs::read_to_string(tree.path("import/.latest.bank.csv")).expect("marker");
+    assert_eq!(marker.lines().count(), 95, "one line per same-date record");
+    assert!(
+        marker.len() > 1024,
+        "the state file is {} bytes",
+        marker.len()
+    );
+
+    // The same statement again. Every row is already in the journal.
+    let (_, staged) = upload(&tree, "bank.csv", statement.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let (status, body) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["count"],
+        json!(0),
+        "every row is already imported: {}",
+        as_text(&body["status"])
+    );
+
+    // And next month's download, which repeats the busy day and adds one row.
+    let grown = format!("{statement}01/22/2026,PEETS,3.25,\n");
+    let (_, staged) = upload(&tree, "bank.csv", grown.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let (status, body) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["count"], json!(1), "only the new row: {body}");
+    assert!(as_text(&body["entries"]).contains("PEETS"), "{body}");
+}
+
+/// **Dedup state that is there and cannot be read stops the import.**
+///
+/// The failure it replaces was silent all the way down: the dry-run ran with no
+/// `.latest` beside the CSV and called every row new, `skipped` had no marker to
+/// report either, and the commit — which reads the real destination directory,
+/// where the state file still is — imported what dedup left. hledger exits 0 at
+/// every step, so the only thing that reached the user was a preview promising
+/// rows the commit then did not write.
+///
+/// "There is no `.latest` at all" is emphatically **not** this case, and the
+/// last leg of this test is that it stays quiet.
+#[tokio::test]
+async fn dedup_state_that_cannot_be_read_stops_the_import() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    // Something that is not a regular file where the state file belongs.
+    std::fs::create_dir(tree.path("import/.latest.bank.csv")).expect("not a regular file");
+    let before = tree.snapshot();
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let text = as_text(&body);
+    assert!(text.contains(".latest.bank.csv"), "{text}");
+    assert!(text.contains("not a regular file"), "{text}");
+    assert!(text.contains("treat every row as new"), "{text}");
+    assert_no_absolute_path(&tree, &text, "a refused dry-run");
+
+    // And the commit refuses on its own terms, before anything is written.
+    let mut request = dry_run_body(&id, "import/bank.csv.rules");
+    request["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", request).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        Vec::<String>::new(),
+        "a refused import writes nothing at all"
+    );
+
+    // With the obstruction gone the ordinary first import proceeds in silence:
+    // no dedup state is not a problem to report.
+    std::fs::remove_dir(tree.path("import/.latest.bank.csv")).expect("clear it");
+    let (status, body) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["count"], json!(3), "{body}");
+    assert_eq!(body["skipped"], json!(null), "nothing to report");
+}
+
 /// The reconciliation, computed by concatenation. A matching balance and a
 /// mismatched one, so the difference is exercised in both directions.
 #[tokio::test]
@@ -2144,8 +2351,9 @@ async fn a_commit_refuses_while_a_target_is_modified() {
     );
 }
 
-/// With a clean tree, the import commits exactly the two files it wrote — and
-/// somebody's unrelated dirty file is still dirty afterwards.
+/// With a clean tree, the import commits exactly the three files it wrote — the
+/// CSV, the journal and hledger's dedup marker — and somebody's unrelated dirty
+/// file is still dirty afterwards.
 #[tokio::test]
 async fn a_successful_import_commits_only_what_it_wrote() {
     require_hledger!();
@@ -2162,9 +2370,12 @@ async fn a_successful_import_commits_only_what_it_wrote() {
     let (status, response) = post(&tree, "/api/import/commit", body).await;
     assert_eq!(status, StatusCode::OK, "{response}");
     assert_eq!(response["git"]["committed"], json!(true), "{response}");
+    // The dedup marker `--catchup` wrote is in the SAME commit. A revert that
+    // restored the journal and the CSV but left `.latest` ahead of them would
+    // make the next import of this statement propose nothing at all.
     assert_eq!(
         response["git"]["paths"],
-        json!(["import/bank.csv", "main.journal"])
+        json!(["import/bank.csv", "main.journal", "import/.latest.bank.csv"])
     );
 
     // The bystander is STILL DIRTY: nothing swept it up.
@@ -2187,7 +2398,193 @@ async fn a_successful_import_commits_only_what_it_wrote() {
     );
     assert!(committed.contains("main.journal"), "{committed}");
     assert!(committed.contains("import/bank.csv"), "{committed}");
+    assert!(committed.contains("import/.latest.bank.csv"), "{committed}");
     assert!(!committed.contains("notes.txt"), "{committed}");
+
+    // Nothing the import touched is left dirty — which is the check that would
+    // have caught the marker going uncommitted.
+    let porcelain = git(tree.dir.path(), &["status", "--porcelain", "--", "import"]);
+    assert!(
+        porcelain.trim().is_empty(),
+        "the import left files uncommitted: {porcelain:?}"
+    );
+}
+
+/// **A gitignored dedup marker neither breaks the commit nor is claimed as
+/// committed.**
+///
+/// `.latest.*` is a very ordinary thing to put in a `.gitignore` — it is derived
+/// state — so this is the common case rather than an edge one. `git add` on an
+/// ignored path fails the whole invocation, which would abort a commit for an
+/// import that has already landed in the journal; `Repo::commit` drops ignored
+/// paths before staging, and what it reports back is what it actually staged.
+#[tokio::test]
+async fn a_gitignored_dedup_marker_is_skipped_and_the_import_still_commits() {
+    require_hledger!();
+    require_git!();
+    let tree = Tree::with_rules();
+    std::fs::write(tree.path(".gitignore"), ".latest.*\n").expect("gitignore");
+    init_repo(tree.dir.path());
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["imported"], json!(3), "{response}");
+    assert_eq!(response["git"]["committed"], json!(true), "{response}");
+    assert_eq!(
+        response["git"]["paths"],
+        json!(["import/bank.csv", "main.journal"]),
+        "an ignored path must not be reported as committed: {response}"
+    );
+    assert_eq!(
+        response["git"]["skipped"],
+        json!(["import/.latest.bank.csv"]),
+        "…and must be reported as skipped: {response}"
+    );
+
+    // The marker really is on disk and really is untracked.
+    assert!(tree.path("import/.latest.bank.csv").is_file());
+    let head = git(
+        tree.dir.path(),
+        &["show", "--name-only", "--format=%s", "HEAD"],
+    );
+    assert!(!head.contains(".latest"), "{head}");
+}
+
+/// **A dirty dedup marker does not block an import.**
+///
+/// The marker joins the commit set and *only* the commit set. It is hledger's
+/// own bookkeeping rather than a user's work, so an uncommitted one — left by an
+/// earlier import, or by somebody running `hledger import` in a terminal — is
+/// not something `git revert` needs to recover and must not refuse every
+/// subsequent import through the screen. The journal and the CSV still block;
+/// that is [`a_commit_refuses_while_a_target_is_modified`].
+#[tokio::test]
+async fn a_dirty_dedup_marker_does_not_block_an_import() {
+    require_hledger!();
+    require_git!();
+    let tree = Tree::with_rules();
+    // A marker that exists and is committed…
+    std::fs::write(tree.path("import/.latest.bank.csv"), "2026-01-05\n").expect("marker");
+    init_repo(tree.dir.path());
+    // …and is then modified behind Ledgeline's back.
+    std::fs::write(tree.path("import/.latest.bank.csv"), "2026-01-10\n").expect("dirty it");
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["blockedByGit"],
+        json!([]),
+        "hledger's own marker is not a blocker: {body}"
+    );
+
+    let mut request = dry_run_body(&id, "import/bank.csv.rules");
+    request["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", request).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["imported"], json!(3), "{response}");
+    assert_eq!(response["git"]["committed"], json!(true), "{response}");
+}
+
+/// **An accepted re-sort commits itself, and on its own.**
+///
+/// The sort rewrites the whole journal in place. Left uncommitted beside an
+/// import that *was* committed, it is the safety net dismantled by the button
+/// offered right after it: `git diff` no longer shows the import and `git
+/// revert` no longer undoes it.
+///
+/// Its own commit, not an amendment to the import's — a user who wants the
+/// ordering back does not want the transactions back out — and it carries the
+/// journal alone, because the CSV and the marker belong to the import.
+#[tokio::test]
+async fn an_accepted_sort_commits_the_journal_on_its_own() {
+    require_hledger!();
+    require_git!();
+    let tree = Tree::with_rules();
+    // An opening entry dated after the statement, so the import lands out of
+    // order and the sort has something to do.
+    std::fs::write(
+        tree.path("main.journal"),
+        "2026-06-01 later than the statement\n    \
+         assets:bank:checking   $1000.00\n    equity:opening\n",
+    )
+    .expect("rewrite the journal");
+    let tree = Tree {
+        state: AppState::from_journal_path(tree.path("main.journal")).expect("reopens"),
+        dir: tree.dir,
+    };
+    init_repo(tree.dir.path());
+
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["ordering"]["inOrder"], json!(false), "{response}");
+    let import_head = git(tree.dir.path(), &["rev-parse", "HEAD"]);
+
+    let (status, sorted) = post(
+        &tree,
+        "/api/import/sort",
+        json!({"journalId": "main.journal"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sorted}");
+    assert_eq!(sorted["git"]["committed"], json!(true), "{sorted}");
+    assert_eq!(sorted["git"]["paths"], json!(["main.journal"]));
+
+    // A SECOND commit, on top of the import's rather than folded into it.
+    assert_ne!(
+        git(tree.dir.path(), &["rev-parse", "HEAD"]),
+        import_head,
+        "the sort must be its own commit"
+    );
+    let head = git(
+        tree.dir.path(),
+        &["show", "--name-only", "--format=%s", "HEAD"],
+    );
+    assert!(head.contains("sort main.journal into date order"), "{head}");
+    assert!(head.contains("main.journal"), "{head}");
+    assert!(
+        !head.contains("import/bank.csv"),
+        "the CSV belongs to the import's commit: {head}"
+    );
+
+    // And the working tree is clean: nothing at all is left behind.
+    let porcelain = git(tree.dir.path(), &["status", "--porcelain"]);
+    assert!(
+        porcelain.trim().is_empty(),
+        "the sort left the tree dirty: {porcelain:?}"
+    );
+
+    // A sort with nothing to move commits nothing, so an accepted no-op does not
+    // manufacture an empty commit.
+    let head_after_sort = git(tree.dir.path(), &["rev-parse", "HEAD"]);
+    let (_, again) = post(
+        &tree,
+        "/api/import/sort",
+        json!({"journalId": "main.journal"}),
+    )
+    .await;
+    assert_eq!(again["moved"], json!(0), "{again}");
+    assert_eq!(again["git"], json!(null), "{again}");
+    assert_eq!(
+        git(tree.dir.path(), &["rev-parse", "HEAD"]),
+        head_after_sort
+    );
 }
 
 // ===========================================================================

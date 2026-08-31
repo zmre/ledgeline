@@ -521,6 +521,54 @@ describe("UNIT normalizeDiagnostics", () => {
         expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: 3}]});
     });
 
+    // An `account`-anchored finding: the `account-tag` rule, whose subject is an
+    // `account` DIRECTIVE and so has no transaction to point at. It is the first
+    // diagnostic to arrive without a `txnIndex`, and the decoder used to drop
+    // exactly that shape.
+    // The engine's real sentence, both halves (`journal_to_tag_diagnostics` in
+    // wire.rs): the accepted codes, then what ignoring the tag cost. Kept whole
+    // because the decoder passes the message through verbatim, and a truncated
+    // fixture would let a decoder that mangled the tail still pass.
+    const tagDiag = {
+        account: "assets:property:house",
+        rule: "account-tag",
+        severity: "warning",
+        message:
+            "account 'assets:property:house' declares `holdings: real-estate`, which is not one of stocks, other, none; " +
+            "the tag is ignored and the account is classified mechanically (does it hold a non-currency commodity?)",
+    };
+
+    it("keeps an account-anchored entry, with a null txnIndex", () => {
+        expect(normalizeDiagnostics({diagnostics: [tagDiag]}, diagTxns)).toEqual([
+            {txnIndex: null, account: "assets:property:house", rule: "account-tag", severity: "warning", message: tagDiag.message},
+        ]);
+    });
+
+    it("drops an entry with NEITHER anchor", () => {
+        // No txnIndex and no account: renderable, but nothing could say what it
+        // was about — worse than losing the one finding.
+        expectNoDiagnostics({diagnostics: [{rule: "account-tag", severity: "warning", message: "something is wrong somewhere"}]});
+        expectNoDiagnostics({diagnostics: [{...tagDiag, account: ""}]});
+        expectNoDiagnostics({diagnostics: [{...tagDiag, account: "   "}]});
+        expectNoDiagnostics({diagnostics: [{...tagDiag, account: 42}]});
+        expectNoDiagnostics({diagnostics: [{...tagDiag, account: null}]});
+    });
+
+    it("still refuses a junk txnIndex rather than demoting it to an account anchor", () => {
+        // An entry carrying BOTH a bad txnIndex and a good account is a bug on
+        // the engine side, not a finding to salvage: the anchors are exclusive,
+        // so falling back would hide the contradiction.
+        expectNoDiagnostics({diagnostics: [{...tagDiag, txnIndex: 99}]});
+        expectNoDiagnostics({diagnostics: [{...tagDiag, txnIndex: 1.5}]});
+        expectNoDiagnostics({diagnostics: [{...tagDiag, txnIndex: null}]});
+    });
+
+    it("decodes both anchor kinds side by side", () => {
+        const decoded = normalizeDiagnostics({diagnostics: [unbalancedDiag, tagDiag, assertionDiag]}, diagTxns);
+        expect(decoded.map((p) => p.txnIndex)).toEqual([1, null, 3]);
+        expect(decoded.map((p) => p.account)).toEqual([undefined, "assets:property:house", undefined]);
+    });
+
     it("skips an entry with a missing or empty message", () => {
         expectNoDiagnostics({diagnostics: [{txnIndex: 0, rule: "unbalanced", severity: "error"}]});
         expectNoDiagnostics({diagnostics: [{...unbalancedDiag, message: ""}]});

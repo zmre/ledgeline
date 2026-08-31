@@ -418,6 +418,118 @@ fn an_unusable_hledger_path_is_rejected_and_nothing_is_written() {
     }
 }
 
+/// SEC-14. `hledgerPath` becomes the first candidate handed to `Command::new`
+/// on every import, and it survives restarts — so a scraped access token used
+/// once against `PUT /api/prefs` used to buy persistent code execution as this
+/// user. Two properties are what raise that cost, and both must be checked
+/// BEFORE anything is written.
+///
+/// This is defence in depth, not a fix for the token exposure: an attacker who
+/// owns the binary outright and makes it print a version banner still gets
+/// through. See `src/security.rs`.
+#[cfg(unix)]
+#[test]
+fn a_binary_writable_by_other_users_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().expect("temp dir");
+    let store = dir.path().join("prefs.json");
+
+    // A perfectly plausible hledger — right banner, execute bit set — that
+    // anyone on the machine may rewrite between our check and our exec.
+    for mode in [0o777, 0o775, 0o757] {
+        let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(mode))
+            .expect("chmod the stub");
+
+        let error = prefs::store_in(
+            &store,
+            &Prefs {
+                hledger_path: Some(stub),
+                git_autocommit: None,
+            },
+        )
+        .expect_err(&format!("mode {mode:o} must be refused, not persisted"));
+        match error {
+            PrefsError::InvalidHledgerPath { reason } => assert_eq!(
+                reason, "is writable by other users, so it is not safe to run (chmod go-w it)",
+                "mode {mode:o}"
+            ),
+            other => panic!("mode {mode:o}: expected InvalidHledgerPath, got {other:?}"),
+        }
+        assert!(
+            !store.exists(),
+            "mode {mode:o}: a rejected value must not create the store"
+        );
+    }
+}
+
+/// The other half of SEC-14: the candidate is RUN before it is persisted, so
+/// "this is not hledger" is answered next to the field the user typed it into
+/// rather than at import time as an unattributable "could not run hledger".
+#[cfg(unix)]
+#[test]
+fn a_binary_that_does_not_answer_like_hledger_is_refused() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = dir.path().join("prefs.json");
+
+    // Owner-only, executable, absolute, a regular file — it passes every check
+    // that existed before — and it is not hledger.
+    let impostor = write_stub(dir.path(), "not-hledger", "this is not a version banner");
+
+    let error = prefs::store_in(
+        &store,
+        &Prefs {
+            hledger_path: Some(impostor.clone()),
+            git_autocommit: None,
+        },
+    )
+    .expect_err("a binary that does not report an hledger version must be refused");
+    match error {
+        PrefsError::InvalidHledgerPath { reason } => assert_eq!(
+            reason,
+            "is not hledger (it did not report an hledger version)"
+        ),
+        other => panic!("expected InvalidHledgerPath, got {other:?}"),
+    }
+    assert!(
+        !store.exists(),
+        "a rejected value must not create the store"
+    );
+
+    // …and the reason still names no path, like every other rejection here.
+    let rendered = PrefsError::InvalidHledgerPath {
+        reason: "is not hledger (it did not report an hledger version)",
+    }
+    .to_string();
+    assert!(
+        !rendered.contains(&*impostor.to_string_lossy()),
+        "{rendered}"
+    );
+}
+
+/// A TOO-OLD hledger is still storable. The version gate belongs to
+/// `Hledger::resolve`, which reports `TooOld` with the number the user needs;
+/// refusing it here would replace that actionable message with a store-time
+/// rejection that cannot explain itself.
+#[cfg(unix)]
+#[test]
+fn a_too_old_hledger_is_still_a_valid_preference() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = dir.path().join("prefs.json");
+    let ancient = write_stub(dir.path(), "hledger", "hledger 1.30, ancient");
+
+    prefs::store_in(
+        &store,
+        &Prefs {
+            hledger_path: Some(ancient.clone()),
+            git_autocommit: None,
+        },
+    )
+    .expect("a runnable but too-old hledger is a legitimate preference");
+    assert_eq!(prefs::load_from(&store).hledger_path, Some(ancient));
+}
+
 /// The rejection message must not carry the path. `/api/prefs` renders
 /// `PrefsError` through `Display`, and `tests/error_surface.rs` pins that no
 /// `/api/*` body discloses an absolute path.

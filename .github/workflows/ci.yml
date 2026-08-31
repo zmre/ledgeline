@@ -24,7 +24,9 @@ jobs:
     name: Version consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: scripts/release.sh check
         run: ./scripts/release.sh check
 
@@ -33,13 +35,15 @@ jobs:
     name: Format Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: zmre
           # Absent on forks / before the user sets the secret: pushes are then
@@ -62,13 +66,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -89,13 +95,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -119,13 +127,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -277,10 +287,12 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -306,13 +318,15 @@ jobs:
     env:
       TZ: America/Denver
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -328,7 +342,7 @@ jobs:
         run: nix build -L .#ledgeline
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Install dependencies
         working-directory: web
@@ -384,7 +398,7 @@ jobs:
       # run debuggable after the fact.
       - name: Upload Playwright failure context
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-test-results
           path: web/test-results/
@@ -406,17 +420,53 @@ jobs:
   # proc-macro-error entries stay VISIBLE in the log without wedging CI (there
   # is no upstream fix to move to — wry/tao still bind GTK3), while a genuinely
   # new and actionable CVE turns this job red on the next run.
+  #
+  # RUSTSEC-2024-0429 (glib < 0.20, `VariantStrIter` unsoundness) is one of
+  # those twelve, and it is the one Dependabot raises as a repo security alert —
+  # GitHub's advisory DB ingests RustSec informational entries without the
+  # unsound/vulnerability split, so it looks more urgent there than it is.
+  # Investigated 2026-08-31; assessed as NOT AFFECTED, on two independent
+  # grounds, both verified rather than reasoned:
+  #
+  #   * NO CALLER EXISTS. The only entry point is `Variant::array_iter_str()`
+  #     (`VariantStrIter::new` is `pub(crate)`). Grepping the whole vendored
+  #     registry for `VariantStrIter|array_iter_str` returns nothing outside
+  #     glib-0.18.5 itself. tao's `Variant` is `dbus::arg::Variant`, unrelated;
+  #     glib's own other uses are `g_variant_get_child_VALUE`, which is not
+  #     variadic and not what the advisory is about.
+  #   * NOT ON macOS AT ALL. `cargo tree -i -p glib@0.18.5 --target
+  #     aarch64-apple-darwin` prints nothing; the GTK subtree is cfg-gated to
+  #     Linux/BSD and appears in Cargo.lock only because lockfiles are
+  #     target-agnostic.
+  #
+  # Note the bug is in the RUST BINDING's `unsafe` block (`&p` where `&mut p`
+  # was needed), NOT in C glib — so "we link GTK3, therefore we are exposed" is
+  # wrong, and is the easy mistake to make here.
+  #
+  # It is deliberately NOT `--ignore`d: it costs nothing to leave visible, and
+  # unlike the quick-xml pair below there is no CI failure to suppress.
+  #
+  # WHAT WOULD MAKE THIS ACTIONABLE: any of tao / wry / muda / gtk / gdk /
+  # webkit2gtk starting to iterate a string-array GVariant (XDG portal replies,
+  # GSettings string lists and GTK action targets are the plausible routes).
+  # That risk arrives with a dependency bump, so re-run the grep above whenever
+  # wry/tao move — not on a calendar. The real fix is upstream: wry/tao
+  # migrating Linux off GTK3. gtk3-rs topped out at 0.18.2 and requires
+  # glib "^0.18", so no lockfile change can reach glib 0.20 — which is also why
+  # Dependabot cannot open a PR for it.
   audit:
     name: Cargo audit (RUSTSEC)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -480,13 +530,15 @@ jobs:
     name: SPA audit (bun)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}

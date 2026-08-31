@@ -15,8 +15,10 @@
 //!
 //! The shell is deliberately the one thing served WITHOUT a token: the browser
 //! has nothing to present until it has loaded the page. That is safe against a
-//! hostile *web page* (no CORS layer, so it cannot read the shell) but not
-//! against another local process — see the threat model in [`crate::security`].
+//! hostile *web page* — no CORS layer ever covers this fallback, not even when
+//! `--allow-origin` names a dev origin (SEC-12), so no page of any origin may
+//! read the shell — but not against another local process. See the threat model
+//! in [`crate::security`].
 //! - a real embedded asset path (e.g. `/_app/immutable/...`, `/robots.txt`) →
 //!   that file, with a guessed `Content-Type` (and a long immutable cache for
 //!   the content-hashed `_app/immutable/` assets).
@@ -101,13 +103,24 @@ fn injected_index(token: Option<&AccessToken>) -> String {
 /// bytes we are about to send: `script-src` gets a `'sha256-…'` for each inline
 /// script actually present, so the policy tracks both SvelteKit's per-build
 /// bootstrap script and the token we just injected.
+///
+/// It also carries `Cache-Control: no-store` (SEC-13). The shell had no cache
+/// headers at all, which leaves the decision to the browser's heuristics for a
+/// document whose body contains the per-process access token: a disk cache
+/// entry outlives the process that minted the token, and a token is exactly the
+/// sort of thing that must never be written to disk on our say-so. The value
+/// comes from [`security::no_store`] rather than a fresh literal — see its docs.
+///
+/// This is the shell ONLY. [`asset_response`] keeps the year-long immutable
+/// cache on the content-hashed `_app/immutable/` assets, which carry no
+/// credential and are the whole reason that cache exists.
 fn shell_response(token: Option<&AccessToken>) -> Response {
     let html = injected_index(token);
     let csp = security::shell_csp(&html);
     let mut response = Html(html).into_response();
-    response
-        .headers_mut()
-        .insert(header::CONTENT_SECURITY_POLICY, csp);
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_SECURITY_POLICY, csp);
+    headers.insert(header::CACHE_CONTROL, security::no_store());
     response
 }
 
@@ -183,6 +196,39 @@ mod tests {
             );
         }
         assert!(csp.contains("connect-src 'self'"));
+    }
+
+    /// SEC-13. The shell's body carries the access token, so it may not be
+    /// written to any cache — and it had no `Cache-Control` at all, which left
+    /// that to the browser's heuristics.
+    #[test]
+    fn the_token_bearing_shell_is_never_stored() {
+        for token in [None, Some(sample_token())] {
+            let response = shell_response(token.as_ref());
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CACHE_CONTROL)
+                    .and_then(|value| value.to_str().ok()),
+                Some("no-store"),
+                "the shell must forbid caching whether or not it carries a token"
+            );
+        }
+    }
+
+    /// The other half of SEC-13: hardening the shell must not cost the assets
+    /// their cache. They are content-hashed and carry no credential, so the
+    /// year-long immutable entry is exactly right for them.
+    #[test]
+    fn immutable_assets_keep_their_long_cache() {
+        let response = asset_response("_app/immutable/chunks/x.js", Cow::Borrowed(b"//"));
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=31536000, immutable")
+        );
     }
 
     /// Every inline `<script>` body in `html`, mirroring what a browser sees.

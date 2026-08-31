@@ -265,6 +265,17 @@ fn a_new_rule_is_appended_without_disturbing_the_file() {
             account: "income:interest".into(),
             amount: usd(Dec::new(-120_000, 2)),
         };
+        // The branch under test is "no rule states this recurrence under this
+        // name yet". Asserted rather than assumed: a fixture that later grows a
+        // `~ yearly  annual budget` rule must fail HERE, rather than quietly
+        // exercising the joining branch under a test named for the other one.
+        assert!(
+            !doc.blocks()
+                .iter()
+                .any(|block| block.period == Some(PeriodExpr::Yearly)
+                    && block.description == "annual budget"),
+            "{name}: this fixture now states the rule this test appends"
+        );
         let plan = plan(&doc, &parsed, &request).expect("plan");
         let after = doc.apply(&plan).expect("apply");
         doc.verify(&plan, &after).expect("verify");
@@ -289,6 +300,100 @@ fn a_new_rule_is_appended_without_disturbing_the_file() {
         assert_eq!(added.postings[0].ptype, PostingType::Virtual);
         assert_eq!(added.postings[0].amounts[0].quantity, Dec::new(-120_000, 2));
     }
+}
+
+/// The other branch of the same decision: when a rule ALREADY states this
+/// recurrence under this name, the goal joins it and no second rule is opened.
+///
+/// The companion to `a_new_rule_is_appended_without_disturbing_the_file`, and
+/// the invariant is made at its strongest here — splice the one inserted line
+/// back out of the result and what is left must be the original file, byte for
+/// byte. That covers the header, the alignment of every other goal, the
+/// comments and the blank lines in one claim, without naming any of them.
+#[test]
+fn a_goal_joins_an_existing_rule_without_disturbing_the_file() {
+    for (name, text) in budget_fixtures() {
+        let doc = PeriodicDoc::parse(&text);
+        let parsed = rules(&text, &name);
+        for block in doc.blocks().iter().filter(|block| block.lock.is_none()) {
+            let period = block.period.expect("an unlocked rule has a period");
+            let request = GoalRequest::AddBlock {
+                period,
+                description: block.description.clone(),
+                account: "expenses:newcategory".into(),
+                amount: usd(Dec::new(2500, 2)),
+            };
+            // Which rule this SHOULD join, restated independently of the engine:
+            // the first, in file order, that states the same recurrence under the
+            // same name and that we are willing to rewrite.
+            let target = doc
+                .blocks()
+                .iter()
+                .position(|other| {
+                    other.lock.is_none()
+                        && other.period == Some(period)
+                        && collapsed(&other.description) == collapsed(&block.description)
+                })
+                .expect("a block matches itself");
+
+            let plan = plan(&doc, &parsed, &request).expect("plan");
+            let after = doc.apply(&plan).expect("apply");
+            doc.verify(&plan, &after).expect("verify");
+            assert_eq!(
+                without_goal(&after, "expenses:newcategory"),
+                text,
+                "{name}: rule {} changed more than the line it gained",
+                block.index
+            );
+
+            let now = reparses(&after, &name);
+            assert_eq!(
+                now.len(),
+                parsed.len(),
+                "{name}: joining a rule must not open another one"
+            );
+            for (at, (before, after)) in parsed.iter().zip(&now).enumerate() {
+                let expected = before.postings.len() + usize::from(at == target);
+                assert_eq!(
+                    after.postings.len(),
+                    expected,
+                    "{name}: rule {at} gained or lost postings it should not have"
+                );
+                assert_eq!(
+                    (before.period, &before.description),
+                    (after.period, &after.description),
+                    "{name}: rule {at} was renamed"
+                );
+            }
+            let added = now[target]
+                .postings
+                .last()
+                .expect("the joined rule has postings");
+            assert_eq!(
+                added.account.0, "expenses:newcategory",
+                "{name}: the new goal is not last in its rule"
+            );
+            assert_eq!(added.amounts[0].quantity, Dec::new(2500, 2));
+        }
+    }
+}
+
+/// A description as the engine compares one: trimmed, and every run of
+/// whitespace a single space. Restated here rather than imported, so the test
+/// says what it expects instead of agreeing with itself.
+fn collapsed(description: &str) -> String {
+    description.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `after` with `account`'s goal line — terminator and all — spliced back out.
+fn without_goal(after: &str, account: &str) -> String {
+    let doc = PeriodicDoc::parse(after);
+    let line = doc
+        .lines()
+        .iter()
+        .find(|line| line.account == account)
+        .unwrap_or_else(|| panic!("{account} was not written:\n{after}"));
+    format!("{}{}", &after[..line.full.start], &after[line.full.end..])
 }
 
 /// The scan and the parser must agree about which `~` block is which, in every

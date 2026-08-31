@@ -119,32 +119,37 @@ impl IntoResponse for AppError {
 /// A bad bucket key is a client error; a decimal overflow is ours. Both are
 /// unreachable for realistic journals, but neither is unwrapped.
 ///
-/// # Why a bad `issection:` or `holdings:` is a `400` and not a `500`
+/// # Why the table is only two rows
 ///
-/// They are the variants whose cause is the JOURNAL rather than the request or
-/// an invariant, so neither status is a perfect fit. `400` is chosen because the
-/// two things that actually matter about the response are that it FAILS rather
-/// than serving a plausible statement with a box reading zero, and that the
-/// sentence reaches a human — `EditError::Unbalanced` is a `400` on the same
-/// reasoning, and `500` is reserved here for "our bug, nothing you can do".
-/// The message names the account, the value and the seven codes, so it is
-/// actionable exactly as an unknown `interval` or `value` param is.
+/// It used to carry four more: a `400` each for an `account` directive whose
+/// `issection:`, `bsterm:`, `holdings:` or `valuation:` value was outside its
+/// closed vocabulary. The reasoning was that such a response FAILS rather than
+/// serving a plausible statement with a box reading zero, and that the sentence
+/// naming the account and the valid codes reaches a human.
 ///
-/// The alternative — a finding in the Problems drawer — is the better home for
-/// it and is deliberately not built here: `wire::WireDiagnostic` anchors every
-/// finding to a `txnIndex`, and an `account` DIRECTIVE has no transaction to
-/// anchor to, so it would need a wider wire struct plus a matching entry in the
-/// SPA's `normalize.ts` allow-list (which silently drops unknown rules). That is
-/// a coordinated Rust+SPA change, not this one.
+/// The first half was wrong. The cause of those four was the JOURNAL, not the
+/// request, and a whole-response failure is far too blunt an instrument for it:
+/// one mistyped `issection:` took down the entire P&L tab, and one mistyped
+/// `holdings:` took down both Holdings tabs, Insights, and the Problems drawer's
+/// own `stock-*` findings along with it. A typo in one directive is not a reason
+/// to stop answering questions about the other nine hundred.
+///
+/// The second half was right, and it is what survives: those tags now read an
+/// unrecognized value as UNDECLARED, so the report renders on its documented
+/// fallback, and `wire::journal_to_tag_diagnostics` emits the same naming
+/// sentence as an `account-tag` warning in the Problems drawer — the home this
+/// comment used to say was the better one.
+///
+/// What is left divides cleanly on the old axis. [`ReportError::InvalidBucketKey`]
+/// is a `400` because its cause really is the REQUEST — an `interval` or period
+/// the caller sent — and [`ReportError::Decimal`] is a `500` because its cause is
+/// an arithmetic invariant of ours; `500` is reserved here for "our bug, nothing
+/// you can do".
 impl From<ReportError> for AppError {
     fn from(error: ReportError) -> Self {
         let message = error.to_string();
         match error {
-            ReportError::InvalidBucketKey(_)
-            | ReportError::UnknownIsSection { .. }
-            | ReportError::UnknownHoldingsClass { .. }
-            | ReportError::UnknownValuationRole { .. }
-            | ReportError::UnknownBsTerm { .. } => Self::BadRequest(message),
+            ReportError::InvalidBucketKey(_) => Self::BadRequest(message),
             ReportError::Decimal(_) => Self::Internal(message),
         }
     }
@@ -271,18 +276,6 @@ mod tests {
             AppError::from(ReportError::Decimal(DecError::Overflow)).status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
-
-        // A journal-content error the user can act on, with the engine's own
-        // naming sentence carried through verbatim.
-        let bad_tag = ReportError::UnknownIsSection {
-            account: "cogs".to_string(),
-            value: "cost-of-goods-sold".to_string(),
-        };
-        let expected = bad_tag.to_string();
-        let converted = AppError::from(bad_tag);
-        assert_eq!(converted.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(converted.to_string(), expected);
-        assert!(expected.contains("cost-of-goods-sold"), "{expected}");
 
         let missing = EditError::TransactionNotFound(7);
         let expected = missing.to_string();

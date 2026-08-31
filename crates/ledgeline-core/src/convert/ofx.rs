@@ -36,7 +36,7 @@
 
 use super::encoding::{self, Decoded, Guess};
 use super::{ConvertError, ConvertNote, MAX_INPUT_BYTES, SourceFormat, StatementMeta, Tabular};
-use crate::decimal::Dec;
+use crate::decimal::{Dec, MAX_RENDER_PLACES};
 use encoding_rs::{Encoding, UTF_8, WINDOWS_1252};
 use std::borrow::Cow;
 
@@ -756,10 +756,18 @@ fn amount(text: &str) -> Option<Dec> {
 
 /// Render a [`Dec`] for a diagnostic. Presentation only — nothing compares
 /// against this text.
+///
+/// `places` is clamped to [`MAX_RENDER_PLACES`], the same clamp `edit.rs` and
+/// `assertions.rs` apply for the same reason: the padding below is
+/// `"0".repeat(places)`, and `places` here comes from a `Dec` the *statement*
+/// supplied. A `BALAMT` of `1e-2147483648` is thirteen bytes and asks for a
+/// 2.1 GB string, so an unclamped scale makes a mailed `.ofx` a memory bomb.
+/// Clamping cannot alter a real balance: an OFX amount is written to the cent,
+/// and [`Dec::parse_with_mark`] caps what it stores at ten places anyway.
 fn render(value: Dec) -> String {
     let sign = if value.mantissa < 0 { "-" } else { "" };
     let digits = value.mantissa.unsigned_abs().to_string();
-    let places = value.places as usize;
+    let places = value.places.min(MAX_RENDER_PLACES) as usize;
     if places == 0 {
         return format!("{sign}{digits}");
     }
@@ -858,6 +866,29 @@ mod tests {
         assert_eq!(render(Dec::new(-4217, 2)), "-42.17");
         assert_eq!(render(Dec::new(5, 3)), "0.005");
         assert_eq!(render(Dec::new(42, 0)), "42");
+    }
+
+    #[test]
+    fn rendering_clamps_a_hostile_scale_instead_of_allocating_for_it() {
+        // The padding below is `"0".repeat(places)`, and before the clamp
+        // `places` came straight off the statement: `1e-20000000` in a `BALAMT`
+        // is twelve bytes and produced a 20 MB diagnostic, `1e-2147483648` a
+        // 2.1 GB one.
+        //
+        // Stated against `Dec::new` rather than against a fixture on purpose.
+        // `Dec::parse_with_mark` now caps what it stores at ten places, so the
+        // OFX lane can no longer *deliver* such a scale — but this function is
+        // the last thing between a `Dec` and an allocation, and it has to be
+        // total on its own terms rather than on a caller's promise.
+        let rendered = render(Dec::new(1, 1_000_000));
+        assert!(
+            rendered.len() <= MAX_RENDER_PLACES as usize + 2,
+            "a one-digit mantissa rendered {} bytes",
+            rendered.len()
+        );
+        // Every scale a bank actually writes is far below the clamp, so no real
+        // balance changes shape.
+        assert_eq!(render(Dec::new(225_783, 2)), "2257.83");
     }
 
     #[test]

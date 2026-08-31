@@ -56,7 +56,7 @@ fn flows(journal: &Journal, from: &str, to: &str) -> ledgeline_core::reports::Fl
             value_in: None,
         },
         &declared_types(&account_decls(journal)),
-        &account_sections(journal).expect("the fixtures declare only valid `issection:` codes"),
+        &account_sections(journal),
         &declared_groups(journal, IS_GROUP_TAG),
     )
     .expect("flow report")
@@ -274,7 +274,7 @@ fn statement_side_labels_are_the_statements_own_lines() {
                 compare: true,
             },
             &declared_types(&account_decls(&journal)),
-            &account_sections(&journal).expect("valid `issection:` codes"),
+            &account_sections(&journal),
             &declared_groups(&journal, IS_GROUP_TAG),
         )
         .expect("grouped income statement");

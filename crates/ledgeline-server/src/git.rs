@@ -363,7 +363,15 @@ impl Repo {
     ///
     /// Hooks are **not** bypassed. A repository that refuses this commit is
     /// telling the user something, and `--no-verify` would silence it.
-    pub fn commit(&self, paths: &[&Path], message: &str) -> Result<(), GitError> {
+    ///
+    /// # Returns
+    ///
+    /// The toplevel-relative names that were **actually** staged — `paths` minus
+    /// whatever was ignored. It is not the same list the caller passed in, and a
+    /// caller that reports one of these results to a user needs the difference:
+    /// telling somebody a gitignored file was committed is a claim `git log`
+    /// contradicts. Match a path back to its entry with [`Repo::relative`].
+    pub fn commit(&self, paths: &[&Path], message: &str) -> Result<Vec<String>, GitError> {
         if message.trim().is_empty() {
             return Err(GitError::EmptyMessage);
         }
@@ -384,7 +392,7 @@ impl Repo {
         self.check("add", added)?;
 
         let committed = self.exec("commit", &commit_args(message, &stageable), COMMIT_TIMEOUT)?;
-        self.check("commit", committed).map(|_| ())
+        self.check("commit", committed).map(|_| stageable)
     }
 
     /// `git status` over the requested paths, parsed from the NUL-delimited
@@ -479,7 +487,11 @@ impl Repo {
     }
 
     /// One target as a toplevel-relative, forward-slashed string.
-    fn relative(&self, path: &Path) -> Result<String, GitError> {
+    ///
+    /// Public so a caller can line a path it passed to [`Repo::commit`] up with
+    /// the names that came back, and tell what was committed from what was
+    /// ignored.
+    pub(crate) fn relative(&self, path: &Path) -> Result<String, GitError> {
         physical(path)
             .strip_prefix(&self.toplevel)
             .map(slashed)

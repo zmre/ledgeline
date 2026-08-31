@@ -2,22 +2,143 @@
 
 
 ## Known issues
-- fix: display issue where pie chart is not round, but oval when the window narrows horizontally or vertically.  Update: seems to be specific to linux as I can't reproduce on mac.
-- chore: route bad `issection:` / `holdings:` / `valuation:` / `bsterm:` / `type:` tag values into Problems
-  - a mistyped `issection:` currently fails the whole P&L request with a 400 naming the account and the
-    valid codes, and `holdings:` now does the same to the Holdings tab. Right that it isn't silently
-    dropped, wrong that one typo takes the tab down. Problems
-    entries anchor to a `txnIndex` and an `account` directive has none, so this needs a wire field that
-    allows a directive-anchored diagnostic plus an allow-list entry in the SPA's `normalize.ts`.
+- fix: display issue where pie chart is not round, but oval when the window narrows horizontally or vertically.  Update: seems to be specific to linux as I can't reproduce on mac. Static analysis says the geometry is fine — layerchart computes the radius as `min(width, height) / 2` and emits a true circle with no `viewBox`, and nothing in our CSS scales non-uniformly — so this needs a WebKitGTK repro (dump the `<svg>`'s rendered box, attributes and computed style from devtools on Linux) before anything is changed.
+
+## Security
+- security: **a local process can read the token straight out of `GET /`, and that escalates to
+  code execution.** `PUT /api/prefs` persists an arbitrary `hledgerPath`, which `Hledger::candidates`
+  then spawns on every import.
+  - The real fix is to hand the token to the WebView **out of band** — wry's
+    `with_initialization_script` — so the token never appears in a response body at all. `GET /` is
+    deliberately outside `route_layer` so the browser can bootstrap, and HTTP cannot tell the user's
+    WebView from someone else's `curl`.
+  - Needs care: the vite dev flow and the Playwright e2e harness bootstrap cross-origin and would
+    have to keep using `$LEDGELINE_TOKEN`.
+  - The prefs validation only removes the *persistent* half. The `--version` probe is itself an
+    `exec`, so a caller can still run an arbitrary binary by repeating `PUT /api/prefs` — measured
+    running the candidate **twice** per request, which is worth fixing on its own since one would do.
+    (Permissions are checked before the probe, so a group/world-writable binary is never run.)
+- security: **an xlsx with two cells can ask for a ~550 GB allocation.** `convert/spreadsheet.rs`
+  lets calamine materialize a dense grid from sparse bounds (`A1` + `XFD1048576` is enough).
+  `MAX_INPUT_BYTES` bounds the *compressed* zip and `MAX_ROWS` truncates only *after*
+  materialization, so neither helps. An allocator abort is not something `CatchPanicLayer` can
+  catch. Needs a streaming/bounds-checked read rather than a cap.
+- security: **TOCTOU between the symlink refusal and the write.** The refusal uses
+  `symlink_metadata` but the write follows symlinks, and the window spans up to three 120-second
+  `hledger` runs. Worse on the edit path, where `carry_forward_metadata` copies the victim file's
+  uid/gid/mode onto the new inode and erases the trace. Wants open-once-and-write-through-fd.
+- security: **the CSP inline-script hashes are never tested against a real SvelteKit shell.**
+  `flake.nix` injects a script-less placeholder for every CI test and Playwright runs cross-origin
+  with no CSP, so a SvelteKit upgrade can break the app to a blank window with nothing failing —
+  and the obvious pressure fix would be `unsafe-inline`. Wants a fixture built from a real shell.
+- security: `wire.rs`'s `/accounts` attributes an `include`d file's line number to the main journal
+  (`adisourcepos` is built with the main journal's name regardless of which file the directive came
+  from). `AccountDeclaration` carries a `SourcePos` but no `source_file`, unlike `Transaction` and
+  `AliasDirective`, which carry both. Blocks file+line anchoring for directive diagnostics.
+- chore: **sweep for caps that exist but are applied inconsistently.** Three were found one at a
+  time (a render clamp present in `edit.rs` but missing from `ofx.rs` and `import_api.rs`, a parse
+  scale cap that failed open, a row cap that ran after materialization). Worth looking for the rest
+  deliberately rather than waiting for the next review.
+- chore: **one `no_store` definition, not five.** The canonical `HeaderValue` is in
+  `security::no_store()`, but `import_api`, `rules_api`, `alias_api` and `budget_api` each still
+  have a module-private `fn no_store<T: Serialize>(body: T) -> Response`. Rebase them onto it.
+- chore: **one path redactor, not two.** `import_api::Redactor` is private to that module, so
+  `edit_api::PathRedaction` duplicates its longest-first and both-spellings-of-`/tmp` rules. Promote
+  `Redactor` to a shared module and delete the duplicate.
 
 ## Misc
-- check security csrf to be sure other apps/browser pages can't fetch financial data
 - chore: Add screenshots and better descriptions to the readme
 
 ## Performance
-- test: lets try to understand performance on large repos by making a fixture with 10k transactions per year, 15 years, and around 200 commodities and 75 accounts
+- perf: **`/api/insights` misses its gate by 2.4×** — 968 ms at 200k against a 400 ms target, and it
+  is the dashboard's landing view, so it is the first number anyone feels. Insights' own dedup work
+  is correct; the cost moved. `compute_holdings` regressed **+57% at 200k / +96% at 50k** under
+  feature accretion (Other-holdings tab, subtree rollups, `valuation:`, cost-basis price-route
+  warnings — each added a pass), and insights calls it 3 times / ~5 engine passes: twice via
+  `window_holdings`, each self-recursing because `gain_since` is set, plus once through
+  `movers` → `portfolio_at`. Holdings work is roughly two-thirds of the 968 ms. Memoizing one
+  holdings replay across the three calls should get insights to ~400-500 ms.
+- perf: **`value_at` rebuilds the entire `PriceGraph` on every call that misses a direct price.** The
+  graph is a function-local, built and dropped per call, and `graph_at` is O(P). Invisible today
+  because a `$`-only book always hits the direct-lookup fast path — the code's own comment records
+  the cliff as ~6 ms vs ~215 ms. Exposure is per call site: `reports/flows.rs:657` sits inside
+  `for txn in txns` × accounts-in-txn, so **up to 150k graph builds per request**. Also
+  `net_worth.rs:253` (A × D builds) and `holdings/other.rs:350` (per bucket). Fix is to hoist the
+  graph to a caller-owned parameter or memoize it on `PriceDb` keyed by `as_of` — a signature change
+  across ~8 call sites, hence not a quick one. This is the difference between "fine" and "unusable"
+  on any journal that is not single-currency.
+- perf: **no windowing on `/transactions`.** ETag and compression are in place (so an unchanged poll
+  is free) but the first load is still all-or-nothing — no offset/limit/date-range param exists on
+  either end. ~347 MB at 200k. This is the structural blocker for a large journal in the UI and it
+  needs both the route and the SPA. It is also what keeps ~390 MB of SPA peak memory in place, since
+  the raw wire payload, the normalized journal and the previous normalized journal are all held at
+  once.
+- perf: a single `/api/insights` request performs **7 `PriceDb::build`s**, each deep-cloning every
+  directive — ~500k clones per request on the v2 corpus.
+- perf: `choose_base` → `coverage` is where the entire cost of a mesh price graph lands (+39% on
+  `compute_holdings`, +45%/+56% on the holdings series at 200 commodities, and none of it in the
+  reports). It is guarded by "fewer than 2 candidates", so it is free on a `$`-only book and a cliff
+  the moment there is a cross-rate plus any single unpriceable symbol.
+- perf: `reachable` (`reports/prices.rs:274`) re-scans the whole edge slice per popped node, so it is
+  O(V·E), **not the O(V+E) its comment at `prices.rs:272` claims**. `shortest_path` enumerates simple
+  paths with a per-partial `Vec` clone and `PriceGraph::rate` runs it twice. Fine on a `$`-star price
+  graph, super-polynomial on a mesh.
+- perf: **`latest_directive_price` residual.** The reverse walk exits early only on a base-priced
+  directive, so a symbol that is *never* priced in the base scans its whole prefix — the v2fx
+  corpus's 59 such symbols cost 0.60 ms per series-point against v2's 0.20 ms. The index could answer
+  "this symbol has no base-priced directive at all" and let it exit immediately.
+- test: **a third corpus shape with a genuinely DENSE many-to-many FX graph.** This is what the
+  `value_at` / `PriceGraph` finding above actually needs — `v2fx` is a star-of-stars with 2-3 hop
+  chains and low degree, and never exercises `shortest_path`, so that finding is still unmeasured
+  rather than disproved.
+- test: `examples/load_rss` takes a transaction count rather than a `Shape`, so there is **no
+  peak-RSS number for v2 or v2fx** — the memory dimension of the 200-commodity shape is unmeasured.
+
+### Never examined — so "not on the findings list" does not mean "measured and fine"
+- **XLSX export.** The balance-sheet / income-statement / holdings exports run through `exceljs` in
+  the browser and have never been profiled. A large report on a big journal is the obvious risk.
+- **Real app startup**, window-open to first paint. `snapshot_from_journal` is measured (458 ms at
+  200k) but the end-to-end desktop launch — wry/WebKit init, SPA boot, first fetch — is not.
+- **The import/convert path at scale.** `MAX_INPUT_BYTES` is 16 MiB; the converter and the rules
+  matcher have never been benched against a file near that, and `import` shells out to hledger
+  several times per dry-run with a 120 s timeout each.
+- **Concurrency.** Report work runs on `spawn_blocking` behind a core-count semaphore, but there is
+  no HTTP-level benchmark, so behaviour under several simultaneous report requests is untested.
+
+### Front end
+The default filter is last-90-days, which is what hides journal-size problems; the cliff is the
+user's first click on "All time".
+
+- fix(web): **a slow insights refetch shows stale numbers under the new period control, silently.**
+  `createResource`'s `view` is `dataView(status, loaded !== null)` with `matchesRequest` defaulting
+  to true, and `dataView` returns `"data"` when `status === "loading"` and a payload exists (pinned
+  at `loadState.test.ts:17`). Keeping the old data instead of blanking is the right call for
+  perceived speed — but `InsightsDashboard` has **no pending indicator of any kind** (no dimming, no
+  spinner, `PeriodControl` is not disabled), so for the length of the request the boxes say "Last 3
+  months" while the control says "Last 12 months" and nothing signals it. Wants a subtle refreshing
+  state, not a blank.
+- perf(web): the whole insights dashboard is **one `AsyncSection`** (`InsightsDashboard.svelte`), so
+  the first load is all-or-nothing: one centred spinner, then every box at once. The endpoint
+  computes the boxes from shared intermediates, so progressive population would mean splitting
+  `/api/insights` — worth it only if the endpoint stays slow.
+- perf(web): **virtualize or cap the Problems drawer list.** The `{#if}` guard moved the cost off
+  every page but did not remove it: building 21,429 findings now happens when the drawer *opens*,
+  measured at 4.3 s in jsdom — much faster in a real browser, but still a visible pause. Virtualize
+  the list the way `TransactionTable` already virtualizes rows.
 
 ## Import improvements
+- fix: **the SPA drops `WireGitResult.message` entirely** (`nativeDecode.ts`'s `RawGitReport` has no
+  `message` field), so a rejecting pre-commit hook is silent in the UI on the import path. The Rust
+  field exists precisely to prevent that.
+- fix: a row that was **pending when imported and later settled** with a different date or amount
+  sits before `.latest` and is never re-imported, so the journal silently keeps the pending version.
+  Inherent to hledger's date-based dedup rather than a bug of ours, but the YTD-redownload workflow
+  hits it routinely and the dry-run's "N rows skipped" count cannot distinguish "already imported
+  identically" from "already imported differently".
+- chore: `AmountStyle.digit_groups` is cloned per amount. The payload is bounded
+  (`MAX_DIGIT_GROUPS`) so there is no amplification, but the real fix is
+  `digit_groups: Option<Arc<DigitGroups>>` in `model.rs` — deferred because it is a cross-cutting
+  change to a widely-used type. There is a `TODO:` at the field.
 - feat: quickbooks import handling
   - transaction matching and skipping
   - account mapping (prompt for unmapped) (aliases?)
@@ -71,7 +192,11 @@
   - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and use an empty folder as a starting point and then create a skeleton so someone can start using us to track things. We should have a default chart of accounts for individuals and another for businesses and then we should allow them to start with an empty set of accounts to add their own.
 - feat: saved report filters?
 
-## Planning / modeling
+## Budgeting / planning / modeling
+* budget fix revenue display: There's something wrong when a budget shows you red for earning more money than expected. We need to treat revenues/income/sales/whatever differently from expenses in terms of how we present current state to the user. If revenue is under budget (and not on-track -- so if we're looking at annual budget but we're only on month six, then on-track would be half of annual budget) then the whole line should be red. If we're "over budget" meaning we've made more than we budgeted, then the whole bar should be green (with the target white line showing appropriately).
+* budget projections: Seeing if you're above/below budget though really doesn't tell you much. Ultimately we need to be able to project into the future to understand the what-ifs.  Given the current budget's income and expense information, what net income is bing projected going forward?  I see this as a new section. So we have actuals vs. budgeted graphics in the top, then the budget goals below that, then below that we should show a very simplified sort of P&L summing up inflows, outflows, and net income using red/green to indicate health.  Ultimately we'll get far more sophisticated on projections, but it's worthwhile to have something basic here to start.  I'm not sure if it's worthwhile to project balances forward, too, maybe summed by starting with cash and then either adding to it or subtracting from it over time?  This would be useful as a sort of napkin-level runway check (if losing money) or savings check (if cash flow positive) as a validation on budget.  This way someone can know they have to tighten one budget or another.
+* budget gaps: As a last point on budgeting, I wonder if it wouldn't be worthwhile to show unbudgeted income and unbudgeted expenses to give the user some idea of how encompassing their budget is versus historical income and expenses and maybe tell them what higher-level categories are being ignored. It may be fine to ignore these (we have set budgets for some things like clothing, but not for other things, like insurance) so this section should be expandable and default to being collapsed
+* While we're at it, the budget goals are currently sorted however they are in the budget file which is whatever order they happened to be added in. So I have revenues:salary at the top and revenues:dividends at the bottom, which makes it hard to scan.
 - feat: personal planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
   - TODO: investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"

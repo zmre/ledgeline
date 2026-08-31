@@ -110,6 +110,19 @@ export const filters = {
     toggleAccount(name: string): void {
         value = {...value, accounts: toggleSubtreeRoot(value.accounts, name)};
     },
+    /**
+     * Replace the whole account selection at once.
+     *
+     * For a caller that has applied several toggles to a local copy and wants to
+     * commit them as ONE filter change — the filter bar does this, so a burst of
+     * checkbox clicks costs one re-derivation of the journal view instead of one
+     * each. The set is copied, so the caller's working copy stays theirs.
+     * Callers are responsible for the subtree-root invariant; build the set with
+     * `toggleSubtreeRoot`, exactly as `toggleAccount` does.
+     */
+    setAccounts(accounts: ReadonlySet<string>): void {
+        value = {...value, accounts: new Set(accounts)};
+    },
     clearAccounts(): void {
         value = {...value, accounts: new Set<string>()};
     },

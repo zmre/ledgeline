@@ -1,5 +1,14 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {ApiShapeError, ApiTimeoutError, ApiUnreachableError, HledgerApi, isNotModified, REQUEST_TIMEOUT_MS, resetConditionalCache} from "./client";
+import {
+    ApiShapeError,
+    ApiTimeoutError,
+    ApiUnreachableError,
+    HledgerApi,
+    isNotModified,
+    REQUEST_TIMEOUT_MS,
+    resetConditionalCache,
+    SETTINGS_STORAGE_KEY,
+} from "./client";
 
 const jsonResponse = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
 
@@ -163,5 +172,84 @@ describe("UNIT HledgerApi deadlines and conditional GET", () => {
         const assertion = expect(pending).rejects.toThrow(ApiUnreachableError);
         controller.abort();
         await assertion;
+    });
+});
+
+/**
+ * SEC-16. `authHeaders` attached the ambient token to whatever URL it was given,
+ * and `HledgerApi` is constructed with an arbitrary base URL by
+ * `settings.setServerUrl` — the setup modal's "verify this server" button. So
+ * typing any address there with an empty token box sent the running engine's
+ * credential to that address.
+ *
+ * These tests stand up a minimal browser-shaped global (`window` + a
+ * `localStorage` the client reads the persisted blob out of), because in the
+ * node project neither exists and the origin check correctly stands aside.
+ */
+describe("UNIT access-token targeting", () => {
+    const PAGE_ORIGIN = "http://localhost:4173";
+    const ENGINE = "http://127.0.0.1:5099";
+    const TOKEN = "ledgeline-e2e-token";
+
+    /** A `localStorage` shim holding one settings blob. */
+    const storageWith = (settings: Record<string, unknown>): Storage =>
+        ({
+            getItem: (key: string) => (key === SETTINGS_STORAGE_KEY ? JSON.stringify(settings) : null),
+        }) as unknown as Storage;
+
+    /** Put the page on `PAGE_ORIGIN` with `settings` persisted. */
+    function browserAt(settings: Record<string, unknown>): void {
+        vi.stubGlobal("window", {location: {origin: PAGE_ORIGIN, href: `${PAGE_ORIGIN}/`}});
+        vi.stubGlobal("localStorage", storageWith(settings));
+    }
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("sends the token to the configured engine, cross-origin (the vite-dev / e2e flow)", async () => {
+        browserAt({serverUrl: ENGINE, serverToken: TOKEN});
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse("1.52"));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await new HledgerApi(ENGINE).version();
+        const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+        expect(headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    });
+
+    it("sends the token to its own origin (the packaged, same-origin app)", async () => {
+        browserAt({serverUrl: PAGE_ORIGIN, serverToken: TOKEN});
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse("1.52"));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await new HledgerApi(PAGE_ORIGIN).version();
+        const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+        expect(headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    });
+
+    it("never sends the token to any other origin", async () => {
+        browserAt({serverUrl: ENGINE, serverToken: TOKEN});
+        // A FRESH Response per call: a `Response` body may only be read once.
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse("1.52")));
+        vi.stubGlobal("fetch", fetchMock);
+
+        // Every one of these is reachable by typing it into the setup modal.
+        for (const hostile of ["http://evil.example", "https://evil.example", "http://127.0.0.1:5100", "http://localhost:4173.evil.example"]) {
+            await new HledgerApi(hostile).version();
+            const headers = (fetchMock.mock.calls.at(-1)?.[1] as RequestInit).headers as Record<string, string>;
+            expect(headers.Authorization, `${hostile} must not receive the token`).toBeUndefined();
+        }
+    });
+
+    it("still sends a token the caller passed explicitly", async () => {
+        browserAt({serverUrl: ENGINE, serverToken: TOKEN});
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse("1.52"));
+        vi.stubGlobal("fetch", fetchMock);
+
+        // The setup modal verifying a candidate server WITH a candidate token:
+        // the user typed both, so both are theirs to send.
+        await new HledgerApi("http://127.0.0.1:5100", "a-token-the-user-typed").version();
+        const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+        expect(headers.Authorization).toBe("Bearer a-token-the-user-typed");
     });
 });

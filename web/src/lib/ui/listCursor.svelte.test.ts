@@ -152,3 +152,50 @@ describe("UNIT listCursor", () => {
         expect({index: cursor.index, key: cursor.key}).toEqual({index: -1, key: null});
     });
 });
+
+// `index` is read on every render, and resolving the key used to be a linear
+// scan of the whole filtered list — 150k rows per keystroke on an all-time
+// journal, which is what made holding `j` stutter. `set` already knows the
+// position it moved to, so on an unchanged list the answer costs one comparison.
+//
+// Counting `keyOf` calls is the honest way to assert that: it is the work the
+// scan does, so the count IS the cost. Timing would be flaky; this is not.
+describe("UNIT listCursor index does not rescan an unchanged list", () => {
+    function counting(size: number): {cursor: ListCursor<Row>; calls: () => number} {
+        let calls = 0;
+        const rows = $state.raw<Row[]>(Array.from({length: size}, (_, i) => ({id: i + 1})));
+        let cursor!: ListCursor<Row>;
+        $effect.root(() => {
+            cursor = listCursor<Row>(
+                () => rows,
+                (row) => {
+                    calls += 1;
+                    return row.id;
+                }
+            );
+        });
+        return {cursor, calls: () => calls};
+    }
+
+    it("resolves a settled cursor in O(1), not O(n)", () => {
+        const {cursor, calls} = counting(1000);
+        cursor.to(900); // one keyOf, inside `set`
+        const settled = calls();
+
+        // Ten renders' worth of reads. A rescan would be 901 keyOf calls EACH.
+        for (let i = 0; i < 10; i += 1) void cursor.index;
+
+        expect(calls() - settled).toBeLessThanOrEqual(1);
+    });
+
+    it("still finds a row that moved, so the fast path never lies", () => {
+        // The fast path checks the old POSITION first; when a different record
+        // now sits there it must fall through to the scan rather than report it.
+        const {cursor, setIds} = harness([1, 2, 3, 4, 5]);
+        cursor.to(4);
+
+        setIds([5, 4, 3, 2, 1]);
+
+        expect({index: cursor.index, item: cursor.item}).toEqual({index: 0, item: {id: 5}});
+    });
+});

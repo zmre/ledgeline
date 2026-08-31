@@ -34,11 +34,17 @@
 //! produce a plausible number nobody questions.
 //!
 //! 1. **A stage is materialised under the destination's own file name, with the
-//!    destination's `.latest.NAME` copied in beside it.** `hledger import`
-//!    de-duplicates from a state file kept next to the *data file* and keyed to
-//!    its name. A dry-run against a temp copy called anything else consults a
-//!    state file that does not exist, reports every row as new, and then the real
-//!    import silently drops the back-dated ones. See [`stage`](crate::stage).
+//!    destination's `.latest.NAME` copied in beside it — verbatim, and if it
+//!    cannot be, the import is refused.** `hledger import` de-duplicates from a
+//!    state file kept next to the *data file* and keyed to its name. A dry-run
+//!    against a temp copy called anything else consults a state file that does
+//!    not exist, reports every row as new, and then the real import silently
+//!    drops the back-dated ones. The file is **not one date** — it repeats the
+//!    newest date once per record sharing it, and the repeat count is what
+//!    hledger skips by — so it is never parsed or rewritten on the way. A state
+//!    file that is there and unreadable stops the import
+//!    ([`refuse_unusable_dedup_state`]) rather than quietly becoming "there is
+//!    none". See [`stage`](crate::stage).
 //! 2. **`commit` writes the CSV to its FINAL destination first, then imports
 //!    there**, so hledger writes `.latest` next to the file it will look for next
 //!    time. Importing the temp copy and moving the CSV afterwards leaves the
@@ -105,7 +111,7 @@ use ledgeline_core::aliases;
 use ledgeline_core::convert::{
     self, ConvertError, ConvertNote, SourceFormat, StatementMeta, Tabular,
 };
-use ledgeline_core::decimal::Dec;
+use ledgeline_core::decimal::{Dec, MAX_RENDER_PLACES};
 use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
 use ledgeline_core::journals::{self, JournalTarget};
@@ -750,6 +756,10 @@ struct WireGitResult {
 #[serde(rename_all = "camelCase")]
 struct WireSorted {
     moved: usize,
+    /// What the git safety net did with the re-sorted journal, on the same terms
+    /// as [`WireCommit::git`]. `null` when the journal is not under version
+    /// control, when autocommit is off, or when nothing moved.
+    git: Option<WireGitResult>,
 }
 
 /// `GET`/`PUT /api/prefs`.
@@ -1943,12 +1953,33 @@ fn is_anglo_numeral(number: &str) -> bool {
 ///
 /// The reconciliation renders both of its sides at one scale, so `2949.8` typed
 /// into the form and `$2949.80` computed by hledger do not sit beside each other
-/// looking like two different numbers. Never truncates: `places` below the
-/// value's own scale keeps the value's, because dropping a digit to make two
-/// numbers look alike is how a 5-cent gap disappears from a screen.
+/// looking like two different numbers. **Below [`MAX_RENDER_PLACES`] it never
+/// truncates**: a `places` under the value's own scale keeps the value's,
+/// because dropping a digit to make two numbers look alike is how a 5-cent gap
+/// disappears from a screen.
+///
+/// # Total by construction
+///
+/// Both the requested `places` **and** the value's own scale are clamped to
+/// [`MAX_RENDER_PLACES`], because both feed a `"0".repeat(…)`: either one left
+/// as a bare `u32` turns a short request into a proportional allocation. That is
+/// the defect `convert::ofx` was carrying, where a 345-byte statement rendered
+/// to 20 MB, and this was the worse instance of it — two unbounded repeats
+/// rather than one. The bound is the engine's single copy, shared with
+/// `edit::render_dec` and `assertions::render_dec`; it is imported, never
+/// restated.
+///
+/// Past the bound a render is a **different number**, which is the same trade
+/// those two renderers make and the reason the clamp is documented rather than
+/// silent. Nothing on this route can reach it today — every [`Dec`] here comes
+/// from `Dec::parse`, which caps scale at `MAX_PARSE_PLACES` — but a renderer is
+/// not entitled to assume its caller validated anything, and this one is called
+/// with a scale derived from *two* values rather than one.
 fn render_money_at(value: Dec, places: u32) -> String {
-    let pad = usize::try_from(places.saturating_sub(value.places)).unwrap_or(0);
-    let places = usize::try_from(value.places.max(places)).unwrap_or(0);
+    let scale = value.places.min(MAX_RENDER_PLACES);
+    let wanted = places.min(MAX_RENDER_PLACES);
+    let pad = usize::try_from(wanted.saturating_sub(scale)).unwrap_or(0);
+    let places = usize::try_from(scale.max(wanted)).unwrap_or(0);
     let digits = format!("{}{}", value.mantissa.unsigned_abs(), "0".repeat(pad));
     let padded = if digits.len() <= places {
         format!("{}{digits}", "0".repeat(places + 1 - digits.len()))
@@ -2107,7 +2138,29 @@ fn commit_targets(targets: &[(&Path, &str)], message: &str, redactor: &Redactor)
             .collect();
         let paths: Vec<&Path> = group.iter().map(|(path, _)| *path).collect();
         match repo.commit(&paths, message) {
-            Ok(()) => committed.extend(group.iter().map(|(_, handle)| (*handle).to_string())),
+            // What came back is what was STAGED, which is what went in minus
+            // whatever the repository ignores — a `.latest.*` or a statements
+            // directory the user deliberately keeps out of version control. The
+            // rest is `skipped`, which is what that field has always promised;
+            // reporting them all as committed would be a claim `git log`
+            // contradicts, and it stopped being hypothetical when the dedup
+            // marker joined this set.
+            Ok(staged) => {
+                let was_staged =
+                    |path: &Path| repo.relative(path).is_ok_and(|name| staged.contains(&name));
+                committed.extend(
+                    group
+                        .iter()
+                        .filter(|(path, _)| was_staged(path))
+                        .map(|(_, handle)| (*handle).to_string()),
+                );
+                skipped.extend(
+                    group
+                        .iter()
+                        .filter(|(path, _)| !was_staged(path))
+                        .map(|(_, handle)| (*handle).to_string()),
+                );
+            }
             Err(error) => {
                 skipped.extend(group.iter().map(|(_, handle)| (*handle).to_string()));
                 // The FIRST failure's words, not the last: a second repository
@@ -2666,6 +2719,10 @@ impl Plan {
         let destination = resolve_destination(&root_dir, &request.csv_path)?;
         let csv_name = file_name(&destination)
             .ok_or_else(|| unresolved("CSV destination", &request.csv_path))?;
+        // Sequencing rule 1, second half. Resolved here for the reason `skip`
+        // and `aliases` are: the dry-run and the commit must not be able to
+        // disagree about whether the dedup state applies.
+        refuse_unusable_dedup_state(&destination, &csv_name, &request.csv_path)?;
         let hledger = resolve_hledger()?;
         // Both homes an account alias can live in — see `AliasArguments::merge`
         // for why the config's come first.
@@ -2715,7 +2772,35 @@ impl Plan {
         self.destination.parent().unwrap_or_else(|| Path::new("."))
     }
 
-    /// The two targets an import touches, each with the handle to report it by.
+    /// The dedup marker `hledger import --catchup` maintains beside the
+    /// destination, with the relative handle to report it by — or `None` when
+    /// there is no file there yet.
+    ///
+    /// Existence is checked, and that is not defensive: `git add` on a path that
+    /// does not exist fails the **whole** invocation, so a first import — which
+    /// has no marker until the catch-up runs — would take the journal and the
+    /// CSV down with it.
+    fn marker_target(&self, csv_path: &str) -> Option<(PathBuf, String)> {
+        let name = stage::latest_name(&self.csv_name);
+        let path = self.destination_dir().join(&name);
+        path.is_file().then(|| {
+            let handle = match csv_path.rsplit_once('/') {
+                Some((parent, _)) => format!("{parent}/{name}"),
+                None => name.clone(),
+            };
+            (path, handle)
+        })
+    }
+
+    /// The two targets an import **writes**, each with the handle to report it
+    /// by — and the two it blocks on.
+    ///
+    /// These are the files that hold a user's own work, so this is the set
+    /// `blocked_by_git` refuses a dirty member of. The dedup marker is written
+    /// too but is not in here: it is hledger's bookkeeping rather than anybody's
+    /// work, and it joins the commit set separately in [`run_commit`]. Widening
+    /// this to include it would let a marker left dirty by a terminal
+    /// `hledger import` block every import through the screen.
     fn targets<'a>(&'a self, request: &'a WireDryRunRequest) -> Vec<(&'a Path, &'a str)> {
         vec![
             (self.destination.as_path(), request.csv_path.as_str()),
@@ -3037,6 +3122,46 @@ fn renames_between(before: &str, after: &str) -> Vec<(String, String)> {
     seen
 }
 
+/// Refuse an import whose destination carries dedup state this process cannot
+/// read.
+///
+/// **"No `.latest` at all" is not this case**, and telling the two apart is the
+/// whole point. A first import of a file of this name has no dedup state,
+/// nothing could be skipped, and it proceeds in silence — that is
+/// [`stage::Latest::Absent`]. What is refused is a `.latest.NAME` that *exists*
+/// and cannot be carried into the run directory, because the alternative is the
+/// worst shape a bug in this module takes:
+///
+/// * the dry-run runs with no dedup state, so every row looks new;
+/// * [`skipped_by_dedup`] has no marker either, so the "N rows would be skipped"
+///   warning also says nothing;
+/// * the commit reads the **real** directory, where the state file still is, and
+///   imports what dedup leaves — far fewer rows than the screen promised.
+///
+/// hledger exits 0 at every step, so nothing else in the pipeline notices. The
+/// preview stops being the bytes and there is no error to read.
+///
+/// A `409` rather than a `500`: nothing here is broken, there is a file on the
+/// user's disk in a state this import will not proceed against, and the sentence
+/// names it.
+fn refuse_unusable_dedup_state(
+    destination: &Path,
+    csv_name: &str,
+    handle: &str,
+) -> Result<(), AppError> {
+    let dir = destination.parent().unwrap_or_else(|| Path::new("."));
+    match stage::latest_state(dir, csv_name) {
+        stage::Latest::Absent | stage::Latest::Present(_) => Ok(()),
+        stage::Latest::Unusable(reason) => Err(AppError::Conflict(format!(
+            "{} records which rows of {} hledger has already imported, and it {reason}. Going \
+             ahead without it would treat every row as new, so nothing was done. Inspect that \
+             file, or move it aside to start this statement's de-duplication over.",
+            quoted(&stage::latest_name(csv_name)),
+            quoted(handle),
+        ))),
+    }
+}
+
 /// A `500` for a staging-area I/O failure. Only the [`std::io::ErrorKind`] is
 /// reported: its `Display` is a fixed phrase from a closed set (`permission
 /// denied`, `no space left on device`) and carries no payload at all.
@@ -3237,10 +3362,36 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
         },
     };
 
+    // The dedup marker hledger wrote a moment ago belongs in the SAME commit as
+    // the journal and the CSV. `git revert` of an import has to put all three
+    // back together: a revert that restores the journal but leaves the marker
+    // ahead of it makes the next import of that statement propose nothing, and
+    // one that leaves the marker behind makes it propose rows twice.
+    //
+    // The COMMIT set only — never `blocked_by_git` above. A marker left dirty by
+    // an earlier import, or by somebody running `hledger import` in a terminal,
+    // is not a reason to refuse every future import through this screen; it is
+    // hledger's own bookkeeping, not a user's work that a revert would have to
+    // recover. That is why this is a second set rather than a wider `targets`.
+    //
+    // A marker that does not exist yet (the first import of this name) and one
+    // the repository ignores are both non-events: the first is filtered here,
+    // the second by `Repo::commit`, which drops ignored paths before staging.
+    let marker = plan.marker_target(&request.plan.csv_path);
+    let committed: Vec<(&Path, &str)> = targets
+        .iter()
+        .copied()
+        .chain(
+            marker
+                .iter()
+                .map(|(path, handle)| (path.as_path(), handle.as_str())),
+        )
+        .collect();
+
     let git = autocommit_enabled(&prefs)
         .then(|| {
             commit_targets(
-                &targets,
+                &committed,
                 &commit_message(&request.plan.csv_path, imported),
                 &plan.redactor,
             )
@@ -3691,6 +3842,25 @@ pub(crate) async fn sort_journal(
 }
 
 /// The whole of `sort`, synchronously.
+///
+/// # It commits, and it commits SEPARATELY
+///
+/// A re-sort rewrites the whole journal in place; leaving that uncommitted next
+/// to an import that *was* committed means `git diff` no longer shows the import
+/// and `git revert` no longer undoes it — the safety net the commit route exists
+/// to provide, dismantled by the button offered immediately after it.
+///
+/// Its own commit rather than an amendment to the import's, because the two are
+/// separately undoable and a user who wants the ordering back does not want the
+/// transactions back out. Only the journal this call rewrote is in it; the CSV
+/// and the dedup marker were not touched here and belong to the import's commit.
+///
+/// There is deliberately **no `blocked_by_git` pre-flight**. A commit refuses a
+/// dirty target because overwriting somebody's uncommitted edit is what a revert
+/// could not undo; here the file was just written by the import a moment ago and
+/// the user has explicitly asked for this rewrite of it. Blocking would refuse
+/// the sort precisely when the import that dirtied the file could not be
+/// committed, which is the case where it helps least.
 fn run_sort(state: &AppState, request: &WireSortRequest) -> Result<WireSorted, AppError> {
     let main = main_journal(state, "journal", &request.journal_id)?;
     let root = include_root(&main)?;
@@ -3699,7 +3869,10 @@ fn run_sort(state: &AppState, request: &WireSortRequest) -> Result<WireSorted, A
     let text = std::fs::read_to_string(&journal).map_err(journal_unreadable)?;
     let plan = sort::plan(&text).map_err(|error| AppError::BadRequest(error.to_string()))?;
     if plan.unchanged {
-        return Ok(WireSorted { moved: 0 });
+        return Ok(WireSorted {
+            moved: 0,
+            git: None,
+        });
     }
     let sorted =
         sort::apply(&text, &plan).map_err(|error| AppError::BadRequest(error.to_string()))?;
@@ -3713,9 +3886,33 @@ fn run_sort(state: &AppState, request: &WireSortRequest) -> Result<WireSorted, A
     if let Some(Err(error)) = state.reopen_editor() {
         eprintln!("ledgeline: the journal could not be re-read after a sort: {error}");
     }
+
+    let redactor = Redactor::default()
+        .hide(&journal, &request.journal_id)
+        .hide_prefix(&root)
+        .hide_prefix(&std::env::temp_dir());
+    let targets = vec![(journal.as_path(), request.journal_id.as_str())];
+    let git = autocommit_enabled(&prefs::load())
+        .then(|| {
+            commit_targets(
+                &targets,
+                &sort_message(&request.journal_id, plan.moves.len()),
+                &redactor,
+            )
+        })
+        .filter(|result| result.committed || result.message.is_some());
+
     Ok(WireSorted {
         moved: plan.moves.len(),
+        git,
     })
+}
+
+/// The generated commit message for a confirmed re-sort.
+fn sort_message(journal_id: &str, moved: usize) -> String {
+    let name = journal_id.rsplit('/').next().unwrap_or(journal_id);
+    let plural = if moved == 1 { "" } else { "s" };
+    format!("sort {name} into date order, moving {moved} transaction{plural}")
 }
 
 /// `POST /api/import/hledger-conf` — install the journal's aliases into an
@@ -4045,6 +4242,53 @@ mod tests {
                 "{ambiguous:?} must not be read as one amount"
             );
         }
+    }
+
+    /// **Rendering money is total: neither the requested scale nor the value's
+    /// own can turn a short input into an unbounded allocation.**
+    ///
+    /// Built with [`Dec::new`] rather than by parsing, deliberately. `Dec::parse`
+    /// caps scale at `MAX_PARSE_PLACES`, so an end-to-end test through
+    /// [`reconcile`] would pass whether or not this function clamps anything —
+    /// it would be testing the parser. The property here is that
+    /// [`render_money_at`] is bounded *on its own terms*, because it is a
+    /// renderer and renderers do not get to assume their caller validated
+    /// something.
+    ///
+    /// The sibling defect: an unclamped `places` feeding `"0".repeat(…)` in
+    /// `convert::ofx` turned a 345-byte statement into a 20 MB render. This one
+    /// had two such repeats — one for the requested scale, one for the value's.
+    #[test]
+    fn rendering_money_is_bounded_whatever_scale_it_is_handed() {
+        // The bound, in bytes: a sign, an integer part, a point, and at most
+        // `MAX_RENDER_PLACES` fractional digits. `i128` tops out at 39 digits.
+        let ceiling = usize::try_from(MAX_RENDER_PLACES).expect("fits") + 64;
+
+        // 1. An absurd scale on the VALUE — the second `repeat`.
+        let deep = Dec::new(12345, u32::MAX);
+        assert!(
+            render_money_at(deep, 2).len() <= ceiling,
+            "a value scale of u32::MAX must not allocate proportionally"
+        );
+
+        // 2. An absurd REQUESTED scale — the first `repeat`, which pads the
+        //    mantissa out to the width asked for.
+        let ordinary = Dec::new(294_505, 2);
+        assert!(
+            render_money_at(ordinary, u32::MAX).len() <= ceiling,
+            "a requested scale of u32::MAX must not allocate proportionally"
+        );
+
+        // 3. Both at once.
+        assert!(render_money_at(deep, u32::MAX).len() <= ceiling);
+
+        // And the clamp is inert for every scale a real balance carries: below
+        // the bound the function still refuses to truncate, which is the
+        // property the reconciliation depends on.
+        assert_eq!(render_money_at(ordinary, 0), "2945.05", "no truncation");
+        assert_eq!(render_money_at(ordinary, 4), "2945.0500", "pads instead");
+        assert_eq!(render_money_at(Dec::new(-500, 2), 2), "-5.00");
+        assert_eq!(render_money_at(Dec::zero(), 2), "0.00");
     }
 
     /// The reconciliation's three fields have to agree with each other: a zero

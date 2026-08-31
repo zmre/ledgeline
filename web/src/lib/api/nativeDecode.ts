@@ -849,6 +849,7 @@ interface RawCommitResult {
 
 interface RawSortResult {
     moved?: number;
+    git?: RawGitReport | null;
 }
 
 interface RawPrefs {
@@ -2504,11 +2505,20 @@ export function decodeCommitResult(raw: unknown): CommitResult {
     });
 }
 
-/** `POST /api/import/sort` → how many transactions the confirmed re-sort moved. */
+/**
+ * `POST /api/import/sort` → how many transactions the confirmed re-sort moved,
+ * and whether git took the rewrite.
+ *
+ * `git` is null when the journal is not under version control or autocommit is
+ * off — the same convention `decodeCommitResult` uses.
+ */
 export function decodeSortResult(raw: unknown): SortResult {
     const result = raw as RawSortResult;
     if (typeof result !== "object" || result === null) throw new ApiShapeError("sort result: expected an object");
-    return Object.freeze({moved: num(result.moved, "sort result moved")});
+    return Object.freeze({
+        moved: num(result.moved, "sort result moved"),
+        git: decodeGitReport(result.git, "sort result git"),
+    });
 }
 
 // ---------------------------------------------------------------------------

@@ -60,6 +60,10 @@ pub struct AccountDecl {
     pub account_type: Option<AccountType>,
 }
 
+/// The `account` directive tag naming an account's TYPE — hledger's own, and
+/// the only one of the five closed-vocabulary tags this codebase did not invent.
+pub const ACCOUNT_TYPE_TAG: &str = "type";
+
 /// The cash-like segments hledger's Cash-account heuristic looks for below an
 /// asset root.
 const CASH_SEGMENTS: [&str; 7] = [
@@ -360,7 +364,7 @@ pub fn account_decls_from(accounts: &[AccountDeclaration]) -> Vec<AccountDecl> {
             let account_type = decl
                 .tags
                 .iter()
-                .find(|(key, _)| key == "type")
+                .find(|(key, _)| key == ACCOUNT_TYPE_TAG)
                 .and_then(|(_, value)| parse_account_type_tag(value));
             AccountDecl {
                 name: decl.name.0.clone(),

@@ -64,13 +64,21 @@ impl MixedAmount {
     /// Add `qty` into `commodity` in place, **without** pruning zeros — callers
     /// prune once at the end, matching `accountTotals`' single final sweep.
     ///
+    /// The already-present case — every call after the first for a commodity,
+    /// which on a real journal is nearly all of them — costs ONE tree descent
+    /// and no allocation. A `get` followed by an `insert` walked the tree twice
+    /// and cloned the key's `String` for a slot that already held it; only a
+    /// genuinely new commodity pays for the key now.
+    ///
     /// # Errors
     /// Returns [`DecError`] on decimal overflow.
     pub fn accumulate(&mut self, commodity: &Commodity, qty: Dec) -> Result<(), DecError> {
-        match self.0.get(commodity).copied() {
-            Some(prev) => self.0.insert(commodity.clone(), prev.add(qty)?),
-            None => self.0.insert(commodity.clone(), qty),
-        };
+        match self.0.get_mut(commodity) {
+            Some(prev) => *prev = prev.add(qty)?,
+            None => {
+                self.0.insert(commodity.clone(), qty);
+            }
+        }
         Ok(())
     }
 

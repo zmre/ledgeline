@@ -14,7 +14,6 @@
     // is named from the CURRENT controls and built from the HELD report, so those
     // two may only be combined when they answer the same question).
     import {onMount} from "svelte";
-    import {encodeDec} from "$lib/api/editMapping";
     import {
         activeBudgetPreset,
         budgetParamsToSearch,
@@ -27,6 +26,7 @@
         type BudgetPreset,
     } from "$lib/budget/params";
     import {budgetStore, REFERENCE_PERIODS, type BudgetReportQuery} from "$lib/budget/budgetStore.svelte";
+    import {alreadyBudgeted, goalChange} from "$lib/budget/target";
     import type {BudgetChange} from "$lib/api/native";
     import type {BudgetGoal, BudgetPeriod, BudgetRule, GoalDraft, GoalSubmission} from "$lib/budget/types";
     import BudgetEditor from "$lib/budget/ui/BudgetEditor.svelte";
@@ -191,28 +191,13 @@
     async function submitGoal(submission: GoalSubmission): Promise<void> {
         const current = draft;
         if (current === null) return;
-        const value = encodeDec(submission.value);
-        // Three shapes, and which one this is falls out of what the modal was
-        // opened for: an existing goal is a `set`, a goal added into a rule is an
-        // `add`, and a goal with no rule to join needs a rule made for it.
-        const change: BudgetChange =
-            current.goal !== null
-                ? {kind: "set", index: current.goal.index, value}
-                : current.rule !== null
-                  ? {kind: "add", block: current.rule.block, account: submission.account, value}
-                  : {kind: "addRule", period: submission.period, description: defaultRuleName(submission.period), account: submission.account, value};
-        if (await apply(current.journalId, change)) draft = null;
-    }
-
-    /**
-     * The description a brand-new rule is created with.
-     *
-     * `--budget=DESCPAT` matches on it, so it is worth being a real name rather
-     * than blank — and naming it after its period is what makes "one rule per
-     * interval" legible in the file itself.
-     */
-    function defaultRuleName(period: BudgetPeriod): string {
-        return `${period} budget`;
+        // Which of the three shapes this is, and which file it goes to, is
+        // `goalChange`'s to decide — the same module the per-period "+ Add"
+        // button asks, so that a goal added from the top of the page joins the
+        // rule that button would have added it to instead of opening a second
+        // one beside it.
+        const {journalId, change} = goalChange(listing.value, current, submission);
+        if (await apply(journalId, change)) draft = null;
     }
 
     /**
@@ -357,6 +342,7 @@
             {styles}
             saving={budgetStore.saving}
             error={writeError}
+            isBudgeted={(account, period) => alreadyBudgeted(listing.value, current, period, account)}
             onAccountChange={loadReference}
             onSubmit={(submission) => void submitGoal(submission)}
             onCancel={() => {
