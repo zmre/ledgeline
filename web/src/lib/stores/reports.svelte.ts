@@ -6,10 +6,8 @@
 // the very first load shows a spinner).
 
 import {LedgelineApi} from "$lib/api/native";
-import {decodeBalanceSheetReport, decodeBudgetReport, decodeIncomeStatementReport, decodePeriodReport} from "$lib/api/nativeDecode";
-import type {ISODate} from "$lib/domain/types";
-import {monthsBetween} from "$lib/reports/periods";
-import type {BalanceSheetReport, BudgetReport, IncomeStatementReport, PeriodReport, SectionedReport} from "$lib/reports/types";
+import {decodeBalanceSheetReport, decodeIncomeStatementReport, decodePeriodReport} from "$lib/api/nativeDecode";
+import type {BalanceSheetReport, IncomeStatementReport, PeriodReport, SectionedReport} from "$lib/reports/types";
 import type {ReportInterval, ReportParams} from "$lib/reports/ui/params";
 import type {LoadStatus} from "./loadState";
 import {createResource} from "./resource.svelte";
@@ -22,7 +20,7 @@ import {createResource} from "./resource.svelte";
  * goldens decode into, and removing it from the union would make the page's
  * `"kind" in current` narrowing vacuous rather than meaningful.
  */
-export type AnyReport = SectionedReport | PeriodReport | BudgetReport | BalanceSheetReport | IncomeStatementReport;
+export type AnyReport = SectionedReport | PeriodReport | BalanceSheetReport | IncomeStatementReport;
 
 /** The exact query for one tab — only the fields that endpoint honors, so the fetch effect refires minimally. */
 export type ReportQuery =
@@ -36,8 +34,7 @@ export type ReportQuery =
     // endpoint takes no such param (plans/13), exactly as `bs` dropped it.
     | {tab: "is"; from: string; to: string}
     | {tab: "cf"; end: string; interval: ReportInterval; count: number; depth: number}
-    | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number}
-    | {tab: "budget"; from: string; end: string; count: number; depth: number};
+    | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number};
 
 /** Map ReportParams → the active tab's endpoint query (drives both the fetch and the refetch key). */
 export function buildReportQuery(params: ReportParams): ReportQuery {
@@ -54,34 +51,7 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
             return {tab: "cf", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
         case "nw":
             return {tab: "nw", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
-        case "budget": {
-            // The budget summary spans the from/to range as monthly buckets, aggregated client-side.
-            // `from` is redundant for the fetch (end + count already describe the span) but is carried
-            // so `sameReportQuery` can tell one span from another: the export names the file after
-            // params.from, and two different `from` dates can round to the same month count.
-            const span = budgetSpan(params.from, params.to);
-            return {tab: "budget", from: params.from, end: span.to, count: span.count, depth: params.depth};
-        }
     }
-}
-
-/**
- * The span the budget bars ACTUALLY cover, given the controls' `from`/`to`.
- *
- * The engine takes `{end, count}` and walks whole months backwards, so the first
- * bucket always starts on the 1st — `from`'s day-of-month is discarded. It does
- * truncate the last bucket at `end`, so only the START drifts. With
- * `from = 2026-01-15` the bar therefore includes 2026-01-01…01-14, which a
- * drill-down filtered to the raw controls excludes: measured $720.00 in the bar
- * against $20.00 in the journal it links to.
- *
- * The bars are the thing that cannot move — a monthly goal is a whole-month
- * figure, so comparing it to a partial month is what the envelope view is for.
- * So the drill-down is widened to this span instead, and `BudgetSummary` shows
- * it, rather than silently filtering to a narrower set than it charted.
- */
-export function budgetSpan(from: ISODate, to: ISODate): {from: ISODate; to: ISODate; count: number} {
-    return {from: `${from.slice(0, 7)}-01`, to, count: monthsBetween(from, to)};
 }
 
 /**
@@ -130,8 +100,6 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
             return decodePeriodReport(await api.cashFlow({end: query.end, interval: query.interval, count: query.count, depth: query.depth}));
         case "nw":
             return decodePeriodReport(await api.netWorth({end: query.end, interval: query.interval, count: query.count, depth: query.depth}));
-        case "budget":
-            return decodeBudgetReport(await api.budget({end: query.end, interval: "monthly", count: query.count, depth: query.depth}));
     }
 }
 

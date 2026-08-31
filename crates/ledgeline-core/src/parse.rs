@@ -479,8 +479,14 @@ fn parse_source(
                     default_mark: ctx.default_decimal_mark,
                     default_commodity: ctx.default_commodity.as_ref(),
                 };
-                let (periodic, next) =
-                    parse_periodic_transaction(&lines, i, amt, source_name, ctx.default_year)?;
+                let (periodic, next) = parse_periodic_transaction(
+                    &lines,
+                    i,
+                    amt,
+                    source_name,
+                    &source_file,
+                    ctx.default_year,
+                )?;
                 ctx.periodic_transactions.push(periodic);
                 i = next;
                 continue;
@@ -1178,6 +1184,7 @@ fn parse_periodic_transaction(
     start: usize,
     amt: AmountCtx,
     source_name: &str,
+    source_file: &Path,
     default_year: Option<i32>,
 ) -> Result<(PeriodicTransaction, usize), ParseError> {
     let header_no = to_u32(start + 1);
@@ -1225,11 +1232,26 @@ fn parse_periodic_transaction(
 
     let postings = balance_postings(raw_postings, header_no)
         .map_err(|e| locate(source_name, header_no, header_line, e))?;
+    // `j` is the index of the first line the rule did NOT consume, so its
+    // 1-based number is already "the line after the last one" — the same
+    // end-exclusive convention `parse_transaction` builds by hand.
+    let source_span = (
+        SourcePos {
+            line: header_no,
+            column: 1,
+        },
+        SourcePos {
+            line: to_u32(j + 1),
+            column: 1,
+        },
+    );
     Ok((
         PeriodicTransaction {
             period,
             description,
             postings,
+            source_span,
+            source_file: source_file.to_path_buf(),
         },
         j,
     ))
@@ -2332,7 +2354,7 @@ fn parse_tags(comment: &str) -> Vec<(String, String)> {
 /// Split a posting's `after-status` remainder into `(account, amount)` at the
 /// first run of two-or-more spaces (or a tab). A single space is part of the
 /// account name.
-fn split_account_amount(text: &str) -> (&str, &str) {
+pub(crate) fn split_account_amount(text: &str) -> (&str, &str) {
     let mut prev_space: Option<usize> = None;
     for (idx, ch) in text.char_indices() {
         if ch == '\t' {
@@ -2954,6 +2976,40 @@ mod tests {
             AccountName("assets:bank".into())
         );
         assert_eq!(periodic.postings[1].amounts[0].quantity, Dec::new(-1000, 0));
+    }
+
+    /// A rule records WHERE it is, on the same end-exclusive convention a
+    /// transaction's span uses. Without this the budget editor can report a goal
+    /// but never rewrite one, so the numbers are pinned rather than assumed.
+    #[test]
+    fn periodic_rule_records_its_span_and_file() {
+        let text = concat!(
+            "; a header comment\n",
+            "\n",
+            "~ monthly  household budget\n",      // line 3
+            "    (expenses:rent)  $1000\n",       // line 4
+            "    ; a trailing posting comment\n", // line 5, consumed by the rule
+            "\n",
+            "~ yearly  annual\n",          // line 7
+            "    (expenses:tax)   $500\n", // line 8
+        );
+        let journal = parse_journal(text, "t.journal").unwrap();
+        let rules = &journal.periodic_transactions;
+        assert_eq!(rules.len(), 2);
+
+        // Start is the `~` line; end is the line AFTER the last one consumed —
+        // the indented comment counts as consumed, exactly as it does for a
+        // transaction.
+        assert_eq!(rules[0].source_span.0, SourcePos { line: 3, column: 1 });
+        assert_eq!(rules[0].source_span.1, SourcePos { line: 6, column: 1 });
+        assert_eq!(rules[1].source_span.0, SourcePos { line: 7, column: 1 });
+        assert_eq!(rules[1].source_span.1, SourcePos { line: 9, column: 1 });
+
+        // The file is the resolved path the parse read, the same one
+        // `Transaction::source_file` and `Journal::source_files` record.
+        assert_eq!(rules[0].source_file, resolve_source_file("t.journal"));
+        assert_eq!(rules[1].source_file, rules[0].source_file);
+        assert!(journal.source_files.contains(&rules[0].source_file));
     }
 
     #[test]

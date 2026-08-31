@@ -37,6 +37,7 @@
 //! threat model on [`security`] before putting either on a real socket.
 
 mod alias_api;
+mod budget_api;
 mod edit_api;
 mod error;
 mod git;
@@ -630,6 +631,26 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // `alias_endpoints.rs::every_alias_route_requires_the_token` pins the 401.
         .route("/api/aliases", get(alias_api::index))
         .route("/api/aliases/{*id}", axum::routing::put(alias_api::save))
+        // Budget goals: the `~` periodic rules `/api/budget` reports against,
+        // listed and edited in place, plus the two routes the editor needs
+        // around them — the per-account history strip, and the one-time
+        // creation of a `budget.journal` for a ledger that has nowhere to put a
+        // first goal.
+        //
+        // THE SAME PLACEMENT TRAP as the routes above, twice over:
+        // `PUT /api/budget/lines/{*id}` rewrites a line of the user's JOURNAL,
+        // and `POST /api/budget/file` CREATES a file beside it and appends an
+        // `include` to the main journal. Below the `route_layer` both would
+        // happen unauthenticated.
+        // `budget_endpoints.rs::every_budget_route_requires_the_token` pins the
+        // 401 for all four.
+        .route("/api/budget/lines", get(budget_api::index))
+        .route(
+            "/api/budget/lines/{*id}",
+            axum::routing::put(budget_api::save),
+        )
+        .route("/api/budget/file", post(budget_api::create_file))
+        .route("/api/budget/reference", get(budget_api::reference))
         // Token-gate exactly the routes registered above. `route_layer` skips
         // the fallback, which is what lets the browser fetch the shell (and the
         // token inside it) before it has any credential to present.

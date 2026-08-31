@@ -17,6 +17,8 @@
 //! - `rules`   — format-preserving CSV import-rules (`*.rules`) model (Imports)
 //! - `aliases` — `alias` directives: forwarding them to `hledger --alias`, and
 //!   the one-line-wide span editor over them (Enhanced imports)
+//! - `periodic` — `~` periodic transaction rules: the span editor that lets a
+//!   budget goal be rewritten in place (Budget editor)
 //! - `convert` — normalize OFX/QFX/spreadsheet/delimited statements to one
 //!   tabular extract (Enhanced imports; see `plans/11-enhanced-import.md`)
 //! - `hledger_conf` — the `--alias` options an `hledger.conf` declares, and
@@ -33,6 +35,7 @@ pub mod holdings;
 pub mod journals;
 pub mod model;
 pub mod parse;
+pub mod periodic;
 pub mod reports;
 pub mod rules;
 pub mod sort;

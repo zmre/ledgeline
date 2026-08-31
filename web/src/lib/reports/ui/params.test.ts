@@ -1,15 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {
-    activeBudgetPreset,
-    budgetPresetRange,
-    defaultReportParams,
-    MAX_COUNT,
-    paramsToSearch,
-    searchToParams,
-    TAB_CONTROLS,
-    TAB_ORDER,
-    type ReportParams,
-} from "./params";
+import {budgetRedirect, defaultReportParams, MAX_COUNT, paramsToSearch, searchToParams, TAB_CONTROLS, TAB_ORDER, type ReportParams} from "./params";
 
 const DFLT = defaultReportParams("2026-07-08");
 
@@ -26,7 +16,7 @@ describe("UNIT reports/ui/params", () => {
                 end: "2026-07-08",
                 interval: "monthly",
                 count: 12,
-                // Shared by cf/nw/budget. Neither statement reads it: both tabs
+                // Shared by cf and nw. Neither statement reads it: both tabs
                 // ask the engine for an unclamped report.
                 depth: 3,
                 insStart: "2024-07-01",
@@ -46,27 +36,8 @@ describe("UNIT reports/ui/params", () => {
             expect(paramsToSearch({...DFLT, tab: "is"})).toBe("tab=is&from=2026-01-01&to=2026-12-31");
             expect(paramsToSearch({...DFLT, tab: "cf"})).toBe("tab=cf&end=2026-07-08&interval=monthly&count=12&depth=3");
             expect(paramsToSearch({...DFLT, tab: "nw"})).toBe("tab=nw&end=2026-07-08&interval=monthly&count=12&depth=3");
-            expect(paramsToSearch({...DFLT, tab: "budget"})).toBe("tab=budget&from=2026-01-01&to=2026-12-31&depth=3");
             // Subscriptions scan a fixed trailing window, so the tab is all there is to restore.
             expect(paramsToSearch({...DFLT, tab: "subs"})).toBe("tab=subs");
-        });
-    });
-
-    describe("budget presets", () => {
-        const NOW = "2026-07-21";
-
-        it("resolves each preset to an inclusive range", () => {
-            expect(budgetPresetRange("this-month", NOW)).toEqual({from: "2026-07-01", to: "2026-07-21"});
-            expect(budgetPresetRange("last-month", NOW)).toEqual({from: "2026-06-01", to: "2026-06-30"});
-            expect(budgetPresetRange("ytd", NOW)).toEqual({from: "2026-01-01", to: "2026-07-21"});
-            expect(budgetPresetRange("this-year", NOW)).toEqual({from: "2026-01-01", to: "2026-12-31"});
-            expect(budgetPresetRange("trailing-12", NOW)).toEqual({from: "2025-08-01", to: "2026-07-21"});
-        });
-
-        it("identifies the active preset, or 'custom' for an unmatched range", () => {
-            expect(activeBudgetPreset("2026-01-01", "2026-07-21", NOW)).toBe("ytd");
-            expect(activeBudgetPreset("2026-06-01", "2026-06-30", NOW)).toBe("last-month");
-            expect(activeBudgetPreset("2020-03-01", "2020-04-15", NOW)).toBe("custom");
         });
     });
 
@@ -135,7 +106,7 @@ describe("UNIT reports/ui/params", () => {
             expect(TAB_CONTROLS.bs.depth).toBe(false);
             expect(TAB_CONTROLS.is.depth).toBe(false);
             expect(TAB_CONTROLS.is.range).toBe(true);
-            expect([TAB_CONTROLS.cf.depth, TAB_CONTROLS.nw.depth, TAB_CONTROLS.budget.depth]).toEqual([true, true, true]);
+            expect([TAB_CONTROLS.cf.depth, TAB_CONTROLS.nw.depth]).toEqual([true, true]);
         });
 
         it("clamps count and depth to sane ranges", () => {
@@ -143,5 +114,33 @@ describe("UNIT reports/ui/params", () => {
             expect(parsed.count).toBe(MAX_COUNT);
             expect(parsed.depth).toBe(1);
         });
+    });
+});
+
+describe("UNIT reports/ui/params — the Budget tab's old address", () => {
+    it("forwards ?tab=budget, carrying the params the new route still honours", () => {
+        // `tab` is dropped (there is no tab to name any more) and from/to/depth
+        // survive, so the forwarded link shows the same budget the old one did.
+        expect(budgetRedirect("?tab=budget&from=2026-01-01&to=2026-06-30&depth=2")).toBe("?from=2026-01-01&to=2026-06-30&depth=2");
+    });
+
+    it("forwards a bare ?tab=budget to no query at all", () => {
+        // An empty string, not "?" — appending a lone question mark to the route
+        // would put one in the address bar for nothing.
+        expect(budgetRedirect("?tab=budget")).toBe("");
+    });
+
+    it("declines every URL that is not the budget tab", () => {
+        // null, not "": the page distinguishes "forward this" from "forward this
+        // with no query", and collapsing them would redirect every reports visit.
+        expect(budgetRedirect("?tab=bs&asof=2026-07-08")).toBeNull();
+        expect(budgetRedirect("")).toBeNull();
+        expect(budgetRedirect("?from=2026-01-01")).toBeNull();
+        // A tab that merely CONTAINS the word is not the budget tab.
+        expect(budgetRedirect("?tab=budgetary")).toBeNull();
+    });
+
+    it("tolerates a missing leading ?", () => {
+        expect(budgetRedirect("tab=budget&depth=3")).toBe("?depth=3");
     });
 });

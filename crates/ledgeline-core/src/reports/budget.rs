@@ -389,8 +389,9 @@ mod tests {
     use crate::decimal::Dec;
     use crate::model::{
         AccountName, Amount, AmountStyle, Commodity, CommoditySide, PeriodExpr, Posting,
-        PostingType, Status,
+        PostingType, SourcePos, Status,
     };
+    use std::path::PathBuf;
 
     /// A `MixedAmount` of `cents` USD (2 places).
     fn usd_ma(cents: i128) -> MixedAmount {
@@ -429,6 +430,12 @@ mod tests {
             period,
             description: description.to_string(),
             postings,
+            // The report never reads a rule's position; only the editor does.
+            source_span: (
+                SourcePos { line: 1, column: 1 },
+                SourcePos { line: 2, column: 1 },
+            ),
+            source_file: PathBuf::from("budget.journal"),
         }
     }
 

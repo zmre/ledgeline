@@ -24,6 +24,10 @@ pub enum DecError {
     /// A numeric literal could not be parsed.
     #[error("invalid numeric literal: '{0}'")]
     InvalidNumber(String),
+    /// [`Dec::div_int`] was asked to divide by a count of zero — the mean of no
+    /// values, which is not a number rather than an infinite one.
+    #[error("cannot divide by a count of zero")]
+    DivideByZero,
 }
 
 /// An exact decimal value: `mantissa / 10^places`.
@@ -128,6 +132,46 @@ impl Dec {
             .checked_add(other.places)
             .ok_or(DecError::Overflow)?;
         Ok(Self::new(mantissa, places).normalized())
+    }
+
+    /// Divide by a positive whole count, keeping this value's scale and rounding
+    /// half away from zero.
+    ///
+    /// Deliberately NOT general division. Money divided by money is a ratio and
+    /// belongs in floating point at a chart boundary; money divided by a *count*
+    /// is money, and this is the one place the engine needs it — the mean of a
+    /// few periods' actuals, which the budget editor shows beside the amount box.
+    ///
+    /// # Why the scale does not grow
+    /// The result is another figure in the same commodity, shown in the same
+    /// column as the periods it averages. Widening the scale to make the division
+    /// exact would print `$553.3333333333` under three amounts written to the
+    /// cent, which is precision the inputs never had.
+    ///
+    /// # Why half away from zero
+    /// It is what `Data.Decimal`'s `roundTo` does, and what a reader expects of a
+    /// displayed average: `$100.335` over three periods reads as `$100.34`, not
+    /// as `$100.33`. Banker's rounding is for repeated accumulation, and nothing
+    /// accumulates this.
+    ///
+    /// # Errors
+    /// [`DecError::DivideByZero`] when `count` is zero; the arithmetic itself
+    /// cannot overflow, since `|mantissa / count| <= |mantissa|`.
+    pub fn div_int(self, count: u32) -> Result<Self, DecError> {
+        let divisor = i128::from(count);
+        if divisor == 0 {
+            return Err(DecError::DivideByZero);
+        }
+        let quotient = self.mantissa / divisor;
+        let remainder = self.mantissa % divisor;
+        // `remainder` carries the sign of `mantissa`, so the correction is in the
+        // same direction as the value — which is what "away from zero" means.
+        let rounded = if remainder.unsigned_abs() * 2 >= divisor.unsigned_abs() {
+            quotient + self.mantissa.signum()
+        } else {
+            quotient
+        };
+        Ok(Self::new(rounded, self.places))
     }
 
     /// Strip trailing decimal zeros down to (but not below) scale 0. Zero
@@ -762,5 +806,64 @@ mod tests {
             Dec::parse("12x4", '.'),
             Err(DecError::InvalidNumber("12x4".to_string()))
         );
+    }
+
+    /// The mean of a few periods' money: same scale in, same scale out.
+    #[test]
+    fn div_int_keeps_the_scale_it_was_given() {
+        // $1,659.00 over three months is exactly $553.00 — and stays at 2dp
+        // rather than normalizing to `553`, so it prints in the same column as
+        // the figures it averages.
+        let sum = Dec::new(165_900, 2);
+        assert_eq!(sum.div_int(3).unwrap(), Dec::new(55_300, 2));
+        assert_eq!(sum.div_int(3).unwrap().places, 2);
+        // A whole-dollar figure stays whole-dollar.
+        assert_eq!(Dec::new(900, 0).div_int(4).unwrap(), Dec::new(225, 0));
+    }
+
+    #[test]
+    fn div_int_rounds_half_away_from_zero() {
+        // 301 / 3 = 100.333… → 100.33 at 2dp (remainder under half).
+        assert_eq!(Dec::new(30_100, 2).div_int(3).unwrap(), Dec::new(10_033, 2));
+        // 302 / 3 = 100.666… → 100.67 (remainder over half).
+        assert_eq!(Dec::new(30_200, 2).div_int(3).unwrap(), Dec::new(10_067, 2));
+        // Exactly half rounds AWAY from zero, in both directions — the property
+        // banker's rounding would break.
+        assert_eq!(Dec::new(5, 0).div_int(2).unwrap(), Dec::new(3, 0));
+        assert_eq!(Dec::new(-5, 0).div_int(2).unwrap(), Dec::new(-3, 0));
+        // And a negative average (income, as hledger writes it) is symmetric.
+        assert_eq!(
+            Dec::new(-30_100, 2).div_int(3).unwrap(),
+            Dec::new(-10_033, 2)
+        );
+    }
+
+    #[test]
+    fn div_int_by_one_is_the_value_itself() {
+        for value in [Dec::new(0, 0), Dec::new(1234, 2), Dec::new(-7, 3)] {
+            assert_eq!(value.div_int(1).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn div_int_refuses_a_count_of_zero() {
+        // The mean of no values is not a number, and reporting one would be a
+        // confident answer to a question nobody can answer.
+        assert_eq!(Dec::new(100, 2).div_int(0), Err(DecError::DivideByZero));
+    }
+
+    proptest! {
+        /// Division by a count can never overflow, and never widens the scale —
+        /// the two claims `div_int`'s docs make about it being total.
+        #[test]
+        fn div_int_is_total_and_scale_preserving(mantissa: i128, places in 0u32..12, count in 1u32..1000) {
+            let value = Dec::new(mantissa, places);
+            let mean = value.div_int(count).expect("division by a positive count cannot fail");
+            prop_assert_eq!(mean.places, places);
+            // |mean| <= |value|, because dividing by at least one never grows a
+            // magnitude — and the rounding step adds at most one unit, which
+            // cannot push it past the original.
+            prop_assert!(mean.mantissa.unsigned_abs() <= value.mantissa.unsigned_abs());
+        }
     }
 }

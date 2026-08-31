@@ -38,6 +38,49 @@ describe("COMPONENT AccountInput popup", () => {
         expect(screen.queryByRole("listbox")).toBeNull();
     });
 
+    it("portals the popup to <body>, out of whatever clipped or contained it", async () => {
+        // Load-bearing, not tidiness. `.modal-box` sets `scale`/`translate`,
+        // which makes it the containing block for `position: fixed` children AND
+        // (being `overflow-y: auto`) their clipper — so a popup left inside it
+        // lands offset and hidden, which reads as "autocomplete stopped working".
+        // The module comment claimed this portal long before the component did it.
+        const {field, view} = mount();
+        await type(field, "exp");
+
+        const list = screen.getByRole("listbox");
+        expect(list.parentElement).toBe(document.body);
+        expect(view.container.contains(list)).toBe(false);
+    });
+
+    it("takes the portalled popup with it when it unmounts", async () => {
+        // The other half of a portal: a node moved out of its own fragment must
+        // still be cleaned up, or every open-and-close leaks a list into <body>.
+        const {field, view} = mount();
+        await type(field, "exp");
+        expect(screen.getByRole("listbox")).toBeTruthy();
+
+        view.unmount();
+        await tick();
+
+        expect(screen.queryByRole("listbox")).toBeNull();
+        expect(document.body.querySelector("[role=listbox]")).toBeNull();
+    });
+
+    it("stays shut on focus, however the field came to be focused", async () => {
+        // Never on focus, and an `openOnFocus` option that briefly existed here
+        // is why the rule is now stated as a test. Two things break:
+        // tabbing through the transaction popup's column of posting rows sprays
+        // popups down the form, and an AUTOFOCUSED field inside a modal is
+        // focused during mount — while `.modal-box` is still at `scale: .95`
+        // mid-transition — so the popup is pinned to a rect the modal then
+        // animates away from, landing off screen before anything is typed.
+        const {field} = mount();
+        await fireEvent.focus(field);
+        await tick();
+
+        expect(screen.queryByRole("listbox")).toBeNull();
+    });
+
     it("opens on typing and ranks matches", async () => {
         const {field} = mount();
 

@@ -11,8 +11,8 @@
 //     the footer shows the negated primary-commodity net, $-15,026.62 (the window
 //     contains the 2026-06-30 $3,500.00 vehicle depreciation)
 //   - deepest account is 4 segments (assets:broker:taxable:vti) → depth-slider max 4
-//     (the slider is on cf/nw/budget only; BOTH statements dropped it and ask the
-//     engine for an unclamped report)
+//     (the slider is on cf/nw and on the Budget tab; BOTH statements dropped it
+//     and ask the engine for an unclamped report)
 //   - `hledger is -V -b 2026-01-01 -e 2027-01-01 --depth 2`: the P&L tab is
 //     GROUPED and market-valued since plans/13, and its default range is the
 //     calendar year — Revenue $34,010.00, Expenses $28,626.48, Net $5,383.52.

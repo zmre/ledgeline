@@ -4,7 +4,9 @@ import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEE
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
 import {ApiShapeError} from "./client";
 import {
+    decodeAccountReference,
     decodeBalanceSheetReport,
+    decodeBudgetListing,
     decodeBudgetReport,
     decodeFlowReport,
     decodeHoldingsReport,
@@ -1531,5 +1533,163 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
 
     it("checks a meaningful number of keys (the sweep is actually running)", () => {
         expect(sweep().checked).toBeGreaterThan(300);
+    });
+});
+
+describe("UNIT nativeDecode — the budget editor's listing", () => {
+    /** One file, one monthly rule, two goals: an expense and an income one. */
+    const LISTING = {
+        editable: true,
+        defaultTarget: "budget.journal",
+        canCreateFile: false,
+        createFileName: "budget.journal",
+        files: [
+            {
+                journalId: "budget.journal",
+                label: "budget.journal",
+                revision: "abc123",
+                writable: true,
+                rules: [
+                    {
+                        block: 0,
+                        line: 3,
+                        period: "monthly",
+                        description: "household budget",
+                        lines: [
+                            {
+                                index: 0,
+                                line: 4,
+                                account: "expenses:food",
+                                unbalanced: true,
+                                amount: {$: {mantissa: "40000", places: 2}},
+                                entry: {commodity: "$", value: {mantissa: "40000", places: 2}},
+                                inverted: false,
+                            },
+                            {
+                                index: 1,
+                                line: 5,
+                                account: "income:interest",
+                                unbalanced: true,
+                                amount: {$: {mantissa: "-120000", places: 2}},
+                                entry: {commodity: "$", value: {mantissa: "120000", places: 2}},
+                                inverted: true,
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    };
+
+    it("carries the file's amount and the user's magnitude as two separate facts", () => {
+        // This is the whole sign contract. `amount` is what hledger reads;
+        // `entry` is what goes in the number box. Collapsing them — or deriving
+        // one from the other in the browser — is how an income budget comes to
+        // be written with the wrong sign, silently, and only for some accounts.
+        const listing = decodeBudgetListing(LISTING);
+        const [food, interest] = listing.files[0].rules[0].goals;
+
+        expect(food.inverted).toBe(false);
+        expect(food.amount?.get("$")).toEqual({m: 40000n, p: 2});
+        expect(food.entry).toEqual({commodity: "$", value: {m: 40000n, p: 2}});
+
+        expect(interest.inverted).toBe(true);
+        expect(interest.amount?.get("$")).toEqual({m: -120000n, p: 2});
+        expect(interest.entry).toEqual({commodity: "$", value: {m: 120000n, p: 2}});
+    });
+
+    it("reads the wire's `lines` as the domain's `goals`, keeping rule and file identity", () => {
+        const listing = decodeBudgetListing(LISTING);
+        expect(listing.editable).toBe(true);
+        expect(listing.defaultTarget).toBe("budget.journal");
+        expect(listing.files[0].revision).toBe("abc123");
+        const rule = listing.files[0].rules[0];
+        expect(rule.period).toBe("monthly");
+        expect(rule.description).toBe("household budget");
+        expect(rule.locked).toBeNull();
+        expect(rule.goals.map((goal) => goal.account)).toEqual(["expenses:food", "income:interest"]);
+    });
+
+    it("keeps a lock's sentence, which is the only thing that makes a read-only row actionable", () => {
+        const locked = {
+            ...LISTING,
+            files: [
+                {
+                    ...LISTING.files[0],
+                    rules: [
+                        {
+                            ...LISTING.files[0].rules[0],
+                            locked: "its period is not one of daily, weekly, monthly, quarterly or yearly",
+                            lines: [{...LISTING.files[0].rules[0].lines[0], locked: "it has no written amount", amount: undefined, entry: undefined}],
+                        },
+                    ],
+                },
+            ],
+        };
+        const listing = decodeBudgetListing(locked);
+        expect(listing.files[0].rules[0].locked).toContain("not one of daily");
+        const goal = listing.files[0].rules[0].goals[0];
+        expect(goal.locked).toContain("no written amount");
+        // Absent together: a line with no written amount has no box to type in.
+        expect(goal.amount).toBeNull();
+        expect(goal.entry).toBeNull();
+    });
+
+    it("refuses a body that is not a listing at all", () => {
+        expect(() => decodeBudgetListing({editable: true})).toThrow(ApiShapeError);
+        expect(() => decodeBudgetListing(null)).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — the budget editor's reference strip", () => {
+    const REFERENCE = {
+        account: "expenses:food",
+        interval: "monthly",
+        inverted: false,
+        periods: [
+            {key: "2026-06", label: "Jun 2026", start: "2026-06-01", end: "2026-06-30", complete: true, total: {$: {mantissa: "61200", places: 2}}},
+            {key: "2026-07", label: "Jul 2026", start: "2026-07-01", end: "2026-07-15", complete: false, total: {$: {mantissa: "38900", places: 2}}},
+        ],
+        average: {$: {mantissa: "61200", places: 2}},
+        averagedPeriods: 1,
+    };
+
+    it("keeps the running period's flag and its clamped end", () => {
+        const reference = decodeAccountReference(REFERENCE);
+        expect(reference.periods.map((p) => p.complete)).toEqual([true, false]);
+        expect(reference.periods[1].end).toBe("2026-07-15");
+        expect(reference.periods[0].total.get("$")).toEqual({m: 61200n, p: 2});
+    });
+
+    it("reads an absent `complete` as finished, not as still running", () => {
+        // The quiet reading: an engine that does not say must not put a "so far"
+        // caveat on what is actually a whole month.
+        const reference = decodeAccountReference({...REFERENCE, periods: [{...REFERENCE.periods[0], complete: undefined}]});
+        expect(reference.periods[0].complete).toBe(true);
+    });
+
+    it("carries the average and how many periods it covers", () => {
+        const reference = decodeAccountReference(REFERENCE);
+        // The mean of the COMPLETE periods only — June, not June-and-part-of-July.
+        expect(reference.average.get("$")).toEqual({m: 61200n, p: 2});
+        expect(reference.averagedPeriods).toBe(1);
+    });
+
+    it("reads a missing average as ABSENT, never as zero", () => {
+        // `averagedPeriods: 0` is "no complete period yet", which is a different
+        // fact from an average of nil — the strip prints a number for one and
+        // nothing for the other.
+        const none = decodeAccountReference({...REFERENCE, average: undefined, averagedPeriods: undefined});
+        expect(none.averagedPeriods).toBe(0);
+        expect(none.average.size).toBe(0);
+        // And an empty average WITH a count is a real answer: "you spent nothing,
+        // twice". The two fields are decoded independently so that survives.
+        const nothing = decodeAccountReference({...REFERENCE, average: {}, averagedPeriods: 2});
+        expect(nothing.averagedPeriods).toBe(2);
+        expect(nothing.average.size).toBe(0);
+    });
+
+    it("refuses a body with no periods array", () => {
+        expect(() => decodeAccountReference({account: "a", interval: "monthly"})).toThrow(ApiShapeError);
     });
 });

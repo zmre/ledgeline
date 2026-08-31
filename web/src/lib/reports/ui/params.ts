@@ -10,11 +10,11 @@
 import type {ISODate} from "$lib/domain/types";
 import {bucketEnd, bucketStart, lastNBuckets, today} from "$lib/reports/periods";
 
-export type ReportTab = "insights" | "bs" | "is" | "cf" | "nw" | "budget" | "subs";
+export type ReportTab = "insights" | "bs" | "is" | "cf" | "nw" | "subs";
 export type ReportInterval = "monthly" | "quarterly" | "yearly";
 
 // Insights is the first (default) tab — the dashboard shown when Reports opens.
-export const TAB_ORDER: ReportTab[] = ["insights", "bs", "is", "cf", "nw", "budget", "subs"];
+export const TAB_ORDER: ReportTab[] = ["insights", "bs", "is", "cf", "nw", "subs"];
 
 export const TAB_LABELS: Record<ReportTab, string> = {
     insights: "Insights",
@@ -22,7 +22,6 @@ export const TAB_LABELS: Record<ReportTab, string> = {
     is: "P&L",
     cf: "Cash Flow",
     nw: "Net Worth",
-    budget: "Budget",
     subs: "Subscriptions",
 };
 
@@ -55,93 +54,42 @@ export interface ControlsConfig {
     interval: boolean;
     count: boolean;
     depth: boolean;
-    /** Budget-only: show the period-preset buttons above the from/to range inputs. */
-    budgetPreset: boolean;
 }
 
 export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     // Insights owns its own period control (PeriodControl), so the shared
     // ReportControls bar shows nothing for it.
-    insights: {asOf: false, range: false, end: false, interval: false, count: false, depth: false, budgetPreset: false},
+    insights: {asOf: false, range: false, end: false, interval: false, count: false, depth: false},
     // No depth on the balance sheet: groups ARE the reading and the accounts
     // inside one are a drill-down, so a clamp had almost nothing left to move —
     // and what it did move it moved wrongly, hiding accounts with no control on
     // screen to ask for them back. Expanding a group now shows all of it (the
     // engine is asked for an unclamped report), single-child chains still
     // compressed by `compressSectionRows`.
-    bs: {asOf: true, range: false, end: false, interval: false, count: false, depth: false, budgetPreset: false},
+    bs: {asOf: true, range: false, end: false, interval: false, count: false, depth: false},
     // The income statement dropped its depth slider for the same reason (plans/13):
     // it is grouped now, and a clamp that hid accounts with no control on screen
     // to ask for them back was the worst of both. The range stays — a P&L is a
     // report ABOUT a period, and that is the one thing it cannot infer.
-    is: {asOf: false, range: true, end: false, interval: false, count: false, depth: false, budgetPreset: false},
-    cf: {asOf: false, range: false, end: true, interval: true, count: true, depth: true, budgetPreset: false},
-    nw: {asOf: false, range: false, end: true, interval: true, count: true, depth: true, budgetPreset: false},
-    // Budget: a from/to range (with preset buttons) + depth; interval is always monthly (derived in the store).
-    budget: {asOf: false, range: true, end: false, interval: false, count: false, depth: true, budgetPreset: true},
+    is: {asOf: false, range: true, end: false, interval: false, count: false, depth: false},
+    cf: {asOf: false, range: false, end: true, interval: true, count: true, depth: true},
+    nw: {asOf: false, range: false, end: true, interval: true, count: true, depth: true},
     // Subscriptions scan a fixed trailing window, so they expose no controls.
-    subs: {asOf: false, range: false, end: false, interval: false, count: false, depth: false, budgetPreset: false},
+    subs: {asOf: false, range: false, end: false, interval: false, count: false, depth: false},
 };
 
 /** Per-tab default interval/count, applied on tab activation (cash flow and net
- *  worth want different lookbacks: monthly/12 vs yearly/5). Depth is shared.
- *  Budget derives its own count from the range, so its entry is inert. */
+ *  worth want different lookbacks: monthly/12 vs yearly/5). Depth is shared. */
 export const TAB_DEFAULTS: Record<ReportTab, {interval: ReportInterval; count: number}> = {
     insights: {interval: "monthly", count: 12}, // inert (insights ignores interval/count)
     bs: {interval: "monthly", count: 12},
     is: {interval: "monthly", count: 12},
     cf: {interval: "monthly", count: 12},
     nw: {interval: "yearly", count: 5},
-    budget: {interval: "monthly", count: 12},
     subs: {interval: "monthly", count: 12}, // inert (subscriptions ignore interval/count)
 };
 
 export const MAX_COUNT = 120;
-
-// --- Budget period presets ---------------------------------------------------
-// The budget summary is period-based; these presets set the from/to range that
-// the store turns into monthly buckets. "Custom" = any range not matching one.
-
-export type BudgetPreset = "this-month" | "last-month" | "ytd" | "this-year" | "trailing-12";
-
-export const BUDGET_PRESETS: {id: BudgetPreset; label: string}[] = [
-    {id: "this-month", label: "This month"},
-    {id: "last-month", label: "Last month"},
-    {id: "ytd", label: "Year to date"},
-    {id: "this-year", label: "This year"},
-    {id: "trailing-12", label: "Trailing 12 mo"},
-];
-
-/** The default budget range: year-to-date (Jan 1 → today). */
-export const DEFAULT_BUDGET_PRESET: BudgetPreset = "ytd";
-
-/** Resolve a preset to an inclusive from/to range, relative to `now`. */
-export function budgetPresetRange(preset: BudgetPreset, now: ISODate = today()): {from: ISODate; to: ISODate} {
-    const year = now.slice(0, 4);
-    switch (preset) {
-        case "this-month":
-            return {from: bucketStart(now.slice(0, 7)), to: now};
-        case "last-month": {
-            const prev = lastNBuckets(now, "monthly", 2)[0];
-            return {from: bucketStart(prev), to: bucketEnd(prev)};
-        }
-        case "ytd":
-            return {from: `${year}-01-01`, to: now};
-        case "this-year":
-            return {from: `${year}-01-01`, to: `${year}-12-31`};
-        case "trailing-12":
-            return {from: bucketStart(lastNBuckets(now, "monthly", 12)[0]), to: now};
-    }
-}
-
-/** Which preset (if any) the current from/to range matches; "custom" otherwise. */
-export function activeBudgetPreset(from: ISODate, to: ISODate, now: ISODate = today()): BudgetPreset | "custom" {
-    for (const {id} of BUDGET_PRESETS) {
-        const range = budgetPresetRange(id, now);
-        if (range.from === from && range.to === to) return id;
-    }
-    return "custom";
-}
 
 // --- Insights comparison-period presets ------------------------------------
 // Each preset is a whole-month span of `spanMonths` COMPLETE months ending with
@@ -256,4 +204,30 @@ export function searchToParams(search: string, dflt: ReportParams): ReportParams
         insStart: parseDate(q.get("istart"), dflt.insStart),
         insEnd: parseDate(q.get("iend"), dflt.insEnd),
     };
+}
+
+// --- The Budget tab's old address -------------------------------------------
+
+/**
+ * The `/budget` query a `?tab=budget` reports URL should be forwarded to, or
+ * `null` when this URL is not one.
+ *
+ * Budget was a report tab for several releases and is its own route now. A
+ * bookmark or a shared link still naming it must not quietly land on Insights,
+ * which is where an unknown `tab` value otherwise falls back to.
+ *
+ * Here rather than in the page for two reasons: this is testable arithmetic with
+ * no router around it (the same split `filters/journalTarget.ts` makes), and
+ * `URLSearchParams` is a mutable built-in the SPA's lint rules keep out of
+ * `.svelte` files.
+ */
+export function budgetRedirect(search: string): string | null {
+    const query = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+    if (query.get("tab") !== "budget") return null;
+    // Everything except the tab itself: `from`, `to` and `depth` are exactly the
+    // params the Budget route still honours, so the forwarded link shows the same
+    // budget the old one did.
+    query.delete("tab");
+    const carried = query.toString();
+    return carried === "" ? "" : `?${carried}`;
 }

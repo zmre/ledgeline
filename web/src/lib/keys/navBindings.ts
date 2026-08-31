@@ -14,7 +14,7 @@ import {rulesStore} from "$lib/imports/rulesStore.svelte";
 import {keymap} from "./keymap.svelte";
 import {PRIORITY, type Layer} from "./types";
 
-type Route = "/" | "/holdings" | "/reports" | "/imports";
+type Route = "/" | "/holdings" | "/budget" | "/reports" | "/imports";
 
 /**
  * No `svelte/no-navigation-without-resolve` disable is needed anywhere in this
@@ -43,6 +43,7 @@ export function globalLayer(): Layer {
             {keys: "?", label: "Show keyboard shortcuts", group: "Global", run: () => keymap.toggleHelp()},
             {keys: "g j", label: "Go to Journal", group: "Navigation", run: to("/")},
             {keys: "g h", label: "Go to Holdings", group: "Navigation", run: to("/holdings")},
+            {keys: "g b", label: "Go to Budget", group: "Navigation", run: to("/budget")},
             {keys: "g r", label: "Go to Reports", group: "Navigation", run: to("/reports")},
             {
                 keys: "g i",
