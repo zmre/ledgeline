@@ -44,7 +44,7 @@ jobs:
     name: Verify (tests + clippy)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -118,7 +118,7 @@ jobs:
       # something a reader should have to derive. Spelled out instead.
       SIGN: ${{ github.event_name == 'push' || inputs.dry_run == false }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Rosetta 2 is what lets an arm64 runner execute the x86_64 compiler and
       # build tools Nix is about to fetch. Idempotent and a no-op where it is
@@ -467,7 +467,7 @@ jobs:
       # Always uploaded, including on a dry run — this is how the packaging is
       # inspected without publishing anything.
       - name: Upload the DMG as a workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ledgeline-macos-${{ env.DMG_ARCH }}
           path: |
@@ -504,7 +504,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Version
         id: version
@@ -514,7 +514,7 @@ jobs:
       # flattens them; without it each lands under its own artifact-name
       # subdirectory and the globs below find nothing.
       - name: Download every architecture's DMG
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: ledgeline-macos-*
           path: dist
@@ -610,7 +610,7 @@ jobs:
     if: ${{ github.event_name == 'push' }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@v3
