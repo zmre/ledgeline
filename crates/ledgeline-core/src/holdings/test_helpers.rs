@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use crate::decimal::Dec;
 use crate::model::{
@@ -55,6 +56,7 @@ pub fn pd(date: &str, commodity: &str, price_cents: i128, target: &str) -> Price
         date: date.to_string(),
         commodity: Commodity(commodity.to_string()),
         price: amt(target, price_cents, 2),
+        source_file: PathBuf::from("test.journal"),
     }
 }
 

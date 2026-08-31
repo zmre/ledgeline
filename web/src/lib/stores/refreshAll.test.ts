@@ -19,14 +19,37 @@ import {importStore} from "$lib/imports/importStore.svelte";
 import {openRules, rulesIndex, rulesStore} from "$lib/imports/rulesStore.svelte";
 import {CAPABILITIES} from "$lib/testing/importFixtures";
 import {FAKE_ENGINE} from "$lib/testing/fakeEngine";
+import {holdingsData, holdingsScope} from "./holdings.svelte";
+import {pricesStore} from "./prices.svelte";
 import {settings} from "./settings.svelte";
 import {currentRefreshState, holdUnsavedEdits, REFRESH_TARGETS, refreshEverything, refreshPlan} from "./refreshAll";
 
 /** The same goldens `nativeDecode.test.ts` reads, so a renamed Rust field fails here too. */
 const golden = (name: string): unknown => JSON.parse(readFileSync(new URL(`../../../../fixtures/rules/golden/${name}.json`, import.meta.url), "utf8"));
 
+/** The native-wire goldens, read for the same reason and from the same place. */
+const nativeGolden = (name: string): unknown => JSON.parse(readFileSync(new URL(`../../../../fixtures/native/v1/${name}.json`, import.meta.url), "utf8"));
+
 const RULES_INDEX = golden("rules-index");
 const RULES_DOC = golden("rules-doc");
+const HOLDINGS_REPORT = nativeGolden("holdings");
+const HOLDINGS_SERIES = nativeGolden("holdings-series");
+
+/**
+ * `/api/prices/status` has no golden: its answer depends on the server's own
+ * clock ("which symbols are held TODAY"), and `fixtures/native/v1/requests.tsv`
+ * admits only URIs whose bytes are the same tomorrow. Hand-written here, and
+ * pinned against the real engine by `prices_endpoints.rs` instead.
+ */
+const PRICES_STATUS = {
+    editable: true,
+    quoteCommodity: "$",
+    symbols: [{symbol: "AAPL", yahooTicker: "AAPL"}],
+    defaultTarget: "prices.journal",
+    canCreateFile: false,
+    createFileName: "prices.journal",
+    files: [{journalId: "prices.journal", label: "prices.journal", writable: true, priceCount: 3}],
+};
 /** The id the index golden carries, which is the document the editor would have open. */
 const OPEN_ID = "import/2026/bank.csv.rules";
 
@@ -64,6 +87,14 @@ const json = (body: unknown): Response => new Response(JSON.stringify(body), {st
 function respond(url: string): Response {
     if (url.endsWith("/version")) return json("1.52");
     if (url.endsWith("/api/import/capabilities")) return json(CAPABILITIES);
+    // Ahead of the bare `/prices` case below, which is the hledger-compat wire
+    // route the journal feed reads and would otherwise swallow this one.
+    if (url.includes("/api/prices/status")) return json(PRICES_STATUS);
+    // The holdings report and trend: counted, not decoded. A 404 would be
+    // counted just the same (`resource.load` records the failure and never
+    // rejects), so answering properly is what keeps the assertion about the
+    // button rather than about the stub.
+    if (url.includes("/api/holdings")) return json(url.includes("/series") ? HOLDINGS_SERIES : HOLDINGS_REPORT);
     if (url.endsWith("/api/aliases")) return aliasesUnreachable ? new Response("boom", {status: 500}) : json(ALIAS_LISTING);
     if (url.endsWith("/api/rules")) return json(RULES_INDEX);
     // The preview is decoration and `loadPreview` swallows its failure, so it is
@@ -118,11 +149,11 @@ describe("UNIT refreshAll — the plan", () => {
         expect(refreshPlan({openRulesId: "a.rules", unsaved: []})).toEqual([...REFRESH_TARGETS]);
     });
 
-    it("names the journal, the rules index, the open document, the aliases and the capabilities", () => {
+    it("names the journal, the rules index, the open document, the aliases, the capabilities, the prices and the holdings", () => {
         // The list IS the definition of "everything". Pinning it is what makes
         // dropping one a failing test rather than a quiet regression — the exact
         // shape of the bug this module was written for.
-        expect([...REFRESH_TARGETS].sort()).toEqual(["aliases", "importCapabilities", "journal", "openRules", "rulesIndex"]);
+        expect([...REFRESH_TARGETS].sort()).toEqual(["aliases", "holdings", "importCapabilities", "journal", "openRules", "prices", "rulesIndex"]);
     });
 
     it("skips the open document when the editor has none open", () => {
@@ -151,6 +182,10 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
         await importStore.ensureCapabilities(FAKE_ENGINE, settings.serverNonce);
         await aliasStore.ensureListing(FAKE_ENGINE, settings.serverNonce);
         await rulesStore.open(FAKE_ENGINE, OPEN_ID);
+        // …and the Holdings tab was visited, which is what sets the price
+        // status's own (nonce, url) key and loads the report behind the table.
+        await pricesStore.ensureStatus(FAKE_ENGINE, settings.serverNonce);
+        await holdingsData.load(FAKE_ENGINE, holdingsScope.value);
         seen = [];
     }
 
@@ -160,6 +195,7 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
         await rulesStore.ensureIndex(FAKE_ENGINE, settings.serverNonce);
         await importStore.ensureCapabilities(FAKE_ENGINE, settings.serverNonce);
         await aliasStore.ensureListing(FAKE_ENGINE, settings.serverNonce);
+        await pricesStore.ensureStatus(FAKE_ENGINE, settings.serverNonce);
 
         expect(seen).toEqual([]);
     });
@@ -180,6 +216,23 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
         expect(hits("/transactions")).toBe(1);
     });
 
+    it("re-reads the price status and the holdings report, which nothing else re-reads", async () => {
+        // Every other resource on this list is re-read by SOMETHING when the
+        // server changes. These two are keyed on `(nonce, url[, scope])` and a
+        // press moves none of them, so a refresh that skipped them would leave
+        // the Stocks table showing the market values from before whatever the
+        // user pressed Refresh to pick up.
+        await startUp();
+
+        await refreshEverything();
+
+        expect(hits("/api/prices/status")).toBe(1);
+        expect(hits("/api/holdings?")).toBe(1);
+        expect(hits("/api/holdings/series")).toBe(1);
+        // The Other tab was never opened, so it holds nothing to go stale.
+        expect(hits("/api/holdings/other")).toBe(0);
+    });
+
     it("leaves each store holding what it just read", async () => {
         // "A request went out" is not the claim the user is making; "the screen
         // shows what is on disk" is. These are the values the panels render.
@@ -191,6 +244,7 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
         expect(openRules.value?.doc.id).toBe(OPEN_ID);
         expect(aliasListing.value?.files[0]?.aliases[0]?.pattern).toBe("CHASE CHECKING");
         expect(importStore.capabilities?.hledger.available).toBe(true);
+        expect(pricesStore.status.value?.defaultTarget).toBe("prices.journal");
     });
 
     it("does not re-read a document the editor has unsaved edits in", async () => {

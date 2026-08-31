@@ -569,6 +569,7 @@ pub fn infer_market_prices(txns: &[Transaction]) -> Result<Vec<PriceDirective>, 
                         style: cost.amount.style.clone(),
                         cost: None,
                     },
+                    source_file: txn.source_file.clone(),
                 });
                 // Reverse (only when 1/unit terminates): lets a commodity that
                 // appears solely as a cost denominator still be valued.
@@ -582,6 +583,7 @@ pub fn infer_market_prices(txns: &[Transaction]) -> Result<Vec<PriceDirective>, 
                             style: amount.style.clone(),
                             cost: None,
                         },
+                        source_file: txn.source_file.clone(),
                     });
                 }
             }

@@ -50,9 +50,7 @@
   - i don't want to reinvent too much here.  and i'd like to use our API endpoints rather than any direct writing. maybe that's what we offer as tools is our api endpoints, but with per-session user approval?  i mean, if the AI is private, it's probably fine to offer up the read-only endpoints. the main thing is to gate writes, not reads.
 
 ## Stocks
-- feat: stock price updates
-  - basically my script, maybe ported into rust, for querying yahoo and updating a prices file. should try to figure out where prices already live and if it can't find anything, prompt for location and include a new file from the base file for the purpose.
-  - this should all be on the holdings tab
+- feat: gain timeline improvements
   - when i change the gain timeline, everything else should update, too, notably the "value over time" which is fixed to previous 12 months
   - the gain timeline also needs more options. lets do 5yr, 3mo, 1mo, and 1 week as additions
 - feat: in holdings tab, optional compare performance to S&P, Dow, Nasdaq, Bonds, US Stock Index

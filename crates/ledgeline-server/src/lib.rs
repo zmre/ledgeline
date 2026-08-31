@@ -44,11 +44,13 @@ mod git;
 mod hledger;
 mod import_api;
 mod prefs;
+mod prices_api;
 mod reports_api;
 mod rules_api;
 mod security;
 mod spa;
 mod stage;
+mod yahoo;
 
 use arc_swap::ArcSwap;
 use axum::{
@@ -73,6 +75,11 @@ use tower_http::set_header::SetResponseHeaderLayer;
 pub use security::{
     AccessToken, ProcessToken, Security, SecurityError, TOKEN_ENV, token_from_env_or_random,
 };
+// `PriceFeed` (+ `FetchedPrice`/`YahooError`, reachable through its method
+// signature) is re-exported so the integration tests can build a fake and hand
+// it to `AppState::with_price_source` — the only way `/api/prices/update` is
+// tested without a live network call.
+pub use yahoo::{FetchedPrice, PriceFeed, YahooError};
 
 /// An immutable, atomically-publishable view of one parsed journal: the parsed
 /// [`Journal`] for the per-request report handlers, plus every wire endpoint's
@@ -273,6 +280,19 @@ pub struct AppState {
     /// [`Self::rules_writes`] covers that. A `tokio` mutex for the same reason
     /// as above: the guard is held across the blocking-pool `.await`.
     import_writes: Arc<tokio::sync::Mutex<()>>,
+    /// Where `prices_api`'s `POST /api/prices/update` fetches quotes from.
+    /// `Arc<dyn PriceFeed>` rather than a concrete `reqwest::Client` so
+    /// [`AppState::with_price_source`] can swap in a fake for the integration
+    /// tests — the only route in this crate that makes an outbound network
+    /// call, and the only state field that is not itself journal-derived.
+    price_source: Arc<dyn yahoo::PriceFeed>,
+}
+
+/// The default [`yahoo::PriceFeed`]: the real Yahoo Finance chart endpoint,
+/// over one shared `reqwest::Client` (connection pooling — a fresh client per
+/// request would re-negotiate TLS on every symbol).
+fn default_price_source() -> Arc<dyn yahoo::PriceFeed> {
+    Arc::new(yahoo::YahooClient::new(reqwest::Client::new()))
 }
 
 impl AppState {
@@ -299,6 +319,7 @@ impl AppState {
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
             stages: Arc::new(stage::StageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
+            price_source: default_price_source(),
         }
     }
 
@@ -319,6 +340,7 @@ impl AppState {
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
             stages: Arc::new(stage::StageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
+            price_source: default_price_source(),
         })
     }
 
@@ -442,6 +464,24 @@ impl AppState {
     /// for why neither of the other two covers an import.
     pub(crate) fn import_writes(&self) -> &tokio::sync::Mutex<()> {
         &self.import_writes
+    }
+
+    /// This state's quote source. `pub(crate)` — only `prices_api` reads it.
+    pub(crate) fn price_source(&self) -> &Arc<dyn yahoo::PriceFeed> {
+        &self.price_source
+    }
+
+    /// Substitute a different quote source, replacing the real Yahoo client.
+    /// `pub`, not `pub(crate)`: the integration tests build this crate's
+    /// `AppState` as an ordinary external dependency, not with this crate's own
+    /// `#[cfg(test)]` in force, so a `pub(crate)` method would not be visible to
+    /// them. Every other `AppState` field stays journal-derived; this is the one
+    /// piece of state a caller — in practice, only a test — has any reason to
+    /// override.
+    #[must_use]
+    pub fn with_price_source(mut self, source: Arc<dyn yahoo::PriceFeed>) -> Self {
+        self.price_source = source;
+        self
     }
 }
 
@@ -651,6 +691,19 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         )
         .route("/api/budget/file", post(budget_api::create_file))
         .route("/api/budget/reference", get(budget_api::reference))
+        // Stock price updates (Holdings tab): which symbols need a quote and
+        // where prices already live, creating a first `prices.journal`, and
+        // fetching + appending quotes from Yahoo Finance.
+        //
+        // THE SAME PLACEMENT TRAP as the routes above: `POST /api/prices/file`
+        // CREATES a file beside the journal and appends an `include`, and
+        // `POST /api/prices/update` rewrites a line of the user's JOURNAL.
+        // Below the `route_layer` both would happen unauthenticated.
+        // `prices_endpoints.rs::every_prices_route_requires_the_token` pins the
+        // 401 for all three.
+        .route("/api/prices/status", get(prices_api::status))
+        .route("/api/prices/file", post(prices_api::create_file))
+        .route("/api/prices/update", post(prices_api::update))
         // Token-gate exactly the routes registered above. `route_layer` skips
         // the fallback, which is what lets the browser fetch the shell (and the
         // token inside it) before it has any credential to present.

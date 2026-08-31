@@ -137,6 +137,30 @@ test("holdings: value-over-time trend renders and time-travel shrinks the window
     await expect(page.getByTestId("holdings-empty")).toBeVisible();
 });
 
+/**
+ * The "Update prices" button, rendered — and deliberately NOT pressed.
+ *
+ * What this covers is the one thing the component tests cannot: that
+ * `+page.svelte` actually mounts the button, against a real engine answering a
+ * real `/api/prices/status`. `fixtures/sample.journal` holds 14 `P` directives
+ * and four live symbols, so the button's every condition is met here.
+ *
+ * **Never click it in this suite.** A press would make a live request to Yahoo
+ * Finance — no network in CI, and a different answer every day — and would
+ * append `P` lines to `fixtures/sample.journal`, which is a COMMITTED file that
+ * half the golden tests in this repo compare against byte for byte. The write
+ * path is covered hermetically by `prices_endpoints.rs` with a fake feed.
+ */
+test("holdings: the Update prices button renders on the Stocks tab", async ({page}) => {
+    await page.goto("/holdings");
+    await expect(page.getByTestId("holdings-table")).toBeVisible();
+    await expect(page.getByTestId("update-prices")).toBeVisible();
+
+    // It belongs to the Stocks tab only — the Other tab prices nothing from Yahoo.
+    await page.getByRole("tab", {name: "Other"}).click();
+    await expect(page.getByTestId("update-prices")).toHaveCount(0);
+});
+
 test("holdings: nav link works and the problems badge still shows 6", async ({page}) => {
     await page.goto("/");
     await page.getByRole("link", {name: "Holdings"}).click();
