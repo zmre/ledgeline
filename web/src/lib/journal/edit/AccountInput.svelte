@@ -17,7 +17,7 @@
     // discarding the whole half-typed transaction.
     import {tick} from "svelte";
     import {TYPING_ATTRIBUTE} from "$lib/keys/target";
-    import {popupPosition} from "$lib/ui/anchoredPopup";
+    import {popupPosition, portal} from "$lib/ui/anchoredPopup";
     import {matchAccounts, tabCompletion} from "./accountMatch";
 
     let {
@@ -110,8 +110,18 @@
 
     function onInput(event: Event): void {
         value = (event.currentTarget as HTMLInputElement).value;
-        // Opens on TYPING, not on focus: tabbing through the transaction popup's
-        // posting rows should not spray popups down the form.
+        // Opens on TYPING, never on focus. Two reasons, and the second is the one
+        // that killed an `openOnFocus` option that briefly lived here:
+        //
+        //   - Tabbing through the transaction popup's column of posting rows
+        //     would spray a popup down the whole form.
+        //   - A field with `autofocus` inside a modal is focused DURING mount,
+        //     while daisyUI's `.modal-box` is still at `scale: .95; opacity: 0`
+        //     and mid-transition. The rect measured then is not where the field
+        //     ends up, so the popup gets pinned somewhere the modal animates
+        //     away from — off screen, before the user has done anything.
+        //
+        // By the time someone types, the modal has settled and the rect is real.
         void show();
     }
 
@@ -246,9 +256,12 @@
 
 {#if open && matches.length > 0}
     <!-- Fixed and portalled to <body> (see anchoredPopup.ts): both of this
-         component's homes are inside a container that clips on both axes.
-         `z-[1001]` clears daisyUI's `.modal`, which is 999. -->
+         component's homes are inside a container that clips on both axes, and
+         `.modal-box` additionally makes itself the containing block for fixed
+         children — so without `use:portal` this lands offset and clipped rather
+         than under the field. `z-[1001]` clears daisyUI's `.modal`, which is 999. -->
     <ul
+        use:portal
         bind:this={popup}
         id={listId}
         role="listbox"
