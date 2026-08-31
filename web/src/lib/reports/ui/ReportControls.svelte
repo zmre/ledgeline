@@ -3,18 +3,11 @@
      the input holds a full valid ISO date (type=date emits "" while clearing). -->
 <script lang="ts">
     import DepthSlider from "$lib/insights/DepthSlider.svelte";
-    import {activeBudgetPreset, budgetPresetRange, BUDGET_PRESETS, MAX_COUNT, TAB_CONTROLS, type BudgetPreset, type ReportParams} from "./params";
+    import {MAX_COUNT, TAB_CONTROLS, type ReportParams} from "./params";
 
     let {params = $bindable(), maxDepth}: {params: ReportParams; maxDepth: number} = $props();
 
     const config = $derived(TAB_CONTROLS[params.tab]);
-    const activePreset = $derived(activeBudgetPreset(params.from, params.to));
-
-    function applyPreset(preset: BudgetPreset): void {
-        const range = budgetPresetRange(preset);
-        params.from = range.from;
-        params.to = range.to;
-    }
 
     const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
     function setDate(key: "asOf" | "from" | "to" | "end", value: string): void {
@@ -34,23 +27,6 @@
 {/snippet}
 
 <div class="flex flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2">
-    {#if config.budgetPreset}
-        <div class="form-control">
-            <span class="label-text mb-1 block text-xs text-base-content/70">Period</span>
-            <div class="join" role="group" aria-label="Budget period">
-                {#each BUDGET_PRESETS as preset (preset.id)}
-                    <button
-                        type="button"
-                        class="btn join-item btn-sm {activePreset === preset.id ? 'btn-active btn-primary' : ''}"
-                        aria-pressed={activePreset === preset.id}
-                        onclick={() => applyPreset(preset.id)}
-                    >
-                        {preset.label}
-                    </button>
-                {/each}
-            </div>
-        </div>
-    {/if}
     {#if config.asOf}
         {@render dateField("As of", "asOf")}
     {/if}

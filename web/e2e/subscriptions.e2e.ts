@@ -27,7 +27,7 @@ test.beforeEach(async ({page}) => {
     );
 });
 
-test("subscriptions: has its own tab next to Budget and lists recurring charges", async ({page}) => {
+test("subscriptions: has its own tab and lists recurring charges", async ({page}) => {
     await page.goto("/reports");
 
     // It is a peer of the other reports, not part of the Insights dashboard.

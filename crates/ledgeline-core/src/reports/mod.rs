@@ -34,6 +34,7 @@ pub mod mixed_amount;
 pub mod net_worth;
 pub mod periods;
 pub mod prices;
+pub mod reference;
 mod sections;
 pub mod subscriptions;
 pub mod types;
@@ -82,6 +83,7 @@ pub use periods::{
     next_bucket,
 };
 pub use prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
+pub use reference::{AccountHistory, ReferenceOpts, ReferencePeriod, account_reference};
 pub use subscriptions::{
     Cadence, DEFAULT_EXCLUDE_DESC, Subscription, SubscriptionOpts, SubscriptionsReport,
     detect_subscriptions,

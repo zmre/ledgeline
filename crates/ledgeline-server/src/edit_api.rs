@@ -101,10 +101,14 @@ use crate::reports_api::WireDec;
 // ===========================================================================
 
 /// An exact decimal on the wire: `mantissa / 10^places`, mantissa STRING-encoded.
+///
+/// `pub(crate)` for [`crate::budget_api`], which takes the same shape for a
+/// budget goal and must reject the same absurd values through the same
+/// [`dec_from_wire`].
 #[derive(Deserialize)]
-struct WireDecIn {
-    mantissa: String,
-    places: u32,
+pub(crate) struct WireDecIn {
+    pub(crate) mantissa: String,
+    pub(crate) places: u32,
 }
 
 /// A bare commodity + quantity, with no cost of its own: the priced side of a
@@ -929,7 +933,7 @@ const MAX_WIRE_MANTISSA: i128 = 10_i128.pow(30);
 /// re-reading the journal could never reproduce. Without it,
 /// `{"mantissa":"0","places":65534}` was accepted with a `201` and committed a
 /// multi-hundred-byte all-zeros amount line to the user's books.
-fn dec_from_wire(dec: &WireDecIn) -> Result<Dec, AppError> {
+pub(crate) fn dec_from_wire(dec: &WireDecIn) -> Result<Dec, AppError> {
     let mantissa = dec.mantissa.trim().parse::<i128>().map_err(|_| {
         AppError::BadRequest(format!(
             "invalid amount mantissa '{}': expected a base-10 integer string",
@@ -960,7 +964,7 @@ fn dec_from_wire(dec: &WireDecIn) -> Result<Dec, AppError> {
 /// journal, else a sensible default. The side/spacing/decimal-mark this yields is
 /// what makes the formatted amount re-parse to the same value (and pass the
 /// editor's round-trip guard).
-fn infer_style(journal: &Journal, commodity: &Commodity, places: u32) -> AmountStyle {
+pub(crate) fn infer_style(journal: &Journal, commodity: &Commodity, places: u32) -> AmountStyle {
     find_style_for(journal, commodity).unwrap_or_else(|| default_style(commodity, places))
 }
 

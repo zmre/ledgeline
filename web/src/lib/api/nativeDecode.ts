@@ -24,6 +24,7 @@
 // reports path runs through decodeMixed, and "absent" silently rendering $0.00
 // was a live bug class (CLEANUP.md DRY-3).
 
+import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile} from "$lib/budget/types";
 import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
 import type {
@@ -2560,5 +2561,201 @@ export function decodePrefs(raw: unknown): Prefs {
         // false = the user turned it off. Collapsing null to false would silently
         // disable a feature the user never opted out of.
         gitAutocommit: optBool(prefs.gitAutocommit, "prefs gitAutocommit"),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Budget editor (`/api/budget/lines`, `/api/budget/file`, `/api/budget/reference`)
+//
+// The `~` periodic rules the budget report measures against, as the Budget tab
+// lists and rewrites them. See `$lib/budget/types.ts` for what `amount` and
+// `entry` are and why both are carried.
+// ---------------------------------------------------------------------------
+
+interface RawBudgetEntry {
+    commodity?: string;
+    value?: RawDec;
+}
+
+interface RawBudgetGoal {
+    index?: number;
+    line?: number;
+    account?: string;
+    unbalanced?: boolean;
+    amount?: RawMixed;
+    entry?: RawBudgetEntry;
+    inverted?: boolean;
+    locked?: string;
+}
+
+interface RawBudgetRule {
+    block?: number;
+    line?: number;
+    period?: string;
+    description?: string;
+    locked?: string;
+    lines?: RawBudgetGoal[];
+}
+
+interface RawBudgetFile {
+    journalId?: string;
+    label?: string;
+    revision?: string;
+    writable?: boolean;
+    rules?: RawBudgetRule[];
+}
+
+interface RawBudgetListing {
+    editable?: boolean;
+    defaultTarget?: string;
+    canCreateFile?: boolean;
+    createFileName?: string;
+    files?: RawBudgetFile[];
+}
+
+interface RawCreatedBudgetFile {
+    journalId?: string;
+    label?: string;
+    includedAs?: string;
+    mainJournalId?: string;
+}
+
+interface RawReferencePeriod {
+    key?: string;
+    label?: string;
+    start?: string;
+    end?: string;
+    complete?: boolean;
+    total?: RawMixed;
+}
+
+interface RawAccountReference {
+    account?: string;
+    interval?: string;
+    inverted?: boolean;
+    periods?: RawReferencePeriod[];
+    average?: RawMixed;
+    averagedPeriods?: number;
+}
+
+/**
+ * One goal line.
+ *
+ * `amount` and `entry` are absent TOGETHER — a line with no written amount is
+ * the leg hledger infers, and the engine reports neither for it rather than
+ * inventing a box the user cannot type in. Decoding them as an independent pair
+ * would let a half-present line through; requiring both or neither is what makes
+ * `entry === null` mean exactly "not editable here", which `locked` also says.
+ */
+function decodeBudgetGoal(raw: RawBudgetGoal, context: string): BudgetGoal {
+    const entry = raw.entry;
+    return Object.freeze({
+        index: num(raw.index, `${context} index`),
+        line: num(raw.line, `${context} line`),
+        account: str(raw.account, `${context} account`),
+        unbalanced: raw.unbalanced === true,
+        amount: raw.amount === undefined || raw.amount === null ? null : decodeMixed(raw.amount, `${context} amount`),
+        entry:
+            entry === undefined || entry === null
+                ? null
+                : Object.freeze({
+                      commodity: str(entry.commodity, `${context} entry commodity`),
+                      value: decodeDec(entry.value, `${context} entry value`),
+                  }),
+        inverted: raw.inverted === true,
+        locked: optStr(raw.locked, `${context} locked`),
+    });
+}
+
+function decodeBudgetRule(raw: RawBudgetRule, context: string): BudgetRule {
+    return Object.freeze({
+        block: num(raw.block, `${context} block`),
+        line: num(raw.line, `${context} line`),
+        period: str(raw.period, `${context} period`),
+        description: str(raw.description, `${context} description`),
+        locked: optStr(raw.locked, `${context} locked`),
+        // The wire calls them `lines` (they are lines of a file); the domain
+        // calls them goals (they are what the user set).
+        goals: frozen((raw.lines ?? []).map((goal, i) => decodeBudgetGoal(goal, `${context} lines[${i}]`))),
+    });
+}
+
+function decodeBudgetFile(raw: RawBudgetFile, context: string): BudgetFile {
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected an object`);
+    return Object.freeze({
+        journalId: str(raw.journalId, `${context} journalId`),
+        label: str(raw.label, `${context} label`),
+        revision: str(raw.revision, `${context} revision`),
+        writable: raw.writable === true,
+        rules: frozen((raw.rules ?? []).map((rule, i) => decodeBudgetRule(rule, `${context} rules[${i}]`))),
+    });
+}
+
+/** `GET /api/budget/lines` → every budget goal the open journal declares. */
+export function decodeBudgetListing(raw: unknown): BudgetListing {
+    const listing = raw as RawBudgetListing;
+    if (typeof listing !== "object" || listing === null || !Array.isArray(listing.files)) {
+        throw new ApiShapeError("budget listing: expected a files array");
+    }
+    return Object.freeze({
+        editable: listing.editable === true,
+        defaultTarget: optStr(listing.defaultTarget, "budget listing defaultTarget"),
+        canCreateFile: listing.canCreateFile === true,
+        // An engine that does not say has nothing to create, so the fallback name
+        // is only ever shown beside a `canCreateFile` of false.
+        createFileName: optStr(listing.createFileName, "budget listing createFileName") ?? "budget.journal",
+        files: frozen(listing.files.map((file, i) => decodeBudgetFile(file, `budget listing files[${i}]`))),
+    });
+}
+
+/** `PUT /api/budget/lines/{*id}` → the file it just wrote, at its new revision. */
+export function decodeBudgetFileResponse(raw: unknown): BudgetFile {
+    return decodeBudgetFile(raw as RawBudgetFile, "budget save");
+}
+
+/** `POST /api/budget/file` → the file it created and the include it wrote. */
+export function decodeCreatedBudgetFile(raw: unknown): CreatedBudgetFile {
+    const created = raw as RawCreatedBudgetFile;
+    if (typeof created !== "object" || created === null) throw new ApiShapeError("budget file: expected an object");
+    return Object.freeze({
+        journalId: str(created.journalId, "budget file journalId"),
+        label: str(created.label, "budget file label"),
+        includedAs: str(created.includedAs, "budget file includedAs"),
+        mainJournalId: str(created.mainJournalId, "budget file mainJournalId"),
+    });
+}
+
+/** `GET /api/budget/reference` → one account's recent actuals, oldest first. */
+export function decodeAccountReference(raw: unknown): AccountReference {
+    const reference = raw as RawAccountReference;
+    if (typeof reference !== "object" || reference === null || !Array.isArray(reference.periods)) {
+        throw new ApiShapeError("budget reference: expected a periods array");
+    }
+    return Object.freeze({
+        account: str(reference.account, "budget reference account"),
+        interval: str(reference.interval, "budget reference interval"),
+        inverted: reference.inverted === true,
+        // An engine that says nothing has no average to report, which is
+        // `averagedPeriods: 0` — never a confident zero. The two fields are read
+        // independently for exactly that reason: an empty `average` with a
+        // non-zero count is a real answer ("you spent nothing, twice").
+        average: reference.average === undefined || reference.average === null ? new Map() : decodeMixed(reference.average, "budget reference average"),
+        averagedPeriods: optNum(reference.averagedPeriods, "budget reference averagedPeriods") ?? 0,
+        periods: frozen(
+            reference.periods.map((period, i) => {
+                const context = `budget reference periods[${i}]`;
+                return Object.freeze({
+                    key: str(period.key, `${context} key`),
+                    label: str(period.label, `${context} label`),
+                    start: str(period.start, `${context} start`),
+                    end: str(period.end, `${context} end`),
+                    // An engine that does not say is taken to mean the period is
+                    // finished, which is the reading that does NOT put a "so far"
+                    // caveat on a whole month.
+                    complete: period.complete !== false,
+                    total: decodeMixed(period.total, `${context} total`),
+                });
+            })
+        ),
     });
 }

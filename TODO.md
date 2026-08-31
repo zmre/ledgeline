@@ -37,11 +37,6 @@
   - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
   - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
   - perhaps instead of one giant form, we have display separate from edit and can therefore make this nicer
-- feat: edit / create budget
-  - figure out where budget rules already exist and that's where we'll store new lines and update existing ones
-  - if they don't exist, make a budget.journal file and include it from the main file (with a button press by user first)
-  - when adding or editing a budget line, we need to say if it's weekly/monthly/annual, pick a category (probably an expense but i guess any account is fine) and it should show us recent values for that time period for that account. In other words, if I want to set a monthly shopping budget line, then i want to see, as reference, what i've spent on shopping for each of the last... lets say three months.  If I want to budget income from interest on an annual basis, i should see what my current plus two prior years had.  Then I set a dollar amount.  Or edit a dollar amount.
-  - Move Budget from Reports to its own top-level tab
 
 ## AI
 - feat: private AI integration
@@ -86,6 +81,16 @@
   - in business, I also build modeling spreadsheets that allow for what-ifs and let me model sales growth, investments, ramp up in hiring/expenses, etc., so i can understand runway (cash balance over time anyway)
     - It would be great if we had a mechanism for unifying this
   - we need to understand how forecasting works in hledger -- is it just the budgeting? can we use that for forecasts meaningfully?
+    - partly answered by the budget editor (`plans/15-budget-editor.md`): hledger's `--forecast` reads the
+      SAME `~` periodic rules `bal --budget` does, so `ledgeline-core/src/periodic.rs` — the span editor
+      the budget tab writes through — is already the document model a forecast scenario would be written
+      with. It is named `periodic` rather than `budget` for exactly that reason.
+  - fix: our parser REJECTS every period expression outside the five fixed intervals — `~ every 2 weeks`,
+    `~ monthly from 2026-01 to 2027-01` — and the rejection fails the WHOLE journal parse, not just the
+    rule. Forecasts need those forms (a scenario is bounded by definition), and today a user who writes
+    one cannot open their journal at all. `parse::parse_period_expr` + `model::PeriodExpr` are where it
+    lives; `periodic::BlockLock::Period` already presents an unmodelled period read-only, so the editor
+    side is ready for whatever the parser learns to read.
   - i want to be able to save different forecasts, probably as files not included in the main, but which we can read in and apply and then produce reports into the future (balance sheet, p&l, cash flow, etc).
   - we should be able to do things with percentages, too, so we can assume some percentage return on investments or increase in salaries, expenses, and so on.  Not sure if we'd have to calculate this and save it out or if we could bake it in using hledger's auto postings
   - I really want this feature to be a nice GUI but then something that persists and still works with hledger to the greatest extent possible.

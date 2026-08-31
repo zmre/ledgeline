@@ -2,7 +2,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {defaultReportParams} from "$lib/reports/ui/params";
 import {GROUPED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
 import {GROUPED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
-import {budgetSpan, buildReportQuery, reports, sameReportQuery, type ReportQuery} from "./reports.svelte";
+import {buildReportQuery, reports, sameReportQuery, type ReportQuery} from "./reports.svelte";
 
 /** A minimal engine response for a period (cf/nw) report. */
 const period = () => ({buckets: ["2026-01"], rows: [], totals: [{}]});
@@ -98,8 +98,8 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
         // Both statements ask the engine for an UNCLAMPED report — expanding a
         // group has to show all of it — and absent is how those endpoints spell
         // "no clamp" (`depth=0` is already totals-only). A stale `?depth=` from a
-        // bookmark still lands in the shared param for cf/nw/budget, and must not
-        // leak back into either request.
+        // bookmark still lands in the shared param for cf/nw, and must not leak
+        // back into either request.
         const params = defaultReportParams();
         expect(build(params)).not.toHaveProperty("depth");
         expect(build({...params, depth: 1})).toEqual(build({...params, depth: 9}));
@@ -128,40 +128,5 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
         expect(seen.every((url) => !url.includes("depth="))).toBe(true);
         expect(reports.report).toMatchObject({kind: "incomeStatement"});
         vi.unstubAllGlobals();
-    });
-
-    it("distinguishes budget spans that share an end and a month count", () => {
-        // `buildReportQuery` reduces the budget span to end + count, so without
-        // carrying `from` two different spans could compare equal and the
-        // workbook would be named after a range it does not contain.
-        const params = defaultReportParams();
-        const a = buildReportQuery({...params, tab: "budget", from: "2026-01-01", to: "2026-12-31"});
-        const b = buildReportQuery({...params, tab: "budget", from: "2026-01-15", to: "2026-12-31"});
-        expect(sameReportQuery(a, b)).toBe(false);
-    });
-});
-
-describe("UNIT budgetSpan — the bars' real span", () => {
-    // The engine walks whole months back from `end`, so a mid-month `from` makes
-    // the first bucket start on the 1st. Measured against a live engine: a bar
-    // for from=2026-01-15 reported $720.00 while the journal link, filtered to
-    // 2026-01-15, showed $20.00. The link now uses this span instead.
-    it("snaps `from` to the first of its month, because the first bucket does", () => {
-        expect(budgetSpan("2026-01-15", "2026-01-31")).toEqual({from: "2026-01-01", to: "2026-01-31", count: 1});
-    });
-
-    it("leaves an already-aligned from untouched", () => {
-        expect(budgetSpan("2026-01-01", "2026-07-25")).toEqual({from: "2026-01-01", to: "2026-07-25", count: 7});
-    });
-
-    it("keeps `to` exactly as asked — the engine truncates the last bucket at `end`", () => {
-        // Verified against the engine: end=2026-07-25 with a 2026-07-28 txn in the
-        // journal reported $30.00, not $530.00. Only the START drifts.
-        expect(budgetSpan("2026-07-01", "2026-07-25").to).toBe("2026-07-25");
-    });
-
-    it("feeds buildReportQuery, so the fetch and the link agree", () => {
-        const q = buildReportQuery({...defaultReportParams(), tab: "budget", from: "2026-01-15", to: "2026-01-31"});
-        expect(q).toMatchObject({tab: "budget", end: "2026-01-31", count: 1});
     });
 });

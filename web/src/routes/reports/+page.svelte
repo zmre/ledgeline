@@ -8,13 +8,13 @@
     // Display styles come from the journal wire feed (reportStyles), fetched in
     // parallel — the engine returns exact numbers, not commodity display styles.
     import {onMount} from "svelte";
+    import {goto} from "$app/navigation";
+    import {resolve} from "$app/paths";
     import AsyncSection from "$lib/components/AsyncSection.svelte";
     import ErrorToast from "$lib/components/ErrorToast.svelte";
-    import {declaredTypes} from "$lib/domain/accountTypes";
-    import {exportBalanceSheetXlsx, exportBudgetXlsx, exportIncomeStatementXlsx, exportXlsx} from "$lib/export/xlsx";
+    import {exportBalanceSheetXlsx, exportIncomeStatementXlsx, exportXlsx} from "$lib/export/xlsx";
     import InsightsDashboard from "$lib/reports/ui/insights/InsightsDashboard.svelte";
     import BalanceSheetView from "$lib/reports/ui/BalanceSheetView.svelte";
-    import BudgetSummary from "$lib/reports/ui/BudgetSummary.svelte";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import IncomeStatementView from "$lib/reports/ui/IncomeStatementView.svelte";
     import ReportControls from "$lib/reports/ui/ReportControls.svelte";
@@ -22,9 +22,8 @@
     import ReportTabs from "$lib/reports/ui/ReportTabs.svelte";
     import SubscriptionsPanel from "$lib/reports/ui/subscriptions/SubscriptionsPanel.svelte";
     import {
-        budgetPresetRange,
+        budgetRedirect,
         defaultReportParams,
-        DEFAULT_BUDGET_PRESET,
         paramsToSearch,
         searchToParams,
         TAB_DEFAULTS,
@@ -36,7 +35,7 @@
     import {reportStyles} from "$lib/reports/ui/styles";
     import {flows, loadFlowsWhenWatched} from "$lib/stores/flows.svelte";
     import {dataView} from "$lib/stores/loadState";
-    import {budgetSpan, buildReportQuery, reports, sameReportQuery, type AnyReport} from "$lib/stores/reports.svelte";
+    import {buildReportQuery, reports, sameReportQuery, type AnyReport} from "$lib/stores/reports.svelte";
     import {journal} from "$lib/stores/journal.svelte";
     import {loadJournalWhenReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
@@ -48,14 +47,24 @@
 
     // Restore params from the URL exactly once, at startup.
     onMount(() => {
-        if (window.location.search !== "") Object.assign(params, searchToParams(window.location.search, defaultReportParams()));
+        const search = window.location.search;
+        // Budget used to be a tab here and is its own route now, so a bookmark
+        // still naming it is forwarded rather than quietly landing on Insights.
+        // `replaceState` because the old URL is not a place to go Back to.
+        const forward = budgetRedirect(search);
+        if (forward !== null) {
+            // eslint-disable-next-line svelte/no-navigation-without-resolve -- resolve("/budget") IS the route id; the query string is appended
+            void goto(`${resolve("/budget")}${forward}`, {replaceState: true});
+            return;
+        }
+        if (search !== "") Object.assign(params, searchToParams(search, defaultReportParams()));
         activeTab = params.tab; // the restored/initial tab keeps its (URL or default) interval/count
         restored = true;
         return () => mirror.stop();
     });
 
     // Each tab seeds its own defaults on activation (cash flow wants monthly/12,
-    // net worth yearly/5, budget year-to-date; bs/is ignore interval/count).
+    // net worth yearly/5; bs/is ignore interval/count).
     $effect(() => {
         const tab = params.tab;
         if (!restored || tab === activeTab) return;
@@ -63,11 +72,6 @@
         const d = TAB_DEFAULTS[tab];
         params.interval = d.interval;
         params.count = d.count;
-        if (tab === "budget") {
-            const range = budgetPresetRange(DEFAULT_BUDGET_PRESET);
-            params.from = range.from;
-            params.to = range.to;
-        }
     });
 
     // Mirror params → URL, debounced, replaceState (no history entries, no loops).
@@ -106,7 +110,6 @@
     // legitimately empty journal, for every new user (FE-5c). `formatTotals`
     // already falls back per commodity when the map has no entry.
     const styles = $derived(reportStyles(journal.txns));
-    const declared = $derived(declaredTypes(journal.accountDecls));
     const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
 
     const report = $derived(reports.report);
@@ -150,11 +153,11 @@
     });
 
     // Discriminate the report shape by its decoder-applied `kind` tag:
-    // "budget" → BudgetSummary, "balanceSheet" → BalanceSheetView,
-    // "incomeStatement" → IncomeStatementView, untagged (cf/nw) → ReportTable.
-    // The tag exists because THREE report types now carry a `sections` array
-    // (SectionedReport, BalanceSheetReport, IncomeStatementReport), so shape
-    // alone cannot tell them apart — the FE-1 mistake, two shapes further on.
+    // "balanceSheet" → BalanceSheetView, "incomeStatement" →
+    // IncomeStatementView, untagged (cf/nw) → ReportTable. The tag exists
+    // because THREE report types carry a `sections` array (SectionedReport,
+    // BalanceSheetReport, IncomeStatementReport), so shape alone cannot tell
+    // them apart — the FE-1 mistake, two shapes further on.
 
     /**
      * The report the export button may act on: the one being shown AND answering
@@ -209,22 +212,14 @@
                 return {title: "Cash Flow", params: `${span}, depth ${params.depth}`, filename: `cash-flow-${params.end}.xlsx`};
             case "nw":
                 return {title: "Net Worth", params: `${span}, depth ${params.depth}`, filename: `net-worth-${params.end}.xlsx`};
-            case "budget":
-                return {
-                    title: "Budget",
-                    params: `${params.from} to ${params.to}, depth ${params.depth}`,
-                    filename: `budget-${params.from}-to-${params.to}.xlsx`,
-                };
         }
     });
 
-    /** Export the current report — the three tagged shapes own their builders; cf/nw share exportXlsx. */
+    /** Export the current report — the two tagged shapes own their builders; cf/nw share exportXlsx. */
     function runExport(current: AnyReport): Promise<void> {
         const meta = {title: exportInfo.title, params: exportInfo.params};
         if (!("kind" in current)) return exportXlsx(current, meta, exportInfo.filename);
         switch (current.kind) {
-            case "budget":
-                return exportBudgetXlsx(current, meta, exportInfo.filename, declared);
             case "balanceSheet":
                 return exportBalanceSheetXlsx(current, meta, exportInfo.filename);
             case "incomeStatement":
@@ -276,17 +271,7 @@
         >
             {#snippet children(current)}
                 {#if "kind" in current}
-                    {#if current.kind === "budget"}
-                        <!-- budgetSpan, not params: the bars cover whole months, so the journal
-                             link has to cover the same span or the rows won't add up to the bar. -->
-                        <BudgetSummary
-                            report={current}
-                            {styles}
-                            {declared}
-                            from={budgetSpan(params.from, params.to).from}
-                            to={budgetSpan(params.from, params.to).to}
-                        />
-                    {:else if current.kind === "balanceSheet"}
+                    {#if current.kind === "balanceSheet"}
                         <BalanceSheetView report={current} {styles} />
                     {:else}
                         <IncomeStatementView report={current} {styles} flows={flowsPanel} />

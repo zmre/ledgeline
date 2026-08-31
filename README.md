@@ -10,9 +10,26 @@ I built this because I was dissatisfied with existing GUIs. They often hard code
 ## What it does
 
 - **Journal view** with live filtering and an insights panel (pie / line charts, account-depth control).
-- **Reports** — balance sheet, income statement, cash flow, net worth, and budgets (`~` periodic goals vs.
-  actuals) — the budget view shows each category as a period-summary envelope bar (year-to-date by default).
-  Computed in Rust with exact decimal math and hledger parity. XLSX exports.
+- **Reports** — balance sheet, income statement, cash flow and net worth. Computed in Rust with exact
+  decimal math and hledger parity. XLSX exports.
+- **Budget** — your `~` periodic goals against what actually happened, as a period-summary envelope bar
+  per category (year-to-date by default) — *and* an editor for the goals themselves. Add or change a
+  weekly / monthly / quarterly / annual goal and Ledgeline writes it back into your journal as an
+  ordinary hledger `~` rule, in the file your goals already live in. Setting one shows the last three
+  periods of that account's actual activity beside the amount box, so a number is set against history
+  rather than from memory:
+
+  ```journal
+  ~ monthly  household budget
+      (expenses:food)      $400
+      (expenses:bus)        $20
+  ```
+
+  Income is typed as a magnitude and written the way hledger wants it (`(income:interest)  $-1200`).
+  An edit rewrites only the amount it names — alignment, comments and everything else come out of the
+  file exactly as they went in — and a rule Ledgeline cannot rewrite safely is shown read-only with the
+  reason rather than guessed at. No budget rules yet? One button writes a `budget.journal` beside your
+  journal and includes it. See **[docs/budget.md](docs/budget.md)**.
 - **Money-flow diagrams** on the income statement: one Sankey above Revenue showing where the period's income came from and which accounts it landed in, one above the expenses showing which accounts paid and what each category was spent on, so card spending shows the card. Each is a decomposition of the box below it, not a second calculation: the ribbon widths add up to the figures already printed there, and where they cannot, the panel says `Showing $X of $Y` rather than implying they do. Withheld tax is attributed to gross pay and not to the bank account, which is the case a naive debit-against-credit pairing gets wrong. Both panels are collapsible, follow the report's date range, and are absent from the XLSX export. See **[docs/income-statement.md](docs/income-statement.md)** for the attribution rule, the links that are not drawn, and why colour tracks the account.
 - **Balance sheet** — three boxes (assets / liabilities / equity), every line valued to one number in your
   base currency so a portfolio reads as money rather than as a column of share counts. Lines are *groups*

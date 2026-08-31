@@ -3,6 +3,7 @@
 // HledgerApi (the wire client) but distinguishes a server that simply lacks the
 // native routes (a plain hledger-web) from one that is unreachable.
 
+import type {BudgetPeriod} from "$lib/budget/types";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
 /** The configured server answered, but has no /api/* routes (e.g. plain hledger-web). */
@@ -328,6 +329,39 @@ export interface SaveAliasesBody {
     edits: SaveAliasEdit[];
 }
 
+/**
+ * One change to one file's budget goals, matching `budget_api::WireChange`.
+ *
+ * Every `value` is an ENTRY magnitude — what the user typed, never a sign. The
+ * engine negates it for an income account on the way in, which is why no caller
+ * does. `WireDec` because this is a request body: the wire carries a
+ * string-encoded mantissa so a large exact value never loses precision through a
+ * JS number, and `encodeDec` is the one conversion.
+ *
+ * Here rather than in `$lib/budget/types.ts` for the reason `SaveAliasesBody` is
+ * here: request bodies are this module's vocabulary, and putting it beside the
+ * domain types would make `budget/types.ts` import `WireDec` back out of this
+ * file for a cycle that buys nothing.
+ */
+export type BudgetChange =
+    | {kind: "set"; index: number; value: WireDec}
+    | {kind: "remove"; index: number}
+    | {kind: "add"; block: number; account: string; value: WireDec; commodity?: string}
+    | {kind: "addRule"; period: BudgetPeriod; description: string; account: string; value: WireDec; commodity?: string};
+
+/**
+ * `PUT /api/budget/lines/{*journalId}` — one change to one file's budget goals.
+ *
+ * Exactly ONE change per request, unlike a rules or alias save. A change is
+ * planned by the engine into however many line rewrites it needs (a goal edit in
+ * a balanced rule also moves its counter-leg), so batching two gestures would
+ * mean planning each against a file the other has already moved.
+ */
+export interface SaveBudgetLinesBody {
+    revision: string;
+    change: BudgetChange;
+}
+
 /** `PUT /api/prefs`. Both fields are tri-state: null means "unset", not "off". */
 export interface PrefsBody {
     hledgerPath: string | null;
@@ -479,6 +513,15 @@ export interface BudgetQuery {
     depth?: number;
     /** Case-insensitive periodic-rule description filter; absent/empty = all rules. */
     budgetDesc?: string;
+}
+
+/** `?account=&interval=&count=&asOf=` — the budget editor's history strip. */
+export interface BudgetReferenceQuery {
+    /** Required: matched inclusively against itself and its subaccounts. */
+    account: string;
+    interval?: string;
+    count?: number;
+    asOf?: string;
 }
 export interface InsightsQuery {
     /** Inclusive comparison-span start (YYYY-MM-DD). */
@@ -765,6 +808,42 @@ export class LedgelineApi {
      */
     saveAliases(journalId: string, body: SaveAliasesBody): Promise<unknown> {
         return this.mutate<unknown>("PUT", `/api/aliases/${encodeRulesId(journalId)}`, 200, body);
+    }
+
+    /** Every budget goal the journal declares (decode with `decodeBudgetListing`). */
+    listBudgetLines(): Promise<unknown> {
+        return this.getJson("/api/budget/lines");
+    }
+
+    /**
+     * Apply one change to one journal file's budget goals. → 200, that file at
+     * its new revision (decode with `decodeBudgetFileResponse`); 409 when the
+     * file moved underneath the editor.
+     *
+     * The id is encoded segment by segment for the same reason a rules id is: it
+     * genuinely contains slashes (`2026/2026.journal`) and they must survive as
+     * path separators rather than as `%2F`.
+     */
+    saveBudgetLines(journalId: string, body: SaveBudgetLinesBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", `/api/budget/lines/${encodeRulesId(journalId)}`, 200, body);
+    }
+
+    /**
+     * Create a `budget.journal` beside the main journal and `include` it. → 200
+     * (decode with `decodeCreatedBudgetFile`); 409 when the journal already has
+     * budget rules, or when a file of that name is already there.
+     *
+     * Takes no body: there is exactly one file this creates, at one place, and a
+     * request that could name either would be a request to write somewhere the
+     * user has not been shown.
+     */
+    createBudgetFile(): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/budget/file", 200, {});
+    }
+
+    /** One account's recent actuals, period by period (decode with `decodeAccountReference`). */
+    budgetReference(query: BudgetReferenceQuery): Promise<unknown> {
+        return this.getJson(`/api/budget/reference${queryString({account: query.account, interval: query.interval, count: query.count, asOf: query.asOf})}`);
     }
 
     /** ADD a whole transaction. → 201 `{index, transaction}`. */

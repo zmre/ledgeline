@@ -334,8 +334,8 @@ pub enum PeriodExpr {
 /// Its postings are parsed and balanced exactly like a normal transaction's (so
 /// an elided balancing posting is inferred). The rule is stored apart from
 /// [`Journal::transactions`] and is deliberately never surfaced through the wire
-/// `/transactions` view — it exists only to supply budget goals to the budget
-/// report.
+/// `/transactions` view — it supplies budget goals to the budget report, and its
+/// position is what lets [`crate::periodic`] edit it in place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeriodicTransaction {
     /// The rule's recurrence period.
@@ -346,6 +346,18 @@ pub struct PeriodicTransaction {
     pub description: String,
     /// The rule's postings, after amount inference/balancing.
     pub postings: Vec<Posting>,
+    /// `[first line, line after last posting]`, both at column 1, exactly as
+    /// [`Transaction::source_span`] is defined — and relative to
+    /// [`source_file`](Self::source_file), not to the main journal.
+    ///
+    /// A rule with no position could be reported but never edited: the budget
+    /// editor has to be able to say *which* `~` block in *which* file a goal
+    /// came from before it will rewrite a byte of it.
+    pub source_span: (SourcePos, SourcePos),
+    /// The resolved (absolute, canonicalized when it exists on disk) path of the
+    /// file this rule was parsed from. Same meaning, and same purpose, as
+    /// [`Transaction::source_file`].
+    pub source_file: PathBuf,
 }
 
 /// A `P DATE COMMODITY PRICE` market-price directive.

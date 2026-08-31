@@ -105,9 +105,9 @@ impl From<Dec> for WireDec {
 ///
 /// A plain function rather than a `From` impl: both `BTreeMap` and
 /// [`MixedAmount`] are foreign types, so the orphan rule forbids the impl.
-type WireMixed = BTreeMap<String, WireDec>;
+pub(crate) type WireMixed = BTreeMap<String, WireDec>;
 
-fn wire_mixed(ma: &MixedAmount) -> WireMixed {
+pub(crate) fn wire_mixed(ma: &MixedAmount) -> WireMixed {
     ma.iter()
         .filter(|(_, dec)| !dec.is_zero())
         .map(|(commodity, dec)| (commodity.0.clone(), WireDec::from(*dec)))
@@ -1342,7 +1342,7 @@ impl From<&OtherHoldingsReport> for WireOtherHoldingsReport {
 /// The report engine is deliberately clock-free (see `reports::periods`);
 /// "today" is a server-side request default only, so it lives here rather than
 /// in `ledgeline-core`, and needs no third-party date dependency.
-fn today_utc() -> String {
+pub(crate) fn today_utc() -> String {
     let days = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| (elapsed.as_secs() / 86_400) as i64)
