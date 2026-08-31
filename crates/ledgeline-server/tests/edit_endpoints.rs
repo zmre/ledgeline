@@ -1124,3 +1124,150 @@ async fn failed_save_with_readable_journal_still_resyncs_and_409s() {
 fn sample_text() -> String {
     std::fs::read_to_string(common::fixture_journal_path()).expect("sample.journal readable")
 }
+
+// ---------------------------------------------------------------------------
+// Error surface: no absolute path in any write-path body (SEC-15)
+// ---------------------------------------------------------------------------
+
+/// Like [`request`], but returns the body as TEXT.
+///
+/// The error bodies are `text/plain` by contract (see `error_surface.rs`), so
+/// `request`'s `serde_json` parse turns every one of them into `Value::Null` —
+/// which is exactly how a path could sit in a `500` for as long as it did
+/// without a test noticing.
+async fn request_text(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, String) {
+    let builder = Request::builder().method(method).uri(uri);
+    let request = match body {
+        Some(json) => builder
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json).expect("serialize body"),
+            ))
+            .expect("request builds"),
+        None => builder.body(Body::empty()).expect("request builds"),
+    };
+    let response = router_with_state(state.clone())
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    let status = response.status();
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .expect("body collects")
+        .to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A journal line that must never come back to us inside a file path.
+const SECRET_DIR: &str = "ledgeline-edit-endpoint-secrets";
+
+/// Editing-enabled state in a directory whose name is easy to spot in a body.
+fn state_in_named_dir(content: &str) -> (AppState, PathBuf) {
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir()
+        .join(SECRET_DIR)
+        .join(format!("{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("main.journal");
+    std::fs::write(&path, content).expect("write temp journal");
+    let state = AppState::from_journal_path(&path).expect("editor opens");
+    (state, path)
+}
+
+/// Assert `body` names neither the journal's directory nor its absolute path,
+/// in either spelling (`/tmp` canonicalizes to `/private/tmp` on macOS).
+fn assert_no_absolute_path(path: &std::path::Path, body: &str, what: &str) {
+    let dir = path.parent().expect("the journal has a parent directory");
+    let mut secrets = vec![path.to_path_buf(), dir.to_path_buf(), std::env::temp_dir()];
+    let canonical: Vec<PathBuf> = secrets
+        .iter()
+        .filter_map(|p| p.canonicalize().ok())
+        .collect();
+    secrets.extend(canonical);
+    for secret in secrets {
+        let rendered = secret.to_string_lossy().into_owned();
+        assert!(
+            !body.contains(&rendered),
+            "{what}: the response body discloses {rendered}\n---\n{body}\n---"
+        );
+    }
+}
+
+/// SEC-15. The `/api/import/*` surface has pinned "no response body contains an
+/// absolute path" since WP-11; the WRITE path never had the equivalent, and it
+/// leaked one from two places at once. `EditError` renders a parse failure as
+/// `{source_name}:{line}: {message}`, and `source_name` is the absolute path the
+/// editor was opened with.
+///
+/// Every failure mode an ordinary edit can reach, swept in one test.
+#[tokio::test]
+async fn no_edit_response_body_contains_an_absolute_path() {
+    let (state, path) = state_in_named_dir(THREE_TXNS);
+    let dir = path.parent().expect("parent").to_path_buf();
+
+    let good = json!({
+        "date": "2024-02-01",
+        "description": "ok",
+        "postings": [
+            {"account": "expenses:a",
+             "amount": {"commodity": "$", "quantity": {"mantissa": "100", "places": 2}}},
+            {"account": "assets:bank"}
+        ]
+    });
+
+    let mut bodies: Vec<(String, String)> = Vec::new();
+
+    // 404: an index nobody has.
+    bodies.push((
+        "delete/unknown".to_string(),
+        request_text(&state, "DELETE", "/api/transactions/99999", None)
+            .await
+            .1,
+    ));
+
+    // 400: a transaction that does not balance.
+    let unbalanced = json!({
+        "date": "2024-02-01",
+        "description": "no",
+        "postings": [
+            {"account": "expenses:a",
+             "amount": {"commodity": "$", "quantity": {"mantissa": "500", "places": 2}}},
+            {"account": "assets:bank",
+             "amount": {"commodity": "$", "quantity": {"mantissa": "-400", "places": 2}}}
+        ]
+    });
+    bodies.push((
+        "add/unbalanced".to_string(),
+        request_text(&state, "POST", "/api/transactions", Some(unbalanced))
+            .await
+            .1,
+    ));
+
+    // 409 / 500: the file was changed under us AND is now unparseable, so the
+    // save is refused and the re-sync that follows it cannot re-read the file.
+    // This is the DL-5 branch, and it is where the absolute path came out.
+    std::fs::write(
+        &path,
+        "2024-01-01 * A\n    expenses:a  $1.00\n    assets:bank\n\n\
+         2024-99-99 * SECRET Landlord rent\n    expenses:rent  $1234.56\n    assets:bank\n",
+    )
+    .expect("corrupt the journal externally");
+    let (status, body) = request_text(&state, "POST", "/api/transactions", Some(good)).await;
+    assert!(
+        status.is_client_error() || status.is_server_error(),
+        "an edit over an unparseable file must fail: {status} {body}"
+    );
+    bodies.push(("add/after-external-corruption".to_string(), body));
+
+    for (what, body) in &bodies {
+        assert!(!body.is_empty(), "{what}: expected a message");
+        assert_no_absolute_path(&path, body, what);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -58,7 +58,7 @@ fn report(
         },
         &declared,
         &account_groups(journal),
-        &bs_terms(journal).expect("`bsterm:` values parse"),
+        &bs_terms(journal),
     )
     .expect("grouped balance sheet")
 }
@@ -1262,16 +1262,37 @@ fn an_untagged_journal_is_completely_unchanged() {
     assert_eq!(names(&untagged, 0), names(&tagged, 0));
 }
 
-/// A misspelt term is refused by name rather than silently filing the account
-/// under the wrong subheading, where it would still add up and still be wrong.
+/// A misspelt term is REPORTED by name rather than either silently filing the
+/// account under the wrong subheading or refusing the whole sheet.
+///
+/// It reads as undeclared, so the account takes `resolve_bs_term`'s
+/// group-derived default — a documented answer rather than a wrong one — and the
+/// `account-tag` warning names the account, the value and the two codes.
 #[test]
-fn an_unknown_term_is_refused() {
+fn an_unknown_term_is_reported_not_refused() {
     let bad = TERMS.replace("bsterm: noncurrent", "bsterm: long-ish");
     let journal = parse_journal(&bad, "bad.journal").expect("journal parses");
-    let err = bs_terms(&journal).expect_err("an unknown term is refused");
-    let text = err.to_string();
-    assert!(text.contains("current"), "{text}");
-    assert!(text.contains("noncurrent"), "{text}");
+
+    // Every `noncurrent` in the fixture became unreadable, so nothing declares
+    // that half any more — but the sheet still builds.
+    let terms = bs_terms(&journal);
+    assert!(
+        terms.values().all(|term| *term == BsTerm::Current),
+        "an unreadable term declares nothing: {terms:?}"
+    );
+
+    let found = serde_json::to_value(ledgeline_core::wire::journal_to_tag_diagnostics(&journal))
+        .expect("serializes");
+    let found = found.as_array().expect("an array");
+    assert!(!found.is_empty(), "the typo must be reported");
+    for entry in found {
+        assert_eq!(entry["rule"], "account-tag");
+        assert_eq!(entry["severity"], "warning");
+        let text = entry["message"].as_str().expect("a message");
+        assert!(text.contains("long-ish"), "{text}");
+        assert!(text.contains("current"), "{text}");
+        assert!(text.contains("noncurrent"), "{text}");
+    }
 }
 
 /// The tag inherits down the tree, like every other tag on this sheet.

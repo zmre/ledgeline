@@ -367,13 +367,23 @@ fn an_ignored_target_does_not_sink_the_rest_of_the_commit() {
     repo.write("main.journal", "; journal\n; imported\n");
     repo.write("secret.csv", "date,amount\n");
 
-    repo.discover()
+    let staged = repo
+        .discover()
         .commit(
             &[&repo.at("secret.csv"), &repo.at("main.journal")],
             "ledgeline: import 3 transactions",
         )
         .expect("the non-ignored path still commits");
 
+    // What comes back is what was STAGED, not what was asked for. A caller that
+    // reported the request back to a user would be claiming a commit of a file
+    // git never took — which is exactly what the import result panel does with
+    // this list.
+    assert_eq!(
+        staged,
+        vec!["main.journal".to_string()],
+        "the ignored path must not be reported as committed"
+    );
     assert_eq!(repo.head_files(), vec!["main.journal".to_string()]);
     assert!(
         !repo.git(&["ls-files"]).contains("secret.csv"),

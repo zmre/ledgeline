@@ -458,3 +458,41 @@ fn the_tolerance_boundary_is_exact_at_every_scale_of_charge() {
         );
     }
 }
+
+// ---- the valuation base ----
+
+/// The detector counts only the amounts denominated in the journal's base
+/// commodity, and that base is the most frequent price TARGET. Deriving it by
+/// counting targets rather than by building a whole price database must not move
+/// it: six €9.99 charges are a subscription only while EUR wins, and the six
+/// $9.99 charges standing beside them never are.
+#[test]
+fn the_base_commodity_is_the_most_frequent_price_target() {
+    let mut text = String::from(
+        "P 2025-01-01 AAPL 100.00 EUR\nP 2025-02-01 AAPL 101.00 EUR\nP 2025-03-01 VTI $50.00\n\n",
+    );
+    for month in 1..=6 {
+        text.push_str(&format!(
+            "2025-{month:02}-10 Euro Streamer\n    expenses:subscriptions   9.99 EUR\n    assets:bank:checking\n\n"
+        ));
+        text.push_str(&format!(
+            "2025-{month:02}-12 Dollar Streamer\n    expenses:subscriptions   $9.99\n    assets:bank:checking\n\n"
+        ));
+    }
+    let journal = parse_journal(&text, "base.journal").expect("base journal parses");
+    let report = detect_subscriptions(
+        &journal,
+        &SubscriptionOpts {
+            as_of: "2025-07-31",
+            ..SubscriptionOpts::default()
+        },
+    )
+    .expect("detection succeeds");
+    assert_eq!(payees(&report.monthly), ["Euro Streamer"]);
+    assert_eq!(
+        find(&report.monthly, "Euro Streamer")
+            .expect("the EUR charge is the subscription")
+            .typical_amount,
+        Dec::new(999, 2)
+    );
+}

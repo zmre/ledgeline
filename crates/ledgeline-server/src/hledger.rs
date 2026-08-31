@@ -815,3 +815,27 @@ fn probe_version(program: &Path) -> Probe {
         answered => answered,
     }
 }
+
+/// Does `program` actually answer `--version` like hledger?
+///
+/// The STORE-time half of `hledgerPath` validation (SEC-14), exposed from this
+/// module because running a program is this module's job and nobody else's —
+/// see the `Command::new` rule at the top of the file.
+///
+/// It deliberately says nothing about the version. [`Hledger::resolve`] owns the
+/// [`MIN_HLEDGER`] gate, and it has to keep owning it: a user who pins an old
+/// hledger should get [`HledgerError::TooOld`], which names the number they need,
+/// rather than a store-time refusal that cannot say what is wrong with the path
+/// they just typed. So this accepts any [`Probe::Reported`].
+///
+/// # Errors
+/// A fixed phrase — never the path, which
+/// [`prefs::check_storable`](crate::prefs::check_storable) would otherwise leak
+/// into an `/api/prefs` body — saying which way the probe failed.
+pub(crate) fn probe_answers_like_hledger(program: &Path) -> Result<(), &'static str> {
+    match probe_version(program) {
+        Probe::Reported(_) => Ok(()),
+        Probe::Absent => Err("could not be run"),
+        Probe::Unrecognised => Err("is not hledger (it did not report an hledger version)"),
+    }
+}

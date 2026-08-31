@@ -8,8 +8,20 @@ import {ALL_RULES} from "./rules";
 
 export type Severity = "error" | "warning" | "info";
 
+/**
+ * One finding, anchored to EITHER a transaction or an account — never both, and
+ * never neither.
+ *
+ * `txnIndex` is hledger's 1-based `Transaction.index` (not the wire's 0-based
+ * position; normalizeDiagnostics translates). It is null for a finding about an
+ * `account` DIRECTIVE, which has no transaction to point at — the `account-tag`
+ * rule is the only such finding today. Consumers that jump to or flag a row must
+ * treat null as "nothing to jump to" rather than as index 0.
+ */
 export interface Problem {
-    txnIndex: number;
+    txnIndex: number | null;
+    /** The declaring account, for a directive-anchored finding. */
+    account?: string;
     rule: string;
     severity: Severity;
     message: string;
@@ -83,10 +95,18 @@ export function maxSeverity(problems: readonly Problem[]): Severity | null {
     return worst;
 }
 
-/** Group problems by transaction index for O(1) row lookup. */
+/**
+ * Group problems by transaction index for O(1) row lookup.
+ *
+ * Unanchored problems are SKIPPED rather than collected under a placeholder key:
+ * this map exists to decide which rows get a flag dot, and a finding about an
+ * `account` directive belongs to no row. It is still in `problems.all`, so the
+ * drawer and the badge count it.
+ */
 export function groupByTxn(problems: readonly Problem[]): Map<number, Problem[]> {
     const byTxn = new Map<number, Problem[]>();
     for (const problem of problems) {
+        if (problem.txnIndex === null) continue;
         const list = byTxn.get(problem.txnIndex);
         if (list === undefined) byTxn.set(problem.txnIndex, [problem]);
         else list.push(problem);

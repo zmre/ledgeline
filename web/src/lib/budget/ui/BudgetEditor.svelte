@@ -14,6 +14,7 @@
      rule the user has, and hiding it would be a worse lie than showing it
      read-only. -->
 <script lang="ts">
+    import {joinableRule} from "$lib/budget/target";
     import {BUDGET_PERIODS, type BudgetFile, type BudgetGoal, type BudgetListing, type BudgetRule} from "$lib/budget/types";
     import type {MixedAmount} from "$lib/domain/money";
     import type {AmountStyle} from "$lib/domain/types";
@@ -78,13 +79,16 @@
      * second, worse way to reach the same place.
      */
     const groups = $derived.by((): Group[] =>
-        BUDGET_PERIODS.map(({id, label}) => {
-            const mine = rows.filter((row) => row.rule.period === id);
-            // The rule a new goal joins: the first writable, unlocked one of this
-            // period. The same "one block per interval" rule the engine follows.
-            const first = mine.find((row) => row.file.writable && row.rule.locked === null);
-            return {period: id, label, rows: mine, target: first === undefined ? null : {file: first.file, rule: first.rule}};
-        }).filter((group) => group.rows.length > 0)
+        BUDGET_PERIODS.map(({id, label}) => ({
+            period: id,
+            label,
+            rows: rows.filter((row) => row.rule.period === id),
+            // The rule a new goal joins. Asked of `joinableRule` rather than
+            // worked out here, because the page asks the same question again when
+            // the modal comes back — and two Add paths answering it differently
+            // is how the tab came to write a fresh rule per goal.
+            target: joinableRule(listing, id),
+        })).filter((group) => group.rows.length > 0)
     );
 
     /** Goals in a period the editor does not offer (a `~ daily` rule, say) still have to appear. */

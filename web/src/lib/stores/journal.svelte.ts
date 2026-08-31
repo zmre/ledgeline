@@ -18,11 +18,33 @@ import {settings} from "$lib/stores/settings.svelte";
 
 type JournalStatus = "idle" | "loading" | "ready" | "error";
 
-let txns = $state<Transaction[]>([]);
-let accountNames = $state<string[]>([]);
-let accountDecls = $state<AccountDecl[]>([]);
-let prices = $state<PriceDirective[]>([]);
-let diagnostics = $state<Problem[]>([]);
+/**
+ * The journal payloads, every one of them `$state.raw` rather than `$state`.
+ *
+ * NOT a micro-optimization, and not redundant with the freezing `normalize.ts`
+ * already does. `$state` wraps its value in Svelte's `proxy()`, and `proxy()`
+ * has no frozen check (see svelte/src/internal/client/proxy.js): it bails out
+ * for non-objects, existing proxies and exotic prototypes, but a frozen plain
+ * object with `Object.prototype` still gets a `Proxy` and an entry in the parent
+ * array's sources `Map` — minted lazily on the FIRST read of each index and then
+ * retained for the life of the array. At 150k transactions that measured
+ * +172 MB retained and made a full scan 7.4× slower (72 ms proxied vs 10 ms
+ * raw), which every whole-journal pass in the app then pays: signConventions,
+ * runChecks, contentFingerprint, filterTxns.
+ *
+ * The precondition `$state.raw` demands is that mutation happens by REPLACING
+ * the value, never by mutating it in place. That was already true here and is
+ * the store's existing contract: `doRefresh` swaps all five wholesale in one
+ * block (the only assignment to any of them), `normalize.ts` deep-freezes what
+ * it builds, and no consumer mutates — `filterTxns`/`sortTxnsDesc` both return
+ * new arrays. Anything added later that wants to change a payload must build a
+ * new array and assign it, or reactivity will silently stop firing.
+ */
+let txns = $state.raw<Transaction[]>([]);
+let accountNames = $state.raw<string[]>([]);
+let accountDecls = $state.raw<AccountDecl[]>([]);
+let prices = $state.raw<PriceDirective[]>([]);
+let diagnostics = $state.raw<Problem[]>([]);
 let engineChecked = $state(false);
 /** The engine's name for the journal on screen, and its main file — the app bar's label. */
 let title = $state<string | null>(null);
@@ -139,7 +161,13 @@ export function contentFingerprint(
     // change any amount we mix), so leaving them out would let a refresh fetch
     // resolved diagnostics and then discard them, stranding a red badge.
     for (const d of diags) {
-        h = (Math.imul(h, 33) + d.txnIndex) >>> 0;
+        // `-1` for an unanchored finding rather than the `+ null` → `+ 0` JS
+        // would have done, so an account-anchored diagnostic cannot hash as if
+        // it were anchored to the first transaction. The account is mixed for
+        // the same reason the index is: it is an anchor, and two findings that
+        // differ only in what they point at must not collide.
+        h = (Math.imul(h, 33) + (d.txnIndex ?? -1)) >>> 0;
+        mixStr(d.account ?? "");
         mixStr(d.rule);
         mixStr(d.severity);
         mixStr(d.message);

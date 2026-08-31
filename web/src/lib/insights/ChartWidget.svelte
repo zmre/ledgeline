@@ -5,8 +5,9 @@
        "(other)". That module documents the validator run and the slot order.
        Secondary encoding, required by the skill at this CVD separation, is the
        always-on legend, pad-angle gaps between pie slices, and full tooltips.
-     - pie and line rank accounts identically (series.rankedAccounts), so an account
-       keeps its hue across modes; slices/series are capped at 6 groups incl. "(other)". -->
+     - one shared magnitude ranking (series.rankedAccounts) drives the colours AND
+       whichever dataset is on screen, so an account keeps its hue across modes and
+       only the active mode is computed; capped at 6 groups incl. "(other)". -->
 <script lang="ts">
     import {LineChart, PieChart, Tooltip} from "layerchart";
     import type {RootCategory} from "$lib/domain/accounts";
@@ -17,8 +18,10 @@
         commoditiesInUse,
         formatChartValue,
         formatCompactChartValue,
+        groupOrder,
         lineData,
         pieData,
+        rankedAccounts,
         styleFor,
         OTHER,
         type AccountSelection,
@@ -67,7 +70,19 @@
     });
     const category = $derived<RootCategory | undefined>(group === "all" ? undefined : group);
 
-    const pie = $derived(pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared}));
+    // The magnitude ranking, computed ONCE and shared three ways: it decides the
+    // colour slots, and it is handed to whichever of pieData/lineData actually
+    // runs so neither repeats the pass. At 150k transactions this scan is 49 ms
+    // and each dataset is ~110 ms, so the old shape — both datasets, each
+    // ranking again — was 221 ms per filter change to draw one chart.
+    const ranked = $derived(rankedAccounts(txns, depth, commodity, accounts, category, declared));
+
+    // Only the mode on screen is computed. `{#if mode === "pie"}` below renders
+    // one or the other, and daisyUI does not hide the loser — nothing did, so
+    // both were being built regardless of which was visible.
+    const pie = $derived(
+        mode === "pie" ? pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared, ranked}) : []
+    );
 
     // A pie encodes parts of a whole by AREA, and a negative part has none.
     // Drawing |value| (the old behaviour) turned a −$500 travel refund into a
@@ -82,24 +97,30 @@
     // signed amounts rather than silently redrawn as spending.
     const pieSlices = $derived(pie.filter((d) => d.value > 0));
     const pieCredits = $derived(pie.filter((d) => d.value < 0));
-    const line = $derived(lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared}));
+    const line = $derived(
+        mode === "line"
+            ? lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared, ranked})
+            : []
+    );
 
-    // Color follows the account, not the mode: both datasets come from the same
-    // magnitude ranking, so slot assignment by first appearance stays consistent.
+    // Color follows the account, not the mode — now by construction rather than
+    // by coincidence. Slots are assigned from the shared RANKING, which is the
+    // same list `pieData` and `lineData` each order their output by, so an
+    // account keeps its hue when you toggle pie/line even if one mode drops it
+    // (a pie omits accounts that net to zero; a line omits accounts with no
+    // buckets). This used to iterate the line dataset and then the pie dataset,
+    // which needed both to exist.
     //
-    // `colorAt` FOLDS past the last slot; this used to be `PALETTE[slot++ %
-    // PALETTE.length]` over a 6-entry copy of the palette. Each dataset is
-    // capped at MAX_GROUPS, but the pie and the line can rank DIFFERENT
-    // accounts, so `slot` can reach 12 — and the modulo then handed a 7th
-    // account slot 1's blue, making it indistinguishable from the 1st.
+    // `colorAt` FOLDS past the last slot rather than wrapping; the ranking is
+    // capped at MAX_GROUPS so `slot` cannot now exceed 6, but folding is still
+    // the right behaviour and this used to be `PALETTE[slot++ %
+    // PALETTE.length]`, which handed a 7th account slot 1's blue and made it
+    // indistinguishable from the 1st.
     const colorOf: Record<string, string> = $derived.by(() => {
         const colors: Record<string, string> = {[OTHER]: OTHER_COLOR};
         let slot = 0;
-        for (const s of line) {
-            colors[s.account] ??= colorAt(slot++);
-        }
-        for (const d of pie) {
-            colors[d.account] ??= colorAt(slot++);
+        for (const account of groupOrder(ranked, MAX_GROUPS)) {
+            colors[account] ??= colorAt(slot++);
         }
         return colors;
     });

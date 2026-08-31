@@ -72,11 +72,32 @@ impl PriceDb {
         as_of: &str,
         matches: impl Fn(&PriceDirective) -> bool,
     ) -> Option<&Amount> {
-        in_effect(self.by_commodity.get(commodity)?, as_of)
+        self.directives_in_effect(commodity, as_of)
             .iter()
             .rev()
             .find(|directive| matches(directive))
             .map(|directive| &directive.price)
+    }
+
+    /// Every directive pricing `commodity` that is IN EFFECT at `as_of` — dated
+    /// ≤ it — ascending by date, same-date directives in declaration order.
+    /// Empty when nothing prices `commodity`.
+    ///
+    /// The whole prefix rather than just its newest entry, because a caller that
+    /// needs a directive's DATE (holdings' `latest_directive_price` reports the
+    /// quote's own date) gets nothing from [`PriceDb::lookup_in`], which returns
+    /// only the [`Amount`]. Scan it in REVERSE and take the first match to
+    /// reproduce [`PriceDb::latest`]'s tie-breaking exactly: latest date wins,
+    /// last-declared wins a same-date tie.
+    ///
+    /// `O(log n)` in this commodity's directive count — see [`in_effect`] — and
+    /// it never touches another commodity's, which is the whole reason it exists
+    /// rather than a scan of the raw directive slice.
+    #[must_use]
+    pub fn directives_in_effect(&self, commodity: &Commodity, as_of: &str) -> &[PriceDirective] {
+        self.by_commodity
+            .get(commodity)
+            .map_or(&[], |directives| in_effect(directives, as_of))
     }
 
     /// Latest `P` directive for `commodity` dated ≤ `as_of`, regardless of the
@@ -424,12 +445,30 @@ fn reverse_rate(unit: Dec) -> Option<Dec> {
     Some(Dec::new(sign.checked_mul(quotient)?, MAX_RATE_PLACES))
 }
 
-/// Out-param for [`value_at`]: commodities that had to be skipped (deduped, in
-/// encounter order — which, over a `BTreeMap`, is lexical).
+/// Out-param for [`value_at`]: commodities that had to be skipped.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValuationMeta {
-    /// Commodities from which no chain of prices reaches the target at `as_of`.
+    /// Commodities from which no chain of prices reaches the target at `as_of`,
+    /// ascending and deduped — the invariant [`ValuationMeta::note_unpriced`]
+    /// maintains, and the order every caller here already sorted into anyway.
     pub unpriced: Vec<Commodity>,
+}
+
+impl ValuationMeta {
+    /// Record `commodity` as unreachable from the valuation target, keeping
+    /// `unpriced` sorted and deduped.
+    ///
+    /// Sorted, so the "have I already recorded this?" test is a binary search.
+    /// It used to be `Vec::contains` — a linear walk of `String` comparisons —
+    /// run once per commodity inside a per-commodity loop, so a sink shared
+    /// across a whole balance sheet cost `O(C²)` per valuation in the commodity
+    /// count. That is invisible at five commodities and quadratic at two
+    /// hundred.
+    pub fn note_unpriced(&mut self, commodity: &Commodity) {
+        if let Err(slot) = self.unpriced.binary_search(commodity) {
+            self.unpriced.insert(slot, commodity.clone());
+        }
+    }
 }
 
 /// Non-normalizing exact multiply, mirroring `money.ts`'s `mul` (`m·m`, `p+p`,
@@ -547,47 +586,124 @@ pub fn infer_market_prices(txns: &[Transaction]) -> Result<Vec<PriceDirective>, 
 
     let mut inferred: Vec<PriceDirective> = Vec::new();
     for txn in ordered {
-        for posting in &txn.postings {
-            for amount in &posting.amounts {
-                let Some(cost) = amount.cost.as_deref() else {
-                    continue;
-                };
-                if amount.quantity.is_zero() {
-                    continue;
-                }
-                let unit = match cost.kind {
-                    CostKind::Unit => cost.amount.quantity,
-                    CostKind::Total => per_unit_from_total(cost.amount.quantity, amount.quantity)?,
-                };
-                // Forward: the posting's commodity priced in the cost commodity.
-                inferred.push(PriceDirective {
-                    date: txn.date.clone(),
-                    commodity: amount.commodity.clone(),
-                    price: Amount {
-                        commodity: cost.amount.commodity.clone(),
-                        quantity: unit,
-                        style: cost.amount.style.clone(),
-                        cost: None,
-                    },
+        infer_from_txn(txn, &mut |price| inferred.push(price.to_directive()))?;
+    }
+    Ok(inferred)
+}
+
+/// One directive [`infer_market_prices`] would infer, as BORROWED pieces.
+///
+/// Handing these out instead of a built [`PriceDirective`] is what lets
+/// [`base_target`] tally the price targets without allocating a `String` per
+/// inference — [`Inferred::to_directive`] is the only place that pays.
+struct Inferred<'a> {
+    date: &'a str,
+    /// The commodity being priced.
+    commodity: &'a Commodity,
+    /// The amount whose COMMODITY and STYLE the inferred price takes.
+    priced_in: &'a Amount,
+    /// The per-unit rate.
+    quantity: Dec,
+}
+
+impl Inferred<'_> {
+    fn to_directive(&self) -> PriceDirective {
+        PriceDirective {
+            date: self.date.to_string(),
+            commodity: self.commodity.clone(),
+            price: Amount {
+                commodity: self.priced_in.commodity.clone(),
+                quantity: self.quantity,
+                style: self.priced_in.style.clone(),
+                cost: None,
+            },
+        }
+    }
+}
+
+/// Drive `emit` once per directive [`infer_market_prices`] would infer from
+/// `txn`, in posting order, forward before reverse.
+///
+/// The single definition of WHAT is inferred, so the two callers — the one that
+/// materializes directives and the one that only counts their targets — can
+/// never drift apart on it.
+///
+/// # Errors
+/// Returns [`DecError`] on decimal overflow while converting a `@@` total.
+fn infer_from_txn<'a>(
+    txn: &'a Transaction,
+    emit: &mut impl FnMut(Inferred<'a>),
+) -> Result<(), DecError> {
+    for posting in &txn.postings {
+        for amount in &posting.amounts {
+            let Some(cost) = amount.cost.as_deref() else {
+                continue;
+            };
+            if amount.quantity.is_zero() {
+                continue;
+            }
+            let unit = match cost.kind {
+                CostKind::Unit => cost.amount.quantity,
+                CostKind::Total => per_unit_from_total(cost.amount.quantity, amount.quantity)?,
+            };
+            // Forward: the posting's commodity priced in the cost commodity.
+            emit(Inferred {
+                date: &txn.date,
+                commodity: &amount.commodity,
+                priced_in: &cost.amount,
+                quantity: unit,
+            });
+            // Reverse (only when 1/unit terminates): lets a commodity that
+            // appears solely as a cost denominator still be valued.
+            if let Some(reciprocal) = exact_reciprocal(unit) {
+                emit(Inferred {
+                    date: &txn.date,
+                    commodity: &cost.amount.commodity,
+                    priced_in: amount,
+                    quantity: reciprocal,
                 });
-                // Reverse (only when 1/unit terminates): lets a commodity that
-                // appears solely as a cost denominator still be valued.
-                if let Some(reciprocal) = exact_reciprocal(unit) {
-                    inferred.push(PriceDirective {
-                        date: txn.date.clone(),
-                        commodity: cost.amount.commodity.clone(),
-                        price: Amount {
-                            commodity: amount.commodity.clone(),
-                            quantity: reciprocal,
-                            style: amount.style.clone(),
-                            cost: None,
-                        },
-                    });
-                }
             }
         }
     }
-    Ok(inferred)
+    Ok(())
+}
+
+/// The valuation base [`PriceDb::base_commodity`] would report for the
+/// cost-inferred prices of `txns` followed by the `explicit` `P` directives —
+/// without building either list.
+///
+/// Only a frequency tally over the price TARGETS decides that answer, and a
+/// tally does not care what order the directives arrive in, so neither the
+/// transaction sort nor the directives themselves have to exist: this counts
+/// [`infer_from_txn`]'s borrowed emissions in journal order and allocates
+/// nothing. `infer_market_prices` + [`PriceDb::build`] pay an `O(N log N)` sort
+/// of the whole journal and then clone every directive twice to answer the same
+/// question — measured at 11.5 ms + 1.7 ms on the 200k corpus, which is all
+/// `subscriptions` ever wanted from them.
+///
+/// The winner is the most frequent target, lexical ties broken smallest-first,
+/// which is exactly [`PriceDb::build`]'s stable descending-count sort of a
+/// `BTreeMap`'s already-lexical keys.
+///
+/// # Errors
+/// Returns [`DecError`] on decimal overflow (never for realistic journals).
+pub(super) fn base_target(
+    txns: &[Transaction],
+    explicit: &[PriceDirective],
+) -> Result<Option<Commodity>, DecError> {
+    let mut counts: BTreeMap<&Commodity, usize> = BTreeMap::new();
+    for txn in txns {
+        infer_from_txn(txn, &mut |price| {
+            *counts.entry(&price.priced_in.commodity).or_insert(0) += 1;
+        })?;
+    }
+    for directive in explicit {
+        *counts.entry(&directive.price.commodity).or_insert(0) += 1;
+    }
+    Ok(counts
+        .into_iter()
+        .max_by_key(|&(commodity, count)| (count, std::cmp::Reverse(commodity)))
+        .map(|(commodity, _)| commodity.clone()))
 }
 
 /// Value a [`MixedAmount`] in `target` at `as_of`: identity for `target` itself,
@@ -630,10 +746,8 @@ pub fn value_at(
                 total = total.add(mul_raw(*qty, rate)?)?;
             }
             None => {
-                if let Some(sink) = meta.as_deref_mut()
-                    && !sink.unpriced.contains(commodity)
-                {
-                    sink.unpriced.push(commodity.clone());
+                if let Some(sink) = meta.as_deref_mut() {
+                    sink.note_unpriced(commodity);
                 }
             }
         }
@@ -782,6 +896,105 @@ mod tests {
                 db.lookup(&c("AAPL"), as_of).map(|price| price.quantity),
                 want,
                 "as_of {as_of}"
+            );
+        }
+    }
+
+    /// [`PriceDb::directives_in_effect`] is what lets a caller that needs a
+    /// directive's DATE binary-search instead of scanning the raw slice
+    /// (holdings' `latest_directive_price`), so it must be EXACTLY the `≤ as_of`
+    /// prefix — in the same order — at every boundary, including the duplicated
+    /// date where an off-by-one would hide.
+    #[test]
+    fn directives_in_effect_is_exactly_the_prefix_at_every_boundary() {
+        let series: Vec<PriceDirective> = [
+            ("2024-01-10", 100),
+            ("2024-03-05", 200),
+            ("2024-03-05", 300),
+            ("2024-07-01", 400),
+        ]
+        .iter()
+        .map(|(date, mantissa)| price(date, "AAPL", amount("$", *mantissa, 2)))
+        .collect();
+        let db = PriceDb::build(&series);
+        for as_of in [
+            "2023-12-31",
+            "2024-01-10",
+            "2024-03-04",
+            "2024-03-05",
+            "2024-06-30",
+            "2024-07-01",
+            "2099-01-01",
+        ] {
+            let want: Vec<&PriceDirective> = series
+                .iter()
+                .filter(|directive| directive.date.as_str() <= as_of)
+                .collect();
+            let got: Vec<&PriceDirective> =
+                db.directives_in_effect(&c("AAPL"), as_of).iter().collect();
+            assert_eq!(got, want, "as_of {as_of}");
+        }
+        assert!(db.directives_in_effect(&c("DOGE"), "2099-01-01").is_empty());
+    }
+
+    /// The membership test behind `meta.unpriced` is a binary search, so the
+    /// list has to STAY sorted and deduped however the commodities arrive.
+    #[test]
+    fn note_unpriced_keeps_the_list_sorted_and_deduped() {
+        let mut meta = ValuationMeta::default();
+        for symbol in ["EUR", "AAPL", "EUR", "ZZZ", "AAPL", "$"] {
+            meta.note_unpriced(&c(symbol));
+        }
+        assert_eq!(meta.unpriced, vec![c("$"), c("AAPL"), c("EUR"), c("ZZZ")]);
+    }
+
+    /// [`base_target`] counts price targets instead of materializing every
+    /// inferred directive and indexing it, so it must name EXACTLY what building
+    /// the database names — the same winner, the same lexical tie-break, the
+    /// same `None` for a journal that prices nothing.
+    #[test]
+    fn base_target_agrees_with_a_built_price_db() {
+        let aapl_buy = vec![txn(
+            1,
+            "2024-09-16",
+            vec![
+                (
+                    "assets:broker",
+                    vec![unit_cost("AAPL", 10, 0, "$", 22000, 2)],
+                ),
+                ("assets:cash", vec![usd(-220_000)]),
+            ],
+        )];
+        let mut inference_and_directives = gld_gift();
+        inference_and_directives.extend(aapl_buy.clone());
+        // Lexically LAST but used twice: frequency has to beat the tie-break.
+        let count_beats_lexical = vec![
+            price("2026-01-01", "A", amount("ZZZ", 1, 0)),
+            price("2026-01-02", "B", amount("ZZZ", 2, 0)),
+            price("2026-01-03", "C", amount("AAA", 3, 0)),
+        ];
+        // Equal counts: `$` wins on lexical order, as `PriceDb::build` does.
+        let tie = vec![
+            price("2026-01-01", "EUR", amount("GBP", 85, 2)),
+            price("2026-01-02", "AAPL", amount("$", 25500, 2)),
+        ];
+        for (txns, explicit) in [
+            (Vec::new(), Vec::new()),
+            (Vec::new(), directives()),
+            (Vec::new(), count_beats_lexical),
+            (Vec::new(), tie),
+            (aapl_buy, Vec::new()),
+            (gld_gift(), Vec::new()),
+            (inference_and_directives, directives()),
+        ] {
+            let mut all = infer_market_prices(&txns).expect("inference does not overflow");
+            all.extend_from_slice(&explicit);
+            assert_eq!(
+                base_target(&txns, &explicit)
+                    .expect("counting does not overflow")
+                    .as_ref(),
+                PriceDb::build(&all).base_commodity(),
+                "{explicit:?}"
             );
         }
     }

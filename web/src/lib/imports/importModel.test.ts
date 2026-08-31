@@ -393,7 +393,13 @@ describe("UNIT import wire decoders", () => {
     });
 
     it("decodes the sort result", () => {
-        expect(decodeSortResult({moved: 3})).toEqual({moved: 3});
+        // No `git` at all: the journal is not under version control, or
+        // autocommit is off. Not the same as a commit that was refused.
+        expect(decodeSortResult({moved: 3})).toEqual({moved: 3, git: null});
+        expect(decodeSortResult({moved: 2, git: {committed: true, paths: ["main.journal"], skipped: []}})).toEqual({
+            moved: 2,
+            git: {committed: true, paths: ["main.journal"], skipped: []},
+        });
     });
 
     it("decodes prefs, keeping gitAutocommit's three states apart", () => {

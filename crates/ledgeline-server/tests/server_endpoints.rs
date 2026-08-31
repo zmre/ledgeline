@@ -606,6 +606,121 @@ async fn allowlisted_origins_get_an_exact_allow_origin_header() {
     );
 }
 
+/// The engine's own security posture with `--allow-origin` in force.
+fn allowing_the_dev_origin() -> Security {
+    local_security()
+        .allow_origins(&["http://localhost:4173"])
+        .expect("valid origin")
+}
+
+/// SEC-12. `--allow-origin` opens the API to a dev origin and NOTHING else.
+///
+/// The SPA shell carries the per-process access token in its body, so a CORS
+/// layer over the fallback hands that token to every page on an allowlisted
+/// origin: one `fetch("http://127.0.0.1:5099/")` from another Vite project on
+/// `localhost:4173`, no interaction, and the caller then has full read/write on
+/// the user's journal. The layer must therefore be a `route_layer` over the
+/// explicit routes, never a `layer` over the router.
+///
+/// All three shell paths are checked, because the fallback serves the shell for
+/// `/`, for `/index.html`, and for every client-side deep link.
+#[tokio::test]
+async fn the_token_bearing_shell_is_never_readable_cross_origin() {
+    for uri in ["/", "/index.html", "/holdings"] {
+        let (status, headers) = probe(
+            allowing_the_dev_origin(),
+            "GET",
+            uri,
+            &[
+                (header::HOST, GOOD_HOST),
+                (header::ORIGIN, "http://localhost:4173"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{uri} must still be served");
+        assert_eq!(
+            header_of(&headers, "access-control-allow-origin"),
+            None,
+            "GET {uri} carries the access token in its body; no browser may ever \
+             be told it is readable cross-origin, allowlisted origin or not"
+        );
+    }
+}
+
+/// The other half of SEC-12: the routes `--allow-origin` EXISTS for keep
+/// working. `just dev` and the Playwright harness both run the SPA at a
+/// different origin from the engine, so a preflight for a token-bearing `PUT`
+/// has to be answered — and answered without an `Authorization` header, which
+/// is why CORS is installed outside the token guard.
+#[tokio::test]
+async fn the_cross_origin_dev_flow_still_works() {
+    let (status, headers) = probe(
+        allowing_the_dev_origin(),
+        "OPTIONS",
+        "/api/prefs",
+        &[
+            (header::HOST, GOOD_HOST),
+            (header::ORIGIN, "http://localhost:4173"),
+            (header::ACCESS_CONTROL_REQUEST_METHOD, "PUT"),
+            (
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization,content-type",
+            ),
+        ],
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "a preflight carries no token and must not be refused: {status}"
+    );
+    assert_eq!(
+        header_of(&headers, "access-control-allow-origin"),
+        Some("http://localhost:4173"),
+        "the preflight must name the allowlisted origin"
+    );
+    assert!(
+        header_of(&headers, "access-control-allow-headers")
+            .unwrap_or_default()
+            .contains("authorization"),
+        "the SPA sends the token in Authorization: {headers:?}"
+    );
+
+    // And the actual request that follows it is readable cross-origin.
+    let (status, headers) = probe(
+        allowing_the_dev_origin(),
+        "GET",
+        "/api/journal",
+        &[
+            (header::HOST, GOOD_HOST),
+            (header::ORIGIN, "http://localhost:4173"),
+            (header::AUTHORIZATION, "Bearer integration-test-token"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header_of(&headers, "access-control-allow-origin"),
+        Some("http://localhost:4173"),
+        "the API is exactly what --allow-origin is for"
+    );
+}
+
+/// SEC-13. The shell's body carries the access token, so nothing may store it.
+/// A disk cache entry outlives the process whose token it holds.
+#[tokio::test]
+async fn the_shell_forbids_caching() {
+    for uri in ["/", "/index.html", "/holdings"] {
+        let (status, headers) =
+            probe(local_security(), "GET", uri, &[(header::HOST, GOOD_HOST)]).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(
+            header_of(&headers, "cache-control"),
+            Some("no-store"),
+            "GET {uri} serves the token-bearing shell and must forbid storing it"
+        );
+    }
+}
+
 /// SEC-7: every response carries the hardening headers, including error ones.
 #[tokio::test]
 async fn security_headers_are_on_every_response() {

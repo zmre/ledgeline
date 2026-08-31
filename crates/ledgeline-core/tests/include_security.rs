@@ -459,3 +459,155 @@ fn an_empty_include_target_is_still_a_malformed_directive() {
     let err = parse_err(&main);
     assert!(err.contains("malformed directive"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// Hidden entries
+// ---------------------------------------------------------------------------
+//
+// Confinement (above) bounds the TREE an include may read. That is not the same
+// as bounding the FILES, because journals routinely live inside a git repo: the
+// confined tree contains `.git/config`, `.env`, `.netrc` and `.ssh/`. `include
+// .git/config` was admitted, read, and — since a parse failure quotes the line
+// that failed — echoed straight back to stderr and the GUI error dialog. That is
+// the SEC-6 read oracle again, aimed inside the tree instead of outside it.
+//
+// The rule is a LEADING DOT and nothing else. `rules/discovery.rs` skips a
+// second class when it scans this same directory — a `SKIP_DIRS` list of
+// routinely-enormous tool directories — and that class deliberately does NOT
+// apply here: `build/`, `dist/`, `target/` and `vendor/` hold no credentials,
+// and an `include` is a path the user typed on purpose rather than something a
+// walk stumbled into. The test below pins that they stay admitted, so a future
+// "make the two modules agree" change has to argue with a test first.
+
+/// Assert `err` refuses `as_written` as a hidden entry and, crucially, discloses
+/// nothing about the file: the refusal happens BEFORE the read, so there is no
+/// content to quote.
+fn assert_excluded(err: &str, as_written: &str) {
+    assert!(
+        err.contains("which includes may not read"),
+        "expected an exclusion refusal, got: {err}"
+    );
+    assert!(
+        err.contains(as_written),
+        "error should quote the include as written: {err}"
+    );
+    assert!(
+        !err.contains(SECRET_LINE),
+        "the target file's contents leaked into the error: {err}"
+    );
+}
+
+#[test]
+fn include_of_a_vcs_directory_is_refused_without_echoing_the_file() {
+    // The concrete case: a journal kept in a git repo, and one line appended to
+    // it. Before the fix this reported
+    // `.../.git/config:1: unsupported directive: '<the line>'`.
+    let dir = scratch("dot_git");
+    write(&dir, ".git/config", &format!("{SECRET_LINE}\n"));
+    let main = write(&dir, "main.journal", "include .git/config\n");
+    assert_excluded(&parse_err(&main), "include .git/config");
+}
+
+#[test]
+fn include_of_a_dot_file_is_refused_without_echoing_the_file() {
+    let dir = scratch("dot_env");
+    write(&dir, ".env", &format!("{SECRET_LINE}\n"));
+    let main = write(&dir, "main.journal", "include .env\n");
+    assert_excluded(&parse_err(&main), ".env");
+}
+
+#[test]
+fn include_of_a_hidden_directory_is_refused_at_any_depth() {
+    // The excluded component does not have to be the last one.
+    let dir = scratch("dot_deep");
+    write(
+        &dir,
+        ".secrets/keys/prod.journal",
+        &format!("{SECRET_LINE}\n"),
+    );
+    let main = write(&dir, "main.journal", "include .secrets/keys/prod.journal\n");
+    assert_excluded(&parse_err(&main), ".secrets/keys/prod.journal");
+}
+
+#[test]
+fn a_tool_directory_that_discovery_skips_is_still_a_legal_include() {
+    // The deliberate NON-application of `rules/discovery.rs`'s SKIP_DIRS.
+    //
+    // Discovery skips `build/`, `dist/`, `target/`, `vendor/` and
+    // `node_modules/` because a scan that descends into them is slow. That is a
+    // reason about the WALK, and an include does not walk — the user named the
+    // file. None of those directories holds a credential, so refusing them would
+    // cost a working `include build/2026.journal` and buy nothing. The guard is
+    // about hidden entries, which is where `.git/config` and `.netrc` live.
+    let dir = scratch("tool_dirs");
+    for tool in ["build", "dist", "target", "vendor", "node_modules"] {
+        write(&dir, &format!("{tool}/2026.journal"), TXN);
+        let main = write(
+            &dir,
+            "main.journal",
+            &format!("include {tool}/2026.journal\n"),
+        );
+        assert_eq!(
+            parse_ok(&main).transactions.len(),
+            1,
+            "'{tool}/' is a performance skip for the rules scan, not a refusal for include"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_symlink_into_a_hidden_directory_is_refused_by_its_resolved_path() {
+    // The exclusion reads the CANONICAL path, so an innocuous-looking name that
+    // resolves into `.git` is caught after resolution, not by its spelling —
+    // the same discipline the confinement check already uses.
+    let dir = scratch("symlink_dot_git");
+    write(&dir, ".git/config", &format!("{SECRET_LINE}\n"));
+    let link = dir.join("innocent.journal");
+    std::os::unix::fs::symlink(dir.join(".git/config"), &link).expect("create symlink");
+    let main = write(&dir, "main.journal", "include innocent.journal\n");
+    assert_excluded(&parse_err(&main), "innocent.journal");
+}
+
+#[test]
+fn the_exclusion_also_applies_to_the_editor_override_reparse_path() {
+    // `admit_include` is shared, so this is a fact about the guard rather than
+    // about one entry point — asserted anyway, because that is exactly what the
+    // confinement guard needed its own test for.
+    let dir = scratch("overrides_dot_git");
+    write(&dir, ".git/config", &format!("{SECRET_LINE}\n"));
+    let main = write(&dir, "main.journal", "include .git/config\n");
+    let overrides: HashMap<PathBuf, String> = HashMap::new();
+    let err = parse_journal_with_overrides(&main.to_string_lossy(), &overrides)
+        .expect_err("an excluded include must be rejected on the overrides path too")
+        .to_string();
+    assert_excluded(&err, "include .git/config");
+}
+
+#[test]
+fn a_journal_that_itself_lives_in_a_hidden_directory_still_includes_normally() {
+    // The exclusion is measured BELOW the journal directory, never on it.
+    // `~/.finance/main.journal` is an ordinary place to keep books, and the user
+    // naming their own journal directory is not the case this guards.
+    let dir = scratch("hidden_root").join(".finance");
+    std::fs::create_dir_all(&dir).expect("create hidden journal dir");
+    write(&dir, "2026/jan.journal", TXN);
+    let main = write(&dir, "main.journal", "include 2026/jan.journal\n");
+    assert_eq!(parse_ok(&main).transactions.len(), 1);
+}
+
+#[test]
+fn an_ordinary_include_whose_name_merely_contains_a_dot_is_unaffected() {
+    // The rule is a LEADING dot on a path component. Every journal file has a
+    // dot in its name, and `2026.q1.journal` is a normal thing to write.
+    let dir = scratch("inner_dot");
+    write(&dir, "2026.q1.journal", TXN);
+    let main = write(&dir, "main.journal", "include 2026.q1.journal\n");
+    assert_eq!(parse_ok(&main).transactions.len(), 1);
+    // `./sub.journal` spells a current-directory component that canonicalizes
+    // away; it must not be read as a hidden entry.
+    let dir = scratch("cur_dir");
+    write(&dir, "sub.journal", TXN);
+    let main = write(&dir, "main.journal", "include ./sub.journal\n");
+    assert_eq!(parse_ok(&main).transactions.len(), 1);
+}

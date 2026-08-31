@@ -446,6 +446,20 @@ pub enum PeriodicError {
         /// Which block.
         index: usize,
     },
+    /// An append named an account the block already budgets. hledger would add
+    /// the two postings together, so a second one is not "another goal" — it is
+    /// an unreadable way of writing the first. Changing what is already there is
+    /// a [`GoalRequest::Set`].
+    #[error(
+        "budget rule number {index} already has a goal for {account}; change that goal rather \
+         than adding a second one to the same rule"
+    )]
+    DuplicateGoal {
+        /// Which block.
+        index: usize,
+        /// The account it already budgets.
+        account: String,
+    },
     /// A client-supplied value is not something this module will write into a
     /// journal.
     #[error("{0}")]
@@ -499,6 +513,40 @@ impl PeriodicDoc {
     #[must_use]
     pub fn lines(&self) -> &[GoalLine] {
         &self.lines
+    }
+
+    /// The block a new goal of this recurrence and name should JOIN: the first,
+    /// in file order, whose interval and description both match and that this
+    /// module is willing to rewrite. `None` means no rule states it yet, and the
+    /// caller should open one.
+    ///
+    /// **Both halves have to match.** The description is not decoration —
+    /// `hledger balance --budget=DESCPAT` filters on it — so folding a goal into
+    /// a rule of the right period but another name would quietly move it into,
+    /// or out of, somebody's filtered report.
+    ///
+    /// The comparison is on the trimmed, whitespace-collapsed description,
+    /// because the spacing of a header is not part of what it says: a rule
+    /// written `~ monthly   monthly budget` states the same thing as
+    /// `~ monthly  monthly budget`, and whoever widened that gap was aligning a
+    /// column, not naming a second rule. Only the COMPARISON is normalised. The
+    /// header is never rewritten to match it — an append touches no byte of the
+    /// block it joins except the one line it adds.
+    ///
+    /// A locked block is skipped rather than joined, and the caller opens a new
+    /// one instead. A [`BlockLock`] is this module saying it will not rewrite
+    /// that construct, and appending a line to it is rewriting it.
+    #[must_use]
+    pub fn joinable_block(&self, period: PeriodExpr, description: &str) -> Option<usize> {
+        let wanted = collapse(description);
+        self.blocks
+            .iter()
+            .find(|block| {
+                block.lock.is_none()
+                    && block.period == Some(period)
+                    && collapse(&block.description) == wanted
+            })
+            .map(|block| block.index)
     }
 
     /// The block a line belongs to.
@@ -913,12 +961,27 @@ impl PeriodicDoc {
                     });
                 }
             }
-            if let PeriodicEdit::AppendLine { block, .. } = edit {
+            if let PeriodicEdit::AppendLine { block, account, .. } = edit {
                 let block = self.block(*block)?;
                 if let Some(lock) = block.lock {
                     return Err(PeriodicError::LockedBlock {
                         index: block.index,
                         why: lock.message(),
+                    });
+                }
+                // A rule states a given account's goal once. Refused here, up
+                // front and with a sentence, rather than left to `verify` — which
+                // cannot match a second line of the same account against the
+                // first and so reports a round-trip failure, i.e. blames the
+                // engine for what the caller asked for.
+                if let Some(at) = block
+                    .lines
+                    .iter()
+                    .find(|at| self.lines[**at].account == *account)
+                {
+                    return Err(PeriodicError::DuplicateGoal {
+                        index: block.index,
+                        account: self.lines[*at].account.clone(),
                     });
                 }
             }
@@ -948,6 +1011,16 @@ impl PeriodicDoc {
             .get(index)
             .ok_or(PeriodicError::UnknownBlock(index))
     }
+}
+
+/// A rule description as it is COMPARED: trimmed, and every run of whitespace a
+/// single space. Never a form anything is written in — see
+/// [`PeriodicDoc::joinable_block`].
+fn collapse(description: &str) -> String {
+    description
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -983,7 +1056,9 @@ pub enum GoalRequest {
         /// The amount, fully specified (commodity and display style included).
         amount: Amount,
     },
-    /// Add a goal in a brand-new block at EOF.
+    /// Add a goal under a rule of this recurrence and name: joining the rule
+    /// that already states it, or opening one at EOF when none does. Which of
+    /// the two is [`PeriodicDoc::joinable_block`]'s answer, not the caller's.
     AddBlock {
         /// The rule's recurrence.
         period: PeriodExpr,
@@ -1085,6 +1160,28 @@ pub fn plan(
             account,
             amount,
         } => {
+            // One rule per interval and name: a goal joins the rule that already
+            // states its recurrence under its description, and a block is opened
+            // only when none does. That is decision 1 of
+            // `plans/15-budget-editor.md` and what `docs/budget.md` promises; a
+            // block per goal is legible to nobody and is not what
+            // `--budget=DESCPAT` is filtering over.
+            //
+            // Joining IS `Add`: the same append, the same imitated alignment,
+            // and the same counter-leg arithmetic when the rule it lands in
+            // balances explicitly. So it is planned as one, rather than as a
+            // second path that would have to go on agreeing with the first.
+            if let Some(block) = doc.joinable_block(*period, description) {
+                return plan(
+                    doc,
+                    rules,
+                    &GoalRequest::Add {
+                        block,
+                        account: account.clone(),
+                        amount: amount.clone(),
+                    },
+                );
+            }
             // A brand-new block holds one unbalanced-virtual goal, which is the
             // idiom every hledger budget example uses and the only shape that
             // needs no counter-leg at all.
@@ -1933,6 +2030,190 @@ mod tests {
             out.ends_with("\n~ yearly  annual budget\n    (income:interest)  $-1200\n"),
             "{out}"
         );
+    }
+
+    /// The rule this goal belongs to already exists, so the goal joins it: one
+    /// block per interval and name, which is decision 1 of
+    /// `plans/15-budget-editor.md` and what `docs/budget.md` promises.
+    #[test]
+    fn a_new_goal_joins_the_rule_that_already_states_its_period_and_name() {
+        let out = edited(
+            VIRTUAL,
+            &GoalRequest::AddBlock {
+                period: PeriodExpr::Monthly,
+                description: "household budget".into(),
+                account: "expenses:shopping".into(),
+                amount: usd(Dec::new(250, 0)),
+            },
+        )
+        .unwrap();
+        // Inside the block, at the end of its postings, on its own column — the
+        // same line `GoalRequest::Add` would have written.
+        assert!(
+            out.contains("    (expenses:bus)        $20\n    (expenses:shopping)  $250\n"),
+            "{out}"
+        );
+        // And no second header: this is the whole bug.
+        assert_eq!(out.matches("~ monthly").count(), 1, "{out}");
+        // The blank line between the rule and the ledger below it is still one
+        // blank line: an insertion INSIDE a block must not disturb its edges.
+        assert!(out.contains("$250\n\n2026-01-05 grocery\n"), "{out}");
+    }
+
+    /// Spacing is not part of a rule's identity — but the header is not touched
+    /// to prove it. The description is compared trimmed and whitespace-collapsed,
+    /// which is what makes a hand-widened separator or a doubled space inside the
+    /// name the SAME rule rather than a reason to open a second one.
+    #[test]
+    fn header_spacing_does_not_make_a_second_rule_and_is_not_rewritten() {
+        let text = concat!(
+            "~ monthly   monthly    budget\n",
+            "    (expenses:food)  $400\n",
+        );
+        let out = edited(
+            text,
+            &GoalRequest::AddBlock {
+                period: PeriodExpr::Monthly,
+                description: "monthly budget".into(),
+                account: "expenses:bus".into(),
+                amount: usd(Dec::new(20, 0)),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "~ monthly   monthly    budget\n    (expenses:food)  $400\n    (expenses:bus)    $20\n",
+            "the header must come back byte-identical"
+        );
+    }
+
+    /// Two rules of the same period and name: the first in file order, always.
+    /// `plans/15-budget-editor.md` — "a journal that already has two monthly
+    /// blocks keeps both; we append to the first and leave the second alone".
+    #[test]
+    fn the_first_matching_rule_in_file_order_is_the_one_joined() {
+        let text = concat!(
+            "~ monthly  monthly budget\n",
+            "    (expenses:food)  $400\n",
+            "\n",
+            "~ monthly  monthly budget\n",
+            "    (expenses:bus)    $20\n",
+        );
+        let out = edited(
+            text,
+            &GoalRequest::AddBlock {
+                period: PeriodExpr::Monthly,
+                description: "monthly budget".into(),
+                account: "expenses:coffee".into(),
+                amount: usd(Dec::new(15, 0)),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            concat!(
+                "~ monthly  monthly budget\n",
+                "    (expenses:food)  $400\n",
+                "    (expenses:coffee)  $15\n",
+                "\n",
+                "~ monthly  monthly budget\n",
+                "    (expenses:bus)    $20\n",
+            ),
+            "the second rule must be left alone"
+        );
+    }
+
+    /// A rule this module presents read-only is NOT joined: appending to it is
+    /// rewriting it, and the whole point of a [`BlockLock`] is that we said we
+    /// would not. A new rule is opened instead.
+    #[test]
+    fn a_locked_rule_is_not_joined_and_a_new_one_is_opened() {
+        let text = concat!(
+            "~ monthly  monthly budget\n",
+            "    [expenses:food]     $400\n",
+            "    [assets:checking]  $-400\n",
+        );
+        let doc = PeriodicDoc::parse(text);
+        assert_eq!(doc.blocks()[0].lock, Some(BlockLock::BalancedVirtual));
+
+        let out = edited(
+            text,
+            &GoalRequest::AddBlock {
+                period: PeriodExpr::Monthly,
+                description: "monthly budget".into(),
+                account: "expenses:bus".into(),
+                amount: usd(Dec::new(20, 0)),
+            },
+        )
+        .unwrap();
+        assert!(
+            out.starts_with(text),
+            "the locked rule was rewritten: {out}"
+        );
+        assert!(
+            out.ends_with("\n~ monthly  monthly budget\n    (expenses:bus)  $20\n"),
+            "{out}"
+        );
+    }
+
+    /// Another name, or another period, is another rule. Both halves have to
+    /// match, because `--budget=DESCPAT` filters on the description: folding a
+    /// goal into a differently-named rule would quietly change which report it
+    /// shows up in.
+    #[test]
+    fn a_rule_with_another_name_or_period_is_not_joined() {
+        for request in [
+            GoalRequest::AddBlock {
+                period: PeriodExpr::Monthly,
+                description: "monthly budget".into(),
+                account: "expenses:coffee".into(),
+                amount: usd(Dec::new(15, 0)),
+            },
+            GoalRequest::AddBlock {
+                period: PeriodExpr::Yearly,
+                description: "household budget".into(),
+                account: "expenses:coffee".into(),
+                amount: usd(Dec::new(15, 0)),
+            },
+        ] {
+            // VIRTUAL holds `~ monthly  household budget` and nothing else.
+            let out = edited(VIRTUAL, &request).unwrap();
+            assert!(out.starts_with(VIRTUAL), "{out}");
+            assert!(out.ends_with("    (expenses:coffee)  $15\n"), "{out}");
+        }
+    }
+
+    /// A rule states an account's goal once. Asking for a second is refused with
+    /// a sentence naming the goal to change instead — on the joining path and on
+    /// a direct `Add` alike, because they are the same append.
+    ///
+    /// Before this was checked, the refusal came from `verify` as a round-trip
+    /// failure: it cannot tell a second line of the same account from the first,
+    /// so it blamed the engine for what the caller had asked for.
+    #[test]
+    fn a_second_goal_for_the_same_account_is_refused() {
+        for request in [
+            GoalRequest::Add {
+                block: 0,
+                account: "expenses:food".into(),
+                amount: usd(Dec::new(50, 0)),
+            },
+            GoalRequest::AddBlock {
+                period: PeriodExpr::Monthly,
+                description: "household budget".into(),
+                account: "expenses:food".into(),
+                amount: usd(Dec::new(50, 0)),
+            },
+        ] {
+            assert_eq!(
+                edited(VIRTUAL, &request).unwrap_err(),
+                PeriodicError::DuplicateGoal {
+                    index: 0,
+                    account: "expenses:food".into(),
+                },
+                "{request:?}"
+            );
+        }
     }
 
     /// Removing a rule's only goal removes the rule: a bare `~` header is not a

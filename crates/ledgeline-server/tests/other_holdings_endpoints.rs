@@ -341,10 +341,17 @@ P 2026-06-01 HOUSE 250000.00 EUR
     assert_eq!(canon(&body["totals"]["value"]), (250_000, 0));
 }
 
-/// A misspelt `holdings:` code is refused by name rather than silently filing
-/// the account back on the tab the user was trying to move it off.
+/// A misspelt `holdings:` code is named in the Problems drawer rather than
+/// refused, and the tab still answers.
+///
+/// The refusal was the worst of the four, because `compute_holdings` is not one
+/// tab: it feeds BOTH Holdings tabs, the Insights tab, and the drawer's own
+/// three `stock-*` findings. One typo emptied all of them at once — including
+/// the drawer that was supposed to explain it, since
+/// `journal_to_stock_diagnostics` answers a failed computation with an empty
+/// vector.
 #[tokio::test]
-async fn an_unknown_holdings_class_is_a_400_naming_the_alternatives() {
+async fn an_unknown_holdings_class_is_a_diagnostic_and_the_tab_still_serves() {
     let text = "\
 account assets:house  ; type: A, holdings: real-estate
 
@@ -353,6 +360,25 @@ account assets:house  ; type: A, holdings: real-estate
     equity:opening
 ";
     let journal = parse_journal(text, "bad-holdings.journal").expect("journal parses");
+
     let (status, _) = get_on(&journal, &format!("/api/holdings/other?asOf={AS_OF}")).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::OK, "the Other tab still answers");
+
+    let (status, _) = get_on(&journal, &format!("/api/holdings?asOf={AS_OF}")).await;
+    assert_eq!(status, StatusCode::OK, "and so does the Stocks tab");
+
+    let (status, body) = get_on(&journal, "/api/diagnostics").await;
+    assert_eq!(status, StatusCode::OK);
+    let found: Vec<&serde_json::Value> = body["diagnostics"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .filter(|d| d["rule"] == "account-tag")
+        .collect();
+    assert_eq!(found.len(), 1, "{body}");
+    assert_eq!(found[0]["account"], "assets:house");
+    let message = found[0]["message"].as_str().expect("a message");
+    for expected in ["assets:house", "real-estate", "stocks", "other", "none"] {
+        assert!(message.contains(expected), "{message}");
+    }
 }

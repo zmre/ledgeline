@@ -2160,7 +2160,7 @@ pub(crate) async fn balancesheet_grouped(
             },
             &declared,
             &account_groups(journal),
-            &bs_terms(journal)?,
+            &bs_terms(journal),
         )?;
         Ok(WireBalanceSheetReport::new(&report, label))
     })
@@ -2234,7 +2234,7 @@ pub(crate) async fn incomestatement_grouped(
     compute(move || {
         let journal = &snapshot.journal;
         let declared = declared_types(&account_decls(journal));
-        let sections = account_sections(journal)?;
+        let sections = account_sections(journal);
         let window = DateRange {
             from: from.clone(),
             to: to.clone(),
@@ -2311,7 +2311,7 @@ pub(crate) async fn incomestatement_flows(
     compute(move || {
         let journal = &snapshot.journal;
         let declared = declared_types(&account_decls(journal));
-        let sections = account_sections(journal)?;
+        let sections = account_sections(journal);
         let window = DateRange {
             from: from.clone(),
             to: to.clone(),

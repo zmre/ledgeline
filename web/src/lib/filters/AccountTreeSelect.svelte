@@ -102,11 +102,25 @@
                 <button type="button" class="btn shrink-0 btn-ghost btn-xs" onclick={() => onClear()}>Clear</button>
             {/if}
         </div>
+        <!-- Built on OPEN, not on mount. `<details>` hides its content but Svelte
+             still creates every node, and `tree`/`visible` are $derived, so a
+             closed dropdown was rebuilding the whole account tree (and one
+             checkbox row per account, at every depth) on every render of the
+             page it sits on. Guarding the list is what makes those deriveds
+             lazy — nothing reads them while closed.
+
+             The search <input> above stays OUTSIDE the guard deliberately: it is
+             what `openAndFocus` calls `.focus()` on in the same tick it sets
+             `open`, and an element that does not exist yet cannot take focus.
+             Keeping it mounted leaves that path (and its Playwright
+             `toBeFocused` assertion) exactly as it was. -->
         <ul class="max-h-64 overflow-y-auto">
-            {#if visible.length === 0}
-                <li class="px-2 py-1 text-sm text-base-content/60">No matching accounts</li>
-            {:else}
-                {@render nodes(visible, 0)}
+            {#if open}
+                {#if visible.length === 0}
+                    <li class="px-2 py-1 text-sm text-base-content/60">No matching accounts</li>
+                {:else}
+                    {@render nodes(visible, 0)}
+                {/if}
             {/if}
         </ul>
     </div>

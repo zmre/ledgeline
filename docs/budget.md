@@ -85,10 +85,30 @@ about them: "my monthly budget", "what I expect to earn this year". Which `~`
 block a goal lives in, and which file that block sits in, are storage details —
 shown in each goal's tooltip, not used as the organising idea.
 
-Adding a goal puts it in the existing rule of that period, creating one
-(`~ monthly  monthly budget`) only if there is none. So a journal edited through
-Ledgeline tends toward one block per interval, which is legible and is what
-`--budget=DESCPAT` filters on.
+Adding a goal puts it in the existing rule of that period — the first writable
+one, in file order, **whatever it is called** — and opens a new rule
+(`~ monthly  monthly budget`) only when that period has no rule at all. Your
+monthly rule can be called `household budget`; goals still go in it. A rule shown
+read-only (§ What Ledgeline will not rewrite) is never joined; a new one is
+opened instead. So a journal edited through Ledgeline tends toward one block per
+interval, which is legible.
+
+The tab can say which rule it means, because it has the listing in front of it.
+The engine, asked for a goal under a period *and* a name — which is what an API
+client does, and all the tab can do when it is opening a rule rather than joining
+one — joins only a rule matching **both**. `--budget=DESCPAT` filters on the
+description, so folding a goal into a rule of the right period but another name
+would quietly change which filtered report it turns up in.
+
+Spacing is not part of that identity: `~ monthly   monthly budget` and
+`~ monthly  monthly budget` are the same rule, compared with their whitespace
+collapsed. Only the comparison is normalised — the header itself is never
+rewritten, and a goal joining a rule adds its line and touches nothing else.
+
+One goal per account per rule. Adding a second goal for an account a rule already
+budgets is refused, naming the goal to edit instead: hledger would add the two
+lines together, so a second one is not another goal but an unreadable way of
+writing the first.
 
 hledger's other two intervals, `daily` and `quarterly`, are read and edited
 normally; the tab just does not offer *daily* when creating a new rule.

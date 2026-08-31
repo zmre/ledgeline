@@ -50,6 +50,18 @@ export function listCursor<T>(items: () => readonly T[], keyOf: (item: T, at: nu
     const index = $derived.by(() => {
         const list = items();
         if (key === null || list.length === 0) return -1;
+        // `fallback` is where `set` last put the cursor, and `set` writes it in
+        // the same breath as `key` — so on a list that has not changed under us
+        // it already IS the answer, and checking it is one comparison instead of
+        // a scan. This matters because `index` is read on every render and the
+        // scan is O(n) over the FILTERED journal: holding `j` down on an
+        // all-time view walked 150k rows per keystroke to rediscover a position
+        // the cursor had just set itself.
+        //
+        // Falling through is not a slow path so much as the correct one for the
+        // case this is really about — the list changed, so the key must be
+        // hunted for or given up on.
+        if (fallback < list.length && keyOf(list[fallback], fallback) === key) return fallback;
         for (let at = 0; at < list.length; at += 1) {
             if (keyOf(list[at], at) === key) return at;
         }

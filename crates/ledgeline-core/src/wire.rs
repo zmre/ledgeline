@@ -5,10 +5,17 @@
 //! model in [`crate::model`] can stay serde-free. Field names match hledger
 //! exactly (camelCase ones via `#[serde(rename = ...)]`).
 
-use crate::holdings::{HoldingsScope, ScopeMode, WarningKind, compute_holdings};
+use crate::holdings::{
+    HOLDINGS_TAG, HoldingsScope, ScopeMode, VALUATION_TAG, WarningKind, compute_holdings,
+    parse_holdings_tag, parse_valuation_tag,
+};
 use crate::model::{
     AccountDeclaration, AccountName, Amount, CommoditySide, CostKind, Journal, Posting,
     PostingType, PriceDirective, SourcePos, Status, Transaction,
+};
+use crate::reports::{
+    ACCOUNT_TYPE_TAG, BS_TERM_TAG, IS_SECTION_TAG, parse_account_type_tag, parse_bs_term_tag,
+    parse_is_section_tag,
 };
 use crate::title::{journal_title, main_file_name};
 use serde::Serialize;
@@ -344,12 +351,32 @@ fn status_str(status: Status) -> &'static str {
 /// The same shape also carries the three STOCK findings — see
 /// [`journal_to_stock_diagnostics`], which is why `rule` and `severity` are no
 /// longer a two-value and a one-value enum.
+///
+/// # The two anchors
+///
+/// A finding points at ONE of two things, never both and never neither:
+/// `txn_index` for anything wrong inside a transaction, `account` for anything
+/// wrong in an `account` DIRECTIVE (see [`journal_to_tag_diagnostics`], the only
+/// producer of the second kind). Both are skipped when absent, so a transaction
+/// finding still serializes to exactly the four keys it always did and the
+/// golden fixtures are unmoved.
+///
+/// A directive is deliberately anchored by NAME rather than by file and line,
+/// even though [`AccountDeclaration`] carries a `position`: it has no
+/// `source_file`, so once `include` is in play that line number belongs to an
+/// unknown file. The SPA already holds every declaration's position from
+/// `/accounts` and can do better with the name than we can with half a location.
 #[derive(Debug, Serialize)]
 pub struct WireDiagnostic {
     /// 0-based index into the SAME transactions array `/transactions` serves,
-    /// so the UI can flag the row.
-    #[serde(rename = "txnIndex")]
-    txn_index: usize,
+    /// so the UI can flag the row. Absent for a finding about an `account`
+    /// directive, which has no transaction to point at.
+    #[serde(rename = "txnIndex", skip_serializing_if = "Option::is_none")]
+    txn_index: Option<usize>,
+    /// The declaring account, for a finding about an `account` directive.
+    /// Absent for every transaction-anchored rule.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
     /// One of [`DIAGNOSTIC_RULES`]. The SPA allow-lists exactly this set
     /// (`normalizeDiagnostics` in `web/src/lib/api/normalize.ts`) and drops
     /// anything else, so the two lists must be grown together.
@@ -363,23 +390,29 @@ pub struct WireDiagnostic {
 /// Diagnostic severity for the two hledger-level rules: both are errors.
 const DIAGNOSTIC_ERROR: &str = "error";
 
-/// Diagnostic severity for the three stock rules. They describe a journal
-/// hledger itself accepts — an unknown cost basis is a gap in the data, not a
-/// broken entry — so they are warnings, and never promoted to errors.
+/// Diagnostic severity for the three stock rules and for `account-tag`. They
+/// describe a journal hledger itself accepts — an unknown cost basis is a gap in
+/// the data, not a broken entry; an unreadable account tag is a directive we
+/// ignored, and the report still renders correct-by-fallback numbers — so they
+/// are warnings, and never promoted to errors.
 const DIAGNOSTIC_WARNING: &str = "warning";
 
 /// Every `rule` value `/api/diagnostics` can emit, in the order the SPA's
-/// drawer groups them. The first two are hledger-level errors; the last three
-/// are the stock findings from the holdings engine.
+/// drawer groups them. The first two are hledger-level errors; `account-tag` is
+/// the journal's own `account` directives; the last three are the stock findings
+/// from the holdings engine.
 ///
 /// This is the wire contract the SPA's `DIAGNOSTIC_RULES` allow-list mirrors.
 /// The SPA drops an unrecognized rule SILENTLY, so the two are pinned together
 /// by `web/src/lib/checks/stock-diagnostics.test.ts`, which reads both files —
 /// it lives on that side because `nix build .#tests` builds from
-/// `cleanCargoSource`, which does not contain `web/`.
-pub const DIAGNOSTIC_RULES: [&str; 5] = [
+/// `cleanCargoSource`, which does not contain `web/`. That test parses this
+/// declaration with `/\[&str; \d+\]/`, so the array form and the bumped length
+/// are load-bearing.
+pub const DIAGNOSTIC_RULES: [&str; 6] = [
     "unbalanced",
     "assertion",
+    "account-tag",
     "stock-missing-basis",
     "stock-negative",
     "stock-unpriced",
@@ -399,7 +432,8 @@ pub fn journal_to_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
         .unwrap_or_default()
         .into_iter()
         .map(|failure| WireDiagnostic {
-            txn_index: failure.transaction_index,
+            txn_index: Some(failure.transaction_index),
+            account: None,
             rule: "unbalanced",
             severity: DIAGNOSTIC_ERROR,
             message: failure.message(),
@@ -408,12 +442,159 @@ pub fn journal_to_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
         .unwrap_or_default()
         .into_iter()
         .map(|failure| WireDiagnostic {
-            txn_index: failure.transaction_index,
+            txn_index: Some(failure.transaction_index),
+            account: None,
             rule: "assertion",
             severity: DIAGNOSTIC_ERROR,
             message: failure.message(),
         });
     unbalanced.chain(assertions).collect()
+}
+
+/// One `account`-directive tag whose values are a CLOSED vocabulary, paired
+/// with the reader's own parser and the codes to name when it says no.
+///
+/// Keeping the parser here rather than a second copy of each word list is the
+/// point: this reports exactly what the reader will ignore, so the two can never
+/// disagree about which spellings are real. `bsterm:`, for one, accepts seven
+/// spellings while naming two — deliberately (see
+/// [`parse_bs_term_tag`](crate::reports::parse_bs_term_tag)) — and a diagnostic
+/// built from the word list instead of the parser would warn about every journal
+/// that used a documented synonym.
+struct ClosedTag {
+    /// The tag key as written in the directive.
+    tag: &'static str,
+    /// The reader's parser: `false` for a value it will not recognize.
+    recognizes: fn(&str) -> bool,
+    /// The alternatives, named in the message because a "that's wrong" with no
+    /// "try these" leads nowhere.
+    codes: &'static str,
+    /// What ignoring this tag actually COSTS, in words, completing the sentence
+    /// "the tag is ignored and …".
+    ///
+    /// Naming the fallback per tag rather than saying "the tag is ignored" and
+    /// stopping is the difference between a warning a user can act on and one
+    /// they cannot. The reader who sees only "is not one of cost, unrealized"
+    /// has no way to tell whether the numbers on screen are wrong, and the
+    /// answer differs per tag — so a generic clause would be reassuring for
+    /// `bsterm:` and dangerously misleading for `valuation:`.
+    consequence: &'static str,
+}
+
+/// Every account tag with a closed vocabulary, in the order a single account's
+/// findings are reported: broadest classification first. `type:` picks the
+/// statement, `issection:` the P&L box, `bsterm:` the balance-sheet half,
+/// `holdings:` the tab, `valuation:` the role within it.
+///
+/// All five degrade to "undeclared" when unreadable, which is what lets this be
+/// a warning list rather than a refusal — and each one's `consequence` says
+/// which fallback it landed on.
+const CLOSED_TAGS: [ClosedTag; 5] = [
+    ClosedTag {
+        tag: ACCOUNT_TYPE_TAG,
+        recognizes: |value| parse_account_type_tag(value).is_some(),
+        codes: "A, L, E, R, X, C, V, G, Asset, Liability, Equity, Revenue, Expense, Cash, \
+                Conversion, Gain",
+        consequence: "the type is inferred from the account name instead",
+    },
+    ClosedTag {
+        tag: IS_SECTION_TAG,
+        recognizes: |value| parse_is_section_tag(value).is_some(),
+        codes: "revenue, cogs, opex, depreciation, interest, tax, other",
+        consequence: "the account falls to the default section inference",
+    },
+    ClosedTag {
+        tag: BS_TERM_TAG,
+        recognizes: |value| parse_bs_term_tag(value).is_some(),
+        codes: "current, noncurrent",
+        consequence: "the account falls to the adaptive default grouping",
+    },
+    ClosedTag {
+        tag: HOLDINGS_TAG,
+        recognizes: |value| parse_holdings_tag(value).is_some(),
+        codes: "stocks, other, none",
+        consequence: "the account is classified mechanically (does it hold a non-currency \
+                      commodity?)",
+    },
+    ClosedTag {
+        tag: VALUATION_TAG,
+        recognizes: |value| parse_valuation_tag(value).is_some(),
+        codes: "cost, unrealized, depreciation, adjustment",
+        // The one consequence that must name a NUMBER the user will see.
+        //
+        // The other four cost a misfiling: something lands in the wrong box and
+        // the totals still add up. This one silently replaces a real gain with
+        // zero, because an account that was meant to carry a mark-to-market
+        // adjustment gets folded back into its own basis — and a zero gain is
+        // indistinguishable from a holding that genuinely has not moved. This
+        // project has been bitten by "the report reads zero" before, and a user
+        // who sees a zero gain cannot connect it to "is not one of cost,
+        // unrealized" unless the sentence joins the two for them.
+        consequence: "the account is treated as cost basis, so any unrealized gain on this \
+                      holding will read as zero",
+    },
+];
+
+/// The journal's unreadable `account`-directive tags, one warning each.
+///
+/// These five tags used to be REFUSALS — a `ReportError` that became a `400` and
+/// took the whole tab down, so a single mistyped `issection:` emptied the P&L and
+/// a mistyped `holdings:` emptied both Holdings tabs, Insights, and (through
+/// [`journal_to_stock_diagnostics`]'s `let Ok(..) else`) the drawer's own
+/// `stock-*` findings. Being loud about a typo was right; spending the whole
+/// report to do it was not. The value is ignored, the fallback renders, and the
+/// finding says so by name.
+///
+/// Each message carries BOTH halves of that: the old refusal's sentence (the
+/// account, the tag, the value as written, the codes that would have worked)
+/// and then what ignoring the tag cost — see [`ClosedTag::consequence`]. The
+/// second half is not decoration. A warning that a value "is not one of cost,
+/// unrealized" leaves the reader unable to tell whether the numbers on screen
+/// are wrong, and for `valuation:` they are: the gain reads zero.
+///
+/// COLLECT-AND-CONTINUE, not short-circuit — `assertions::check_balance_assertions`'
+/// argument, which applies verbatim: a tool that reports the first break and
+/// hides the rest is a worse tool. Ten misspelt directives produce ten findings,
+/// in DECLARATION order and then in [`CLOSED_TAGS`] order, so the sequence is a
+/// function of the journal alone and the golden fixtures are stable.
+///
+/// An EMPTY value (`; issection:`) is not a finding. It already means "no
+/// declaration" to every one of the five readers, and a warning about a value
+/// the user never wrote would be noise.
+#[must_use]
+pub fn journal_to_tag_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    journal
+        .accounts
+        .iter()
+        .flat_map(|decl| {
+            CLOSED_TAGS.iter().filter_map(move |closed| {
+                decl.tags
+                    .iter()
+                    // First occurrence only: that is the one every reader takes,
+                    // so it is the only one whose value actually decides
+                    // anything.
+                    .find(|(key, _)| key == closed.tag)
+                    .map(|(_, value)| value.trim())
+                    .filter(|value| !value.is_empty() && !(closed.recognizes)(value))
+                    .map(|value| WireDiagnostic {
+                        txn_index: None,
+                        account: Some(decl.name.0.clone()),
+                        rule: "account-tag",
+                        severity: DIAGNOSTIC_WARNING,
+                        // Two halves. The first is the sentence the old `400`
+                        // carried, kept verbatim so moving the finding into the
+                        // drawer lost nothing; the second says what ignoring the
+                        // tag cost, which the `400` never had to because its own
+                        // consequence was "no report at all".
+                        message: format!(
+                            "account '{}' declares `{}: {}`, which is not one of {}; \
+                             the tag is ignored and {}",
+                            decl.name.0, closed.tag, value, closed.codes, closed.consequence
+                        ),
+                    })
+            })
+        })
+        .collect()
 }
 
 /// The as-of date the stock diagnostics are computed at: far enough in the
@@ -524,7 +705,8 @@ pub fn journal_to_stock_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
                         stock_rule_rank(rule),
                         warning.symbol.as_str(),
                         WireDiagnostic {
-                            txn_index: position,
+                            txn_index: Some(position),
+                            account: None,
                             rule,
                             severity: DIAGNOSTIC_WARNING,
                             message: warning.message.clone(),
@@ -546,15 +728,25 @@ pub fn journal_to_stock_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
 }
 
 /// Every diagnostic `/api/diagnostics` serves: the hledger-level errors from
-/// [`journal_to_diagnostics`] first, then the stock warnings from
+/// [`journal_to_diagnostics`] first, then the unreadable account tags from
+/// [`journal_to_tag_diagnostics`], then the stock warnings from
 /// [`journal_to_stock_diagnostics`].
 ///
 /// The errors lead deliberately. The SPA's drawer groups by rule in
 /// FIRST-APPEARANCE order, so a journal that both fails to balance and holds an
 /// unpriced security shows the balance failure at the top.
+///
+/// The tag pass sits BEFORE the stock pass and is independent of it. That
+/// ordering is not cosmetic: a bad `holdings:` value used to make
+/// `compute_holdings` fail, and [`journal_to_stock_diagnostics`] answers a
+/// failure with an empty vector — so the one journal most in need of an
+/// explanation got a drawer with nothing in it. The tags are now read straight
+/// off the declarations, with no holdings computation in the path, so that
+/// journal gets its `account-tag` warning whatever the stock pass does.
 #[must_use]
 pub fn journal_to_all_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
     let mut all = journal_to_diagnostics(journal);
+    all.extend(journal_to_tag_diagnostics(journal));
     all.extend(journal_to_stock_diagnostics(journal));
     all
 }

@@ -80,15 +80,20 @@ export interface RawTransaction {
 
 /**
  * One engine-computed journal diagnostic (unbalanced transaction / failed
- * balance assertion). These are ADVISORY: the engine reports them instead of
- * refusing to open the journal, so the decoder skips malformed entries rather
- * than throwing — see normalizeDiagnostics.
+ * balance assertion / unreadable `account` tag). These are ADVISORY: the engine
+ * reports them instead of refusing to open the journal, so the decoder skips
+ * malformed entries rather than throwing — see normalizeDiagnostics.
+ *
+ * Exactly ONE of `txnIndex` and `account` is present; the engine omits the other
+ * key entirely rather than sending null.
  */
 export interface RawDiagnostic {
     /** 0-based position in the served transactions array (NOT hledger's 1-based tindex). */
     txnIndex?: number;
-    rule?: string; // "unbalanced" | "assertion"
-    severity?: string; // "error"
+    /** The declaring account, for a finding about an `account` directive. */
+    account?: string;
+    rule?: string; // "unbalanced" | "assertion" | "account-tag" | "stock-*"
+    severity?: string; // "error" | "warning"
     message?: string; // hledger-style, may be multi-line
 }
 

@@ -20,7 +20,7 @@
 //!
 //! # Why `store` validates and `load` does not
 //!
-//! `hledger_path` is checked at STORE time ([`check_executable`]) and rejected
+//! `hledger_path` is checked at STORE time ([`check_storable`]) and rejected
 //! rather than persisted. A bad value written now would not fail now — it would
 //! fail at import time, several screens later, as "could not run hledger",
 //! which is the mysterious-failure shape this module exists to avoid. The
@@ -32,8 +32,28 @@
 //! do it), and refusing to start because a *preference* went stale is worse than
 //! the alternative. So a stale path survives `load`, and
 //! [`Hledger::resolve`](crate::hledger::Hledger::resolve) simply falls through
-//! to the next candidate. Every consumer therefore re-validates before use, and
-//! the check lives here, once, for both of them.
+//! to the next candidate. Every consumer therefore re-validates before use with
+//! the CHEAP half of the check ([`check_executable`]), which lives here, once,
+//! for both of them.
+//!
+//! # `hledgerPath` is a code-execution setting, and is validated like one
+//!
+//! SEC-14. This preference is not a display option: whatever it names becomes
+//! the first candidate in [`Hledger::candidates`](crate::hledger) and is handed
+//! straight to `Command::new` on every import, and it SURVIVES RESTARTS. So the
+//! store-time gate is stricter than "is this a file with an `+x` bit on it":
+//! [`check_storable`] additionally refuses a binary that any user but its owner
+//! can write, and actually RUNS the candidate with `--version` before persisting
+//! it, so a value that could never have worked is refused at the API rather than
+//! discovered three screens later.
+//!
+//! Read the limits of that honestly. It removes the *persistent* half for
+//! anything that is not plausibly hledger — such a value is refused and never
+//! written down. It does not remove execution: probing IS an `exec`, so this
+//! route still runs whatever it is handed, once, before refusing it. And an
+//! attacker who points it at a binary they own outright which does print an
+//! hledger version banner walks through all of it. It is defence in depth for
+//! the token exposure documented in [`crate::security`], not a fix for it.
 //!
 //! # Why a corrupt file is moved aside rather than overwritten
 //!
@@ -121,8 +141,8 @@ pub(crate) fn load() -> Prefs {
 /// Persist `prefs`, replacing whatever was there.
 ///
 /// # Errors
-/// [`PrefsError::InvalidHledgerPath`] if `hledger_path` is set to anything but
-/// an existing, absolute, regular, executable file;
+/// [`PrefsError::InvalidHledgerPath`] if `hledger_path` is set to anything but a
+/// binary that passes [`check_storable`];
 /// [`PrefsError::NoConfigDir`] if there is nowhere to write;
 /// [`PrefsError::Io`] / [`PrefsError::Serialize`] if the write itself fails.
 /// On any error nothing is written, so the previous settings survive intact.
@@ -185,7 +205,7 @@ pub(crate) fn load_from(file: &Path) -> Prefs {
 /// See [`store`], which is this with the path resolved from the environment.
 pub(crate) fn store_in(file: &Path, prefs: &Prefs) -> Result<(), PrefsError> {
     if let Some(path) = prefs.hledger_path.as_deref() {
-        check_executable(path).map_err(|reason| PrefsError::InvalidHledgerPath { reason })?;
+        check_storable(path).map_err(|reason| PrefsError::InvalidHledgerPath { reason })?;
     }
     // `load` normally moves a corrupt store aside long before we get here, but
     // not every caller loads first and the file may have been replaced in
@@ -233,14 +253,75 @@ fn set_corrupt_aside(file: &Path) {
     }
 }
 
-/// Whether `path` is a binary we could actually execute — the check both this
-/// module (at store time) and [`hledger`](crate::hledger) (at resolve time) use,
-/// so "a valid hledger path" means one thing in this codebase.
+/// Whether `path` is a binary we could actually execute — the cheap, purely
+/// stat-based check both this module (as the first step of [`check_storable`])
+/// and [`hledger`](crate::hledger) (at resolve time, once per candidate) use, so
+/// "a runnable-looking hledger path" means one thing in this codebase.
 pub(crate) fn is_executable_file(path: &Path) -> bool {
     check_executable(path).is_ok()
 }
 
-/// [`is_executable_file`] with the reason attached, for the error a rejected
+/// The full STORE-time gate for `hledger_path`: [`check_executable`], plus the
+/// two checks that only make sense at the moment a user chooses a binary
+/// (SEC-14).
+///
+/// Both extras are here rather than in [`check_executable`] on purpose, because
+/// [`Hledger::candidates`](crate::hledger) runs that one over every candidate on
+/// every resolve:
+///
+/// * **Not writable by anyone but its owner.** A group- or world-writable
+///   binary is one any of those users can replace between our check and our
+///   `exec`, so persisting it as the thing we will run on every import — for
+///   good, across restarts — hands them code execution as this user. Refusing it
+///   at resolve time instead would silently drop a binary the user explicitly
+///   configured, with no screen able to say why; refusing it *here* puts the
+///   sentence next to the field they just typed in.
+/// * **It answers `--version` like hledger.** One `fork`/`exec` with a short
+///   timeout, which is affordable once per settings save and is not affordable
+///   per candidate per resolve.
+///
+/// # What this does NOT check, deliberately
+///
+/// The DIRECTORIES above the binary. A file that is `0755` inside a
+/// world-writable directory can still be swapped out by anyone who can write
+/// that directory, and walking every ancestor would reject `/tmp`-rooted paths
+/// (mode `1777`, sticky, and legitimately used by the test suites and by `nix
+/// shell`). The mode check is the sharp, cheap edge of the problem, not all of
+/// it — and none of this is what stops a caller who already has the access
+/// token; see the module docs.
+///
+/// # Errors
+/// A fixed phrase naming the failed property, never the path — the module docs
+/// on [`PrefsError`] explain why that matters for an `/api/*` body.
+pub(crate) fn check_storable(path: &Path) -> Result<(), &'static str> {
+    check_executable(path)?;
+    check_not_writable_by_others(path)?;
+    crate::hledger::probe_answers_like_hledger(path)
+}
+
+/// Reject a binary that some user other than its owner may rewrite.
+///
+/// Unix mode bits only: `0o022` is the group-write and other-write bits
+/// together. On non-unix targets this is a no-op, for the same reason
+/// [`check_executable`] skips the execute bit there.
+#[cfg(unix)]
+fn check_not_writable_by_others(path: &Path) -> Result<(), &'static str> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::metadata(path).map_err(|_| "does not exist")?;
+    if meta.permissions().mode() & 0o022 == 0 {
+        Ok(())
+    } else {
+        Err("is writable by other users, so it is not safe to run (chmod go-w it)")
+    }
+}
+
+#[cfg(not(unix))]
+fn check_not_writable_by_others(_path: &Path) -> Result<(), &'static str> {
+    Ok(())
+}
+
+/// [`is_executable_file`] with the reason attached, and the first step of
+/// [`check_storable`] — so the reason reaches the error a rejected
 /// `PUT /api/prefs` returns.
 ///
 /// Four properties, each earning its place:

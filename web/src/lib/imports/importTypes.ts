@@ -408,9 +408,18 @@ export interface CommitResult {
     readonly git: GitReport | null;
 }
 
-/** `POST /api/import/sort` — how many transactions the confirmed re-sort moved. */
+/**
+ * `POST /api/import/sort` — how many transactions the confirmed re-sort moved,
+ * and what the git safety net did with the rewritten journal.
+ *
+ * The sort gets its own commit rather than amending the import's, so that
+ * reverting the ordering and reverting the transactions are separate acts.
+ * `git` is null when the journal is not under version control, when autocommit
+ * is off, or when nothing moved.
+ */
 export interface SortResult {
     readonly moved: number;
+    readonly git: GitReport | null;
 }
 
 /** `GET`/`PUT /api/prefs`. `gitAutocommit: null` = "commit when a repo is present". */

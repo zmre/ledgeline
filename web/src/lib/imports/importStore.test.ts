@@ -416,6 +416,29 @@ describe("UNIT importStore — writing", () => {
         await importStore.resort();
         expect(bodyOf(fetchMock, "/sort")).toEqual({journalId: "2026/2026.journal"});
         expect(importStore.sortMoved).toBe(3);
+        expect(importStore.sortError).toBeNull();
+    });
+
+    it("says so when the re-sort landed but git would not commit it", async () => {
+        // The dangerous quiet case: the journal is rewritten, the import's own
+        // commit is already in history, and `git revert` of it no longer
+        // restores the file. Silence here would be the safety net failing
+        // without a word.
+        const outOfOrder = {...COMMIT, ordering: {inOrder: false, moves: [{date: "2026-01-20", description: "x", fromLine: 812, toLine: 540}]}};
+        const fetchMock = routes({
+            ...BASE_ROUTES,
+            "/api/import/stage": STAGE,
+            "/api/import/dry-run": DRY_RUN,
+            "/api/import/commit": outOfOrder,
+            "/api/import/sort": {moved: 3, git: {committed: false, paths: [], skipped: ["2026/2026.journal"]}},
+        });
+        vi.stubGlobal("fetch", fetchMock);
+        await importStore.offerFile(upload("bank.csv"));
+        await importStore.writeChanges();
+        await importStore.resort();
+        expect(importStore.sortMoved).toBe(3);
+        expect(importStore.sortError).toContain("git did not commit");
+        expect(importStore.sortError).toContain("2026/2026.journal");
     });
 });
 

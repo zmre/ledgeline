@@ -4,6 +4,8 @@
 // This module also owns the ACCESS TOKEN the Ledgeline engine requires on every
 // wire and /api route: `authHeaders` is the single place it is attached, and
 // both this client and the native one (native.ts) route every fetch through it.
+// It is also the single place that decides WHERE it may be attached — see
+// `tokenMayBeSentTo` (SEC-16).
 
 /** localStorage key for the persisted settings blob. Owned here (rather than in
  * the settings store) so `apiToken` can read it without importing a runes module
@@ -26,6 +28,22 @@ export const SETTINGS_STORAGE_KEY = "ledgeline.settings.v1";
  *
  * A plain hledger-web has no token; null simply means "send no Authorization",
  * which is what that server expects.
+ *
+ * # Why source 2 stays in `localStorage`
+ *
+ * It is worth asking, because a bearer token in `localStorage` is readable by
+ * anything running on the page. The answer is that it is LOAD-BEARING and only
+ * for the cross-origin cases: the SPA at `:4173`/`:5173` is a different origin
+ * from the engine at `:5099`, so it cannot be handed the token in the page the
+ * way the packaged app is, and every e2e spec seeds it there before its first
+ * request. Dropping it would break `just dev` and the whole Playwright suite.
+ *
+ * In the packaged app it is not used at all: `window.__LEDGELINE_TOKEN__` is
+ * checked first and always wins, and nothing writes `serverToken` because the
+ * embedded SPA never shows the setup modal that collects one. So the exposure is
+ * confined to development, where the token is a fixed `$LEDGELINE_TOKEN` against
+ * a fixture journal. What DOES change is where that token may be sent — see
+ * `tokenMayBeSentTo`.
  */
 export function apiToken(): string | null {
     if (typeof window !== "undefined") {
@@ -48,8 +66,74 @@ export function apiToken(): string | null {
     return null;
 }
 
-/** `base` plus `Authorization: Bearer <token>` when a token is available. */
-export function authHeaders(base: Record<string, string>): Record<string, string> {
+/**
+ * The origin of the engine the user actually configured, or null.
+ *
+ * Read from the persisted blob rather than the settings store for the same
+ * reason [`apiToken`] is: this module must not import a runes module.
+ */
+function configuredEngineOrigin(): string | null {
+    if (typeof localStorage === "undefined") return null;
+    try {
+        const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+        const parsed = raw === null ? {} : (JSON.parse(raw) as {serverUrl?: unknown});
+        if (typeof parsed.serverUrl !== "string" || parsed.serverUrl === "") return null;
+        return new URL(parsed.serverUrl).origin;
+    } catch {
+        // No stored URL, or one that is not parseable as an origin.
+        return null;
+    }
+}
+
+/**
+ * May the access token be sent to `url`?
+ *
+ * SEC-16. `authHeaders` used to attach the token to whatever URL it was handed,
+ * and the token is persisted in `localStorage`. `HledgerApi` is constructed with
+ * an ARBITRARY base URL by `settings.setServerUrl` — which is the setup modal's
+ * "verify this server" button — so typing any address into that field and
+ * leaving the token box empty sent the running engine's credential to that
+ * address. Two origins are legitimate targets and nothing else is:
+ *
+ *  1. **Our own.** The packaged app serves the SPA and the API same-origin, and
+ *     `window.__LEDGELINE_TOKEN__` is injected into that page for exactly this.
+ *  2. **The engine the user configured**, i.e. the origin of the stored
+ *     `serverUrl`. This is what keeps the documented CROSS-ORIGIN flows working:
+ *     `just dev` and `web/playwright.config.ts` run the SPA at one origin
+ *     (`:5173` / `:4173`) and the engine at another (`:5099`), and every e2e spec
+ *     seeds `{serverUrl, serverToken}` into `localStorage` before the first
+ *     request. The token still goes to `:5099`, because that is what is stored.
+ *
+ * Verifying a NEW address with an empty token box now sends no token, which is
+ * both what an empty token box means and the right answer anyway: a different
+ * engine process has a different token, so the old one was never going to work.
+ *
+ * Outside a browser (the node integration suite, which drives this client
+ * directly with `$LEDGELINE_TOKEN`) there is no origin to compare against and no
+ * other page to leak to, so the caller's own target stands.
+ */
+function tokenMayBeSentTo(url: string): boolean {
+    if (typeof window === "undefined") return true;
+    let target: string;
+    try {
+        target = new URL(url, window.location.href).origin;
+    } catch {
+        // Not a resolvable URL: fail closed rather than guess.
+        return false;
+    }
+    return target === window.location.origin || target === configuredEngineOrigin();
+}
+
+/**
+ * `base` plus `Authorization: Bearer <token>` when a token is available AND
+ * `url` is an origin the token may go to (see [`tokenMayBeSentTo`]).
+ *
+ * `url` is optional only because `native.ts` calls this from four places and is
+ * always aimed at the configured engine already; pass it wherever the target can
+ * be anything else.
+ */
+export function authHeaders(base: Record<string, string>, url?: string): Record<string, string> {
+    if (url !== undefined && !tokenMayBeSentTo(url)) return base;
     const token = apiToken();
     return token === null ? base : {...base, Authorization: `Bearer ${token}`};
 }
@@ -216,9 +300,13 @@ export class HledgerApi {
         this.timeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
     }
 
-    private headers(): Record<string, string> {
+    /** Headers for a request to `url`, which is passed on so the ambient token is
+     * only ever attached to an origin it belongs to (SEC-16). An EXPLICIT token
+     * skips that check on purpose: it is the one the user just typed into the
+     * setup modal for the server they are pointing at. */
+    private headers(url: string): Record<string, string> {
         const base = {Accept: "application/json"};
-        return this.token === undefined ? authHeaders(base) : {...base, Authorization: `Bearer ${this.token}`};
+        return this.token === undefined ? authHeaders(base, url) : {...base, Authorization: `Bearer ${this.token}`};
     }
 
     /**
@@ -236,7 +324,7 @@ export class HledgerApi {
     private async get(route: string, revalidatable = false): Promise<unknown> {
         const conditional = revalidatable && this.conditional;
         const url = `${this.baseUrl}${route}`;
-        const headers = this.headers();
+        const headers = this.headers(url);
         const known = conditional ? etagByUrl.get(url) : undefined;
         if (known !== undefined) headers["If-None-Match"] = known;
         return withDeadline(`GET ${url}`, this.timeoutMs, this.signal, async (signal) => {

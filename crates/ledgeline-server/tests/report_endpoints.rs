@@ -711,13 +711,14 @@ async fn a_padded_value_in_is_the_same_request_as_the_bare_one() {
 }
 
 /// **The cautionary tale, on the balance sheet.** A journal whose `bsterm:` is
-/// misspelt must fail loudly instead of filing the account under the wrong
-/// Current/Non-current subtotal — the income-statement analogue is
-/// [`a_bad_issection_tag_is_a_400_naming_the_account_and_the_alternatives`],
-/// and without this pin a regression mapping `ReportError::UnknownBsTerm` to a
-/// `500` would pass the whole suite.
+/// misspelt serves the sheet — with the account on its group-derived default
+/// rather than under the wrong Current/Non-current subtotal — and reports the
+/// typo. The income-statement analogue is
+/// [`a_bad_issection_tag_is_a_diagnostic_and_the_statement_still_serves`], and
+/// without this pin a regression that dropped the finding for this tag would
+/// pass the whole suite.
 #[tokio::test]
-async fn a_bad_bsterm_tag_is_a_400_naming_the_account_and_the_alternatives() {
+async fn a_bad_bsterm_tag_is_a_diagnostic_and_the_sheet_still_serves() {
     let source =
         std::fs::read_to_string(common::fixture_journal_path()).expect("read sample.journal");
     // Misspell ONE declaration (the home's) — to a word OUTSIDE the vocabulary
@@ -736,16 +737,35 @@ async fn a_bad_bsterm_tag_is_a_400_naming_the_account_and_the_alternatives() {
     let journal =
         parse_journal(&text, "sample-bsterm-typo.journal").expect("the FILE is still valid");
 
-    let (status, message) = get_error(
+    // The sheet serves.
+    let body = body_ok(
         &journal,
         "/api/reports/balancesheet/grouped?asOf=2026-07-08",
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["sections"]
+            .as_array()
+            .is_some_and(|sections| !sections.is_empty()),
+        "the sheet must still render: {body}"
+    );
+
+    // And the typo is named, with the account and both codes.
+    let diagnostics = body_ok(&journal, "/api/diagnostics").await;
+    let found: Vec<&Value> = diagnostics["diagnostics"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .filter(|d| d["rule"] == "account-tag")
+        .collect();
+    assert_eq!(found.len(), 1, "{diagnostics}");
+    assert_eq!(found[0]["account"], "assets:property:home");
+    let message = found[0]["message"].as_str().expect("a message");
     for expected in ["assets:property:home", "fixed", "current", "noncurrent"] {
         assert!(message.contains(expected), "{message}");
     }
-    // Every OTHER report is unaffected — the tag is this statement's alone.
+
+    // Every OTHER report is unaffected — as it always was.
     for uri in [
         "/api/reports/balancesheet?asOf=2026-07-08",
         "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08",
@@ -1425,22 +1445,55 @@ async fn incomestatement_grouped_validates_value_and_compare() {
     );
 }
 
-/// **The cautionary tale, over HTTP.** A journal whose `issection:` is misspelt
-/// must fail loudly instead of serving a statement with a box reading zero.
+/// **The cautionary tale, over HTTP — told in the drawer instead of the status
+/// line.** A journal whose `issection:` is misspelt now SERVES the statement and
+/// reports the typo as an `account-tag` finding on `/api/diagnostics`.
+///
+/// This used to be a `400`, on the argument that failing loudly beats serving a
+/// statement with a box reading zero. The argument was half right: the user does
+/// have to be told. But the `400` told them by taking the entire P&L tab away
+/// over one mistyped word in one `account` directive, and left them with no way
+/// to see the other nine sections that were fine. The finding says the same
+/// sentence, names the same account, and costs nothing.
 #[tokio::test]
-async fn a_bad_issection_tag_is_a_400_naming_the_account_and_the_alternatives() {
+async fn a_bad_issection_tag_is_a_diagnostic_and_the_statement_still_serves() {
     let text = std::fs::read_to_string(fixtures_dir().join("reports").join("is-sections.journal"))
         .expect("read is-sections.journal")
         .replace("issection: cogs", "issection: cost-of-goods-sold");
     let journal =
         parse_journal(&text, "is-sections-typo.journal").expect("the FILE is still valid");
 
-    let (status, message) = get_error(&journal, "/api/reports/incomestatement/grouped").await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // The statement serves, and it is a real statement rather than an empty one.
+    let body = body_ok(&journal, "/api/reports/incomestatement/grouped").await;
+    assert!(
+        body["sections"]
+            .as_array()
+            .is_some_and(|sections| !sections.is_empty()),
+        "the statement must still render: {body}"
+    );
+
+    // The typo is named in the drawer, with the sentence the 400 used to carry.
+    let diagnostics = body_ok(&journal, "/api/diagnostics").await;
+    let found: Vec<&Value> = diagnostics["diagnostics"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .filter(|d| d["rule"] == "account-tag")
+        .collect();
+    assert_eq!(found.len(), 1, "{diagnostics}");
+    assert_eq!(found[0]["account"], "cogs");
+    assert_eq!(found[0]["severity"], "warning");
+    assert!(
+        found[0].get("txnIndex").is_none(),
+        "an account finding has no transaction to anchor to: {}",
+        found[0]
+    );
+    let message = found[0]["message"].as_str().expect("a message");
     for expected in ["cogs", "cost-of-goods-sold", "revenue", "depreciation"] {
         assert!(message.contains(expected), "{message}");
     }
-    // Every OTHER report is unaffected — the tag is this statement's alone.
+
+    // Every OTHER report is unaffected — as it always was.
     for uri in [
         "/api/reports/incomestatement",
         "/api/reports/balancesheet/grouped",

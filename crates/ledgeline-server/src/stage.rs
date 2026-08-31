@@ -49,6 +49,23 @@
 //! directory's own `.latest.NAME` in beside it. The dry-run then sees exactly
 //! the dedup state the real import will see.
 //!
+//! # `.latest.NAME` is not one date, and the copy is byte for byte
+//!
+//! It is the newest date hledger has imported **repeated once per record sharing
+//! that date** — two records on the 22nd give
+//!
+//! ```text
+//! 2026-05-22
+//! 2026-05-22
+//! ```
+//!
+//! and the repeat count is load-bearing. hledger skips every record older than
+//! that date and then the first *n* records on it, so a file carrying one repeat
+//! where hledger wrote two re-proposes a row that is already in the journal.
+//! Nothing in this module parses, rewrites or truncates the file; it is copied
+//! verbatim, and [`Latest`] exists so that a copy which cannot be made is
+//! **reported** rather than skipped.
+//!
 //! # Every copy hledger reads is aligned to a rules file's `skip`
 //!
 //! [`Stage::data`] is the **canonical** CSV: header on line 1, no padding. It is
@@ -96,10 +113,29 @@ const DATA_FILE: &str = "data.csv";
 /// name here either.
 const ALIGNED_PREFIX: &str = "aligned-";
 
-/// The biggest `.latest.NAME` we will copy. The file holds one date, so anything
-/// larger is not one and copying it would be pointless work on a path an
-/// attacker could aim at a large file.
-const MAX_LATEST_BYTES: u64 = 1024;
+/// The most same-date records a `.latest.NAME` may describe before this module
+/// stops believing it is one.
+///
+/// The file holds **one line per record on its date**, not one date — see the
+/// module docs. A bound of "one date" is what the previous version of this
+/// constant assumed, and at 1 KiB it tripped at 94 records on a single day,
+/// which a business account reaches. Ten thousand is past anything a person
+/// imports by hand.
+const MAX_LATEST_RECORDS: u64 = 10_000;
+
+/// One `YYYY-MM-DD` line, plus a byte of slack for CRLF. hledger writes no other
+/// shape.
+const LATEST_LINE_BYTES: u64 = 12;
+
+/// The biggest `.latest.NAME` we will read: [`MAX_LATEST_RECORDS`] lines of
+/// [`LATEST_LINE_BYTES`], a little under 120 KiB.
+///
+/// Bounded at all because this is a path an attacker could aim at something
+/// enormous. A symlink is already refused on file type, but a plain file this
+/// process is asked to read into memory is not, and the read has to be capped
+/// somewhere. What changed is only *where*: high enough that no real state file
+/// is refused, low enough that the refusal still means something.
+const MAX_LATEST_BYTES: u64 = MAX_LATEST_RECORDS * LATEST_LINE_BYTES;
 
 /// The run directory used for a dry-run or import that should see the real
 /// dedup state.
@@ -228,8 +264,10 @@ impl Stage {
     /// report a dedup state that belongs to a different file.
     ///
     /// # Errors
-    /// [`std::io::Error`] if the name is not a bare file name, or if the copy
-    /// fails.
+    /// [`std::io::Error`] if the name is not a bare file name, if the copy
+    /// fails, or — [`ErrorKind::InvalidData`](std::io::ErrorKind::InvalidData) —
+    /// if `latest_from` holds a `.latest.NAME` that exists but cannot be
+    /// carried. That last one is a refusal, not a fault: see [`Latest`].
     pub(crate) fn materialize(
         &self,
         slot: &str,
@@ -252,10 +290,26 @@ impl Stage {
         let staged = run.join(name);
         std::fs::write(&staged, self.aligned_bytes(skip)?)?;
 
-        if let Some(dir) = latest_from
-            && let Some(bytes) = read_latest(dir, name)
-        {
-            std::fs::write(run.join(latest_name(name)), bytes)?;
+        match latest_from.map(|dir| latest_state(dir, name)) {
+            None | Some(Latest::Absent) => {}
+            // Verbatim, repeated same-date lines and all: the repeat count is
+            // what hledger de-duplicates by.
+            Some(Latest::Present(bytes)) => {
+                std::fs::write(run.join(latest_name(name)), bytes)?;
+            }
+            // **Never silently skipped.** A run directory missing the dedup
+            // state its destination has makes hledger propose every row as new,
+            // and nothing downstream fails, so the only way that reaches a user
+            // is as a plausible number. Callers refuse before they get here
+            // (`import_api::refuse_unusable_dedup_state`); this is the backstop
+            // that makes forgetting to impossible, on the same principle as the
+            // alignment above.
+            Some(Latest::Unusable(reason)) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("the import de-duplication state beside the destination {reason}"),
+                ));
+            }
         }
         Ok(staged)
     }
@@ -279,34 +333,78 @@ fn padding_lines(skip: u32) -> u32 {
     skip.saturating_sub(1)
 }
 
+/// What sits at `.latest.NAME` beside a destination.
+///
+/// Three states rather than an [`Option`], because two of them are **not the
+/// same answer** and collapsing them is the bug this type exists to prevent:
+///
+/// * [`Absent`](Self::Absent) — hledger has never imported a file of this name.
+///   There is no dedup state, nothing could be skipped, and the screen has
+///   nothing to say. The ordinary first import.
+/// * [`Present`](Self::Present) — hledger's state, to be copied verbatim.
+/// * [`Unusable`](Self::Unusable) — the state **exists** and this process could
+///   not carry it into a run directory. Read as "absent", which is what the code
+///   this type replaced did, it makes hledger report every row as new: a wrong
+///   answer that exits zero, with no error anywhere to notice it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Latest {
+    Absent,
+    Present(Vec<u8>),
+    /// Why, as one of a closed set of phrases. Fixed strings, so nothing about
+    /// the filesystem reaches a user-facing message through this.
+    Unusable(&'static str),
+}
+
+/// The reason a `.latest.NAME` that is not a regular file is refused. A symlink
+/// here is refused on its file type alone, without a second question being
+/// asked about where it points.
+const NOT_A_REGULAR_FILE: &str = "is not a regular file";
+
+/// The reason an implausibly large `.latest.NAME` is refused. See
+/// [`MAX_LATEST_BYTES`].
+const IMPLAUSIBLY_LARGE: &str = "is far larger than any real de-duplication state";
+
+/// The reason a `.latest.NAME` this process cannot open is refused.
+const UNREADABLE: &str = "could not be read";
+
 /// The dedup marker `hledger import` keeps next to a data file: the newest date
 /// it has already imported from a file of that name.
 ///
-/// Returned as text so the caller can report it verbatim. `None` covers every
-/// "no dedup state" case uniformly — absent, unreadable, not a regular file,
-/// oversize, empty.
+/// The file repeats that date once per record sharing it (see the module docs),
+/// and this returns the date alone — which is what
+/// [`WireSkipped`](crate::import_api) shows. The count of repeats is deliberately
+/// **not** derived here: what a user is told is how many rows *this* statement
+/// lost to dedup, which is measured by differencing two dry-runs and is a
+/// different number from how many the marker has already consumed.
+///
+/// `None` when there is no usable state. Callers that must distinguish "nothing
+/// there" from "there and unusable" ask [`latest_state`] instead.
 pub(crate) fn latest_marker(dir: &Path, name: &str) -> Option<String> {
-    let bytes = read_latest(dir, name)?;
+    let Latest::Present(bytes) = latest_state(dir, name) else {
+        return None;
+    };
     let text = String::from_utf8(bytes).ok()?;
     let marker = text.split_whitespace().next()?;
     (!marker.is_empty()).then(|| marker.to_string())
 }
 
-/// `.latest.NAME`'s bytes, if it is a small regular file.
+/// `.latest.NAME`'s bytes, or why they are not available.
 ///
-/// [`std::fs::symlink_metadata`] rather than `metadata`: a symlink named
-/// `.latest.bank.csv` pointing at something large or unreadable is refused on
-/// its own file type, without a second question being asked.
-fn read_latest(dir: &Path, name: &str) -> Option<Vec<u8>> {
+/// [`std::fs::symlink_metadata`] rather than `metadata`, so the file type is
+/// this file's own rather than that of whatever a symlink points at.
+pub(crate) fn latest_state(dir: &Path, name: &str) -> Latest {
     let path = dir.join(latest_name(name));
-    let meta = std::fs::symlink_metadata(&path).ok()?;
-    (meta.file_type().is_file() && meta.len() <= MAX_LATEST_BYTES)
-        .then(|| std::fs::read(&path).ok())
-        .flatten()
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Latest::Absent,
+        Err(_) => Latest::Unusable(UNREADABLE),
+        Ok(meta) if !meta.file_type().is_file() => Latest::Unusable(NOT_A_REGULAR_FILE),
+        Ok(meta) if meta.len() > MAX_LATEST_BYTES => Latest::Unusable(IMPLAUSIBLY_LARGE),
+        Ok(_) => std::fs::read(&path).map_or(Latest::Unusable(UNREADABLE), Latest::Present),
+    }
 }
 
 /// The name hledger keys its import state by.
-fn latest_name(name: &str) -> String {
+pub(crate) fn latest_name(name: &str) -> String {
     format!(".latest.{name}")
 }
 
@@ -555,6 +653,156 @@ mod tests {
                 .expect("run dir")
                 .join(".latest.bank.csv")
                 .exists()
+        );
+
+        std::fs::remove_dir_all(&dest).ok();
+    }
+
+    /// A scratch directory to stand in for an import destination.
+    fn scratch_destination() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ledgeline-stage-test-{}",
+            StageId::mint().expect("csprng").as_str()
+        ));
+        std::fs::create_dir(&dir).expect("dest dir");
+        dir
+    }
+
+    /// **A `.latest.NAME` is carried byte for byte, repeats and all.**
+    ///
+    /// The file holds one line per already-imported record on its date and
+    /// hledger skips exactly that many, so a copy that normalised the text —
+    /// collapsed the repeats, rewrote the line endings, added a trailing newline
+    /// — would change which rows the dry-run calls new. Verbatim is the only
+    /// correct answer, and it is asserted against the three spellings hledger
+    /// and an editor between them can produce.
+    #[test]
+    fn a_multi_line_latest_marker_is_copied_verbatim() {
+        let area = StageArea::default();
+        let (_, stage) = area.put("a\n1\n", SourceFormat::Csv).expect("stage");
+        let dest = scratch_destination();
+
+        for original in [
+            "2026-05-22\n2026-05-22\n",
+            "2026-05-22\r\n2026-05-22\r\n",
+            "2026-05-22\n2026-05-22",
+            "2026-05-22\n2026-05-22\n\n",
+        ] {
+            std::fs::write(dest.join(".latest.bank.csv"), original).expect("marker");
+            let staged = stage
+                .materialize(RUN_WITH_LATEST, "bank.csv", Some(&dest), 1)
+                .expect("materialize");
+            let carried =
+                std::fs::read_to_string(staged.parent().expect("run dir").join(".latest.bank.csv"))
+                    .expect("marker copied");
+            assert_eq!(carried, original, "the dedup state must not be rewritten");
+            // The date the UI reports is still just the date.
+            assert_eq!(
+                latest_marker(&dest, "bank.csv").as_deref(),
+                Some("2026-05-22")
+            );
+        }
+
+        std::fs::remove_dir_all(&dest).ok();
+    }
+
+    /// A state file for a genuinely busy day is carried, and the cap is nowhere
+    /// near it.
+    ///
+    /// The bound this replaced was 1 KiB, on the false premise that the file
+    /// holds one date; it tripped at 94 records sharing a date, which a business
+    /// account reaches, and dropped the whole file without a word.
+    #[test]
+    fn a_state_file_for_thousands_of_same_day_records_is_still_carried() {
+        let area = StageArea::default();
+        let (_, stage) = area.put("a\n1\n", SourceFormat::Csv).expect("stage");
+        let dest = scratch_destination();
+
+        let busy = "2026-05-22\n".repeat(5_000);
+        assert!(busy.len() > 1024, "the old cap would have refused this");
+        std::fs::write(dest.join(".latest.bank.csv"), &busy).expect("marker");
+
+        let staged = stage
+            .materialize(RUN_WITH_LATEST, "bank.csv", Some(&dest), 1)
+            .expect("materialize");
+        assert_eq!(
+            std::fs::read_to_string(staged.parent().expect("run dir").join(".latest.bank.csv"))
+                .expect("marker copied"),
+            busy
+        );
+
+        std::fs::remove_dir_all(&dest).ok();
+    }
+
+    /// **"There is no dedup state" and "there is one and I cannot read it" are
+    /// different answers**, and this is the test that keeps them apart.
+    ///
+    /// Collapsing them — which an `Option` return did — makes an import run with
+    /// no dedup state at all and report every row as new, with nothing anywhere
+    /// that failed.
+    #[test]
+    fn a_latest_that_is_there_but_unusable_is_not_reported_as_absent() {
+        let dest = scratch_destination();
+        assert_eq!(
+            latest_state(&dest, "bank.csv"),
+            Latest::Absent,
+            "no file is the ordinary first import"
+        );
+
+        std::fs::write(dest.join(".latest.bank.csv"), "2026-05-22\n").expect("marker");
+        assert_eq!(
+            latest_state(&dest, "bank.csv"),
+            Latest::Present(b"2026-05-22\n".to_vec())
+        );
+
+        // Implausibly large: a real one is eleven bytes per already-imported
+        // record on one date, so this is not a state file.
+        std::fs::write(
+            dest.join(".latest.bank.csv"),
+            "x".repeat(usize::try_from(MAX_LATEST_BYTES).expect("fits") + 1),
+        )
+        .expect("marker");
+        assert_eq!(
+            latest_state(&dest, "bank.csv"),
+            Latest::Unusable(IMPLAUSIBLY_LARGE)
+        );
+
+        // Not a regular file. Refused on file type alone, and loudly.
+        std::fs::remove_file(dest.join(".latest.bank.csv")).expect("remove");
+        std::fs::create_dir(dest.join(".latest.bank.csv")).expect("a directory in its place");
+        assert_eq!(
+            latest_state(&dest, "bank.csv"),
+            Latest::Unusable(NOT_A_REGULAR_FILE)
+        );
+        assert_eq!(
+            latest_marker(&dest, "bank.csv"),
+            None,
+            "the marker string is for display and has nothing to show here"
+        );
+
+        std::fs::remove_dir_all(&dest).ok();
+    }
+
+    /// Materialising **refuses** unusable dedup state rather than running
+    /// without it — the backstop that makes the caller's check impossible to
+    /// forget.
+    #[test]
+    fn materializing_refuses_to_drop_unusable_dedup_state() {
+        let area = StageArea::default();
+        let (_, stage) = area.put("a\n1\n", SourceFormat::Csv).expect("stage");
+        let dest = scratch_destination();
+        std::fs::create_dir(dest.join(".latest.bank.csv")).expect("not a regular file");
+
+        let error = stage
+            .materialize(RUN_WITH_LATEST, "bank.csv", Some(&dest), 1)
+            .expect_err("an unusable marker must not be silently skipped");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+
+        // The `.latest`-free run is unaffected: it is *meant* to have none, and
+        // it never looks at the destination.
+        assert!(
+            stage.materialize(RUN_BARE, "bank.csv", None, 1).is_ok(),
+            "the bare run has no destination to read"
         );
 
         std::fs::remove_dir_all(&dest).ok();

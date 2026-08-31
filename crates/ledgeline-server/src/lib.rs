@@ -476,10 +476,32 @@ pub fn router_with_state(state: AppState) -> Router {
 /// * The `Host` guard wraps routing and the SPA fallback both, so a rebound host
 ///   cannot fetch the shell that carries the token.
 /// * CORS (installed only when [`Security::allow_origins`] was given exact
-///   origins) sits inside the `Host` guard, so preflights are answered only for
-///   requests that were addressed to us properly in the first place.
-/// * The token guard is a `route_layer`: it covers exactly the routes below and
-///   never the SPA shell or its assets, which must stay reachable to bootstrap.
+///   origins) is a `route_layer`, so it covers exactly the wire and `/api`
+///   routes and NEVER the SPA fallback. It still sits inside the `Host` guard,
+///   so preflights are answered only for requests that were addressed to us
+///   properly in the first place.
+/// * The token guard is a `route_layer` too, installed *before* CORS so that it
+///   is the inner of the two: a preflight carries no `Authorization`, so the
+///   CORS layer has to be able to answer it without the token guard seeing it.
+///   Like CORS it covers exactly the routes below and never the SPA shell or its
+///   assets, which must stay reachable to bootstrap.
+///
+/// # Why CORS is a `route_layer` and not a `layer` (SEC-12)
+///
+/// It used to be `.layer(...)`, applied after `.fallback(...)`, and so it
+/// covered the fallback as well. The fallback is the SPA shell, and the shell
+/// carries the access token in its body. That combination meant a single
+/// `fetch("http://127.0.0.1:<port>/")` from any page on an allowlisted dev
+/// origin — another Vite project, a malicious dev dependency — was answered
+/// with `Access-Control-Allow-Origin`, so the browser handed that page the
+/// token, and with it full read/write on the user's journal. `--allow-origin`
+/// is meant to open the API to a dev SPA; it must not also publish the
+/// credential.
+///
+/// The documented cross-origin flows do not need the shell: `just dev` and
+/// `web/playwright.config.ts` both serve the SPA from vite/`preview` and pin the
+/// token through `$LEDGELINE_TOKEN`, which the specs seed into `localStorage`
+/// alongside `serverUrl`. They only ever fetch the routes below.
 ///
 /// Compression (PERF-2) sits between the `Host` guard and routing, so it sees
 /// every route's body and the SPA's assets, but never a response the guards
@@ -657,13 +679,28 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route_layer(middleware::from_fn_with_state(
             security.clone(),
             security::token_guard,
-        ))
-        // Everything else (the SPA shell, its embedded assets, and client-side
-        // deep links) is served same-origin; the explicit routes above win.
-        .fallback(move |uri: Uri| {
-            let token = spa_token.clone();
-            async move { spa::fallback(uri, token).await }
-        });
+        ));
+
+    // CORS for the allowlisted origins, over exactly the routes above. A second
+    // `route_layer` wraps the first, so this ends up OUTSIDE the token guard —
+    // which is required, because a preflight carries no `Authorization` and must
+    // be answered rather than refused.
+    //
+    // `route_layer`, never `layer`: see this function's docs. The default
+    // posture is no CORS layer at all, so a browser refuses to hand any
+    // cross-origin page our responses (SEC-1).
+    let router = match security.cors_layer() {
+        Some(cors) => router.route_layer(cors),
+        None => router,
+    };
+
+    // Everything else (the SPA shell, its embedded assets, and client-side deep
+    // links) is served same-origin ONLY; the explicit routes above win, and
+    // neither `route_layer` above reaches this.
+    let router = router.fallback(move |uri: Uri| {
+        let token = spa_token.clone();
+        async move { spa::fallback(uri, token).await }
+    });
 
     // `Fastest` (gzip level 1), not the default level 6: the /transactions body
     // is hundreds of megabytes and this server's usual peer is the SPA on the
@@ -672,13 +709,6 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
     // payload compresses at, and it is what makes a LAN or `--allow-origin`
     // client affordable.
     let router = router.layer(CompressionLayer::new().quality(CompressionLevel::Fastest));
-
-    let router = match security.cors_layer() {
-        Some(cors) => router.layer(cors),
-        // The default posture: no CORS layer at all, so a browser refuses to
-        // hand any cross-origin page our responses (SEC-1).
-        None => router,
-    };
 
     router
         .layer(middleware::from_fn_with_state(

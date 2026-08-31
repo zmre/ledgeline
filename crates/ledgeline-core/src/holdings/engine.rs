@@ -651,8 +651,10 @@ struct HoldingsInputs<'a> {
 
 impl<'a> HoldingsInputs<'a> {
     /// # Errors
-    /// Returns [`ReportError::UnknownHoldingsClass`] for an `account` directive
-    /// whose `holdings:` value is outside the closed vocabulary.
+    /// Propagates a [`ReportError::Decimal`] overflow from the price inference.
+    /// An `account` directive whose `holdings:` value is outside the closed
+    /// vocabulary is NOT an error here — it reads as untagged and is reported as
+    /// an `account-tag` diagnostic instead.
     fn build(
         txns: &'a [Transaction],
         prices: &[PriceDirective],
@@ -660,7 +662,7 @@ impl<'a> HoldingsInputs<'a> {
         commodity_tags: &'a [(Commodity, Vec<(String, String)>)],
     ) -> Result<Self, ReportError> {
         let declared = declared_types(&account_decls_from(accounts));
-        let classes = declared_holdings_classes(accounts)?;
+        let classes = declared_holdings_classes(accounts);
         Ok(Self {
             txns,
             ordered: journal_order(txns),
@@ -1026,42 +1028,43 @@ fn pool_snapshots(
 }
 
 /// Latest `P` directive ≤ `as_of` pricing `symbol` in `base` (ties: last
-/// declared wins), with its date. Port of the TS `latestDirectivePrice` (scans
-/// the raw directive list so it can return the date, unlike `PriceDb::lookup_in`).
+/// declared wins), with its date. Port of the TS `latestDirectivePrice`
+/// (`PriceDb::lookup_in` returns only the `Amount`, and the date is what
+/// `HoldingPrice.date` reports, so this reads the directive itself).
 ///
-/// A directive priced in `base` always wins. Failing that, the latest directive
-/// in ANY commodity that converts to `base` is used, applying exactly the same
-/// conversion [`latest_cost_prices`] already applies to cost annotations — so a
-/// `P XYZ 100.00 EUR` + `P EUR $1.10` pair prices XYZ instead of reading as
-/// unpriced and dropping it out of the portfolio totals. The security's quote
-/// keeps its own date (that is what `HoldingPrice.date` reports); the rate that
-/// converts it is the one in force at `as_of`, the valuation date.
+/// A directive priced in `base` always wins, at any date. Failing that, the
+/// latest directive in ANY commodity that converts to `base` is used, applying
+/// exactly the same conversion [`latest_cost_prices`] already applies to cost
+/// annotations — so a `P XYZ 100.00 EUR` + `P EUR $1.10` pair prices XYZ instead
+/// of reading as unpriced and dropping it out of the portfolio totals. The
+/// security's quote keeps its own date; the rate that converts it is the one in
+/// force at `as_of`, the valuation date.
+///
+/// Reads [`PriceDb`]'s per-commodity index, which is date-sorted, so the
+/// in-effect entries are a binary search away and only this symbol's directives
+/// are ever looked at. Scanning the raw slice instead cost `O(P)` over EVERY
+/// directive in the journal, and this sits inside a per-symbol loop inside a
+/// per-date one. Same element chosen, same tie-breaking: walking that prefix
+/// newest-first makes the first base-priced hit the latest one, and a later
+/// same-date directive is still reached before the earlier one it supersedes.
 fn latest_directive_price(
-    prices: &[PriceDirective],
     db: &PriceDb,
     symbol: &str,
     base: &Commodity,
     as_of: &str,
 ) -> Result<Option<DatedPrice>, ReportError> {
-    let mut direct: Option<DatedPrice> = None;
+    // The index is keyed by `Commodity`, which does not borrow as `str`; one
+    // key per (symbol, date) is noise next to the scan it replaces.
+    let key = Commodity(symbol.to_string());
     let mut converted: Option<DatedPrice> = None;
-    for directive in prices {
-        if directive.commodity.0 != symbol || directive.date.as_str() > as_of {
-            continue;
-        }
-        let newer = |current: &Option<DatedPrice>| {
-            current
-                .as_ref()
-                .is_none_or(|best| directive.date.as_str() >= best.date.as_str())
-        };
+    for directive in db.directives_in_effect(&key, as_of).iter().rev() {
         if directive.price.commodity == *base {
-            if newer(&direct) {
-                direct = Some(DatedPrice {
-                    qty: directive.price.quantity,
-                    date: directive.date.clone(),
-                });
-            }
-        } else if newer(&converted)
+            return Ok(Some(DatedPrice {
+                qty: directive.price.quantity,
+                date: directive.date.clone(),
+            }));
+        }
+        if converted.is_none()
             && let Some(rate) = db.lookup_in(&directive.price.commodity, base, as_of)
         {
             converted = Some(DatedPrice {
@@ -1070,7 +1073,7 @@ fn latest_directive_price(
             });
         }
     }
-    Ok(direct.or(converted))
+    Ok(converted)
 }
 
 /// Fold one transaction's cost annotations into the running "latest usable
@@ -1239,7 +1242,6 @@ fn coverage(
     held: &[Commodity],
     target: &Commodity,
     ordered: &[&Transaction],
-    prices: &[PriceDirective],
     db: &PriceDb,
     as_of: &str,
 ) -> Result<usize, ReportError> {
@@ -1247,7 +1249,7 @@ fn coverage(
     let mut covered = 0;
     for symbol in held {
         let priced = symbol == target
-            || latest_directive_price(prices, db, &symbol.0, target, as_of)?.is_some()
+            || latest_directive_price(db, &symbol.0, target, as_of)?.is_some()
             || cost_prices.contains_key(&symbol.0);
         if priced {
             covered += 1;
@@ -1280,7 +1282,6 @@ fn coverage(
 /// closest single-commodity approximation of that.
 fn choose_base(
     inputs: &HoldingsInputs<'_>,
-    prices: &[PriceDirective],
     as_of: &str,
     value_in: Option<&Commodity>,
     in_scope: &dyn Fn(&str) -> bool,
@@ -1306,7 +1307,7 @@ fn choose_base(
     let mut best = &candidates[0];
     let mut best_covered = 0;
     for candidate in candidates {
-        let covered = coverage(&held, candidate, &inputs.ordered, prices, db, as_of)?;
+        let covered = coverage(&held, candidate, &inputs.ordered, db, as_of)?;
         if covered > best_covered {
             best = candidate;
             best_covered = covered;
@@ -1337,13 +1338,7 @@ pub fn valuation_base(
     // No `commodity` directives: choosing a base never reads a security's name.
     let inputs = HoldingsInputs::build(txns, prices, accounts, &[])?;
     let predicate = scope_predicate(scope, &inputs.classes);
-    choose_base(
-        &inputs,
-        prices,
-        &scope.as_of,
-        scope.value_in.as_ref(),
-        &predicate,
-    )
+    choose_base(&inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)
 }
 
 /// True when valuing this scope in `target` prices at least one of the holdings
@@ -1371,14 +1366,7 @@ pub fn prices_any_held(
     if held.is_empty() {
         return Ok(true);
     }
-    Ok(coverage(
-        &held,
-        target,
-        &inputs.ordered,
-        prices,
-        &inputs.db,
-        &scope.as_of,
-    )? > 0)
+    Ok(coverage(&held, target, &inputs.ordered, &inputs.db, &scope.as_of)? > 0)
 }
 
 /// [`prices_any_held`]'s admission question, asked about the OTHER tab: true
@@ -1439,7 +1427,7 @@ fn other_held_commodities(
     scope: &HoldingsScope,
 ) -> Result<BTreeSet<Commodity>, ReportError> {
     let types = AccountTypes::from_declared(declared_types(&account_decls_from(accounts)));
-    let classes = declared_holdings_classes(accounts)?;
+    let classes = declared_holdings_classes(accounts);
     let in_scope = scope_accounts(scope);
     let totals = account_totals(
         txns,
@@ -1562,20 +1550,13 @@ pub fn compute_holdings(
 ) -> Result<HoldingsReport, ReportError> {
     let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags)?;
     let predicate = scope_predicate(scope, &inputs.classes);
-    let base_commodity = choose_base(
-        &inputs,
-        prices,
-        &scope.as_of,
-        scope.value_in.as_ref(),
-        &predicate,
-    )?;
+    let base_commodity = choose_base(&inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
     // `gain_since` re-runs the report at the window start, so the facts have to
     // cover the LATER of the two dates; `as_of` is it.
     let facts = sole_symbol_facts(&inputs.ordered, &scope.as_of, &predicate, &inputs.declared);
     report_at(
         &inputs,
         &facts,
-        prices,
         &base_commodity,
         &scope.as_of,
         scope.gain_since.as_deref(),
@@ -1601,13 +1582,7 @@ pub(super) fn holdings_at_each(
 ) -> Result<(Commodity, Vec<HoldingsReport>), ReportError> {
     let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags)?;
     let predicate = scope_predicate(scope, &inputs.classes);
-    let base_commodity = choose_base(
-        &inputs,
-        prices,
-        &scope.as_of,
-        scope.value_in.as_ref(),
-        &predicate,
-    )?;
+    let base_commodity = choose_base(&inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
     let Some(last) = as_ofs.last() else {
         return Ok((base_commodity, Vec::new()));
     };
@@ -1622,7 +1597,6 @@ pub(super) fn holdings_at_each(
         .map(|(as_of, snapshot)| {
             assemble_report(
                 &inputs,
-                prices,
                 &base_commodity,
                 as_of,
                 None,
@@ -1640,7 +1614,6 @@ pub(super) fn holdings_at_each(
 fn report_at(
     inputs: &HoldingsInputs<'_>,
     facts: &BTreeMap<String, SoleSymbolFacts>,
-    prices: &[PriceDirective],
     base_commodity: &Commodity,
     as_of: &str,
     gain_since: Option<&str>,
@@ -1669,7 +1642,7 @@ fn report_at(
     // subtracting a value in one commodity from a value in another is not a gain.
     let start_values: BTreeMap<String, Option<Dec>> = match gain_since {
         None => BTreeMap::new(),
-        Some(start) => report_at(inputs, facts, prices, base_commodity, start, None, in_scope)?
+        Some(start) => report_at(inputs, facts, base_commodity, start, None, in_scope)?
             .holdings
             .into_iter()
             .map(|holding| (holding.symbol, holding.market_value))
@@ -1677,7 +1650,6 @@ fn report_at(
     };
     assemble_report(
         inputs,
-        prices,
         base_commodity,
         as_of,
         gain_since,
@@ -1694,7 +1666,6 @@ fn report_at(
 /// which is why a 60-point series now costs about what a 12-point one does.
 fn assemble_report(
     inputs: &HoldingsInputs<'_>,
-    prices: &[PriceDirective],
     base_commodity: &Commodity,
     as_of: &str,
     gain_since: Option<&str>,
@@ -1781,7 +1752,7 @@ fn assemble_report(
             });
         }
 
-        let price = match latest_directive_price(prices, db, symbol, base_commodity, as_of)? {
+        let price = match latest_directive_price(db, symbol, base_commodity, as_of)? {
             Some(directive) => Some(HoldingPrice {
                 qty: directive.qty,
                 date: directive.date,
@@ -3886,6 +3857,83 @@ mod tests {
         let price = only(&report, "XYZ").price.as_ref().expect("priced");
         assert_eq!(price.qty, Dec::new(5000, 2), "the $ directive wins");
         assert_eq!(price.date, "2025-01-15");
+    }
+
+    /// With nothing priced in the base, the LATEST convertible directive wins —
+    /// the reverse walk must not stop at the first one it can convert.
+    #[test]
+    fn the_latest_convertible_directive_wins_when_none_is_in_base() {
+        let txns = [txn(
+            1,
+            "2025-01-05",
+            vec![buy("assets:broker:xyz", "XYZ", 10, 9000, true)],
+            &[],
+        )];
+        let prices = [
+            pd("2025-01-15", "XYZ", 5000, "EUR"),
+            pd("2025-02-01", "XYZ", 10000, "EUR"),
+            pd("2025-02-01", "EUR", 110, "$"),
+            pd("2025-02-01", "VTI", 12000, "$"),
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        assert_eq!(report.base, "$");
+        let price = only(&report, "XYZ").price.as_ref().expect("priced");
+        assert_eq!(price.qty, Dec::new(11000, 2), "€100.00 × 1.10, not €50.00");
+        assert_eq!(price.date, "2025-02-01");
+    }
+
+    /// Same date, declared twice: the LAST declaration wins, and an older
+    /// directive later in the file does not displace it. The date order comes
+    /// from `PriceDb`'s stable sort now rather than from the raw slice, so pin
+    /// both halves of the tie-break.
+    #[test]
+    fn a_later_same_date_directive_supersedes_the_earlier_one() {
+        let txns = [txn(
+            1,
+            "2025-01-05",
+            vec![buy("assets:broker:vti", "VTI", 10, 20000, true)],
+            &[],
+        )];
+        let prices = [
+            pd("2025-02-01", "VTI", 30000, "$"),
+            pd("2025-02-01", "VTI", 31000, "$"),
+            pd("2025-01-01", "VTI", 10000, "$"),
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let price = only(&report, "VTI").price.as_ref().expect("priced");
+        assert_eq!(price.qty, Dec::new(31000, 2));
+        assert_eq!(price.date, "2025-02-01");
+    }
+
+    /// A directive dated after `as_of` is not in effect and must not be read.
+    #[test]
+    fn a_directive_dated_after_the_as_of_is_ignored() {
+        let txns = [txn(
+            1,
+            "2025-01-05",
+            vec![buy("assets:broker:vti", "VTI", 10, 20000, true)],
+            &[],
+        )];
+        let prices = [
+            pd("2025-06-30", "VTI", 30000, "$"),
+            pd("2026-01-01", "VTI", 99900, "$"),
+        ];
+        let report = run(
+            &txns,
+            &prices,
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        );
+        let price = only(&report, "VTI").price.as_ref().expect("priced");
+        assert_eq!(price.qty, Dec::new(30000, 2));
+        assert_eq!(price.date, "2025-06-30");
     }
 
     #[test]

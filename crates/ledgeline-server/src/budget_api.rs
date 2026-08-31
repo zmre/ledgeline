@@ -985,10 +985,22 @@ fn goal_request(
         } => {
             let account = account.trim().to_string();
             let quantity = signed(journal, &account, dec_from_wire(value)?)?;
+            let period = parse_period(period)?;
+            let description = description.trim().to_string();
+            // The rule this goal will actually land in, when one already states
+            // this recurrence under this name — `periodic::plan` joins it rather
+            // than opening a second block. The commodity is inferred from THAT
+            // rule for the reason `amount_for` gives: a new goal in a EUR rule is
+            // a EUR goal, and a `$` one appended beside it would leave a rule
+            // whose postings are not all in one commodity, which is a rule
+            // neither of us will edit again.
+            let joined = doc
+                .joinable_block(period, &description)
+                .and_then(|block| doc.blocks().get(block));
             Ok(GoalRequest::AddBlock {
-                period: parse_period(period)?,
-                description: description.trim().to_string(),
-                amount: amount_for(journal, rules, None, commodity.as_deref(), quantity),
+                period,
+                amount: amount_for(journal, rules, joined, commodity.as_deref(), quantity),
+                description,
                 account,
             })
         }

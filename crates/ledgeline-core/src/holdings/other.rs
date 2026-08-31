@@ -162,12 +162,12 @@ impl<'a> OtherInputs<'a> {
         // precedence, and exactly the order `net_worth` combines them in.
         let mut all_prices = infer_market_prices(txns)?;
         all_prices.extend_from_slice(explicit_prices);
-        let classes = declared_holdings_classes(accounts)?;
+        let classes = declared_holdings_classes(accounts);
         let types = AccountTypes::from_declared(declared_types(&account_decls_from(accounts)));
         Ok(Self {
             txns,
             db: PriceDb::build(&all_prices),
-            roles: declared_valuation_roles(accounts)?,
+            roles: declared_valuation_roles(accounts),
             account_tags: account_tag_map(accounts),
             row_roots: row_roots(txns, &classes, &types),
             classes,

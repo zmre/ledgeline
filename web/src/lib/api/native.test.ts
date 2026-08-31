@@ -155,9 +155,16 @@ describe("UNIT LedgelineApi — error taxonomy", () => {
     });
 
     // The read path used to report the STATUS LINE and drop the body unread,
-    // which threw away the only actionable half of a journal-authoring mistake.
-    it("carries the engine's own sentence on a 4xx, so a bad `holdings:` tag reaches the user", async () => {
-        const sentence = "account 'assets:property:house' declares `holdings: hous`, which is not one of stocks, other, none";
+    // which threw away the only actionable half of the refusal.
+    //
+    // The example used to be a mistyped `holdings:` tag. That is no longer a
+    // 400 — an unreadable account tag is now an `account-tag` finding in the
+    // Problems drawer and the report still serves — so these two tests use a
+    // refusal that still exists. The MACHINERY is unchanged and still needed:
+    // an unpriceable `valueIn`, an unknown `interval` and an out-of-range
+    // `depth` are all 400s whose body is the only actionable half.
+    it("carries the engine's own sentence on a 4xx, so the reason reaches the user", async () => {
+        const sentence = "cannot value these holdings in 'XYZZY': no price directive or cost annotation connects any holding in scope to it";
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(sentence, {status: 400, statusText: "Bad Request"})));
 
         await expect(new LedgelineApi("http://127.0.0.1:5000").otherHoldings({asOf: "2026-07-08"})).rejects.toThrow(sentence);
@@ -169,7 +176,7 @@ describe("UNIT LedgelineApi — error taxonomy", () => {
     // ANSWERING — it refused the journal, not the connection — so it carries
     // the same taxonomy the write path gives its 400s.
     it("types a 400 read refusal as EngineRefusalError, never as an unreachable engine", async () => {
-        const sentence = "account 'assets:x' declares `issection: vibes`, which is not a section";
+        const sentence = "unknown interval 'fortnightly' (expected daily|weekly|monthly|quarterly|yearly)";
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(sentence, {status: 400, statusText: "Bad Request"})));
         const promise = new LedgelineApi("http://127.0.0.1:5000").incomeStatementGrouped();
 

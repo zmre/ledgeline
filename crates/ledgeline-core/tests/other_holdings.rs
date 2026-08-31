@@ -591,22 +591,54 @@ account revenues:unrealized    ; type:R
     assert_eq!(report.totals.change, None);
 }
 
-/// A misspelt role is refused rather than quietly reverting the account to
-/// `cost`, which would fold the gain into the basis and report it as zero.
+/// A misspelt role reverts the account to `cost` — which does fold the gain into
+/// the basis and report it as zero — and is REPORTED, by name, rather than
+/// taking the Other tab down.
+///
+/// This is the sharpest of the five fallbacks and the least comfortable, so it
+/// is worth being explicit: the gain is wrong either way once the tag cannot be
+/// read. The choice is between a wrong number the drawer explains and a blank
+/// tab it does not, and a blank tab also hides the six holdings that were fine.
 #[test]
-fn an_unknown_valuation_role_is_refused() {
+fn an_unknown_valuation_role_is_reported_not_refused() {
     let bad = SPLIT_ASSET.replace("valuation: unrealized", "valuation: unrealised-gain");
     let journal = parse_journal(&bad, "bad.journal").expect("journal parses");
-    let err = other_holdings(
+
+    // The report still computes...
+    let report = other_holdings(
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
         &scope("2026-01-01", None),
     )
-    .expect_err("an unknown role is refused");
-    let text = err.to_string();
-    assert!(text.contains("cost"), "{text}");
-    assert!(text.contains("unrealized"), "{text}");
+    .expect("an unreadable role must not refuse the report");
+    assert!(!report.holdings.is_empty(), "the tab still renders");
+
+    // ...and EVERY typo is named in the drawer. The fixture declares the role on
+    // two accounts, so the substitution above misspells both — which is exactly
+    // the collect-and-continue contract: the old code refused on the first and
+    // the second was never mentioned.
+    let found = serde_json::to_value(ledgeline_core::wire::journal_to_tag_diagnostics(&journal))
+        .expect("serializes");
+    let found = found.as_array().expect("an array");
+    assert_eq!(
+        found
+            .iter()
+            .map(|d| d["account"].as_str().expect("an account"))
+            .collect::<Vec<_>>(),
+        vec![
+            "assets:home:unrealized",
+            "assets:partnerships:angel-continuity:unrealized",
+        ],
+        "both misspelt accounts, in declaration order"
+    );
+    for entry in found {
+        assert_eq!(entry["rule"], "account-tag");
+        let text = entry["message"].as_str().expect("a message");
+        assert!(text.contains("unrealised-gain"), "{text}");
+        assert!(text.contains("cost"), "{text}");
+        assert!(text.contains("unrealized"), "{text}");
+    }
 }
 
 // ---------------------------------------------------------------------------

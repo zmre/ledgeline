@@ -4,13 +4,18 @@ import {classify} from "./editFailure";
 import {EngineRefusalError} from "./native";
 
 describe("UNIT editFailure — classify", () => {
-    // The whole point of EngineRefusalError (native.ts): a journal typo
-    // surfaced on a READ — a 400 from the refetch after an edit, or from a
-    // report route — is the same fact as a write-path ValidationError. Before
-    // this mapping it fell through to ApiUnreachableError's "network" kind,
-    // which sent the user to check their connection instead of their journal.
+    // The whole point of EngineRefusalError (native.ts): a refusal surfaced on
+    // a READ — a 400 from the refetch after an edit, or from a report route —
+    // is the same fact as a write-path ValidationError. Before this mapping it
+    // fell through to ApiUnreachableError's "network" kind, which sent the user
+    // to check their connection instead of their input.
+    //
+    // The example was a mistyped `holdings:` tag until that became an
+    // `account-tag` finding in the Problems drawer instead of a 400. The
+    // mapping still matters for the 400s that remain, of which an unpriceable
+    // `valueIn` is one.
     it("maps a read-path engine refusal to `validation`, never to `network`", () => {
-        const sentence = "account 'assets:x' declares `holdings: y`, which is not one of stocks, other, none";
+        const sentence = "cannot value these holdings in 'XYZZY': no price directive or cost annotation connects any holding in scope to it";
         expect(classify(new EngineRefusalError(sentence))).toEqual({kind: "validation", message: sentence});
     });
 

@@ -44,15 +44,28 @@
             <span class="font-semibold {signClass(toNumber(net))}">{netFormatted}</span>
         </span>
     </div>
+    <!-- `{#if settings.insightsOpen}` because daisyUI's `collapse` is CSS ONLY:
+         collapsing sets the content's height, it does not unmount anything. A
+         collapsed panel therefore went on mounting BigNumbers and ChartWidget
+         and recomputing both on every filter change — ~250 ms of whole-journal
+         passes at 150k transactions, for a panel the user had deliberately shut.
+         `max` is guarded with them because `maxAccountDepth` is another full
+         pass and only the slider reads it.
+
+         The HEADER above stays outside the guard on purpose: showing the period
+         net while collapsed is the point of collapsing rather than hiding, and
+         it is the one number worth a scan here. -->
     <div class="collapse-content flex flex-col gap-4">
-        <BigNumbers {txns} {accounts} {allTxns} {declared} />
-        <ChartWidget {txns} {accounts} {allTxns} {depth} {declared} />
-        <!-- Keyed on max: the slider can mount while txns are still loading (max=1),
-             and the browser clamps the input's value to that max without updating the
-             bound state; remounting once the real max arrives re-applies `depth`
-             (same guard as reports/ui/ReportControls.svelte). -->
-        {#key max}
-            <DepthSlider bind:depth {max} />
-        {/key}
+        {#if settings.insightsOpen}
+            <BigNumbers {txns} {accounts} {allTxns} {declared} />
+            <ChartWidget {txns} {accounts} {allTxns} {depth} {declared} />
+            <!-- Keyed on max: the slider can mount while txns are still loading (max=1),
+                 and the browser clamps the input's value to that max without updating the
+                 bound state; remounting once the real max arrives re-applies `depth`
+                 (same guard as reports/ui/ReportControls.svelte). -->
+            {#key max}
+                <DepthSlider bind:depth {max} />
+            {/key}
+        {/if}
     </div>
 </section>

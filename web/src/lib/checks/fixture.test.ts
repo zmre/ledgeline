@@ -64,7 +64,11 @@ describe("UNIT checks over fixture API snapshot", () => {
             .map((t) => t.index)
             .sort((a, b) => a - b);
         const flagged = byRule("future-date")
+            // `future-date` is a transaction rule, so every finding is anchored;
+            // the filter is what tells TypeScript so (Problem.txnIndex is
+            // nullable for the account-anchored rules).
             .map((p) => p.txnIndex)
+            .filter((index): index is number => index !== null)
             .sort((a, b) => a - b);
         expect(flagged).toEqual(expected);
         expect(problems.filter((p) => p.severity === "error")).toEqual([]);

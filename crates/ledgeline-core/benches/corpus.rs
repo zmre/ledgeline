@@ -17,43 +17,188 @@
 //! - dates come from an integer day counter through a proleptic-Gregorian
 //!   conversion, not from any calendar library.
 //!
-//! Change anything about the shape and you must bump [`CORPUS_VERSION`], which
-//! is part of the on-disk filename, so stale corpora can never be silently
-//! benchmarked against fresh code.
+//! Change anything about a shape's output and you must give it a new
+//! [`Shape::version`] or [`Shape::label`], both of which are part of the on-disk
+//! filename, so stale corpora can never be silently benchmarked against fresh
+//! code.
 //!
-//! # Shape
+//! # Shapes
 //!
-//! Reproduces the journal shape CLEANUP.md's Phase 6 table was measured on:
+//! [`V1`] reproduces the journal CLEANUP.md's Phase 6 table was measured on:
 //! 300 declared accounts, 5 commodities, 1,488 `P` directives, a 30-year span
 //! (1996-01-01 .. 2025-12-31), ~2.2 postings per transaction, ~9% of
 //! transactions carrying an `@`/`@@` cost, plus periodic (`~`) budget rules,
 //! virtual and balanced-virtual postings, tags, comments and balance
-//! assertions.
+//! assertions. **`generate(n)` is frozen on it** — `docs/perf-baseline.md` §2
+//! records the SHA-256 of its output, and every timing in §3 is measured
+//! against those exact bytes.
+//!
+//! [`V2`] is the large-repo fixture: 150,000 transactions over 15 years, 200
+//! commodities and 75 accounts, with 25 commodities sharing each brokerage
+//! account. [`V2_FX`] is the same journal with a MESH price graph rather than a
+//! `$`-star, which is what takes valuation off its direct-lookup fast path.
 
 #![allow(dead_code)]
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-/// Bump on ANY change to the emitted shape — it keys the on-disk cache file.
+/// Bump on ANY change to a shape's emitted output — it keys the on-disk cache
+/// file through [`Shape::version`]. [`V1`] is FROZEN at 1: `docs/perf-baseline.md`
+/// §3 is measured against its exact bytes, so anything that moves them
+/// invalidates every number in that table.
 pub const CORPUS_VERSION: u32 = 1;
 
 /// The one and only entropy source. Chosen arbitrarily; never derived from the
 /// clock, the environment or the requested size.
 const SEED: u64 = 0x01ED_A11E_C011_5EED;
 
-/// First day of the span (1996-01-01) as a day number.
-const SPAN_START: (i64, u32, u32) = (1996, 1, 1);
-/// Last day of the span (2025-12-31) — exactly 30 years.
+/// Last day of every span (2025-12-31). Spans are anchored at the END so a
+/// shorter corpus still finishes on the date the benches use as `as_of`.
 const SPAN_END: (i64, u32, u32) = (2025, 12, 31);
 
-/// First month of the price series (1996-01) and count, giving exactly
-/// `4 * 372 = 1488` `P` directives.
-const PRICE_FIRST_MONTH: (i64, u32) = (1996, 1);
-const PRICE_MONTHS: u32 = 372;
+// ---------------------------------------------------------------------------
+// Shape
+// ---------------------------------------------------------------------------
 
-/// Total declared `account` directives, matching CLEANUP.md's stated shape.
-const DECLARED_ACCOUNTS: usize = 300;
+/// Everything a corpus VARIANT can vary. One `Shape` in, one byte-identical
+/// journal out.
+///
+/// The generator used to be a wall of consts, which made it impossible to ask
+/// for the large-repo fixture (10k transactions a year for 15 years, ~200
+/// commodities, 75 accounts) without editing it. Every one of those consts is
+/// now a field, and [`V1`] holds their old values so `generate(n)` — the whole
+/// of `docs/perf-baseline.md` — is untouched.
+///
+/// **Adding a field is safe. Changing [`V1`]'s values is not**: it silently
+/// re-shapes the corpus the recorded SHA-256s and the whole baseline table were
+/// measured on. Add a new `Shape` instead, with its own `version`/`label`.
+#[derive(Debug, Clone)]
+pub struct Shape {
+    /// Cache-file version. Frozen at 1 for [`V1`].
+    pub version: u32,
+    /// Filename discriminator after the version, so two shapes of the same
+    /// version and size cannot collide. Empty for [`V1`].
+    pub label: &'static str,
+    pub txns: usize,
+    /// Exact number of `account` directives emitted.
+    pub accounts: usize,
+    /// Number of tradeable security commodities (`$`/`EUR` are on top).
+    pub symbols: usize,
+    /// Span length in years, ending at [`SPAN_END`].
+    pub years: i64,
+    /// Months of `P` directives, from January of the span's first year.
+    pub price_months: u32,
+    /// How many symbols share one brokerage position account. `1` gives the v1
+    /// account-per-symbol layout; a larger number is what forces many
+    /// commodities into one account's `MixedAmount`.
+    pub symbols_per_position: usize,
+    /// Cross-rate currencies plus non-`$`-priced symbols, turning the price
+    /// graph from a star into a mesh. See [`write_prices`].
+    pub cross_rates: bool,
+    // Account-pool sizes. Each slices the head of the matching name pool.
+    pub banks: usize,
+    pub brokers: usize,
+    pub card_issuers: usize,
+    pub loans: usize,
+    pub employers: usize,
+    pub receivables: usize,
+    pub other_income: usize,
+    pub expense_categories: usize,
+}
+
+/// The original corpus. **FROZEN** — `docs/perf-baseline.md` §2 records the
+/// SHA-256 of its output at 5k, 50k and 200k.
+pub const V1: Shape = Shape {
+    version: CORPUS_VERSION,
+    label: "",
+    txns: 0,
+    accounts: 300,
+    symbols: 3,
+    years: 30,
+    price_months: 372,
+    symbols_per_position: 1,
+    cross_rates: false,
+    banks: 8,
+    brokers: 3,
+    card_issuers: 5,
+    loans: 4,
+    employers: 4,
+    receivables: 6,
+    other_income: 5,
+    expense_categories: 20,
+};
+
+/// The large-repo fixture: 10k transactions a year for 15 years, ~200
+/// commodities and 75 accounts.
+///
+/// The commodity and account counts are in deliberate tension. One position
+/// account per (broker × symbol) — v1's model — would mint 400 accounts on its
+/// own, five times the whole budget, so 25 symbols share each account instead.
+/// That is the point of the fixture: it is the only way to get a
+/// `BTreeMap<Commodity, Dec>` per account that is 25 entries deep rather than 1,
+/// which is what every `MixedAmount` fold, every `value_at` and every
+/// `roll_up` actually walks.
+pub const V2: Shape = Shape {
+    version: 2,
+    label: "",
+    txns: 150_000,
+    accounts: 75,
+    symbols: 200,
+    years: 15,
+    price_months: 180,
+    symbols_per_position: 25,
+    cross_rates: false,
+    banks: 2,
+    brokers: 2,
+    card_issuers: 2,
+    loans: 1,
+    employers: 2,
+    receivables: 1,
+    other_income: 2,
+    expense_categories: 6,
+};
+
+/// [`V2`] with a MESH price graph instead of a `$`-star.
+///
+/// A star keeps `reports::prices::value_at` on its direct-lookup fast path and
+/// `choose_base` on its "fewer than 2 candidates" short-circuit, so a
+/// star-only corpus would measure neither. Three things change here, and each
+/// one disarms a specific guard:
+///
+/// 1. **GBP and CHF are priced in EUR and GBP**, not in `$`, so reaching `$`
+///    from them is a 2- and 3-hop chain through [`PriceGraph`].
+/// 2. **Roughly two sevenths of the symbols are quoted in EUR or GBP**, so
+///    valuing them in `$` misses `lookup_in` and builds the graph.
+/// 3. **The last symbol is never priced at all.** `choose_base` stops walking
+///    candidates the moment one prices everything; one unpriceable holding means
+///    no candidate ever does, so every one of them is scanned.
+pub const V2_FX: Shape = Shape {
+    label: "fx",
+    cross_rates: true,
+    ..V2
+};
+
+impl Shape {
+    /// This shape at a different transaction count.
+    #[must_use]
+    pub fn with_txns(&self, txns: usize) -> Shape {
+        Shape {
+            txns,
+            ..self.clone()
+        }
+    }
+
+    /// First day of the span: January 1st, `years` before [`SPAN_END`]'s year.
+    fn span_start(&self) -> (i64, u32, u32) {
+        (SPAN_END.0 - self.years + 1, 1, 1)
+    }
+
+    /// First month of the price series — January of the span's first year.
+    fn price_first_month(&self) -> (i64, u32) {
+        (self.span_start().0, 1)
+    }
+}
 
 /// The single account whose running `$` balance is tracked exactly so periodic
 /// balance assertions can be emitted (and must therefore verify).
@@ -195,6 +340,16 @@ fn eur(cents: i64) -> String {
     format!("{sign}{whole},{frac:02} EUR")
 }
 
+/// A two-decimal amount in a symbol-right commodity: `12345`, `"GBP"` ->
+/// `"123.45 GBP"`. The plain style — no digit grouping, point decimal — used for
+/// every cross-rate quote.
+fn plain(cents: i64, code: &str) -> String {
+    let neg = cents < 0;
+    let abs = cents.unsigned_abs();
+    let sign = if neg { "-" } else { "" };
+    format!("{sign}{}.{:02} {code}", abs / 100, abs % 100)
+}
+
 // ---------------------------------------------------------------------------
 // Name pools. Fixed, ordered, never hashed.
 // ---------------------------------------------------------------------------
@@ -203,7 +358,44 @@ const BANKS: [&str; 8] = [
     "chase", "wells", "ally", "schwab", "citi", "hsbc", "usaa", "sofi",
 ];
 const BROKERS: [&str; 3] = ["fidelity", "vanguard", "etrade"];
-const SYMBOLS: [&str; 3] = ["AAPL", "VTI", "GLD"];
+
+/// The tickers a small corpus uses, in order. Beyond these,
+/// [`symbol_names`] mints codes.
+const SEED_SYMBOLS: [&str; 3] = ["AAPL", "VTI", "GLD"];
+
+/// `count` distinct commodity symbols: [`SEED_SYMBOLS`] first, then minted
+/// `Q`-prefixed four-letter codes.
+///
+/// `Q` because none of the seed tickers starts with one, so a minted code can
+/// never collide with a real name however many are asked for. Letters only —
+/// hledger needs a commodity symbol containing a digit to be double-quoted, and
+/// a quoted symbol would be measuring the parser's quoting path rather than the
+/// engine's commodity handling.
+fn symbol_names(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|i| match SEED_SYMBOLS.get(i) {
+            Some(name) => (*name).to_string(),
+            None => {
+                let n = i - SEED_SYMBOLS.len();
+                let letter = |place: usize| (b'A' + ((n / place) % 26) as u8) as char;
+                format!("Q{}{}{}", letter(676), letter(26), letter(1))
+            }
+        })
+        .collect()
+}
+
+/// Opening price in cents for symbol `i`, before the monthly random walk.
+///
+/// The first three are [`V1`]'s literals; beyond them a coprime stride spreads
+/// the openings across a realistic $10–$610 band without touching the RNG (which
+/// would shift every later draw and break v1's byte-identity).
+fn opening_cents(i: usize) -> i64 {
+    const SEED_CENTS: [i64; 3] = [2_000, 4_500, 28_000];
+    match SEED_CENTS.get(i) {
+        Some(cents) => *cents,
+        None => 1_000 + ((i as i64 * 977) % 60_000),
+    }
+}
 const CARD_ISSUERS: [&str; 5] = ["visa", "amex", "mastercard", "discover", "store"];
 const LOANS: [&str; 4] = ["mortgage", "auto", "student", "personal"];
 const EMPLOYERS: [&str; 4] = ["acme", "globex", "initech", "umbrella"];
@@ -375,20 +567,50 @@ struct Chart {
     cash: Vec<String>,
     /// Credit-card liabilities.
     credit: Vec<String>,
-    /// `(position account, symbol, that broker's cash sweep)`.
-    broker_positions: Vec<(String, &'static str, String)>,
+    /// `(position account, symbol, that broker's cash sweep)`. One entry per
+    /// tradeable pair, so several entries SHARE an account name whenever
+    /// [`Shape::symbols_per_position`] is greater than one.
+    broker_positions: Vec<(String, String, String)>,
     /// The EUR-denominated account.
     eur: String,
     /// Expense leaves — the accounts most postings land on.
     expense_leaves: Vec<String>,
-    /// Income accounts, salaries first (`EMPLOYERS.len()` of them).
+    /// Income accounts, salaries first (`shape.employers` of them).
     income: Vec<String>,
     /// `equity:{opening,transfers,retained}`, in that order.
     equity: Vec<String>,
+    /// Every commodity symbol, in declaration order.
+    symbols: Vec<String>,
 }
 
-fn build_chart() -> Chart {
-    let mut decls: Vec<Decl> = Vec::with_capacity(DECLARED_ACCOUNTS);
+/// The two accounts [`emit_salary`] withholds to. They are not drawn from a
+/// pool — the payroll transaction names them directly — so the chart has to
+/// guarantee they are declared or `hledger check -s` rejects the journal.
+const SALARY_TAXES: [&str; 2] = ["expenses:taxes:federal", "expenses:taxes:state"];
+
+/// The expense leaves for a given budget: category-major round-robin, so leaves
+/// spread evenly and a category never repeats a word (the `ci * 11 + j` stride
+/// is coprime with [`LEAF_WORDS`]'s length).
+///
+/// Pure, and called twice — once to find out whether it already produces
+/// [`SALARY_TAXES`] (v1 does, at 204 leaves over 20 categories) and once for
+/// real. That is what lets the reservation below cost v1 nothing.
+fn leaf_names(budget: usize, categories: &[&str]) -> Vec<String> {
+    let mut per_category = vec![0usize; categories.len()];
+    (0..budget)
+        .map(|k| {
+            let ci = k % categories.len();
+            let j = per_category[ci];
+            per_category[ci] += 1;
+            let word = LEAF_WORDS[(ci * 11 + j) % LEAF_WORDS.len()];
+            format!("expenses:{}:{word}", categories[ci])
+        })
+        .collect()
+}
+
+fn build_chart(shape: &Shape) -> Chart {
+    let symbols = symbol_names(shape.symbols);
+    let mut decls: Vec<Decl> = Vec::with_capacity(shape.accounts);
     // A macro rather than a closure so `decls.len()` stays readable further down
     // (a `FnMut` closure would hold the mutable borrow for the whole function).
     macro_rules! push {
@@ -409,7 +631,7 @@ fn build_chart() -> Chart {
 
     // --- cash (type: C) ---
     let mut cash = Vec::new();
-    for bank in BANKS {
+    for bank in &BANKS[..shape.banks] {
         for kind in ["checking", "savings"] {
             let name = format!("assets:bank:{bank}:{kind}");
             push!(name.clone(), Some("C"));
@@ -427,22 +649,32 @@ fn build_chart() -> Chart {
     cash.push("assets:bank:wise:usd".to_string());
 
     let mut broker_cash = Vec::new();
-    for broker in BROKERS {
+    for broker in &BROKERS[..shape.brokers] {
         let name = format!("assets:broker:{broker}:cash");
         push!(name.clone(), Some("C"));
         broker_cash.push(name);
     }
 
     // --- non-cash assets ---
+    // Every broker holds every SLEEVE, and a sleeve holds
+    // `symbols_per_position` commodities. At one symbol per sleeve this is v1's
+    // account-per-symbol layout, named after the symbol; above that the sleeve
+    // gets a number, because a name cannot spell 25 tickers.
+    let sleeves: Vec<&[String]> = symbols.chunks(shape.symbols_per_position).collect();
     let mut broker_positions = Vec::new();
-    for (bi, broker) in BROKERS.iter().enumerate() {
-        for symbol in SYMBOLS {
-            let name = format!("assets:broker:{broker}:{}", symbol.to_lowercase());
+    for (bi, broker) in BROKERS[..shape.brokers].iter().enumerate() {
+        for (si, sleeve) in sleeves.iter().enumerate() {
+            let name = match sleeve {
+                [only] => format!("assets:broker:{broker}:{}", only.to_lowercase()),
+                _ => format!("assets:broker:{broker}:sleeve{:02}", si + 1),
+            };
             push!(name.clone(), Some("A"));
-            broker_positions.push((name, symbol, broker_cash[bi].clone()));
+            for symbol in *sleeve {
+                broker_positions.push((name.clone(), symbol.clone(), broker_cash[bi].clone()));
+            }
         }
     }
-    for n in 1..=6 {
+    for n in 1..=shape.receivables {
         push!(format!("assets:receivable:client{n:02}"), Some("A"));
     }
     for thing in ["house", "car", "art"] {
@@ -451,14 +683,14 @@ fn build_chart() -> Chart {
 
     // --- liabilities ---
     let mut credit = Vec::new();
-    for issuer in CARD_ISSUERS {
+    for issuer in &CARD_ISSUERS[..shape.card_issuers] {
         let name = format!("liabilities:cc:{issuer}");
         push!(name.clone(), Some("L"));
         credit.push(name);
     }
     // Declared but never posted to, which is realistic: 248 of the 300 declared
     // accounts see traffic.
-    for loan in LOANS {
+    for loan in &LOANS[..shape.loans] {
         push!(format!("liabilities:loan:{loan}"), Some("L"));
     }
     for tax in ["federal", "state"] {
@@ -475,51 +707,78 @@ fn build_chart() -> Chart {
 
     // --- income ---
     let mut income = Vec::new();
-    for employer in EMPLOYERS {
+    for employer in &EMPLOYERS[..shape.employers] {
         let name = format!("income:salary:{employer}");
         push!(name.clone(), Some("R"));
         income.push(name);
     }
-    for broker in BROKERS {
+    for broker in &BROKERS[..shape.brokers] {
         let name = format!("income:dividends:{broker}");
         push!(name.clone(), Some("R"));
         income.push(name);
     }
-    for bank in &BANKS[..4] {
+    for bank in &BANKS[..shape.banks.min(4)] {
         let name = format!("income:interest:{bank}");
         push!(name.clone(), Some("R"));
         income.push(name);
     }
-    for other in ["consulting", "rental", "refunds", "gifts", "capgains"] {
+    const OTHER_INCOME: [&str; 5] = ["consulting", "rental", "refunds", "gifts", "capgains"];
+    for other in &OTHER_INCOME[..shape.other_income] {
         let name = format!("income:{other}");
         push!(name.clone(), Some("R"));
         income.push(name);
     }
 
     // --- expenses: category parents, then exactly enough leaves to land on
-    //     DECLARED_ACCOUNTS. Computing the leaf budget keeps the total pinned at
-    //     300 even if a pool above changes size.
-    for category in EXPENSE_CATEGORIES {
+    //     `shape.accounts`. Computing the leaf budget keeps the total pinned
+    //     even if a pool above changes size.
+    let categories = &EXPENSE_CATEGORIES[..shape.expense_categories];
+    for category in categories {
         push!(format!("expenses:{category}"), None);
     }
-    let leaf_budget = DECLARED_ACCOUNTS - decls.len();
-    let mut expense_leaves = Vec::with_capacity(leaf_budget);
-    // Round-robin across categories so leaves spread evenly; the `(ci * 11 + j)`
-    // stride is coprime with 40, so a category never repeats a leaf word.
-    let mut per_category = vec![0usize; EXPENSE_CATEGORIES.len()];
-    for k in 0..leaf_budget {
-        let ci = k % EXPENSE_CATEGORIES.len();
-        let j = per_category[ci];
-        per_category[ci] += 1;
-        let word = LEAF_WORDS[(ci * 11 + j) % LEAF_WORDS.len()];
-        let name = format!("expenses:{}:{word}", EXPENSE_CATEGORIES[ci]);
+    // `saturating_sub`, not `-`: a shape whose fixed pools already exceed its
+    // account budget must fail with the assert below, which names the numbers,
+    // rather than by wrapping to `usize::MAX` and aborting inside
+    // `Vec::with_capacity`. That wrap is exactly what asking for 75 accounts
+    // used to do.
+    assert!(
+        decls.len() <= shape.accounts,
+        "shape's fixed account pools need {} declarations but the budget is {} — \
+         shrink a pool, do not raise the budget silently",
+        decls.len(),
+        shape.accounts
+    );
+    let budget = shape.accounts.saturating_sub(decls.len());
+
+    // Reserve room for any salary-tax account the round-robin would not produce
+    // on its own. v1's 204 leaves over 20 categories already contain both, so
+    // nothing is reserved there and its byte stream is untouched; a small chart
+    // reserves two of its leaves instead.
+    let unreserved = leaf_names(budget, categories);
+    let reserved: Vec<&str> = SALARY_TAXES
+        .iter()
+        .filter(|required| !unreserved.iter().any(|leaf| leaf == *required))
+        .copied()
+        .collect();
+    let expense_leaves = leaf_names(budget - reserved.len(), categories);
+    assert!(
+        reserved
+            .iter()
+            .all(|required| !expense_leaves.iter().any(|leaf| leaf == required)),
+        "reserving a salary-tax account must not make the round-robin produce it"
+    );
+    for name in &expense_leaves {
         push!(name.clone(), None);
-        expense_leaves.push(name);
     }
+    for name in &reserved {
+        push!((*name).to_string(), None);
+    }
+
     assert_eq!(
         decls.len(),
-        DECLARED_ACCOUNTS,
-        "chart of accounts must declare exactly {DECLARED_ACCOUNTS} accounts"
+        shape.accounts,
+        "chart of accounts must declare exactly {} accounts",
+        shape.accounts
     );
 
     Chart {
@@ -531,6 +790,7 @@ fn build_chart() -> Chart {
         expense_leaves,
         income,
         equity,
+        symbols,
     }
 }
 
@@ -576,17 +836,19 @@ struct Gen {
     rng: Rng,
     out: String,
     chart: Chart,
+    shape: Shape,
     /// Exact running `$` balance of [`ASSERTED_ACCOUNT`], in cents.
     asserted_cents: i64,
     postings_emitted: usize,
 }
 
 impl Gen {
-    fn new(expected_bytes: usize) -> Self {
+    fn new(shape: &Shape, expected_bytes: usize) -> Self {
         Self {
             rng: Rng::new(SEED),
             out: String::with_capacity(expected_bytes),
-            chart: build_chart(),
+            chart: build_chart(shape),
+            shape: shape.clone(),
             asserted_cents: 0,
             postings_emitted: 0,
         }
@@ -658,28 +920,42 @@ impl Gen {
     }
 }
 
-/// Generate the synthetic journal with `txns` transactions.
+/// Generate the [`V1`] journal with `txns` transactions.
 ///
-/// Deterministic: same `txns` in, byte-identical journal out. See the module
-/// docs for the guarantee's basis.
+/// Deterministic: same `txns` in, byte-identical journal out — and identical to
+/// what this function produced before the generator was parameterized, which is
+/// what keeps `docs/perf-baseline.md` §3 meaningful. See the module docs for the
+/// guarantee's basis.
 #[must_use]
 pub fn generate(txns: usize) -> String {
-    assert!(txns > 1, "corpus needs at least 2 transactions");
-    // ~145 bytes/txn plus a ~30 KB preamble; over-reserving beats reallocating a
-    // 28 MB string.
-    let mut jg = Gen::new(txns * 160 + 64 * 1024);
+    generate_shape(&V1.with_txns(txns))
+}
+
+/// Generate the journal `shape` describes.
+///
+/// Deterministic: same `shape` in, byte-identical journal out.
+#[must_use]
+pub fn generate_shape(shape: &Shape) -> String {
+    assert!(shape.txns > 1, "corpus needs at least 2 transactions");
+    // ~145 bytes/txn, plus a preamble that scales with the price series (a
+    // 200-commodity corpus writes ~36k `P` directives, far past v1's 30 KB).
+    // Over-reserving beats reallocating a 28 MB string.
+    let price_lines = (shape.price_months as usize) * (shape.symbols + 4);
+    let mut jg = Gen::new(shape, shape.txns * 160 + price_lines * 40 + 64 * 1024);
 
     write_preamble(&mut jg);
     write_prices(&mut jg);
     write_periodic_rules(&mut jg);
-    write_transactions(&mut jg, txns);
+    write_transactions(&mut jg, shape.txns);
 
     jg.out
 }
 
 fn write_preamble(jg: &mut Gen) {
     // Destructured so the account list can be read while `out` is written to.
-    let Gen { out, chart, .. } = jg;
+    let Gen {
+        out, chart, shape, ..
+    } = jg;
     out.push_str("; Ledgeline synthetic performance corpus — GENERATED, DO NOT EDIT.\n");
     out.push_str(concat!(
         "; Produced by crates/ledgeline-core/benches/corpus.rs (deterministic, fixed seed).\n",
@@ -689,7 +965,12 @@ fn write_preamble(jg: &mut Gen) {
     out.push_str("; ---------- commodity declarations ----------\n");
     out.push_str("commodity $1,000.00\n");
     out.push_str("commodity 1.000,00 EUR\n");
-    for symbol in SYMBOLS {
+    if shape.cross_rates {
+        for code in CROSS_CURRENCIES {
+            let _ = writeln!(out, "commodity 1.00 {code}");
+        }
+    }
+    for symbol in &chart.symbols {
         let _ = writeln!(out, "commodity 1.00 {symbol}");
     }
     out.push_str("\nD $1,000.00\n\n");
@@ -709,26 +990,67 @@ fn write_preamble(jg: &mut Gen) {
     out.push('\n');
 }
 
-/// Exactly `4 * PRICE_MONTHS` (= 1,488) `P` directives: EUR plus the three
-/// symbols, at every month end from 1996-01 through 2026-12.
+/// The currencies that turn the price graph into a mesh, each quoted in the one
+/// before it (GBP in EUR, CHF in GBP) so reaching `$` takes 2 and 3 hops.
+const CROSS_CURRENCIES: [&str; 2] = ["GBP", "CHF"];
+
+/// One `P` directive per priced commodity per month end, from January of the
+/// span's first year. [`V1`] emits `4 × 372 = 1,488` of them: EUR plus its three
+/// symbols.
+///
+/// Under [`Shape::cross_rates`] two things change. The [`CROSS_CURRENCIES`] are
+/// quoted in each OTHER rather than in `$`, and a symbol whose index is
+/// `0 mod 7` or `3 mod 7` is quoted in EUR or GBP rather than `$` — so valuing
+/// it in `$` cannot be a direct lookup and has to walk the graph. The LAST
+/// symbol is skipped entirely: an unpriceable holding is what stops
+/// `choose_base` short-circuiting on the first candidate that prices everything.
 fn write_prices(jg: &mut Gen) {
-    jg.out
-        .push_str("; ---------- market prices (1,488 P directives) ----------\n");
-    // Integer random walks. EUR is quoted at 4dp, symbols at 2dp.
+    let symbols = jg.chart.symbols.clone();
+    let cross = jg.shape.cross_rates;
+    // Under cross-rates the last symbol is deliberately left unpriced.
+    let priced = symbols.len().saturating_sub(usize::from(cross));
+    let lines = jg.shape.price_months as usize * (priced + 1 + if cross { 2 } else { 0 });
+    let _ = writeln!(
+        jg.out,
+        "; ---------- market prices ({} P directives) ----------",
+        group3(&lines.to_string())
+    );
+    // Integer random walks. EUR is quoted at 4dp, everything else at 2dp.
     let mut eur_rate: i64 = 11_500; // $1.1500
-    let mut symbol_cents: [i64; 3] = [2_000, 4_500, 28_000];
-    let (mut year, mut month) = PRICE_FIRST_MONTH;
-    for _ in 0..PRICE_MONTHS {
+    let mut cross_rate: [i64; 2] = [8_600, 11_200]; // GBP in EUR, CHF in GBP
+    let mut symbol_cents: Vec<i64> = (0..symbols.len()).map(opening_cents).collect();
+    let (mut year, mut month) = jg.shape.price_first_month();
+    for _ in 0..jg.shape.price_months {
         let date = iso(month_end(year, month));
         eur_rate = (eur_rate + jg.rng.range(-400, 400)).clamp(7_000, 16_000);
         let _ = writeln!(jg.out, "P {date} EUR {}", usd4(eur_rate));
-        for (i, symbol) in SYMBOLS.iter().enumerate() {
+        if cross {
+            for (i, code) in CROSS_CURRENCIES.iter().enumerate() {
+                let quoted_in = if i == 0 {
+                    "EUR"
+                } else {
+                    CROSS_CURRENCIES[i - 1]
+                };
+                cross_rate[i] = (cross_rate[i] + jg.rng.range(-300, 300)).clamp(5_000, 20_000);
+                let _ = writeln!(
+                    jg.out,
+                    "P {date} {code} {}",
+                    plain(cross_rate[i], quoted_in)
+                );
+            }
+        }
+        for (i, symbol) in symbols[..priced].iter().enumerate() {
             // Drift up slightly on average — 30 years of a flat walk would make
             // every holdings bench value at roughly the cost basis.
             let step = symbol_cents[i] / 12;
             symbol_cents[i] =
                 (symbol_cents[i] + jg.rng.range(-step, step + step / 8)).clamp(200, 5_000_000);
-            let _ = writeln!(jg.out, "P {date} {symbol} {}", usd(symbol_cents[i]));
+            let quote = match (cross, i % 7) {
+                (true, 0) => plain(symbol_cents[i], "EUR"),
+                (true, 3) => plain(symbol_cents[i], "GBP"),
+                _ => usd(symbol_cents[i]),
+            };
+            let _ = writeln!(jg.out, "P {date} {symbol} {quote}");
         }
         if month == 12 {
             year += 1;
@@ -776,7 +1098,8 @@ fn write_periodic_rules(jg: &mut Gen) {
 
 fn write_transactions(jg: &mut Gen, txns: usize) {
     jg.out.push_str("; ---------- transactions ----------\n");
-    let start = days_from_civil(SPAN_START.0, SPAN_START.1, SPAN_START.2);
+    let span_start = jg.shape.span_start();
+    let start = days_from_civil(span_start.0, span_start.1, span_start.2);
     let end = days_from_civil(SPAN_END.0, SPAN_END.1, SPAN_END.2);
     let span = end - start;
 
@@ -865,8 +1188,8 @@ fn emit_split_expense(jg: &mut Gen, day: i64) {
 
 fn emit_salary(jg: &mut Gen, day: i64) {
     let status = jg.status();
-    // The salary accounts are the first `EMPLOYERS.len()` income accounts.
-    let salaries = jg.chart.income[..EMPLOYERS.len()].to_vec();
+    // The salary accounts are the first `shape.employers` income accounts.
+    let salaries = jg.chart.income[..jg.shape.employers].to_vec();
     let employer = jg.rng.pick(&salaries).clone();
     let gross = jg.rng.range(200_000, 900_000);
     let federal = gross * 21 / 100;
@@ -1006,29 +1329,47 @@ pub fn corpus_dir() -> PathBuf {
     }
 }
 
+/// Cache path for `shape`: `synthetic-v<version><label>-<txns>.journal`.
+///
+/// Version AND label are both in the name, so two shapes can never share a file
+/// and a stale cache can never mask a generator change.
 #[must_use]
-pub fn journal_path(txns: usize) -> PathBuf {
-    corpus_dir().join(format!("synthetic-v{CORPUS_VERSION}-{txns}.journal"))
+pub fn journal_path_for(shape: &Shape) -> PathBuf {
+    corpus_dir().join(format!(
+        "synthetic-v{}{}-{}.journal",
+        shape.version, shape.label, shape.txns
+    ))
 }
 
-/// Path to the generated journal for `txns`, writing it first if it is missing.
+#[must_use]
+pub fn journal_path(txns: usize) -> PathBuf {
+    journal_path_for(&V1.with_txns(txns))
+}
+
+/// Path to the generated journal for `shape`, writing it first if it is missing.
 ///
-/// The file name carries [`CORPUS_VERSION`], so a generator change can never be
-/// masked by a stale cache.
+/// # Panics
+/// If the corpus directory or file cannot be written.
+#[must_use]
+pub fn ensure_journal_for(shape: &Shape) -> PathBuf {
+    let path = journal_path_for(shape);
+    if !path.exists() {
+        let dir = path.parent().expect("corpus path has a parent");
+        std::fs::create_dir_all(dir)
+            .unwrap_or_else(|e| panic!("could not create {}: {e}", dir.display()));
+        std::fs::write(&path, generate_shape(shape))
+            .unwrap_or_else(|e| panic!("could not write {}: {e}", path.display()));
+    }
+    path
+}
+
+/// Path to the [`V1`] journal for `txns`, writing it first if it is missing.
 ///
 /// # Panics
 /// If the corpus directory or file cannot be written.
 #[must_use]
 pub fn ensure_journal(txns: usize) -> PathBuf {
-    let path = journal_path(txns);
-    if !path.exists() {
-        let dir = path.parent().expect("corpus path has a parent");
-        std::fs::create_dir_all(dir)
-            .unwrap_or_else(|e| panic!("could not create {}: {e}", dir.display()));
-        std::fs::write(&path, generate(txns))
-            .unwrap_or_else(|e| panic!("could not write {}: {e}", path.display()));
-    }
-    path
+    ensure_journal_for(&V1.with_txns(txns))
 }
 
 /// The generated journal's TEXT for `txns`, from the on-disk cache.
@@ -1051,6 +1392,65 @@ pub fn load(txns: usize) -> String {
 ///
 /// # Panics
 /// If `LEDGELINE_BENCH_SIZES` is set but does not parse.
+/// The shapes a `cargo bench` run covers.
+///
+/// Defaults to [`V1`] at [`bench_sizes`], so the run every recorded baseline was
+/// measured with is what you get unless you ask for something else.
+/// `LEDGELINE_BENCH_SHAPES` takes a comma-separated list of shape names —
+/// `v2`, `v2fx`, or `v2@20000` to override a shape's transaction count, which is
+/// how you probe a new corpus before committing to a full-size run.
+///
+/// # Panics
+/// If `LEDGELINE_BENCH_SHAPES` names a shape that does not exist.
+#[must_use]
+pub fn bench_shapes() -> Vec<Shape> {
+    let Ok(raw) = std::env::var("LEDGELINE_BENCH_SHAPES") else {
+        return bench_sizes()
+            .into_iter()
+            .map(|txns| V1.with_txns(txns))
+            .collect();
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            let (name, txns) = match name.split_once('@') {
+                Some((name, txns)) => (
+                    name,
+                    Some(
+                        txns.parse()
+                            .unwrap_or_else(|e| panic!("bad transaction count in {name:?}: {e}")),
+                    ),
+                ),
+                None => (name, None),
+            };
+            let shape = match name {
+                "v1" => V1.with_txns(5_000),
+                "v2" => V2,
+                "v2fx" => V2_FX,
+                other => panic!("unknown shape {other:?} — expected v1, v2 or v2fx"),
+            };
+            match txns {
+                Some(txns) => shape.with_txns(txns),
+                None => shape,
+            }
+        })
+        .collect()
+}
+
+/// A short label for a shape, used as the criterion benchmark id suffix.
+#[must_use]
+pub fn shape_id(shape: &Shape) -> String {
+    let size = match shape.txns {
+        n if n.is_multiple_of(1000) => format!("{}k", n / 1000),
+        n => n.to_string(),
+    };
+    match shape.version {
+        1 => size,
+        version => format!("v{version}{}-{size}", shape.label),
+    }
+}
+
 #[must_use]
 pub fn bench_sizes() -> Vec<usize> {
     match std::env::var("LEDGELINE_BENCH_SIZES") {

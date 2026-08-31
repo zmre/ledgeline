@@ -290,9 +290,11 @@ pub struct IncomeStatementReport {
 /// plurals because hledger rejects the directive outright and ours could not, so
 /// the choice was between a superset and a silent misfiling. Here there is no
 /// such constraint — this tag is ours alone — so the third option is available
-/// and is the right one: [`account_sections_from`] turns anything unrecognised
-/// into a [`ReportError::UnknownIsSection`] naming the account, the value and
-/// the alternatives.
+/// and is the right one: [`account_sections_from`] treats anything unrecognised
+/// as undeclared and
+/// [`journal_to_tag_diagnostics`](crate::wire::journal_to_tag_diagnostics)
+/// reports it as an `account-tag` finding naming the account, the value and the
+/// alternatives.
 #[must_use]
 pub fn parse_is_section_tag(value: &str) -> Option<IsSectionKind> {
     match value.trim().to_lowercase().as_str() {
@@ -310,11 +312,8 @@ pub fn parse_is_section_tag(value: &str) -> Option<IsSectionKind> {
 /// Declared `issection:` values per account, read off a parsed journal's
 /// `account` directives — the section analogue of
 /// [`super::account_types::declared_types`].
-///
-/// # Errors
-/// Returns [`ReportError::UnknownIsSection`] for a value outside the closed
-/// vocabulary.
-pub fn account_sections(journal: &Journal) -> Result<BTreeMap<String, IsSectionKind>, ReportError> {
+#[must_use]
+pub fn account_sections(journal: &Journal) -> BTreeMap<String, IsSectionKind> {
     account_sections_from(&journal.accounts)
 }
 
@@ -325,12 +324,17 @@ pub fn account_sections(journal: &Journal) -> Result<BTreeMap<String, IsSectionK
 /// with nothing after it names no section, and the two tag readers answering
 /// differently about the same syntax would be its own trap.
 ///
-/// # Errors
-/// Returns [`ReportError::UnknownIsSection`] for a non-empty value outside the
-/// closed vocabulary.
-pub fn account_sections_from(
-    accounts: &[AccountDeclaration],
-) -> Result<BTreeMap<String, IsSectionKind>, ReportError> {
+/// An UNRECOGNISED value reads the same way — as no declaration — so the
+/// account falls back to its type-inferred section and the statement still
+/// renders. It is not silent: the typo is reported as an `account-tag`
+/// diagnostic by [`journal_to_tag_diagnostics`](crate::wire::journal_to_tag_diagnostics),
+/// which is where every closed-vocabulary account tag now answers for itself.
+/// This function used to refuse the whole report instead, on the argument that a
+/// silent fallback leaves the user's box reading zero with nothing on screen to
+/// say why. The second half of that argument was right and is preserved by the
+/// diagnostic; the first half made one typo take the entire P&L tab down.
+#[must_use]
+pub fn account_sections_from(accounts: &[AccountDeclaration]) -> BTreeMap<String, IsSectionKind> {
     accounts
         .iter()
         .filter_map(|decl| {
@@ -339,14 +343,8 @@ pub fn account_sections_from(
                 .find(|(key, _)| key == IS_SECTION_TAG)
                 .map(|(_, value)| value.trim())
                 .filter(|value| !value.is_empty())
-                .map(|value| {
-                    parse_is_section_tag(value)
-                        .map(|kind| (decl.name.0.clone(), kind))
-                        .ok_or_else(|| ReportError::UnknownIsSection {
-                            account: decl.name.0.clone(),
-                            value: value.to_string(),
-                        })
-                })
+                .and_then(parse_is_section_tag)
+                .map(|kind| (decl.name.0.clone(), kind))
         })
         .collect()
 }

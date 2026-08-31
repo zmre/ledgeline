@@ -27,9 +27,9 @@ mod common;
 use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
     Amounts, DateRange, GroupSource, IncomeStatementReport, IsGroup, IsOpts, IsSection,
-    IsSectionKind, IsSubtotalKind, MixedAmount, ReportError, Valuation, account_decls,
-    account_sections, account_sections_from, declared_groups, declared_types,
-    income_statement_grouped, parse_is_section_tag,
+    IsSectionKind, IsSubtotalKind, MixedAmount, Valuation, account_decls, account_sections,
+    account_sections_from, declared_groups, declared_types, income_statement_grouped,
+    parse_is_section_tag,
 };
 use ledgeline_core::{Dec, Journal, parse_journal};
 use std::collections::BTreeMap;
@@ -58,7 +58,7 @@ fn report(journal: &Journal, from: &str, to: &str, value: Valuation, compare: bo
                 compare,
             },
             &declared_types(&account_decls(journal)),
-            &account_sections(journal).expect("the fixtures declare only valid `issection:` codes"),
+            &account_sections(journal),
             &declared_groups(journal, ledgeline_core::reports::IS_GROUP_TAG),
         )
         .expect("grouped income statement"),
@@ -1083,7 +1083,8 @@ fn parses_every_section_code_and_nothing_else() {
     // No forgiving superset, unlike `type:` — see `parse_is_section_tag`'s docs.
     // The plurals `type:` had to accept, the English names the rejected design
     // would have matched, and plain typos all land in the same place: `None`,
-    // which `account_sections_from` turns into a named error.
+    // which `account_sections_from` reads as no declaration and the
+    // `account-tag` diagnostic then names.
     for tag in [
         "revenues",
         "taxes",
@@ -1101,28 +1102,49 @@ fn parses_every_section_code_and_nothing_else() {
     }
 }
 
-/// **The cautionary tale, headed off.** A misspelt code must NOT fall back to
-/// the type-inferred section: the box the user spelled would read zero and
-/// nothing on screen would say why. This is the `account-type-not-name` failure
-/// with a fresh cause, and it is refused by name.
+/// **The cautionary tale, headed off — without taking the tab down.**
+///
+/// A misspelt code falls back to the type-inferred section, and the statement
+/// still renders. The original worry stands: the box the user spelled reads zero
+/// and, on its own, nothing would say why. That is answered by the `account-tag`
+/// warning `wire::journal_to_tag_diagnostics` emits — pinned in full by
+/// `tests/tag_diagnostics.rs` — rather than by refusing the report, which used
+/// to turn one typo in one directive into a blank P&L tab.
 #[test]
-fn an_unrecognized_issection_value_is_a_hard_error() {
+fn an_unrecognized_issection_value_is_reported_not_refused() {
     let text = std::fs::read_to_string(common::fixtures_dir().join("reports/is-sections.journal"))
         .expect("read is-sections.journal")
         .replace("issection: cogs", "issection: cost-of-goods-sold");
     let journal =
         parse_journal(&text, "is-sections-typo.journal").expect("the FILE is still valid");
 
-    let error = account_sections(&journal).expect_err("a bad code must not be tolerated");
-    assert_eq!(
-        error,
-        ReportError::UnknownIsSection {
-            account: "cogs".to_string(),
-            value: "cost-of-goods-sold".to_string(),
-        }
+    // `cogs` loses its declaration; every other account keeps its own.
+    let sections = account_sections(&journal);
+    assert!(
+        !sections.contains_key("cogs"),
+        "an unreadable code declares nothing: {sections:?}"
     );
-    // The message names the account, the value and the way out.
-    let message = error.to_string();
+    assert_eq!(
+        sections.get("revenue"),
+        Some(&IsSectionKind::Revenue),
+        "the accounts around it are untouched"
+    );
+
+    // And the report still computes rather than 400-ing the whole tab.
+    let report = report(&journal, "2026-01-01", "2026-12-31", Valuation::None, false);
+    assert!(
+        !report.sections.is_empty(),
+        "the statement must still render on the type-inferred fallback"
+    );
+
+    // The user is told, by name, in the drawer.
+    let warned = serde_json::to_value(ledgeline_core::wire::journal_to_tag_diagnostics(&journal))
+        .expect("serializes");
+    let found = warned.as_array().expect("an array");
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0]["rule"], "account-tag");
+    assert_eq!(found[0]["account"], "cogs");
+    let message = found[0]["message"].as_str().expect("a message");
     for expected in ["cogs", "cost-of-goods-sold", "revenue", "depreciation"] {
         assert!(message.contains(expected), "{message}");
     }
@@ -1137,8 +1159,8 @@ fn an_empty_issection_value_is_not_a_declaration() {
         "empty-tag.journal",
     )
     .expect("parse");
-    assert_eq!(account_sections(&journal), Ok(BTreeMap::new()));
-    assert!(account_sections_from(&journal.accounts).is_ok());
+    assert_eq!(account_sections(&journal), BTreeMap::new());
+    assert!(account_sections_from(&journal.accounts).is_empty());
 }
 
 /// The tag reader takes only `issection:`, and it inherits down the tree.
@@ -1146,7 +1168,7 @@ fn an_empty_issection_value_is_not_a_declaration() {
 fn account_sections_reads_only_issection_tags() {
     let journal = sections_journal();
     assert_eq!(
-        account_sections(&journal).expect("valid codes"),
+        account_sections(&journal),
         [
             ("cogs", IsSectionKind::Cogs),
             ("expenses:depreciation", IsSectionKind::Depreciation),
@@ -1167,7 +1189,7 @@ fn account_sections_reads_only_issection_tags() {
     // sample.journal declares no sections at all, and must still report.
     assert_eq!(
         account_sections(&common::fixture_journal()),
-        Ok(BTreeMap::new())
+        BTreeMap::new()
     );
 
     // The inherited cases really are inherited rather than declared: neither of

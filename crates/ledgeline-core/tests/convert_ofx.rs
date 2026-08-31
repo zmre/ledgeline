@@ -955,3 +955,33 @@ fn a_properly_escaped_less_than_still_reads_as_one() {
 
     assert_eq!(cell(&table.rows[0], "name"), "A < B REPAIRS");
 }
+
+#[test]
+fn a_hostile_scale_cannot_inflate_the_balance_mismatch_note() {
+    // The balance-mismatch note renders the computed total, and that renderer
+    // pads with `"0".repeat(places)` from a scale the FILE chose. `1e-20000000`
+    // is twelve bytes of `VALUE` asking for a 20 MB string; `1e-2147483648` asks
+    // for 2.1 GB. A statement is mailed to people, so this is reachable input.
+    let ofx = "OFXHEADER:100\nDATA:OFXSGML\n\n\
+        <OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>\n\
+        <CURDEF>USD\n\
+        <BANKTRANLIST>\n\
+        <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260105<TRNAMT>1e-20000000<NAME>X</STMTTRN>\n\
+        </BANKTRANLIST>\n\
+        <LEDGERBAL><BALAMT>0.00<DTASOF>20260131</LEDGERBAL>\n\
+        <BALLIST><BAL><NAME>OPENING<VALUE>1e-20000000</BAL></BALLIST>\n\
+        </STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>\n";
+    assert!(ofx.len() < 512, "the whole attack is {} bytes", ofx.len());
+
+    let table = ofx::parse(ofx.as_bytes()).expect("parses");
+    for note in &table.notes {
+        if let ConvertNote::BalanceMismatch { computed, .. } = note {
+            assert!(
+                computed.len() < 4096,
+                "a {}-byte statement produced a {}-byte diagnostic",
+                ofx.len(),
+                computed.len()
+            );
+        }
+    }
+}
