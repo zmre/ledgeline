@@ -59,6 +59,22 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+# Stock price updates: fetching quotes from Yahoo Finance's public chart
+# endpoint. `rustls-tls`, not `native-tls` (IronCore Rust standard); only the
+# two features this crate actually calls (`.json()` is unused — the response is
+# read as raw bytes so `yahoo::parse_chart_response` stays testable without a
+# live `reqwest::Response`).
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+] }
+# `PriceFeed` (`yahoo.rs`) needs to be a `dyn` trait object on `AppState` so the
+# integration tests can substitute a fake with no network — native
+# async-fn-in-trait is not `dyn`-safe on stable, hence this.
+async-trait = "0.1"
+# Bounded-concurrency fan-out over the symbols being priced (`prices_api.rs`),
+# the same `buffer_unordered` pattern used throughout this codebase's own style
+# guide for batch I/O.
+futures = "0.3"
 # `catch-panic` turns a handler panic into a 500 instead of a dropped connection
 # (SEC-2); `set-header` carries the security headers (SEC-7); `cors` is only
 # reachable through the opt-in `--allow-origin` allowlist (SEC-1);

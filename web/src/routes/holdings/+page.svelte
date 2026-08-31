@@ -30,12 +30,14 @@
     import HoldingsTrend from "$lib/holdings/ui/HoldingsTrend.svelte";
     import OtherHoldingsTable from "$lib/holdings/ui/OtherHoldingsTable.svelte";
     import ScopeBar from "$lib/holdings/ui/ScopeBar.svelte";
+    import UpdatePricesButton from "$lib/holdings/ui/UpdatePricesButton.svelte";
     import {startHoldingsUrlSync} from "$lib/holdings/ui/urlSync";
     import {formatUnitsWith, partitionShortPositions, shortPositionNote} from "$lib/holdings/ui/view";
     import {formatChartValue, formatCompactChartValue, styleFor} from "$lib/insights/series";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import {holdingsData, holdingsScope, holdingsTab, otherHoldingsData} from "$lib/stores/holdings.svelte";
     import {journal} from "$lib/stores/journal.svelte";
+    import {pricesStore} from "$lib/stores/prices.svelte";
     import {loadJournalWhenReady} from "$lib/stores/serverWatch.svelte";
     import {settings} from "$lib/stores/settings.svelte";
 
@@ -60,6 +62,14 @@
     $effect(() => {
         const {url, scope} = loadKey;
         if (url !== null) void holdingsData.load(url, scope);
+    });
+
+    // The "Update prices" button's status (which symbols need a quote, where a
+    // fetch can go) is not scope-dependent, so it loads once per (server,
+    // reconnect) rather than on every scope change — see `ensureStatus`.
+    $effect(() => {
+        const {url, nonce} = {url: settings.serverUrl, nonce: settings.serverNonce};
+        if (url !== null) void pricesStore.ensureStatus(url, nonce);
     });
 
     // The Other report is fetched the FIRST time its tab is opened (plans/14), so
@@ -140,7 +150,12 @@
 
 <div class="flex flex-col gap-3">
     <ScopeBar {accountNames} />
-    <HoldingsTabs bind:tab={holdingsTab.value} />
+    <div class="flex items-center justify-between gap-2">
+        <HoldingsTabs bind:tab={holdingsTab.value} />
+        {#if holdingsTab.value === "stocks"}
+            <UpdatePricesButton {format} />
+        {/if}
+    </div>
 
     <!-- The tab strip's switched region, completing the WAI-ARIA tabs pattern:
          every tab's aria-controls points at this id, and aria-labelledby follows

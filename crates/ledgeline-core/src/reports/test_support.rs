@@ -7,6 +7,7 @@ use crate::model::{
     AccountName, Amount, AmountStyle, BalanceAssertion, Commodity, CommoditySide, Posting,
     PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
 };
+use std::path::PathBuf;
 
 fn style(precision: u32) -> AmountStyle {
     AmountStyle {
@@ -39,6 +40,7 @@ pub fn price(date: &str, commodity: &str, price_amount: Amount) -> PriceDirectiv
         date: date.to_string(),
         commodity: Commodity(commodity.to_string()),
         price: price_amount,
+        source_file: PathBuf::from("test.journal"),
     }
 }
 

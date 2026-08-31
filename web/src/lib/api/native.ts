@@ -846,6 +846,32 @@ export class LedgelineApi {
         return this.getJson(`/api/budget/reference${queryString({account: query.account, interval: query.interval, count: query.count, asOf: query.asOf})}`);
     }
 
+    /** Which currently-held stock symbols need a quote, and where prices can go (decode with `decodePricesStatus`). */
+    getPricesStatus(): Promise<unknown> {
+        return this.getJson("/api/prices/status");
+    }
+
+    /**
+     * Create a `prices.journal` beside the main journal and `include` it. → 200
+     * (decode with `decodeCreatedPricesFile`); 409 when the journal already has
+     * price directives, or when a file of that name is already there.
+     *
+     * Takes no body, for the same reason `createBudgetFile` does not: there is
+     * exactly one file this creates, at one place.
+     */
+    createPricesFile(): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/prices/file", 200, {});
+    }
+
+    /**
+     * Fetch every currently-held symbol's latest close from Yahoo Finance and
+     * append it to `journalId`. → 200, the file's new state and every symbol's
+     * outcome (decode with `decodePricesUpdateResponse`).
+     */
+    updatePrices(journalId: string): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/prices/update", 200, {journalId});
+    }
+
     /** ADD a whole transaction. → 201 `{index, transaction}`. */
     addTransaction(body: AddTransactionBody): Promise<MutationResult> {
         return this.mutate<MutationResult>("POST", "/api/transactions", 201, body);

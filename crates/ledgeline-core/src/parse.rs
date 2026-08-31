@@ -410,7 +410,7 @@ fn parse_source(
                     default_mark: ctx.default_decimal_mark,
                     default_commodity: ctx.default_commodity.as_ref(),
                 };
-                let price = parse_price_directive(trimmed, amt, ctx.default_year)
+                let price = parse_price_directive(trimmed, amt, ctx.default_year, &source_file)
                     .map_err(|e| locate(source_name, line_no, line, e))?;
                 ctx.prices.push(price);
             }
@@ -1002,6 +1002,7 @@ fn parse_price_directive(
     line: &str,
     amt: AmountCtx,
     default_year: Option<i32>,
+    source_file: &Path,
 ) -> Result<PriceDirective, ParseError> {
     let malformed = || ParseError::MalformedDirective(line.to_string());
     let rest = line.trim_start().strip_prefix('P').ok_or_else(malformed)?;
@@ -1026,6 +1027,7 @@ fn parse_price_directive(
         date: normalize_date(date, default_year)?,
         commodity: Commodity(commodity),
         price,
+        source_file: source_file.to_path_buf(),
     })
 }
 
