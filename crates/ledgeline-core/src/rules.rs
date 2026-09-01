@@ -114,11 +114,19 @@
 //! change a meaning the user did not ask to change:
 //!
 //! 1. It is a block, not a table ([`OpaqueReason::IfTable`]).
-//! 2. Every matcher is plain — no `&`, `&&`, `!`, `& !` or `&& !` prefix, and no
-//!    `&&` joining two matchers on one line ([`OpaqueReason::CombinedMatcher`]).
-//!    Matchers in an editable block are a plain OR list, so reordering or
-//!    deleting one cannot change what the others mean; an AND/NOT chain is
-//!    positional and would not survive that.
+//! 2. Every matcher is plain or a **plain line-prefix `&` AND-continuation** —
+//!    no `!`, `& !` or `&& !` prefix, no `&&` at the head of a line, and no `&&`
+//!    joining two matchers on one line ([`OpaqueReason::CombinedMatcher`]).
+//!    An editable block's matchers are an OR of AND-groups
+//!    ([`MatcherGroup`]) — hledger's own `if A` / `& B` shape, verified against
+//!    the 1.52 binary — so grouping is *structural* and an edit to one matcher
+//!    cannot change what another means. A `!` negation is refused because
+//!    hledger's `!` binds to its own line rather than to a group, so deleting
+//!    or reordering around one silently re-points the rest.
+//!
+//!    The **first** matcher line may not begin with `&`: hledger 1.52 accepts
+//!    one and treats it as a no-op, but it AND-s with nothing, and this module
+//!    will not promise an edit preserves a form that means nothing.
 //! 3. No matcher pattern contains an **unescaped `(`**
 //!    ([`OpaqueReason::MatchGroup`]). No group means no `\N` backreference can
 //!    be meaningful, so no assignment value can silently depend on a matcher.
@@ -226,8 +234,18 @@
 //!   span either way, because dropping it on an edit would be data loss, and the
 //!   whitespace-led form raises a [`Warning`].
 //! - **`&&` anywhere in a matcher makes the block opaque**, even inside what is
-//!   plainly one regex. Distinguishing "joins two matchers" from "is two
-//!   ampersands" needs hledger's own parser; declining costs only editability.
+//!   plainly one regex, and even as a line prefix — where hledger 1.52 really
+//!   does read it as an AND join, verified against the binary. Distinguishing
+//!   "joins two matchers" from "is two ampersands" needs hledger's own parser;
+//!   declining costs only editability. A **single** leading `&` carries no such
+//!   ambiguity and is the [`MatcherGroup`] shape rule 2 admits.
+//! - **A first matcher line beginning `&` makes the block opaque**, although
+//!   hledger accepts it: `if\n& COFFEE` really does import exactly what
+//!   `if\nCOFFEE` does, so the `&` is a no-op with nothing to AND with.
+//! - **`&` is a prefix only at the start of a matcher line.** `%description
+//!   &COFFEE` is a regex matching a literal ampersand and matches no record
+//!   containing plain `COFFEE`, verified against the binary — so a `&` after a
+//!   `%FIELD` is content, never a combinator.
 //! - **Quoted `fields` names are out of scope.** hledger accepts
 //!   `fields date, "my field"`; a name starting with `"` leaves the line
 //!   [`OpaqueReason::Unclassified`] rather than reporting a name list this
@@ -692,8 +710,12 @@ pub enum ControlField {
 pub struct IfBlock {
     /// Whether the first matcher sits on the `if` line or below it.
     pub layout: IfLayout,
-    /// The matchers, OR-ed, in file order.
-    pub matchers: Vec<Matcher>,
+    /// The OR-ed matcher groups, in file order. At least one, each non-empty.
+    ///
+    /// A block with no `&` continuation lines — every rules file this module
+    /// could already edit — is one group per matcher, so an OR list is the
+    /// degenerate case of this rather than a separate shape.
+    pub groups: Vec<MatcherGroup>,
     /// The indented assignments, in file order.
     pub assignments: Vec<Assignment>,
     /// The exact leading whitespace of the block's first body line, reused
@@ -703,6 +725,23 @@ pub struct IfBlock {
     /// whitespace-only line's entire content is its indentation, so aligning to
     /// one would align to nothing.
     pub indent: Span,
+}
+
+/// One OR-branch of a conditional block: matchers AND-ed together.
+///
+/// hledger spells the AND with a **line-prefix `&`**: the group's first matcher
+/// is a plain line (or the `if` header's own matcher) and every further matcher
+/// in the same group is a line beginning `&`. Groups are OR-ed, in file order.
+/// Verified against hledger 1.52 — `if\nA\n& B\nC\n& D` selects a record
+/// matching `(A and B) or (C and D)`.
+///
+/// The `&` itself is grammar rather than content, so it appears nowhere in a
+/// [`Matcher`]: a group's *shape* is what says AND, and the renderer is what
+/// puts the `&` back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatcherGroup {
+    /// The AND-ed matchers, in file order. Never empty.
+    pub matchers: Vec<Matcher>,
 }
 
 /// Where a conditional block's first matcher lives.
@@ -762,14 +801,19 @@ pub enum OpaqueReason {
     /// Tables are never editable here: a row's meaning is positional, so an edit
     /// to the header silently re-points every row.
     IfTable,
-    /// A matcher carries a `&`, `&&`, `!`, `& !` or `&& !` prefix, or joins two
-    /// matchers on one line with `&&`. Such matchers are a positional AND/NOT
-    /// chain rather than the plain OR list an editable block promises.
+    /// A matcher carries a `!`, `& !`, `&&` or `&& !` prefix, joins two matchers
+    /// on one line with `&&`, or is a first matcher line beginning with `&`.
+    ///
+    /// A plain line-prefix `&` chain is **not** this — it is the editable
+    /// [`MatcherGroup`] shape. What is left here is the two things this module
+    /// declines to model: negation, whose scope is a line rather than a group, so
+    /// a reorder or delete around one changes what its neighbours select; and
+    /// `&&`, which cannot be told from two literal ampersands in one regex
+    /// without hledger's own parser.
     ///
     /// A bare `!` (negation with nothing to combine) lands here too: the reason
     /// set names the *shape* an editable block requires, and a negated matcher
-    /// fails it for the same reason — the block's matchers stop being an
-    /// order-independent OR list.
+    /// fails it for the same reason.
     CombinedMatcher,
     /// A matcher pattern contains an unescaped `(`, so it has a capture group,
     /// so an assignment value may hold a `\N` backreference into it. `\(` is
@@ -1076,11 +1120,11 @@ pub enum ItemBody {
         /// as assigning the empty string.
         value: String,
     },
-    /// A conditional block: an OR list of matchers and the assignments they
-    /// select.
+    /// A conditional block: an OR list of AND-ed matcher groups, and the
+    /// assignments they select.
     IfBlock {
-        /// The matchers, in file order. At least one.
-        matchers: Vec<MatcherSpec>,
+        /// The OR-ed groups, in file order. At least one, each non-empty.
+        groups: Vec<MatcherGroupSpec>,
         /// The indented assignments, in file order. At least one.
         assignments: Vec<(HledgerField, String)>,
     },
@@ -1098,6 +1142,19 @@ pub struct MatcherSpec {
     pub scope: MatchScope,
     /// The regex, as hledger will read it. Never compiled here.
     pub pattern: String,
+}
+
+/// One OR-branch of an edited or inserted conditional block.
+///
+/// The parsed counterpart is [`MatcherGroup`]. As there, the AND is expressed by
+/// membership rather than by text: a client says "these matchers are one group",
+/// and the renderer writes the `&` lines hledger reads that as. There is
+/// therefore no way for a client to smuggle a combinator through a pattern —
+/// value validation still refuses a pattern that *starts* with `&` or `!`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatcherGroupSpec {
+    /// The AND-ed matchers, in file order. Must not be empty.
+    pub matchers: Vec<MatcherSpec>,
 }
 
 /// The complete intended shape of a rewritten document.
@@ -2023,12 +2080,38 @@ impl<'a> LineIndex<'a> {
             .find(|&i| !self.is_matcher(i))
             .unwrap_or(end);
 
-        // Rules 2-4.
-        let matchers = header
+        // Rules 2-4. Grouping is decided HERE, because it is a property of a
+        // line's position in the run rather than of the line on its own:
+        // `& X` extends the group above it, anything else starts a new one.
+        // `classify_matcher` sees only the already-`&`-stripped text.
+        let groups = header
             .into_iter()
             .chain((start + 1..matchers_end).map(|i| trimmed(self.content(i), self.offset(i))))
-            .map(|(text, at)| classify_matcher(text, at))
-            .collect::<Result<Vec<_>, _>>()?;
+            .try_fold(
+                Vec::<MatcherGroup>::new(),
+                |mut groups, (text, at)| match and_continuation(text, at) {
+                    // A leading `&` with no group above it AND-s with nothing.
+                    // hledger 1.52 accepts it as a no-op; this module declines
+                    // rather than promise an edit preserves a degenerate form.
+                    Some(_) if groups.is_empty() => Err(OpaqueReason::CombinedMatcher),
+                    Some((text, at)) => {
+                        let matcher = classify_matcher(text, at)?;
+                        groups
+                            .last_mut()
+                            .expect("a continuation has a group above it")
+                            .matchers
+                            .push(matcher);
+                        Ok(groups)
+                    }
+                    None => {
+                        let matcher = classify_matcher(text, at)?;
+                        groups.push(MatcherGroup {
+                            matchers: vec![matcher],
+                        });
+                        Ok(groups)
+                    }
+                },
+            )?;
 
         // Rules 5-6. A whitespace-only line is a no-op hledger consumes, so it
         // is skipped rather than rejected.
@@ -2046,7 +2129,7 @@ impl<'a> LineIndex<'a> {
 
         // Rule 7, both halves. The first non-blank body line is necessarily the
         // first assignment line, every body line having parsed above.
-        if matchers.is_empty() {
+        if groups.is_empty() {
             return Err(OpaqueReason::Unclassified);
         }
         let indent = self
@@ -2057,7 +2140,7 @@ impl<'a> LineIndex<'a> {
 
         Ok(IfBlock {
             layout,
-            matchers,
+            groups,
             assignments,
             indent,
         })
@@ -2569,10 +2652,40 @@ fn header_matcher(header: &str, base: usize) -> Option<(&str, usize)> {
     (!text.is_empty()).then_some((text, at))
 }
 
-/// Rules 2-4 from the module docs, over one already-trimmed matcher.
+/// A line-prefix `&` AND-continuation: the matcher after it, and where that
+/// matcher starts.
+///
+/// `None` for anything that is not **exactly one** `&` followed by a pattern, so
+/// the caller falls through to [`classify_matcher`] and the line is refused
+/// there:
+///
+/// - `&&…` — hledger 1.52 reads a leading `&&` as an AND join too, but this
+///   module cannot tell that from a `&&` inside one regex without hledger's own
+///   parser, so both stay [`OpaqueReason::CombinedMatcher`]. See the module
+///   docs' divergences.
+/// - a bare `&` — hledger rejects the file outright ("unexpected newline,
+///   expecting conditional block"), verified against the binary.
+///
+/// Whitespace after the `&` is optional and is not part of the pattern:
+/// `&DOWNTOWN`, `& DOWNTOWN` and `&\tDOWNTOWN   ` are the same matcher to
+/// hledger, all verified against 1.52. Whitespace *before* the `&` is not
+/// allowed at all, and needs no check here: an indented line is not in the
+/// matcher run ([`LineIndex::is_matcher`]), which is also how hledger reads it.
+fn and_continuation(text: &str, base: usize) -> Option<(&str, usize)> {
+    let rest = text
+        .strip_prefix('&')
+        .filter(|rest| !rest.starts_with('&'))?;
+    let (rest, at) = trimmed(rest, base + '&'.len_utf8());
+    (!rest.is_empty()).then_some((rest, at))
+}
+
+/// Rules 2-4 from the module docs, over one already-trimmed matcher whose `&`
+/// AND-prefix, if it had one, the caller has already taken off.
 fn classify_matcher(text: &str, base: usize) -> Result<Matcher, OpaqueReason> {
-    // Rule 2. `&&` anywhere, not just as a prefix: telling "joins two matchers"
-    // from "is two ampersands in one regex" needs hledger's own parser.
+    // Rule 2, what is left of it once `and_continuation` has claimed the plain
+    // `&` chains: a `!` negation, a `&&` anywhere — telling "joins two matchers"
+    // from "is two ampersands in one regex" needs hledger's own parser — and a
+    // leading `&` that got here, which is one `and_continuation` refused.
     if text.starts_with(['&', '!']) || text.contains("&&") {
         return Err(OpaqueReason::CombinedMatcher);
     }
@@ -2657,6 +2770,34 @@ const FIELD_LIST_SEPARATOR: &str = ", ";
 /// convention rather than a rule: four spaces, matching the rules files this
 /// project ships. Nothing downstream depends on the width.
 const INSERTED_BLOCK_INDENT: &str = "    ";
+
+/// What an *added* AND-continuation line is prefixed with.
+///
+/// hledger accepts `&PATTERN` with no gap (verified against 1.52), so the space
+/// is convention, matching how every rules file in the wild writes one. A
+/// continuation line the file already had keeps its own bytes instead — see
+/// [`RulesDoc::render_if_block`].
+const AND_PREFIX: &str = "& ";
+
+/// A conditional block's matchers, flattened into file order, each paired with
+/// **whether it starts its OR-group**.
+///
+/// One matcher per line is what the renderer walks; the flag is the whole of
+/// what that line's `&` prefix says, and it is the only thing grouping
+/// contributes to rendering. Generic because the parsed ([`MatcherGroup`]) and
+/// the edited ([`MatcherGroupSpec`]) sides are walked in lockstep, and a second
+/// copy of this would be free to disagree with the first.
+fn flatten<'a, G: 'a, M: 'a>(
+    groups: &'a [G],
+    matchers: impl Fn(&'a G) -> &'a [M] + Copy,
+) -> impl Iterator<Item = (bool, &'a M)> {
+    groups.iter().flat_map(move |group| {
+        matchers(group)
+            .iter()
+            .enumerate()
+            .map(|(at, matcher)| (at == 0, matcher))
+    })
+}
 
 /// Append `line` plus a terminator, starting a new line first if the buffer is
 /// mid-line.
@@ -2846,9 +2987,9 @@ impl RulesDoc {
                 self.render_assignment(loaded_assignment(loaded), *field, value)
             }
             ItemBody::IfBlock {
-                matchers,
+                groups,
                 assignments,
-            } => self.render_if_block(loaded_if_block(loaded), matchers, assignments),
+            } => self.render_if_block(loaded_if_block(loaded), groups, assignments),
         };
         Ok(ensure_terminated(text, self.newline))
     }
@@ -3002,24 +3143,36 @@ impl RulesDoc {
     /// its column alignment and any trailing whitespace exactly as written.
     ///
     /// Added matchers go at column 1 directly below the last matcher the file
-    /// already had — the one place hledger's grammar allows another one. Added
-    /// assignments go at the end, indented with [`IfBlock::indent`], the block's
-    /// own leading whitespace. Removed matchers and assignments take their whole
-    /// lines with them.
+    /// already had — the one place hledger's grammar allows another one — and
+    /// carry an [`AND_PREFIX`] when they continue a group rather than start one,
+    /// so "+ AND condition" and "+ OR group" land on the same line and differ
+    /// only by that prefix. Added assignments go at the end, indented with
+    /// [`IfBlock::indent`], the block's own leading whitespace. Removed matchers
+    /// and assignments take their whole lines with them.
+    ///
+    /// A matcher's *prefix* — a stacked line's nothing, an inline header's
+    /// `if `, a continuation's own `& `/`&\t` — is spliced from the file
+    /// verbatim while the line keeps its OR-group role. Only a matcher whose
+    /// role changed gets a new prefix, which is the one thing grouping can
+    /// change about a line that already exists.
     fn render_if_block(
         &self,
         loaded: Option<(&Item, &IfBlock)>,
-        matchers: &[MatcherSpec],
+        groups: &[MatcherGroupSpec],
         assignments: &[(HledgerField, String)],
     ) -> String {
         let Some((item, block)) = loaded else {
-            return self.fresh_if_block(matchers, assignments);
+            return self.fresh_if_block(groups, assignments);
         };
         let newline = self.newline.as_str();
         let lines = line_spans(&self.text[item.body.clone()], item.body.start);
+        let loaded_matchers = flatten(&block.groups, |group| group.matchers.as_slice())
+            .collect::<Vec<(bool, &Matcher)>>();
+        let specs = flatten(groups, |group| group.matchers.as_slice())
+            .collect::<Vec<(bool, &MatcherSpec)>>();
         // A classified block always has at least one matcher (rule 7), so the
         // saturation is unreachable rather than meaningful.
-        let last_matcher = block.matchers.len().saturating_sub(1);
+        let last_matcher = loaded_matchers.len().saturating_sub(1);
 
         let mut out = String::new();
         for (at, line) in lines.iter().enumerate() {
@@ -3028,10 +3181,9 @@ impl RulesDoc {
             let matcher = if at == 0 {
                 (block.layout == IfLayout::Inline).then_some(0)
             } else {
-                block
-                    .matchers
+                loaded_matchers
                     .iter()
-                    .position(|matcher| line.contains(&matcher_start(matcher)))
+                    .position(|(_, matcher)| line.contains(&matcher_start(matcher)))
             };
 
             if let Some(index) = matcher {
@@ -3039,9 +3191,20 @@ impl RulesDoc {
                 // list dropped, so the line goes with it. The header line is
                 // never one of those: `check_body` refuses an empty matcher
                 // list, so index 0 always has a replacement.
-                if let (Some(loaded), Some(spec)) = (block.matchers.get(index), matchers.get(index))
+                if let (Some((was_head, loaded)), Some((is_head, spec))) =
+                    (loaded_matchers.get(index), specs.get(index))
                 {
-                    out.push_str(&self.text[line.start..matcher_start(loaded)]);
+                    // Index 0 heads the first group on both sides, so the `if `
+                    // of an inline header is never what the mismatch branches
+                    // rewrite.
+                    let prefix = if was_head == is_head {
+                        &self.text[line.start..matcher_start(loaded)]
+                    } else if *is_head {
+                        ""
+                    } else {
+                        AND_PREFIX
+                    };
+                    out.push_str(prefix);
                     out.push_str(&self.render_matcher(Some(loaded), spec));
                     out.push_str(&self.text[loaded.pattern_span.end..line.end]);
                 }
@@ -3064,8 +3227,8 @@ impl RulesDoc {
             }
 
             if matcher == Some(last_matcher) {
-                for spec in matchers.iter().skip(block.matchers.len()) {
-                    push_line(&mut out, &self.render_matcher(None, spec), newline);
+                for (is_head, spec) in specs.iter().skip(loaded_matchers.len()) {
+                    push_line(&mut out, &self.and_line(*is_head, spec), newline);
                 }
             }
         }
@@ -3081,21 +3244,30 @@ impl RulesDoc {
     /// A brand-new conditional block.
     ///
     /// Inline layout, because `if MATCHER` is what a one-matcher block looks like
-    /// in every rules file anyone writes; further matchers stack below it.
+    /// in every rules file anyone writes; further matchers stack below it, each
+    /// a group head at column 1 or an [`AND_PREFIX`] continuation.
     fn fresh_if_block(
         &self,
-        matchers: &[MatcherSpec],
+        groups: &[MatcherGroupSpec],
         assignments: &[(HledgerField, String)],
     ) -> String {
         let newline = self.newline.as_str();
         let mut out = String::new();
-        let mut rendered = matchers.iter().map(|spec| self.render_matcher(None, spec));
+        let mut rendered = flatten(groups, |group| group.matchers.as_slice());
+        // The very first matcher heads the very first group, so it never needs a
+        // prefix of its own — the `if` is its prefix.
         match rendered.next() {
-            Some(first) => push_line(&mut out, &format!("if {first}"), newline),
+            Some((_, first)) => {
+                push_line(
+                    &mut out,
+                    &format!("if {}", self.render_matcher(None, first)),
+                    newline,
+                );
+            }
             None => push_line(&mut out, "if", newline),
         }
-        for matcher in rendered {
-            push_line(&mut out, &matcher, newline);
+        for (is_head, spec) in rendered {
+            push_line(&mut out, &self.and_line(is_head, spec), newline);
         }
         for (field, value) in assignments {
             let assignment = self.render_assignment(None, *field, value);
@@ -3106,6 +3278,21 @@ impl RulesDoc {
             );
         }
         out
+    }
+
+    /// A **new** matcher's whole line: the matcher at column 1 if it starts an
+    /// OR-group, or [`AND_PREFIX`]-ed if it continues the one above.
+    ///
+    /// Column 1 either way, because that is the only column hledger's grammar
+    /// allows: an indented `& X` is not a matcher line at all and hledger 1.52
+    /// rejects the file for it, verified against the binary.
+    fn and_line(&self, is_head: bool, spec: &MatcherSpec) -> String {
+        let matcher = self.render_matcher(None, spec);
+        if is_head {
+            matcher
+        } else {
+            format!("{AND_PREFIX}{matcher}")
+        }
     }
 
     /// `%FIELD PATTERN` or a bare `PATTERN`.
@@ -3262,13 +3449,21 @@ fn check_body(body: &ItemBody) -> Result<(), RulesError> {
             check_assignment(*field, value, Placement::TopLevel)
         }
         ItemBody::IfBlock {
-            matchers,
+            groups,
             assignments,
         } => {
-            if matchers.is_empty() {
+            if groups.is_empty() {
                 return Err(RulesError::Invalid(
                     "a conditional block needs at least one matcher; hledger rejects one with none"
                         .to_string(),
+                ));
+            }
+            // An empty group would simply vanish when the groups are flattened
+            // into lines, silently re-grouping its neighbours; hledger rejects
+            // the bare `&` line it would have to be to survive.
+            if groups.iter().any(|group| group.matchers.is_empty()) {
+                return Err(RulesError::Invalid(
+                    "a conditional block's OR-group needs at least one matcher".to_string(),
                 ));
             }
             if assignments.is_empty() {
@@ -3278,7 +3473,10 @@ fn check_body(body: &ItemBody) -> Result<(), RulesError> {
                         .to_string(),
                 ));
             }
-            matchers.iter().try_for_each(check_matcher)?;
+            groups
+                .iter()
+                .flat_map(|group| &group.matchers)
+                .try_for_each(check_matcher)?;
             assignments
                 .iter()
                 .try_for_each(|(field, value)| check_assignment(*field, value, Placement::InBlock))
@@ -3600,6 +3798,33 @@ mod tests {
             ItemKind::IfBlock(block) => block.clone(),
             other => panic!("{text:?} should be an editable if block, got {other:?}"),
         }
+    }
+
+    /// A block's matchers in file order, grouping discarded.
+    fn matchers(block: &IfBlock) -> impl Iterator<Item = &Matcher> {
+        block.groups.iter().flat_map(|group| &group.matchers)
+    }
+
+    /// A block's first matcher — for the tests about one matcher's *parts*,
+    /// which grouping does not touch.
+    fn first_matcher(block: &IfBlock) -> &Matcher {
+        matchers(block).next().expect("at least one matcher")
+    }
+
+    /// A block's matcher patterns, group by group — the shape of its OR-of-ANDs
+    /// in one comparable value.
+    fn patterns(block: &IfBlock) -> Vec<Vec<&str>> {
+        block
+            .groups
+            .iter()
+            .map(|group| {
+                group
+                    .matchers
+                    .iter()
+                    .map(|matcher| matcher.pattern.as_str())
+                    .collect()
+            })
+            .collect()
     }
 
     /// The reason a single-construct fixture stayed opaque.
@@ -4673,33 +4898,32 @@ mod tests {
 
     #[test]
     fn both_if_layouts_classify_with_their_matchers_in_file_order() {
+        // No `&` anywhere, so every group holds exactly one matcher: a plain OR
+        // list is the degenerate case of the grouped shape, not a second one.
         let inline = if_block("if ACME PAYROLL\nCOSTCO WHOLESALE\n    account2  income:salary\n");
         assert_eq!(inline.layout, IfLayout::Inline);
         assert_eq!(
-            inline
-                .matchers
-                .iter()
-                .map(|matcher| matcher.pattern.as_str())
-                .collect::<Vec<_>>(),
-            ["ACME PAYROLL", "COSTCO WHOLESALE"]
+            patterns(&inline),
+            [vec!["ACME PAYROLL"], vec!["COSTCO WHOLESALE"]]
         );
 
         let stacked = if_block("if\nCOFFEE\nPEETS\n    account2  expenses:coffee\n");
         assert_eq!(stacked.layout, IfLayout::Stacked);
-        assert_eq!(
-            stacked
-                .matchers
-                .iter()
-                .map(|matcher| matcher.pattern.as_str())
-                .collect::<Vec<_>>(),
-            ["COFFEE", "PEETS"]
-        );
+        assert_eq!(patterns(&stacked), [vec!["COFFEE"], vec!["PEETS"]]);
         assert!(
-            stacked
-                .matchers
-                .iter()
-                .all(|matcher| matcher.scope == MatchScope::WholeRecord)
+            matchers(&stacked).all(|matcher| matcher.scope == MatchScope::WholeRecord),
+            "a bare regex is matched against the whole record"
         );
+    }
+
+    #[test]
+    fn a_plain_ampersand_chain_is_one_and_ed_group() {
+        // hledger 1.52, verified against the binary: `if\nCOFFEE\n& DOWNTOWN`
+        // selects only a record containing BOTH, so these two lines are one
+        // AND-ed group rather than two OR-ed alternatives.
+        let block = if_block("if\nCOFFEE\n& DOWNTOWN\n  account2  x\n");
+        assert_eq!(block.layout, IfLayout::Stacked);
+        assert_eq!(patterns(&block), [vec!["COFFEE", "DOWNTOWN"]]);
     }
 
     #[test]
@@ -4709,24 +4933,24 @@ mod tests {
             unreachable!()
         };
         assert_eq!(
-            block.matchers[0].scope,
+            first_matcher(block).scope,
             MatchScope::Field("description".to_string())
         );
         // The `%` is punctuation, not part of the name, so a rename splices only
         // the name.
         assert_eq!(
-            block.matchers[0]
+            first_matcher(block)
                 .field_span
                 .as_ref()
                 .map(|span| at(&doc, span)),
             Some("description")
         );
-        assert_eq!(at(&doc, &block.matchers[0].pattern_span), "COFFEE HOUSE");
+        assert_eq!(at(&doc, &first_matcher(block).pattern_span), "COFFEE HOUSE");
 
         // A column number reads the same way.
         let numbered = if_block("if %3 COFFEE\n  account2  x\n");
         assert_eq!(
-            numbered.matchers[0].scope,
+            first_matcher(&numbered).scope,
             MatchScope::Field("3".to_string())
         );
 
@@ -4734,9 +4958,9 @@ mod tests {
         // all: hledger's `try fieldmatcherp <|> recordmatcherp` falls back to
         // reading the whole line as a whole-record regex.
         let fallback = if_block("if %description\n  account2  x\n");
-        assert_eq!(fallback.matchers[0].scope, MatchScope::WholeRecord);
-        assert_eq!(fallback.matchers[0].pattern, "%description");
-        assert_eq!(fallback.matchers[0].field_span, None);
+        assert_eq!(first_matcher(&fallback).scope, MatchScope::WholeRecord);
+        assert_eq!(first_matcher(&fallback).pattern, "%description");
+        assert_eq!(first_matcher(&fallback).field_span, None);
     }
 
     #[test]
@@ -4747,8 +4971,8 @@ mod tests {
         let ItemKind::IfBlock(block) = only(&doc) else {
             unreachable!()
         };
-        assert_eq!(block.matchers[0].pattern, "COFFEE");
-        assert_eq!(at(&doc, &block.matchers[0].pattern_span), "COFFEE");
+        assert_eq!(first_matcher(block).pattern, "COFFEE");
+        assert_eq!(at(&doc, &first_matcher(block).pattern_span), "COFFEE");
         assert_eq!(
             at(&doc, &block.assignments[0].value_span),
             "expenses:coffee   "
@@ -4792,6 +5016,10 @@ mod tests {
 
     #[test]
     fn a_double_ampersand_matcher_is_not_editable() {
+        // hledger 1.52 reads a leading `&&` as an AND join, exactly like a
+        // single `&` — verified against the binary. It stays opaque anyway: on
+        // one line the same bytes may be two literal ampersands inside one
+        // regex, and telling the two apart needs hledger's own parser.
         assert_eq!(
             opaque_reason("if\n%description SUPERMARKET\n&& %note GROCERY\n  account2  x\n"),
             OpaqueReason::CombinedMatcher
@@ -4802,6 +5030,17 @@ mod tests {
             opaque_reason("if COFFEE && HOUSE\n  account2  x\n"),
             OpaqueReason::CombinedMatcher
         );
+        // And when it follows a plain `&` chain, which is otherwise editable:
+        // one bad line is enough.
+        assert_eq!(
+            opaque_reason("if A\n& B\n&& C\n  account2  x\n"),
+            OpaqueReason::CombinedMatcher
+        );
+        // A `&&` inside a continuation's own pattern is the same problem.
+        assert_eq!(
+            opaque_reason("if A\n& B && C\n  account2  x\n"),
+            OpaqueReason::CombinedMatcher
+        );
     }
 
     #[test]
@@ -4809,6 +5048,100 @@ mod tests {
         assert_eq!(
             opaque_reason("if\n%description ONLINE\n& ! %note REFUND\n  account2  x\n"),
             OpaqueReason::CombinedMatcher
+        );
+        // `&& !` and a gapless `&!` are the same refusal: `!` is scoped to its
+        // own line rather than to a group, so nothing here models it.
+        assert_eq!(
+            opaque_reason("if ONLINE\n&& ! REFUND\n  account2  x\n"),
+            OpaqueReason::CombinedMatcher
+        );
+        assert_eq!(
+            opaque_reason("if ONLINE\n&!REFUND\n  account2  x\n"),
+            OpaqueReason::CombinedMatcher
+        );
+    }
+
+    #[test]
+    fn an_ampersand_with_nothing_above_it_to_and_with_is_not_editable() {
+        // hledger 1.52 ACCEPTS both of these and treats the `&` as a no-op —
+        // `if\n& COFFEE` imports exactly what `if\nCOFFEE` does, verified
+        // against the binary. This module declines rather than promise an edit
+        // preserves a combinator that combines nothing.
+        assert_eq!(
+            opaque_reason("if\n& COFFEE\n  account2  x\n"),
+            OpaqueReason::CombinedMatcher
+        );
+        assert_eq!(
+            opaque_reason("if & COFFEE\n  account2  x\n"),
+            OpaqueReason::CombinedMatcher
+        );
+        // A bare `&`, which hledger rejects outright, lands here too.
+        assert_eq!(
+            opaque_reason("if COFFEE\n&\n  account2  x\n"),
+            OpaqueReason::CombinedMatcher
+        );
+    }
+
+    #[test]
+    fn an_ampersand_is_a_prefix_only_at_the_head_of_a_matcher_line() {
+        // `%description &COFFEE` is a regex matching a literal ampersand — it
+        // selects no record containing plain `COFFEE`, verified against
+        // hledger 1.52 — so the `&` is content and the block is one OR group.
+        let block = if_block("if %description &COFFEE\n  account2  x\n");
+        assert_eq!(patterns(&block), [vec!["&COFFEE"]]);
+    }
+
+    #[test]
+    fn an_and_chain_admits_every_matcher_shape_a_plain_line_does() {
+        // Field-scoped, gapless, tab-separated and over-padded continuations
+        // are all the same matcher to hledger 1.52, all verified against the
+        // binary; the pattern is trimmed at both ends exactly as a plain
+        // matcher's is.
+        let block = if_block(
+            "if\n%description COFFEE\n&%extra alpha\n&\tDOWNTOWN\n&    UPTOWN   \n  account2  x\n",
+        );
+        assert_eq!(
+            patterns(&block),
+            [vec!["COFFEE", "alpha", "DOWNTOWN", "UPTOWN"]]
+        );
+        assert_eq!(
+            matchers(&block)
+                .map(|m| m.scope.clone())
+                .collect::<Vec<_>>(),
+            [
+                MatchScope::Field("description".to_string()),
+                MatchScope::Field("extra".to_string()),
+                MatchScope::WholeRecord,
+                MatchScope::WholeRecord,
+            ]
+        );
+    }
+
+    #[test]
+    fn or_groups_and_and_chains_interleave_in_file_order() {
+        // `(A and B) or (C and D)` — hledger 1.52 selects a record matching
+        // either pair, verified against the binary.
+        let stacked = if_block("if\nA\n& B\nC\n& D\n  account2  x\n");
+        assert_eq!(patterns(&stacked), [vec!["A", "B"], vec!["C", "D"]]);
+
+        // An inline header's matcher heads the first group just as a stacked
+        // one's first line does, and hledger accepts a continuation under it.
+        let inline = if_block("if A\n& B\nC\n  account2  x\n");
+        assert_eq!(inline.layout, IfLayout::Inline);
+        assert_eq!(patterns(&inline), [vec!["A", "B"], vec!["C"]]);
+    }
+
+    #[test]
+    fn every_other_matcher_rule_still_applies_inside_a_group() {
+        // Grouping is about a line's prefix; rules 3 and 4 are about the
+        // pattern, and a continuation gets them unchanged.
+        assert_eq!(
+            opaque_reason("if A\n& (B)\n  account2  x\n"),
+            OpaqueReason::MatchGroup
+        );
+        assert_eq!(
+            opaque_reason("if A\n& ;B\n  account2  x\n"),
+            OpaqueReason::CommentLikeMatcher
         );
     }
 
@@ -4840,9 +5173,9 @@ mod tests {
         // `\(` is a literal paren: no group, so no backreference, so nothing an
         // edit could break.
         let block = if_block("if %description COFFEE\\(X\n  account2  x\n");
-        assert_eq!(block.matchers[0].pattern, "COFFEE\\(X");
+        assert_eq!(first_matcher(&block).pattern, "COFFEE\\(X");
         assert_eq!(
-            block.matchers[0].scope,
+            first_matcher(&block).scope,
             MatchScope::Field("description".to_string())
         );
     }
@@ -5202,12 +5535,29 @@ mod tests {
         (field, value.to_string())
     }
 
-    /// A one-matcher, one-assignment block body, for the validation tests: the
-    /// smallest shape that gets a matcher or a value past `check_body`'s arity
-    /// rules and into the rule under test.
+    /// A block body whose matchers are a plain OR list — one matcher per group,
+    /// which is what every rules file this module could already edit parses to.
+    /// The grouped cases spell their groups out with [`grouped_block`].
     fn block_of(matchers: Vec<MatcherSpec>, assignments: Vec<(HledgerField, String)>) -> ItemBody {
+        grouped_block(
+            matchers
+                .into_iter()
+                .map(|matcher| vec![matcher])
+                .collect::<Vec<_>>(),
+            assignments,
+        )
+    }
+
+    /// A block body from explicit OR-groups of AND-ed matchers.
+    fn grouped_block(
+        groups: Vec<Vec<MatcherSpec>>,
+        assignments: Vec<(HledgerField, String)>,
+    ) -> ItemBody {
         ItemBody::IfBlock {
-            matchers,
+            groups: groups
+                .into_iter()
+                .map(|matchers| MatcherGroupSpec { matchers })
+                .collect(),
             assignments,
         }
     }
@@ -5434,6 +5784,136 @@ mod tests {
                 ),
             ),
             "if ACME PAYROLL\nCOSTCO\n%description SAFEWAY\n    account2  income:salary\n    comment   monthly pay\n"
+        );
+    }
+
+    /// A stacked block whose matchers are `(A and B) or C`, written with the
+    /// gapless `&B` hledger accepts — so a splice that reused the prefix is
+    /// visibly different from one that re-rendered it.
+    const GROUPED: &str = "if\nA\n&B\nC\n    account2  expenses:x\n";
+
+    #[test]
+    fn an_and_ed_matcher_edit_rewrites_only_its_own_line_and_keeps_its_prefix() {
+        let doc = parsed(GROUPED);
+        assert_eq!(
+            replaced(
+                &doc,
+                0,
+                grouped_block(
+                    vec![vec![whole("A"), whole("BEE")], vec![whole("C")]],
+                    vec![assign(account(2), "expenses:x")],
+                ),
+            ),
+            // `&B` keeps its gapless `&`: the prefix is the file's bytes, not
+            // something re-derived from the group shape.
+            "if\nA\n&BEE\nC\n    account2  expenses:x\n"
+        );
+    }
+
+    #[test]
+    fn an_added_and_condition_lands_below_the_last_matcher_with_an_ampersand() {
+        // Same placement as `an_added_if_block_matcher_lands_at_column_one_
+        // below_the_last_one`: column 1, directly below the last matcher line.
+        // The only difference between "+ AND condition" and "+ OR group" is the
+        // prefix, so both are that one rule.
+        let doc = parsed(GROUPED);
+        assert_eq!(
+            replaced(
+                &doc,
+                0,
+                grouped_block(
+                    vec![vec![whole("A"), whole("B")], vec![whole("C"), whole("D")]],
+                    vec![assign(account(2), "expenses:x")],
+                ),
+            ),
+            "if\nA\n&B\nC\n& D\n    account2  expenses:x\n"
+        );
+    }
+
+    #[test]
+    fn an_added_or_group_lands_below_the_last_matcher_at_column_one() {
+        let doc = parsed(GROUPED);
+        assert_eq!(
+            replaced(
+                &doc,
+                0,
+                grouped_block(
+                    vec![
+                        vec![whole("A"), whole("B")],
+                        vec![whole("C")],
+                        vec![scoped("description", "D"), whole("E")],
+                    ],
+                    vec![assign(account(2), "expenses:x")],
+                ),
+            ),
+            "if\nA\n&B\nC\n%description D\n& E\n    account2  expenses:x\n"
+        );
+    }
+
+    #[test]
+    fn a_matcher_that_changes_or_group_role_gets_the_prefix_its_new_role_needs() {
+        // The one thing grouping can change about a line that already exists.
+        // Splitting the AND chain: `&B` becomes its own OR group and loses the
+        // `&`; merging: `C` joins the group above it and gains one.
+        let doc = parsed(GROUPED);
+        assert_eq!(
+            replaced(
+                &doc,
+                0,
+                grouped_block(
+                    vec![vec![whole("A")], vec![whole("B")], vec![whole("C")]],
+                    vec![assign(account(2), "expenses:x")],
+                ),
+            ),
+            "if\nA\nB\nC\n    account2  expenses:x\n"
+        );
+        assert_eq!(
+            replaced(
+                &doc,
+                0,
+                grouped_block(
+                    vec![vec![whole("A"), whole("B"), whole("C")]],
+                    vec![assign(account(2), "expenses:x")],
+                ),
+            ),
+            "if\nA\n&B\n& C\n    account2  expenses:x\n"
+        );
+    }
+
+    #[test]
+    fn an_inserted_block_writes_its_groups_as_hledgers_own_and_or_shape() {
+        assert_eq!(
+            inserted(grouped_block(
+                vec![
+                    vec![scoped("description", "A"), whole("B")],
+                    vec![whole("C")],
+                ],
+                vec![assign(account(2), "expenses:x")],
+            )),
+            "if %description A\n& B\nC\n    account2 expenses:x\n\n"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_group_is_refused_rather_than_silently_dropped() {
+        // Flattening would make it vanish and re-group its neighbours, and the
+        // bare `&` line it would otherwise be is a file hledger rejects.
+        let doc = parsed(GROUPED);
+        let error = doc
+            .apply(&EditPlan {
+                order: vec![Slot::Replace(
+                    ItemId(0),
+                    grouped_block(
+                        vec![vec![whole("A")], vec![]],
+                        vec![assign(account(2), "expenses:x")],
+                    ),
+                )],
+                delete: Vec::new(),
+            })
+            .expect_err("an empty group is not writable");
+        assert!(
+            invalid_message(&error).contains("OR-group needs at least one matcher"),
+            "{error:?}"
         );
     }
 
@@ -5697,12 +6177,12 @@ mod tests {
 
     #[test]
     fn a_rendered_if_block_parses_back_to_the_block_it_was_given() {
-        let matchers = vec![scoped("description", "COFFEE"), whole("PEETS")];
+        let specs = vec![scoped("description", "COFFEE"), whole("PEETS")];
         let assignments = vec![
             assign(account(2), "expenses:food:coffee"),
             assign(HledgerField::Comment, "caffeine"),
         ];
-        let text = inserted(block_of(matchers.clone(), assignments.clone()));
+        let text = inserted(block_of(specs.clone(), assignments.clone()));
         assert_eq!(
             text,
             "if %description COFFEE\nPEETS\n    account2 expenses:food:coffee\n    comment caffeine\n\n"
@@ -5714,15 +6194,13 @@ mod tests {
         };
         assert_eq!(block.layout, IfLayout::Inline);
         assert_eq!(
-            block
-                .matchers
-                .iter()
+            matchers(block)
                 .map(|matcher| MatcherSpec {
                     scope: matcher.scope.clone(),
                     pattern: matcher.pattern.clone(),
                 })
                 .collect::<Vec<_>>(),
-            matchers
+            specs
         );
         assert_eq!(
             block
@@ -6398,8 +6876,7 @@ mod tests {
         let ItemKind::IfBlock(block) = &reparsed.items()[4].kind else {
             panic!("the appended rule must re-parse as an editable block");
         };
-        assert_eq!(block.matchers.len(), 1);
-        assert_eq!(block.matchers[0].pattern, "LATTE");
+        assert_eq!(patterns(block), [vec!["LATTE"]]);
         assert_eq!(block.assignments.len(), 1);
     }
 

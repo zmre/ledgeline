@@ -402,17 +402,23 @@ Two obligations, kept strictly separate. Conflating them is how a span editor co
 > **(B) Classification may be as narrow as we like.** Anything unclassified is opaque:
 > byte-preserved, listed in order, still reorderable. When in doubt, opaque.
 
-An `if` block is editable only if every matcher is plain (no `&`, `&&`, `!`), has no match group, and
-does not begin with `;`/`#`/`*`; every body line is a known field assignment; and there is no
-`skip`/`end`. Everything else — `if` tables, combined matchers, match groups, control flow — renders
-as a dimmed read-only card that says *why* it is locked, and can still be moved.
+An `if` block is editable only if every matcher is plain or a **plain line-prefix `&`
+AND-continuation** (no `!`, no `&&`, and no leading `&` on the *first* matcher line), has no match
+group, and does not begin with `;`/`#`/`*`; every body line is a known field assignment; and there is
+no `skip`/`end`. Everything else — `if` tables, negated or `&&` matchers, match groups, control flow
+— renders as a dimmed read-only card that says *why* it is locked, and can still be moved.
+
+A block's matchers are therefore an **OR of AND-groups**: a plain line opens a new OR branch and each
+`&` line below it is AND-ed onto that branch. `if\nA\n& B\nC\n& D` selects `(A and B) or (C and D)`.
+The `&` is grammar, never content — the model carries the AND as *nesting* (`groups[].matchers[]` on
+the wire), so no matcher pattern anywhere can contain a combinator.
 
 Order is semantics: every matching block applies and the **last** assignment to a field wins. The UI
 says "later matches win" for that reason.
 
-### Three grammar facts that are easy to get wrong
+### Grammar facts that are easy to get wrong
 
-Verified against hledger 1.52's `RulesReader.hs`, not just the manual:
+Verified against hledger 1.52's `RulesReader.hs` **and the binary**, not just the manual:
 
 - A **matcher line must start at column 1** with a non-space character. A body line must be indented.
   An indented *blank* line is consumed by the block; a truly empty line ends it.
@@ -420,6 +426,16 @@ Verified against hledger 1.52's `RulesReader.hs`, not just the manual:
   a block rather than cement a reading the author almost certainly did not intend.
 - Field-assignment values run **verbatim to end of line** — no comment stripping. `account2 x ; note`
   assigns the literal `x ; note`.
+- The `&` AND-prefix takes **optional** whitespace: `&B`, `& B` and `&\tB   ` are one matcher, and
+  the pattern is trimmed at both ends. It works under an inline `if X` header as well as under a
+  bare `if`. An **indented** `& B` is not a matcher line at all and hledger rejects the file for it.
+- `&` is a prefix only at the head of a matcher line. In `%description &COFFEE` the `&` is a literal
+  ampersand in the regex, so that matcher hits nothing containing plain `COFFEE`.
+- A **leading `&` on the first matcher line** (`if\n& X`) is accepted by hledger and is a no-op — it
+  imports exactly what `if\nX` does. We keep it opaque rather than promise to preserve it.
+- A leading `&&` really is an AND join to hledger, same as `&`. We still refuse it, because on one
+  line the same bytes may be two literal ampersands inside a regex and telling those apart needs
+  hledger's own parser.
 
 An `if` **table**'s extent is terminated by a blank line, so when something is placed after a table
 that ran to EOF, the renderer supplies that blank line. Without it the new rule would be read back as

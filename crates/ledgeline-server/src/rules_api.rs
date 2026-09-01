@@ -123,8 +123,8 @@ use axum::response::{IntoResponse, Response};
 use ledgeline_core::Fingerprint;
 use ledgeline_core::rules::{
     self, DirectiveValue, DiscoveredRules, Discovery, EditPlan, HledgerField, IfLayout, Item,
-    ItemBody, ItemId, ItemKind, MatchScope, MatcherSpec, Newline, OpaqueReason, Preview,
-    PreviewUnavailable, RulesDoc, Setting, Settings, Slot, Warning,
+    ItemBody, ItemId, ItemKind, MatchScope, MatcherGroupSpec, MatcherSpec, Newline, OpaqueReason,
+    Preview, PreviewUnavailable, RulesDoc, Setting, Settings, Slot, Warning,
 };
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -546,14 +546,16 @@ enum WireItemBody {
     Fields { names: Vec<String> },
     /// A top-level field assignment (`account2 expenses:unknown`).
     Assignment { field: String, value: String },
-    /// A conditional block whose matchers are a plain OR list and whose
+    /// A conditional block whose matchers are an OR of AND-groups and whose
     /// assignments are all well-formed — the only conditional shape that can be
     /// edited one part at a time.
     IfBlock {
         /// `"inline"` (`if MATCHER`) or `"stacked"` (a bare `if`). Preserved as
         /// found on a save, even when the matcher count changes.
         layout: &'static str,
-        matchers: Vec<WireMatcher>,
+        /// The OR-ed groups, in file order. Always at least one, each with at
+        /// least one matcher — a plain OR list is one matcher per group.
+        groups: Vec<WireMatcherGroup>,
         assignments: Vec<WireAssignment>,
     },
     /// A construct the engine declined to classify, carried verbatim.
@@ -569,6 +571,17 @@ enum WireItemBody {
         text: String,
         truncated: bool,
     },
+}
+
+/// One OR-branch of a conditional block: matchers AND-ed together.
+///
+/// The AND is hledger's own line-prefix `&`, and it is carried as *nesting*
+/// rather than as text: no `&` appears in a [`WireMatcher`] in either
+/// direction, and the engine's renderer is what writes one.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireMatcherGroup {
+    matchers: Vec<WireMatcher>,
 }
 
 /// One matcher of a conditional block.
@@ -673,15 +686,21 @@ fn wire_item_body(doc: &RulesDoc, item: &Item) -> WireItemBody {
                 IfLayout::Inline => "inline",
                 IfLayout::Stacked => "stacked",
             },
-            matchers: block
-                .matchers
+            groups: block
+                .groups
                 .iter()
-                .map(|matcher| WireMatcher {
-                    field: match &matcher.scope {
-                        MatchScope::Field(name) => Some(name.clone()),
-                        MatchScope::WholeRecord => None,
-                    },
-                    pattern: matcher.pattern.clone(),
+                .map(|group| WireMatcherGroup {
+                    matchers: group
+                        .matchers
+                        .iter()
+                        .map(|matcher| WireMatcher {
+                            field: match &matcher.scope {
+                                MatchScope::Field(name) => Some(name.clone()),
+                                MatchScope::WholeRecord => None,
+                            },
+                            pattern: matcher.pattern.clone(),
+                        })
+                        .collect(),
                 })
                 .collect(),
             assignments: block
@@ -856,9 +875,21 @@ enum WireItemIn {
     IfBlock {
         #[serde(default)]
         id: Option<u32>,
-        matchers: Vec<WireMatcherIn>,
+        groups: Vec<WireMatcherGroupIn>,
         assignments: Vec<WireAssignmentIn>,
     },
+}
+
+/// One OR-branch of a saved conditional block. Mirrors [`WireMatcherGroup`].
+///
+/// A client says "these matchers are AND-ed" by nesting them, never by writing
+/// a combinator: the engine still refuses a pattern that *starts* with `&` or
+/// `!`, so the grouping is the only way to express an AND and there is no text
+/// path to a `!`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireMatcherGroupIn {
+    matchers: Vec<WireMatcherIn>,
 }
 
 #[derive(Deserialize)]
@@ -1353,12 +1384,17 @@ fn slot_from_wire(item: &WireItemIn) -> Result<Slot, AppError> {
         ),
         WireItemIn::IfBlock {
             id,
-            matchers,
+            groups,
             assignments,
         } => slot(
             *id,
             ItemBody::IfBlock {
-                matchers: matchers.iter().map(matcher_from_wire).collect(),
+                groups: groups
+                    .iter()
+                    .map(|group| MatcherGroupSpec {
+                        matchers: group.matchers.iter().map(matcher_from_wire).collect(),
+                    })
+                    .collect(),
                 assignments: assignments
                     .iter()
                     .map(|assignment| {

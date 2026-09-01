@@ -24,9 +24,9 @@
 mod common;
 
 use ledgeline_core::rules::{
-    Assignment, BalanceType, DirectiveName, DirectiveValue, EditPlan, Item, ItemBody, ItemId,
-    ItemKind, MatchScope, MatcherSpec, Newline, OpaqueReason, RulesDoc, RulesError, Separator,
-    Slot, Span,
+    Assignment, BalanceType, DirectiveName, DirectiveValue, EditPlan, IfBlock, Item, ItemBody,
+    ItemId, ItemKind, MatchScope, Matcher, MatcherGroupSpec, MatcherSpec, Newline, OpaqueReason,
+    RulesDoc, RulesError, Separator, Slot, Span,
 };
 use proptest::prelude::*;
 use std::collections::BTreeSet;
@@ -473,6 +473,54 @@ fn checking_fixture_has_the_expected_paragraphs() {
 }
 
 #[test]
+fn and_groups_fixture_classifies_as_an_or_of_and_groups() {
+    // The `&`-chain fixture is EDITABLE, which is the whole point of it: before
+    // AND-groups existed here every one of these three blocks was
+    // `Opaque(CombinedMatcher)`. The round-trip, reorder, delete, part-span and
+    // edit-isolation suites above all reach it through `fixtures()`, so the
+    // multi-group round trip is covered by the same proofs as every other file.
+    let text = fixture_text("simple/and-groups.csv.rules");
+    let doc = RulesDoc::parse(&text);
+    assert!(doc.warnings().is_empty(), "{:?}", doc.warnings());
+
+    let blocks = doc
+        .items()
+        .iter()
+        .filter_map(|item| item.if_block())
+        .map(|block| {
+            block
+                .groups
+                .iter()
+                .map(|group| {
+                    group
+                        .matchers
+                        .iter()
+                        .map(|matcher| (matcher.scope.clone(), matcher.pattern.as_str()))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    let whole = |pattern| (MatchScope::WholeRecord, pattern);
+    let card = |pattern| (MatchScope::Field("card".to_string()), pattern);
+    assert_eq!(
+        blocks,
+        vec![
+            // Inline header, one AND-group.
+            vec![vec![whole("AMAZON"), card("personal")]],
+            // Stacked, two AND-groups OR-ed.
+            vec![
+                vec![whole("GROCER"), card("personal")],
+                vec![whole("FARMERS"), card("business")],
+            ],
+            // A plain OR list is one matcher per group, not a second shape.
+            vec![vec![whole("SHELL")], vec![whole("CHEVRON")]],
+        ]
+    );
+}
+
+#[test]
 fn mixed_fixture_keeps_the_table_and_the_blocks_whole() {
     let text = fixture_text("advanced/mixed.csv.rules");
     let doc = RulesDoc::parse(&text);
@@ -698,6 +746,10 @@ fn edge_fixtures_keep_their_awkward_bytes() {
 /// the moment either stops holding: the span lies inside the item's own body, or
 /// an edit reaches into a neighbour; and it covers the text the model reports,
 /// or an edit replaces the wrong bytes.
+fn block_matchers(block: &IfBlock) -> impl Iterator<Item = &Matcher> {
+    block.groups.iter().flat_map(|group| &group.matchers)
+}
+
 fn part_spans(kind: &ItemKind) -> Vec<(Span, Option<&str>)> {
     fn assignment_spans(assignment: &Assignment) -> Vec<(Span, Option<&str>)> {
         vec![
@@ -732,7 +784,7 @@ fn part_spans(kind: &ItemKind) -> Vec<(Span, Option<&str>)> {
             .collect(),
         ItemKind::Assignment(assignment) => assignment_spans(assignment),
         ItemKind::IfBlock(block) => std::iter::once((block.indent.clone(), None))
-            .chain(block.matchers.iter().flat_map(|matcher| {
+            .chain(block_matchers(block).flat_map(|matcher| {
                 std::iter::once((matcher.pattern_span.clone(), Some(matcher.pattern.as_str())))
                     .chain(matcher.field_span.clone().map(|span| {
                         (
@@ -817,18 +869,27 @@ fn edit_for(doc: &RulesDoc, item: &Item) -> Option<ItemBody> {
             field: assignment.field,
             value: extended(&assignment.value_span),
         }),
+        // Grouping is kept exactly as found: the point here is that a *small*
+        // edit stays small, and re-grouping is not a small edit.
         ItemKind::IfBlock(block) => Some(ItemBody::IfBlock {
-            matchers: block
-                .matchers
+            groups: block
+                .groups
                 .iter()
                 .enumerate()
-                .map(|(at, matcher)| MatcherSpec {
-                    scope: matcher.scope.clone(),
-                    pattern: if at == 0 {
-                        format!("{}X", matcher.pattern)
-                    } else {
-                        matcher.pattern.clone()
-                    },
+                .map(|(group_at, group)| MatcherGroupSpec {
+                    matchers: group
+                        .matchers
+                        .iter()
+                        .enumerate()
+                        .map(|(at, matcher)| MatcherSpec {
+                            scope: matcher.scope.clone(),
+                            pattern: if (group_at, at) == (0, 0) {
+                                format!("{}X", matcher.pattern)
+                            } else {
+                                matcher.pattern.clone()
+                            },
+                        })
+                        .collect(),
                 })
                 .collect(),
             assignments: block

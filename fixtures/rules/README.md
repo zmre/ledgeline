@@ -20,6 +20,7 @@ hledger executes.
 | File                            | What it is for                                                                |
 | ------------------------------- | ------------------------------------------------------------------------------ |
 | `simple/checking.csv.rules`     | The friendly, realistic shape most rules files have. Inline `if`, stacked-matcher `if`, and a commented `if` |
+| `simple/and-groups.csv.rules`   | hledger's line-prefix `&`: an inline AND chain, an OR of two AND-groups, and a plain OR list in one file. Its CSV is built so each row's account **says** which group matched, which is what `rules_hledger_render.rs` checks against hledger itself |
 | `simple/creditcard1.csv.rules`  | `amount-in`/`amount-out`, `balance-type`, and **column-aligned values** — exists to prove alignment survives editing |
 | `advanced/mixed.csv.rules`      | Every construct that must stay `Opaque`, in one file: `if` table, `&&`, `& !`, `!`, a match group, `skip`/`end`, `commentN`, `separator:`, tab indentation |
 | `edge/crlf.rules`               | Every terminator is CRLF                                                        |
@@ -73,9 +74,10 @@ next decoy, because a fixture git silently refuses to track is a test that silen
 `tree/import/2026/bank.csv.rules` does double duty: it is the file discovery must find, **and** it
 is the document `golden/rules-doc.json` describes. That is why it carries more than the discovery
 test needs — every top-level setting a preferences panel renders, a one-matcher `if`, a
-two-matcher OR list, and one conditional **table**, which is the `opaque` item the golden exercises.
-Editing it changes both the discovery assertions in `crates/ledgeline-core/tests/rules_security.rs`
-and the golden bytes.
+two-matcher OR list, a two-matcher **AND-group** (the only thing that pins the wire's
+`groups[].matchers[]` nesting byte for byte), and one conditional **table**, which is the `opaque`
+item the golden exercises. Editing it changes both the discovery assertions in
+`crates/ledgeline-core/tests/rules_security.rs` and the golden bytes.
 
 ## `golden/` — the `/api/rules` wire, byte-pinned
 

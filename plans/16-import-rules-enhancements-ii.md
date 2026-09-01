@@ -111,6 +111,69 @@ hledger itself says it should (cross-check via `hledger print -O json` on a fixt
 `matching.rs` already uses). New fixture:
 `fixtures/rules/simple/and-groups.csv.rules` (+ its `.csv`).
 
+### Contract amendments made during implementation (Rust + wire half)
+
+Per convention #9 in `plans/00-overview.md`. The Rust engine and the JSON wire landed as sketched
+above; the SPA half (`model.ts`, `importTypes.ts`, the three components) is a separate pass and
+should be written against **this** section, not the sketch above it.
+
+Findings first — all verified against the hledger 1.52 binary (`hledger print -f DATA.csv --rules
+FILE.rules`), several of which contradict what the sketch assumed:
+
+- **AND-chains are not confined to the stacked layout.** An inline `if MATCHER` header followed by
+  `& CONTINUATION` lines works and AND-s exactly as a bare `if` does. The sketch's `if A\n& B\nif C`
+  phrasing also mis-stated the OR separator: a new OR branch is a *plain matcher line inside the
+  same block*, not a second `if`.
+- **The space after `&` is optional.** `&B`, `& B`, `&\tB` and `&    B   ` are one matcher, pattern
+  trimmed both ends — so the parser must not require `"& "` and the renderer must splice an existing
+  line's own spacing rather than normalise it.
+- **A leading `&` on the first matcher line is legal hledger and is a no-op** (`if\n& COFFEE`
+  imports exactly what `if\nCOFFEE` does). The sketch guessed hledger might error. It does not; we
+  keep it `Opaque(CombinedMatcher)` anyway, by choice, and say so.
+- **A bare `&` line is a hard parse error** in hledger, which is why an empty `MatcherGroup` is
+  refused rather than dropped.
+- **A leading `&&` is also an AND join to hledger**, not the error the old code's blanket
+  `contains("&&")` implied. It stays opaque regardless: on one line `&&` may be two literal
+  ampersands in a regex, and that ambiguity is unresolvable without hledger's parser.
+- **`&` is a prefix only at the head of a line.** `%description &COFFEE` is a regex containing a
+  literal `&`; it matches no record containing plain `COFFEE`. So the `%field &pattern` form the
+  sketch asked about does *not* AND.
+- **An indented `& X` is rejected by hledger** ("expecting conditional block"), which is why
+  continuation lines render at column 1 and no indent logic was added.
+
+Type and contract shapes as landed:
+
+- `MatcherGroup { matchers: Vec<Matcher> }` and `IfBlock.groups: Vec<MatcherGroup>` — as sketched.
+- **`ItemBody::IfBlock` gained a mirrored `MatcherGroupSpec { matchers: Vec<MatcherSpec> }`**, and
+  its field is `groups`, not `matchers`. The sketch named only the parsed side; the edit side has to
+  move in lockstep or a client could not express an AND at all.
+- **`check_body` refuses an empty group** with "a conditional block's OR-group needs at least one
+  matcher". An empty group would vanish on flattening and silently re-group its neighbours.
+- **`check_matcher` is unchanged**: a *pattern* still may not start with `&` or `!` nor contain
+  `&&`. The AND is carried only by nesting, so there remains no text path from a client to a
+  combinator. The SPA's per-matcher validation therefore needs no change either — only its shape.
+- Wire: `WireItemBody::IfBlock.groups: Vec<WireMatcherGroup>` and `WireItemIn::IfBlock.groups:
+  Vec<WireMatcherGroupIn>`, both `{ "matchers": [{ "field"?, "pattern" }] }`. `layout`,
+  `assignments`, `WireMatcher`'s own two fields and every other variant are untouched.
+
+Rendering conventions, which the sketch left open:
+
+- An **existing** matcher line's prefix — nothing, `if `, or its own `& `/`&\t`/`&   ` — is spliced
+  from the file verbatim whenever the matcher keeps its OR-group role. Only a matcher that changed
+  role is re-prefixed (gaining `"& "` or losing its `&`), which is the sole thing grouping can do to
+  a line that already exists.
+- **Added** matchers keep the existing placement rule exactly (`column one below the last one`) and
+  differ only by that prefix, so "+ AND condition" and "+ OR group" are one code path.
+
+Fixtures and tests as landed, beyond the plan: `fixtures/rules/tree/import/2026/bank.csv.rules`
+gained a two-matcher AND-group, because the byte-pinned wire golden could not otherwise pin the
+`groups[].matchers[]` **nesting** (every other block is one matcher per group). That moved
+`rules_security.rs`'s counts to `if_block_count == 5` / `editable_block_count == 4` and required
+`just snapshot-rules-wire`. `rules_hledger_render.rs` gained a second test that asserts hledger
+*routes each CSV row* the way the re-parsed groups say it should — the existing "hledger reads it"
+scenarios all pass against a renderer that writes OR where the model says AND, and this one does
+not.
+
 ## Phase 2 — create rules files from a CSV
 
 ### Rust: `crates/ledgeline-core/src/rules/generate.rs` (new)

@@ -7,9 +7,9 @@
 # It is ALSO the document `fixtures/rules/golden/rules-doc.json` is taken over,
 # so it deliberately carries one of each shape that wire has to describe: the
 # top-level settings a preferences panel renders, an editable one-matcher block,
-# an editable multi-matcher OR list, and one advanced construct that must stay
-# `opaque`. Changing it changes that golden — regenerate with
-# `just snapshot-rules-wire` and review the diff.
+# an editable multi-matcher OR list, an editable AND-group, and one advanced
+# construct that must stay `opaque`. Changing it changes that golden —
+# regenerate with `just snapshot-rules-wire` and review the diff.
 
 skip 1
 fields date, description, amount
@@ -32,6 +32,15 @@ if
 %description GROCER
     account2  expenses:food:groceries
     comment   weekly shop
+
+# An AND-group. A `&` line continues the group above it rather than starting a
+# new OR branch, so BOTH matchers must hit — verified against hledger 1.52. The
+# wire carries that AND as NESTING (`groups[].matchers[]`), and a group holding
+# more than one matcher is the only thing that pins the nesting byte for byte.
+if
+%description AIRLINE
+& %amount ^-
+    account2 expenses:travel:airfare
 
 # A conditional TABLE. hledger reads each row positionally against the header,
 # so an edit to the header would silently re-point every row — which is why
