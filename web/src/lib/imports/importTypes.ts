@@ -391,6 +391,8 @@ export interface GitReport {
     readonly paths: readonly string[];
     /** Targets deliberately not committed (gitignored, or in another repo). Reported, never force-added. */
     readonly skipped: readonly string[];
+    /** A commit failure's stderr (a rejecting pre-commit hook, a GPG prompt, ...). Null on success. */
+    readonly message: string | null;
 }
 
 /**

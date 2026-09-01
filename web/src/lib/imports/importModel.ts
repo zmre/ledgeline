@@ -648,6 +648,17 @@ export function writtenLines(result: CommitResult): string[] {
     return lines;
 }
 
+/**
+ * A rejecting pre-commit hook, a GPG prompt, an unset `user.email` — surfaced
+ * distinctly from {@link writtenLines} rather than folded into that plain list,
+ * because the journal is already correctly written at this point (`git.rs`'s
+ * own rule): this is a bonus step that failed, not part of what was written.
+ * Null when there is nothing to report (including when git never ran at all).
+ */
+export function gitCommitFailure(result: CommitResult): string | null {
+    return result.git?.message ?? null;
+}
+
 /** The re-sort offer, or null when the journal came out in date order. */
 export function reorderOffer(result: CommitResult): string | null {
     if (result.ordering.inOrder) return null;

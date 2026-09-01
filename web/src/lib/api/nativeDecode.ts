@@ -837,6 +837,9 @@ interface RawGitReport {
     committed?: boolean;
     paths?: unknown[];
     skipped?: unknown[];
+    // Contract amendment — see WireGitResult's doc comment in import_api.rs:
+    // additive, and omitted (not null) on success.
+    message?: string;
 }
 
 interface RawCommitResult {
@@ -2487,6 +2490,7 @@ function decodeGitReport(raw: RawGitReport | null | undefined, context: string):
         committed: raw.committed === true,
         paths: frozen(decodeStrings(raw.paths, `${context} paths`)),
         skipped: frozen(decodeStrings(raw.skipped, `${context} skipped`)),
+        message: optStr(raw.message, `${context} message`),
     });
 }
 

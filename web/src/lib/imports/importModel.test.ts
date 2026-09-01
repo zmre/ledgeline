@@ -44,6 +44,7 @@ import {
     formatScore,
     formIsBusy,
     gitBlockMessage,
+    gitCommitFailure,
     headerFilename,
     hledgerBannerCopy,
     importAction,
@@ -378,7 +379,27 @@ describe("UNIT import wire decoders", () => {
         expect(commit.imported).toBe(3);
         expect(commit.ordering.inOrder).toBe(false);
         expect(commit.ordering.moves[0]).toEqual({date: "2026-01-20", description: "BACK DATED", fromLine: 812, toLine: 540});
-        expect(commit.git).toEqual({committed: true, paths: ["import/2026/bank.csv", "2026/2026.journal"], skipped: []});
+        expect(commit.git).toEqual({committed: true, paths: ["import/2026/bank.csv", "2026/2026.journal"], skipped: [], message: null});
+    });
+
+    it("decodes git.message, the contract amendment for a rejecting pre-commit hook", () => {
+        // The Rust field is additive and omitted on success (see import_api.rs's
+        // WireGitResult doc comment) — this is the one case where it is present.
+        const commit = decodeCommitResult({
+            ...COMMIT_JSON,
+            git: {
+                committed: false,
+                paths: [],
+                skipped: ["import/2026/bank.csv", "2026/2026.journal"],
+                message: "hook rejected: no swearing in commit messages",
+            },
+        });
+        expect(commit.git).toEqual({
+            committed: false,
+            paths: [],
+            skipped: ["import/2026/bank.csv", "2026/2026.journal"],
+            message: "hook rejected: no swearing in commit messages",
+        });
     });
 
     it("decodes the Save-CSV-only commit, where no journal was touched", () => {
@@ -398,7 +419,7 @@ describe("UNIT import wire decoders", () => {
         expect(decodeSortResult({moved: 3})).toEqual({moved: 3, git: null});
         expect(decodeSortResult({moved: 2, git: {committed: true, paths: ["main.journal"], skipped: []}})).toEqual({
             moved: 2,
-            git: {committed: true, paths: ["main.journal"], skipped: []},
+            git: {committed: true, paths: ["main.journal"], skipped: [], message: null},
         });
     });
 
@@ -1016,6 +1037,23 @@ describe("UNIT result rendering", () => {
     it("reports what git declined to commit rather than hiding it", () => {
         const result = decodeCommitResult({...COMMIT_JSON, git: {committed: true, paths: ["a"], skipped: ["b"]}});
         expect(writtenLines(result)).toContain("Not committed: b.");
+    });
+
+    it("reports a git commit failure separately from what was written, rather than dropping it", () => {
+        const clean = decodeCommitResult({...COMMIT_JSON, git: {committed: true, paths: ["a"], skipped: []}});
+        expect(gitCommitFailure(clean)).toBeNull();
+
+        const failed = decodeCommitResult({
+            ...COMMIT_JSON,
+            git: {committed: false, paths: [], skipped: ["a", "b"], message: "hook rejected: no swearing in commit messages"},
+        });
+        expect(gitCommitFailure(failed)).toBe("hook rejected: no swearing in commit messages");
+        // Not duplicated into the plain "what was written" list.
+        expect(writtenLines(failed).join(" ")).not.toContain("hook rejected");
+    });
+
+    it("has nothing to report when git never ran (no repository)", () => {
+        expect(gitCommitFailure(decodeCommitResult({csvWritten: "bank.csv"}))).toBeNull();
     });
 
     it("offers the re-sort only when the journal came out of order", () => {
