@@ -36,3 +36,20 @@ if
 SHELL
 CHEVRON
     account2 expenses:auto:fuel
+
+# hledger's OTHER spelling of the same AND: `&&` in the middle of ONE line.
+# Verified against 1.52 — the split is unconditional and needs no surrounding
+# whitespace, and each piece keeps its own `%field` scope. Row 9 (business)
+# must land here and row 10 (personal) must not; a reader that took this for an
+# OR would take both.
+if %description TARGET && %card business
+    account2 expenses:shopping:target
+
+# The two spellings composed. Line 2's leading `&` continues the group line 1
+# opened, and that same line's own `&&` splits it further, so this is ONE group
+# of three: STAPLES and business and -85. Rows 11, 12 and 13 differ in exactly
+# one of the three, so only row 11 may land here.
+if
+STAPLES
+& %card business && %amount -85
+    account2 expenses:office:supplies

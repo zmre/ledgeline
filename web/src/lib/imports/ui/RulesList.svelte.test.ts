@@ -18,7 +18,7 @@
 // editing — and about the open card surviving, or not surviving, the things that
 // happen around it.
 
-import {render, screen} from "@testing-library/svelte";
+import {fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
 import {keymap} from "$lib/keys/keymap.svelte";
@@ -28,7 +28,7 @@ import RulesList from "./RulesList.svelte";
 afterEach(() => keymap.reset());
 
 function rule(pattern: string, account: string): FormItem {
-    return {kind: "ifBlock", id: null, groups: [{matchers: [{field: "", pattern}]}], assignments: [{field: "account2", value: account}]};
+    return {kind: "ifBlock", id: null, groups: [{matchers: [{field: "", pattern}]}], assignments: [{field: "account2", value: account}], control: null};
 }
 
 /**
@@ -360,5 +360,37 @@ describe("COMPONENT RulesList AND-groups", () => {
         await tick();
 
         expect(screen.getByText("IF row ~ COFFEE AND card ~ personal → account2 = expenses:coffee")).toBeDefined();
+    });
+});
+
+describe("COMPONENT RulesList skip/end", () => {
+    it("puts the picked control on the rule as a word, and 'as usual' back to null", async () => {
+        const live = mountLive();
+        await click("Edit rule 2");
+
+        const select = screen.getByLabelText("Rule 2 row handling") as HTMLSelectElement;
+        // The empty option is the one the model spells `null`. Sending `""` to
+        // the engine would be a third control word and a 400, so the round trip
+        // through "" and back has to land on null rather than on a blank string.
+        expect(select.value).toBe("");
+
+        await fireEvent.change(select, {target: {value: "skip"}});
+        const skipped = live.items[1];
+        expect(skipped?.kind === "ifBlock" && skipped.control).toBe("skip");
+
+        await fireEvent.change(select, {target: {value: ""}});
+        const cleared = live.items[1];
+        expect(cleared?.kind === "ifBlock" && cleared.control).toBeNull();
+    });
+
+    it("summarizes a skipping rule by what happens to the row", async () => {
+        const live = mountLive();
+        const edited = live.items[1];
+        if (edited?.kind !== "ifBlock") throw new Error("expected a rule");
+        edited.control = "skip";
+        edited.assignments = [];
+        await tick();
+
+        expect(screen.getByText("IF row ~ COFFEE → skip this row")).toBeDefined();
     });
 });

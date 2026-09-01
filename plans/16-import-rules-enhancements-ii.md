@@ -234,6 +234,127 @@ assertion to `5 rules, 1 advanced`. `RulesList.svelte.test.ts` builds its items 
 — a plain array renders once and then stops agreeing with itself, because the card's `rule.groups =
 …` is a nested write.
 
+### Contract amendments: same-line `&&`, and `skip`/`end` (2026-09-01 follow-up)
+
+Per convention #9. This is a **follow-up to the two sections above**, raised by the repo owner
+testing the shipped AND-group feature against their real rules files and finding it did not help:
+their files spell the AND with hledger's **same-line `&&`**, which the first pass deliberately left
+`Opaque(CombinedMatcher)` on the stated reasoning that "`&&` on one line may be two literal
+ampersands inside one regex, and telling that apart from an AND-join needs hledger's own parser."
+
+**That reasoning was wrong, and this section retracts it.** Re-verified against the hledger 1.52
+binary:
+
+- **The same-line split is unconditional.** `foo&&bar` splits with no surrounding whitespace, and
+  there is **no escape**. The two candidates are not counter-examples: `[&][&]` and `\&\&` read as
+  one regex only because neither contains two *adjacent* ampersands, so neither is a way to write a
+  literal `&&` that survives. A regex genuinely needing two adjacent ampersands cannot be written in
+  an hledger matcher at all — so there was never an ambiguity to protect against.
+- **Each piece is independently scoped.** `if %activity Debit Card && %description clothing` ANDs
+  two field-scoped matchers, and a bare piece is a *whole-record* match rather than an inheritance
+  of the previous piece's `%field` — proven with a row whose `activity` matches and whose `clothing`
+  appears only in `description`.
+- **The two spellings compose.** `if\nFIRST\n& SECOND && THIRD\nFOURTH` is
+  `(FIRST and SECOND and THIRD) or FOURTH`: the leading `&` continues the group above, and that same
+  line's `&&` splits it further. All of one line's pieces join **one** group.
+
+Two `&&` shapes are still refused, for reasons of *meaning* rather than ambiguity — both are new
+findings, and neither was anticipated:
+
+- **Three or more consecutive ampersands.** hledger splits at the **first** `&&` and reads the
+  remainder verbatim: `A&&&B` is `AND(A, "&B")` and `A&&&&B` is `AND(A, "&&B")`. Splitting on every
+  `&&` would give `["A","","B"]` and silently mean something else, so this stays
+  `Opaque(CombinedMatcher)`.
+- **An empty piece.** hledger *rejects* `if A &&` outright, and reads `if && A` as an AND with an
+  everything-matching empty regex. Neither is worth presenting as editable.
+
+A **line-leading** `&&` also stays opaque, and this is a deliberate non-extension: hledger reads it
+as an AND-continuation identical to a single `&` (verified — `if A\n&& B` and `if A\n& B` import
+identically), but one `&` already spells continuation unambiguously and a second spelling earns only
+a second thing to get wrong.
+
+Also verified, for `skip`/`end` inside a block:
+
+- Bare `skip` drops **the matching row only**; bare `end` stops reading at it, dropping that row and
+  every row after it.
+- **`skip N` is a different construct, not a spelling of the same one**: `skip 2` drops the matching
+  record *and the one after it*, `skip 3` three. (`skip 0` and `skip 1` happen to equal the bare
+  form.) `end N` is accepted and its argument ignored. Only the **bare** form is modelled; anything
+  with an argument stays `Opaque(ControlFlowInBlock)`.
+- hledger **accepts** a control word alongside ordinary assignments (the assignment is simply never
+  used, since the row does not import), so the model accepts it too rather than lock a legal file.
+- hledger also accepts **both** words in one block, with `end` winning. That stays opaque, because
+  `Option<Control>` cannot say there are two and dropping one on a save would change which rows
+  import.
+- **Reordering a control block among other blocks changes nothing.** Three orderings of an `end`
+  block, a `skip` block and a value block produced byte-identical output, so the rules list's
+  existing whole-item reorder needs no guard.
+- `skip abc` is an hledger crash (`Prelude.read: no parse`), which the existing grammar already
+  refuses.
+
+**Landed shapes.** The wire and the SPA form model needed **no change for the `&&` half** — a group
+is still a flat matcher list whichever concrete syntax produced it, and which spelling a group came
+from is not on the wire at all. `skip`/`end` added exactly one optional field at each layer:
+
+```rust
+// crates/ledgeline-core/src/rules.rs — parsed side, carries its span like every
+// other typed leaf, so a skip↔end swap splices only those bytes.
+pub struct Control { pub kind: ControlField, pub span: Span }
+pub struct IfBlock { /* … */ pub control: Option<Control>, /* … */ }
+
+// edit side — only what a client can choose, no spans
+ItemBody::IfBlock { groups: Vec<MatcherGroupSpec>, assignments: Vec<(HledgerField, String)>,
+                    control: Option<ControlField> }
+```
+
+```jsonc
+// read wire, key OMITTED when absent (like WireMatcher.field):
+{"kind": "ifBlock", "layout": "inline", "groups": [...], "assignments": [...], "control": "skip"}
+// write wire: same optional key; any other string is a 400.
+```
+
+SPA: `RulesIfBlockItem.control: "skip" | "end" | null` (the domain type spells the absent case
+`null`, per `imports/types.ts`'s standing convention), `IfBlockItem.control` likewise, and `bodyOf`
+omits the key rather than sending `null`. `itemSignature` **must** include it — a control change
+with no other edit would otherwise go back as an unchanged `keep` and leave the file importing rows
+the screen says it drops.
+
+**Rendering rules chosen** (the harder half, and the part the plan left open):
+
+- **A new matcher is never spliced into an existing `&&` line.** "+ AND condition" on a group whose
+  matchers are `&&`-joined still emits a new `&`-prefixed line below. hledger reads the two
+  spellings identically, and an inline splice would have to re-extend a line whose bytes the
+  renderer is otherwise reusing whole — buying nothing for real risk.
+- **The renderer never writes `&&` at all.** It is read-only syntax: existing `&&` bytes are
+  spliced back verbatim, and every AND the renderer *authors* is the line-prefix form.
+- **Deleting.** Specs pair with loaded matchers **by position** (pre-existing behaviour), so a
+  deletion drops the *tail* of the flattened list and slides the rest up. Applied per piece: a
+  dropped piece takes its own ` && ` joiner with it, and only a line left with **no** surviving
+  piece disappears entirely. Deleting the sole piece of a one-piece line therefore still removes the
+  whole line, and deleting one piece of a two-piece line leaves the other with the line's original
+  prefix.
+- **Regrouping.** A `&&` piece that stops continuing its group cannot stay behind a `&&`, which
+  *is* the AND — it moves to a line of its own at column 1, which is what OR looks like. This is the
+  only role change reachable for a non-first piece, since later pieces are never group heads as
+  found.
+- **The control line** keeps its position among the assignments and splices only the word; clearing
+  it drops the line; setting one the block did not have appends it last, indented with the block's
+  own `IfBlock::indent`.
+
+Rule 7 loosened: a block needs at least one matcher and **at least one assignment *or* a control
+word**, because `if COND / skip` with no assignment is legal hledger and does something.
+`check_matcher` needed no change — it already refuses a pattern starting with `&`/`!` or containing
+`&&`, and grouping remains structural, so there is still no path from a client to a combinator.
+
+Fixtures: `simple/and-groups.csv(.rules)` gained a same-line `&&` block and a composed
+`&`-plus-`&&` block (5 new CSV rows chosen so each conjunction reaches strictly fewer rows than its
+parts do, which is what tells AND from OR); new pair `simple/control-flow.csv(.rules)` covers
+`skip` and `end`. `rules_hledger_render.rs` gained
+`hledger_skips_and_ends_exactly_where_the_classifier_says`, which asserts the *surviving
+descriptions* before and after a save — including one `skip` block written from scratch by
+`fresh_if_block` and placed **after** the `end` block, which is also where the reorder-safety
+finding gets exercised.
+
 ## Phase 2 — create rules files from a CSV
 
 ### Rust: `crates/ledgeline-core/src/rules/generate.rs` (new)

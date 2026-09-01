@@ -9,18 +9,25 @@
     // # What is editable, and what is still not
     //
     // Matchers within a group are AND-ed and groups are OR-ed, which is exactly
-    // hledger's line-prefix `&`: a plain matcher line opens a new OR branch and
-    // each `&` line below it is AND-ed onto that branch. The AND is carried as
-    // NESTING and never as text — the engine writes the `&` — so nothing typed
-    // into a pattern here can become a combinator.
+    // hledger's own AND — spelled either as a line-prefix `&` or as a same-line
+    // `&&`, both of which the engine reads into the same flat group. The AND is
+    // carried as NESTING and never as text — the engine writes the `&` — so
+    // nothing typed into a pattern here can become a combinator, and which of
+    // the two spellings the file used is the engine's to preserve.
     //
-    // Still refused, and still a decision rather than a gap: a `!` negation, an
-    // `&&` join (on one line those bytes may be two literal ampersands in a
-    // regex, and telling them apart needs hledger's own parser), a leading `&`
-    // with no group above it, a capture group whose value a later assignment
-    // refers back into, and an `if` TABLE, whose rows read positionally against
-    // its header. The engine classifies each of those `opaque` and this GUI
-    // shows them read-only.
+    // Still refused, and still a decision rather than a gap: a `!` negation, a
+    // leading `&`/`&&` with no group above it, a capture group whose value a
+    // later assignment refers back into, and an `if` TABLE, whose rows read
+    // positionally against its header. The engine classifies each of those
+    // `opaque` and this GUI shows them read-only.
+    //
+    // # skip / end
+    //
+    // A rule can also drop the row instead of (or as well as) setting fields.
+    // Only the BARE `skip`/`end` reaches here; `skip N` skips N records rather
+    // than the matched one, so the engine leaves those blocks `opaque`. The two
+    // are mutually exclusive because `control` holds one value, which is also
+    // all the engine can represent.
     //
     // Fields bind straight into the rule object. `form.items` is `$state`, so
     // the proxy makes a nested write reactive without the parent having to
@@ -28,7 +35,8 @@
     // `groups`/`assignments` array, exactly as `TransactionModal` does for
     // posting rows.
     import AccountInput from "$lib/journal/edit/AccountInput.svelte";
-    import {ASSIGNABLE_FIELDS, describeIfBlock, type IfBlockItem} from "../model";
+    import {ASSIGNABLE_FIELDS, CONTROL_SUMMARY, describeIfBlock, type IfBlockItem} from "../model";
+    import type {RulesControl} from "../types";
 
     let {
         rule,
@@ -108,6 +116,16 @@
     }
     function removeAssignment(index: number): void {
         rule.assignments = rule.assignments.filter((_, at) => at !== index);
+    }
+
+    /**
+     * The `<select>`'s empty option means "no control word", which the model
+     * spells `null` and the wire spells by omitting the key. `""` must never
+     * reach `rule.control`: the engine would read it as a third control word
+     * and 400 the save.
+     */
+    function setControl(value: string): void {
+        rule.control = value === "" ? null : (value as RulesControl);
     }
 
     /** The scope options: whole row, the CSV's own columns, plus any field this rule already names. */
@@ -287,6 +305,27 @@
                 </div>
             {/each}
             <button type="button" class="btn gap-1 self-start btn-ghost btn-xs" {disabled} onclick={addAssignment}>+ Add field to set</button>
+        </div>
+
+        <!-- An edge case, and deliberately one row rather than a section of its
+             own: almost no rule wants this, and a rule that does still usually
+             sets fields too, so it reads as a modifier on the card rather than
+             as a peer of "When any of these match". One select rather than two
+             checkboxes because the three states are exclusive and a select
+             cannot express the fourth, impossible one. -->
+        <div class="flex items-center gap-2">
+            <span class="shrink-0 text-xs text-base-content/60">And with the row:</span>
+            <select
+                class="select w-44 shrink-0 select-xs sm:w-52"
+                {disabled}
+                aria-label="Rule {position} row handling"
+                value={rule.control ?? ""}
+                onchange={(event) => setControl(event.currentTarget.value)}
+            >
+                <option value="">import it as usual</option>
+                <option value="skip">{CONTROL_SUMMARY.skip}</option>
+                <option value="end">{CONTROL_SUMMARY.end}</option>
+            </select>
         </div>
     </div>
 </div>

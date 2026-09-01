@@ -1394,6 +1394,45 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
         ]);
     });
 
+    // VERBATIM from `WireItemBody::IfBlock` again, for the key the engine only
+    // emits sometimes. Both halves matter: `"skip"` has to arrive as `"skip"`,
+    // and an ABSENT key has to become `null` rather than `undefined` — the
+    // engine omits it with `skip_serializing_if`, exactly as it omits a
+    // whole-record matcher's `field`, and every rules file that predates this
+    // feature sends blocks without it.
+    it("decodes an if-block control word, and an absent one as null", () => {
+        const wire = (item: Record<string, unknown>) => ({
+            id: "x.rules",
+            label: "x",
+            revision: "1-0",
+            editable: true,
+            newline: "lf",
+            settings: {},
+            items: [
+                {
+                    id: 0,
+                    line: 1,
+                    lines: 2,
+                    kind: "ifBlock",
+                    layout: "inline",
+                    groups: [{matchers: [{field: "description", pattern: "PENDING"}]}],
+                    assignments: [],
+                    ...item,
+                },
+            ],
+            warnings: [],
+        });
+
+        expect(decodeRulesDoc(wire({control: "skip"})).items[0]).toMatchObject({kind: "ifBlock", control: "skip"});
+        expect(decodeRulesDoc(wire({control: "end"})).items[0]).toMatchObject({kind: "ifBlock", control: "end"});
+        expect(decodeRulesDoc(wire({})).items[0]).toMatchObject({kind: "ifBlock", control: null});
+
+        // A third control word would mean the engine grew one. Rendering that
+        // block as "imports as usual" would hide an instruction to drop rows,
+        // so it is refused instead.
+        expect(() => decodeRulesDoc(wire({control: "halt"}))).toThrow(ApiShapeError);
+    });
+
     // Flattening `groups` into a matcher list would turn an AND into an OR —
     // the rule would start matching either condition instead of both — so a
     // body without the nesting is refused rather than read the old way.

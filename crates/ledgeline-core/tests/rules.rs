@@ -504,6 +504,7 @@ fn and_groups_fixture_classifies_as_an_or_of_and_groups() {
 
     let whole = |pattern| (MatchScope::WholeRecord, pattern);
     let card = |pattern| (MatchScope::Field("card".to_string()), pattern);
+    let field = |name: &str, pattern| (MatchScope::Field(name.to_string()), pattern);
     assert_eq!(
         blocks,
         vec![
@@ -516,6 +517,17 @@ fn and_groups_fixture_classifies_as_an_or_of_and_groups() {
             ],
             // A plain OR list is one matcher per group, not a second shape.
             vec![vec![whole("SHELL")], vec![whole("CHEVRON")]],
+            // hledger's same-line `&&`: one group, exactly as the `&`-chain
+            // above, and each piece scoped on its own.
+            vec![vec![field("description", "TARGET"), card("business")]],
+            // The two spellings composed: a leading `&` continues the group the
+            // line above opened, and that line's own `&&` splits it further —
+            // one group of three, not two groups.
+            vec![vec![
+                whole("STAPLES"),
+                card("business"),
+                field("amount", "-85"),
+            ]],
         ]
     );
 }
@@ -897,6 +909,10 @@ fn edit_for(doc: &RulesDoc, item: &Item) -> Option<ItemBody> {
                 .iter()
                 .map(|assignment| (assignment.field, extended(&assignment.value_span)))
                 .collect(),
+            // Kept as found for the same reason as the grouping: adding or
+            // dropping a `skip`/`end` changes which rows import at all, which
+            // is not the small edit this test measures.
+            control: block.control.as_ref().map(|control| control.kind),
         }),
         ItemKind::Trivia | ItemKind::Include(_) | ItemKind::Opaque(_) => None,
     }

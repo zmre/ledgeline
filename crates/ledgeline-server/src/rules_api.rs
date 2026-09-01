@@ -123,10 +123,10 @@ use axum::response::{IntoResponse, Response};
 use ledgeline_core::Fingerprint;
 use ledgeline_core::convert::{self, SourceFormat, Tabular};
 use ledgeline_core::rules::{
-    self, CreateRefusal, DirectiveValue, DiscoveredRules, Discovery, EditPlan, HledgerField,
-    IfLayout, Item, ItemBody, ItemId, ItemKind, MatchScope, MatcherGroupSpec, MatcherSpec, Newline,
-    OpaqueReason, Preview, PreviewUnavailable, RulesDoc, RulesPath, Setting, Settings, Slot,
-    Warning, generate,
+    self, ControlField, CreateRefusal, DirectiveValue, DiscoveredRules, Discovery, EditPlan,
+    HledgerField, IfLayout, Item, ItemBody, ItemId, ItemKind, MatchScope, MatcherGroupSpec,
+    MatcherSpec, Newline, OpaqueReason, Preview, PreviewUnavailable, RulesDoc, RulesPath, Setting,
+    Settings, Slot, Warning, generate,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -577,8 +577,18 @@ enum WireItemBody {
         layout: &'static str,
         /// The OR-ed groups, in file order. Always at least one, each with at
         /// least one matcher — a plain OR list is one matcher per group.
+        ///
+        /// A group is a flat list of matchers whichever concrete syntax
+        /// produced it: hledger's line-prefix `&`, its same-line `&&`, or both
+        /// on one block. The spelling is the engine's to preserve; the wire
+        /// carries only the grouping.
         groups: Vec<WireMatcherGroup>,
         assignments: Vec<WireAssignment>,
+        /// hledger's `"skip"` (drop the matching row) or `"end"` (stop reading
+        /// here), or absent. Only the bare, argument-less form reaches this;
+        /// `skip N` skips N records and stays `opaque`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        control: Option<&'static str>,
     },
     /// A construct the engine declined to classify, carried verbatim.
     ///
@@ -597,9 +607,12 @@ enum WireItemBody {
 
 /// One OR-branch of a conditional block: matchers AND-ed together.
 ///
-/// The AND is hledger's own line-prefix `&`, and it is carried as *nesting*
-/// rather than as text: no `&` appears in a [`WireMatcher`] in either
-/// direction, and the engine's renderer is what writes one.
+/// The AND is hledger's own — a line-prefix `&`, or a same-line `&&` — and it
+/// is carried as *nesting* rather than as text: no `&` appears in a
+/// [`WireMatcher`] in either direction, and the engine's renderer is what writes
+/// one. Which of the two spellings a group came from is not on the wire at all,
+/// because the engine preserves the file's own bytes and only ever writes the
+/// line-prefix form for a matcher it is adding.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireMatcherGroup {
@@ -643,6 +656,32 @@ const fn opaque_reason(reason: OpaqueReason) -> &'static str {
         OpaqueReason::UnparsedDirective => "unparsedDirective",
         OpaqueReason::Unclassified => "unclassified",
     }
+}
+
+/// The name a client sees for a [`ControlField`], and the same table read back.
+///
+/// Spelled out rather than derived from `Debug`, exactly as [`opaque_reason`]
+/// is, so a refactor in the engine cannot silently rename a wire value — and
+/// written as one pair so the two directions cannot drift apart.
+const fn control_name(control: ControlField) -> &'static str {
+    match control {
+        ControlField::Skip => "skip",
+        ControlField::End => "end",
+    }
+}
+
+/// A `control` a client asked for. `None` for absent; an unknown word is a
+/// `400` rather than a silently dropped instruction to skip a row.
+fn control_named(name: Option<&String>) -> Result<Option<ControlField>, AppError> {
+    name.map(|name| match name.as_str() {
+        "skip" => Ok(ControlField::Skip),
+        "end" => Ok(ControlField::End),
+        _ => Err(AppError::BadRequest(format!(
+            "{} is not a conditional block control word; expected \"skip\" or \"end\"",
+            quoted(name)
+        ))),
+    })
+    .transpose()
 }
 
 /// `text` clipped to [`MAX_ITEM_TEXT_BYTES`] **on a char boundary**, plus
@@ -733,6 +772,10 @@ fn wire_item_body(doc: &RulesDoc, item: &Item) -> WireItemBody {
                     value: text(&assignment.value_span),
                 })
                 .collect(),
+            control: block
+                .control
+                .as_ref()
+                .map(|control| control_name(control.kind)),
         },
         ItemKind::Opaque(opaque) => {
             let (text, truncated) = clip(&doc.text()[item.span.clone()]);
@@ -1033,6 +1076,11 @@ enum WireItemIn {
         id: Option<u32>,
         groups: Vec<WireMatcherGroupIn>,
         assignments: Vec<WireAssignmentIn>,
+        /// `"skip"`, `"end"`, or absent. The engine writes the bare word; there
+        /// is no way to ask for `skip N` from here, which is deliberate — that
+        /// skips N records and is a construct this surface does not model.
+        #[serde(default)]
+        control: Option<String>,
     },
 }
 
@@ -1770,9 +1818,11 @@ fn slot_from_wire(item: &WireItemIn) -> Result<Slot, AppError> {
             id,
             groups,
             assignments,
+            control,
         } => slot(
             *id,
             ItemBody::IfBlock {
+                control: control_named(control.as_ref())?,
                 groups: groups
                     .iter()
                     .map(|group| MatcherGroupSpec {

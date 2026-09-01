@@ -232,6 +232,16 @@ export interface IfBlockRulesItem {
     id?: number;
     groups: RulesMatcherGroupInput[];
     assignments: {field: string; value: string}[];
+    /**
+     * hledger's `skip`/`end`, OMITTED when the rule only sets fields.
+     *
+     * Omitted rather than `null` for the same reason `id` is: the body is
+     * `deny_unknown_fields` server-side and the engine reads an absent key as
+     * "no control word". There is deliberately no way to ask for `skip N` from
+     * here — that skips N records rather than the matched one, and the engine
+     * does not model it.
+     */
+    control?: "skip" | "end";
 }
 
 export type SaveRulesItem = KeepRulesItem | DirectiveRulesItem | FieldsRulesItem | AssignmentRulesItem | IfBlockRulesItem;

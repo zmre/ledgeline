@@ -201,6 +201,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
             id: null,
             groups: [{matchers: [{field: "description", pattern: "PHARMACY"}]}],
             assignments: [{field: "account2", value: "expenses:health"}],
+            control: null,
         });
         form.items = form.items.filter((item) => itemId(item) !== doomed);
 

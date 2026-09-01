@@ -307,6 +307,28 @@ describe("UNIT imports model — an OR of AND-groups", () => {
         });
     });
 
+    // The write wire OMITS an absent control rather than sending `null`, the
+    // same way it omits an absent `id` — the save body is `deny_unknown_fields`
+    // and the engine reads the missing key as "no control word". A `null` on
+    // the wire would be a third value it has no case for.
+    it("sends a skip as a key and an unset control as no key at all", () => {
+        const {baseline, form} = pair();
+        ruleAt(form, 1).control = "skip";
+        const sent = toSaveRequest(baseline, form).items.find((item) => item.id === 7);
+        expect(sent).toEqual({
+            kind: "ifBlock",
+            id: 7,
+            groups: [{matchers: [{pattern: "COFFEE"}]}],
+            assignments: [{field: "account2", value: "expenses:food:coffee"}],
+            control: "skip",
+        });
+
+        const untouched = pair();
+        untouched.form.items = appendRule(untouched.form.items, blankRule("expenses:x"));
+        const inserted = toSaveRequest(untouched.baseline, untouched.form).items.at(-1)!;
+        expect(inserted).not.toHaveProperty("control");
+    });
+
     it("goes clean again when a regrouping is undone", () => {
         const {baseline, form} = pair();
         const rule = ruleAt(form, 4);
@@ -351,11 +373,16 @@ describe("UNIT imports model — an OR of AND-groups", () => {
 });
 
 describe("UNIT imports model — the one-line rule summary", () => {
-    const rule = (groups: IfBlockItem["groups"], assignments: IfBlockItem["assignments"] = [{field: "account2", value: "expenses:x"}]): IfBlockItem => ({
+    const rule = (
+        groups: IfBlockItem["groups"],
+        assignments: IfBlockItem["assignments"] = [{field: "account2", value: "expenses:x"}],
+        control: IfBlockItem["control"] = null
+    ): IfBlockItem => ({
         kind: "ifBlock",
         id: null,
         groups,
         assignments,
+        control,
     });
 
     it("reads a single whole-record matcher as one line", () => {
@@ -468,6 +495,25 @@ describe("UNIT imports model — the one-line rule summary", () => {
             "IF description ~ AIRLINE AND amount ~ ^- → account2 = expenses:travel:airfare",
         ]);
     });
+
+    // A control word has no field and no value, so the `field = value` phrasing
+    // has nothing to put on either side of the `=`. Saying what happens to the
+    // ROW is the only reading that is both true and scannable.
+    it("says what a skip/end does to the row rather than naming the keyword", () => {
+        expect(describeIfBlock(rule([{matchers: [{field: "description", pattern: "PENDING"}]}], [], "skip"))).toBe("IF description ~ PENDING → skip this row");
+        expect(describeIfBlock(rule([{matchers: [{field: "description", pattern: "PENDING"}]}], [], "end"))).toBe(
+            "IF description ~ PENDING → stop reading here"
+        );
+    });
+
+    // hledger accepts both in one block (the assignment is simply never used on
+    // a skipped row), so the summary has to show both. The control word goes
+    // last because it is what finally happens to the row.
+    it("shows an assignment and a control word together, control last", () => {
+        expect(describeIfBlock(rule([{matchers: [{field: "", pattern: "X"}]}], [{field: "account2", value: "expenses:y"}], "skip"))).toBe(
+            "IF row ~ X → account2 = expenses:y, skip this row"
+        );
+    });
 });
 
 describe("UNIT imports model — dirty tracking", () => {
@@ -501,6 +547,20 @@ describe("UNIT imports model — dirty tracking", () => {
         const removed = pair();
         removed.form.items = removed.form.items.filter((item) => itemId(item) !== 9);
         expect(isDirty(removed.baseline, removed.form)).toBe(true);
+    });
+
+    // The signature has to see the control word for the same reason it has to
+    // see the grouping: nothing else about the rule changes, but the file goes
+    // from importing the row to dropping it. A signature that missed it would
+    // send the rule back as an unchanged `keep` and the file would keep
+    // importing rows the card says are skipped.
+    it("is dirty when only the skip/end changed, with no character edited", () => {
+        const {baseline, form} = pair();
+        ruleAt(form, 1).control = "skip";
+        expect(isDirty(baseline, form)).toBe(true);
+
+        ruleAt(form, 1).control = null;
+        expect(isDirty(baseline, form)).toBe(false);
     });
 
     it("notices a setting change and a setting removal", () => {
@@ -631,7 +691,13 @@ describe("UNIT imports model — reordering the rules list", () => {
     it("lands BELOW a trailing advanced construct, which the engine now keeps separate", () => {
         const items: FormItem[] = [
             {kind: "assignment", id: 0, field: "account2", value: "expenses:unknown"},
-            {kind: "ifBlock", id: 1, groups: [{matchers: [{field: "", pattern: "COFFEE"}]}], assignments: [{field: "account2", value: "expenses:food"}]},
+            {
+                kind: "ifBlock",
+                id: 1,
+                groups: [{matchers: [{field: "", pattern: "COFFEE"}]}],
+                assignments: [{field: "account2", value: "expenses:food"}],
+                control: null,
+            },
             {
                 kind: "kept",
                 id: 2,
@@ -645,7 +711,13 @@ describe("UNIT imports model — reordering the rules list", () => {
     it("appends at the end when nothing is in the way", () => {
         const items: FormItem[] = [
             {kind: "assignment", id: 0, field: "account2", value: "expenses:unknown"},
-            {kind: "ifBlock", id: 1, groups: [{matchers: [{field: "", pattern: "COFFEE"}]}], assignments: [{field: "account2", value: "expenses:food"}]},
+            {
+                kind: "ifBlock",
+                id: 1,
+                groups: [{matchers: [{field: "", pattern: "COFFEE"}]}],
+                assignments: [{field: "account2", value: "expenses:food"}],
+                control: null,
+            },
         ];
         expect(appendRule(items, blankRule()).map(itemId)).toEqual([0, 1, null]);
     });
@@ -663,7 +735,14 @@ describe("UNIT imports model — validation", () => {
         revision: "r",
         editable: true,
         items: [
-            {kind: "ifBlock", id: null, groups: [{matchers: [{field: "", pattern: "OK"}]}], assignments: [{field: "account2", value: "expenses:x"}], ...rule},
+            {
+                kind: "ifBlock",
+                id: null,
+                groups: [{matchers: [{field: "", pattern: "OK"}]}],
+                assignments: [{field: "account2", value: "expenses:x"}],
+                control: null,
+                ...rule,
+            },
         ],
     });
 
@@ -674,6 +753,14 @@ describe("UNIT imports model — validation", () => {
     it("requires a rule to have something to match and something to set", () => {
         expect(validateForm(withRule({groups: []}))[0]).toContain("at least one thing to match");
         expect(validateForm(withRule({assignments: []}))[0]).toContain("at least one field to set");
+    });
+
+    // hledger accepts `if COND / skip` with no assignment at all, and so does
+    // the engine's `check_body` — so a rule that only drops the row is complete,
+    // not half-written. Refusing it here would block a legal file from saving.
+    it("accepts a rule that only skips the row, with no field set at all", () => {
+        expect(validateForm(withRule({assignments: [], control: "skip"}))).toEqual([]);
+        expect(validateForm(withRule({assignments: [], control: "end"}))).toEqual([]);
     });
 
     it("refuses the matcher shapes hledger would read as something else", () => {

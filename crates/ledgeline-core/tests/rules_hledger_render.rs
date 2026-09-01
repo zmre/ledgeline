@@ -34,8 +34,8 @@
 mod common;
 
 use ledgeline_core::rules::{
-    EditPlan, HledgerField, Item, ItemBody, ItemKind, MatchScope, MatcherGroupSpec, MatcherSpec,
-    NumberedField, RulesDoc, Slot,
+    ControlField, EditPlan, HledgerField, Item, ItemBody, ItemKind, MatchScope, MatcherGroupSpec,
+    MatcherSpec, NumberedField, RulesDoc, Slot,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -128,6 +128,7 @@ fn block_body(doc: &RulesDoc, item: &Item) -> Option<ItemBody> {
                 )
             })
             .collect(),
+        control: block.control.as_ref().map(|control| control.kind),
     })
 }
 
@@ -164,6 +165,7 @@ fn deepen_accounts(doc: &RulesDoc) -> Option<EditPlan> {
                 let Some(ItemBody::IfBlock {
                     groups,
                     assignments,
+                    control,
                 }) = block_body(doc, item)
                 else {
                     continue;
@@ -172,6 +174,7 @@ fn deepen_accounts(doc: &RulesDoc) -> Option<EditPlan> {
                     item.id,
                     ItemBody::IfBlock {
                         groups,
+                        control,
                         assignments: assignments
                             .into_iter()
                             .map(|(field, value)| match field {
@@ -200,6 +203,7 @@ fn add_matchers(doc: &RulesDoc) -> Option<EditPlan> {
         let Some(ItemBody::IfBlock {
             mut groups,
             assignments,
+            control,
         }) = block_body(doc, item)
         else {
             continue;
@@ -215,6 +219,7 @@ fn add_matchers(doc: &RulesDoc) -> Option<EditPlan> {
             ItemBody::IfBlock {
                 groups,
                 assignments,
+                control,
             },
         );
         touched = true;
@@ -230,6 +235,7 @@ fn add_assignments(doc: &RulesDoc) -> Option<EditPlan> {
         let Some(ItemBody::IfBlock {
             groups,
             mut assignments,
+            control,
         }) = block_body(doc, item)
         else {
             continue;
@@ -248,6 +254,7 @@ fn add_assignments(doc: &RulesDoc) -> Option<EditPlan> {
             ItemBody::IfBlock {
                 groups,
                 assignments,
+                control,
             },
         );
         touched = true;
@@ -317,6 +324,7 @@ fn insert_block(doc: &RulesDoc) -> Option<EditPlan> {
             ),
             (HledgerField::Comment, "rendered by ledgeline".to_string()),
         ],
+        control: None,
     }));
     Some(plan)
 }
@@ -403,6 +411,7 @@ fn regrouped(doc: &RulesDoc) -> EditPlan {
             },
             AND_ONLY_ACCOUNT.to_string(),
         )],
+        control: None,
     }));
     plan
 }
@@ -554,6 +563,130 @@ fn hledger_ands_and_ors_the_groups_the_way_the_classifier_reads_them() {
         1,
         "an inserted `&` line hledger read as OR would have taken both AMAZON \
          records:\n{out}"
+    );
+    // The fixture's same-line `&&` blocks, under the same guard. Each is an AND
+    // of conditions that individually reach MORE rows than the conjunction
+    // does, so a `&&` hledger read as an OR — or that this module split
+    // somewhere hledger does not — shows up as a different count.
+    for (account, hits) in [
+        ("expenses:shopping:target", 1),
+        ("expenses:office:supplies", 1),
+    ] {
+        assert_eq!(
+            actual.iter().filter(|got| *got == account).count(),
+            hits,
+            "a same-line `&&` must AND exactly the rows the classifier says:\n{out}"
+        );
+    }
+}
+
+/// Every imported transaction's description, in record order.
+///
+/// The question `skip`/`end` raise is which records import **at all**, so this
+/// reads the surviving descriptions rather than [`imported_accounts`]'
+/// per-record account: a dropped row has no account to disagree about.
+fn imported_descriptions(csv: &Path) -> Result<Vec<String>, String> {
+    let output = Command::new("hledger")
+        .args(["print", "-O", "json", "-f"])
+        .arg(csv)
+        .output()
+        .map_err(|e| format!("could not run hledger: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "hledger exited {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("hledger JSON: {e}"))?;
+    json.as_array()
+        .ok_or_else(|| "hledger print -O json emits an array".to_string())?
+        .iter()
+        .map(|transaction| {
+            transaction["tdescription"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("no description in {transaction}"))
+        })
+        .collect()
+}
+
+#[test]
+fn hledger_skips_and_ends_exactly_where_the_classifier_says() {
+    if std::env::var_os(OPT_IN).is_none_or(|value| value.is_empty()) {
+        eprintln!("skipping: set {OPT_IN}=1 to run the hledger renderer check");
+        return;
+    }
+
+    let root = common::fixtures_dir().join("rules/simple");
+    let text = std::fs::read_to_string(root.join("control-flow.csv.rules"))
+        .expect("the control-flow fixture is readable");
+    let csv = std::fs::read_to_string(root.join("control-flow.csv")).expect("its CSV is readable");
+
+    // What the classifier claims about the file, asserted before hledger is
+    // asked anything: two editable control blocks, one of each word.
+    let doc = RulesDoc::parse(&text);
+    let controls = doc
+        .items()
+        .iter()
+        .filter_map(|item| Some(item.if_block()?.control.as_ref()?.kind))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        controls,
+        vec![ControlField::Skip, ControlField::End],
+        "the fixture's `skip` and `end` blocks must both be editable, not opaque"
+    );
+
+    let scratch = Scratch::new("control-flow");
+    let scratch_csv = scratch.0.join("control-flow.csv");
+    std::fs::write(&scratch_csv, &csv).expect("write the CSV");
+
+    // Unedited first, so the expectation below is anchored to the fixture
+    // rather than to whatever the renderer happens to produce.
+    std::fs::write(scratch.0.join("control-flow.csv.rules"), &text).expect("write the rules");
+    assert_eq!(
+        imported_descriptions(&scratch_csv).expect("hledger reads the fixture"),
+        vec!["COFFEE SHOP", "GROCERY MART"],
+        "`skip` drops its own row and `end` drops the rest of the file"
+    );
+
+    // Now save it: re-render every block from its own typed body — which drives
+    // the control word through the splicing path — and insert a FRESH `skip`
+    // block, whose bytes `fresh_if_block` wrote and which shares nothing with
+    // the file. Placed last, AFTER the `end` block: verified against 1.52,
+    // reordering a control block among other blocks does not change a row.
+    let mut plan = EditPlan::keep_all(&doc);
+    for item in doc.items() {
+        if let Some(body) = block_body(&doc, item) {
+            plan.order[item.id.0 as usize] = Slot::Replace(item.id, body);
+        }
+    }
+    plan.order.push(Slot::Insert(ItemBody::IfBlock {
+        groups: vec![MatcherGroupSpec {
+            matchers: vec![MatcherSpec {
+                scope: MatchScope::Field("description".to_string()),
+                pattern: "COFFEE".to_string(),
+            }],
+        }],
+        assignments: Vec::new(),
+        control: Some(ControlField::Skip),
+    }));
+    let out = doc.apply(&plan).expect("the control-flow plan renders");
+    doc.verify(&plan, &out).expect("and verifies");
+
+    // The re-rendered blocks are byte-identical: nothing about them changed, so
+    // the leaf splicer must not have moved a byte.
+    assert!(
+        out.starts_with(&text),
+        "re-rendering an unchanged control block must reproduce it:\n{out}"
+    );
+
+    std::fs::write(scratch.0.join("control-flow.csv.rules"), &out).expect("write the rules");
+    assert_eq!(
+        imported_descriptions(&scratch_csv).expect("hledger reads the saved file"),
+        vec!["GROCERY MART"],
+        "a freshly rendered `skip` must drop its row too:\n{out}"
     );
 }
 

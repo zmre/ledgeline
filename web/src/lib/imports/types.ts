@@ -104,6 +104,19 @@ export type OpaqueReason =
 /** `if MATCHER` on the same line, or a bare `if` with its matchers stacked below. */
 export type IfLayout = "inline" | "stacked";
 
+/**
+ * hledger's two conditional-block control words.
+ *
+ * These are not assignments: they change which CSV records are read at all
+ * rather than what a record's postings say. `skip` drops the matching row;
+ * `end` stops reading, so that row and every row after it are dropped.
+ *
+ * Only the BARE word is ever this. `skip N` skips N records rather than the
+ * matched one, which is a different construct, and the engine leaves a block
+ * carrying one `opaque` — see `OPAQUE_REASONS.controlFlowInBlock`.
+ */
+export type RulesControl = "skip" | "end";
+
 /** Common to every item: its id in THIS parse, and where it sits in the file. */
 interface RulesItemBase {
     /**
@@ -176,6 +189,15 @@ export interface RulesIfBlockItem extends RulesItemBase {
     /** The OR-ed groups, in file order. Always at least one, each with at least one matcher. */
     readonly groups: readonly RulesMatcherGroup[];
     readonly assignments: readonly RulesAssignmentSpec[];
+    /**
+     * The block's `skip`/`end`, or `null` for a block that only sets fields.
+     *
+     * The wire omits the key entirely when there is none, so this is one of the
+     * explicit nulls the header comment describes: "sets fields" and "drops the
+     * row" are different things for the card to render, not a value and its
+     * absence.
+     */
+    readonly control: RulesControl | null;
 }
 
 export interface RulesOpaqueItem extends RulesItemBase {

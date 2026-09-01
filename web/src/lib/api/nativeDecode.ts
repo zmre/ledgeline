@@ -79,6 +79,7 @@ import type {
     IfLayout,
     OpaqueReason,
     PreviewUnavailable,
+    RulesControl,
     RulesDocument,
     RulesDraft,
     RulesFieldsPref,
@@ -587,6 +588,7 @@ interface RawRulesItem {
     layout?: string;
     groups?: RawRulesMatcherGroup[];
     assignments?: RawRulesAssignment[];
+    control?: string;
     // opaque
     reason?: string;
     label?: string;
@@ -1957,6 +1959,21 @@ function decodeLayout(raw: string | undefined, context: string): IfLayout {
     throw new ApiShapeError(`${context}: unknown if-block layout ${JSON.stringify(raw)}`);
 }
 
+/**
+ * `skip`, `end`, or nothing.
+ *
+ * Absent is a VALUE here rather than a missing field — the engine omits the key
+ * for a block that only sets fields — so unlike `decodeLayout` this returns
+ * `null` instead of throwing. An unknown non-empty word still throws: it would
+ * mean the engine grew a third control word, and quietly rendering that block as
+ * "sets fields only" would hide an instruction to drop rows.
+ */
+function decodeControl(raw: string | undefined, context: string): RulesControl | null {
+    if (raw === undefined) return null;
+    if (raw === "skip" || raw === "end") return raw;
+    throw new ApiShapeError(`${context}: unknown if-block control ${JSON.stringify(raw)}`);
+}
+
 function decodeMatcher(raw: RawRulesMatcher | undefined, context: string): RulesMatcher {
     if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing matcher`);
     // An absent `field` is a WHOLE-RECORD matcher, not a missing one — the
@@ -2019,6 +2036,7 @@ function decodeRulesItem(raw: RawRulesItem | undefined, context: string): RulesI
                         })
                     )
                 ),
+                control: decodeControl(raw.control, context),
             });
         case "opaque":
             return Object.freeze({

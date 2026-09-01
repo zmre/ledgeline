@@ -511,16 +511,26 @@ Two obligations, kept strictly separate. Conflating them is how a span editor co
 > **(B) Classification may be as narrow as we like.** Anything unclassified is opaque:
 > byte-preserved, listed in order, still reorderable. When in doubt, opaque.
 
-An `if` block is editable only if every matcher is plain or a **plain line-prefix `&`
-AND-continuation** (no `!`, no `&&`, and no leading `&` on the *first* matcher line), has no match
-group, and does not begin with `;`/`#`/`*`; every body line is a known field assignment; and there is
-no `skip`/`end`. Everything else — `if` tables, negated or `&&` matchers, match groups, control flow
-— renders as a dimmed read-only card that says *why* it is locked, and can still be moved.
+An `if` block is editable only if every matcher is plain, a **plain line-prefix `&`
+AND-continuation**, or one piece of a **same-line `&&` join** (no `!`, no leading `&`/`&&` on the
+*first* matcher line), has no match group, and does not begin with `;`/`#`/`*`; every body line is a
+known field assignment or a **bare** `skip`/`end`. Everything else — `if` tables, negated matchers,
+match groups, `skip N` — renders as a dimmed read-only card that says *why* it is locked, and can
+still be moved.
 
-A block's matchers are therefore an **OR of AND-groups**: a plain line opens a new OR branch and each
-`&` line below it is AND-ed onto that branch. `if\nA\n& B\nC\n& D` selects `(A and B) or (C and D)`.
-The `&` is grammar, never content — the model carries the AND as *nesting* (`groups[].matchers[]` on
-the wire), so no matcher pattern anywhere can contain a combinator.
+A block's matchers are therefore an **OR of AND-groups**: a plain line opens a new OR branch, and
+each `&` line below it — plus each `&&`-joined piece on any of those lines — is AND-ed onto that
+branch. `if\nA\n& B\nC\n& D` selects `(A and B) or (C and D)`, and so does `if\nA && B\nC && D`. The
+two spellings compose: `if\nFIRST\n& SECOND && THIRD\nFOURTH` is `(FIRST and SECOND and THIRD) or
+FOURTH`. Neither combinator is content — the model carries the AND as *nesting*
+(`groups[].matchers[]` on the wire), so no matcher pattern anywhere can contain one, and the renderer
+only ever *writes* the line-prefix form.
+
+A block may also carry hledger's control flow, as `control: "skip" | "end"` beside the assignments
+rather than as an assignment: `skip` drops the matching row and `end` stops reading at it. A block
+whose whole body is one of those is legal and needs no assignment at all. Reordering such a block
+among other blocks does not change a single imported row (verified), so the rules list moves it like
+any other.
 
 Order is semantics: every matching block applies and the **last** assignment to a field wins. The UI
 says "later matches win" for that reason.
@@ -542,9 +552,22 @@ Verified against hledger 1.52's `RulesReader.hs` **and the binary**, not just th
   ampersand in the regex, so that matcher hits nothing containing plain `COFFEE`.
 - A **leading `&` on the first matcher line** (`if\n& X`) is accepted by hledger and is a no-op — it
   imports exactly what `if\nX` does. We keep it opaque rather than promise to preserve it.
-- A leading `&&` really is an AND join to hledger, same as `&`. We still refuse it, because on one
-  line the same bytes may be two literal ampersands inside a regex and telling those apart needs
-  hledger's own parser.
+- A **same-line `&&` is unconditionally** hledger's AND operator, and we read it as one. The split
+  needs no surrounding whitespace (`foo&&bar` splits), and there is **no escape**: `[&][&]` and
+  `\&\&` read as one regex only because neither holds two *adjacent* ampersands. A single `&` is
+  ordinary content, so `A&B && C` is `AND(A&B, C)`.
+- **Three or more consecutive ampersands** stay opaque. hledger splits at the *first* `&&` and reads
+  the remainder verbatim — `A&&&B` is `AND(A, &B)` and `A&&&&B` is `AND(A, &&B)` — so splitting on
+  every `&&` would silently mean something else. An **empty piece** stays opaque too: hledger rejects
+  `if A &&` outright, and `if && A` is an AND with an everything-matching empty regex.
+- A **line-leading `&&`** really is an AND-continuation to hledger, same as `&` (`if A\n&& B` and
+  `if A\n& B` import identically). We keep it opaque anyway: one `&` already spells continuation, and
+  a second spelling buys nothing but a second thing to get wrong.
+- **Block-level `skip`/`end` take no argument**, and `skip N` is a *different* construct: verified,
+  `skip 2` drops the matching record **and the one after it**, so only the bare form is modelled.
+  hledger accepts a control word alongside ordinary assignments (the assignment is simply never
+  used), and accepts both words in one block (`end` wins) — the second we keep opaque, because one
+  `control` field cannot say there are two.
 
 An `if` **table**'s extent is terminated by a blank line, so when something is placed after a table
 that ran to EOF, the renderer supplies that blank line. Without it the new rule would be read back as

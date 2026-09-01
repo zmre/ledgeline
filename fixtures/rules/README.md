@@ -20,9 +20,10 @@ hledger executes.
 | File                            | What it is for                                                                |
 | ------------------------------- | ------------------------------------------------------------------------------ |
 | `simple/checking.csv.rules`     | The friendly, realistic shape most rules files have. Inline `if`, stacked-matcher `if`, and a commented `if` |
-| `simple/and-groups.csv.rules`   | hledger's line-prefix `&`: an inline AND chain, an OR of two AND-groups, and a plain OR list in one file. Its CSV is built so each row's account **says** which group matched, which is what `rules_hledger_render.rs` checks against hledger itself |
+| `simple/and-groups.csv.rules`   | hledger's AND, in **both** spellings: a line-prefix `&` (an inline AND chain, an OR of two AND-groups, a plain OR list) and a same-line `&&` (on its own, and composed with a `&` continuation). Its CSV is built so each row's account **says** which group matched, which is what `rules_hledger_render.rs` checks against hledger itself |
+| `simple/control-flow.csv.rules` | hledger's block-level `skip` and `end`, the two words that change which records are read at all. Its CSV is built so the surviving rows **say** where each word took effect |
 | `simple/creditcard1.csv.rules`  | `amount-in`/`amount-out`, `balance-type`, and **column-aligned values** — exists to prove alignment survives editing |
-| `advanced/mixed.csv.rules`      | Every construct that must stay `Opaque`, in one file: `if` table, `&&`, `& !`, `!`, a match group, `skip`/`end`, `commentN`, `separator:`, tab indentation |
+| `advanced/mixed.csv.rules`      | Every construct that must stay `Opaque`, in one file: `if` table, a line-leading `&&`, `& !`, `!`, a match group, a `skip N` + `end` pair (an argument *and* two control words), `commentN`, `separator:`, tab indentation |
 | `edge/crlf.rules`               | Every terminator is CRLF                                                        |
 | `edge/bom.rules`                | Leading UTF-8 byte-order mark                                                   |
 | `edge/no-final-newline.rules`   | Last line has no terminator — the case a naive reorder glues together           |
