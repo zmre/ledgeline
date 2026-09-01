@@ -652,6 +652,31 @@ journals *and* the CSVs byte for byte.
 
 ## Phase 4 — ID-based re-import matching & status sync
 
+### Pre-implementation correction (found while starting this phase, before any code)
+
+The sketch below frames the status-flip as needing a brand-new "narrow span editor" and calls it
+"the first capability in the codebase that edits an existing journal transaction at all." That
+premise is wrong, in the same shape Phase 3's "nothing to extract" correction was: the capability
+already exists, fully public and fully tested. `crates/ledgeline-core/src/edit.rs`'s
+`JournalEditor` has `pub fn set_status(&mut self, index: Tindex, status: Status)
+-> Result<(), EditError>` (verified at `edit.rs:661`), and `crates/ledgeline-server/src/edit_api.rs`
+already drives it from `PATCH /api/transactions/{index}` via the `lock_editor` →
+`bound` → `apply_patch` → `save_and_publish` sequence (`edit_api.rs:671-698`,
+`patch_transaction_locked`). `Transaction.tags: Vec<(String, String)>` (`model.rs:252`) is also
+already parsed and available on every transaction in the open `Journal` — no new parsing needed to
+read an id back off an already-imported transaction.
+
+So: **do not build a new span editor.** Reuse `JournalEditor::set_status` directly from
+`import_api.rs`'s commit path, following the exact `lock_editor`/`bound`/`save_and_publish` pattern
+`edit_api.rs` already demonstrates (read that file's sequence before writing anything). This also
+means Phase 4 does not need its own CLI wiring: `ledgeline import` (Phase 3) already calls
+`run_commit`, so a classification step added inside `run_commit` benefits both callers for free.
+
+The genuinely new work is narrower than the original sketch implied: the `reimport.rs` classification
+logic itself, wiring one new step into `run_dry_run`/`run_commit`, and how a rules file declares
+which tag holds the dedup id (verify this against the real hledger 1.52 binary — see below, still
+the one new piece of hledger-facing grammar this phase introduces).
+
 ### Rules-file concept: an id column
 
 Smallest addition that reuses existing machinery rather than inventing a new directive: a rules
