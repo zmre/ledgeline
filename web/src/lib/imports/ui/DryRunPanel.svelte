@@ -1,7 +1,7 @@
 <script lang="ts">
     // The dry run: everything that must be seen before anything is written.
     //
-    // Five things in one panel, in the order they matter:
+    // Six things in one panel, in the order they matter:
     //
     //  1. A FAILURE renders hledger's stderr VERBATIM in a `<pre>` and is never
     //     paraphrased. hledger's import errors echo the offending CSV record
@@ -22,6 +22,13 @@
     //  5. The git block. A modified target refuses the import until it is
     //     committed, and the ENGINE enforces that too; this panel is not the
     //     only thing standing between an import and an unrecoverable overwrite.
+    //  6. The equivalent command line. Everything above is a choice the user has
+    //     just made in a wizard, and next month they will make the same one
+    //     again; `run.cliCommand` is those choices as a `ledgeline import` line
+    //     they can keep. It is rendered VERBATIM and never assembled here — the
+    //     engine builds it with the same argv builder `ledgeline import` is
+    //     parsed into, so a string this panel composed itself could say
+    //     something the CLI does not do.
     //
     // The proposed entries are hledger's stdout — valid, re-parseable journal
     // text, not scraped human-readable output — so they are shown as they are.
@@ -66,6 +73,29 @@
         onWrite: () => void;
         onInstallConf: (revision: string) => void;
     } = $props();
+
+    /** The "Copy"/"Copied!" latch for the equivalent command line. */
+    let copied = $state(false);
+
+    /**
+     * Put the command line on the clipboard, as `ServerSetupModal` does for its
+     * launch command — the one existing copy affordance in this app, and copied
+     * rather than abstracted because two call sites is not yet a component.
+     *
+     * The failure is swallowed on purpose: `navigator.clipboard` is undefined in
+     * an insecure context, and the `select-all` on the block means the command is
+     * still usable with the mouse when it is. A thrown error here would be an
+     * error popup over a working screen.
+     */
+    async function copyCommand(command: string): Promise<void> {
+        try {
+            await navigator.clipboard.writeText(command);
+            copied = true;
+            setTimeout(() => (copied = false), 1500);
+        } catch {
+            // Clipboard unavailable; the command stays selectable.
+        }
+    }
 </script>
 
 <AsyncSection {view} value={result} {error} testid="imports-dry-run-error" label="the dry run" loadingLabel="Running the import as a dry run" {onRetry}>
@@ -147,6 +177,23 @@
                     {#if run.count === 0}
                         <span class="text-xs text-base-content/60">There is nothing new to import — every row is already in your journal.</span>
                     {/if}
+                </div>
+
+                <!-- (6) The same import, as a command. VERBATIM from the engine:
+                     see the head of this file for why nothing here builds it. -->
+                <div>
+                    <h3 class="mb-1 text-xs font-semibold tracking-tight">Do this again from a terminal</h3>
+                    <p class="mb-1 text-xs text-base-content/60">
+                        Run from the folder holding your journal. The paths are relative to it, so this works next month with a new statement file.
+                    </p>
+                    <div class="flex items-center gap-2">
+                        <code class="grow overflow-x-auto rounded bg-base-300 p-2 text-xs whitespace-nowrap select-all" data-testid="imports-cli-command"
+                            >{run.cliCommand}</code
+                        >
+                        <button type="button" class="btn shrink-0 btn-sm" onclick={() => copyCommand(run.cliCommand)} data-testid="imports-copy-cli-command">
+                            {copied ? "Copied!" : "Copy"}
+                        </button>
+                    </div>
                 </div>
             {/if}
         </section>

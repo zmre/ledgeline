@@ -355,6 +355,130 @@ Round-trip parity test: run the GUI path against a fixture, capture `cliEquivale
 execute it as a subprocess against a fresh copy of the same fixture, diff the two resulting
 journals byte-for-byte — must be identical.
 
+### Contract amendments made during implementation
+
+Per convention #9 in `plans/00-overview.md`. **The extraction described above did not happen and
+should not.** Everything else landed close to the sketch; the flag set and the two id-resolution
+questions the sketch left open are settled below.
+
+**There was nothing to extract.** The sketch's premise — "`import_api.rs`'s handlers currently
+build a `Plan` and call `hledger` inline" — is not what the file does. Each axum handler already
+delegates to a plain, non-async, HTTP-independent function (`dry_run`→`run_dry_run`,
+`commit`→`run_commit`, `save_csv`→`run_save_csv`, `sort_journal`→`run_sort`), each taking a
+`Wire*Request` and returning a `Wire*`. Those functions **already are** the runner
+`import_runner.rs` was to become, and moving them would have been a large no-op diff across a
+4,900-line file whose only effect was to relocate the thing it also proposed to characterise first.
+So no new module, no promotion of types, and no characterization tests — the behaviour being
+preserved was never disturbed. The CLI is a **second caller** of those four functions.
+
+Two things did stand between a command line and `run_dry_run`, and both were solved without
+widening anything:
+
+- **The request structs' fields are module-private.** So the CLI entry point lives *inside*
+  `import_api.rs` (`run_cli_import`) and constructs `WireDryRunRequest`/`WireCommitRequest`
+  directly. The privacy boundary is unchanged rather than opened crate-wide for one caller.
+- **The flow assumes a staged upload.** `run_cli_import` reads the input file and calls the
+  existing `stage_upload` — the same function the HTTP `stage` handler calls — so the CLI's file
+  goes through the same detection, conversion and staging area. Nothing about the import sequence
+  is re-implemented.
+
+**`pub(crate)` was not enough.** The binary (`main.rs`) is a *separate crate* from the library, so
+the entry point is `pub` and re-exported from `lib.rs`. The public surface is exactly four names —
+`CliImport`, `CliImportReport`, `CliImportWritten`, `run_cli_import` — and every `Wire*` type stays
+module-private behind them. `run_cli_import` returns `Result<_, String>` rather than the crate's
+`AppError`, which is a set of HTTP conditions a command line has no use for and whose `Display` is
+already the sentence to print.
+
+**`CliImport` is the `clap` derive AND the runner's argument type**, not two structs that must be
+kept in step. `main.rs` holds only `enum Command { Import(ledgeline::CliImport) }`.
+
+Flags as landed, differing from the sketch in four ways:
+
+- **`--root-journal` is new, and it is the two-journals distinction on the command line.** The
+  sketch had one `-j`, which cannot express a split layout: `docs/imports.md` § "Two journals" is
+  precisely that the file written to is not the file reckoned against. So `-j/--journal` is the
+  **target** (what is appended to) and `--root-journal` is the **root** (what balances are computed
+  from), defaulting to `--journal` — correct for a single-file journal, and explicit for every
+  split one. `CliImport::root_journal_path()` owns the defaulting, because `main.rs` needs it to
+  build the `AppState` before the runner exists.
+- **`--balance-account` is required with `--balance`** (`requires`, both ways), because
+  `run_dry_run` already refuses a balance with no account it is a balance *of*. Refusing at the
+  parser is a better error for a script than the same refusal three subprocesses later.
+- **`--balance` sets `allow_hyphen_values`.** Without it `--balance -3238.65` parses as the unknown
+  flag `-3`, making the option unusable for exactly the accounts people most want to reconcile — a
+  credit-card statement balance is negative, which is why `plain_field` permits a leading `-`.
+  **Found by the round-trip test, not by inspection**, which is the argument for having written it.
+- **`--dry-run` does not exit non-zero on a balance mismatch** as the sketch's "exit 0/1 on
+  match/mismatch" proposed. Instead **any run with a `--balance` that does not reconcile is refused
+  outright, dry or not**, and nothing is written. This is stricter than the GUI, deliberately: there
+  a red number is shown and a person decides, and a script has no such person. It also gives the
+  commit's all-or-nothing property (`docs/imports.md` § "A failing assertion refuses the commit
+  *before* the import is applied") a second, cheaper trigger that needs no `--write-assertion`.
+
+**`--no-git` is a `GitPolicy` parameter, not a preferences write.** `run_dry_run`/`run_commit`/
+`run_sort` gained a `GitPolicy` argument; every HTTP caller passes `FromPrefs`, which is byte-for-byte
+today's behaviour. `Off` suppresses **both** halves of the net together — the dirty-target refusal
+and the commit — because leaving the refusal with no safety behind it is the worst of both. The
+alternative considered and rejected was for the CLI to write `gitAutocommit: false` into the
+preferences store, i.e. a flag that silently reconfigures the desktop app.
+
+**Paths resolve against the working directory; handles do not.** All four path flags are ordinary
+filesystem paths resolved as any CLI tool resolves one. They become the journal-relative handles the
+engine speaks through the **same two scans the HTTP routes use** — `journals::targets` for
+`--journal`/`--root-journal` (so a path the parse never read is refused, and the refusal *lists the
+targets that do exist*) and `rules::discover` for `--rules`. `--output` is the one handle naming a
+file that need not exist, so its **parent** is canonicalized and required to be inside the include
+root, exactly as `resolve_destination` does and for the same reason.
+
+**AppState: `from_journal_path`, and deliberately no file watcher.** Identical to headless mode's
+construction — canonicalize, then `AppState::from_journal_path` — so the CLI writes through the same
+editor with the same validation. `spawn_watcher` is *not* called: a one-shot process exits before an
+external edit could matter, `run_commit` already re-reads through `reopen_editor` when it changes
+the file, and a watcher would add a thread, inotify handles on every included directory, and a race
+between the import's own write and a reload triggered by it. The CLI also does **not** record the
+journal in the recents store — a cron job is not the user choosing a journal to work in.
+
+Rendering, and the single-builder property:
+
+- **`fn cli_argv(&CliRun) -> Vec<String>` is the one place** that knows which flag carries which
+  handle. `cli_invocation` is `cli_argv` joined with `shell_quote`; `ledgeline import` is `clap`
+  parsing an argv. The renderer emits an argv and the parser consumes one, so
+  `a_rendered_command_round_trips_through_clap` feeds the first into the second through clap's own
+  derive — neither side hand-writes the other's list.
+- **The argv is unquoted and only the display string is quoted.** Quoting an argv would make the
+  quotes part of the file name. `shell_quote` single-quotes anything outside a conservative bare set
+  (`'` closed-escaped-reopened, the only shell-safe spelling) and leaves ordinary handles bare.
+- **The wire field is `cliCommand` on `WireDryRun`'s success shape, and it is `String`, not
+  `Option`** — a preview that succeeded always has an invocation that reproduces it. Explicitly
+  **not** named near `WireCliParity`/`cliParity`, which is the unrelated `hledger.conf` `--alias`
+  divergence notice living a few fields above inside `aliases`.
+- **What the panel advertises is the COMMIT form**: the choices *this request* carries, with
+  `--dry-run`, `--sort`, `--write-assertion` and `--no-git` all absent, because a dry-run has not
+  been asked those questions. The CLI's own stderr echo, by contrast, renders **its own** flags —
+  it is an audit record of the run that happened, so `--dry-run` appears there when it was used.
+  The two are the same builder with different inputs, not two renderings.
+- **Relative handles only, never an absolute path**, so § Security layer 5 is intact and the string
+  is short. The consequence is stated on screen rather than hidden: the panel says to run it from
+  the folder holding the journal.
+
+**`Stage` gained `upload_name`.** The renderer's `-i` needs the name the statement *arrived* under,
+which was previously recorded nowhere: a stage stores the file as `data.csv` and materialises it
+under the *destination's* name, and neither is what the user dropped. `StageArea::put` takes it and
+`Stage::upload_name()` hands it back; it is already validated by `bare_filename`, so it is safe to
+render. The GUI can offer only the name — a dropped upload has a name, not a location — which is
+honest, and is the same string the user's own download is called.
+
+Tests as landed, beyond the plan: `crates/ledgeline-server/tests/import_cli.rs`, the **first suite
+in the repository to spawn the built binary**, via `env!("CARGO_BIN_EXE_ledgeline")` rather than the
+hardcoded `./target/debug/ledgeline` the `justfile` recipes use — cargo builds it and hands over the
+path, which is the hermetic version of the same thing. Children get `$LEDGELINE_CONFIG_DIR` and a
+`current_dir` (per-child, so it cannot race the threaded test harness the way `set_current_dir`
+would). Split in the usual two tiers: the refusals and `--help` are hermetic, everything that
+actually imports is behind `LEDGELINE_HLEDGER_IMPORT_CHECK` and added to `just hledger-checks`.
+The parity test takes `cliCommand` from a real HTTP dry-run response — because that is the string
+the copy button copies — and replays it as a subprocess against a fresh fixture copy, comparing the
+journals *and* the CSVs byte for byte.
+
 ## Phase 4 — ID-based re-import matching & status sync
 
 ### Rules-file concept: an id column

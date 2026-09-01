@@ -519,6 +519,25 @@ struct WireProposal {
     aliases: Option<WireAliasEffect>,
     /// Targets git reports as modified. Non-empty means `commit` will refuse.
     blocked_by_git: Vec<String>,
+    /// The `ledgeline import …` command line that reproduces this import
+    /// non-interactively, for the panel's copy affordance.
+    ///
+    /// **Contract amendment (WP-16 Phase 3):** additive, and always present on a
+    /// successful preview — there is no state in which this run exists and has no
+    /// command line, so it is a `String` rather than an `Option`.
+    ///
+    /// **Not [`WireCliParity`], which is a different "cli" entirely** and sits a
+    /// few fields above inside `aliases`. That one asks whether a *terminal
+    /// `hledger`* would produce the same accounts as this screen, and is about
+    /// `hledger.conf`'s `--alias`. This one is Ledgeline's own invocation. The
+    /// names are deliberately unalike so a reader is never asked to tell them
+    /// apart by context.
+    ///
+    /// Built by [`cli_argv`], the same function `ledgeline import` is parsed
+    /// into, so what this says and what that does cannot drift. Carries only the
+    /// relative handles this request already used — never an absolute path — so
+    /// it is run from the journal's own directory, which is what the panel says.
+    cli_command: String,
 }
 
 /// The account rewrites the forwarded aliases performed on this import.
@@ -2069,6 +2088,36 @@ fn autocommit_enabled(prefs: &Prefs) -> bool {
     prefs.git_autocommit.unwrap_or(true)
 }
 
+/// Whether THIS run may use the git safety net at all, before the preferences
+/// are even consulted.
+///
+/// Every HTTP caller passes [`FromPrefs`](Self::FromPrefs), which is exactly the
+/// behaviour that existed before this type: the stored preference decides. It is
+/// a parameter rather than another read of `prefs::load()` because
+/// `ledgeline import --no-git` has to turn the net off for **one invocation**
+/// without writing anything into a store that outlives it — a CLI flag that
+/// silently edited the desktop app's preferences would be a considerably worse
+/// bargain than the one the flag offers.
+///
+/// Both halves of the net move together, deliberately: with [`Off`](Self::Off)
+/// a dirty target no longer blocks the commit AND nothing is committed
+/// afterwards. Suppressing only the second would leave the refusal in place
+/// with no safety left to justify it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GitPolicy {
+    /// Ask the preferences store, as every `/api/import/*` request does.
+    FromPrefs,
+    /// Off for this run only, whatever the preferences say (`--no-git`).
+    Off,
+}
+
+impl GitPolicy {
+    /// Is the safety net live for this run?
+    fn enabled(self, prefs: &Prefs) -> bool {
+        self == Self::FromPrefs && autocommit_enabled(prefs)
+    }
+}
+
 /// Which of `targets` git reports as MODIFIED, repository by repository.
 ///
 /// Untracked never blocks — a brand-new CSV is expected to be untracked. A
@@ -2276,7 +2325,7 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
     let tabular = convert::convert(format, bytes).map_err(convert_error)?;
     let csv = convert::to_csv(&tabular);
 
-    let (id, staged) = state.stages().put(&csv, format).map_err(|error| {
+    let (id, staged) = state.stages().put(&csv, format, name).map_err(|error| {
         AppError::Internal(format!("could not stage this upload: {}", error.kind()))
     })?;
 
@@ -2634,7 +2683,7 @@ pub(crate) async fn dry_run(
     payload: Result<Json<WireDryRunRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let request = json_body(payload)?;
-    let Json(body) = compute(move || run_dry_run(&state, &request)).await?;
+    let Json(body) = compute(move || run_dry_run(&state, &request, GitPolicy::FromPrefs)).await?;
     Ok(no_store(body))
 }
 
@@ -2772,6 +2821,16 @@ impl Plan {
         self.destination.parent().unwrap_or_else(|| Path::new("."))
     }
 
+    /// The root journal's own handle, relative to [`root_dir`](Self::root_dir).
+    ///
+    /// It is by construction a file IN that directory (the directory is defined
+    /// as its parent), so the handle is its file name — the same string
+    /// [`journals::targets`] derives for it. Only [`cli_argv`] needs it, to
+    /// decide whether `--root-journal` has to be said at all.
+    fn root_journal_id(&self) -> Option<&str> {
+        self.root_journal.file_name().and_then(|name| name.to_str())
+    }
+
     /// The dedup marker `hledger import --catchup` maintains beside the
     /// destination, with the relative handle to report it by — or `None` when
     /// there is no file there yet.
@@ -2810,7 +2869,11 @@ impl Plan {
 }
 
 /// The whole of `dry-run`, synchronously.
-fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryRun, AppError> {
+fn run_dry_run(
+    state: &AppState,
+    request: &WireDryRunRequest,
+    git: GitPolicy,
+) -> Result<WireDryRun, AppError> {
     let plan = Plan::resolve(state, request)?;
     let staged = plan
         .staged
@@ -2881,11 +2944,25 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
         skipped: skipped_by_dedup(&plan, count)?,
         balance,
         aliases: alias_effect(&plan, &staged, &entries)?,
-        blocked_by_git: if autocommit_enabled(&prefs::load()) {
+        blocked_by_git: if git.enabled(&prefs::load()) {
             blocked_by_git(&plan.targets(request))
         } else {
             Vec::new()
         },
+        // The choices this REQUEST carries and no others: a dry-run has not been
+        // asked whether to sort or to write an assertion, so the command it
+        // advertises is the plain import it is previewing.
+        cli_command: cli_invocation(&CliRun {
+            input: plan.staged.upload_name(),
+            plan: request,
+            root_journal: plan
+                .root_journal_id()
+                .filter(|id| id != &request.journal_id),
+            write_assertion: false,
+            sort: false,
+            dry_run: false,
+            no_git: false,
+        }),
     })))
 }
 
@@ -3189,7 +3266,7 @@ pub(crate) async fn commit(
     // mutex the clone locks is the one the closure's state would have locked.
     let guard = state.clone();
     let _write = guard.import_writes().lock().await;
-    let Json(body) = compute(move || run_commit(&state, &request)).await?;
+    let Json(body) = compute(move || run_commit(&state, &request, GitPolicy::FromPrefs)).await?;
     Ok(no_store(body))
 }
 
@@ -3229,14 +3306,18 @@ pub(crate) async fn commit(
 /// established for a mistyped balance. If the roll-back itself fails, the error
 /// says so in as many words and names the duplication risk, because that is a
 /// state a person has to be told about rather than one to paper over.
-fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommit, AppError> {
+fn run_commit(
+    state: &AppState,
+    request: &WireCommitRequest,
+    git: GitPolicy,
+) -> Result<WireCommit, AppError> {
     let plan = Plan::resolve(state, &request.plan)?;
     let targets = plan.targets(&request.plan);
     let prefs = prefs::load();
 
     // Sequencing rule 3: re-checked HERE. The dry-run's answer is a report, not
     // an authorization, and the UI is not a security boundary.
-    let blocked = if autocommit_enabled(&prefs) {
+    let blocked = if git.enabled(&prefs) {
         blocked_by_git(&targets)
     } else {
         Vec::new()
@@ -3388,7 +3469,8 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
         )
         .collect();
 
-    let git = autocommit_enabled(&prefs)
+    let git = git
+        .enabled(&prefs)
         .then(|| {
             commit_targets(
                 &committed,
@@ -3837,7 +3919,7 @@ pub(crate) async fn sort_journal(
     }
     let guard = state.clone();
     let _write = guard.import_writes().lock().await;
-    let Json(body) = compute(move || run_sort(&state, &request)).await?;
+    let Json(body) = compute(move || run_sort(&state, &request, GitPolicy::FromPrefs)).await?;
     Ok(no_store(body))
 }
 
@@ -3861,7 +3943,11 @@ pub(crate) async fn sort_journal(
 /// the user has explicitly asked for this rewrite of it. Blocking would refuse
 /// the sort precisely when the import that dirtied the file could not be
 /// committed, which is the case where it helps least.
-fn run_sort(state: &AppState, request: &WireSortRequest) -> Result<WireSorted, AppError> {
+fn run_sort(
+    state: &AppState,
+    request: &WireSortRequest,
+    git: GitPolicy,
+) -> Result<WireSorted, AppError> {
     let main = main_journal(state, "journal", &request.journal_id)?;
     let root = include_root(&main)?;
     let (journal, _) = resolve_journal(state, &root, &request.journal_id)?;
@@ -3892,7 +3978,8 @@ fn run_sort(state: &AppState, request: &WireSortRequest) -> Result<WireSorted, A
         .hide_prefix(&root)
         .hide_prefix(&std::env::temp_dir());
     let targets = vec![(journal.as_path(), request.journal_id.as_str())];
-    let git = autocommit_enabled(&prefs::load())
+    let git = git
+        .enabled(&prefs::load())
         .then(|| {
             commit_targets(
                 &targets,
@@ -3913,6 +4000,582 @@ fn sort_message(journal_id: &str, moved: usize) -> String {
     let name = journal_id.rsplit('/').next().unwrap_or(journal_id);
     let plural = if moved == 1 { "" } else { "s" };
     format!("sort {name} into date order, moving {moved} transaction{plural}")
+}
+
+// ===========================================================================
+// The command line: one builder, two ends
+// ===========================================================================
+//
+// `ledgeline import` runs an import without a browser, and the dry-run panel
+// shows the invocation that would reproduce what is on screen. Those are the two
+// ends of one thing, and the failure mode worth designing against is that they
+// DRIFT — a displayed command that quietly does something else is worse than no
+// command at all, because it is copied into a script and trusted.
+//
+// So there is exactly one function that knows which flag carries which handle
+// ([`cli_argv`]), and exactly one definition of what those flags are
+// ([`CliImport`], a `clap` derive). The renderer emits an argv; `clap` parses an
+// argv; `a_rendered_command_round_trips_through_clap` runs the first into the
+// second. Neither side hand-writes the other's list.
+
+/// One `ledgeline import` run, as the set of choices that define it.
+///
+/// The handles are the **relative** ones the request already carries — the same
+/// strings `Plan::resolve` resolved — never absolute paths. That is the
+/// no-path-disclosure rule (§ Security layer 5) applied to a new string on the
+/// wire, and it is also what makes the rendered command runnable: the CLI
+/// resolves its paths against the process's working directory, so the command
+/// reproduces this run when it is run from the journal's own directory, which is
+/// what the panel tells the user.
+struct CliRun<'a> {
+    /// The statement file, by the name it arrived under — see
+    /// [`Stage::upload_name`]. It is the one thing here that names a file
+    /// outside the journal's tree, and the only honest answer available: a
+    /// dropped upload has a name, not a location.
+    input: &'a str,
+    /// The four handles plus the balance, exactly as resolved.
+    plan: &'a WireDryRunRequest,
+    /// The root journal's handle, and `None` when it IS the file being written
+    /// to. Omitted in that case because `--root-journal 2026.journal -j
+    /// 2026.journal` is noise, and because the flag's default is precisely that.
+    root_journal: Option<&'a str>,
+    write_assertion: bool,
+    sort: bool,
+    dry_run: bool,
+    no_git: bool,
+}
+
+/// The argument vector that reproduces `run`, `ledgeline` first.
+///
+/// **The single source of truth for the flag mapping.** It is what
+/// [`cli_invocation`] renders for the screen and what the round-trip test feeds
+/// back through `clap`; nothing else anywhere builds an import command line.
+///
+/// Unquoted, deliberately: this is an argv, the shape `Command::args` takes,
+/// where a quote would become part of the file name. Quoting belongs to the
+/// display string alone — see [`shell_quote`].
+fn cli_argv(run: &CliRun<'_>) -> Vec<String> {
+    let mut argv: Vec<String> = ["ledgeline", "import"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let mut push = |flag: &str, value: &str| {
+        argv.push(flag.to_string());
+        argv.push(value.to_string());
+    };
+    push("-i", run.input);
+    push("-o", &run.plan.csv_path);
+    push("-r", &run.plan.rules_id);
+    push("-j", &run.plan.journal_id);
+    if let Some(root) = run.root_journal {
+        push("--root-journal", root);
+    }
+    if let Some(balance) = run.plan.balance.as_deref() {
+        push("--balance", balance);
+    }
+    if let Some(account) = run.plan.balance_account.as_deref() {
+        push("--balance-account", account);
+    }
+    for (chosen, flag) in [
+        (run.write_assertion, "--write-assertion"),
+        (run.sort, "--sort"),
+        (run.dry_run, "--dry-run"),
+        (run.no_git, "--no-git"),
+    ] {
+        if chosen {
+            argv.push(flag.to_string());
+        }
+    }
+    argv
+}
+
+/// [`cli_argv`] as one line a person can copy into a shell.
+fn cli_invocation(run: &CliRun<'_>) -> String {
+    cli_argv(run)
+        .iter()
+        .map(|argument| shell_quote(argument))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One argument, safe to paste into a POSIX shell.
+///
+/// Single quotes rather than backslashes because inside `'…'` a shell
+/// reinterprets **nothing at all**, so one rule covers spaces, `;`, `$`, `*` and
+/// everything else in one go. The apostrophe is the sole exception — it cannot
+/// appear inside its own quoting — and the standard spelling for it is to close
+/// the quote, escape a bare `'`, and reopen.
+///
+/// Left bare when there is nothing to protect, so an ordinary handle reads as
+/// itself: a command line decorated with quotes it does not need looks like it
+/// is hiding something.
+fn shell_quote(argument: &str) -> String {
+    /// Characters a shell leaves entirely alone, and which therefore need no
+    /// quoting. Conservative on purpose — anything not on this list is quoted,
+    /// so a character nobody thought about is safe by default rather than
+    /// dangerous by default.
+    fn is_bare(c: char) -> bool {
+        c.is_ascii_alphanumeric() || "._-/:=+,@".contains(c)
+    }
+    if !argument.is_empty() && argument.chars().all(is_bare) {
+        return argument.to_string();
+    }
+    format!("'{}'", argument.replace('\'', r"'\''"))
+}
+
+// ===========================================================================
+// `ledgeline import` — the same import, without a browser
+// ===========================================================================
+
+/// The flags `ledgeline import` takes.
+///
+/// **Also the type the runner is handed**, rather than a parallel struct the
+/// binary would have to copy into: one definition means the flags a user can
+/// type and the choices a run can make are provably the same list.
+///
+/// Every path is an ordinary filesystem path, resolved against the process's
+/// working directory exactly as any other command-line tool resolves one. They
+/// are turned into the journal-relative handles the engine works in by
+/// [`run_cli_import`], through the *same* resolution the HTTP routes use — the
+/// journal target list and the rules discovery scan — so the CLI can name
+/// exactly the files the screen can and no others.
+#[derive(clap::Args, Debug, Clone)]
+pub struct CliImport {
+    /// The statement to import: CSV/TSV, OFX/QFX/QBO, or a spreadsheet.
+    #[arg(short = 'i', long)]
+    input: PathBuf,
+
+    /// Where to keep the converted CSV. Must be inside the journal's own
+    /// directory, and is also the file `hledger` keys its de-duplication state
+    /// to, so re-importing the same statement later needs the same `--output`.
+    #[arg(short = 'o', long)]
+    output: PathBuf,
+
+    /// The hledger CSV rules file to import with.
+    #[arg(short = 'r', long)]
+    rules: PathBuf,
+
+    /// The journal file to append the imported transactions to.
+    #[arg(short = 'j', long)]
+    journal: PathBuf,
+
+    /// The journal to reckon balances against — the root that `include`s
+    /// `--journal`. Defaults to `--journal` itself, which is right for a
+    /// single-file journal and wrong for every split one.
+    #[arg(long)]
+    root_journal: Option<PathBuf>,
+
+    /// The statement's closing balance, which may be negative. The import is
+    /// REFUSED if the journal does not reconcile to it.
+    // `allow_hyphen_values` because **a credit-card statement balance is
+    // negative**, and without it `--balance -3238.65` is read as the unknown
+    // flag `-3` — which would make this option unusable for exactly the accounts
+    // people most want to reconcile. The same case `plain_field` permits a
+    // leading `-` for. Found by the round-trip test rather than by inspection,
+    // which is what that test is for. A `//` comment, not a `///` one: this is
+    // an argument to the next maintainer, not to someone reading `--help`.
+    #[arg(long, allow_hyphen_values = true, requires = "balance_account")]
+    balance: Option<String>,
+
+    /// The account `--balance` is a balance of.
+    #[arg(long, requires = "balance")]
+    balance_account: Option<String>,
+
+    /// Write `--balance` into the journal as a balance assertion.
+    #[arg(long, requires = "balance")]
+    write_assertion: bool,
+
+    /// Re-sort the journal into date order afterwards, if the import left it out
+    /// of order.
+    #[arg(long)]
+    sort: bool,
+
+    /// Report what would be imported and write nothing at all.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Do not commit to git around this import, whatever the preferences say.
+    #[arg(long)]
+    no_git: bool,
+}
+
+impl CliImport {
+    /// The journal to OPEN: the root of the `include` tree this import is
+    /// reckoned against, which is `--journal` itself unless `--root-journal`
+    /// says otherwise.
+    ///
+    /// The binary needs this before the runner exists — it is what the
+    /// [`AppState`] is built from — so the defaulting rule lives here rather
+    /// than being spelled out at the one call site that would then own it.
+    #[must_use]
+    pub fn root_journal_path(&self) -> &Path {
+        self.root_journal.as_deref().unwrap_or(&self.journal)
+    }
+}
+
+/// What a `ledgeline import` run did.
+///
+/// Everything the binary needs for stdout and an exit code, and nothing about
+/// how it is printed — the rendering is `main.rs`'s, so this crate never decides
+/// what a terminal looks like.
+#[derive(Debug, Clone)]
+pub struct CliImportReport {
+    /// The `ledgeline import …` line that reproduces this run, from the same
+    /// builder the dry-run panel shows. Echoed so a log of a scripted run says
+    /// what it did in a form that can be re-run.
+    pub command: String,
+    /// hledger's own status line for the preview.
+    pub status: String,
+    /// Transactions the preview proposed.
+    pub count: usize,
+    /// The statement-balance reconciliation, when one was asked for.
+    pub balance: Option<String>,
+    /// `None` on `--dry-run`, where the whole point is that there is nothing to
+    /// report because nothing was written.
+    pub written: Option<CliImportWritten>,
+}
+
+/// What a committing run actually wrote.
+#[derive(Debug, Clone)]
+pub struct CliImportWritten {
+    /// The CSV's handle, relative to the journal's directory.
+    pub csv: String,
+    /// The journal's handle, likewise.
+    pub journal: String,
+    /// Transactions appended.
+    pub imported: usize,
+    /// The journal is in date order after the import.
+    pub in_order: bool,
+    /// Transactions a `--sort` moved, or `None` when it was not asked for.
+    pub sorted: Option<usize>,
+}
+
+/// Run one non-interactive import against `state`.
+///
+/// # Why this reuses the HTTP routes' own functions
+///
+/// It stages the file through [`stage_upload`] and then calls
+/// [`run_dry_run`]/[`run_commit`]/[`run_sort`] — the very functions the axum
+/// handlers call, with the very request types they deserialize. Nothing about
+/// the import sequence is re-implemented here, and there is no second code path
+/// that could import differently: `docs/imports.md` describes one pipeline, and
+/// this is a second caller of it rather than a second copy of it. In particular
+/// every subprocess still goes through `hledger.rs`/`git.rs`, which stay the only
+/// two modules in this crate that may spawn one.
+///
+/// The only genuinely new work is turning command-line **paths** into the
+/// journal-relative **handles** the engine speaks, and it is done by asking the
+/// same two scans the routes ask.
+///
+/// # No write mutex, and why that is not an omission
+///
+/// The `commit` and `sort` handlers take `AppState::import_writes` because two
+/// concurrent HTTP requests can reach them and would interleave hledger's
+/// appends. This process has one import in it and no socket, so there is no
+/// second writer to serialize against and the guard would only ever be
+/// uncontended. Two `ledgeline import` processes racing on one journal are not
+/// covered by an in-process mutex in either design.
+///
+/// # The dry run always happens
+///
+/// Even for a committing run, which costs one extra `hledger import --dry-run`.
+/// It buys two things worth more than the subprocess: the report says what is
+/// about to happen in the same words the screen would, and a `--balance` that
+/// does not reconcile can refuse **before** anything is written. A script has
+/// nobody to look at a red number and decide.
+///
+/// # Errors
+///
+/// One sentence, ready to print. The engine's own [`AppError`] is deliberately
+/// not exposed: its variants are HTTP conditions, which a command line has no
+/// use for, and its `Display` is already the sentence a person needs.
+pub fn run_cli_import(state: &AppState, args: &CliImport) -> Result<CliImportReport, String> {
+    cli_import(state, args).map_err(|error| error.to_string())
+}
+
+/// [`run_cli_import`], in the crate's own error type.
+fn cli_import(state: &AppState, args: &CliImport) -> Result<CliImportReport, AppError> {
+    // The journal this process was opened with — `--root-journal`, or `--journal`
+    // when it was not given. `main_journal`'s own 404 is not used here: its
+    // wording is for a caller that supplied a handle, and this state was built
+    // from a parsed journal file, so an empty source list is impossible rather
+    // than merely unlikely.
+    let root_journal = state
+        .source_files()
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("this process has no journal open".to_string()))?;
+    let root_dir = include_root(&root_journal)?;
+
+    // Layer 2/3 resolution, through the SAME scans the routes use: a path that
+    // does not name a file the engine already knows about cannot be imported to,
+    // whichever door it arrives at.
+    let journal_id = cli_journal_id(state, &root_dir, &args.journal)?;
+    let rules_id = cli_rules_id(&rules::discover(&root_journal), &args.rules)?;
+    let csv_path = cli_csv_path(&root_dir, &args.output)?;
+    let root_id = cli_journal_id(state, &root_dir, &root_journal)?;
+
+    // The upload, done the way the browser does it — the same conversion, the
+    // same detection, the same staging area — because a CLI import that read the
+    // file some other way would be a different import.
+    let name = cli_upload_name(&args.input)?;
+    let bytes = std::fs::read(&args.input).map_err(|error| {
+        AppError::BadRequest(format!(
+            "{} could not be read: {}",
+            quoted(&args.input.display().to_string()),
+            error.kind()
+        ))
+    })?;
+    if bytes.len() > stage::MAX_UPLOAD_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "this file is larger than the {} MiB import limit",
+            stage::MAX_UPLOAD_BYTES / (1024 * 1024)
+        )));
+    }
+    let staged = stage_upload(state, &name, &bytes)?;
+
+    let request = WireDryRunRequest {
+        stage_id: staged.stage_id,
+        rules_id,
+        csv_path,
+        journal_id,
+        balance: args.balance.clone(),
+        balance_account: args.balance_account.clone(),
+    };
+    let git = if args.no_git {
+        GitPolicy::Off
+    } else {
+        GitPolicy::FromPrefs
+    };
+    let command = cli_invocation(&CliRun {
+        input: &name,
+        plan: &request,
+        root_journal: (root_id != request.journal_id).then_some(root_id.as_str()),
+        write_assertion: args.write_assertion,
+        sort: args.sort,
+        dry_run: args.dry_run,
+        no_git: args.no_git,
+    });
+
+    let (count, status, balance) = match run_dry_run(state, &request, git)? {
+        WireDryRun::Failed(failed) => {
+            return Err(AppError::BadRequest(format!(
+                "the import preview failed and nothing was written. hledger said:\n{}",
+                failed.stderr
+            )));
+        }
+        WireDryRun::Proposed(proposal) => {
+            // A statement balance that does not reconcile REFUSES the run, which
+            // is stricter than the screen — there the number is shown in red and
+            // the person decides. A script has no such person, and "imported
+            // anyway, into books that no longer agree with the statement" is not
+            // a thing to do quietly.
+            if let Some(balance) = &proposal.balance
+                && !balance.matches
+            {
+                return Err(AppError::BadRequest(format!(
+                    "the statement balance {} does not match the journal's {}, so nothing was \
+                     written. Difference: {}.",
+                    balance.statement,
+                    balance.computed,
+                    balance.difference.as_deref().unwrap_or("not a number"),
+                )));
+            }
+            let balance = proposal
+                .balance
+                .as_ref()
+                .map(|balance| format!("{} matches the journal", balance.computed));
+            (proposal.count, proposal.status, balance)
+        }
+    };
+
+    if args.dry_run {
+        return Ok(CliImportReport {
+            command,
+            status,
+            count,
+            balance,
+            written: None,
+        });
+    }
+
+    let journal_id = request.journal_id.clone();
+    let commit = run_commit(
+        state,
+        &WireCommitRequest {
+            plan: request,
+            write_assertion: args.write_assertion,
+        },
+        git,
+    )?;
+
+    // Only when it is both asked for and needed. `run_sort` is a no-op on a
+    // journal already in order, but saying so costs a whole-file read and a
+    // second git commit message about nothing.
+    let sorted = match (args.sort, commit.ordering.in_order) {
+        (true, false) => Some(
+            run_sort(
+                state,
+                &WireSortRequest {
+                    journal_id: journal_id.clone(),
+                },
+                git,
+            )?
+            .moved,
+        ),
+        (true, true) => Some(0),
+        (false, _) => None,
+    };
+
+    Ok(CliImportReport {
+        command,
+        status,
+        count,
+        balance,
+        written: Some(CliImportWritten {
+            csv: commit.csv_written,
+            journal: commit.journal_written,
+            imported: commit.imported,
+            in_order: commit.ordering.in_order || sorted.is_some(),
+            sorted,
+        }),
+    })
+}
+
+/// The `--input` file's own name, validated exactly as an upload's
+/// `X-Ledgeline-Filename` is.
+///
+/// The same check rather than a laxer one because the name does the same two
+/// jobs here that it does there — it decides the format and it is echoed back —
+/// and because a CLI is not a reason to relax a rule the HTTP surface keeps.
+fn cli_upload_name(input: &Path) -> Result<String, AppError> {
+    let malformed = || {
+        AppError::BadRequest(format!(
+            "{} does not end in a usable file name",
+            quoted(&input.display().to_string())
+        ))
+    };
+    let name = input
+        .file_name()
+        .ok_or_else(malformed)?
+        .to_str()
+        .ok_or_else(malformed)?;
+    let well_formed = !name.is_empty()
+        && name.len() <= MAX_FILENAME_BYTES
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', ':'])
+        && !name.chars().any(|c| c.is_ascii_control());
+    well_formed.then(|| name.to_string()).ok_or_else(malformed)
+}
+
+/// Which journal handle `path` names, by matching it against the same target
+/// list [`resolve_journal`] resolves against.
+///
+/// Deliberately a search of [`journals::targets`] rather than
+/// `path.strip_prefix(root)`: the handles are the engine's, derived from the
+/// files this parse actually read, so a path that is not one of them is not a
+/// file this journal includes — and saying which ones it *does* include is the
+/// useful half of that refusal.
+fn cli_journal_id(state: &AppState, root_dir: &Path, path: &Path) -> Result<String, AppError> {
+    let wanted = std::fs::canonicalize(path).map_err(|error| {
+        AppError::BadRequest(format!(
+            "{} could not be resolved: {}",
+            quoted(&path.display().to_string()),
+            error.kind()
+        ))
+    })?;
+    let snapshot = state.snapshot();
+    let targets = journals::targets(&snapshot.journal);
+    targets
+        .iter()
+        .find(|target| {
+            std::fs::canonicalize(root_dir.join(&target.id)).is_ok_and(|known| known == wanted)
+        })
+        .map(|target| target.id.clone())
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "{} is not part of this journal. It includes: {}",
+                quoted(&path.display().to_string()),
+                targets
+                    .iter()
+                    .map(|target| target.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })
+}
+
+/// Which rules-file handle `path` names, by matching it against the discovery
+/// scan — the only id → rules-file resolution this codebase has.
+fn cli_rules_id(discovery: &Discovery, path: &Path) -> Result<String, AppError> {
+    let wanted = std::fs::canonicalize(path).map_err(|error| {
+        AppError::BadRequest(format!(
+            "{} could not be resolved: {}",
+            quoted(&path.display().to_string()),
+            error.kind()
+        ))
+    })?;
+    discovery
+        .files
+        .iter()
+        .find(|found| {
+            discovery
+                .resolve(&found.id)
+                .and_then(|found| std::fs::canonicalize(found.path().as_path()).ok())
+                .is_some_and(|known| known == wanted)
+        })
+        .map(|found| found.id.clone())
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "{} is not a rules file beside this journal. Found: {}",
+                quoted(&path.display().to_string()),
+                if discovery.files.is_empty() {
+                    "none".to_string()
+                } else {
+                    discovery
+                        .files
+                        .iter()
+                        .map(|found| found.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            ))
+        })
+}
+
+/// The `csvPath` handle for `path`: its location relative to the journal's own
+/// directory, with `/` separators.
+///
+/// The one handle naming a file that need not exist, so — exactly as
+/// [`resolve_destination`] does for the same reason — the **parent** is
+/// canonicalized and required to be inside the root, and the file name is joined
+/// on afterwards. `resolve_destination` then re-checks all of it when the plan
+/// resolves; this only has to produce a handle, not to trust one.
+fn cli_csv_path(root_dir: &Path, path: &Path) -> Result<String, AppError> {
+    let outside = || {
+        AppError::BadRequest(format!(
+            "{} is not inside this journal's own directory, so an import cannot write there",
+            quoted(&path.display().to_string())
+        ))
+    };
+    let (parent, name) = path
+        .parent()
+        .zip(path.file_name().and_then(|name| name.to_str()))
+        .ok_or_else(outside)?;
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let parent = std::fs::canonicalize(parent).map_err(|_| outside())?;
+    let relative = parent.strip_prefix(root_dir).map_err(|_| outside())?;
+    let mut components: Vec<String> = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    components.push(name.to_string());
+    Ok(components.join("/"))
 }
 
 /// `POST /api/import/hledger-conf` — install the journal's aliases into an
@@ -4903,5 +5566,210 @@ mod tests {
                 "{argv:?} must NOT disable assertions"
             );
         }
+    }
+
+    // =======================================================================
+    // The command line the GUI shows and the CLI runs
+    // =======================================================================
+
+    /// A dry-run request built from handles, for the renderer's tests.
+    fn plan_request(balance: Option<&str>, account: Option<&str>) -> WireDryRunRequest {
+        WireDryRunRequest {
+            stage_id: "0123456789abcdef0123456789abcdef".to_string(),
+            rules_id: "import/bank.csv.rules".to_string(),
+            csv_path: "import/bank.csv".to_string(),
+            journal_id: "2026/2026.journal".to_string(),
+            balance: balance.map(str::to_string),
+            balance_account: account.map(str::to_string),
+        }
+    }
+
+    /// Re-parse a rendered argv through the **same** clap derive `ledgeline
+    /// import` itself uses, so a round-trip proves the two agree rather than
+    /// proving that two hand-written lists happen to match.
+    fn reparse(argv: &[String]) -> CliImport {
+        use clap::{Args as _, FromArgMatches as _};
+        assert_eq!(
+            &argv[..2],
+            ["ledgeline".to_string(), "import".to_string()],
+            "a rendered command must be a `ledgeline import` invocation"
+        );
+        let matches = CliImport::augment_args(clap::Command::new("ledgeline-import"))
+            .try_get_matches_from(
+                std::iter::once("ledgeline-import".to_string()).chain(argv[2..].iter().cloned()),
+            )
+            .expect("the rendered command line parses");
+        CliImport::from_arg_matches(&matches).expect("the parsed matches rebuild the arguments")
+    }
+
+    /// The minimal run: four handles and nothing else. Every optional flag is
+    /// absent, because a flag that is always printed says nothing.
+    #[test]
+    fn a_rendered_command_names_only_the_choices_that_were_made() {
+        let request = plan_request(None, None);
+        let argv = cli_argv(&CliRun {
+            input: "bank.csv",
+            plan: &request,
+            root_journal: None,
+            write_assertion: false,
+            sort: false,
+            dry_run: false,
+            no_git: false,
+        });
+        assert_eq!(
+            argv,
+            [
+                "ledgeline",
+                "import",
+                "-i",
+                "bank.csv",
+                "-o",
+                "import/bank.csv",
+                "-r",
+                "import/bank.csv.rules",
+                "-j",
+                "2026/2026.journal",
+            ]
+        );
+        assert_eq!(
+            cli_invocation(&CliRun {
+                input: "bank.csv",
+                plan: &request,
+                root_journal: None,
+                write_assertion: false,
+                sort: false,
+                dry_run: false,
+                no_git: false,
+            }),
+            "ledgeline import -i bank.csv -o import/bank.csv -r import/bank.csv.rules \
+             -j 2026/2026.journal"
+        );
+    }
+
+    /// Every choice a run can carry reaches the command line, and the root
+    /// journal appears exactly when it is not the file being written to — the
+    /// two-journals distinction `Plan`'s own docs are about.
+    #[test]
+    fn a_rendered_command_names_every_choice_including_the_second_journal() {
+        let request = plan_request(Some("2949.80"), Some("assets:bank:checking"));
+        let argv = cli_argv(&CliRun {
+            input: "Statement.xlsx",
+            plan: &request,
+            root_journal: Some("main.journal"),
+            write_assertion: true,
+            sort: true,
+            dry_run: true,
+            no_git: true,
+        });
+        assert_eq!(
+            argv,
+            [
+                "ledgeline",
+                "import",
+                "-i",
+                "Statement.xlsx",
+                "-o",
+                "import/bank.csv",
+                "-r",
+                "import/bank.csv.rules",
+                "-j",
+                "2026/2026.journal",
+                "--root-journal",
+                "main.journal",
+                "--balance",
+                "2949.80",
+                "--balance-account",
+                "assets:bank:checking",
+                "--write-assertion",
+                "--sort",
+                "--dry-run",
+                "--no-git",
+            ]
+        );
+    }
+
+    /// The whole point of the feature: the string the GUI SHOWS parses back into
+    /// the flags the CLI would RUN. One builder, both ends, proved by clap's own
+    /// derive rather than by inspection.
+    #[test]
+    fn a_rendered_command_round_trips_through_clap() {
+        let request = plan_request(Some("-3238.65"), Some("liabilities:card"));
+        let run = CliRun {
+            input: "statement.qfx",
+            plan: &request,
+            root_journal: Some("main.journal"),
+            write_assertion: true,
+            sort: true,
+            dry_run: false,
+            no_git: true,
+        };
+        let parsed = reparse(&cli_argv(&run));
+
+        // The four handles come back as paths naming the same files, relative to
+        // the journal's own directory — which is where the panel says to run it.
+        assert_eq!(parsed.input, Path::new("statement.qfx"));
+        assert_eq!(parsed.output, Path::new("import/bank.csv"));
+        assert_eq!(parsed.rules, Path::new("import/bank.csv.rules"));
+        assert_eq!(parsed.journal, Path::new("2026/2026.journal"));
+        assert_eq!(
+            parsed.root_journal.as_deref(),
+            Some(Path::new("main.journal"))
+        );
+        assert_eq!(parsed.balance.as_deref(), Some("-3238.65"));
+        assert_eq!(parsed.balance_account.as_deref(), Some("liabilities:card"));
+        assert!(parsed.write_assertion);
+        assert!(parsed.sort);
+        assert!(!parsed.dry_run);
+        assert!(parsed.no_git);
+
+        // …and re-rendering the re-parsed run reproduces the string, so the loop
+        // is closed rather than merely one-way.
+        assert_eq!(
+            cli_argv(&CliRun {
+                input: "statement.qfx",
+                plan: &request,
+                root_journal: parsed.root_journal.as_deref().and_then(Path::to_str),
+                write_assertion: parsed.write_assertion,
+                sort: parsed.sort,
+                dry_run: parsed.dry_run,
+                no_git: parsed.no_git,
+            }),
+            cli_argv(&run)
+        );
+    }
+
+    /// A name with a space in it is a real bank export (`Statement Feb 2026.xlsx`)
+    /// and must survive being pasted into a shell. The argv is unquoted — it is
+    /// handed to `Command::args`, which needs no quoting and must not receive
+    /// any — and only the DISPLAY string carries the quotes.
+    #[test]
+    fn a_handle_with_a_space_is_quoted_only_for_display() {
+        let request = plan_request(None, None);
+        let run = CliRun {
+            input: "Statement Feb 2026.xlsx",
+            plan: &request,
+            root_journal: None,
+            write_assertion: false,
+            sort: false,
+            dry_run: false,
+            no_git: false,
+        };
+        assert!(
+            cli_argv(&run).contains(&"Statement Feb 2026.xlsx".to_string()),
+            "argv carries the name as-is"
+        );
+        assert!(
+            cli_invocation(&run).contains("'Statement Feb 2026.xlsx'"),
+            "the display string quotes it: {}",
+            cli_invocation(&run)
+        );
+
+        // An apostrophe is the one character single-quoting cannot carry, so it
+        // is closed, escaped and reopened — the only shell-safe spelling.
+        assert_eq!(shell_quote("Bob's bank.csv"), r"'Bob'\''s bank.csv'");
+        // Nothing a shell would reinterpret is left bare.
+        assert_eq!(shell_quote("a;rm -rf /"), "'a;rm -rf /'");
+        // …and an ordinary handle is not decorated for nothing.
+        assert_eq!(shell_quote("import/bank.csv"), "import/bank.csv");
     }
 }

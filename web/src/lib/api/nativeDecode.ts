@@ -823,6 +823,11 @@ interface RawDryRun {
     balance?: RawBalanceCheck | null;
     aliases?: RawAliasEffect | null;
     blockedByGit?: unknown[];
+    // Contract amendment (WP-16 Phase 3) — see WireProposal's doc comment in
+    // import_api.rs: additive, and always present on a SUCCESSFUL preview, so it
+    // is required rather than optional here. Not `cliParity`, which is a
+    // different "cli" entirely and lives under `aliases`.
+    cliCommand?: string;
     stderr?: string;
 }
 
@@ -2483,6 +2488,7 @@ export function decodeDryRun(raw: unknown): DryRunResult {
         balance: decodeBalanceCheck(run.balance, "dry run balance"),
         aliases: decodeAliasEffect(run.aliases, "dry run aliases"),
         blockedByGit: frozen(decodeStrings(run.blockedByGit, "dry run blockedByGit")),
+        cliCommand: str(run.cliCommand, "dry run cliCommand"),
     });
 }
 

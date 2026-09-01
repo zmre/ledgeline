@@ -45,6 +45,14 @@ const DEFAULT_FIXTURE: &str = "fixtures/sample.journal";
     long_about = None
 )]
 pub(crate) struct Cli {
+    /// A non-interactive job to run instead of opening a window or a socket.
+    ///
+    /// **Optional, and everything below is what runs when it is absent** —
+    /// `ledgeline`, `ledgeline my.journal` and `ledgeline --server …` all behave
+    /// exactly as they did before there were any subcommands.
+    #[command(subcommand)]
+    pub(crate) command: Option<Command>,
+
     /// Journal to open (default: $LEDGELINE_FIXTURE, else fixtures/sample.journal).
     pub(crate) journal: Option<PathBuf>,
 
@@ -66,6 +74,25 @@ pub(crate) struct Cli {
     /// posture the packaged app uses.
     #[arg(long = "allow-origin", value_name = "ORIGIN")]
     pub(crate) allow_origin: Vec<String>,
+}
+
+/// The non-interactive jobs this binary can be asked to do.
+///
+/// One so far. It is a subcommand rather than another set of flags on [`Cli`]
+/// because an import needs four required paths that mean nothing to the GUI, and
+/// because `ledgeline import --help` is then a real page describing exactly that
+/// job.
+#[derive(clap::Subcommand, Debug)]
+pub(crate) enum Command {
+    /// Import a statement without a window: convert, preview, and (unless
+    /// `--dry-run`) write the CSV and append to the journal.
+    ///
+    /// The same pipeline the New Transactions screen runs — see
+    /// `ledgeline::run_cli_import` — so a scripted import and a clicked one
+    /// cannot produce different journals. The screen shows the equivalent
+    /// command line for a run you have just set up, which is where these
+    /// arguments are meant to come from.
+    Import(ledgeline::CliImport),
 }
 
 /// Fatal startup/runtime errors surfaced to the user via `main`.
@@ -111,6 +138,11 @@ pub(crate) enum AppError {
     #[cfg(feature = "gui")]
     #[error("desktop GUI: {0}")]
     Gui(String),
+    /// A `ledgeline import` run refused or failed. The engine has already
+    /// composed the sentence — see `run_cli_import`'s docs on why it hands back
+    /// a string rather than its own HTTP-shaped error type.
+    #[error("{0}")]
+    Import(String),
 }
 
 fn main() -> ExitCode {
@@ -125,6 +157,12 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), AppError> {
+    // A subcommand is a job, not a mode: it runs and the process exits, and
+    // neither `--server` nor the GUI is consulted. Checked FIRST so the branches
+    // below keep reading exactly as they did when they were the whole function.
+    if let Some(Command::Import(args)) = &cli.command {
+        return run_import(args);
+    }
     #[cfg(feature = "gui")]
     if !cli.server {
         return gui::run(&cli);
@@ -136,6 +174,87 @@ fn run(cli: Cli) -> Result<(), AppError> {
         );
     }
     run_server_blocking(&cli)
+}
+
+/// `ledgeline import` — one import, then exit.
+///
+/// # What this owns, and what it deliberately does not
+///
+/// It builds the [`AppState`] and prints; everything else belongs to
+/// [`ledgeline::run_cli_import`], which is inside the library beside the HTTP
+/// handlers precisely so both callers reach the same code.
+///
+/// # No file watcher, on purpose
+///
+/// [`run_server_blocking`] calls [`spawn_watcher`] because a server outlives the
+/// journal's next external edit and must republish. This process does not: it
+/// runs one import and exits, and `run_commit` already re-reads the journal
+/// through `AppState::reopen_editor` when it changes it. A watcher here would
+/// buy a reload nobody could observe, at the cost of a thread, a set of
+/// filesystem handles on every included directory, and a race between the
+/// import's own write and a reload triggered by it.
+///
+/// The journal is otherwise opened **exactly** as headless mode opens it —
+/// canonicalized, then [`AppState::from_journal_path`] — so the import writes
+/// through the same editor with the same validation. The one difference is that
+/// this does not record the journal in the recents store: a scripted import is
+/// not the user choosing a journal to work in, and it would push whatever a cron
+/// job touched to the top of the desktop app's list.
+fn run_import(args: &ledgeline::CliImport) -> Result<(), AppError> {
+    let journal_path = args.root_journal_path();
+    let editor_path = journal_path
+        .canonicalize()
+        .unwrap_or_else(|_| journal_path.to_path_buf());
+    let state =
+        AppState::from_journal_path(&editor_path).map_err(|source| AppError::OpenEditor {
+            path: journal_path.display().to_string(),
+            source,
+        })?;
+
+    let report = ledgeline::run_cli_import(&state, args).map_err(AppError::Import)?;
+
+    // The command line goes to stderr, so a script's stdout stays the result and
+    // a log of an unattended run still says what it did in a re-runnable form.
+    eprintln!("ledgeline: {}", report.command);
+    println!("{}", report.status.trim_end());
+    match &report.written {
+        None => println!(
+            "{} transaction{} would be imported. Nothing was written (--dry-run).",
+            report.count,
+            plural(report.count)
+        ),
+        Some(written) => {
+            println!(
+                "wrote {} and appended {} transaction{} to {}",
+                written.csv,
+                written.imported,
+                plural(written.imported),
+                written.journal
+            );
+            match written.sorted {
+                Some(0) => {}
+                Some(moved) => println!(
+                    "re-sorted {}, moving {moved} transaction{}",
+                    written.journal,
+                    plural(moved)
+                ),
+                None if !written.in_order => println!(
+                    "note: {} is no longer in date order; re-run with --sort to fix it",
+                    written.journal
+                ),
+                None => {}
+            }
+        }
+    }
+    if let Some(balance) = &report.balance {
+        println!("statement balance: {balance}");
+    }
+    Ok(())
+}
+
+/// The `s` in "3 transactions".
+fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
 
 /// Resolve the journal path: positional arg → `$LEDGELINE_FIXTURE` → the

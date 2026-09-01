@@ -10,8 +10,8 @@
 // Props, not a store: this panel takes its dry run as a prop and the resource
 // behind it is already driven end to end in `importStore.test.ts`.
 
-import {render, screen} from "@testing-library/svelte";
-import {describe, expect, it} from "vitest";
+import {fireEvent, render, screen} from "@testing-library/svelte";
+import {describe, expect, it, vi} from "vitest";
 import {dryRun, RENAMES_AND_PARITY, RENAMES_ONLY, ROTH_ALIAS} from "$lib/testing/aliasFixtures";
 import type {DryRunResult} from "../importTypes";
 import DryRunPanel from "./DryRunPanel.svelte";
@@ -67,5 +67,47 @@ describe("COMPONENT DryRunPanel — the alias notices", () => {
         // being satisfied by a panel that failed to render.
         expect(screen.getByTestId("imports-dry-run-entries")).toBeDefined();
         expect(screen.getByTestId("imports-write-changes")).toBeDefined();
+    });
+});
+
+describe("COMPONENT DryRunPanel — the equivalent command line", () => {
+    it("shows the engine's command VERBATIM", () => {
+        const run = dryRun(null);
+        mount(run);
+
+        // Byte for byte. The engine builds this with the same argv builder
+        // `ledgeline import` is parsed into (WP-16 Phase 3), so any re-quoting,
+        // splitting or prettifying here would break the one property the whole
+        // feature rests on.
+        if (!run.ok) throw new Error("unreachable");
+        expect(screen.getByTestId("imports-cli-command").textContent).toBe(run.cliCommand);
+    });
+
+    it("copies it to the clipboard and says so", async () => {
+        // jsdom has no `navigator.clipboard`, and the component swallows the
+        // failure on purpose (an insecure context must not raise an error over a
+        // working screen) — so an unstubbed run would silently never latch.
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        vi.stubGlobal("navigator", {...navigator, clipboard: {writeText}});
+
+        const run = dryRun(null);
+        mount(run);
+        const button = screen.getByTestId("imports-copy-cli-command");
+        expect(button.textContent?.trim()).toBe("Copy");
+
+        await fireEvent.click(button);
+
+        if (!run.ok) throw new Error("unreachable");
+        expect(writeText).toHaveBeenCalledWith(run.cliCommand);
+        expect(button.textContent?.trim()).toBe("Copied!");
+        vi.unstubAllGlobals();
+    });
+
+    it("is not offered when hledger refused the import", () => {
+        // There is no import to reproduce, so there is no command to copy.
+        mount({ok: false, stderr: "hledger: Error: could not parse date\n"});
+
+        expect(screen.queryByTestId("imports-cli-command")).toBeNull();
+        expect(screen.queryByTestId("imports-copy-cli-command")).toBeNull();
     });
 });

@@ -102,6 +102,13 @@ const STAGE_JSON = {
     defaults: {csvPath: "import/2026/bank.csv", journalId: "2026/2026.journal"},
 };
 
+/** A copy of `obj` with one key removed — for asserting a decoder NOTICES an absent field rather than defaulting it. (As `nativeDecode.test.ts`.) */
+function without<T extends object>(obj: T, key: keyof T): Partial<T> {
+    const copy: Partial<T> = {...obj};
+    delete copy[key];
+    return copy;
+}
+
 const DRY_RUN_JSON = {
     ok: true,
     entries: "2026-02-01 GROCERY STORE\n    expenses:groceries  $12.34\n",
@@ -110,6 +117,7 @@ const DRY_RUN_JSON = {
     skipped: {olderThan: "2026-02-05", count: 1},
     balance: {statement: "$2945.05", computed: "$2945.05", matches: true, difference: "$0.00"},
     blockedByGit: ["2026/2026.journal"],
+    cliCommand: "ledgeline import -i bank.csv -o import/2026/bank.csv -r import/2026/bank.csv.rules -j 2026/2026.journal",
 };
 
 const COMMIT_JSON = {
@@ -303,6 +311,24 @@ describe("UNIT import wire decoders", () => {
 
     it("throws when a dry run carries no ok flag", () => {
         expect(() => decodeDryRun({entries: "", count: 0})).toThrow(ApiShapeError);
+    });
+
+    it("decodes cliCommand, the line the panel offers to copy", () => {
+        // WP-16 Phase 3. The engine builds this with the same argv builder
+        // `ledgeline import` is PARSED into, so the SPA's only job is to carry
+        // the string through unaltered — there is deliberately nothing here that
+        // splits, re-joins or re-quotes it.
+        const run = decodeDryRun(DRY_RUN_JSON);
+        if (!run.ok) throw new Error("unreachable");
+        expect(run.cliCommand).toBe("ledgeline import -i bank.csv -o import/2026/bank.csv -r import/2026/bank.csv.rules -j 2026/2026.journal");
+    });
+
+    it("refuses a successful dry run with no command line", () => {
+        // Required, not optional: a preview that succeeded always has an
+        // invocation that reproduces it, so an absent field is a decode failure
+        // rather than "there is none". Contrast `git.message`, which is genuinely
+        // absent on success.
+        expect(() => decodeDryRun(without(DRY_RUN_JSON, "cliCommand"))).toThrow(ApiShapeError);
     });
 
     // An engine older than this build has nothing to say about command-line

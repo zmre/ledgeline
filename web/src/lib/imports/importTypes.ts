@@ -284,6 +284,16 @@ export interface DryRunOk {
     readonly aliases: AliasEffect | null;
     /** Modified targets that make `commit` refuse. Empty when clear. */
     readonly blockedByGit: readonly string[];
+    /**
+     * The `ledgeline import …` line that reproduces this import from a terminal,
+     * built by the engine's own argv builder — the same one `ledgeline import`
+     * is parsed into, so what it says and what it does cannot drift.
+     *
+     * Carries relative handles only, so it is run from the journal's own
+     * directory (which is what the panel says beside it). Not {@link CliParity},
+     * which asks a different question about a different `cli`.
+     */
+    readonly cliCommand: string;
 }
 
 /** One account rewrite an alias performed on this import. */
