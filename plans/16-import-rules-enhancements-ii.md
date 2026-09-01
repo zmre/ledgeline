@@ -959,23 +959,33 @@ argument for applying it anyway rather than for reasoning once that it need not 
 - `edit_api::status_str` now delegates to `reimport::status_word` so the two screens cannot come to
   spell `pending` two ways.
 
-#### The SPA was deliberately left alone
+#### The SPA was deliberately left alone, then closed as a same-day follow-up
 
-`idMatches` reaches the browser and is discarded at the decoder boundary. That is safe and was
-checked rather than assumed: `decodeDryRun`/`decodeCommitResult` (`web/src/lib/api/nativeDecode.ts`)
-cast and then build a fresh frozen literal from named fields, so an unknown key can neither throw
-nor leak into a component; there is no runtime schema validator anywhere in `web/src`; no golden
-pins an import response (`native_wire_golden.rs` is GET-only and covers no `/api/import/*` route);
-and no component spreads a response object.
+`idMatches` initially reached the browser and was discarded at the decoder boundary — checked
+rather than assumed at the time (`decodeDryRun`/`decodeCommitResult` cast and build a fresh frozen
+literal from named fields, so an unknown key could neither throw nor leak into a component). That
+left one real gap: the engine already refused to overwrite a conflicting row, but nothing told
+anyone it happened, which is exactly the "warn that it changed and how" behaviour this feature was
+asked for. Closed immediately after, rather than left as a dangling follow-up:
 
-So nothing is required to keep existing behaviour correct, and this plan asks for no UI here.
-**Follow-up, named so it is not lost:** surfacing it needs `idMatches` on `RawDryRun`/
-`RawCommitResult` (`nativeDecode.ts`), a nullable decoder branch beside `decodeBalanceCheck`'s, the
-types in `imports/importTypes.ts`, and a section in `ui/DryRunPanel.svelte` — the `cliCommand`
-precedent from Phase 3, except that `idMatches` is legitimately `null` and so must not be decoded as
-required. Until then a conflict is reported by the engine and shown to nobody, which is the one
-thing about this phase a user would notice as missing. The CLI has the same gap for the same reason
-(`CliImportReport` gained no field), and its stdout count is at least already net of the matching.
+- `RawIdMatches`/`RawStatusChange`/`RawFieldDiff`/`RawConflict` and `decodeIdMatches` in
+  `web/src/lib/api/nativeDecode.ts`, nullable like `decodeBalanceCheck` (not required like
+  `cliCommand` — every rules file with no id column has nothing to say here, and that is a fact,
+  not a decode failure). Wired into both `decodeDryRun` and `decodeCommitResult`.
+- `IdMatches`/`StatusChange`/`FieldDiff`/`Conflict` types in `imports/importTypes.ts`, and
+  `idMatches: IdMatches | null` on `DryRunOk`/`CommitResult`.
+- Two pure functions in `imports/importModel.ts`: `idMatchesSummary` (a headline; null when there
+  is nothing worth a section — `new`/`unchanged` alone are already reflected elsewhere on screen)
+  and `conflictDetail` (one conflict's diffs as a readable line), unit-tested directly.
+- A new section in `ui/DryRunPanel.svelte`, between the balance check and the git block: one alert
+  (`alert-info` for a status sync alone, `alert-warning` the moment any conflict exists), listing
+  each status change's from→to and each conflict's id + diff. Component-tested for all four states
+  (no id column; id column, nothing to report; status sync; conflict).
+
+The CLI gap named above is still open — `CliImportReport` gained no field, though its printed count
+was already net of the matching — and stays a follow-up, since the GUI is where "warn... but don't
+wipe out what may be a hand-edit" was asked for; a scripted import has no person to show a warning
+to anyway.
 
 ## Sequencing
 

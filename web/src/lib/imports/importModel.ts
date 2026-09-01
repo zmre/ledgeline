@@ -27,8 +27,10 @@ import type {
     BalanceCheck,
     CandidateSignals,
     CommitResult,
+    Conflict,
     ConvertNote,
     DryRunResult,
+    IdMatches,
     ImportCapabilities,
     JournalTarget,
     RulesCandidate,
@@ -568,6 +570,39 @@ export function gitBlockMessage(blockedByGit: readonly string[]): string | null 
     if (blockedByGit.length === 0) return null;
     const files = blockedByGit.length === 1 ? "one file this import writes has" : `${blockedByGit.length} files this import writes have`;
     return `Commit first: ${files} uncommitted changes. An import rewrites ${blockedByGit.length === 1 ? "it" : "them"} in place, and \`git diff\` is how you would undo that — which only works if what is there now is committed.`;
+}
+
+/**
+ * The id-matching section's headline, or null when there is nothing worth a
+ * section for.
+ *
+ * `new`/`unchanged` alone say nothing new: `new` is already reflected in the
+ * transaction count above, and `unchanged` is the ordinary "already imported"
+ * case `.latest` already handled before this feature existed. What is worth a
+ * sentence is a status sync (something is ABOUT to change) or a conflict — and
+ * a conflict is worth one even alone, which is the whole point of the feature:
+ * warn that a row disagrees, rather than silently importing it as new or
+ * silently overwriting what may be a hand-edit.
+ */
+export function idMatchesSummary(idMatches: IdMatches | null): string | null {
+    if (idMatches === null) return null;
+    const parts: string[] = [];
+    if (idMatches.statusChangedTotal > 0) {
+        const n = idMatches.statusChangedTotal;
+        parts.push(`${n} row${n === 1 ? "" : "s"} would have its clearing status synced (matched by id, not by date).`);
+    }
+    if (idMatches.conflictingTotal > 0) {
+        const n = idMatches.conflictingTotal;
+        parts.push(
+            `${n} row${n === 1 ? "" : "s"} the journal already holds differently — left untouched, since a field disagreement more likely means you edited it on purpose than that the bank's data changed.`
+        );
+    }
+    return parts.length === 0 ? null : parts.join(" ");
+}
+
+/** One conflicting row's disagreements, as a single readable line. */
+export function conflictDetail(conflict: Conflict): string {
+    return conflict.diffs.map((diff) => `${diff.field}: ${diff.existing} → ${diff.incoming}`).join("; ");
 }
 
 /** Whether `Write changes` may be offered at all. Git blocks it, and so does a failed dry run. */

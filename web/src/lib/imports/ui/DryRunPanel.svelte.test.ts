@@ -111,3 +111,73 @@ describe("COMPONENT DryRunPanel — the equivalent command line", () => {
         expect(screen.queryByTestId("imports-copy-cli-command")).toBeNull();
     });
 });
+
+describe("COMPONENT DryRunPanel — rows matched by id (WP-16 Phase 4)", () => {
+    it("shows nothing when the rules file declares no id", () => {
+        // The overwhelming common case: every rules file written before this
+        // feature existed. `idMatches` decodes to null and nothing renders.
+        mount(dryRun(null));
+
+        expect(screen.queryByTestId("imports-id-matches")).toBeNull();
+    });
+
+    it("shows nothing when there is an id column but nothing worth reporting", () => {
+        const run = dryRun(null);
+        if (!run.ok) throw new Error("unreachable");
+        mount({...run, idMatches: {new: 4, unchanged: 6, statusChanged: [], statusChangedTotal: 0, conflicting: [], conflictingTotal: 0}});
+
+        expect(screen.queryByTestId("imports-id-matches")).toBeNull();
+    });
+
+    it("reports a status sync without alarm", () => {
+        const run = dryRun(null);
+        if (!run.ok) throw new Error("unreachable");
+        mount({
+            ...run,
+            idMatches: {
+                new: 0,
+                unchanged: 0,
+                statusChanged: [{id: "FIT0001", from: "pending", to: "cleared", applied: false}],
+                statusChangedTotal: 1,
+                conflicting: [],
+                conflictingTotal: 0,
+            },
+        });
+
+        const box = screen.getByTestId("imports-id-matches");
+        expect(box.className).toContain("alert-info");
+        expect(box.className).not.toContain("alert-warning");
+        expect(screen.getByTestId("imports-status-changed").textContent).toContain("pending → cleared");
+        expect(screen.queryByTestId("imports-conflicting")).toBeNull();
+    });
+
+    it("warns — not just reports — a conflict, and names it, without touching the transaction count", () => {
+        // This is the requirement the feature exists to satisfy: warn that a
+        // row changed and how, because it is more likely the user changed it on
+        // purpose than that the bank's data did — never silently reimport or
+        // overwrite it.
+        const run = dryRun(null);
+        if (!run.ok) throw new Error("unreachable");
+        mount({
+            ...run,
+            idMatches: {
+                new: 0,
+                unchanged: 0,
+                statusChanged: [],
+                statusChangedTotal: 0,
+                conflicting: [{id: "FIT0002", diffs: [{field: "amount", existing: "-35.60", incoming: "-32.10"}]}],
+                conflictingTotal: 1,
+            },
+        });
+
+        const box = screen.getByTestId("imports-id-matches");
+        expect(box.className).toContain("alert-warning");
+        const conflicts = screen.getByTestId("imports-conflicting");
+        expect(conflicts.textContent).toContain("FIT0002");
+        expect(conflicts.textContent).toContain("-35.60");
+        expect(conflicts.textContent).toContain("-32.10");
+        // The engine already excluded conflicting rows from `count`/`entries` —
+        // this panel only ever reports that fact, never recomputes it.
+        expect(screen.getByTestId("imports-dry-run-status").textContent).toBe(run.status);
+    });
+});

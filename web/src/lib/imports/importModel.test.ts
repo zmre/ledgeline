@@ -35,6 +35,7 @@ import {
     candidateById,
     candidateCards,
     canWrite,
+    conflictDetail,
     csvPathForRules,
     defaultBalanceAccount,
     defaultJournalId,
@@ -47,6 +48,7 @@ import {
     gitCommitFailure,
     headerFilename,
     hledgerBannerCopy,
+    idMatchesSummary,
     importAction,
     isInFlight,
     journalOptionLabel,
@@ -68,7 +70,7 @@ import {
     writtenLines,
     type ImportFlowState,
 } from "./importModel";
-import type {CommitResult, ImportCapabilities, JournalTarget, StagedFile} from "./importTypes";
+import type {CommitResult, Conflict, ImportCapabilities, JournalTarget, StagedFile} from "./importTypes";
 
 // ---------------------------------------------------------------------------
 // Wire fixtures — the contract's own JSON, verbatim
@@ -118,6 +120,7 @@ const DRY_RUN_JSON = {
     balance: {statement: "$2945.05", computed: "$2945.05", matches: true, difference: "$0.00"},
     blockedByGit: ["2026/2026.journal"],
     cliCommand: "ledgeline import -i bank.csv -o import/2026/bank.csv -r import/2026/bank.csv.rules -j 2026/2026.journal",
+    idMatches: null,
 };
 
 const COMMIT_JSON = {
@@ -126,6 +129,17 @@ const COMMIT_JSON = {
     imported: 3,
     ordering: {inOrder: false, moves: [{date: "2026-01-20", description: "BACK DATED", fromLine: 812, toLine: 540}]},
     git: {committed: true, paths: ["import/2026/bank.csv", "2026/2026.journal"], skipped: []},
+    idMatches: null,
+};
+
+/** WP-16 Phase 4's wire, literal, one row of each kind. */
+const ID_MATCHES_JSON = {
+    new: 1,
+    unchanged: 2,
+    statusChanged: [{id: "FIT0001", from: "pending", to: "cleared", applied: true}],
+    statusChangedTotal: 1,
+    conflicting: [{id: "FIT0002", diffs: [{field: "posting 1 amount", existing: "-35.60", incoming: "-32.10"}]}],
+    conflictingTotal: 1,
 };
 
 /** The staged file as the SPA holds it — decoded once, reused by the model tests. */
@@ -329,6 +343,35 @@ describe("UNIT import wire decoders", () => {
         // rather than "there is none". Contrast `git.message`, which is genuinely
         // absent on success.
         expect(() => decodeDryRun(without(DRY_RUN_JSON, "cliCommand"))).toThrow(ApiShapeError);
+    });
+
+    it("reads a null idMatches as 'no id column, nothing to match'", () => {
+        // Every rules file this feature did not exist for behaves this way —
+        // WP-16 Phase 4's opt-in invariant, on the decode side.
+        const run = decodeDryRun(DRY_RUN_JSON);
+        if (!run.ok) throw new Error("unreachable");
+        expect(run.idMatches).toBeNull();
+    });
+
+    it("decodes idMatches, one row of each kind", () => {
+        const run = decodeDryRun({...DRY_RUN_JSON, idMatches: ID_MATCHES_JSON});
+        if (!run.ok) throw new Error("unreachable");
+        expect(run.idMatches).toEqual({
+            new: 1,
+            unchanged: 2,
+            statusChanged: [{id: "FIT0001", from: "pending", to: "cleared", applied: true}],
+            statusChangedTotal: 1,
+            conflicting: [{id: "FIT0002", diffs: [{field: "posting 1 amount", existing: "-35.60", incoming: "-32.10"}]}],
+            conflictingTotal: 1,
+        });
+    });
+
+    it("decodes a commit's idMatches, where applied reports what was actually written", () => {
+        const commit = decodeCommitResult({
+            ...COMMIT_JSON,
+            idMatches: {...ID_MATCHES_JSON, statusChanged: [{id: "FIT0001", from: "pending", to: "cleared", applied: true}]},
+        });
+        expect(commit.idMatches?.statusChanged[0]).toEqual({id: "FIT0001", from: "pending", to: "cleared", applied: true});
     });
 
     // An engine older than this build has nothing to say about command-line
@@ -958,6 +1001,66 @@ describe("UNIT dry run rendering", () => {
         expect(gitBlockMessage([])).toBeNull();
         expect(gitBlockMessage(["2026/2026.journal"])).toContain("one file");
         expect(gitBlockMessage(["a", "b"])).toContain("2 files");
+    });
+
+    it("says nothing about id matches when the rules file has no id column", () => {
+        expect(idMatchesSummary(null)).toBeNull();
+    });
+
+    it("says nothing when there is an id column but nothing to report about it", () => {
+        // `new`/`unchanged` alone are not worth a section — they are already
+        // reflected in the transaction count and the ordinary skip warning.
+        expect(idMatchesSummary({new: 3, unchanged: 5, statusChanged: [], statusChangedTotal: 0, conflicting: [], conflictingTotal: 0})).toBeNull();
+    });
+
+    it("reports a status sync", () => {
+        // The headline is a count; the per-row from/to detail is the template's
+        // job to render from `idMatches.statusChanged` directly, the same split
+        // `gitBlockMessage`'s sentence vs. `blockedByGit`'s list already uses.
+        const summary = idMatchesSummary({
+            new: 0,
+            unchanged: 0,
+            statusChanged: [{id: "FIT0001", from: "pending", to: "cleared", applied: false}],
+            statusChangedTotal: 1,
+            conflicting: [],
+            conflictingTotal: 0,
+        });
+        expect(summary).toContain("1");
+        expect(summary?.toLowerCase()).toContain("status");
+    });
+
+    it("warns about a conflict rather than staying quiet about it", () => {
+        // This is the whole point of the feature per the person who asked for
+        // it: warn that a row changed, don't wipe out what may be a hand-edit.
+        const summary = idMatchesSummary({
+            new: 0,
+            unchanged: 0,
+            statusChanged: [],
+            statusChangedTotal: 0,
+            conflicting: [{id: "FIT0002", diffs: [{field: "amount", existing: "-35.60", incoming: "-32.10"}]}],
+            conflictingTotal: 1,
+        });
+        expect(summary).toContain("1");
+        expect(summary?.toLowerCase()).toMatch(/not (?:been )?(?:changed|touched|imported|edited)|left (?:as|alone)|untouched/);
+    });
+
+    it("counts conflicts by their real total, not the capped list length", () => {
+        const conflict: Conflict = {id: "x", diffs: [{field: "amount", existing: "1", incoming: "2"}]};
+        const summary = idMatchesSummary({new: 0, unchanged: 0, statusChanged: [], statusChangedTotal: 0, conflicting: [conflict], conflictingTotal: 200});
+        expect(summary).toContain("200");
+    });
+
+    it("renders a conflict's diffs as one readable line", () => {
+        const line = conflictDetail({
+            id: "FIT0002",
+            diffs: [
+                {field: "amount", existing: "-35.60", incoming: "-32.10"},
+                {field: "description", existing: "COFFEE SHOP", incoming: "COFFEE SHOP #2"},
+            ],
+        });
+        expect(line).toContain("-35.60");
+        expect(line).toContain("-32.10");
+        expect(line).toContain("COFFEE SHOP #2");
     });
 
     it("refuses to offer a write with no dry run, a failed one, or a git block", () => {

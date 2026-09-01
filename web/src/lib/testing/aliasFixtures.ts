@@ -119,5 +119,6 @@ export function dryRun(aliases: AliasEffect | null): DryRunResult {
         aliases,
         blockedByGit: [],
         cliCommand: "ledgeline import -i bank.csv -o import/bank.csv -r import/bank.csv.rules -j 2026/2026.journal",
+        idMatches: null,
     };
 }

@@ -53,11 +53,14 @@ import type {
     CommitResult,
     ConfRefusalReason,
     ConfWritten,
+    Conflict,
     ConvertNote,
     DryRunResult,
+    FieldDiff,
     GitReport,
     HledgerStatus,
     HledgerUnavailableReason,
+    IdMatches,
     ImportCapabilities,
     JournalTarget,
     OrderingReport,
@@ -70,6 +73,7 @@ import type {
     StageDefaults,
     StagePreview,
     StatementMeta,
+    StatusChange,
 } from "$lib/imports/importTypes";
 import type {
     IfLayout,
@@ -828,6 +832,33 @@ interface RawBalanceCheck {
     difference?: string | null;
 }
 
+interface RawStatusChange {
+    id?: string;
+    from?: string;
+    to?: string;
+    applied?: boolean;
+}
+
+interface RawFieldDiff {
+    field?: string;
+    existing?: string;
+    incoming?: string;
+}
+
+interface RawConflict {
+    id?: string;
+    diffs?: RawFieldDiff[];
+}
+
+interface RawIdMatches {
+    new?: number;
+    unchanged?: number;
+    statusChanged?: RawStatusChange[];
+    statusChangedTotal?: number;
+    conflicting?: RawConflict[];
+    conflictingTotal?: number;
+}
+
 interface RawDryRun {
     ok?: boolean;
     entries?: string;
@@ -842,6 +873,11 @@ interface RawDryRun {
     // is required rather than optional here. Not `cliParity`, which is a
     // different "cli" entirely and lives under `aliases`.
     cliCommand?: string;
+    // Contract amendment (WP-16 Phase 4) — see WireIdMatches's doc comment:
+    // additive, opt-in, and nullable like `balance`/`skipped` above rather than
+    // required like `cliCommand` — every rules file written before this feature
+    // existed has nothing to say here, and null is that fact, not an absence.
+    idMatches?: RawIdMatches | null;
     stderr?: string;
 }
 
@@ -872,6 +908,10 @@ interface RawCommitResult {
     imported?: number;
     ordering?: RawOrdering;
     git?: RawGitReport | null;
+    // Contract amendment (WP-16 Phase 4) — same nullable convention as the dry
+    // run's copy; `statusChanged[].applied` here reports what was actually
+    // written rather than what a commit would write.
+    idMatches?: RawIdMatches | null;
 }
 
 interface RawSortResult {
@@ -2493,6 +2533,50 @@ export function decodeStagedFile(raw: unknown): StagedFile {
     });
 }
 
+function decodeStatusChange(raw: RawStatusChange | undefined, context: string): StatusChange {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing status change`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        from: str(raw.from, `${context} from`),
+        to: str(raw.to, `${context} to`),
+        applied: raw.applied === true,
+    });
+}
+
+function decodeFieldDiff(raw: RawFieldDiff | undefined, context: string): FieldDiff {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing field diff`);
+    return Object.freeze({
+        field: str(raw.field, `${context} field`),
+        existing: str(raw.existing, `${context} existing`),
+        incoming: str(raw.incoming, `${context} incoming`),
+    });
+}
+
+function decodeConflict(raw: RawConflict | undefined, context: string): Conflict {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing conflict`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        diffs: frozen((raw.diffs ?? []).map((diff, i) => decodeFieldDiff(diff, `${context} diffs[${i}]`))),
+    });
+}
+
+/**
+ * Nullable like `balance`/`skipped`, not required like `cliCommand`: every
+ * rules file written before WP-16 Phase 4 existed has nothing to say here, and
+ * null is that fact rather than a decode failure.
+ */
+function decodeIdMatches(raw: RawIdMatches | null | undefined, context: string): IdMatches | null {
+    if (raw === undefined || raw === null) return null;
+    return Object.freeze({
+        new: num(raw.new, `${context} new`),
+        unchanged: num(raw.unchanged, `${context} unchanged`),
+        statusChanged: frozen((raw.statusChanged ?? []).map((change, i) => decodeStatusChange(change, `${context} statusChanged[${i}]`))),
+        statusChangedTotal: num(raw.statusChangedTotal, `${context} statusChangedTotal`),
+        conflicting: frozen((raw.conflicting ?? []).map((conflict, i) => decodeConflict(conflict, `${context} conflicting[${i}]`))),
+        conflictingTotal: num(raw.conflictingTotal, `${context} conflictingTotal`),
+    });
+}
+
 function decodeBalanceCheck(raw: RawBalanceCheck | null | undefined, context: string): BalanceCheck | null {
     if (raw === undefined || raw === null) return null;
     return Object.freeze({
@@ -2533,6 +2617,7 @@ export function decodeDryRun(raw: unknown): DryRunResult {
         aliases: decodeAliasEffect(run.aliases, "dry run aliases"),
         blockedByGit: frozen(decodeStrings(run.blockedByGit, "dry run blockedByGit")),
         cliCommand: str(run.cliCommand, "dry run cliCommand"),
+        idMatches: decodeIdMatches(run.idMatches, "dry run idMatches"),
     });
 }
 
@@ -2577,6 +2662,7 @@ export function decodeCommitResult(raw: unknown): CommitResult {
         imported: optNum(result.imported, "commit result imported") ?? 0,
         ordering: decodeOrdering(result.ordering, "commit result ordering"),
         git: decodeGitReport(result.git, "commit result git"),
+        idMatches: decodeIdMatches(result.idMatches, "commit result idMatches"),
     });
 }
 

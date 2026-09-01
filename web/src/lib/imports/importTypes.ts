@@ -267,6 +267,68 @@ export interface BalanceCheck {
     readonly difference: string | null;
 }
 
+/** One clearing status a re-downloaded statement moved: an authorization hold that settled. */
+export interface StatusChange {
+    /** The row id, as the rules file wrote it (`comment id:%fitid`). */
+    readonly id: string;
+    /** What the journal says today: `unmarked`, `pending` or `cleared`. */
+    readonly from: string;
+    /** What this statement says. */
+    readonly to: string;
+    /**
+     * Whether it was actually written. Always false on a dry run, which
+     * previews and writes nothing. On a commit, false only for a match outside
+     * the file this import writes to — syncing into some other included file
+     * would write somewhere this request had neither checked nor could undo.
+     */
+    readonly applied: boolean;
+}
+
+/** One field a conflicting row disagrees on. */
+export interface FieldDiff {
+    /** What disagrees: `date`, `description`, `posting 2 amount`, … */
+    readonly field: string;
+    /** What the journal says today. */
+    readonly existing: string;
+    /** What this statement proposes. */
+    readonly incoming: string;
+}
+
+/** One row the journal already holds differently — the hand-edit this feature exists to protect. */
+export interface Conflict {
+    /** The row id, as the rules file wrote it. */
+    readonly id: string;
+    /** Every disagreement, in field order. */
+    readonly diffs: readonly FieldDiff[];
+}
+
+/**
+ * What matching this statement's rows against the journal by id found, or null
+ * when the rules file declares no id (`comment id:%fitid` — see `docs/imports.md`).
+ *
+ * Never an empty object when present: "there is no id to match on" and "there
+ * is, and nothing matched" are different facts, and this type lets the UI tell
+ * them apart. An id match may keep a row OUT of the import (already held) or
+ * sync a clearing status; it never does anything else — a conflicting row is
+ * reported and left exactly as the user wrote it, never overwritten, on the
+ * premise that a field disagreement more likely means the journal was hand-
+ * edited on purpose than that the bank's own data changed.
+ */
+export interface IdMatches {
+    /** Rows no transaction in the journal claims. Imported as usual. */
+    readonly new: number;
+    /** Rows the journal already holds, identically. Not imported, not edited. */
+    readonly unchanged: number;
+    /** Status flips this statement would make (or, on commit, did make). */
+    readonly statusChanged: readonly StatusChange[];
+    /** How many there are — `statusChanged` may be capped by the engine. */
+    readonly statusChangedTotal: number;
+    /** Rows the journal holds differently in some way a status flip can't express. */
+    readonly conflicting: readonly Conflict[];
+    /** How many there are — `conflicting` may be capped by the engine. */
+    readonly conflictingTotal: number;
+}
+
 /** A successful dry run: what hledger would write, and everything that must be seen before it is. */
 export interface DryRunOk {
     readonly ok: true;
@@ -294,6 +356,8 @@ export interface DryRunOk {
      * which asks a different question about a different `cli`.
      */
     readonly cliCommand: string;
+    /** What matching this statement against the journal by id found. See {@link IdMatches}. */
+    readonly idMatches: IdMatches | null;
 }
 
 /** One account rewrite an alias performed on this import. */
@@ -418,6 +482,13 @@ export interface CommitResult {
     readonly imported: number;
     readonly ordering: OrderingReport;
     readonly git: GitReport | null;
+    /**
+     * What matching this statement against the journal by id found, or null
+     * when the rules file declares no id. See {@link IdMatches}. Unlike the
+     * dry run's copy, `statusChanged[].applied` here reports what was actually
+     * written, and `entries`/`imported` above are already net of it.
+     */
+    readonly idMatches: IdMatches | null;
 }
 
 /**
