@@ -246,6 +246,26 @@ export interface SaveRulesBody {
 }
 
 /**
+ * `POST /api/rules-create` — draft a rules file for a staged upload.
+ *
+ * Note what is NOT here: no column mapping and no date format. The draft is the
+ * engine's own reading of the data, and the user corrects it by editing the
+ * returned document and saving THAT, through the ordinary `PUT` and the
+ * ordinary typed item vocabulary. Sending overrides here would be a second way
+ * to say the same thing, and the two would drift.
+ *
+ * This route writes nothing. `saveRules(id, createRulesBody(...))` does.
+ */
+export interface CreateRulesBody {
+    /** The SAME handle the candidate list already has — the file is already staged. */
+    stageId: string;
+    /** The id the new file will have, exactly as every other rules route takes one. */
+    id: string;
+    /** The account this statement IS. May be empty; the form fills it in. */
+    account1: string;
+}
+
+/**
  * Percent-encode a rules id for a URL path, SEGMENT BY SEGMENT.
  *
  * The route is a greedy `{*id}` wildcard and a real id contains slashes
@@ -801,6 +821,19 @@ export class LedgelineApi {
     /** Save a whole rules document. → 200, the saved document (decode with `decodeRulesDoc`). */
     saveRules(id: string, body: SaveRulesBody): Promise<unknown> {
         return this.mutate<unknown>("PUT", `/api/rules/${encodeRulesId(id)}`, 200, body);
+    }
+
+    /**
+     * Draft a rules file for a staged upload. → 200, the draft (decode with
+     * `decodeRulesDraft`); 409 when a file of that id already exists.
+     *
+     * WRITES NOTHING — `saveRules` does, once the user is happy with the draft.
+     * A `POST` on its own prefix rather than on `/api/rules`, because the id it
+     * takes names a file that does not exist yet and so belongs to no id-keyed
+     * route.
+     */
+    createRules(body: CreateRulesBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/rules-create", 200, body);
     }
 
     /** Every `alias` the journal declares (decode with `decodeAliasListing`). */

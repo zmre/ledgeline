@@ -564,7 +564,13 @@ fn normalize_name(name: &str) -> String {
 /// `None` is not a failure — it is the honest "cannot answer", and it makes the
 /// caller skip the check rather than reject a candidate on a question it could
 /// not evaluate.
-fn count_parsable(format: &str, values: &[String]) -> Option<usize> {
+///
+/// `pub(crate)` for one other caller: [`super::generate::guess_date_format`]
+/// picks a `date-format` for a NEW rules file by asking which catalogue formats
+/// read every sample. Sharing this reader rather than growing a second one is
+/// what stops the two from disagreeing about the same column — the scorer would
+/// then be rejecting a format the generator had just written.
+pub(crate) fn count_parsable(format: &str, values: &[String]) -> Option<usize> {
     let specs = parse_format(format)?;
     Some(
         values

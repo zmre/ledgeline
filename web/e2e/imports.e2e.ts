@@ -393,3 +393,161 @@ test("switching files with unsaved changes asks before discarding them", async (
     await page.getByRole("button", {name: "Discard"}).click();
     await expect(page.getByTestId("imports-open-file")).toHaveText("checking");
 });
+
+// ---------------------------------------------------------------------------
+// Creating a rules file from a dropped CSV (WP-16 Phase 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * A statement no committed rules file can read: exactly TWO columns.
+ *
+ * The narrowness is the mechanism, not a stylistic choice. `matching::prefilter`
+ * rejects any rules file whose `fields` list is wider than the data's widest
+ * record, and every rules file under `fixtures/` declares at least three — so a
+ * two-column drop is guaranteed to score nothing and land on the empty state
+ * this flow is reached from. A cleverer CSV would depend on hledger's scoring
+ * and would start failing the day someone adds a fixture.
+ *
+ * The headers say nothing an English synonym table knows, so both columns are
+ * read from their VALUES — which is the weakest guess the generator makes, and
+ * therefore the one worth driving end to end.
+ */
+const ALIEN_CSV = `When,HowMuch
+2026-03-01,-12.50
+2026-03-02,-4.25
+2026-03-03,900.00
+`;
+
+/** The id the flow writes. Removed before each run so the create is a real create. */
+const CREATED_RULES = new URL("dropped.csv.rules", SCRATCH_DIR);
+
+test("drafts a rules file for a CSV nothing can read, and writes it", async ({page}) => {
+    rmSync(CREATED_RULES, {force: true});
+    await page.goto("/imports");
+
+    // The engine has to be able to run hledger for the candidate list to mean
+    // anything. Without it the screen shows only the banner, and this test
+    // would be asserting on the machine rather than on the feature.
+    const drop = page.getByTestId("imports-drop-target");
+    if ((await drop.count()) === 0) test.skip(true, "this engine cannot run hledger");
+
+    await page.locator('input[type="file"]').setInputFiles({
+        name: "dropped.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(ALIEN_CSV),
+    });
+
+    // Nothing fits — which is the state the whole flow exists for.
+    await expect(page.getByTestId("imports-no-candidates")).toBeVisible();
+    await page.getByTestId("imports-create-rules").click();
+
+    const panel = page.getByTestId("imports-create-rules-panel");
+    await expect(panel).toBeVisible();
+
+    // The name defaults from the CSV destination, because hledger FINDS a rules
+    // file by being named after its data file.
+    await expect(page.getByTestId("imports-create-id")).toHaveValue(/dropped\.csv\.rules$/);
+
+    // Both columns were read from their values, so both are marked as guesses
+    // rather than presented as facts.
+    await expect(page.getByTestId("imports-create-uncertain")).toBeVisible();
+
+    // Both columns were read from their VALUES, so the mapping is shown for
+    // checking rather than asserted. `HowMuch` really is the amount, so the
+    // correction this test makes is the one the panel's own warning asks for:
+    // these amounts carry no currency symbol, and hledger reads a
+    // commodity-less amount as a commodity of its OWN — so those rows would
+    // never add up with the `$` amounts already in the journal, visible only as
+    // a balance that does not move.
+    await expect(page.getByLabel("Field name for column 1")).toHaveValue("date");
+    await expect(page.getByLabel("Field name for column 2")).toHaveValue("amount");
+    await expect(page.getByTestId("imports-create-warnings")).toContainText("no currency symbol");
+
+    const currency = page.getByTestId("imports-create-currency");
+    await expect(currency).toHaveValue("");
+    await currency.fill("$");
+    await currency.blur();
+
+    // The one thing no CSV can supply. Until it is there, Create is refused
+    // with the reason beside it rather than a disabled button and no comment.
+    await expect(page.getByTestId("imports-create-save")).toBeDisabled();
+    await expect(page.getByTestId("imports-create-blocker")).toContainText(/which account/i);
+    // `AccountInput` carries a fixed `aria-label="Account"` for both accounts,
+    // so the PLACEHOLDER is what tells account1 from account2 here.
+    const account1 = page.getByPlaceholder("assets:bank:checking");
+    await account1.fill("assets:bank:checking");
+    await account1.blur();
+
+    // What the file will say, shown BEFORE it is written.
+    await expect(page.getByTestId("imports-create-lines")).toContainText("fields date, amount");
+    await expect(page.getByTestId("imports-create-lines")).toContainText("currency $");
+    await expect(page.getByTestId("imports-create-lines")).toContainText("account1 assets:bank:checking");
+    await expect(page.getByTestId("imports-create-lines")).toContainText("account2 expenses:unknown");
+
+    await expect(page.getByTestId("imports-create-save")).toBeEnabled();
+    await page.getByTestId("imports-create-save").click();
+
+    // The bytes on disk are the engine's renderer's, and carry no comment line
+    // — `ItemBody` has no comment variant, so a draft that had one could not be
+    // saved through the create wire at all.
+    await expect(async () => {
+        expect(readFileSync(CREATED_RULES, "utf8")).toBe(
+            "skip 1\n" +
+                "date-format %Y-%m-%d\n" +
+                "fields date, amount\n" +
+                "account1 assets:bank:checking\n" +
+                "account2 expenses:unknown\n" +
+                // LAST, not beside the other directives: `withSetting` inserts
+                // after the last setting already in the document, and a draft's
+                // last one is `account2`. Only `skip` is positional to hledger,
+                // so this is harmless — and it is pinned by
+                // `createModel.test.ts` so this expectation is a measurement
+                // rather than a guess.
+                "currency $\n"
+        );
+    }).toPass();
+
+    // And it is readable back through the editor, which knows nothing about any
+    // of this: one round trip, two independent routes.
+    await page.goto("/imports?tab=rules");
+    await page.getByRole("button", {name: /^dropped/}).click();
+    await expect(page.getByTestId("imports-open-file")).toHaveText("dropped");
+    await expect(page.getByPlaceholder("assets:bank:checking")).toHaveValue("assets:bank:checking");
+
+    rmSync(CREATED_RULES, {force: true});
+});
+
+test("refuses to create a rules file over one that already exists", async ({page}) => {
+    // Creating and editing stay separate operations, and the check that MATTERS
+    // is the write's: the draft route's own 409 is a courtesy that expires the
+    // moment it returns, so this drives the name the user actually types and
+    // presses Create.
+    await page.goto("/imports");
+    const drop = page.getByTestId("imports-drop-target");
+    if ((await drop.count()) === 0) test.skip(true, "this engine cannot run hledger");
+
+    await page.locator('input[type="file"]').setInputFiles({
+        name: "dropped.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(ALIEN_CSV),
+    });
+    await expect(page.getByTestId("imports-no-candidates")).toBeVisible();
+    await page.getByTestId("imports-create-rules").click();
+    await expect(page.getByTestId("imports-create-rules-panel")).toBeVisible();
+
+    // `scratch/imports-e2e/scratch.csv.rules` is written fresh by `beforeEach`,
+    // so this id is taken. The draft above succeeded under a different name —
+    // the panel does not re-draft on a rename, by design, because a re-draft
+    // would discard the corrections the user came here to make.
+    await page.getByTestId("imports-create-id").fill("scratch/imports-e2e/scratch.csv.rules");
+    const account1 = page.getByPlaceholder("assets:bank:checking");
+    await account1.fill("assets:bank:checking");
+    await account1.blur();
+
+    await expect(page.getByTestId("imports-create-save")).toBeEnabled();
+    await page.getByTestId("imports-create-save").click();
+    await expect(page.getByTestId("imports-create-save-error")).toContainText(/already exists/i);
+
+    // And the existing file is untouched — the whole point of the refusal.
+    expect(readFileSync(SCRATCH_RULES, "utf8")).toBe(RULES);
+});

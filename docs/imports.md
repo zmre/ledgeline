@@ -9,9 +9,9 @@ Three surfaces behind one nav item, each with its own tab:
   hands to `hledger --alias`. See § Account aliases, and § The two homes an alias can live in for
   why the same mapping in an `hledger.conf` is a different thing.
 
-Rules-file scope: **discover, present, edit, save.** Still not in scope: generating a rules file
-from a CSV, and writing a chosen category back as a new `if` rule. The model below is shaped so
-each of those slots in additively.
+Rules-file scope: **discover, present, edit, save, and draft a new one from a dropped CSV.** Still
+not in scope: writing a chosen category back as a new `if` rule. The model below is shaped so that
+slots in additively.
 
 Raw text editing is deliberately *not* offered — that is what a terminal is for. The GUI covers
 preferences, the row mapping, the two default accounts, and an ordered list of `if` rules.
@@ -28,12 +28,13 @@ why.
 | `crates/ledgeline-core/src/rules.rs` | The format-preserving document model: parse, classify, render, `EditPlan`/`apply`/`verify` |
 | `crates/ledgeline-core/src/rules/discovery.rs` | The directory scan, `RulesPath`, `Discovery::resolve`, the CSV preview |
 | `crates/ledgeline-core/src/rules/matching.rs` | Scoring a rules file against dropped data — the two-stage matcher |
+| `crates/ledgeline-core/src/rules/generate.rs` | Drafting a NEW rules file from a CSV: column guessing, `date-format`, `decimal-mark` |
 | `crates/ledgeline-core/src/convert/` | Statement preprocessors: `ofx`, `spreadsheet`, `delimited`, shared `encoding` |
 | `crates/ledgeline-core/src/sort.rs` | Format-preserving date sort of a journal file |
 | `crates/ledgeline-core/src/journals.rs` | Ranking candidate target journals, by content only |
 | `crates/ledgeline-core/src/aliases.rs` | `alias` directives: forwarding them to `--alias`, and the one-line-wide span editor |
 | `crates/ledgeline-core/src/hledger_conf.rs` | `hledger.conf`: reading its `--alias` options, and the escaping rule for writing one |
-| `crates/ledgeline-server/src/rules_api.rs` | `/api/rules`, `/api/rules/{*id}`, `/api/rules-preview/{*id}` |
+| `crates/ledgeline-server/src/rules_api.rs` | `/api/rules`, `/api/rules/{*id}`, `/api/rules-preview/{*id}`, `/api/rules-create` |
 | `crates/ledgeline-server/src/alias_api.rs` | `/api/aliases`, `/api/aliases/{*journalId}` |
 | `crates/ledgeline-server/src/{hledger,git,prefs}.rs` | Subprocess invocation, the git safety net, the preferences store |
 | `web/src/lib/imports/` | Pure form model, reorder, date-format catalogue, store, UI |
@@ -679,6 +680,38 @@ through the user's shell. So `source`, `archive` and `include` can be kept, move
 written. Without that rule this endpoint would be a remote-code-execution primitive. For the same
 reason the test suite **never runs hledger against a user's file**, only against fixtures we author.
 
+### Creating a file: the one place a client string becomes a path
+
+> **Layer 2 cannot serve a CREATE.** `Discovery::resolve` only ever returns a file the scan already
+> found; a file that does not exist yet cannot be found. So `Discovery::resolve_new` performs the
+> **only `root.join(id)` in either crate**, and every guard below is what earns it.
+
+1. **Shape**, before any filesystem call — deliberately a *second* copy of the question
+   `validate_id` asks, because neither layer may assume the other ran.
+2. **Discoverability.** No hidden component, and none in the scan's `SKIP_DIRS`. Not a security
+   guard so much as a coherence one: creating a file the scan will never list would write something
+   the user cannot then open, which is worse than refusing.
+3. **Confinement**, via the same `parse::confine` everything else here uses.
+4. **A real, non-symlink parent directory.** **No directory is ever created** — a rules file goes
+   beside a journal that already exists.
+5. **Nothing already at the name.**
+
+Guard 5 is *not* what makes it safe, and must not be read as if it were: it expires the moment it
+returns. The write is `create_new` — `O_EXCL` — so the refusal is the **kernel's**, decided
+atomically at the open. `edit::atomic_write` is deliberately not used: its rename-over-the-top is
+exactly the property that makes it right for a save and wrong for a create.
+
+Two of the four refusals collapse into the ordinary `404`. "Resolves outside the root" and "that
+directory is not there" are answers *about the filesystem*, and a route that told them apart would
+report whether `/etc/ledgeline/` exists. "Already exists" is safe to report as itself, because it is
+only reachable for a confined, non-hidden `*.rules` name below the root — precisely the set
+`GET /api/rules` already publishes.
+
+Content provenance is unchanged, and that is the point of routing the write through the ordinary
+`PUT`: a create is a `revision: ""` request over the same typed item vocabulary, rendered by the
+same renderer. `POST /api/rules-create` itself **writes nothing at all** — it drafts, and the user
+saves. Drafting a plausible file and writing one stay separate, separately-testable operations.
+
 ## Concurrency
 
 Each response carries a `revision` — a fingerprint of the file's **raw bytes**. A save must echo it,
@@ -696,7 +729,9 @@ no transaction, so routing it through a reload would cost a full reparse for not
 just rules-check           # every fixture is a rules file REAL hledger accepts
 cargo test -p ledgeline-core --test rules            # round-trip + isolation + properties
 cargo test -p ledgeline-core --test rules_security   # the scan's guards
+cargo test -p ledgeline-core --test rules_generate   # drafting a new file from a CSV
 cargo test -p ledgeline --test rules_endpoints
+cargo test -p ledgeline --test rules_create_endpoints  # the create boundary
 just snapshot-rules-wire   # ONLY when the wire contract changed on purpose
 
 # New Transactions
@@ -716,6 +751,7 @@ which stays hermetic:
 ```sh
 LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
 LEDGELINE_HLEDGER_MATCH_CHECK=1  cargo test -p ledgeline-core --test matching
+LEDGELINE_HLEDGER_GENERATE_CHECK=1 cargo test -p ledgeline-core --test rules_generate
 LEDGELINE_HLEDGER_SORT_CHECK=1   cargo test -p ledgeline-core --test sort
 LEDGELINE_HLEDGER_LAYOUT_CHECK=1 cargo test -p ledgeline-core --test journals
 LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_endpoints

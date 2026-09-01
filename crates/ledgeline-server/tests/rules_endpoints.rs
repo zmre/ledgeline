@@ -1253,6 +1253,10 @@ async fn every_rules_route_requires_the_token() {
             "/api/rules-preview/import/2026/bank.csv.rules".to_string(),
         ),
         ("PUT", BANK.to_string()),
+        // The draft route writes nothing, and is still behind the guard: it
+        // reads the journal's own directory tree and another tab's staged
+        // upload, both of which are this server's business and nobody else's.
+        ("POST", "/api/rules-create".to_string()),
     ] {
         assert_eq!(
             probe(method, uri.clone(), None).await,

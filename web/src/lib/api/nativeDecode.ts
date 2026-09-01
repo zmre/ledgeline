@@ -76,6 +76,7 @@ import type {
     OpaqueReason,
     PreviewUnavailable,
     RulesDocument,
+    RulesDraft,
     RulesFieldsPref,
     RulesIndex,
     RulesItem,
@@ -635,6 +636,19 @@ interface RawRulesPreview {
     rows?: unknown[];
     columns?: number;
     truncated?: boolean;
+}
+
+interface RawRulesColumnGuess {
+    index?: number;
+    field?: string;
+    confidence?: number;
+}
+
+interface RawRulesDraft {
+    doc?: RawRulesDoc;
+    preview?: RawRulesPreview;
+    columns?: RawRulesColumnGuess[];
+    warnings?: unknown[];
 }
 
 // --- New Transactions import flow (import_api.rs) ---------------------------
@@ -2083,6 +2097,36 @@ export function decodeRulesPreview(raw: unknown): RulesPreview {
         ),
         columns: num(preview.columns, "rules preview columns"),
         truncated: preview.truncated === true,
+    });
+}
+
+/**
+ * `POST /api/rules-create` → a drafted rules file, its preview and its guesses.
+ *
+ * `doc` and `preview` go through the SAME two decoders the read routes use —
+ * the engine sends the same two shapes on purpose, so a create screen renders
+ * through what already exists. Only `columns` is new, and it is the part a
+ * saved document has no need of: how sure each mapping was.
+ */
+export function decodeRulesDraft(raw: unknown): RulesDraft {
+    const draft = raw as RawRulesDraft;
+    if (typeof draft !== "object" || draft === null) throw new ApiShapeError("rules draft: expected an object");
+    return Object.freeze({
+        doc: decodeRulesDoc(draft.doc),
+        preview: decodeRulesPreview(draft.preview),
+        columns: frozen(
+            (draft.columns ?? []).map((column, i) =>
+                Object.freeze({
+                    index: num(column?.index, `rules draft column #${i} index`),
+                    // An ABSENT field is the engine declining to map the column,
+                    // which is a real answer it makes deliberately — never a
+                    // key that went missing.
+                    field: column?.field === undefined ? null : str(column.field, `rules draft column #${i} field`),
+                    confidence: num(column?.confidence, `rules draft column #${i} confidence`),
+                })
+            )
+        ),
+        warnings: frozen(decodeStrings(draft.warnings, "rules draft warnings")),
     });
 }
 

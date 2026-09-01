@@ -16,8 +16,11 @@
     import type {JournalTarget, StagedFile} from "../importTypes";
     import BalanceField from "./BalanceField.svelte";
     import CandidateList from "./CandidateList.svelte";
+    import CreateRulesPanel from "./CreateRulesPanel.svelte";
     import DestinationForm from "./DestinationForm.svelte";
     import PreviewTable from "./PreviewTable.svelte";
+    import type {RulesDraft} from "../types";
+    import type {FormItem, RulesForm} from "../model";
 
     let {
         sections,
@@ -27,6 +30,20 @@
         journals,
         accountNames,
         selectedRulesId,
+        creating,
+        createDraft,
+        createForm,
+        createId,
+        createDrafting,
+        createSaving,
+        createError,
+        createdId,
+        onCreateOpen,
+        onCreateClose,
+        onCreateId,
+        onCreateItems,
+        onCreateSave,
+        onCreateRetry,
         csvPath,
         journalId,
         balance,
@@ -49,6 +66,21 @@
         journals: readonly JournalTarget[];
         accountNames: string[];
         selectedRulesId: string | null;
+        /** The Create-a-rules-file flow. All of it null/false until the button is pressed. */
+        creating: boolean;
+        createDraft: RulesDraft | null;
+        createForm: RulesForm | null;
+        createId: string;
+        createDrafting: boolean;
+        createSaving: boolean;
+        createError: string | null;
+        createdId: string | null;
+        onCreateOpen: () => void;
+        onCreateClose: () => void;
+        onCreateId: (value: string) => void;
+        onCreateItems: (items: FormItem[]) => void;
+        onCreateSave: () => void;
+        onCreateRetry: () => void;
         csvPath: string;
         journalId: string | null;
         balance: string;
@@ -79,7 +111,35 @@
             {/if}
 
             {#if shows(sections, "candidates")}
-                <CandidateList candidates={file.candidates} selectedId={selectedRulesId} disabled={busy} {onSelect} />
+                <CandidateList
+                    candidates={file.candidates}
+                    selectedId={selectedRulesId}
+                    disabled={busy}
+                    {creating}
+                    {createdId}
+                    {onSelect}
+                    onCreate={onCreateOpen}
+                />
+            {/if}
+
+            <!-- Outside `candidates`' own section: the panel is reached from
+                 that list but is not part of it, and it stays open across the
+                 re-stage its own save triggers. -->
+            {#if creating}
+                <CreateRulesPanel
+                    draft={createDraft}
+                    form={createForm}
+                    id={createId}
+                    drafting={createDrafting}
+                    saving={createSaving}
+                    error={createError}
+                    {accountNames}
+                    onId={onCreateId}
+                    onItems={onCreateItems}
+                    onSave={onCreateSave}
+                    onRetry={onCreateRetry}
+                    onCancel={onCreateClose}
+                />
             {/if}
 
             {#if shows(sections, "destinations")}

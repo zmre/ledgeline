@@ -267,9 +267,13 @@
 /// starting from a [`DiscoveredRules`], so it is confined to the same root
 /// without a second containment argument.
 mod discovery;
+pub mod generate;
 pub mod matching;
 
-pub use discovery::{DiscoveredRules, Discovery, Preview, PreviewUnavailable, RulesPath, discover};
+pub use discovery::{
+    CreateRefusal, DiscoveredRules, Discovery, Preview, PreviewUnavailable, RulesPath, discover,
+    label_for,
+};
 
 use itertools::Itertools;
 use std::collections::{BTreeSet, HashMap};

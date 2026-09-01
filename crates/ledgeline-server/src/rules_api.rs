@@ -121,19 +121,22 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderName, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use ledgeline_core::Fingerprint;
+use ledgeline_core::convert::{self, SourceFormat, Tabular};
 use ledgeline_core::rules::{
-    self, DirectiveValue, DiscoveredRules, Discovery, EditPlan, HledgerField, IfLayout, Item,
-    ItemBody, ItemId, ItemKind, MatchScope, MatcherGroupSpec, MatcherSpec, Newline, OpaqueReason,
-    Preview, PreviewUnavailable, RulesDoc, Setting, Settings, Slot, Warning,
+    self, CreateRefusal, DirectiveValue, DiscoveredRules, Discovery, EditPlan, HledgerField,
+    IfLayout, Item, ItemBody, ItemId, ItemKind, MatchScope, MatcherGroupSpec, MatcherSpec, Newline,
+    OpaqueReason, Preview, PreviewUnavailable, RulesDoc, RulesPath, Setting, Settings, Slot,
+    Warning, generate,
 };
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path as FsPath, PathBuf};
 
 use crate::AppState;
 use crate::edit_api::json_body;
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::compute;
+use crate::stage::{Stage, StageId};
 
 // ===========================================================================
 // Budgets
@@ -183,6 +186,25 @@ const MAX_ID_BYTES: usize = 1024;
 /// `a_file_at_the_scan_s_maximum_depth_can_be_opened` in `rules_endpoints.rs`
 /// discovers a file at the limit and then fetches it by the id the index gave.
 const MAX_ID_COMPONENTS: usize = 9;
+
+/// How many sample rows a draft's preview carries, and the two budgets that
+/// bound one of them.
+///
+/// Deliberately more than [`rules::Preview`]'s three: this preview is the
+/// mapping table itself rather than a label beside a column number, and telling
+/// a month-first file from a day-first one by eye needs more than three dates.
+const DRAFT_PREVIEW_ROWS: usize = 8;
+const DRAFT_PREVIEW_COLUMNS: usize = 64;
+const DRAFT_PREVIEW_CELL_CHARS: usize = 120;
+
+/// The `revision` that means **"there is no file yet"**.
+///
+/// A `PUT` carrying it is a create; anything else is an edit against bytes that
+/// exist. The empty string can never collide with a real one — [`Fingerprint`]
+/// tokens are always `LEN-HASH` in hex — and it is the same spelling
+/// `import_api`'s `hledger.conf` write already uses for the same fact, so the
+/// SPA has one convention rather than two.
+const NEW_FILE_REVISION: &str = "";
 
 /// The largest rules file this module will read into memory.
 ///
@@ -730,9 +752,26 @@ fn wire_doc(
     revision: String,
     editable: bool,
 ) -> WireRulesDoc {
+    wire_doc_named(&found.id, &found.label, doc, revision, editable)
+}
+
+/// The same projection, for a document with no [`DiscoveredRules`] behind it.
+///
+/// The create path has one: a draft describes a file that is not on disk, so
+/// there is nothing for a scan to have returned. Splitting the id and label out
+/// rather than inventing a stand-in `DiscoveredRules` is what keeps that type
+/// meaning "a file the scan found", which is the claim its private path field
+/// exists to make.
+fn wire_doc_named(
+    id: &str,
+    label: &str,
+    doc: &RulesDoc,
+    revision: String,
+    editable: bool,
+) -> WireRulesDoc {
     WireRulesDoc {
-        id: found.id.clone(),
-        label: found.label.clone(),
+        id: id.to_string(),
+        label: label.to_string(),
         revision,
         editable,
         newline: match doc.newline() {
@@ -814,9 +853,126 @@ impl From<&Preview> for WirePreview {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Create: the drafted document, and how it was arrived at
+// ---------------------------------------------------------------------------
+
+/// `POST /api/rules-create` — a starting-point rules file for a staged upload.
+///
+/// `doc` is the **same shape** `GET /api/rules/{*id}` returns, and `preview` the
+/// same shape `GET /api/rules-preview/{*id}` returns, so the SPA renders a draft
+/// through the components it already has rather than a second rendering path.
+/// The two fields below them are what a draft has and a saved document does not:
+/// how each column was arrived at, and what the user has to be told about it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireRulesDraft {
+    doc: WireRulesDoc,
+    preview: WirePreview,
+    /// One entry per column of the staged table, in column order.
+    columns: Vec<WireColumnGuess>,
+    /// Sentences about what this draft assumed. Never a refusal — a draft is
+    /// produced whatever these say, because a mapping the user can see and
+    /// correct beats a `400` describing it.
+    warnings: Vec<String>,
+}
+
+/// How one column was read.
+///
+/// The `fields` list in `doc` already says *what* each column became; this says
+/// **how sure** that was, which is the half a mapping screen needs in order to
+/// mark a guess as a guess rather than presenting all of them as facts.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireColumnGuess {
+    index: usize,
+    /// The hledger field this column assigns, or absent when nothing claimed
+    /// it. Absent is a real answer — see `rules::generate`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    field: Option<String>,
+    /// `0.0..=1.0`. Orders guesses and marks the shaky ones; nothing computes
+    /// with it.
+    confidence: f32,
+}
+
+/// The preview a draft carries: the staged table itself, in the shape
+/// `rules-preview` already publishes.
+///
+/// `available` is always `true` and `reason` always absent: there is no file to
+/// fail to read, because the rows come from the upload the user has already
+/// made. The fields are still present, because the SPA decodes this with
+/// `decodeRulesPreview` and a second, nearly-identical shape would be a second
+/// decoder to keep true.
+fn draft_preview(tabular: &Tabular) -> WirePreview {
+    let header = tabular.header.as_ref().map(|row| clip_preview_row(row));
+    let rows: Vec<Vec<String>> = tabular
+        .rows
+        .iter()
+        .take(DRAFT_PREVIEW_ROWS)
+        .map(|row| clip_preview_row(row))
+        .collect();
+    let columns = header
+        .iter()
+        .chain(rows.iter())
+        .map(Vec::len)
+        .max()
+        .unwrap_or(0);
+    WirePreview {
+        available: true,
+        reason: None,
+        data_label: None,
+        // The staged CSV is `convert::to_csv`'s output, which is always
+        // comma-separated whatever the download was. Reporting the download's
+        // own delimiter here would describe a file hledger will never read.
+        separator: ",".to_string(),
+        header,
+        rows,
+        columns,
+        truncated: tabular.truncated,
+    }
+}
+
+/// One preview row, clipped in width and per cell — the same budgets
+/// `Discovery::preview` applies, restated here because this row never went
+/// through it.
+fn clip_preview_row(row: &[String]) -> Vec<String> {
+    row.iter()
+        .take(DRAFT_PREVIEW_COLUMNS)
+        .map(|cell| cell.chars().take(DRAFT_PREVIEW_CELL_CHARS).collect())
+        .collect()
+}
+
 // ===========================================================================
 // Request wire types
 // ===========================================================================
+
+/// The `POST /api/rules-create` body.
+///
+/// Note what is **not** here: no column mapping, no date format, no separator.
+/// A draft is the engine's own reading of the data, and the user corrects it by
+/// editing the returned document and saving that — through the ordinary `PUT`,
+/// against the ordinary typed item vocabulary. Accepting overrides here would be
+/// a second way to say the same thing, and the two would drift.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WireCreateRequest {
+    /// The upload this rules file is being written for. The SAME handle the
+    /// candidate list already has — the user dropped the file to get here, and
+    /// re-uploading it to draft against it would be asking twice.
+    stage_id: String,
+    /// The id the file will have. One handle, exactly as every other rules
+    /// route takes, rather than a separate directory + file name: `PUT` takes
+    /// an id, `validate_id` checks an id, and a second spelling would need a
+    /// second validator.
+    id: String,
+    /// The account this statement IS — the one thing no CSV can supply.
+    ///
+    /// May be empty. The draft then carries a bare `account1` line for the
+    /// form to fill in, because a panel that refused to show anything until an
+    /// account had been typed would be a mapping table nobody could look at.
+    #[serde(default)]
+    account1: String,
+}
 
 /// The `PUT /api/rules/{*id}` body: the complete intended shape of the document.
 ///
@@ -1262,6 +1418,223 @@ pub(crate) async fn save(
     Ok(no_store(body))
 }
 
+/// `POST /api/rules-create` — draft a rules file for a staged upload.
+///
+/// **Writes nothing.** Drafting a plausible file and writing one are separate,
+/// separately-testable operations: the answer is a document the SPA can show,
+/// correct and only then save, through the ordinary `PUT` below. That split is
+/// also what keeps this route's guards honest — nothing here can damage a file,
+/// so the whole of the write-side argument lives in one place.
+pub(crate) async fn create(
+    State(state): State<AppState>,
+    payload: Result<Json<WireCreateRequest>, JsonRejection>,
+) -> Result<Response, AppError> {
+    let request = json_body(payload)?;
+    // Syntax before anything else, exactly as the other four routes do. The id
+    // is checked here as well as in `resolve_new` because neither layer gets to
+    // assume the other ran.
+    validate_id(&request.id)?;
+    // A draft for a server that cannot write is a form that dead-ends on its own
+    // Save button, so this route answers the editor's `501` rather than handing
+    // back a document nobody could keep.
+    if !state.editing_enabled() {
+        return Err(editing_disabled());
+    }
+    let Some(main) = main_journal_file(&state) else {
+        return Err(editing_disabled());
+    };
+    let stage = staged_upload(&state, &request.stage_id)?;
+    let Json(body) = compute(move || draft_document(&main, &request, &stage)).await?;
+    Ok(no_store(body))
+}
+
+/// The staged upload `raw` names, or the one `404` every stage failure shares.
+///
+/// Shape first, then the lookup — the same order, and for the same reason, as
+/// [`validate_id`]: a handle that could not have been minted never reaches the
+/// map, and "not a stage id" and "not a stage id I have" answer alike so the
+/// route is not an oracle for another tab's upload.
+fn staged_upload(state: &AppState, raw: &str) -> Result<std::sync::Arc<Stage>, AppError> {
+    StageId::parse(raw)
+        .and_then(|id| state.stages().get(&id))
+        .ok_or_else(|| {
+            AppError::NotFound(
+                "that upload is no longer staged. Drop the file again and retry.".to_string(),
+            )
+        })
+}
+
+/// The whole draft, synchronously, on the blocking pool.
+fn draft_document(
+    main: &FsPath,
+    request: &WireCreateRequest,
+    stage: &Stage,
+) -> Result<WireRulesDraft, AppError> {
+    // Refuse an id that is taken (or unreachable) BEFORE reading a file and
+    // running the generator: the user is about to fill in a form, and finding
+    // out at the end that the name was never available is the worst moment to
+    // be told.
+    let discovery = rules::discover(main);
+    discovery
+        .resolve_new(&request.id)
+        .map_err(|refusal| create_refused(&request.id, refusal))?;
+
+    // The CANONICAL staged CSV — `convert::to_csv`'s own output, header on line
+    // 1, comma-separated, UTF-8. Read back rather than kept in memory from the
+    // upload because it is the file hledger will actually be pointed at, so a
+    // mapping guessed from anything else could describe a table that differs
+    // from the one being imported.
+    let bytes = std::fs::read(stage.data()).map_err(|error| {
+        AppError::Internal(format!(
+            "could not read the staged upload: {}",
+            error.kind()
+        ))
+    })?;
+    let tabular = convert::convert(SourceFormat::Csv, &bytes)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+
+    let drafted = generate::generate(&tabular, request.account1.trim())?;
+    Ok(WireRulesDraft {
+        doc: wire_doc_named(
+            &request.id,
+            &rules::label_for(&request.id),
+            &drafted.doc,
+            NEW_FILE_REVISION.to_string(),
+            true,
+        ),
+        preview: draft_preview(&tabular),
+        columns: drafted
+            .columns
+            .iter()
+            .map(|column| WireColumnGuess {
+                index: column.index,
+                field: column.field.map(rules::field_name_text),
+                confidence: column.confidence,
+            })
+            .collect(),
+        warnings: drafted.warnings.clone(),
+    })
+}
+
+/// A [`CreateRefusal`] as an HTTP error.
+///
+/// Two of the four collapse into the ordinary `404`, and that is the whole
+/// point: "outside the root" and "that directory is not there" are answers
+/// about the filesystem, and a route that told them apart would be an existence
+/// oracle for paths outside the journal — the exact thing security layer 5
+/// exists to prevent. `Exists` is safe to report as itself, because it is only
+/// reachable for a confined, non-hidden `*.rules` name below the root, which is
+/// precisely the set `GET /api/rules` already publishes.
+fn create_refused(id: &str, refusal: CreateRefusal) -> AppError {
+    match refusal {
+        CreateRefusal::Malformed => malformed_id(id),
+        CreateRefusal::OutsideRoot | CreateRefusal::DirectoryMissing => unresolved(id),
+        CreateRefusal::Exists => AppError::Conflict(format!(
+            "{} already exists. Creating a rules file and editing one are separate actions — open \
+             it from the list to change it, or choose another name.",
+            quoted(id)
+        )),
+    }
+}
+
+/// Write a brand-new file, refusing to touch one that is already there.
+///
+/// `create_new` is `O_EXCL`, so the refusal is the **kernel's**, decided
+/// atomically at the moment of the open. That matters more than it looks:
+/// [`Discovery::resolve_new`]'s own existence check expires the instant it
+/// returns, so a create that leant on it would have a window in which another
+/// process could put a file there and have it silently truncated. Here the
+/// window does not exist.
+///
+/// Deliberately **not** [`ledgeline_core::edit::atomic_write`], whose
+/// temp-file-and-rename would happily replace an existing file — the property
+/// that makes it right for a save is exactly what makes it wrong here.
+///
+/// The mode is the process umask's, unlike a save, which carries an existing
+/// file's mode forward. There is no previous mode to carry, and inventing a
+/// stricter one than the user's own editor would give them is a surprise rather
+/// than a protection.
+fn create_exclusive(path: &FsPath, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    // Before the handle drops, so "the write returned" means the bytes are on
+    // the disk rather than in a cache — the same durability `atomic_write`
+    // gives a save.
+    file.sync_all()
+}
+
+/// The whole of a CREATE, synchronously, on the blocking pool.
+///
+/// Reached from [`save`] when the request carries [`NEW_FILE_REVISION`]. It
+/// shares the renderer, the edit policy and [`RulesDoc::verify`] with the edit
+/// path below — the document is rendered by applying the plan to an **empty**
+/// one — and differs in exactly three ways, each of which is the point:
+///
+/// 1. resolution is [`Discovery::resolve_new`], since no scan can have found a
+///    file that is not there;
+/// 2. every slot must be an insert, because there are no bytes to keep;
+/// 3. the write is exclusive, so creating can never become overwriting.
+fn create_document(
+    main: &FsPath,
+    id: &str,
+    request: &WireSaveRequest,
+) -> Result<WireRulesDoc, AppError> {
+    let discovery = rules::discover(main);
+    let path: RulesPath = discovery
+        .resolve_new(id)
+        .map_err(|refusal| create_refused(id, refusal))?;
+
+    let plan = plan_from_wire(request)?;
+    // An empty document has no items, so `Keep`/`Replace` could only name one
+    // that does not exist. `RulesDoc::apply` would refuse them anyway, with
+    // "unknown item 3" — true, and useless. This says what actually happened.
+    if plan.order.iter().any(|slot| slot.item_id().is_some()) || !request.delete.is_empty() {
+        return Err(AppError::BadRequest(
+            "a new rules file has no existing items, so every item must be a new one and there is \
+             nothing to delete"
+                .to_string(),
+        ));
+    }
+    if plan.order.is_empty() {
+        return Err(AppError::BadRequest(
+            "a new rules file needs at least one line".to_string(),
+        ));
+    }
+
+    let empty = RulesDoc::parse("");
+    let new_text = empty.apply(&plan)?;
+    // The same second opinion a save gets. Byte preservation is vacuous here —
+    // there are no bytes to preserve — but the other half is not: `verify`
+    // re-parses and requires every slot to reappear as the shape the plan said,
+    // which is what catches a rendered line that reads back as something else.
+    empty.verify(&plan, &new_text)?;
+
+    create_exclusive(path.as_path(), new_text.as_bytes()).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            // Lost the race with another writer between `resolve_new` and the
+            // open. The kernel refused it; this is only how that is reported.
+            create_refused(id, CreateRefusal::Exists)
+        } else {
+            write_failed(id, &error)
+        }
+    })?;
+
+    // From what we WROTE, never from a re-read — same reason the save path
+    // gives: a re-read could pick up somebody else's write and hand this client
+    // a token for bytes it has never seen.
+    let revision = Fingerprint::of_bytes(new_text.as_bytes()).token();
+    Ok(wire_doc_named(
+        id,
+        &rules::label_for(id),
+        &RulesDoc::parse(&new_text),
+        revision,
+        true,
+    ))
+}
+
 /// The whole save, synchronously, on the blocking pool.
 ///
 /// Every `?` here is a decision not to write. The single [`atomic_write`] is the
@@ -1274,8 +1647,19 @@ fn save_document(
     id: &str,
     request: &WireSaveRequest,
 ) -> Result<WireRulesDoc, AppError> {
+    // A create is a different operation with a different resolution step and a
+    // different write, and it says so in the request: the empty revision is the
+    // revision of "there was no file". Branching on the revision rather than on
+    // a separate route keeps ONE save wire for the SPA — the items, the
+    // validation and the renderer are identical, and only the two ends differ.
+    if request.revision == NEW_FILE_REVISION {
+        return create_document(main, id, request);
+    }
+
     // Security layer 2: a set scanned in THIS request, matched by exact string
-    // equality. There is no `root.join(id)` anywhere in this crate.
+    // equality. `root.join(id)` appears in this codebase exactly once, in
+    // `Discovery::resolve_new`, which is the create path above and cannot be
+    // reached from here.
     let discovery = rules::discover(main);
     let found = discovery.resolve(id).ok_or_else(|| unresolved(id))?;
     let (text, fingerprint) = read_document(found, id)?;

@@ -20,13 +20,21 @@
         candidates,
         selectedId,
         disabled,
+        creating,
+        createdId,
         onSelect,
+        onCreate,
     }: {
         /** Ranked best-first by the engine. This component never re-orders them. */
         candidates: readonly RulesCandidate[];
         selectedId: string | null;
         disabled: boolean;
+        /** The Create panel is open, so its own button should not offer to open it again. */
+        creating: boolean;
+        /** A rules file this session wrote, so the empty state can say so instead of repeating itself. */
+        createdId: string | null;
         onSelect: (id: string | null) => void;
+        onCreate: () => void;
     } = $props();
 
     const cards = $derived(candidateCards(candidates));
@@ -41,17 +49,22 @@
                 None of the <code>*.rules</code> files beside your journal fit this data, so Ledgeline has nothing to read it through.
             </p>
             <p class="text-sm text-base-content/60">
-                You can still save the converted CSV — the destination below is where it goes — and write the rules file by hand next to it. The
-                <strong>Edit Rules</strong> tab will pick it up as soon as it exists.
+                Ledgeline can write one for you: it reads your file, guesses which column is the date, the payee and the amount, and shows you the mapping
+                before anything is saved. You can still just keep the converted CSV instead — the destination below is where it goes.
             </p>
-            <!-- Disabled, with the reason in the tooltip rather than hidden:
-                 generating a rules file from a CSV is the next work package, and
-                 an absent button reads as "this is impossible" rather than "not
-                 yet". The tooltip is on the WRAPPER because a disabled button
-                 fires no pointer events, so a tooltip on it never opens. -->
-            <span class="tooltip tooltip-right" data-tip="Generating a rules file from your data is the next piece of work — it isn't built yet.">
-                <button type="button" class="btn btn-sm" disabled data-testid="imports-create-rules">Create rules file…</button>
-            </span>
+            {#if createdId !== null}
+                <!-- A file WAS written and this list is still empty, which is a
+                     real outcome and a confusing one: the new file scored zero
+                     against the very data it was written for. Saying so beats
+                     an unchanged empty state that reads as "nothing happened". -->
+                <p class="text-sm text-warning" data-testid="imports-create-no-match">
+                    <code>{createdId}</code> was created, but it still does not match this file — open it in
+                    <strong>Edit Rules</strong> and check the column mapping.
+                </p>
+            {/if}
+            <button type="button" class="btn btn-primary btn-sm" disabled={disabled || creating} onclick={onCreate} data-testid="imports-create-rules">
+                Create rules file…
+            </button>
         </div>
     {:else}
         {#each cards as card (card.candidate.id)}

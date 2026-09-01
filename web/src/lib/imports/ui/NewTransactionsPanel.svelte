@@ -110,6 +110,20 @@
                     journals={capabilities.journals}
                     accountNames={journal.accountNames}
                     selectedRulesId={importStore.selectedRulesId}
+                    creating={importStore.creating}
+                    createDraft={importStore.draft}
+                    createForm={importStore.createForm}
+                    createId={importStore.createId}
+                    createDrafting={importStore.createDrafting}
+                    createSaving={importStore.createSaving}
+                    createError={importStore.createError}
+                    createdId={importStore.createdId}
+                    onCreateOpen={() => void importStore.openCreate()}
+                    onCreateClose={() => importStore.closeCreate()}
+                    onCreateId={(value) => importStore.setCreateId(value)}
+                    onCreateItems={(items) => importStore.setCreateItems(items)}
+                    onCreateSave={() => void importStore.saveCreate()}
+                    onCreateRetry={() => void importStore.redraft()}
                     csvPath={importStore.csvPath}
                     journalId={importStore.journalId}
                     balance={importStore.balance}

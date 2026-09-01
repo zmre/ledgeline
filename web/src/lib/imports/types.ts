@@ -204,6 +204,39 @@ export interface RulesDocument {
     readonly warnings: readonly RulesWarning[];
 }
 
+/**
+ * How the engine read one CSV column when drafting a new rules file.
+ *
+ * The drafted document's `fields` list already says WHAT each column became;
+ * this says how sure that was, which is the half a mapping screen needs to mark
+ * a guess as a guess. `field: null` is a real answer, not a missing one — the
+ * engine declines to map a column it cannot claim, and the column keeps a plain
+ * name so a rule can still interpolate it.
+ */
+export interface RulesColumnGuess {
+    readonly index: number;
+    readonly field: string | null;
+    /** 0..=1. Orders guesses and marks the shaky ones; nothing computes with it. */
+    readonly confidence: number;
+}
+
+/**
+ * `POST /api/rules-create` — a starting-point rules file for a staged upload.
+ *
+ * `doc` is the same `RulesDocument` every other rules route returns, and
+ * `preview` the same `RulesPreview`, precisely so the create screen renders
+ * through the components and decoders that already exist. `doc.revision` is the
+ * empty string: nothing has been written, and that value is what a follow-up
+ * save carries to mean "there is no file yet".
+ */
+export interface RulesDraft {
+    readonly doc: RulesDocument;
+    readonly preview: RulesPreview;
+    readonly columns: readonly RulesColumnGuess[];
+    /** What the draft assumed, in sentences. Never a refusal. */
+    readonly warnings: readonly string[];
+}
+
 /** Why a preview has nothing to show. On every one of these, nothing on disk was read. */
 export type PreviewUnavailable = "noDataFile" | "sourceIsCommand" | "sourceOutsideRoot" | "notRegularFile" | "unreadable" | "notUtf8" | "empty";
 

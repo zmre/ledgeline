@@ -147,10 +147,62 @@ Regenerate **only when a fixture's meaning changes on purpose**, and re-run the 
 assertions in `crates/ledgeline-core/tests/convert_tabular.rs` name specific cells, sheet names
 and note counts.
 
+## `generate/headers/` — the rules-file GENERATOR's corpus
+
+Seven real-shaped bank export **header rows** (plus a few data rows each), for
+`crates/ledgeline-core/src/rules/generate.rs` — the module that drafts a `*.rules` file for a CSV
+that has none. Driven by `crates/ledgeline-core/tests/rules_generate.rs`.
+
+The house rule above carries over unchanged: every file is a shape some real exporter writes, and
+each exists to make exactly **one wrong implementation** fail. What is different is the oracle.
+These fixtures have two, and both are used:
+
+| Oracle | What it proves |
+| --- | --- |
+| the per-fixture assertions | the mapping, the date format and the decimal mark are the ones we meant |
+| **real hledger** (`LEDGELINE_HLEDGER_GENERATE_CHECK=1`) | the drafted file actually imports — every row arrives, every posting has an amount, and the numbers are right |
+
+The second is the one that matters, for `docs/imports.md`'s fact 4: **parse success is not a
+matching signal.** A drafted file that is valid hledger syntax and produces garbage exits 0.
+
+| File | What it proves |
+| --- | --- |
+| `chase-checking.csv` | The date column is `Posting Date`, not `Date` — a synonym table that only knows the bare word maps nothing here. `Details` holds the *words* `DEBIT`/`CREDIT` and must not become an amount column; `Type` and `Check or Slip #` are nobody's field and are **named, not mapped**, so `%type` stays reachable |
+| `capitalone-card.csv` | **Two** date columns. The second is `date2` rather than dropped — a demotion, so its confidence is lower than the winner's. Also the split `Debit`/`Credit` scheme, and a `Category` column that must stay `%category` rather than being guessed at |
+| `uk-current-account.csv` | Day-first dates (`31/01/2026`), unambiguously — some sample has a day > 12. Every cell carries `£`, so **no `currency` is declared**: the directive is a blind string prefix and would produce `££3.60`, a distinct commodity, at exit 0 |
+| `euro-decimal-comma.csv` | Decimal commas, dotted day-first dates, and a per-row `Currency` column. The `-1.500` row is the one that bites — see below |
+| `paypal-activity.csv` | Three amount-shaped columns (`Gross`, `Fee`, `Net`) and not one named anything hledger knows, so the **value-shaped fallback** claims the first at low confidence. And `Status`, whose values are `Completed`/`Pending`, which must never reach hledger's own `status` field (it wants `*`/`!`) |
+| `ambiguous-dates.csv` | Every date component ≤ 12, so nothing in the data can tell month-first from day-first: the draft must say so rather than pick silently. Also offers a signed `Amount` *and* `Debit`/`Credit`, and hledger errors on a record with two non-zero amounts — so exactly one scheme may be mapped |
+| `thousands-trap.csv` | The US mirror of the euro trap: `-1,200` is twelve hundred dollars |
+
+### The whole-thousands row, and why both files have one
+
+`euro-decimal-comma.csv` carries `-1.500` and `thousands-trap.csv` carries `-1,200`, and both
+rows exist for one reason: **they are the only shape that discriminates.**
+
+A lone separator followed by exactly three digits is ambiguous, and hledger resolves it by
+assuming a decimal point. So `-1,200` is read as −1.2 and `-1.500` as −1.5 — a factor of a
+thousand — and `print` re-renders each one *exactly as it was written*, so the error appears
+nowhere in hledger's own output. Measured against 1.52:
+
+| cell | no `decimal-mark` | `decimal-mark .` | `decimal-mark ,` |
+| --- | --- | --- | --- |
+| `-1,200` | −1.200 | **−1200** | −1.200 |
+| `-1.500` | −1.500 | −1.500 | **−1500** |
+
+A value carrying **both** separators (`2.400,00`) is resolved correctly with no directive at all,
+which is why the original fixtures could not prove anything: the check passed against a generator
+that emitted no `decimal-mark` whatsoever. `the_decimal_mark_the_generator_chose_is_the_one_that_changes_the_number`
+therefore runs each file **twice** — as drafted, and with the `decimal-mark` line stripped out —
+and asserts the **wrong** answer as well as the right one.
+
 ## Running the checks
 
 ```sh
 cargo test -p ledgeline-core --test convert_tabular   # every fixture here, plus the properties
+cargo test -p ledgeline-core --test rules_generate    # the generator, hermetically
+LEDGELINE_HLEDGER_GENERATE_CHECK=1 \
+  cargo test -p ledgeline-core --test rules_generate  # ...and against the real binary
 ```
 
 ## Adding a fixture

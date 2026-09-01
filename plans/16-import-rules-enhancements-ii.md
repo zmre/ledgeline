@@ -285,6 +285,177 @@ identical). Server tests mirroring `rules_security.rs`'s discipline for `rules-c
 boundary. SPA component/e2e test: drop a CSV with no matching rules file → Create flow → preview →
 save → new file appears in Edit Rules.
 
+### Contract amendments made during implementation
+
+Per convention #9 in `plans/00-overview.md`. Everything the sketch above left open, decided here,
+plus the four places the sketch turned out to be **wrong** about hledger.
+
+#### Findings first — all verified against the hledger 1.52 binary
+
+- **`%-m`/`%-d` parse a superset of `%m`/`%d`.** A padded specifier *rejects* an unpadded value
+  (`%m/%d/%Y` on `1/2/2026` is exit 1, and hledger's own error recommends the relaxed form). So
+  `guess_date_format` emits the padded spelling when every sample is padded and the relaxed one the
+  moment any is not — clean output for the common case, correct output for the messy one.
+- **A `date-format` must consume the WHOLE value.** `%Y-%m-%d` does not truncate
+  `2026-01-02T13:45:00`; it fails it. The catalogue therefore carries datetime shapes too.
+- **With no `date-format` at all, hledger reads year-first dates only.** An unrecognised date column
+  is therefore a *warning*, never a silent omission.
+- **`currency` is a blind string prefix, not "set the commodity".** `currency $` over a cell already
+  reading `$-4.50` produces `$$-4.50` — a real, distinct commodity, exit 0, nothing on stderr. This
+  **inverts** the sketch's suggestion ("`currency` only if you can infer one confidently, e.g. a `$`
+  present in every sample amount"): a `$` in every sample is precisely when the directive must
+  **not** be written. It is emitted only when no sample carries a symbol *and* the source format
+  volunteered one (OFX `CURDEF`).
+- **A lone `,` with no `decimal-mark` is read as a DECIMAL POINT.** `1,234` becomes 1.234, and
+  `print` re-renders it as `1,234` — so the 1000× error is invisible in hledger's own output. This
+  is why `guess_decimal_mark` exists at all; it was not in the sketch.
+- **`amount-out` is negated and `amount-in` is not**, and a record with two non-zero amount fields
+  is a hard error. So at most one amount scheme is ever mapped, even when a bank offers all three
+  columns.
+
+#### `generate.rs` — signatures as landed
+
+```rust
+pub const DEFAULT_ACCOUNT2: &str = "expenses:unknown";
+
+pub struct ColumnGuess { pub index: usize, pub field: Option<HledgerField>, pub confidence: f32, pub name: String }
+pub struct DateFormatGuess { pub format: String, pub confidence: f32, pub ambiguous: bool }
+pub struct Draft { pub doc: RulesDoc, pub columns: Vec<ColumnGuess>, pub date_format: Option<DateFormatGuess>, pub warnings: Vec<String> }
+
+pub fn guess_columns(header: &[String], sample_rows: &[Vec<String>]) -> Vec<ColumnGuess>;
+pub fn guess_date_format(samples: &[String]) -> Option<DateFormatGuess>;
+pub fn guess_decimal_mark(samples: &[String]) -> Option<char>;
+pub fn draft(tabular: &Tabular, columns: &[ColumnGuess], date_format: Option<&str>, account1: &str)
+    -> Result<RulesDoc, RulesError>;
+pub fn generate(tabular: &Tabular, account1: &str) -> Result<Draft, RulesError>;
+```
+
+Departures from the sketch, each because the sketch could not be written as stated:
+
+- **`field` is `Option<HledgerField>`, not a `RulesField`.** There is no such type, and
+  `HledgerField` is already the module's vocabulary. `None` is the honest answer for a column
+  nothing could claim, and `ColumnGuess` gained **`name`** so that column still gets a plain
+  `fields` entry derived from its own header — `%fitid` stays reachable for a rule written later.
+- **`draft` returns `Result`,** because it renders through `RulesDoc::apply`, which validates. It
+  also takes `date_format`: a draft cannot be assembled without one, and re-deriving it inside
+  would mean guessing twice.
+- **The document is built by applying an `EditPlan` of `Slot::Insert`s to `RulesDoc::parse("")`**,
+  not by formatting strings. The brief allowed either; this way a draft goes through the *same*
+  renderer, edit policy and `check_body` as every save, so there is no second spelling of a
+  directive to drift.
+- **`generate` is the one-call entry point** the server uses; `draft` is the seam a test drives.
+
+#### What a draft deliberately does NOT contain
+
+- **No `separator`, no `encoding`, and never `skip N > 1`.** The file a draft describes is
+  `convert::to_csv`'s output — comma-separated, UTF-8, header on line 1 — not the download. The
+  `ConvertNote::DelimiterSniffed`/`PreambleSkipped`/`EncodingGuessed` notes the brief pointed at
+  describe bytes this rules file will never see, and an `encoding windows-1252` line would make
+  hledger **mis-decode a UTF-8 file**. `skip` is therefore always exactly 1 (or absent, for a
+  headerless table), which `align_to_skip` already returns byte-for-byte unchanged.
+- **No comments.** `ItemBody` has no comment variant — by design, since that is what stops a client
+  smuggling raw text into a rules file — so a comment would come back as a `trivia` item whose only
+  save form is `{kind:"keep", id}`, and a create has no file to keep bytes *from*. Every item in a
+  draft is one the create `PUT` can name, pinned by `every_drafted_item_can_be_written_back`.
+- **No `status` mapping**, ever. hledger's `status` field wants `*`/`!`/empty, and a bank's
+  `Posted`/`Pending` column mapped to it is a journal that will not parse. "Status" is a very common
+  header, so it is excluded from the synonym table outright rather than scored low.
+
+#### HTTP surface as landed
+
+`POST /api/rules-create`. Two departures from the sketch:
+
+- **One `id`, not a directory plus a filename.** Every other rules route takes a single id and
+  `validate_id` checks a single id; a second spelling would need a second validator.
+- **No overrides in the request.** The sketch left open how a correction gets back; it does not go
+  through this route at all. The user edits the *returned document* and saves that, through the
+  ordinary `PUT` and the ordinary typed item vocabulary — so there is exactly one way to express a
+  mapping, and the draft is fetched once rather than re-fetched per keystroke.
+
+```jsonc
+// POST /api/rules-create
+{"stageId": "ecdec767…", "id": "import/2026/bank.csv.rules", "account1": ""}
+
+// 200
+{
+  "doc": { /* the SAME WireRulesDoc `GET /api/rules/{*id}` returns, with revision: "" */ },
+  "preview": { /* the SAME WirePreview `GET /api/rules-preview/{*id}` returns */ },
+  "columns": [{"index": 0, "field": "date", "confidence": 0.95},
+              {"index": 5, "confidence": 0.0}],        // `field` ABSENT ⇒ unmapped, on purpose
+  "warnings": ["A running-balance column was mapped to `balance`, so hledger will check…"]
+}
+```
+
+- `400` malformed id or a value the renderer refuses (a control character in `account1`);
+  `404` unknown/expired stage, **and** both "outside the root" and "that directory is not there"
+  — those two must stay indistinguishable or the route is an existence oracle;
+  `409` the id already exists; `501` the server has no journal bound to an editor.
+- `columns[].confidence` is the one thing a *saved* document has no need of, which is why it is a
+  sibling of `doc` rather than inside it.
+- **`account1` may be empty**, so the panel has a mapping table to show before the user has typed
+  anything. `createBlocker` refuses the save until it is filled.
+
+#### The write: `PUT /api/rules/{*id}` with `revision: ""`
+
+The sketch said the existing edit route does the write. It does, on a **branch**: an empty
+`revision` means "there is no file yet" — the same spelling `import_api`'s `hledger.conf` write
+already uses, and one that can never collide with a real revision (`Fingerprint` tokens are always
+`LEN-HASH` in hex). Branching on the revision rather than adding a route keeps one save wire for the
+SPA: identical items, identical validation, identical renderer, differing only at the two ends.
+
+The create branch differs in exactly three ways, each load-bearing:
+
+1. **`Discovery::resolve_new`** replaces `Discovery::resolve` — the file is not there, so no scan
+   can have found it. This is **the one `root.join(id)` in the codebase**, and it is guarded by:
+   shape (a second copy of `validate_id`'s question, since neither layer may assume the other ran);
+   *discoverability* — no hidden or `SKIP_DIRS` component, because creating a file the scan will
+   never list would write something the user cannot then open; `parse::confine`; a real,
+   non-symlink parent directory (**no directory is ever created**); and nothing already at the name.
+2. **Every slot must be an insert.** There are no bytes for a `keep` to re-emit, and the message
+   says that rather than "unknown item 0".
+3. **The write is `create_new` (`O_EXCL`), not `edit::atomic_write`.** `atomic_write`'s
+   rename-over-the-top is exactly what makes it right for a save and wrong here. The refusal is the
+   **kernel's**, decided atomically — `resolve_new`'s existence check expires the moment it returns,
+   so a create leaning on it would have a window in which another process could have its file
+   silently truncated. Mode is the process umask's: there is no previous mode to carry forward.
+
+#### SPA as landed
+
+- **`createModel.ts`** (new, pure): `defaultRulesId`, `checkRulesId`, `createSaveRequest`,
+  `draftForm`, `createBlocker`, `draftLines`. `createSaveRequest` **reuses `toSaveRequest`** by
+  stripping ids and diffing against an empty baseline, rather than growing a second body builder
+  that could disagree about how an `ifBlock` is spelled.
+- **Phase 1's `RuleSummaryCard`/`RulesList` are NOT reused,** and the plan expected them to be. A
+  drafted file has no `if` rules in it at all — category guessing is the separate, out-of-scope TODO
+  item — so a rules list would render its empty state beside the only thing worth looking at. What
+  *is* reused is better: `toForm` makes a draft the same `FormItem[]` the editor holds, so the
+  column mapping is **`RowMappingPanel` unchanged** and the accounts are **`AccountsPanel`
+  unchanged**. Correcting a mis-detected column is the same control, with the same `%name`
+  semantics and the same free-text escape hatch, as correcting one in an existing file.
+- **A currency field was added to the panel** because a *warning* points at it ("the amounts carry
+  no currency symbol… set Currency below"), and a warning naming a control that does not exist is
+  worse than no warning. It writes through `withSetting(items, "currency", …)`.
+- **Saving re-stages the upload.** The candidate list is scored at stage time, so re-uploading the
+  same `File` is the only way to show the user that the file they just wrote now reads their
+  statement. `CandidateList` gained a `createdId` so that the empty state can say "…was created, but
+  it still does not match" rather than looking as though nothing happened.
+
+#### Fixtures and tests beyond the plan
+
+- `fixtures/import/generate/headers/` holds **seven** files, not "several": the seventh,
+  `thousands-trap.csv`, exists because the first six could not discriminate. See that README section
+  — a value carrying *both* separators is resolved correctly by hledger with no directive at all, so
+  the original euro fixture passed against a generator that emitted no `decimal-mark` whatsoever.
+  The gated check now runs each file twice, stripped and unstripped, and asserts the **wrong**
+  answer as well as the right one.
+- New gated suite `LEDGELINE_HLEDGER_GENERATE_CHECK`, added to `just hledger-checks`. It is the only
+  thing that proves a *drafted* file imports rather than merely parsing — `docs/imports.md`'s fact 4.
+- **Two real defects were found by running the live route, not by a test**, and both now have one:
+  `guess_date_format` returned `Some` for an empty sample set (every format "reads" zero values),
+  and `amount_samples` sampled only the *first* mapped amount column — so on a split debit/credit
+  export the thousands separator in the other column was missed, and twelve hundred dollars imported
+  as one dollar twenty, silently.
+
 ## Phase 3 — scriptable CLI import
 
 ### Extraction

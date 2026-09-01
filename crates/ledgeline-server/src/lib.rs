@@ -647,6 +647,16 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             get(rules_api::document).put(rules_api::save),
         )
         .route("/api/rules-preview/{*id}", get(rules_api::preview))
+        // Drafting a rules file for a dropped CSV that has none (WP-16 Phase
+        // 2). A SIBLING prefix for the same reason `rules-preview` is one, and
+        // deliberately not a `POST` on `/api/rules` — the id it takes names a
+        // file that does not exist yet, so it belongs to no id-keyed route.
+        //
+        // This one WRITES NOTHING; the follow-up `PUT /api/rules/{*id}` above
+        // does, when the user is happy with the draft. It is still inside the
+        // token layer, because it reads the staged upload and the journal's own
+        // directory tree.
+        .route("/api/rules-create", post(rules_api::create))
         // Enhanced imports (WP-11): capabilities, upload, dry-run, commit,
         // re-sort, and the preferences store.
         //
