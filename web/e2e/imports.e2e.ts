@@ -24,10 +24,10 @@ const SCRATCH_RULES = new URL("scratch.csv.rules", SCRATCH_DIR);
 const SCRATCH_CSV = new URL("scratch.csv", SCRATCH_DIR);
 
 // Deliberately one of each shape the screen has to handle: a standalone comment
-// run, the settings the three panels own, three editable OR-list rules, and one
-// conditional TABLE the engine classifies `opaque` and this GUI must show
-// read-only. `%m/%d/%Y` rather than ISO so the date-format example is a
-// non-trivial one.
+// run, the settings the three panels own, three editable OR-list rules, one
+// editable AND-group, and one conditional TABLE the engine classifies `opaque`
+// and this GUI must show read-only. `%m/%d/%Y` rather than ISO so the
+// date-format example is a non-trivial one.
 const RULES = `# Written by web/e2e/imports.e2e.ts. Not a committed fixture.
 
 skip 1
@@ -45,6 +45,13 @@ if COFFEE
 
 if LANDLORD
     account2 expenses:home:rent
+
+# An AND-group: the continuation line's & prefix means BOTH must match, which is
+# a different rule from the same two matchers on two plain lines.
+if
+%description LANDLORD
+& %amount ^-1
+    account2 expenses:home:rent:large
 
 # A conditional TABLE. hledger reads each row positionally against the header,
 # so Ledgeline never offers one for editing.
@@ -87,9 +94,22 @@ async function openScratch(page: Page): Promise<void> {
     await expect(page.getByTestId("imports-open-file")).toHaveText("scratch");
 }
 
-/** The matcher summary of each editable rule card, in the order they are listed. */
+/** The card of each editable rule, in the order they are listed — a one-line summary until it is opened. */
 function ruleSummaries(page: Page) {
     return page.getByTestId("imports-rule");
+}
+
+/**
+ * Open one rule for editing.
+ *
+ * Rules-list POSITION, not rule number: position 1 is the file's leading comment
+ * run, so the first editable rule is 2. That is deliberate — a reorder moves a
+ * rule past whatever is next, comment or not, and the numbering on screen says
+ * so.
+ */
+async function openRule(page: Page, position: number): Promise<void> {
+    await page.getByRole("button", {name: `Edit rule ${position}`}).click();
+    await expect(page.getByRole("button", {name: `Close rule ${position}`})).toBeVisible();
 }
 
 test("navigates to Imports and lists the rules files beside the journal", async ({page}) => {
@@ -123,7 +143,7 @@ test("navigates to Imports and lists the rules files beside the journal", async 
     await expect(scratchRow).toContainText("scratch/imports-e2e");
 
     // Every assertion below is SCOPED to that row on purpose. Two unrelated
-    // files summarizing identically ("4 rules, 1 advanced" also describes the
+    // files summarizing identically ("5 rules, 1 advanced" also describes the
     // committed tree fixture) is precisely the ambiguity this change exists to
     // fix, so a page-wide matcher would resolve to both and fail.
     //
@@ -133,11 +153,11 @@ test("navigates to Imports and lists the rules files beside the journal", async 
     // drawn and the name for what is announced; they are two different
     // mechanisms and either can break alone.
     //
-    // Four conditionals, one of which is the table: `ifBlockCount` counts every
+    // Five conditionals, one of which is the table: `ifBlockCount` counts every
     // conditional, `opaqueItemCount` only the ones this GUI will not edit.
     const scratchItem = page.locator("li.tooltip", {has: scratchRow});
-    await expect(scratchItem).toHaveAttribute("data-tip", /^scratch\/imports-e2e\/scratch\.csv\.rules · 4 rules, 1 advanced/);
-    await expect(scratchRow).toHaveAccessibleName(/scratch\/imports-e2e\/scratch\.csv\.rules · 4 rules, 1 advanced/);
+    await expect(scratchItem).toHaveAttribute("data-tip", /^scratch\/imports-e2e\/scratch\.csv\.rules · 5 rules, 1 advanced/);
+    await expect(scratchRow).toHaveAccessibleName(/scratch\/imports-e2e\/scratch\.csv\.rules · 5 rules, 1 advanced/);
     await expect(scratchRow).toHaveAccessibleName(/assets:bank:checking → expenses:unknown/);
 
     // The folder belongs UNDER the name, and this asserts the pixels rather than
@@ -223,7 +243,7 @@ test("an advanced construct is listed, locked, and has no edit control", async (
 test("reorders two rules, saves, and the new order survives a reload", async ({page}) => {
     await openScratch(page);
 
-    await expect(ruleSummaries(page)).toHaveCount(3);
+    await expect(ruleSummaries(page)).toHaveCount(4);
     await expect(ruleSummaries(page).nth(0)).toContainText("ACME PAYROLL");
     await expect(ruleSummaries(page).nth(1)).toContainText("COFFEE");
 
@@ -253,6 +273,11 @@ test("reorders two rules, saves, and the new order survives a reload", async ({p
 test("edits a rule's category and saves it", async ({page}) => {
     await openScratch(page);
 
+    // The list is summaries until a rule is opened, so editing one is now two
+    // steps: find it by its line, then open it.
+    await expect(ruleSummaries(page).nth(1)).toContainText("IF row ~ COFFEE → account2 = expenses:food:coffee");
+    await openRule(page, 3);
+
     const coffee = ruleSummaries(page).nth(1);
     const category = coffee.getByLabel("Account").first();
     await expect(category).toHaveValue("expenses:food:coffee");
@@ -265,7 +290,80 @@ test("edits a rule's category and saves it", async ({page}) => {
 
     await page.reload();
     await openScratch(page);
+    // Collapsed again after the reload, and the new category is on the line —
+    // which is the whole point of the summary being the thing you read.
+    await expect(ruleSummaries(page).nth(1)).toContainText("IF row ~ COFFEE → account2 = expenses:food:cafe");
+    await openRule(page, 3);
     await expect(ruleSummaries(page).nth(1).getByLabel("Account").first()).toHaveValue("expenses:food:cafe");
+});
+
+// The redesign end to end: a scannable list, one rule opened, an AND condition
+// added to the group it already has, saved, and read back off disk. The AND is
+// grammar the ENGINE writes — the `&` prefix in the file is the only thing that
+// distinguishes "both of these" from "either of these", and nothing typed here
+// produces it.
+test("opens a rule, adds an AND condition, and the file keeps the AND after a reload", async ({page}) => {
+    await openScratch(page);
+
+    // Every rule is one line, and no rule has an editable field until it is
+    // opened. This is what the list looked like before the split: four rules of
+    // stacked selects and inputs, and nothing to scan.
+    await expect(ruleSummaries(page)).toHaveCount(4);
+    await expect(ruleSummaries(page).nth(3)).toContainText("IF description ~ LANDLORD AND amount ~ ^-1 → account2 = expenses:home:rent:large");
+    // Scoped to the rule cards: the Preferences panel above the list always has
+    // fields of its own, and it is the RULES that have none until one is opened.
+    await expect(ruleSummaries(page).getByRole("textbox")).toHaveCount(0);
+
+    await openRule(page, 5);
+    await expect(page.getByLabel("Rule 5, group 1, match 1 text")).toHaveValue("LANDLORD");
+    await expect(page.getByLabel("Rule 5, group 1, match 2 text")).toHaveValue("^-1");
+
+    await page.getByRole("button", {name: "Add an AND condition to group 1 of rule 5"}).click();
+    await page.getByLabel("Rule 5, group 1, match 3 column").selectOption("description");
+    await page.getByLabel("Rule 5, group 1, match 3 text").fill("LLC");
+
+    await page.getByRole("button", {name: "Save"}).click();
+    await expect(page.getByTestId("imports-saved")).toBeVisible();
+    // A save hands the list back: the rule that was open is a summary again,
+    // now carrying the condition that was just added.
+    await expect(page.getByRole("button", {name: "Close rule 5"})).toHaveCount(0);
+    await expect(ruleSummaries(page).nth(3)).toContainText("AND description ~ LLC");
+
+    // The `&` prefix is in the FILE, on its own line — an added OR branch would
+    // be the same three matchers without it, and would import differently.
+    expect(readFileSync(SCRATCH_RULES, "utf8")).toContain("%description LANDLORD\n& %amount ^-1\n& %description LLC\n");
+
+    await page.reload();
+    await openScratch(page);
+    await expect(ruleSummaries(page)).toHaveCount(4);
+    await expect(ruleSummaries(page).nth(3)).toContainText("IF description ~ LANDLORD AND amount ~ ^-1 AND description ~ LLC");
+    await expect(ruleSummaries(page).getByRole("textbox")).toHaveCount(0);
+});
+
+// Adding a rule opens it, because a blank summary line has nothing to scan and
+// the next thing anyone does is type into it.
+test("adds a rule, which opens for editing straight away", async ({page}) => {
+    await openScratch(page);
+
+    await page.getByRole("button", {name: "+ Add rule"}).click();
+
+    // Position 7: the comment run, four rules, the conditional table, then this.
+    await expect(page.getByRole("button", {name: "Close rule 7"})).toBeVisible();
+    await page.getByLabel("Rule 7, group 1, match 1 text").fill("PHARMACY");
+    await page.getByRole("button", {name: "Add an OR group to rule 7"}).click();
+    await page.getByLabel("Rule 7, group 2, match 1 text").fill("CHEMIST");
+    // `account2` gets the account autocomplete rather than a plain field, which
+    // is the control this rule was seeded with the file's fallback in.
+    await ruleSummaries(page).last().getByLabel("Account").first().fill("expenses:health");
+
+    await page.getByRole("button", {name: "Save"}).click();
+    await expect(page.getByTestId("imports-saved")).toBeVisible();
+
+    // Two OR branches are two plain matcher lines — no `&` anywhere, which is
+    // exactly the difference the nesting carries.
+    const text = readFileSync(SCRATCH_RULES, "utf8");
+    expect(text).toContain("PHARMACY\nCHEMIST\n");
+    expect(text).toContain("account2 expenses:health");
 });
 
 test("switching files with unsaved changes asks before discarding them", async ({page}) => {

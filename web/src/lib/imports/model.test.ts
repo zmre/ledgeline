@@ -7,6 +7,7 @@ import {
     blankRule,
     columnRole,
     columnRoleHint,
+    describeIfBlock,
     describeItem,
     fieldNames,
     fieldsIndex,
@@ -74,7 +75,7 @@ describe("UNIT imports model — the golden document becomes a form", () => {
     it("makes trivia and opaque constructs KEPT — they carry no editable field at all", () => {
         const form = toForm(goldenDoc());
         const kept = form.items.filter((item) => item.kind === "kept");
-        expect(kept.map(itemId)).toEqual([0, 10]);
+        expect(kept.map(itemId)).toEqual([0, 11]);
         expect(kept.every((item) => item.kind === "kept" && "source" in item)).toBe(true);
     });
 
@@ -104,9 +105,10 @@ describe("UNIT imports model — the golden document becomes a form", () => {
 
     it("gives the rules list everything no panel speaks for, and nothing else", () => {
         const form = toForm(goldenDoc());
-        // 0 is the header comment; 7/8/9 are the editable blocks; 10 is the
-        // `if` table. 1-6 are the directives/fields/assignments the panels own.
-        expect(ruleIndices(form.items)).toEqual([0, 7, 8, 9, 10]);
+        // 0 is the header comment; 7/8/9/10 are the editable blocks (10 being
+        // the AND-group one); 11 is the `if` table. 1-6 are the
+        // directives/fields/assignments the panels own.
+        expect(ruleIndices(form.items)).toEqual([0, 7, 8, 9, 10, 11]);
     });
 });
 
@@ -116,9 +118,9 @@ describe("UNIT imports model — the save request accounts for every item", () =
         const body = toSaveRequest(baseline, form);
         expect(body.revision).toBe(baseline.revision);
         expect(body.delete).toEqual([]);
-        expect(body.items).toHaveLength(11);
+        expect(body.items).toHaveLength(12);
         expect(body.items.every((item) => item.kind === "keep")).toBe(true);
-        expect(body.items.map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        expect(body.items.map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     });
 
     it("carries the OPAQUE construct through as `keep`, never as a body", () => {
@@ -127,39 +129,45 @@ describe("UNIT imports model — the save request accounts for every item", () =
         // id, not dropped and not re-rendered from a guess.
         const {baseline, form} = pair();
         ruleAt(form, 1).assignments[0]!.value = "expenses:food:beans";
-        const opaque = toSaveRequest(baseline, form).items.find((item) => item.id === 10);
-        expect(opaque).toEqual({kind: "keep", id: 10});
+        const opaque = toSaveRequest(baseline, form).items.find((item) => item.id === 11);
+        expect(opaque).toEqual({kind: "keep", id: 11});
     });
 
     it("sends only the edited item as a typed body", () => {
         const {baseline, form} = pair();
-        ruleAt(form, 1).matchers[0]!.pattern = "ESPRESSO";
+        ruleAt(form, 1).groups[0]!.matchers[0]!.pattern = "ESPRESSO";
         const body = toSaveRequest(baseline, form);
         const bodies = body.items.filter((item) => item.kind !== "keep");
         expect(bodies).toEqual([
             {
                 kind: "ifBlock",
                 id: 7,
-                matchers: [{pattern: "ESPRESSO"}],
+                groups: [{matchers: [{pattern: "ESPRESSO"}]}],
                 assignments: [{field: "account2", value: "expenses:food:coffee"}],
             },
         ]);
-        expect(accountedFor(body.items, body.delete)).toEqual(new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+        expect(accountedFor(body.items, body.delete)).toEqual(new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]));
     });
 
     it("omits `field` for a whole-record matcher and sends it for a scoped one", () => {
         const {baseline, form} = pair();
         const rule = ruleAt(form, 3);
-        expect(rule.matchers.map((matcher) => matcher.field)).toEqual(["description", "description"]);
-        rule.matchers = [{field: "", pattern: "MARKET"}, ...rule.matchers];
+        // An OR list is one matcher per group, which is what makes "add another
+        // alternative" an added GROUP rather than an added matcher.
+        expect(rule.groups.map((group) => group.matchers.map((matcher) => matcher.field))).toEqual([["description"], ["description"]]);
+        rule.groups = [{matchers: [{field: "", pattern: "MARKET"}]}, ...rule.groups];
         const sent = toSaveRequest(baseline, form).items.find((item) => item.id === 9);
         expect(sent).toMatchObject({
             kind: "ifBlock",
-            matchers: [{pattern: "MARKET"}, {field: "description", pattern: "SUPERMARKET"}, {field: "description", pattern: "GROCER"}],
+            groups: [
+                {matchers: [{pattern: "MARKET"}]},
+                {matchers: [{field: "description", pattern: "SUPERMARKET"}]},
+                {matchers: [{field: "description", pattern: "GROCER"}]},
+            ],
         });
         // A whole-record matcher must not carry `field: ""` — the engine reads
         // that as a field NAMED "" and its bare-name check refuses it.
-        expect(Object.keys((sent as {matchers: object[]}).matchers[0] ?? {})).toEqual(["pattern"]);
+        expect(Object.keys((sent as {groups: {matchers: object[]}[]}).groups[0]?.matchers[0] ?? {})).toEqual(["pattern"]);
     });
 
     it("inserts a new rule WITHOUT an id and still accounts for every server item", () => {
@@ -167,13 +175,13 @@ describe("UNIT imports model — the save request accounts for every item", () =
         form.items = appendRule(form.items, blankRule("expenses:unknown"));
         const rule = form.items.find((item) => item.kind === "ifBlock" && item.id === null);
         if (rule?.kind !== "ifBlock") throw new Error("appendRule did not add a rule");
-        rule.matchers[0]!.pattern = "PHARMACY";
+        rule.groups[0]!.matchers[0]!.pattern = "PHARMACY";
         rule.assignments[0]!.value = "expenses:health";
 
         const body = toSaveRequest(baseline, form);
         const inserted = body.items.filter((item) => item.kind === "ifBlock" && item.id === undefined);
         expect(inserted).toHaveLength(1);
-        expect(accountedFor(body.items, body.delete)).toEqual(new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+        expect(accountedFor(body.items, body.delete)).toEqual(new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]));
     });
 
     it("puts a removed item in `delete`, and nowhere else", () => {
@@ -182,7 +190,7 @@ describe("UNIT imports model — the save request accounts for every item", () =
         const body = toSaveRequest(baseline, form);
         expect(body.delete).toEqual([8]);
         expect(body.items.some((item) => item.id === 8)).toBe(false);
-        expect(accountedFor(body.items, body.delete)).toEqual(new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+        expect(accountedFor(body.items, body.delete)).toEqual(new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]));
     });
 
     it("expresses a reorder as `keep`s in a new order — no item is re-rendered", () => {
@@ -190,16 +198,16 @@ describe("UNIT imports model — the save request accounts for every item", () =
         form.items = moveRule(form.items, 1, 2);
         const body = toSaveRequest(baseline, form);
         expect(body.items.every((item) => item.kind === "keep")).toBe(true);
-        expect(body.items.map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 8, 7, 9, 10]);
+        expect(body.items.map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 8, 7, 9, 10, 11]);
         expect(body.delete).toEqual([]);
     });
 
     it("re-sends an item as `keep` once its value is typed back to what it was", () => {
         const {baseline, form} = pair();
         const rule = ruleAt(form, 1);
-        rule.matchers[0]!.pattern = "TEA";
+        rule.groups[0]!.matchers[0]!.pattern = "TEA";
         expect(toSaveRequest(baseline, form).items.find((item) => item.id === 7)?.kind).toBe("ifBlock");
-        rule.matchers[0]!.pattern = "COFFEE";
+        rule.groups[0]!.matchers[0]!.pattern = "COFFEE";
         expect(toSaveRequest(baseline, form).items.find((item) => item.id === 7)).toEqual({kind: "keep", id: 7});
     });
 
@@ -236,20 +244,246 @@ describe("UNIT imports model — the save request accounts for every item", () =
     });
 });
 
+describe("UNIT imports model — an OR of AND-groups", () => {
+    // The distinction the whole grouped shape exists for. `A OR B` and `A AND B`
+    // are written with the same two matchers and import different rows, and the
+    // only thing that tells them apart on either side of the wire is the nesting.
+    it("keeps an AND-group as one group and an OR list as one group each", () => {
+        const form = toForm(goldenDoc());
+        expect(ruleAt(form, 3).groups.map((group) => group.matchers.map((matcher) => matcher.pattern))).toEqual([["SUPERMARKET"], ["GROCER"]]);
+        expect(ruleAt(form, 4).groups.map((group) => group.matchers.map((matcher) => matcher.pattern))).toEqual([["AIRLINE", "^-"]]);
+    });
+
+    it("sends an edited AND-group back with its nesting, and no combinator anywhere", () => {
+        const {baseline, form} = pair();
+        ruleAt(form, 4).groups[0]!.matchers[1]!.pattern = "^-1";
+        const sent = toSaveRequest(baseline, form).items.find((item) => item.id === 10);
+        expect(sent).toEqual({
+            kind: "ifBlock",
+            id: 10,
+            groups: [
+                {
+                    matchers: [
+                        {field: "description", pattern: "AIRLINE"},
+                        {field: "amount", pattern: "^-1"},
+                    ],
+                },
+            ],
+            assignments: [{field: "account2", value: "expenses:travel:airfare"}],
+        });
+        // The `&` is the engine's to write. Nothing in the body may carry one.
+        expect(JSON.stringify(sent)).not.toContain("&");
+    });
+
+    it("adds an AND condition to an existing group and an OR group beside it", () => {
+        const {baseline, form} = pair();
+        const rule = ruleAt(form, 1);
+        rule.groups[0]!.matchers = [...rule.groups[0]!.matchers, {field: "card", pattern: "personal"}];
+        rule.groups = [...rule.groups, {matchers: [{field: "", pattern: "ESPRESSO"}]}];
+        expect(toSaveRequest(baseline, form).items.find((item) => item.id === 7)).toMatchObject({
+            groups: [{matchers: [{pattern: "COFFEE"}, {field: "card", pattern: "personal"}]}, {matchers: [{pattern: "ESPRESSO"}]}],
+        });
+    });
+
+    // The signature has to see the SHAPE, not just the values: regrouping two
+    // matchers changes which rows the file matches, and a signature that missed
+    // it would send the item back as an unchanged `keep` — the file would keep
+    // importing the old way while the screen showed the new one.
+    it("is dirty when the same matchers are regrouped, with no character changed", () => {
+        const {baseline, form} = pair();
+        const rule = ruleAt(form, 3);
+        const [first, second] = rule.groups;
+        rule.groups = [{matchers: [...first!.matchers, ...second!.matchers]}];
+        expect(isDirty(baseline, form)).toBe(true);
+        expect(toSaveRequest(baseline, form).items.find((item) => item.id === 9)).toMatchObject({
+            groups: [
+                {
+                    matchers: [
+                        {field: "description", pattern: "SUPERMARKET"},
+                        {field: "description", pattern: "GROCER"},
+                    ],
+                },
+            ],
+        });
+    });
+
+    it("goes clean again when a regrouping is undone", () => {
+        const {baseline, form} = pair();
+        const rule = ruleAt(form, 4);
+        const [group] = rule.groups;
+        rule.groups = group!.matchers.map((matcher) => ({matchers: [matcher]}));
+        expect(isDirty(baseline, form)).toBe(true);
+        rule.groups = [{matchers: rule.groups.flatMap((each) => each.matchers)}];
+        expect(isDirty(baseline, form)).toBe(false);
+    });
+
+    it("renders the AND-group the way the file spells it, `&` prefix and all", () => {
+        const form = toForm(goldenDoc());
+        expect(itemText(ruleAt(form, 4))).toBe("if %description AIRLINE\n& %amount ^-\n    account2 expenses:travel:airfare");
+    });
+
+    it("validates every matcher of every group, naming the group only when there is more than one", () => {
+        const form = toForm(goldenDoc());
+        expect(validateForm(form)).toEqual([]);
+
+        const oneGroup = toForm(goldenDoc());
+        ruleAt(oneGroup, 4).groups[0]!.matchers[1]!.pattern = "& SNEAKY";
+        expect(validateForm(oneGroup)[0]).toContain("Rule 4, match 2:");
+
+        const twoGroups = toForm(goldenDoc());
+        const rule = ruleAt(twoGroups, 3);
+        rule.groups[1]!.matchers[0]!.pattern = "GROC(ER|ERY)";
+        expect(validateForm(twoGroups)[0]).toContain("Rule 3, group 2, match 1:");
+    });
+
+    // The engine refuses an empty group ("a conditional block's OR-group needs
+    // at least one matcher") because it would vanish on flattening and silently
+    // re-group its neighbours. Saying so here is friendlier than a 400.
+    it("refuses an empty OR-group, exactly as the engine does", () => {
+        const form = toForm(goldenDoc());
+        ruleAt(form, 3).groups[1]!.matchers = [];
+        expect(validateForm(form)[0]).toContain("Rule 3, group 2 needs at least one thing to match");
+    });
+
+    it("seeds a new rule with one group holding one whole-record matcher", () => {
+        expect(blankRule().groups).toEqual([{matchers: [{field: "", pattern: ""}]}]);
+    });
+});
+
+describe("UNIT imports model — the one-line rule summary", () => {
+    const rule = (groups: IfBlockItem["groups"], assignments: IfBlockItem["assignments"] = [{field: "account2", value: "expenses:x"}]): IfBlockItem => ({
+        kind: "ifBlock",
+        id: null,
+        groups,
+        assignments,
+    });
+
+    it("reads a single whole-record matcher as one line", () => {
+        expect(describeIfBlock(rule([{matchers: [{field: "", pattern: "COFFEE"}]}]))).toBe("IF row ~ COFFEE → account2 = expenses:x");
+    });
+
+    it("names the column a scoped matcher is scoped to", () => {
+        expect(describeIfBlock(rule([{matchers: [{field: "description", pattern: "AMAZON"}]}]))).toBe("IF description ~ AMAZON → account2 = expenses:x");
+    });
+
+    it("joins an AND-group with AND and needs no brackets for one branch", () => {
+        const summary = describeIfBlock(
+            rule([
+                {
+                    matchers: [
+                        {field: "description", pattern: "AMAZON"},
+                        {field: "card", pattern: "personal"},
+                    ],
+                },
+            ])
+        );
+        expect(summary).toBe("IF description ~ AMAZON AND card ~ personal → account2 = expenses:x");
+    });
+
+    it("joins a plain OR list with OR and still needs no brackets", () => {
+        const summary = describeIfBlock(rule([{matchers: [{field: "", pattern: "SHELL"}]}, {matchers: [{field: "", pattern: "CHEVRON"}]}]));
+        expect(summary).toBe("IF row ~ SHELL OR row ~ CHEVRON → account2 = expenses:x");
+    });
+
+    // Without the brackets `A AND B OR C` reads as either grouping, and the two
+    // match different rows — so they appear exactly where the ambiguity is.
+    it("brackets an AND-group once it shares the line with another branch", () => {
+        const summary = describeIfBlock(
+            rule([
+                {
+                    matchers: [
+                        {field: "", pattern: "GROCER"},
+                        {field: "card", pattern: "personal"},
+                    ],
+                },
+                {matchers: [{field: "", pattern: "FARMERS"}]},
+            ])
+        );
+        expect(summary).toBe("IF (row ~ GROCER AND card ~ personal) OR row ~ FARMERS → account2 = expenses:x");
+    });
+
+    it("lists what the rule sets, and counts the rest", () => {
+        const summary = describeIfBlock(
+            rule(
+                [{matchers: [{field: "", pattern: "X"}]}],
+                [
+                    {field: "account2", value: "expenses:a"},
+                    {field: "comment", value: "note"},
+                    {field: "code", value: "42"},
+                ]
+            )
+        );
+        expect(summary).toBe("IF row ~ X → account2 = expenses:a, comment = note, +1 more");
+    });
+
+    it("names an assignment that has no value yet without an empty `=`", () => {
+        expect(describeIfBlock(rule([{matchers: [{field: "", pattern: "X"}]}], [{field: "account2", value: ""}]))).toBe("IF row ~ X → account2");
+    });
+
+    // Scannability is the whole point of the collapsed list, so a monstrous rule
+    // is summarized rather than allowed to grow the card.
+    it("counts the branches and conditions it does not show, instead of growing", () => {
+        const many = rule(
+            [
+                {
+                    matchers: [
+                        {field: "a", pattern: "1"},
+                        {field: "b", pattern: "2"},
+                        {field: "c", pattern: "3"},
+                        {field: "d", pattern: "4"},
+                    ],
+                },
+                {matchers: [{field: "e", pattern: "5"}]},
+                {matchers: [{field: "f", pattern: "6"}]},
+                {matchers: [{field: "g", pattern: "7"}]},
+            ],
+            [{field: "account2", value: "expenses:x"}]
+        );
+        expect(describeIfBlock(many)).toBe("IF (a ~ 1 AND b ~ 2 AND c ~ 3 AND +1 more) OR e ~ 5 OR +2 more → account2 = expenses:x");
+    });
+
+    it("clips a pattern and a value that would run off the line", () => {
+        const long = "SUPERMARKET|GROCER|CORNERSHOP|MARKET|DELI";
+        const summary = describeIfBlock(rule([{matchers: [{field: "description", pattern: long}]}], [{field: "comment", value: long}]));
+        expect(summary).toBe("IF description ~ SUPERMARKET|GROCER|CORNERSHOP|M… → comment = SUPERMARKET|GROCER|CORNERSHOP|M…");
+        expect(summary.length).toBeLessThan(100);
+    });
+
+    it("calls a rule with nothing typed in it a new rule", () => {
+        expect(describeIfBlock(blankRule("expenses:unknown"))).toBe("New rule");
+        expect(describeIfBlock(rule([]))).toBe("New rule");
+    });
+
+    it("summarizes every editable rule in the golden document", () => {
+        const form = toForm(goldenDoc());
+        expect(
+            ruleIndices(form.items)
+                .map((at) => form.items[at]!)
+                .filter((item) => item.kind === "ifBlock")
+                .map(describeIfBlock)
+        ).toEqual([
+            "IF row ~ COFFEE → account2 = expenses:food:coffee",
+            "IF row ~ LANDLORD → account2 = expenses:home:rent",
+            "IF description ~ SUPERMARKET OR description ~ GROCER → account2 = expenses:food:groceries, comment = weekly shop",
+            "IF description ~ AIRLINE AND amount ~ ^- → account2 = expenses:travel:airfare",
+        ]);
+    });
+});
+
 describe("UNIT imports model — dirty tracking", () => {
     it("is clean for an untouched form and dirty for any change", () => {
         const {baseline, form} = pair();
         expect(isDirty(baseline, form)).toBe(false);
 
-        ruleAt(form, 1).matchers[0]!.pattern = "ESPRESSO";
+        ruleAt(form, 1).groups[0]!.matchers[0]!.pattern = "ESPRESSO";
         expect(isDirty(baseline, form)).toBe(true);
     });
 
     it("goes clean again when the edit is undone by hand", () => {
         const {baseline, form} = pair();
         const rule = ruleAt(form, 1);
-        rule.matchers[0]!.pattern = "ESPRESSO";
-        rule.matchers[0]!.pattern = "COFFEE";
+        rule.groups[0]!.matchers[0]!.pattern = "ESPRESSO";
+        rule.groups[0]!.matchers[0]!.pattern = "COFFEE";
         expect(isDirty(baseline, form)).toBe(false);
     });
 
@@ -359,20 +593,21 @@ describe("UNIT imports model — reordering the rules list", () => {
     it("moves a rule within the list and leaves every other item where it was", () => {
         const form = toForm(goldenDoc());
         const moved = moveRule(form.items, 1, 2);
-        expect(moved.map(itemId)).toEqual([0, 1, 2, 3, 4, 5, 6, 8, 7, 9, 10]);
+        expect(moved.map(itemId)).toEqual([0, 1, 2, 3, 4, 5, 6, 8, 7, 9, 10, 11]);
         // The settings items never move — they are not in the rules list.
         expect(moved.slice(1, 7).map(itemId)).toEqual([1, 2, 3, 4, 5, 6]);
     });
 
     it("can move the advanced item, which is listed and movable but not editable", () => {
         const form = toForm(goldenDoc());
-        expect(moveRule(form.items, 4, 1).map(itemId)).toEqual([0, 1, 2, 3, 4, 5, 6, 10, 7, 8, 9]);
+        // Rules-list position 5 is the `if` table; 4 is the AND-group block.
+        expect(moveRule(form.items, 5, 1).map(itemId)).toEqual([0, 1, 2, 3, 4, 5, 6, 11, 7, 8, 9, 10]);
     });
 
     it("is a no-op at the bounds", () => {
         const form = toForm(goldenDoc());
         expect(moveRule(form.items, 0, -1).map(itemId)).toEqual(form.items.map(itemId));
-        expect(moveRule(form.items, 4, 5).map(itemId)).toEqual(form.items.map(itemId));
+        expect(moveRule(form.items, 5, 6).map(itemId)).toEqual(form.items.map(itemId));
     });
 
     it("appends a new rule LAST, below every rule in the document", () => {
@@ -384,7 +619,7 @@ describe("UNIT imports model — reordering the rules list", () => {
         const added = items[items.length - 1];
         expect(added?.kind).toBe("ifBlock");
         expect(itemId(added as FormItem)).toBeNull();
-        expect(items.map(itemId)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, null]);
+        expect(items.map(itemId)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, null]);
     });
 
     // A conditional table's extent is terminated by a BLANK LINE, so a table
@@ -396,7 +631,7 @@ describe("UNIT imports model — reordering the rules list", () => {
     it("lands BELOW a trailing advanced construct, which the engine now keeps separate", () => {
         const items: FormItem[] = [
             {kind: "assignment", id: 0, field: "account2", value: "expenses:unknown"},
-            {kind: "ifBlock", id: 1, matchers: [{field: "", pattern: "COFFEE"}], assignments: [{field: "account2", value: "expenses:food"}]},
+            {kind: "ifBlock", id: 1, groups: [{matchers: [{field: "", pattern: "COFFEE"}]}], assignments: [{field: "account2", value: "expenses:food"}]},
             {
                 kind: "kept",
                 id: 2,
@@ -410,7 +645,7 @@ describe("UNIT imports model — reordering the rules list", () => {
     it("appends at the end when nothing is in the way", () => {
         const items: FormItem[] = [
             {kind: "assignment", id: 0, field: "account2", value: "expenses:unknown"},
-            {kind: "ifBlock", id: 1, matchers: [{field: "", pattern: "COFFEE"}], assignments: [{field: "account2", value: "expenses:food"}]},
+            {kind: "ifBlock", id: 1, groups: [{matchers: [{field: "", pattern: "COFFEE"}]}], assignments: [{field: "account2", value: "expenses:food"}]},
         ];
         expect(appendRule(items, blankRule()).map(itemId)).toEqual([0, 1, null]);
     });
@@ -427,7 +662,9 @@ describe("UNIT imports model — validation", () => {
         label: "x",
         revision: "r",
         editable: true,
-        items: [{kind: "ifBlock", id: null, matchers: [{field: "", pattern: "OK"}], assignments: [{field: "account2", value: "expenses:x"}], ...rule}],
+        items: [
+            {kind: "ifBlock", id: null, groups: [{matchers: [{field: "", pattern: "OK"}]}], assignments: [{field: "account2", value: "expenses:x"}], ...rule},
+        ],
     });
 
     it("passes the golden document unchanged", () => {
@@ -435,7 +672,7 @@ describe("UNIT imports model — validation", () => {
     });
 
     it("requires a rule to have something to match and something to set", () => {
-        expect(validateForm(withRule({matchers: []}))[0]).toContain("at least one thing to match");
+        expect(validateForm(withRule({groups: []}))[0]).toContain("at least one thing to match");
         expect(validateForm(withRule({assignments: []}))[0]).toContain("at least one field to set");
     });
 
@@ -443,8 +680,8 @@ describe("UNIT imports model — validation", () => {
         const refused: [string, string][] = [
             ["", "empty"],
             [" leading", "cannot start with a space"],
-            ["& AND", "combines rules"],
-            ["! NOT", "combines rules"],
+            ["& AND", "+ AND condition"],
+            ["! NOT", "needs the command line"],
             ["; looks like a comment", "`;`, `#` or `*`"],
             ["# also", "`;`, `#` or `*`"],
             ["A && B", "`&&` joins"],
@@ -453,19 +690,19 @@ describe("UNIT imports model — validation", () => {
             ["%description NARROW", "%field pattern"],
         ];
         for (const [pattern, expected] of refused) {
-            const errors = validateForm(withRule({matchers: [{field: "", pattern}]}));
+            const errors = validateForm(withRule({groups: [{matchers: [{field: "", pattern}]}]}));
             expect(errors.join(" "), `pattern ${JSON.stringify(pattern)}`).toContain(expected);
         }
     });
 
     it("accepts an escaped parenthesis, which is a literal one", () => {
-        expect(validateForm(withRule({matchers: [{field: "", pattern: "ACME \\(UK\\)"}]}))).toEqual([]);
+        expect(validateForm(withRule({groups: [{matchers: [{field: "", pattern: "ACME \\(UK\\)"}]}]}))).toEqual([]);
     });
 
     it("accepts a scoped matcher whose pattern begins with `%` once it is scoped", () => {
         // Scoped, so hledger reads the pattern as a pattern — the refusal only
         // applies to a WHOLE-RECORD matcher that would be silently narrowed.
-        expect(validateForm(withRule({matchers: [{field: "description", pattern: "%something else"}]}))).toEqual([]);
+        expect(validateForm(withRule({groups: [{matchers: [{field: "description", pattern: "%something else"}]}]}))).toEqual([]);
     });
 
     it("refuses assignment fields hledger does not have, and the ones it will not take here", () => {
@@ -524,7 +761,7 @@ describe("UNIT imports model — hledger field names", () => {
 describe("UNIT imports model — describing what the GUI will not edit", () => {
     it("marks the `if` table advanced, and says why in a sentence", () => {
         const form = toForm(goldenDoc());
-        const opaque = form.items.find((item) => itemId(item) === 10) as FormItem;
+        const opaque = form.items.find((item) => itemId(item) === 11) as FormItem;
         const summary = describeItem(opaque);
         expect(summary.advanced).toBe(true);
         expect(summary.title).toBe("if,account2,comment");

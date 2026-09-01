@@ -35,9 +35,12 @@ const SCRATCH_FILE = new URL("live.csv.rules", SCRATCH_DIR);
 const SCRATCH_ID = "scratch/imports-integration/live.csv.rules";
 
 // One of each shape the round trip has to survive: a standalone comment run, the
-// settings the panels own, two editable OR-list rules, and a conditional TABLE
-// the engine refuses to classify. The table is the point — it is the item that
-// only survives because the client echoes it back as `{kind:"keep", id}`.
+// settings the panels own, two editable OR-list rules, an editable AND-group,
+// and a conditional TABLE the engine refuses to classify. The table is the point
+// — it is the item that only survives because the client echoes it back as
+// `{kind:"keep", id}`. The AND-group is the other point: the `&` is grammar the
+// ENGINE writes, and only a live save proves the nesting we send comes back as
+// the same nesting rather than as two OR-ed alternatives.
 const SCRATCH = `# Scratch file for rulesLive.integration.test.ts.
 
 skip 1
@@ -51,6 +54,12 @@ if COFFEE
 
 if LANDLORD
     account2 expenses:home:rent
+
+# An AND-group: the continuation line's & prefix means BOTH have to match.
+if
+%description AIRLINE
+& %amount ^-
+    account2 expenses:travel:airfare
 
 # A conditional TABLE: keep-only, and it must come back byte for byte.
 if,account2,comment
@@ -137,8 +146,8 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
 
     it("reorders two rules and writes the new order, keeping every other byte", async () => {
         const {baseline, form} = await open(SCRATCH_ID);
-        expect(ruleAt(form, 1).matchers[0]?.pattern).toBe("COFFEE");
-        expect(ruleAt(form, 2).matchers[0]?.pattern).toBe("LANDLORD");
+        expect(ruleAt(form, 1).groups[0]?.matchers[0]?.pattern).toBe("COFFEE");
+        expect(ruleAt(form, 2).groups[0]?.matchers[0]?.pattern).toBe("LANDLORD");
 
         // Position 0 is the leading comment run, so the first rule is at 1.
         form.items = moveRule(form.items, 1, 2);
@@ -146,8 +155,8 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
 
         const saved = decodeRulesDoc(await api().saveRules(SCRATCH_ID, toSaveRequest(baseline, form)));
         const reopened = toForm(saved);
-        expect(ruleAt(reopened, 1).matchers[0]?.pattern).toBe("LANDLORD");
-        expect(ruleAt(reopened, 2).matchers[0]?.pattern).toBe("COFFEE");
+        expect(ruleAt(reopened, 1).groups[0]?.matchers[0]?.pattern).toBe("LANDLORD");
+        expect(ruleAt(reopened, 2).groups[0]?.matchers[0]?.pattern).toBe("COFFEE");
 
         const text = readFileSync(SCRATCH_FILE, "utf8");
         expect(text.indexOf("LANDLORD")).toBeLessThan(text.indexOf("COFFEE"));
@@ -190,7 +199,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         form.items = appendRule(form.items, {
             kind: "ifBlock",
             id: null,
-            matchers: [{field: "description", pattern: "PHARMACY"}],
+            groups: [{matchers: [{field: "description", pattern: "PHARMACY"}]}],
             assignments: [{field: "account2", value: "expenses:health"}],
         });
         form.items = form.items.filter((item) => itemId(item) !== doomed);
@@ -207,6 +216,37 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         // and read back as a rule of its own rather than as table rows.
         expect(text.indexOf("ATM WITHDRAWAL")).toBeLessThan(text.indexOf("PHARMACY"));
         expect(reopened.items[reopened.items.length - 1]?.kind).toBe("ifBlock");
+    });
+
+    // The half of the grouped shape only a live engine can prove: what we send
+    // as NESTING has to come back as the same nesting, and be spelled in the
+    // file with the `&` prefix hledger reads as an AND. A renderer that wrote
+    // the two matchers as two plain lines would pass every unit test in this
+    // repo and quietly change the rule from "both" to "either".
+    it("reads an AND-group back as one group, and writes the `&` the file needs", async () => {
+        const {baseline, form} = await open(SCRATCH_ID);
+        // Found by SHAPE, not by position: the tests above this one reorder,
+        // delete and append rules in the same scratch file, so a fixed index
+        // would be asserting about whichever rule happened to land there.
+        const rule = form.items.find((item): item is IfBlockItem => item.kind === "ifBlock" && item.groups.some((group) => group.matchers.length > 1));
+        if (rule === undefined) throw new Error("the AND-group rule is missing from the scratch file");
+        expect(rule.groups.map((group) => group.matchers.map((matcher) => matcher.pattern))).toEqual([["AIRLINE", "^-"]]);
+
+        // Add a second condition to the SAME group — the "+ AND condition" the
+        // card offers — and a whole new OR branch beside it.
+        rule.groups[0]!.matchers = [...rule.groups[0]!.matchers, {field: "description", pattern: "SEAT"}];
+        rule.groups = [...rule.groups, {matchers: [{field: "description", pattern: "RAILWAY"}]}];
+        expect(isDirty(baseline, form)).toBe(true);
+        expect(validateForm(form)).toEqual([]);
+
+        const saved = toForm(decodeRulesDoc(await api().saveRules(SCRATCH_ID, toSaveRequest(baseline, form))));
+        const reread = saved.items.find((item): item is IfBlockItem => item.kind === "ifBlock" && item.groups.some((group) => group.matchers.length > 1));
+        expect(reread?.groups.map((group) => group.matchers.map((matcher) => matcher.pattern))).toEqual([["AIRLINE", "^-", "SEAT"], ["RAILWAY"]]);
+
+        const text = readFileSync(SCRATCH_FILE, "utf8");
+        // Continuations carry the `&` and the new OR branch does not — which is
+        // the entire difference between "both" and "either" on disk.
+        expect(text).toContain("%description AIRLINE\n& %amount ^-\n& %description SEAT\n%description RAILWAY\n");
     });
 
     // The whole point of `revision`: a save against bytes somebody else has

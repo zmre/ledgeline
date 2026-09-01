@@ -1224,13 +1224,13 @@ describe("UNIT nativeDecode — RulesIndex over the rules-index golden", () => {
         expect(index.files[0]).toEqual({
             id: "import/2026/bank.csv.rules",
             label: "bank",
-            revision: "665-f7dafa70ae699ef1",
-            sizeBytes: 1637,
+            revision: "807-cdb071b43e7abbba",
+            sizeBytes: 2055,
             parsed: true,
             account1: "assets:bank:checking",
             account2: "expenses:unknown",
-            ifBlockCount: 4,
-            editableBlockCount: 3,
+            ifBlockCount: 5,
+            editableBlockCount: 4,
             opaqueItemCount: 1,
             warnings: [],
         });
@@ -1263,7 +1263,7 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
         const doc = decodeRulesDoc(raw);
         expect(doc.id).toBe("import/2026/bank.csv.rules");
         expect(doc.label).toBe("bank");
-        expect(doc.revision).toBe("665-f7dafa70ae699ef1");
+        expect(doc.revision).toBe("807-cdb071b43e7abbba");
         expect(doc.editable).toBe(true);
         expect(doc.newline).toBe("lf");
         expect(doc.warnings).toEqual([]);
@@ -1294,9 +1294,10 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
             "ifBlock",
             "ifBlock",
             "ifBlock",
+            "ifBlock",
             "opaque",
         ]);
-        expect(doc.items.map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        expect(doc.items.map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 
         const trivia = doc.items[0];
         expect(trivia).toMatchObject({kind: "trivia", line: 1, lines: 13, truncated: false});
@@ -1312,16 +1313,16 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
         expect(doc.items[7]).toMatchObject({
             kind: "ifBlock",
             layout: "inline",
-            matchers: [{field: null, pattern: "COFFEE"}],
+            groups: [{matchers: [{field: null, pattern: "COFFEE"}]}],
             assignments: [{field: "account2", value: "expenses:food:coffee"}],
         });
+        // A plain OR list is ONE MATCHER PER GROUP, not one group holding both:
+        // the two readings differ in which rows the file matches, and only the
+        // nesting says which one this file means.
         expect(doc.items[9]).toMatchObject({
             kind: "ifBlock",
             layout: "stacked",
-            matchers: [
-                {field: "description", pattern: "SUPERMARKET"},
-                {field: "description", pattern: "GROCER"},
-            ],
+            groups: [{matchers: [{field: "description", pattern: "SUPERMARKET"}]}, {matchers: [{field: "description", pattern: "GROCER"}]}],
             assignments: [
                 {field: "account2", value: "expenses:food:groceries"},
                 {field: "comment", value: "weekly shop"},
@@ -1329,8 +1330,82 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
         });
     });
 
+    // The AND is carried by NESTING, and this is the item that pins it: two
+    // matchers inside ONE group, which is a different rule from the two-group
+    // OR above and would decode identically under a flattened reading.
+    it("reads an AND-group as two matchers inside one group", () => {
+        expect(decodeRulesDoc(raw).items[10]).toMatchObject({
+            kind: "ifBlock",
+            layout: "stacked",
+            groups: [
+                {
+                    matchers: [
+                        {field: "description", pattern: "AIRLINE"},
+                        {field: "amount", pattern: "^-"},
+                    ],
+                },
+            ],
+            assignments: [{field: "account2", value: "expenses:travel:airfare"}],
+        });
+    });
+
+    // VERBATIM from the contract in `rules_api.rs` (`WireItemBody::IfBlock` /
+    // `WireMatcherGroup`), not round-tripped through our own encoder — the same
+    // discipline `importModel.test.ts` documents. A literal that was generated
+    // from this decoder's own idea of the shape would agree with it by
+    // construction and could never catch the engine renaming a key.
+    it("decodes a multi-group block from the wire's own JSON", () => {
+        const doc = decodeRulesDoc({
+            id: "x.rules",
+            label: "x",
+            revision: "1-0",
+            editable: true,
+            newline: "lf",
+            settings: {},
+            items: [
+                {
+                    id: 0,
+                    line: 1,
+                    lines: 5,
+                    kind: "ifBlock",
+                    layout: "stacked",
+                    groups: [
+                        {
+                            matchers: [
+                                {field: "description", pattern: "AMAZON"},
+                                {field: "card", pattern: "personal"},
+                            ],
+                        },
+                        {matchers: [{pattern: "COSTCO"}]},
+                    ],
+                    assignments: [{field: "account2", value: "expenses:shopping:online"}],
+                },
+            ],
+            warnings: [],
+        });
+        const block = doc.items[0];
+        if (block?.kind !== "ifBlock") throw new Error("expected an ifBlock");
+        expect(block.groups.map((group) => group.matchers.map((matcher) => [matcher.field, matcher.pattern]))).toEqual([
+            [
+                ["description", "AMAZON"],
+                ["card", "personal"],
+            ],
+            [[null, "COSTCO"]],
+        ]);
+    });
+
+    // Flattening `groups` into a matcher list would turn an AND into an OR —
+    // the rule would start matching either condition instead of both — so a
+    // body without the nesting is refused rather than read the old way.
+    it("refuses an ifBlock that sends a flat matcher list instead of groups", () => {
+        const items = (raw as {items: Record<string, unknown>[]}).items;
+        const flattened = {...items[7], groups: undefined, matchers: [{pattern: "COFFEE"}]};
+        expect(() => decodeRulesDoc({...(raw as object), items: [flattened]})).toThrow(ApiShapeError);
+        expect(() => decodeRulesDoc({...(raw as object), items: [{...items[7], groups: [{}]}]})).toThrow(ApiShapeError);
+    });
+
     it("carries an opaque construct's reason, label and raw text", () => {
-        const opaque = decodeRulesDoc(raw).items[10];
+        const opaque = decodeRulesDoc(raw).items[11];
         expect(opaque).toMatchObject({kind: "opaque", reason: "ifTable", label: "if,account2,comment", truncated: false});
         expect(opaque?.kind === "opaque" && opaque.text).toContain("ATM WITHDRAWAL,assets:cash,cash out");
     });
@@ -1340,14 +1415,14 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
     // document is the honest failure.
     it("throws on an unknown item kind rather than inventing a carry-through", () => {
         const doc = raw as {items: unknown[]};
-        const mutated = {...doc, items: [...doc.items, {id: 11, line: 50, lines: 1, kind: "somethingNew"}]};
+        const mutated = {...doc, items: [...doc.items, {id: 12, line: 60, lines: 1, kind: "somethingNew"}]};
         expect(() => decodeRulesDoc(mutated)).toThrow(ApiShapeError);
     });
 
     it("throws on an unknown opaque reason, layout or newline", () => {
         expect(() => decodeRulesDoc({...(raw as object), newline: "cr"})).toThrow(ApiShapeError);
         const items = (raw as {items: Record<string, unknown>[]}).items;
-        expect(() => decodeRulesDoc({...(raw as object), items: [{...items[10], reason: "somethingNew"}]})).toThrow(ApiShapeError);
+        expect(() => decodeRulesDoc({...(raw as object), items: [{...items[11], reason: "somethingNew"}]})).toThrow(ApiShapeError);
         expect(() => decodeRulesDoc({...(raw as object), items: [{...items[7], layout: "table"}]})).toThrow(ApiShapeError);
     });
 

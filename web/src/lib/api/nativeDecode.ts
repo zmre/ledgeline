@@ -80,6 +80,7 @@ import type {
     RulesIndex,
     RulesItem,
     RulesMatcher,
+    RulesMatcherGroup,
     RulesPref,
     RulesPreview,
     RulesSettings,
@@ -550,6 +551,10 @@ interface RawRulesMatcher {
     pattern?: string;
 }
 
+interface RawRulesMatcherGroup {
+    matchers?: RawRulesMatcher[];
+}
+
 interface RawRulesAssignment {
     field?: string;
     value?: string;
@@ -575,7 +580,7 @@ interface RawRulesItem {
     field?: string;
     // ifBlock
     layout?: string;
-    matchers?: RawRulesMatcher[];
+    groups?: RawRulesMatcherGroup[];
     assignments?: RawRulesAssignment[];
     // opaque
     reason?: string;
@@ -1901,6 +1906,22 @@ function decodeMatcher(raw: RawRulesMatcher | undefined, context: string): Rules
 }
 
 /**
+ * One OR-branch, whose matchers are AND-ed.
+ *
+ * The nesting IS the AND — the engine writes the `&` and never sends one — so a
+ * group that is not an object with a `matchers` array is a wire shape this
+ * decoder cannot represent, and inventing a flat reading of it would silently
+ * turn an AND into an OR: a rule that matched two things at once would start
+ * matching either of them.
+ */
+function decodeMatcherGroup(raw: RawRulesMatcherGroup | undefined, context: string): RulesMatcherGroup {
+    if (raw === undefined || raw === null || !Array.isArray(raw.matchers)) {
+        throw new ApiShapeError(`${context}: a matcher group needs a matchers array`);
+    }
+    return Object.freeze({matchers: frozen(raw.matchers.map((matcher, i) => decodeMatcher(matcher, `${context} matchers[${i}]`)))});
+}
+
+/**
  * One item, by its `kind` tag.
  *
  * An unknown tag THROWS rather than degrading to a carry-through: the editor's
@@ -1923,14 +1944,14 @@ function decodeRulesItem(raw: RawRulesItem | undefined, context: string): RulesI
         case "assignment":
             return Object.freeze({...base, kind: "assignment" as const, field: str(raw.field, `${context} field`), value: str(raw.value, `${context} value`)});
         case "ifBlock":
-            if (!Array.isArray(raw.matchers) || !Array.isArray(raw.assignments)) {
-                throw new ApiShapeError(`${context}: an ifBlock needs matchers and assignments arrays`);
+            if (!Array.isArray(raw.groups) || !Array.isArray(raw.assignments)) {
+                throw new ApiShapeError(`${context}: an ifBlock needs groups and assignments arrays`);
             }
             return Object.freeze({
                 ...base,
                 kind: "ifBlock" as const,
                 layout: decodeLayout(raw.layout, context),
-                matchers: frozen(raw.matchers.map((matcher, i) => decodeMatcher(matcher, `${context} matchers[${i}]`))),
+                groups: frozen(raw.groups.map((group, i) => decodeMatcherGroup(group, `${context} groups[${i}]`))),
                 assignments: frozen(
                     raw.assignments.map((assignment, i) =>
                         Object.freeze({

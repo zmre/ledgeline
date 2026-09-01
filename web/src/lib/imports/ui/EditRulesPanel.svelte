@@ -427,11 +427,16 @@
                                     </div>
                                 </div>
 
+                                <!-- `savedAt` is passed for one reason: the list
+                                     closes the rule it has open when a save
+                                     lands, and a save is the one thing it
+                                     cannot see from its own props. -->
                                 <RulesList
                                     items={form.items}
                                     accountNames={journal.accountNames}
                                     {csvFields}
                                     {fallbackAccount}
+                                    {savedAt}
                                     onChange={updateItems}
                                     {disabled}
                                 />

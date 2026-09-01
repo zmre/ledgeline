@@ -216,10 +216,21 @@ export interface RulesMatcherInput {
     pattern: string;
 }
 
+/**
+ * One OR-branch on the write wire: its matchers are AND-ed.
+ *
+ * A client says "these matchers are AND-ed" by NESTING them and never by
+ * writing a combinator — the engine still refuses a pattern that starts with
+ * `&` or `!`, so there is no text path from here to one.
+ */
+export interface RulesMatcherGroupInput {
+    matchers: RulesMatcherInput[];
+}
+
 export interface IfBlockRulesItem {
     kind: "ifBlock";
     id?: number;
-    matchers: RulesMatcherInput[];
+    groups: RulesMatcherGroupInput[];
     assignments: {field: string; value: string}[];
 }
 

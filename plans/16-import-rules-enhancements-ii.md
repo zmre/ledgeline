@@ -174,6 +174,66 @@ gained a two-matcher AND-group, because the byte-pinned wire golden could not ot
 scenarios all pass against a renderer that writes OR where the model says AND, and this one does
 not.
 
+### Contract amendments made during implementation (SPA half)
+
+The `groups` wire above landed in the SPA exactly as the Rust half describes it — `RulesMatcherGroup`
+in `imports/types.ts`, `RulesMatcherGroupInput` in `api/native.ts`, `FormMatcherGroup` in
+`imports/model.ts`, one `decodeMatcherGroup` calling the existing `decodeMatcher` per matcher. What
+follows is everything the plan left open, decided here.
+
+Model:
+
+- **`itemSignature` needed a third separator.** It already joins with the control characters U+0000
+  (fields), U+0001 (a matcher’s own two halves) and U+0002 (matchers from assignments); matchers
+  within an AND-group now join with U+0003. Without it `[[A],[B]]` and `[[A,B]]` flatten
+  to the same string, and a *regrouping* — which changes which rows the file matches — would go back
+  to the engine as an unchanged `{kind:"keep"}`. There is a test that fails if the separator is
+  removed.
+- **`describeIfBlock(rule): string` is its own export**, not a branch of `describeItem`.
+  `describeItem` returns an `ItemSummary` for `KeptItemCard`'s title/detail/`<pre>` chrome, which a
+  one-line rule summary has no use for. Format:
+  `IF description ~ AMAZON AND card ~ personal → account2 = expenses:shopping:online`; `row ~ X` for
+  a whole-record matcher; brackets around an AND-group **only** when a second OR-branch shares the
+  line. Truncation is structural, not a character cut: at most 2 OR-branches, 3 conditions per
+  branch, 2 assignments and 32 characters per pattern/value, each overflow rendered as `+N more`.
+  A rule with no pattern typed anywhere reads `New rule`; an assignment with no value yet is named
+  without an `=`.
+- **Validation names a group only when there is one to name.** One group keeps today's
+  `Rule 1, match 2`; two or more give `Rule 1, group 2, match 1`. An empty group is refused with the
+  engine's own reason. `checkMatcher` itself is unchanged, as the Rust half predicted.
+- Two user-facing strings went stale and were rewritten: the `&`/`!` matcher error now points at
+  "+ AND condition" rather than saying Ledgeline cannot edit an AND, and `OPAQUE_REASONS`'
+  `combinedMatcher` now names what is actually still opaque (`!`, `&&`, a leading `&` with nothing
+  above it).
+
+UI:
+
+- **Expand/collapse state lives in `RulesList`**, beside the keyboard cursor, not in
+  `EditRulesPanel` — it is a fact about how the list is being read. The panel keys the subtree on
+  `form.id#formEpoch`, so a file switch or Revert already discards it. A **save** is the one event
+  the list cannot see from its own props, so the panel passes `savedAt` (state it already had) and
+  the list closes the open card when that value *moves* — a latch on the value, not on truthiness,
+  or the card could never be reopened.
+- **New component `imports/ui/RuleSummaryCard.svelte`** — the collapsed line, styled after
+  `KeptItemCard` but not dimmed. It carries `data-testid="imports-rule"`, as the expanded
+  `IfBlockCard` does, so "the rule cards" is one locator in either state.
+- **The summary row carries ↑/↓ and nothing else; delete stays inside the opened editor.** Reordering
+  is a list-level act done while reading; deleting is destructive and should follow reading the rule.
+- **"+ Add rule" opens the new rule immediately** — a blank summary line has nothing to scan.
+- **Keyboard**: `Enter` now opens/closes the cursored rule (and focuses its first control after a
+  tick), matching `BalanceSheetView`/`IncomeStatementView`; it previously focused a control in an
+  always-expanded card because there was no collapsed state. `Escape` closes the open rule first and
+  clears the cursor only when nothing is open — the same two-stage shape `TransactionTable`'s Escape
+  already has. j/k/J/K/gg/G are untouched.
+- An open card is carried through a reorder by position (`afterMove`), because position is the only
+  identity these entries have — a rule the user just added has no id at all.
+
+Fixtures and tests, beyond the plan: `rulesLive.integration.test.ts`'s scratch file and
+`e2e/imports.e2e.ts`'s scratch file each gained an AND-group block, which moved the e2e listing
+assertion to `5 rules, 1 advanced`. `RulesList.svelte.test.ts` builds its items with `$state(...)`
+— a plain array renders once and then stops agreeing with itself, because the card's `rule.groups =
+…` is a nested write.
+
 ## Phase 2 — create rules files from a CSV
 
 ### Rust: `crates/ledgeline-core/src/rules/generate.rs` (new)

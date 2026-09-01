@@ -153,6 +153,18 @@ export interface RulesMatcher {
     readonly pattern: string;
 }
 
+/**
+ * One OR-branch of a conditional block: its matchers are AND-ed together.
+ *
+ * The AND is hledger's own line-prefix `&`, and the wire carries it as NESTING
+ * rather than as text — no `&` ever appears in a `RulesMatcher.pattern` in
+ * either direction. A plain OR list, which is every rules file this editor
+ * could already open, is simply one matcher per group.
+ */
+export interface RulesMatcherGroup {
+    readonly matchers: readonly RulesMatcher[];
+}
+
 export interface RulesAssignmentSpec {
     readonly field: string;
     readonly value: string;
@@ -161,7 +173,8 @@ export interface RulesAssignmentSpec {
 export interface RulesIfBlockItem extends RulesItemBase {
     readonly kind: "ifBlock";
     readonly layout: IfLayout;
-    readonly matchers: readonly RulesMatcher[];
+    /** The OR-ed groups, in file order. Always at least one, each with at least one matcher. */
+    readonly groups: readonly RulesMatcherGroup[];
     readonly assignments: readonly RulesAssignmentSpec[];
 }
 
