@@ -1,0 +1,24 @@
+# The OFX conversion's own columns, in the order `convert::ofx` emits them.
+skip 1
+fields date,amount,name,memo,trntype,fitid,checknum
+date-format %Y-%m-%d
+description %name
+account1 assets:bank:checking
+account2 expenses:unknown
+
+# The one line this whole feature turns on. `comment` is an ordinary top-level
+# hledger field, so this writes `; id:FIT0001` onto the transaction and hledger
+# reads it back as the tag `id` — no new grammar, and a rules file anyone can
+# run from a terminal. Ledgeline matches a re-download against the journal on it.
+comment id:%fitid
+
+# OFX's own way of saying "authorized, not yet posted" is TRNTYPE HOLD, and it
+# is the only status signal an OFX statement carries — there is no status column
+# for `convert::ofx` to emit. Mapping it here is what makes a settled hold a
+# STATUS-ONLY difference rather than an invisible one.
+if %trntype HOLD
+  status !
+if %trntype DEBIT
+  status *
+if %trntype CREDIT
+  status *

@@ -115,6 +115,8 @@ use ledgeline_core::decimal::{Dec, MAX_RENDER_PLACES};
 use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
 use ledgeline_core::journals::{self, JournalTarget};
+use ledgeline_core::model::Status;
+use ledgeline_core::reimport::{self, RowClassification};
 use ledgeline_core::rules::matching::{self, Candidate, Ranking, Score, Signals};
 use ledgeline_core::rules::{self, Discovery, RulesDoc};
 use ledgeline_core::sort;
@@ -182,6 +184,22 @@ const MAX_FILENAME_BYTES: usize = 255;
 /// error messages and one of them is written into a journal, so both are bounded
 /// before they are used.
 const MAX_FIELD_CHARS: usize = 128;
+
+/// How many status changes / conflicts one response lists individually.
+///
+/// The lists exist to be read, and nobody reads two thousand of them; a user who
+/// reformatted their journal could otherwise turn every row of a year's
+/// statement into a conflict entry. The counts beside each list are **not**
+/// capped, so the number is always the true one and only the detail is bounded —
+/// the same trade `PREVIEW_ROWS` makes. It bounds the reporting only: the status
+/// flips a commit actually applies are not capped, because a cap on those would
+/// silently leave a statement half-synced.
+const MAX_ID_REPORTS: usize = 200;
+
+/// How many field disagreements one conflicting row lists. A transaction has a
+/// handful of fields and a couple of postings; past that the row is not "a
+/// changed amount" but "a different transaction", and the first few say so.
+const MAX_ID_DIFFS: usize = 8;
 
 /// Wall-clock budget for an `import` or `print` run over a whole statement.
 ///
@@ -538,6 +556,14 @@ struct WireProposal {
     /// relative handles this request already used — never an absolute path — so
     /// it is run from the journal's own directory, which is what the panel says.
     cli_command: String,
+    /// What matching this statement's rows against the journal by id found, or
+    /// `null` when the rules file declares no id. See [`WireIdMatches`].
+    ///
+    /// **Contract amendment (WP-16 Phase 4):** additive and opt-in. `entries`
+    /// and `count` above are already net of it — a row the journal demonstrably
+    /// holds is not in the proposal this preview shows, and therefore not in the
+    /// bytes the commit appends.
+    id_matches: Option<WireIdMatches>,
 }
 
 /// The account rewrites the forwarded aliases performed on this import.
@@ -672,6 +698,86 @@ struct WireSkipped {
     count: usize,
 }
 
+/// What this statement's rows turned out to be, matched against the journal by
+/// the row id its rules file writes (`comment id:%fitid`).
+///
+/// **`null` when the rules file declares no id**, which is every rules file
+/// written before this feature existed and is byte-for-byte today's behaviour —
+/// see [`reconcile_ids`]. Never an empty object: "there is no id to match on"
+/// and "there is, and nothing matched" are different answers and the UI has to
+/// be able to tell them apart.
+///
+/// The two counts answer "how much of this statement did I already have?"; the
+/// two lists carry the rows a person has to look at. See
+/// [`reimport`](ledgeline_core::reimport) for what may and may not follow from a
+/// match — in short, an id match may keep a row *out* of an import and may sync
+/// a clearing status, and may never do anything else.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireIdMatches {
+    /// Rows no transaction in the journal claims. Imported as usual — subject,
+    /// still, to hledger's own `.latest` dedup.
+    new: usize,
+    /// Rows the journal already holds, identically. Not imported, not edited.
+    unchanged: usize,
+    /// Rows whose only difference is the clearing status: the authorization
+    /// hold that settled. Capped at [`MAX_ID_REPORTS`]; `statusChangedTotal` is
+    /// the real number.
+    status_changed: Vec<WireStatusChange>,
+    /// How many there are, whether or not they all fit in the list.
+    status_changed_total: usize,
+    /// Rows the journal holds *differently* in some way a status flip cannot
+    /// express. Never imported and **never edited** — this is the hand-edit the
+    /// feature exists to protect. Capped at [`MAX_ID_REPORTS`].
+    conflicting: Vec<WireConflict>,
+    /// How many there are, whether or not they all fit in the list.
+    conflicting_total: usize,
+}
+
+/// One clearing status this statement moved.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireStatusChange {
+    /// The row id, as the rules file wrote it.
+    id: String,
+    /// What the journal says today: `unmarked`, `pending` or `cleared`.
+    from: &'static str,
+    /// What this statement says.
+    to: &'static str,
+    /// Whether it was actually written.
+    ///
+    /// Always `false` on a **dry-run**, which previews and writes nothing — the
+    /// same rule the rest of this screen follows. On a **commit** it is `false`
+    /// only for a transaction that lives outside the file this import writes to:
+    /// the flip is confined to `journalId`, the one file whose git state was
+    /// checked before the commit and whose new bytes the commit's own git commit
+    /// carries. Syncing a status into some other included file would write
+    /// somewhere this request had neither permission for nor a way to undo.
+    applied: bool,
+}
+
+/// One row the journal already holds differently.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireConflict {
+    /// The row id, as the rules file wrote it.
+    id: String,
+    /// Every disagreement, in field order. Capped at [`MAX_ID_DIFFS`].
+    diffs: Vec<WireFieldDiff>,
+}
+
+/// One field a conflicting row disagrees on.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireFieldDiff {
+    /// What disagrees: `date`, `description`, `posting 2 amount`, …
+    field: String,
+    /// What the journal says today.
+    existing: String,
+    /// What this statement proposes.
+    incoming: String,
+}
+
 /// The statement-balance reconciliation.
 ///
 /// **All three amounts are in ONE representation** — the commodity hledger
@@ -704,6 +810,11 @@ struct WireCommit {
     ordering: WireOrdering,
     /// `null` when neither target is under version control.
     git: Option<WireGitResult>,
+    /// What matching this statement's rows against the journal by id found, or
+    /// `null` when the rules file declares no id. See [`WireIdMatches`]. The
+    /// same type the dry-run carries, so one decoder serves both; here its
+    /// `statusChanged[].applied` reports what was actually written.
+    id_matches: Option<WireIdMatches>,
 }
 
 /// `POST /api/import/save-csv` — the CSV was kept, and nothing else happened.
@@ -2907,11 +3018,26 @@ fn run_dry_run(
     // `commit` will append. Nothing re-renders it in between; see `run_commit`,
     // and `docs/imports.md` § "Commodity style" for why re-printing it under the
     // tree's `commodity` directives is deliberately NOT done.
-    let entries = output.stdout_lossy();
+    let proposal = output.stdout_lossy();
     let status = output.stderr_lossy();
-    let count = count_transactions(&entries)
-        .or_else(|| reported_count(&status, "would import"))
-        .unwrap_or(0);
+
+    // One extra `--dry-run`, and only when the destination carries a `.latest`.
+    // Two things read it: what dedup would drop, and — when the rules file names
+    // a row id — what those dropped rows actually ARE.
+    let bare = bare_proposal(&plan)?;
+    let ids = reconcile_ids(state, &plan, &proposal, bare.as_ref());
+    // `entries` is what the commit appends, so it is what the preview shows: a
+    // row the journal demonstrably already holds is taken out of both, together.
+    // With no id in the rules file `ids` is `None` and this is `proposal` itself.
+    let (entries, count) = match &ids {
+        Some(ids) => (ids.entries.as_str(), ids.count),
+        None => (
+            proposal.as_str(),
+            count_transactions(&proposal)
+                .or_else(|| reported_count(&status, "would import"))
+                .unwrap_or(0),
+        ),
+    };
 
     let balance = request
         .balance
@@ -2931,19 +3057,24 @@ fn run_dry_run(
             // The ROOT, not the file being written: the balance the user is
             // reconciling against their statement is the tree's, and in a split
             // layout the target holds only part of it. See `verify_balance`.
-            let computed = verify_balance(&plan.hledger, &plan.root_journal, &entries, &account)?;
+            let computed = verify_balance(&plan.hledger, &plan.root_journal, entries, &account)?;
             Ok::<_, AppError>(reconcile(&statement, computed))
         })
         .transpose()?;
 
     Ok(WireDryRun::Proposed(Box::new(WireProposal {
         ok: true,
-        entries: plan.redactor.apply(&entries),
+        entries: plan.redactor.apply(entries),
         count,
         status: plan.redactor.apply(&status),
-        skipped: skipped_by_dedup(&plan, count)?,
+        skipped: skipped_by_dedup(count, bare.as_ref()),
         balance,
-        aliases: alias_effect(&plan, &staged, &entries)?,
+        // The UNFILTERED proposal, deliberately. This measures the aliases by
+        // diffing two runs posting-for-posting, and both baselines are whole
+        // proposals; handing it a filtered one would be a shape mismatch and the
+        // renames would silently vanish. What an alias rewrites is a property of
+        // the rules file, not of which rows are new.
+        aliases: alias_effect(&plan, &staged, &proposal)?,
         blocked_by_git: if git.enabled(&prefs::load()) {
             blocked_by_git(&plan.targets(request))
         } else {
@@ -2963,21 +3094,30 @@ fn run_dry_run(
             dry_run: false,
             no_git: false,
         }),
+        // `applied: false` throughout: a dry-run previews and writes nothing,
+        // the same rule every other field on this screen follows.
+        id_matches: ids.as_ref().map(|ids| ids.wire(&plan.redactor, false)),
     })))
 }
 
-/// How many rows `.latest` dedup would silently drop, and from when.
+/// The same import proposed **without** hledger's date-based dedup: the run in a
+/// directory with no `.latest` beside the CSV.
 ///
-/// Measured rather than inferred: the same dry-run is repeated in a run
-/// directory with **no** `.latest` beside the CSV, and the difference in
-/// transaction counts is exactly what dedup removed. That is rules-agnostic —
-/// nothing here has to know which column holds the date, or how the rules file
-/// formats it — and it is the only way to be sure, because hledger reports a
-/// dropped row nowhere at all.
+/// Two callers want it and it is one subprocess, so it is run once and shared.
+/// [`skipped_by_dedup`] wants the *count* — the difference between the two
+/// proposals is exactly what dedup removed, measured rather than inferred, which
+/// is the only way to be sure because hledger reports a dropped row nowhere at
+/// all. [`reconcile_ids`] wants the *entries*, and for a sharper reason: the rows
+/// `.latest` hides are precisely the ones an id match has something to say about.
+/// A hold that settled two weeks ago is behind the marker, so the ordinary
+/// proposal does not contain it and no amount of matching against that proposal
+/// could ever notice. That is `TODO.md`'s bug, restated as a data-flow fact.
 ///
-/// `None` when the destination has no dedup state, in which case there is
-/// nothing that could have been dropped.
-fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, AppError> {
+/// `None` when the destination carries no dedup state: there is then nothing
+/// `.latest` could be hiding, and the ordinary proposal already *is* this one.
+/// Also `None` when hledger refused the second run, which is the same
+/// "say nothing rather than guess" answer this function has always given.
+fn bare_proposal(plan: &Plan) -> Result<Option<BareProposal>, AppError> {
     let Some(marker) = stage::latest_marker(plan.destination_dir(), &plan.csv_name) else {
         return Ok(None);
     };
@@ -2999,16 +3139,314 @@ fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, Ap
     if !output.success() {
         return Ok(None);
     }
-    let without = count_transactions(&output.stdout_lossy())
-        .or_else(|| reported_count(&output.stderr_lossy(), "would import"))
+    Ok(Some(BareProposal {
+        marker,
+        entries: output.stdout_lossy(),
+        status: output.stderr_lossy(),
+    }))
+}
+
+/// What every row of this statement would import into, ignoring `.latest`.
+struct BareProposal {
+    /// The newest date `.latest` records — what rows are being hidden *from*.
+    marker: String,
+    /// hledger's stdout: every row the rules file proposes, deduped by nothing.
+    entries: String,
+    /// hledger's stderr, for the count fallback [`reported_count`] reads.
+    status: String,
+}
+
+/// What matching this statement's rows against the journal by id turned up, and
+/// the proposal with the rows the journal already holds taken out of it.
+struct IdReconciliation {
+    /// `entries`, minus every row whose id the journal already carries. When
+    /// nothing was removed this is `entries` byte for byte — see
+    /// [`reimport::retain_new`].
+    entries: String,
+    /// How many transactions that leaves: the `count` a preview reports and the
+    /// `imported` a commit reports.
+    count: usize,
+    /// Rows whose only difference is the clearing status, in proposal order.
+    flips: Vec<StatusFlip>,
+    /// Rows no transaction in the journal claims.
+    new: usize,
+    /// Rows the journal already holds, identically.
+    unchanged: usize,
+    /// Rows the journal holds differently, in proposal order: the row's id and
+    /// every disagreement, both **raw**. Kept whole and untreated —
+    /// [`IdReconciliation::wire`] is the one place that redacts and clips for a
+    /// response body, so the count beside the list is always the true one and
+    /// there is a single place to check the hygiene was applied.
+    conflicting: Vec<(String, Vec<reimport::FieldDiff>)>,
+}
+
+/// One clearing status this statement moved.
+struct StatusFlip {
+    /// The row id, as the rules file wrote it.
+    id: String,
+    /// What the journal says today.
+    from: &'static str,
+    /// What this statement says.
+    to: &'static str,
+    /// The status to write.
+    new_status: Status,
+    /// Whether the transaction lives in the file this import writes to, which is
+    /// the only file a flip is ever applied in. See
+    /// [`WireStatusChange::applied`].
+    in_target: bool,
+}
+
+impl IdReconciliation {
+    /// The report for one call site.
+    ///
+    /// `applied` is `false` for a dry-run, which previews and writes nothing; a
+    /// commit passes `true` and each row is then reported as written exactly
+    /// when it was in range to be.
+    ///
+    /// Every string that leaves here goes through [`reported`] first. These are
+    /// a bank's own ids and a journal's own descriptions and amounts rather than
+    /// paths this server resolved, so security layer 5 is not obviously in play
+    /// — which is the argument for applying it here anyway, rather than for
+    /// reasoning once that it need not be.
+    fn wire(&self, redactor: &Redactor, applied: bool) -> WireIdMatches {
+        WireIdMatches {
+            new: self.new,
+            unchanged: self.unchanged,
+            status_changed: self
+                .flips
+                .iter()
+                .take(MAX_ID_REPORTS)
+                .map(|flip| WireStatusChange {
+                    id: reported(redactor, &flip.id),
+                    from: flip.from,
+                    to: flip.to,
+                    applied: applied && flip.in_target,
+                })
+                .collect(),
+            status_changed_total: self.flips.len(),
+            conflicting: self
+                .conflicting
+                .iter()
+                .take(MAX_ID_REPORTS)
+                .map(|(id, diffs)| WireConflict {
+                    id: reported(redactor, id),
+                    diffs: diffs
+                        .iter()
+                        .take(MAX_ID_DIFFS)
+                        .map(|diff| WireFieldDiff {
+                            // Our own phrase, not the user's own text.
+                            field: diff.field.clone(),
+                            existing: reported(redactor, &diff.existing),
+                            incoming: reported(redactor, &diff.incoming),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            conflicting_total: self.conflicting.len(),
+        }
+    }
+}
+
+/// Match this statement's rows against the journal by the id its rules file
+/// writes — or answer `None`, which is "behave exactly as before".
+///
+/// # The opt-in, and where it actually lives
+///
+/// `None` comes back whenever no proposed row carries the `id` tag, which is
+/// every rules file written before this feature existed. Everything downstream
+/// then reads the untouched `entries`, so an import with no id in its rules file
+/// is byte-for-byte the import it was — not "equivalent to", the same bytes,
+/// because [`reimport::retain_new`] hands back the very `&str` it was given when
+/// there is nothing to drop.
+///
+/// It is decided **observationally**, from hledger's own output, rather than by
+/// reading the rules file for a `comment id:` line. A rules file that declares
+/// one over a column that turns out to be empty then gets the same silence as
+/// one that declares nothing, which is the honest answer: there are no ids here.
+///
+/// # Which proposal is classified, and which is filtered
+///
+/// They are not the same one, and that is the whole fix. Rows are **classified**
+/// against [`bare_proposal`] — the dedup-free run — because the rows worth
+/// talking about are exactly the ones `.latest` hides: a hold that settled last
+/// week is behind the marker, so it is not in the ordinary proposal at all and
+/// matching against that proposal could never see it. Rows are **filtered** out
+/// of the ordinary proposal, because that is the text a commit appends.
+///
+/// The asymmetry is deliberate and is the safety property. Reading the id as
+/// authority to *import* a row `.latest` declined would resurrect rows a journal
+/// holds untagged — every transaction imported before the rules file grew its
+/// `comment id:` line — and duplicate them. So an id may only ever subtract.
+fn reconcile_ids(
+    state: &AppState,
+    plan: &Plan,
+    entries: &str,
+    bare: Option<&BareProposal>,
+) -> Option<IdReconciliation> {
+    let proposed = ledgeline_core::parse_journal(entries, "proposed").ok()?;
+    // Parsed only when it is a DIFFERENT text: with no `.latest` beside the CSV
+    // the two runs produce the same proposal and there is nothing to re-read.
+    let dedup_free = match bare {
+        Some(bare) => Some(ledgeline_core::parse_journal(&bare.entries, "proposed").ok()?),
+        None => None,
+    };
+    let classified = dedup_free
+        .as_ref()
+        .map_or(&proposed.transactions, |journal| &journal.transactions);
+
+    let snapshot = state.snapshot();
+    let index = reimport::build_index(&snapshot.journal, reimport::ID_TAG);
+    let rows = reimport::reconcile(&index, classified, reimport::ID_TAG)?;
+
+    let mut new = 0;
+    let mut unchanged = 0;
+    let mut flips = Vec::new();
+    let mut conflicting = Vec::new();
+    for row in &rows {
+        match &row.classification {
+            RowClassification::New => new += 1,
+            RowClassification::Unchanged => unchanged += 1,
+            RowClassification::StatusOnly {
+                existing_status,
+                new_status,
+                ..
+            } => flips.push(StatusFlip {
+                id: row.id.clone(),
+                from: reimport::status_word(*existing_status),
+                to: reimport::status_word(*new_status),
+                new_status: *new_status,
+                // Decided here, from the journal as it stands before anything is
+                // written, because the answer cannot change afterwards: the only
+                // rows an import appends are `New` ones, whose ids are by
+                // definition not in this list.
+                in_target: index
+                    .get(&row.id)
+                    .is_some_and(|(txn, _)| txn.source_file == plan.target),
+            }),
+            // Raw and whole; `IdReconciliation::wire` does the redacting and the
+            // clipping, in one place, for both lists.
+            RowClassification::Conflicting { diffs, .. } => {
+                conflicting.push((row.id.clone(), diffs.clone()));
+            }
+        }
+    }
+
+    let kept = reimport::retain_new(entries, &proposed.transactions, &index, reimport::ID_TAG);
+    // The kept text is hledger's own, minus whole transactions, so it is still a
+    // journal — `reimport`'s own round-trip tests pin that — and our parser is
+    // the authority on how many it holds.
+    let count = count_transactions(&kept).unwrap_or(proposed.transactions.len());
+    Some(IdReconciliation {
+        entries: kept.into_owned(),
+        count,
+        flips,
+        new,
+        unchanged,
+        conflicting,
+    })
+}
+
+/// Sync the clearing statuses an id match found, on a **commit**.
+///
+/// The one place the import pipeline writes an *existing* transaction, and it
+/// does so through [`edit_api::set_statuses`](crate::edit_api::set_statuses) —
+/// the same `lock_editor` → `bound` → `set_status` → `save_and_publish`
+/// sequence, with the same re-sync on a partial failure, that
+/// `PATCH /api/transactions/{index}` has always used. Nothing new writes a
+/// journal.
+///
+/// Confined to [`Plan::target`]. That file is the one whose git state was
+/// checked before the commit, and the one the commit's own git commit carries,
+/// so a flip cannot land anywhere this request had neither permission for nor a
+/// way to undo. A status-only match in some other included file is reported with
+/// `applied: false` rather than written.
+///
+/// Runs **after** the append and the catch-up, so it is the last write and a
+/// failure here leaves an import that landed and statuses that did not — a state
+/// the next run of the same import repairs by itself, which the message says.
+fn apply_status_flips(
+    state: &AppState,
+    plan: &Plan,
+    ids: Option<&IdReconciliation>,
+) -> Result<(), AppError> {
+    let wanted: Vec<(String, Status)> = ids
+        .into_iter()
+        .flat_map(|ids| ids.flips.iter())
+        .filter(|flip| flip.in_target)
+        .map(|flip| (flip.id.clone(), flip.new_status))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(());
+    }
+
+    // The append moved every transaction after the target file's own end, so a
+    // `Tindex` taken before it may now name a neighbour. Re-read, then resolve
+    // each row against THAT journal by its id — see `set_statuses`, which takes
+    // a callback for exactly this reason.
+    let pending = wanted.len();
+    if let Some(Err(error)) = state.reopen_editor() {
+        return Err(AppError::Internal(format!(
+            "the import landed, but the journal could not be re-read to sync {pending} cleared \
+             status(es): {}. Run the same import again to retry them — an id match means nothing \
+             will be imported twice.",
+            plan.redactor.apply(&error.to_string())
+        )));
+    }
+    let target = plan.target.clone();
+    crate::edit_api::set_statuses(state, &move |journal| {
+        let index = reimport::build_index(journal, reimport::ID_TAG);
+        wanted
+            .iter()
+            .filter_map(|(id, status)| {
+                let (txn, carriers) = index.get(id)?;
+                // Re-asked of the journal actually being written: exactly one
+                // transaction to name, in the file this import may write, and
+                // not already saying what would be set.
+                (carriers == 1 && txn.source_file == target && txn.status != *status)
+                    .then_some((txn.index, *status))
+            })
+            .collect()
+    })
+    .map(|_| ())
+}
+
+/// A value from a bank's statement or a user's own journal, made safe for a
+/// response body: any path this server resolved rewritten back into the handle
+/// the caller already has (security layer 5), then bounded.
+///
+/// Verbatim otherwise, on the same terms as [`WireProposal::entries`] and
+/// [`WireRename`]: this is the user's own text coming back to them, and
+/// paraphrasing it would defeat the point of showing a diff at all.
+fn reported(redactor: &Redactor, value: &str) -> String {
+    clipped(&redactor.apply(value))
+}
+
+/// [`reported`]'s length bound, on its own so it can be tested as itself.
+fn clipped(value: &str) -> String {
+    let mut clipped: String = value.chars().take(MAX_FIELD_CHARS).collect();
+    if clipped.len() < value.len() {
+        clipped.push('…');
+    }
+    clipped
+}
+
+/// How many rows `.latest` dedup would silently drop, and from when.
+///
+/// Pure, over the two proposals [`bare_proposal`] already measured. `None` when
+/// the destination has no dedup state, in which case there is nothing that could
+/// have been dropped.
+fn skipped_by_dedup(count: usize, bare: Option<&BareProposal>) -> Option<WireSkipped> {
+    let bare = bare?;
+    let without = count_transactions(&bare.entries)
+        .or_else(|| reported_count(&bare.status, "would import"))
         .unwrap_or(count);
-    Ok(without
+    without
         .checked_sub(count)
         .filter(|dropped| *dropped > 0)
         .map(|dropped| WireSkipped {
-            older_than: marker,
+            older_than: bare.marker.clone(),
             count: dropped,
-        }))
+        })
 }
 
 /// Which accounts the forwarded aliases rewrote, measured against a second
@@ -3380,12 +3818,26 @@ fn run_commit(
     }
     // The same one step the dry-run route ran, from the same `Plan` — which is
     // what makes the preview the bytes.
-    let entries = output.stdout_lossy();
-    let imported = count_transactions(&entries)
-        .or_else(|| reported_count(&output.stderr_lossy(), "would import"))
-        .unwrap_or(0);
+    let proposal = output.stdout_lossy();
 
-    let appended = appended_text(&entries);
+    // …and the same id reconciliation the dry-run ran, for the same reason: the
+    // two must not be able to disagree about which rows are new. It is run here
+    // rather than trusted from the preview's response because the UI is not a
+    // security boundary — sequencing rule 3's argument, applied to a second
+    // thing a client could otherwise skip.
+    let bare = bare_proposal(&plan)?;
+    let ids = reconcile_ids(state, &plan, &proposal, bare.as_ref());
+    let (entries, imported) = match &ids {
+        Some(ids) => (ids.entries.as_str(), ids.count),
+        None => (
+            proposal.as_str(),
+            count_transactions(&proposal)
+                .or_else(|| reported_count(&output.stderr_lossy(), "would import"))
+                .unwrap_or(0),
+        ),
+    };
+
+    let appended = appended_text(entries);
     if !appended.is_empty() {
         let combined = [before.as_slice(), appended.as_bytes()].concat();
         ledgeline_core::edit::atomic_write(&plan.target, &combined).map_err(|error| {
@@ -3421,6 +3873,14 @@ fn run_commit(
     if request.write_assertion {
         write_assertion(&plan, &request.plan)?;
     }
+
+    // The status sync, and it is deliberately the LAST write: the rows it
+    // touches are ones this import did not import, so nothing above depends on
+    // it, and a failure here leaves an import that landed rather than a journal
+    // half-written. Both reads below then see the flipped bytes — the ordering
+    // check because it reads the file, and the git commit because the target is
+    // already in its path set. See `apply_status_flips`.
+    apply_status_flips(state, &plan, ids.as_ref())?;
 
     // The ordering check reads the TARGET, and correctly so: date order is a
     // per-file property (`hledger check ordereddates` is per-file too, and a
@@ -3494,6 +3954,10 @@ fn run_commit(
         imported,
         ordering,
         git,
+        // `applied: true` for every flip that was in range — `apply_status_flips`
+        // above returned `Ok`, so those landed, and the ones out of range are
+        // reported unwritten.
+        id_matches: ids.as_ref().map(|ids| ids.wire(&plan.redactor, true)),
     })
 }
 
@@ -5771,5 +6235,70 @@ mod tests {
         assert_eq!(shell_quote("a;rm -rf /"), "'a;rm -rf /'");
         // …and an ordinary handle is not decorated for nothing.
         assert_eq!(shell_quote("import/bank.csv"), "import/bank.csv");
+    }
+
+    /// The report lists are bounded, and the counts beside them are not.
+    ///
+    /// A user who reformatted their journal turns every row of a year's
+    /// statement into a conflict, and a response body is not the place to put
+    /// two thousand of them. Silently truncating would be worse than the size,
+    /// so the totals are the true numbers and only the detail is clipped.
+    #[test]
+    fn the_id_report_clips_its_lists_but_never_its_counts() {
+        let conflicts = MAX_ID_REPORTS + 5;
+        let reconciliation = IdReconciliation {
+            entries: String::new(),
+            count: 0,
+            flips: (0..conflicts)
+                .map(|n| StatusFlip {
+                    id: format!("FIT{n:05}"),
+                    from: "pending",
+                    to: "cleared",
+                    new_status: Status::Cleared,
+                    in_target: true,
+                })
+                .collect(),
+            new: 0,
+            unchanged: 0,
+            conflicting: (0..conflicts)
+                .map(|n| (format!("FIT{n:05}"), Vec::new()))
+                .collect(),
+        };
+
+        let redactor = Redactor::default();
+        let wire = reconciliation.wire(&redactor, true);
+        assert_eq!(wire.status_changed.len(), MAX_ID_REPORTS);
+        assert_eq!(
+            wire.status_changed_total, conflicts,
+            "the count is the truth"
+        );
+        assert_eq!(wire.conflicting.len(), MAX_ID_REPORTS);
+        assert_eq!(wire.conflicting_total, conflicts);
+
+        // A dry-run writes nothing, so nothing it reports was applied.
+        assert!(
+            reconciliation
+                .wire(&redactor, false)
+                .status_changed
+                .iter()
+                .all(|f| !f.applied)
+        );
+        assert!(wire.status_changed.iter().all(|f| f.applied));
+    }
+
+    /// A bank's own string comes back verbatim, and bounded.
+    #[test]
+    fn a_reported_value_is_the_users_own_text_clipped() {
+        assert_eq!(clipped("FIT0001"), "FIT0001");
+        let long = "x".repeat(MAX_FIELD_CHARS * 2);
+        let bounded = clipped(&long);
+        assert_eq!(bounded.chars().count(), MAX_FIELD_CHARS + 1);
+        assert!(
+            bounded.ends_with('\u{2026}'),
+            "the clip is visible: {bounded}"
+        );
+        // Multi-byte characters are counted as characters, not bytes, so a
+        // clip can never land inside one.
+        assert_eq!(clipped("kaffee-über"), "kaffee-über");
     }
 }

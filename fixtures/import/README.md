@@ -17,8 +17,10 @@ balance.
 
 `delimited/` and `spreadsheet/` are documented below. The sibling directories belong to the
 other WP-11 lanes and are documented by them — `ofx/` (OFX 1.x/2.x and QFX), `match/` (rules
-scoring), `sort/` (date re-ordering) and `layouts/` (journal-target ranking). Each lane appends
-its own section here rather than starting a second README.
+scoring), `sort/` (date re-ordering), `layouts/` (journal-target ranking) and `reimport/`
+(matching a re-downloaded statement against the journal it was already imported into). Each lane
+appends its own section here rather than starting a second README; the four that grew past a table
+carry their own `README.md` in their own directory instead, which is where to look.
 
 ## `delimited/`
 

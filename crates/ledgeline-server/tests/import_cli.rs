@@ -885,3 +885,85 @@ fn re_importing_the_same_statement_adds_nothing() {
         stdout(&second)
     );
 }
+
+/// **CLI parity for id-based re-import matching, with no CLI-specific code.**
+///
+/// `ledgeline import` is a second caller of `run_commit`, so the classification
+/// wired into that function reaches the command line for free — and this is what
+/// says so out loud, because "for free" is a claim about a call graph and claims
+/// about call graphs rot. A cron job that re-downloads a statement gets the same
+/// three answers the screen does: the settled hold is synced, the row already in
+/// the journal is not imported again, and only the genuinely new one lands.
+///
+/// A single-file journal here rather than this suite's usual split layout: the
+/// question is the classification, and the two-journals distinction is already
+/// exercised by every other test in this file.
+#[test]
+fn the_cli_gets_the_same_id_matching_the_screen_does() {
+    require_hledger!();
+    let dir = TempDir::new().expect("temp dir");
+    let scenario = fixtures_dir().join("import/reimport/pending-then-cleared");
+    std::fs::create_dir(dir.path().join("import")).expect("import dir");
+    std::fs::copy(
+        scenario.join("bank.csv.rules"),
+        dir.path().join("import/bank.csv.rules"),
+    )
+    .expect("copy the rules fixture");
+    std::fs::write(
+        dir.path().join("main.journal"),
+        "2026-01-01 opening balances\n    assets:bank:checking   $1000.00\n    equity:opening\n",
+    )
+    .expect("write the journal");
+    std::fs::copy(scenario.join("first.ofx"), dir.path().join("first.ofx")).expect("copy");
+    std::fs::copy(
+        scenario.join("redownload.ofx"),
+        dir.path().join("redownload.ofx"),
+    )
+    .expect("copy");
+    let tree = Tree {
+        dir,
+        config: TempDir::new().expect("config dir"),
+    };
+    let args = |input: &'static str| {
+        vec![
+            "-i",
+            input,
+            "-o",
+            "import/bank.csv",
+            "-r",
+            "import/bank.csv.rules",
+            "-j",
+            "main.journal",
+            "--no-git",
+        ]
+    };
+
+    let first = tree.import(&args("first.ofx"));
+    assert!(first.status.success(), "{}", transcript(&first));
+    assert!(
+        stdout(&first).contains("appended 2 transactions"),
+        "{}",
+        stdout(&first)
+    );
+
+    let second = tree.import(&args("redownload.ofx"));
+    assert!(second.status.success(), "{}", transcript(&second));
+    assert!(
+        stdout(&second).contains("appended 1 transaction "),
+        "only the genuinely new row lands:\n{}",
+        transcript(&second)
+    );
+
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert!(
+        journal.contains("2026-01-05 * COFFEE SHOP  ; id:FIT0001"),
+        "the settled hold is synced from the command line too:\n{journal}"
+    );
+    for id in ["FIT0001", "FIT0002", "FIT0003"] {
+        assert_eq!(
+            journal.matches(&format!("id:{id}")).count(),
+            1,
+            "{id} exactly once:\n{journal}"
+        );
+    }
+}

@@ -740,6 +740,243 @@ one existing journal transaction was hand-edited (amount changed) after the firs
 the hand-edit survives untouched and is reported as `conflicting`, not overwritten. This fixture
 also stands in as the regression test for the `TODO.md` pending/settled bug this phase closes.
 
+### Contract amendments made during implementation
+
+Per convention #9 in `plans/00-overview.md`. The pre-implementation correction above held in full —
+no new span editor was written, `JournalEditor::set_status` was reused, and the CLI needed no code
+of its own. What follows is Step 0's findings, the one design question the sketch left open, and
+the four places the sketch's data flow turned out to be wrong.
+
+#### Step 0 — the round-trip, verified against hledger 1.52
+
+**Everything the sketch hoped for is true, and the fallback (`; ledgeline-id:`, a Ledgeline-only
+convention) is not needed.** `comment id:%fitid` in a rules file:
+
+```console
+$ hledger --no-conf print -f bank.csv --rules bank.csv.rules
+2026-01-05 ! COFFEE SHOP  ; id:FIT0001
+    assets:bank:checking           -4.50
+    expenses:unknown                4.50
+$ hledger --no-conf print -f bank.csv --rules bank.csv.rules -O json | jq '.[0].ttags'
+[["id","FIT0001"]]
+```
+
+`import --dry-run` emits the same comment, so the text a commit appends carries it. And the half
+that actually matters — since `reimport.rs` reads `Transaction.tags` and never hledger's JSON —
+`parse.rs`'s existing tag extraction lands `("id", "FIT0001")` with no change to the parser. All
+three are pinned by `hledger_writes_the_id_tag_our_parser_reads_back`, which asserts them in that
+order for exactly that reason: the first two could hold while the third failed.
+
+**The tag key is plain `id`.** It is what a rules-file author writes unprompted, it is the spelling
+this plan named, and it keeps the file readable to someone running hledger from a terminal, which a
+`ledgeline-id` would not. The cost — a journal that already uses `id:` for something else — is
+survivable by construction: a collision has to be with a bank's opaque `FITID`, and its worst
+outcome is a visible `conflicting` row, never a silent substitution, because every path that
+*writes* requires every other field to match too.
+
+**Two further findings, both load-bearing:**
+
+- **OFX carries no status column, and `convert::ofx` emits none.** Its seven columns are
+  `date,amount,name,memo,trntype,fitid,checknum`. The only pending signal an OFX statement has is
+  `TRNTYPE HOLD` — a real value of the OFX enumeration — so a rules file reaches it through
+  `if %trntype HOLD / status !`. That is what the fixture does, and it is why the status half of
+  this phase is expressible from an OFX statement at all.
+- **`import` never marks a transaction by itself.** A rules file with no `status` field proposes
+  `2026-01-05 COFFEE SHOP`, unmarked. That is what makes "does this rules file assign a status?"
+  answerable from hledger's own output instead of by re-reading the rules file — see below.
+
+#### The classification reads a DIFFERENT proposal from the one it filters
+
+This is the correction that matters most, and the sketch does not mention it. `hledger import
+--dry-run` de-duplicates by date, so **the rows worth classifying are exactly the rows it does not
+propose**: a hold that settled last week sits behind `.latest` and is not in that output at all. An
+implementation that matched ids against it would find nothing to match and report the settled hold
+as though it had never been re-downloaded — which is `TODO.md`'s bug, verbatim. Pinned twice, by
+`classifying_the_deduped_proposal_would_see_none_of_it` and by mutating the live code (that one
+line, reverted, fails three of the five endpoint tests).
+
+So:
+
+- rows are **classified** against the dedup-free run — `bare_proposal`, which is
+  `skipped_by_dedup`'s existing second `--dry-run` refactored so **one subprocess serves both**.
+  `skipped_by_dedup` became pure over its result; no new hledger invocation was added anywhere.
+- rows are **filtered out of** the ordinary proposal, which is the text a commit appends.
+
+**And never filtered *in*. An id may subtract from an import; it may never add to one.** This was
+the sharpest judgement call in the phase. Reading an id match as authority to *import* a row
+`.latest` declined is superficially attractive — it would also auto-re-import the settled version —
+and it is unsafe: journals hold transactions imported before the rules file grew its `comment id:`
+line, and those carry no id, so the first re-download after adding that line would read every
+untagged transaction as new and duplicate the lot. The asymmetry closes the `TODO.md` item as
+written, which asks to *distinguish* "already imported identically" from "already imported
+differently", not to overwrite the second.
+
+#### `StatusOnly` needs a file-level fact, so `classify` takes one
+
+The sketch's `classify(index, id, proposed)` cannot decide this row-locally. If the rules file
+assigns no `status` at all, every proposed row is `Unmarked`; a `*` the user typed by hand then
+looks like a status-only difference and syncing it would rub out their own mark. So
+`maps_status(&[Transaction]) -> bool` is computed once over the whole proposal (any marker at all
+means the author wrote an assignment — see the finding above) and passed to `classify` as
+`status_mapped`. With it `false`, **every** difference for a known id is `Conflicting`.
+`without_a_status_assignment_a_status_difference_is_a_conflict` asserts both directions.
+
+Status is otherwise compared like any other field, and "status-only" means literally only status: a
+hold that settled for a different amount is a conflict.
+
+#### Signatures as landed
+
+`crates/ledgeline-core/src/reimport.rs` — **top level, not under `rules/`**. That directory is about
+the rules-FILE model (`discovery`, `generate`, `matching`); this is about matching a *journal*
+against a *proposal* and mentions a rules file nowhere.
+
+```rust
+pub const ID_TAG: &str = "id";
+pub fn id_of<'a>(txn: &'a Transaction, id_tag: &str) -> Option<&'a str>;
+pub struct IdIndex<'a>;                     // borrows the journal; no clones
+pub fn build_index<'a>(journal: &'a Journal, id_tag: &str) -> IdIndex<'a>;
+pub struct FieldDiff { pub field: String, pub existing: String, pub incoming: String }
+pub enum RowClassification { New, Unchanged, StatusOnly {..}, Conflicting {..} }
+pub fn maps_status(proposed: &[Transaction]) -> bool;
+pub fn classify(index: &IdIndex<'_>, id: &str, proposed: &Transaction, status_mapped: bool) -> RowClassification;
+pub fn reconcile(index: &IdIndex<'_>, proposed: &[Transaction], id_tag: &str) -> Option<Vec<ClassifiedRow>>;
+pub fn retain_new<'t>(entries: &'t str, proposed: &[Transaction], index: &IdIndex<'_>, id_tag: &str) -> Cow<'t, str>;
+pub fn status_word(status: Status) -> &'static str;
+```
+
+Departures from the sketch, each because the sketch could not be written as stated:
+
+- **`ProposedTxn` does not exist; `proposed` is a `Transaction`.** hledger's proposal is
+  re-parseable journal text and `count_transactions` already re-parses it, so both sides of every
+  comparison are the *same type* from the *same parser*. A second representation would have been a
+  second thing to keep in step.
+- **`reconcile` takes an `IdIndex`, not a `Journal`.** One build serves both it and `retain_new`,
+  which are asked about **different proposals of the same import** (above).
+- **`retain_new` is new and is not in the sketch.** Something has to take the matched rows out of
+  the bytes that get appended, and it is a **line-span deletion** rather than a re-render, because
+  `docs/imports.md` § "hledger proposes; Ledgeline appends" rests on the preview being the bytes.
+  With nothing to drop it returns `Cow::Borrowed`, which is the opt-in invariant made structural
+  rather than asserted.
+- **`Unchanged` carries no payload and `StatusOnly`/`Conflicting` carry a `Tindex`**, but the server
+  never uses that index to write — see below.
+- **`FieldDiff.field` is a `String`, not a `&'static str`**, because postings are named positionally
+  (`posting 2 amount`) and a closed set cannot spell that.
+- **A duplicated id is `Conflicting`, not a guess.** `build_index` keeps the first in file order and
+  counts the rest; two transactions claiming one id means "which one" has no answer, so it is
+  reported and nothing is written.
+- **The comment is deliberately not compared**, so an annotation a user added
+  (`; id:FIT0001, reimbursed by work`) is not a conflict. Compared: date, secondary date, code,
+  description, status, and every posting's account, amount and balance assertion.
+
+#### The status flip: reuse, confinement, and ordering
+
+- **`edit_api::set_statuses(state, choose: &dyn Fn(&Journal) -> Vec<(Tindex, Status)>)`** is the one
+  new function in `edit_api.rs`, and it is `patch_transaction_locked`'s sequence with
+  `apply_statuses` standing in for `apply_patch` — same `lock_editor`/`bound`/`save_and_publish`,
+  same `resync_from_disk` on a partial failure. **No visibility was widened**; `import_api` cannot
+  see the editor lock and does not need to.
+- **It takes a callback rather than a `&[(Tindex, Status)]`, and that is a correctness fix, not a
+  style choice.** A `Tindex` is a file-order index over the whole tree and the append has just moved
+  every transaction after the target's end, so an index taken at classification time may now name a
+  neighbour. The callback is handed the journal the editor holds *at the moment of the write*, and
+  the rows are re-resolved there by id. A stale index is unrepresentable.
+- **Confined to `plan.target`.** The index spans the whole tree (a row already imported into an
+  `include`d file must still not be imported again), but the write does not: `journalId` is the only
+  file whose git state the commit checked and the only one its git commit carries. A status-only
+  match elsewhere is reported with `applied: false`. A status sync therefore adds **no path** to a
+  commit's blast radius — asserted directly.
+- **It is the last write of a commit**, after the append, the catch-up and the assertion. Nothing
+  above depends on it, so a failure leaves an import that landed rather than a journal half-written,
+  and the error says the next run of the same import repairs it (which it does — the row is still
+  status-only, and an id match means nothing is imported twice).
+
+#### `idMatches` as landed
+
+```jsonc
+"idMatches": {
+  "new": 1,
+  "unchanged": 0,
+  "statusChanged": [{"id": "FIT0001", "from": "pending", "to": "cleared", "applied": true}],
+  "statusChangedTotal": 1,
+  "conflicting": [{"id": "FIT0002",
+                   "diffs": [{"field": "posting 1 amount",
+                              "existing": "-35.60", "incoming": "-32.10"}]}],
+  "conflictingTotal": 1
+}
+```
+
+`null` — never `{}` — when the rules file declares no id. On **both** `dry-run` and `commit`, one
+type so one decoder serves both. Four departures from the sketch:
+
+- **`statusChanged[].applied`** is new. It is `false` throughout a dry-run (which writes nothing,
+  the same rule as everything else on this screen) and, on a commit, `false` for a match outside the
+  target file. Without it the response could not distinguish "synced" from "found but out of range",
+  and the alternative — silently omitting out-of-range matches — would hide the very thing the user
+  needs to know to go and fix it by hand.
+- **The two `*Total` counts** are new. The lists are capped at `MAX_ID_REPORTS = 200` (a user who
+  reformatted their journal turns a year's statement into conflicts) and a diff at `MAX_ID_DIFFS = 8`,
+  but the *counts* are never capped — silent truncation is worse than the size. The flips a commit
+  applies are likewise uncapped; only the reporting is bounded, because a cap there would leave a
+  statement half-synced.
+- **The classification is decided observationally**, from whether any proposed row carries the tag,
+  rather than by reading the rules file for a `comment id:` line. A rules file that declares one over
+  a column that turns out to be empty then gets the same silence as one that declares nothing, which
+  is the honest answer: there are no ids here. (An empty tag value is treated as no id at all — a
+  blank `fitid` writes `; id:` on every row, and matching those to each other would fuse unrelated
+  transactions.)
+- **`entries`/`count` on the dry-run and `imported` on the commit are already net of it.** A row the
+  journal demonstrably holds is out of the preview *and* out of the appended bytes, together, or the
+  preview would stop being the bytes.
+
+`alias_effect` is deliberately handed the **unfiltered** proposal: it measures renames by diffing
+two whole runs posting-for-posting, and a filtered one would be a shape mismatch that silently
+reported no renames at all. What an alias rewrites is a property of the rules file, not of which
+rows are new.
+
+Every string in the report goes through the `Plan`'s own `Redactor` before it is clipped, in one
+place (`IdReconciliation::wire`), and the raw values are carried to it untreated so there is a
+single point to check. These are a bank's ids and a journal's own descriptions and amounts rather
+than paths this server resolved, so security layer 5 is not obviously in play — which is the
+argument for applying it anyway rather than for reasoning once that it need not be.
+
+#### Fixtures and tests beyond the plan
+
+- `fixtures/import/reimport/pending-then-cleared/` carries **four** files, not two. Besides the two
+  OFX downloads there is `bank.csv.rules` and — the one the plan did not ask for —
+  **`no-id.csv.rules`, the same file with the `comment id:` line removed and nothing else changed**.
+  The opt-in invariant is the single most important property of this phase and it needed a control
+  to be a claim about behaviour rather than about code.
+- `the_same_statement_under_a_new_name_is_not_imported_twice` exists because **the fixture scenario
+  alone does not exercise the filter**: `.latest` already hides both matched rows there, so deleting
+  `retain_new` entirely left every other test passing. Found by mutating the live code, not by
+  inspection. It is also a real workflow — a statement saved under a new name has no dedup state and
+  is proposed in full, which today doubles it.
+- Every guard in this phase was checked by mutation: classifying the deduped proposal, dropping the
+  filter, dropping the flip, dropping the target confinement, dropping the `status_mapped` gate,
+  dropping the empty-id filter, and dropping `retain_new`'s separator handling. Each is caught by
+  exactly the test that names it, and by no other.
+- New gated suite `LEDGELINE_HLEDGER_REIMPORT_CHECK`, added to `just hledger-checks`.
+- `edit_api::status_str` now delegates to `reimport::status_word` so the two screens cannot come to
+  spell `pending` two ways.
+
+#### The SPA was deliberately left alone
+
+`idMatches` reaches the browser and is discarded at the decoder boundary. That is safe and was
+checked rather than assumed: `decodeDryRun`/`decodeCommitResult` (`web/src/lib/api/nativeDecode.ts`)
+cast and then build a fresh frozen literal from named fields, so an unknown key can neither throw
+nor leak into a component; there is no runtime schema validator anywhere in `web/src`; no golden
+pins an import response (`native_wire_golden.rs` is GET-only and covers no `/api/import/*` route);
+and no component spreads a response object.
+
+So nothing is required to keep existing behaviour correct, and this plan asks for no UI here.
+**Follow-up, named so it is not lost:** surfacing it needs `idMatches` on `RawDryRun`/
+`RawCommitResult` (`nativeDecode.ts`), a nullable decoder branch beside `decodeBalanceCheck`'s, the
+types in `imports/importTypes.ts`, and a section in `ui/DryRunPanel.svelte` — the `cliCommand`
+precedent from Phase 3, except that `idMatches` is legitimately `null` and so must not be decoded as
+required. Until then a conflict is reported by the engine and shown to nobody, which is the one
+thing about this phase a user would notice as missing. The CLI has the same gap for the same reason
+(`CliImportReport` gained no field), and its stdout count is at least already net of the matching.
+
 ## Sequencing
 
 ```

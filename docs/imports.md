@@ -30,6 +30,7 @@ why.
 | `crates/ledgeline-core/src/rules/matching.rs` | Scoring a rules file against dropped data — the two-stage matcher |
 | `crates/ledgeline-core/src/rules/generate.rs` | Drafting a NEW rules file from a CSV: column guessing, `date-format`, `decimal-mark` |
 | `crates/ledgeline-core/src/convert/` | Statement preprocessors: `ofx`, `spreadsheet`, `delimited`, shared `encoding` |
+| `crates/ledgeline-core/src/reimport.rs` | Matching a re-downloaded statement against the journal by row id, and the four-way split that follows |
 | `crates/ledgeline-core/src/sort.rs` | Format-preserving date sort of a journal file |
 | `crates/ledgeline-core/src/journals.rs` | Ranking candidate target journals, by content only |
 | `crates/ledgeline-core/src/aliases.rs` | `alias` directives: forwarding them to `--alias`, and the one-line-wide span editor |
@@ -372,6 +373,113 @@ posting. Reproduced exactly. An empty proposal appends nothing at all.
 into a copy of the same journal by a real `hledger import`, and the two files are compared byte for
 byte. With nothing re-styling the proposal in between, that now describes **every** journal rather
 than only the ones declaring no commodity style.
+
+## Matching a re-download by row id
+
+> **hledger de-duplicates by DATE. A statement you download twice is not a date problem.**
+
+`.latest.NAME` holds the newest imported date, and every row at or before it is dropped. That is
+exactly right for an append-only download and exactly wrong for the YTD-redownload workflow, where
+the same row arrives twice: once as an authorization hold, and again once it settles. The second
+copy sits *behind* the marker, is never proposed, and the journal keeps the pending version
+forever. `TODO.md` names it, and names the sharper half — the dry-run's "N rows skipped" count
+**cannot distinguish "already imported identically" from "already imported differently"**.
+
+### The id is the bank's, and it needs no new grammar
+
+OFX/QFX/QBO give every transaction a `FITID`, which `convert::ofx` already emits as the `fitid`
+column. A rules file names it as the dedup id with one ordinary line:
+
+```
+comment id:%fitid
+```
+
+`comment` is a top-level assignable field, so this needs nothing added to `rules.rs`. Verified end
+to end against hledger 1.52:
+
+```console
+$ hledger print -f bank.csv --rules bank.csv.rules
+2026-01-05 ! COFFEE SHOP  ; id:FIT0001
+    assets:bank:checking           -4.50
+    expenses:unknown                4.50
+$ hledger print -f bank.csv --rules bank.csv.rules -O json | jq '.[0].ttags'
+[["id","FIT0001"]]
+```
+
+…and, the half that actually matters, through **our own** parser: `parse.rs`'s tag extraction lands
+`("id", "FIT0001")` in `Transaction.tags`, which is what `reimport.rs` reads. hledger's JSON is
+never consulted at runtime. The tag key is plain `id` rather than a Ledgeline-private spelling,
+because the rules file has to stay readable to somebody running hledger from a terminal.
+
+### An id may subtract from an import. It may never add to one.
+
+This is the safety property the whole feature rests on, and it is asymmetric on purpose.
+
+Journals hold transactions imported **before** the rules file grew its `comment id:` line, and
+those carry no id at all. If a missing id were ever read as "this row is new", the first
+re-download after adding that line would duplicate every untagged transaction in the file. So:
+
+- rows are **classified** against the dedup-free proposal — the run with no `.latest` beside the
+  CSV, which `skipped_by_dedup` already performed and now shares — because the rows worth talking
+  about are precisely the ones the marker hides;
+- rows are **filtered out of** the ordinary proposal, which is the text a commit appends. Nothing
+  is ever filtered *in*.
+
+Four outcomes per row, and only two of them touch anything:
+
+| | what happens |
+| --- | --- |
+| `new` | no transaction carries this id — imported as usual, still subject to `.latest` |
+| `unchanged` | the journal already holds it, identically — not imported, not edited, counted |
+| `statusChanged` | **only** the clearing status differs — the hold that settled. Synced |
+| `conflicting` | something a status flip cannot express differs — reported with the diff, **never** imported and **never** edited |
+
+**"Status-only" means only status.** A hold that settled for a different amount (the tip added at
+the till) is `conflicting`, not a sync. And a rules file that assigns no `status` field at all can
+produce no status-only row *whatsoever*: every proposed row is then unmarked, so a `*` the user
+typed by hand would read as a status-only difference and syncing it would rub out their own mark.
+Whether the file assigns one is answered from hledger's own output — `import` never marks a
+transaction by itself — rather than by reading the rules file.
+
+The comment is deliberately **not** compared. It is where a person annotates a transaction they
+have already imported (`; id:FIT0001, reimbursed by work`), and reading a note as a conflict would
+report one for every transaction anybody had ever written on.
+
+### The status flip is the ordinary transaction editor
+
+No new write path was built for this. `JournalEditor::set_status` already rewrites exactly one
+header line's `*`/`!` marker and re-parses to prove it, and `edit_api::set_statuses` drives it
+through the same `lock_editor` → `bound` → `save_and_publish` sequence, with the same re-sync on a
+partial failure, that `PATCH /api/transactions/{index}` has always used.
+
+Three things about *when* and *where*:
+
+- **It is the last write of a commit**, after the append and the catch-up. The rows it touches are
+  rows this import did not import, so nothing above depends on it, and a failure leaves an import
+  that landed rather than a journal half-written — a state the next run of the same import repairs
+  by itself, which the error says.
+- **It resolves rows by id under the editor lock, never by a `Tindex` taken earlier.** The append
+  moved every transaction after the target file's own end, so `set_statuses` takes a callback and is
+  handed the journal the editor is holding at the moment of the write. A stale index is
+  unrepresentable rather than merely avoided.
+- **It is confined to the import's own target file.** The id index spans the whole tree — a row
+  already imported into an `include`d file is still a row this statement must not import again — but
+  the *write* is confined to `journalId`: the one file whose git state this request checked before
+  committing, and the one its git commit carries. A match outside it is reported with
+  `applied: false` rather than written somewhere the request had no way to offer to undo. A status
+  sync therefore adds **no path** to a commit's blast radius.
+
+Nothing is ever written on a dry-run, so `applied` is `false` throughout a preview.
+
+### Opt-in, byte for byte
+
+A rules file that names no id gets `"idMatches": null` — not an empty object; "there is no id to
+match on" and "there is, and nothing matched" are different answers — and the proposal is passed on
+as the same `String` hledger produced, never through the filter at all. Even when the filter *does*
+run and finds nothing to drop it hands back the borrowed input, so the untouched path cannot differ
+by a byte. `fixtures/import/reimport/pending-then-cleared/` carries `no-id.csv.rules` beside
+`bank.csv.rules` — the same file minus that one line — precisely so the two can be run against the
+same statement and compared.
 
 ## The one invariant everything rests on
 
@@ -740,22 +848,31 @@ cargo test -p ledgeline-core --test convert_tabular  # delimited + spreadsheet
 cargo test -p ledgeline-core --test matching         # rules-file scoring
 cargo test -p ledgeline-core --test sort             # format-preserving date sort
 cargo test -p ledgeline-core --test journals         # target ranking, by content only
+cargo test -p ledgeline-core --lib reimport          # the id classifier's four-way split
+cargo test -p ledgeline-core --test reimport         # …over the committed re-download corpus
 cargo test -p ledgeline --test prefs          # prefs store + hledger resolution
 cargo test -p ledgeline --test git_commit     # the git safety net
 cargo test -p ledgeline --test import_endpoints  # the /api/import/* routes
 ```
 
-Five opt-in checks shell out to a real binary and are therefore **not** part of `cargo test`,
-which stays hermetic:
+The opt-in checks shell out to a real binary and are therefore **not** part of `cargo test`, which
+stays hermetic. `just hledger-checks` runs all of them:
 
 ```sh
 LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
 LEDGELINE_HLEDGER_MATCH_CHECK=1  cargo test -p ledgeline-core --test matching
 LEDGELINE_HLEDGER_GENERATE_CHECK=1 cargo test -p ledgeline-core --test rules_generate
+LEDGELINE_HLEDGER_REIMPORT_CHECK=1 cargo test -p ledgeline-core --test reimport
 LEDGELINE_HLEDGER_SORT_CHECK=1   cargo test -p ledgeline-core --test sort
 LEDGELINE_HLEDGER_LAYOUT_CHECK=1 cargo test -p ledgeline-core --test journals
 LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_endpoints
+LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_cli
 ```
+
+`reimport`'s variant is the only thing that proves the one hledger-facing grammar claim this
+feature makes: that `comment id:%fitid` becomes a tag hledger writes, hledger reads back, **and our
+own parser reads back**. The first two could both hold while the third failed, and then nothing
+would ever match.
 
 `import_endpoints`' gated half is where the whole import *sequence* is proved: that the
 proposed entries come from stdout and the status line from stderr, that a row `.latest` would

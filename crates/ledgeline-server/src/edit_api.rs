@@ -697,6 +697,62 @@ fn patch_transaction_locked(
     })
 }
 
+/// Flip the clearing status of transactions an **import** matched by row id.
+///
+/// The one seam `import_api` writes an existing transaction through, and it is
+/// deliberately the same sequence [`patch_transaction_locked`] uses —
+/// [`lock_editor`] → [`bound`] → [`JournalEditor::set_status`] →
+/// [`save_and_publish`], with [`resync_from_disk`] if one of several changes
+/// fails after an earlier one committed to memory. A second spelling of that
+/// sequence living in the import module is exactly how the editor and the
+/// served snapshot come to disagree with the file.
+///
+/// `JournalEditor::set_status` rewrites only the transaction's header line and
+/// re-parses to prove the status round-tripped, so nothing outside the one
+/// `*`/`!` marker moves.
+///
+/// # Why a callback rather than a `&[(Tindex, Status)]`
+///
+/// A `Tindex` is a **file-order** index over the whole tree, and an import has
+/// just appended to one of its files — so every index taken before the append
+/// may now name a different transaction. `choose` is handed the journal the
+/// editor is holding *at the moment of the write*, under the editor lock, so
+/// the caller resolves its rows against that journal (by id) and a stale index
+/// is unrepresentable rather than merely avoided.
+///
+/// Returns how many statuses were changed.
+pub(crate) fn set_statuses(
+    state: &AppState,
+    choose: &dyn Fn(&Journal) -> Vec<(Tindex, Status)>,
+) -> Result<usize, AppError> {
+    let mut guard = lock_editor(state)?;
+    let editor = bound(&mut guard)?;
+    let changes = choose(editor.journal());
+    if changes.is_empty() {
+        return Ok(0);
+    }
+    if let Err(error) = apply_statuses(editor, &changes) {
+        resync_from_disk(state, &mut guard)?;
+        return Err(error.into());
+    }
+    save_and_publish(state, &mut guard)?;
+    Ok(changes.len())
+}
+
+/// Apply each `(index, status)` to `editor` in order, stopping at the first
+/// error. The [`apply_patch`] of [`set_statuses`], and separate for the same
+/// borrow-checking reason: the mutable borrow of the editor has to end before
+/// the caller can re-sync the slot that lends it.
+fn apply_statuses(
+    editor: &mut JournalEditor,
+    changes: &[(Tindex, Status)],
+) -> Result<(), EditError> {
+    for (index, status) in changes {
+        editor.set_status(*index, *status)?;
+    }
+    Ok(())
+}
+
 /// The transaction with `tindex` `index` in the editor's current journal.
 fn find_transaction(editor: &JournalEditor, index: u32) -> Option<&Transaction> {
     editor
@@ -1203,12 +1259,12 @@ fn native_amount(amount: &Amount) -> NativeAmount {
     }
 }
 
+/// The wire spelling of a clearing status.
+///
+/// Delegated to the engine so that the import screen's `idMatches` and this
+/// screen's transaction rows cannot come to spell `pending` two ways.
 fn status_str(status: Status) -> &'static str {
-    match status {
-        Status::Unmarked => "unmarked",
-        Status::Pending => "pending",
-        Status::Cleared => "cleared",
-    }
+    ledgeline_core::reimport::status_word(status)
 }
 
 fn ptype_str(ptype: PostingType) -> &'static str {

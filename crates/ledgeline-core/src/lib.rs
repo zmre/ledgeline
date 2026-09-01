@@ -19,6 +19,8 @@
 //!   the one-line-wide span editor over them (Enhanced imports)
 //! - `periodic` — `~` periodic transaction rules: the span editor that lets a
 //!   budget goal be rewritten in place (Budget editor)
+//! - `reimport` — matching a re-downloaded statement against the journal it was
+//!   already imported into, by the bank's own row id (Import & rules II)
 //! - `convert` — normalize OFX/QFX/spreadsheet/delimited statements to one
 //!   tabular extract (Enhanced imports; see `plans/11-enhanced-import.md`)
 //! - `hledger_conf` — the `--alias` options an `hledger.conf` declares, and
@@ -36,6 +38,7 @@ pub mod journals;
 pub mod model;
 pub mod parse;
 pub mod periodic;
+pub mod reimport;
 pub mod reports;
 pub mod rules;
 pub mod sort;
