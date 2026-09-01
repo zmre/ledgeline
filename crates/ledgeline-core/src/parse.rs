@@ -75,6 +75,7 @@ use crate::model::{
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Errors produced while parsing a journal.
@@ -1941,7 +1942,8 @@ fn parse_amount(token: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
                 // seen ONLY without a decimal, e.g. `-1712 D`) needs a post-parse
                 // style pass — that's the still-open `precision` corpus gap.
                 decimal_mark: Some(
-                    inferred_mark.unwrap_or_else(|| default_display_mark(inferred_groups.as_ref())),
+                    inferred_mark
+                        .unwrap_or_else(|| default_display_mark(inferred_groups.as_deref())),
                 ),
                 digit_groups: inferred_groups,
                 precision,
@@ -2703,7 +2705,7 @@ fn split_quoted_commodity(text: &str) -> Option<(String, &str)> {
 fn analyze_number(
     literal: &str,
     forced_mark: Option<char>,
-) -> (Option<char>, Option<DigitGroups>, u32) {
+) -> (Option<char>, Option<Arc<DigitGroups>>, u32) {
     let body = literal.trim().trim_start_matches(['-', '+']);
     let last_dot = body.rfind('.');
     let last_comma = body.rfind(',');
@@ -2777,7 +2779,7 @@ fn analyze_number(
         // into every amount does not carry the original capacity with it.
         sizes.truncate(MAX_DIGIT_GROUPS);
         sizes.shrink_to_fit();
-        DigitGroups { mark, sizes }
+        Arc::new(DigitGroups { mark, sizes })
     });
 
     (decimal_mark, digit_groups, precision)
@@ -2910,10 +2912,10 @@ mod tests {
         assert_eq!(style.decimal_mark, Some('.'));
         assert_eq!(
             style.digit_groups,
-            Some(DigitGroups {
+            Some(Arc::new(DigitGroups {
                 mark: ',',
                 sizes: vec![3]
-            })
+            }))
         );
         assert_eq!(style.precision, 2);
     }
@@ -2929,10 +2931,10 @@ mod tests {
         assert_eq!(style.decimal_mark, Some(','));
         assert_eq!(
             style.digit_groups,
-            Some(DigitGroups {
+            Some(Arc::new(DigitGroups {
                 mark: '.',
                 sizes: vec![3]
-            })
+            }))
         );
         assert_eq!(style.precision, 2);
     }
@@ -2944,6 +2946,21 @@ mod tests {
         assert_eq!(amount.quantity, Dec::new(64500, 2));
         assert_eq!(amount.style.decimal_mark, Some(','));
         assert_eq!(amount.style.precision, 2);
+    }
+
+    /// Pins the `Arc<DigitGroups>` fix at `model.rs`: every amount of a
+    /// commodity with a declared style shares ONE allocation rather than each
+    /// cloning its own `Vec`. Value equality alone (`assert_eq!`) would not
+    /// catch a regression back to a per-amount clone — this checks identity.
+    #[test]
+    fn amounts_of_a_declared_commodity_share_the_digit_groups_allocation() {
+        let styles = eur_styles();
+        let first = parse_amount("645,00 EUR", ctx(&styles)).unwrap();
+        let second = parse_amount("1.234,50 EUR", ctx(&styles)).unwrap();
+        let (Some(a), Some(b)) = (&first.style.digit_groups, &second.style.digit_groups) else {
+            panic!("EUR is declared with digit groups");
+        };
+        assert!(Arc::ptr_eq(a, b));
     }
 
     #[test]
@@ -3022,10 +3039,10 @@ mod tests {
         assert_eq!(amount.style.decimal_mark, Some(','));
         assert_eq!(
             amount.style.digit_groups,
-            Some(DigitGroups {
+            Some(Arc::new(DigitGroups {
                 mark: '.',
                 sizes: vec![3]
-            })
+            }))
         );
         let counter = &postings[1].amounts[0];
         assert_eq!(counter.quantity, Dec::new(-123450, 2));
