@@ -213,11 +213,14 @@ struct WireQbSample {
 /// when its own rules file assigns no status.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireQbIdMatches {
-    new: usize,
-    unchanged: usize,
+pub(crate) struct WireQbIdMatches {
+    // `pub(crate)`: the CLI path (`import_api::cli_import_qb_journal`) reads
+    // the three counts directly off a [`commit_journal`] result rather than
+    // re-deriving them — see that function's own docs.
+    pub(crate) new: usize,
+    pub(crate) unchanged: usize,
     conflicting: Vec<WireQbConflict>,
-    conflicting_total: usize,
+    pub(crate) conflicting_total: usize,
 }
 
 #[derive(Serialize)]
@@ -236,12 +239,16 @@ struct WireQbFieldDiff {
 }
 
 /// `POST /api/import/qb-journal/commit` — what was written.
+///
+/// `pub(crate)`: also the return type of [`commit_journal`], the extracted
+/// write function `import_api::cli_import_qb_journal` calls directly (see its
+/// own docs) rather than going through a `stageId` this process never stages.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WireQbCommit {
-    imported: usize,
-    id_matches: WireQbIdMatches,
-    ordering: WireQbOrdering,
+    pub(crate) imported: usize,
+    pub(crate) id_matches: WireQbIdMatches,
+    pub(crate) ordering: WireQbOrdering,
     /// `null` when nothing was written, when no touched file is under version
     /// control, or when the git safety net is off.
     git: Option<WireGitResult>,
@@ -252,20 +259,20 @@ pub(crate) struct WireQbCommit {
 /// land rows in more than one, unlike the CSV path's single target.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireQbOrdering {
-    in_order: bool,
-    files: Vec<WireQbFileOrdering>,
+pub(crate) struct WireQbOrdering {
+    pub(crate) in_order: bool,
+    pub(crate) files: Vec<WireQbFileOrdering>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireQbFileOrdering {
+pub(crate) struct WireQbFileOrdering {
     /// A relative, forward-slash handle — the same shape `journals::targets`'
     /// ids take, and (when the file is one of the journal's own source files)
     /// usable straight away with the existing `POST /api/import/sort` route
     /// to fix it. See [`journal_handle`].
-    journal_id: String,
-    in_order: bool,
+    pub(crate) journal_id: String,
+    pub(crate) in_order: bool,
     moves: Vec<WireMove>,
 }
 
@@ -636,20 +643,44 @@ fn posting_comment(posting: &QbPosting) -> String {
 
 fn run_commit(state: &AppState, stage_id: &str) -> Result<WireQbCommit, AppError> {
     let (_, stage) = resolve_stage(state, stage_id)?;
-    let parsed = stage.journal();
+    // Always `FromPrefs`: the HTTP route has no `--no-git`-equivalent
+    // request field, and never has — git behaviour here is governed purely
+    // by Preferences, exactly as it always was. See [`commit_journal`]'s own
+    // docs for why it now takes this as a parameter rather than deciding it
+    // internally.
+    commit_journal(state, stage.journal(), GitPolicy::FromPrefs)
+}
 
-    let snapshot = state.snapshot();
-    let aliases = plain_aliases(&snapshot.journal);
-    let unmapped = qb_import::unmapped_accounts(&aliases, &parsed.transactions);
-    if !unmapped.is_empty() {
-        return Err(AppError::BadRequest(format!(
-            "these QuickBooks accounts have no matching alias, so nothing was written: {}. Add a \
-             plain alias for each one (PUT /api/aliases/{{journalId}}) and try again.",
-            unmapped.join(", ")
-        )));
-    }
-
-    let built = build_and_classify(&snapshot.journal, &aliases, &parsed.transactions);
+/// Classify every parsed transaction by id, refuse if any account is
+/// unmapped, otherwise build and write the new ones, git-check/git-commit
+/// around the write, and report ordering.
+///
+/// This is [`run_commit`]'s own body from "unmapped accounts block the
+/// write" onward (see the plan's Phase D amendments,
+/// `plans/17-quickbooks-journal-import.md`), factored out so it takes a
+/// [`QbJournal`] **directly** instead of a `stageId` — the CLI
+/// (`import_api::cli_import_qb_journal`) has no stage at all, it reads the
+/// file and parses it right there, so a `stageId`-shaped entry point would
+/// force it to fake one. `run_commit` above is now a thin `resolve_stage` +
+/// call to this. There is exactly one write path: nothing downstream of the
+/// unmapped-accounts check is duplicated anywhere else in this crate.
+///
+/// `git`: the CSV path's own `run_commit`/`run_dry_run`/`run_sort` all take
+/// this as a parameter rather than deciding it themselves, for the same
+/// reason it has to be a parameter here now that a second caller exists that
+/// is not bound to Preferences — `import_api::cli_import`'s `--no-git` has no
+/// representation on the HTTP wire at all, so it can only reach this
+/// function as an argument, never by this function re-reading Preferences
+/// itself. [`run_commit`] passes [`GitPolicy::FromPrefs`] unconditionally,
+/// which is exactly what this function did before the parameter existed, so
+/// the HTTP route's own behaviour (and `qb_journal_endpoints.rs`'s existing
+/// tests) is unchanged.
+pub(crate) fn commit_journal(
+    state: &AppState,
+    parsed: &QbJournal,
+    git: GitPolicy,
+) -> Result<WireQbCommit, AppError> {
+    let (snapshot, built) = classify_parsed(state, parsed)?;
     let id_matches = wire_id_matches(&built);
     let new_transactions: Vec<Transaction> = built
         .into_iter()
@@ -683,7 +714,7 @@ fn run_commit(state: &AppState, stage_id: &str) -> Result<WireQbCommit, AppError
         .map(PathBuf::as_path)
         .zip(handles.iter().map(String::as_str))
         .collect();
-    let blocked = if GitPolicy::FromPrefs.enabled(&prefs) {
+    let blocked = if git.enabled(&prefs) {
         import_api::blocked_by_git(&git_targets)
     } else {
         Vec::new()
@@ -715,7 +746,7 @@ fn run_commit(state: &AppState, stage_id: &str) -> Result<WireQbCommit, AppError
         .zip(touched_handles.iter().map(String::as_str))
         .collect();
     let imported = new_transactions.len();
-    let git = GitPolicy::FromPrefs
+    let git = git
         .enabled(&prefs)
         .then(|| import_api::commit_targets(&committed, &commit_message(imported), &redactor))
         .filter(|result| result.committed || result.message.is_some());
@@ -730,6 +761,78 @@ fn run_commit(state: &AppState, stage_id: &str) -> Result<WireQbCommit, AppError
         ordering,
         git,
     })
+}
+
+/// [`classify_report`]'s result: the three id-match counts, without
+/// `wire_id_matches`'s HTTP-shaped `conflicting: Vec<WireQbConflict>` detail
+/// the CLI's own summary line has no use for.
+pub(crate) struct QbClassifyReport {
+    pub(crate) new: usize,
+    pub(crate) unchanged: usize,
+    pub(crate) conflicting: usize,
+}
+
+/// The read-only half of [`commit_journal`]: classify `parsed`'s transactions
+/// by id against `state`'s current journal, refusing (naming every unmapped
+/// account, via [`unmapped_refusal`]) exactly as a commit would, but never
+/// writing anything.
+///
+/// Used by the CLI's `--dry-run` for a QuickBooks Journal input
+/// (`import_api::cli_import_qb_journal`), mirroring the CSV path's own "the
+/// dry run always happens" rule (see `import_api::cli_import`'s doc comment)
+/// rather than threading a `write: bool` through [`commit_journal`]: this
+/// function's own work — an alias scan and an in-memory classify, no
+/// subprocess, no I/O beyond `state.snapshot()` — costs nothing worth
+/// avoiding, so a committing CLI run classifies twice (once here for the
+/// report, once inside `commit_journal` for the write) exactly as a
+/// committing CSV run pays for a real `hledger import --dry-run` subprocess
+/// it does not strictly need either. The alternative (a `write` flag on
+/// `commit_journal`) would leave that function's own contract — "the part of
+/// `run_commit` from 'unmapped accounts block the write' onward", which
+/// always writes — no longer accurately described by its name, and would let
+/// a future caller pass `write: false` to the HTTP commit handler by mistake.
+pub(crate) fn classify_report(
+    state: &AppState,
+    parsed: &QbJournal,
+) -> Result<QbClassifyReport, AppError> {
+    let (_, built) = classify_parsed(state, parsed)?;
+    let matches = wire_id_matches(&built);
+    Ok(QbClassifyReport {
+        new: matches.new,
+        unchanged: matches.unchanged,
+        conflicting: matches.conflicting_total,
+    })
+}
+
+/// The refusal-or-classify step [`commit_journal`]/[`classify_report`] both
+/// start from: an alias scan, then either the [`unmapped_refusal`] (naming
+/// every account with no matching alias) or [`build_and_classify`]'s result.
+/// The one place this check's wording is written, so both callers — and both
+/// the HTTP and CLI doors reaching them — refuse in the exact same words.
+fn classify_parsed(
+    state: &AppState,
+    parsed: &QbJournal,
+) -> Result<(Arc<crate::Snapshot>, Vec<Classified>), AppError> {
+    let snapshot = state.snapshot();
+    let aliases = plain_aliases(&snapshot.journal);
+    let unmapped = qb_import::unmapped_accounts(&aliases, &parsed.transactions);
+    if !unmapped.is_empty() {
+        return Err(unmapped_refusal(&unmapped));
+    }
+    let built = build_and_classify(&snapshot.journal, &aliases, &parsed.transactions);
+    Ok((snapshot, built))
+}
+
+/// "These QuickBooks accounts have no matching alias…" — written once so the
+/// HTTP `commit` route and the CLI's non-interactive refusal (which has
+/// nobody to prompt, so it names the same accounts and stops — see the
+/// plan's Phase D section) say the identical sentence.
+fn unmapped_refusal(unmapped: &[String]) -> AppError {
+    AppError::BadRequest(format!(
+        "these QuickBooks accounts have no matching alias, so nothing was written: {}. Add a \
+         plain alias for each one (PUT /api/aliases/{{journalId}}) and try again.",
+        unmapped.join(", ")
+    ))
 }
 
 fn commit_message(imported: usize) -> String {

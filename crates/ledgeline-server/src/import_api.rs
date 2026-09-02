@@ -4678,19 +4678,33 @@ fn shell_quote(argument: &str) -> String {
 /// exactly the files the screen can and no others.
 #[derive(clap::Args, Debug, Clone)]
 pub struct CliImport {
-    /// The statement to import: CSV/TSV, OFX/QFX/QBO, or a spreadsheet.
+    /// The statement to import: CSV/TSV, OFX/QFX/QBO, a spreadsheet, or a
+    /// QuickBooks Online "Journal" report export. Which one is decided by
+    /// sniffing the file's own bytes
+    /// ([`ledgeline_core::qb_journal::detect`]) — the exact same check the
+    /// screen's upload makes — not by `--output`/`--rules` being present or
+    /// absent.
     #[arg(short = 'i', long)]
     input: PathBuf,
 
     /// Where to keep the converted CSV. Must be inside the journal's own
     /// directory, and is also the file `hledger` keys its de-duplication state
     /// to, so re-importing the same statement later needs the same `--output`.
+    ///
+    /// **Required** for a CSV/OFX/spreadsheet `--input`; **refused** for a
+    /// QuickBooks Journal export, which never produces an intermediate CSV
+    /// at all. `Option` rather than a plain required path because which rule
+    /// applies is decided by the file's *content*, which `clap` cannot see
+    /// while parsing arguments — see `cli_import`'s own docs.
     #[arg(short = 'o', long)]
-    output: PathBuf,
+    output: Option<PathBuf>,
 
     /// The hledger CSV rules file to import with.
+    ///
+    /// **Required**/**refused** on exactly the same terms as `--output` — see
+    /// that field's own docs.
     #[arg(short = 'r', long)]
-    rules: PathBuf,
+    rules: Option<PathBuf>,
 
     /// The journal file to append the imported transactions to.
     #[arg(short = 'j', long)]
@@ -4704,6 +4718,10 @@ pub struct CliImport {
 
     /// The statement's closing balance, which may be negative. The import is
     /// REFUSED if the journal does not reconcile to it.
+    ///
+    /// **Refused** for a QuickBooks Journal export: that format has no single
+    /// statement-closing balance to reconcile against, since one export can
+    /// write into several accounts across several files in one run.
     // `allow_hyphen_values` because **a credit-card statement balance is
     // negative**, and without it `--balance -3238.65` is read as the unknown
     // flag `-3` — which would make this option unusable for exactly the accounts
@@ -4787,6 +4805,80 @@ pub struct CliImportWritten {
     pub sorted: Option<usize>,
 }
 
+/// What one `ledgeline import` run did — the CSV/OFX/spreadsheet path or the
+/// QuickBooks Journal one, whichever [`ledgeline_core::qb_journal::detect`]
+/// picked (see `cli_import`'s own docs).
+///
+/// An enum rather than one struct wide enough for both: [`CliImportReport`]'s
+/// `balance`/`status` and [`CliImportWritten`]'s `csv` name concepts (a
+/// single statement balance, an intermediate CSV file) a QuickBooks Journal
+/// import has none of, and [`CliQbReport`]'s `new`/`unchanged`/`conflicting`
+/// id-match counts have no CSV-path analogue either — forcing the two shapes
+/// together would leave fields on one variant or the other that can never be
+/// populated, which is exactly the "the type can express a state that cannot
+/// happen" gap this codebase's own conventions warn against (see
+/// `plans/17-quickbooks-journal-import.md`'s Phase D amendments). `main.rs`
+/// matches on this to pick which fields to print, the same way it already
+/// decides everything else about rendering.
+#[derive(Debug, Clone)]
+pub enum CliRunReport {
+    Csv(CliImportReport),
+    QbJournal(CliQbReport),
+}
+
+/// What a `ledgeline import` run against a QuickBooks Journal export did —
+/// the QuickBooks-Journal analogue of [`CliImportReport`]/[`CliImportWritten`],
+/// not a reuse of either (see [`CliRunReport`]'s own docs for why).
+#[derive(Debug, Clone)]
+pub struct CliQbReport {
+    /// The `ledgeline import …` line that reproduces this run. Built by
+    /// [`qb_cli_invocation`], the QuickBooks-Journal analogue of
+    /// [`cli_invocation`] — this format has no rules file, CSV destination,
+    /// or balance to name, so it is not that function called with blanks.
+    pub command: String,
+    /// Transactions the parse found, before id-based dedup against the
+    /// journal.
+    pub transaction_count: usize,
+    pub posting_count: usize,
+    /// hledger date-format directive the parser guessed, e.g. `%-m/%-d/%Y`.
+    pub date_format: String,
+    /// `true` when another format in the catalogue reads the same sample
+    /// dates — see [`ledgeline_core::qb_journal::QbJournal::date_format`]'s
+    /// own docs. Surfaced, not resolved: there is nothing to resolve it with
+    /// at this layer, same as the GUI's own panel.
+    pub date_format_ambiguous: bool,
+    /// Ids not already in the journal — what a commit would write.
+    pub new: usize,
+    /// Ids already in the journal, identical to the freshly-parsed
+    /// transaction — skipped, not re-written.
+    pub unchanged: usize,
+    /// Ids already in the journal but differing from the freshly-parsed
+    /// transaction — a hand-edit outranks a re-download, so these are never
+    /// overwritten (see `qb_journal_api`'s own docs).
+    pub conflicting: usize,
+    /// `None` on `--dry-run`.
+    pub written: Option<CliQbWritten>,
+}
+
+/// What a committing QuickBooks Journal run actually wrote.
+#[derive(Debug, Clone)]
+pub struct CliQbWritten {
+    /// Every `include`d file the write actually touched, relative handles.
+    /// Plural, unlike [`CliImportWritten::journal`]: `InsertPosition::
+    /// DateOrdered` can route a multi-year import's rows into more than one
+    /// file — see `qb_journal_api`'s module docs.
+    pub journals: Vec<String>,
+    /// Transactions appended — every `new` id from [`CliQbReport`] is
+    /// written; every `unchanged`/`conflicting` one never is.
+    pub imported: usize,
+    /// Every touched file is in date order after the import (and after a
+    /// `--sort`, if one was asked for and needed).
+    pub in_order: bool,
+    /// Transactions a `--sort` moved, summed across every file it touched,
+    /// or `None` when `--sort` was not asked for.
+    pub sorted: Option<usize>,
+}
+
 /// Run one non-interactive import against `state`.
 ///
 /// # Why this reuses the HTTP routes' own functions
@@ -4821,17 +4913,35 @@ pub struct CliImportWritten {
 /// does not reconcile can refuse **before** anything is written. A script has
 /// nobody to look at a red number and decide.
 ///
+/// # Detection decides the branch, not a flag (WP-17 Phase D)
+///
+/// `--input`'s bytes are sniffed with [`ledgeline_core::qb_journal::detect`]
+/// — the exact same check `stage_upload` runs for the GUI — right after they
+/// are read, and that decides which of [`cli_import_csv`]/
+/// [`cli_import_qb_journal`] handles the rest of the run. There is
+/// deliberately no `--quickbooks-journal` flag: that would be a second way to
+/// say what a byte-sniff already says reliably (proven accurate over the
+/// whole fixture corpus, including a deliberate near-miss export — see
+/// `ledgeline_core::qb_journal`'s own module docs), and CLI/GUI detection
+/// diverging is exactly what this rule exists to prevent.
+///
+/// `--output`/`--rules` are therefore [`Option`] on [`CliImport`] rather than
+/// plain required paths: `clap` cannot see the file's content while parsing
+/// arguments, so it cannot enforce "required for CSV, refused for QuickBooks
+/// Journal" itself. Both branch functions re-check this at runtime, right
+/// after detection, in the first few lines of their own bodies.
+///
 /// # Errors
 ///
 /// One sentence, ready to print. The engine's own [`AppError`] is deliberately
 /// not exposed: its variants are HTTP conditions, which a command line has no
 /// use for, and its `Display` is already the sentence a person needs.
-pub fn run_cli_import(state: &AppState, args: &CliImport) -> Result<CliImportReport, String> {
+pub fn run_cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, String> {
     cli_import(state, args).map_err(|error| error.to_string())
 }
 
 /// [`run_cli_import`], in the crate's own error type.
-fn cli_import(state: &AppState, args: &CliImport) -> Result<CliImportReport, AppError> {
+fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppError> {
     // The journal this process was opened with — `--root-journal`, or `--journal`
     // when it was not given. `main_journal`'s own 404 is not used here: its
     // wording is for a caller that supplied a handle, and this state was built
@@ -4844,17 +4954,15 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliImportReport, App
         .ok_or_else(|| AppError::Internal("this process has no journal open".to_string()))?;
     let root_dir = include_root(&root_journal)?;
 
-    // Layer 2/3 resolution, through the SAME scans the routes use: a path that
+    // Layer 2/3 resolution, through the SAME scan the routes use: a path that
     // does not name a file the engine already knows about cannot be imported to,
-    // whichever door it arrives at.
+    // whichever door it arrives at, and whichever branch below handles it.
     let journal_id = cli_journal_id(state, &root_dir, &args.journal)?;
-    let rules_id = cli_rules_id(&rules::discover(&root_journal), &args.rules)?;
-    let csv_path = cli_csv_path(&root_dir, &args.output)?;
     let root_id = cli_journal_id(state, &root_dir, &root_journal)?;
 
-    // The upload, done the way the browser does it — the same conversion, the
-    // same detection, the same staging area — because a CLI import that read the
-    // file some other way would be a different import.
+    // The upload, read the way the browser's drop reads it — before either
+    // branch is chosen, because which one applies is a question about these
+    // bytes (see this function's own docs on detection).
     let name = cli_upload_name(&args.input)?;
     let bytes = std::fs::read(&args.input).map_err(|error| {
         AppError::BadRequest(format!(
@@ -4869,13 +4977,70 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliImportReport, App
             stage::MAX_UPLOAD_BYTES / (1024 * 1024)
         )));
     }
-    let staged = stage_upload(state, &name, &bytes)?;
+
+    if ledgeline_core::qb_journal::detect(&bytes) {
+        return cli_import_qb_journal(state, args, &bytes, &name, &journal_id, &root_id)
+            .map(CliRunReport::QbJournal);
+    }
+    cli_import_csv(
+        state,
+        args,
+        &root_journal,
+        &root_dir,
+        &journal_id,
+        &root_id,
+        &name,
+        &bytes,
+    )
+    .map(CliRunReport::Csv)
+}
+
+/// The CSV/OFX/spreadsheet branch of [`cli_import`] — everything
+/// `cli_import` did before WP-17 Phase D added a second one, unchanged in
+/// behavior (see the plan's Phase D amendments for the characterization work
+/// that established this).
+#[allow(clippy::too_many_arguments)]
+fn cli_import_csv(
+    state: &AppState,
+    args: &CliImport,
+    root_journal: &Path,
+    root_dir: &Path,
+    journal_id: &str,
+    root_id: &str,
+    name: &str,
+    bytes: &[u8],
+) -> Result<CliImportReport, AppError> {
+    // `-o`/`-r` are required here, exactly as they always were — re-checked
+    // at runtime now that `clap` cannot enforce it statically (see
+    // `CliImport`'s own field docs and `cli_import`'s "Detection decides the
+    // branch" section).
+    let mut missing = Vec::new();
+    if args.output.is_none() {
+        missing.push("--output");
+    }
+    if args.rules.is_none() {
+        missing.push("--rules");
+    }
+    if !missing.is_empty() {
+        return Err(AppError::BadRequest(format!(
+            "{} required: this input is not a QuickBooks Journal export, so it needs a CSV \
+             destination and a rules file, like every other import.",
+            missing_sentence(&missing),
+        )));
+    }
+    let output = args.output.as_deref().expect("checked above");
+    let rules = args.rules.as_deref().expect("checked above");
+
+    let rules_id = cli_rules_id(&rules::discover(root_journal), rules)?;
+    let csv_path = cli_csv_path(root_dir, output)?;
+
+    let staged = stage_upload(state, name, bytes)?;
 
     let request = WireDryRunRequest {
         stage_id: staged.stage_id,
         rules_id,
         csv_path,
-        journal_id,
+        journal_id: journal_id.to_string(),
         balance: args.balance.clone(),
         balance_account: args.balance_account.clone(),
     };
@@ -4885,9 +5050,9 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliImportReport, App
         GitPolicy::FromPrefs
     };
     let command = cli_invocation(&CliRun {
-        input: &name,
+        input: name,
         plan: &request,
-        root_journal: (root_id != request.journal_id).then_some(root_id.as_str()),
+        root_journal: (root_id != request.journal_id).then_some(root_id),
         write_assertion: args.write_assertion,
         sort: args.sort,
         dry_run: args.dry_run,
@@ -4977,6 +5142,209 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliImportReport, App
             sorted,
         }),
     })
+}
+
+/// "`--output` is required" / "`--output` and `--rules` are required" — the
+/// grammar for [`cli_import_csv`]'s missing-flag refusal.
+fn missing_sentence(missing: &[&str]) -> String {
+    match missing {
+        [one] => format!("{one} is"),
+        many => format!("{} are", many.join(" and ")),
+    }
+}
+
+/// The QuickBooks Journal branch of [`cli_import`] (WP-17 Phase D).
+///
+/// No stage: unlike the GUI (`stage_upload` → `qb_journal_api::preview`/
+/// `commit`, reading a parsed [`ledgeline_core::qb_journal::QbJournal`] back
+/// out of [`crate::qb_journal_api::QbStageArea`] by `stageId`), this process
+/// already has `bytes` in hand and parses them directly — a stage exists to
+/// let a *later, separate* HTTP request find the same parse again, and there
+/// is no later request here.
+///
+/// # No second write path
+///
+/// The unmapped-accounts check, the build, the classify, the git-check, the
+/// write, and the post-write ordering report are exactly
+/// `qb_journal_api::commit_journal`'s body — the same function `commit`'s
+/// HTTP handler now calls too (see that function's own docs). This function
+/// is glue: turn `CliImport`'s flags into a refusal-or-report, and turn
+/// `commit_journal`'s [`WireQbCommit`](crate::qb_journal_api::WireQbCommit)
+/// into [`CliQbReport`].
+///
+/// # The dry run always happens
+///
+/// Mirrors [`cli_import_csv`]'s own rule (see `cli_import`'s docs) for the
+/// same reason: `qb_journal_api::classify_report` always runs first (an alias
+/// scan plus an in-memory classify — no subprocess, so unlike the CSV path's
+/// real `hledger import --dry-run` cost, this buys the same "know before you
+/// write" guarantee for nothing), and only when `--dry-run` was **not** given
+/// does this go on to call `commit_journal`, which is the one function that
+/// actually writes. See `classify_report`'s own doc comment for why this is a
+/// second function rather than a `write: bool` parameter threaded through
+/// `commit_journal`.
+fn cli_import_qb_journal(
+    state: &AppState,
+    args: &CliImport,
+    bytes: &[u8],
+    name: &str,
+    journal_id: &str,
+    root_id: &str,
+) -> Result<CliQbReport, AppError> {
+    // `-o`/`-r`/`--balance`/`--balance-account`/`--write-assertion` are
+    // refused BY NAME, never silently ignored — there is no CSV or rules
+    // file in this path, and no single statement balance to reconcile
+    // against, since one export can write into several accounts across
+    // several files in one run.
+    let mut extra = Vec::new();
+    if args.output.is_some() {
+        extra.push("--output");
+    }
+    if args.rules.is_some() {
+        extra.push("--rules");
+    }
+    if args.balance.is_some() {
+        extra.push("--balance");
+    }
+    if args.balance_account.is_some() {
+        extra.push("--balance-account");
+    }
+    if args.write_assertion {
+        extra.push("--write-assertion");
+    }
+    if !extra.is_empty() {
+        return Err(AppError::BadRequest(format!(
+            "{} not used for a QuickBooks Journal export: there is no CSV or rules file in this \
+             path, and no single statement balance to reconcile against, since one export can \
+             write into several accounts across several files in one run.",
+            missing_sentence(&extra),
+        )));
+    }
+
+    let parsed = ledgeline_core::qb_journal::parse(bytes)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+
+    let git = if args.no_git {
+        GitPolicy::Off
+    } else {
+        GitPolicy::FromPrefs
+    };
+    let command = qb_cli_invocation(
+        name,
+        journal_id,
+        (root_id != journal_id).then_some(root_id),
+        args.sort,
+        args.dry_run,
+        args.no_git,
+    );
+
+    let report = crate::qb_journal_api::classify_report(state, &parsed)?;
+    let transaction_count = parsed.transactions.len();
+    let posting_count = parsed
+        .transactions
+        .iter()
+        .map(|txn| txn.postings.len())
+        .sum();
+    let date_format = parsed.date_format.format.clone();
+    let date_format_ambiguous = parsed.date_format.ambiguous;
+
+    if args.dry_run {
+        return Ok(CliQbReport {
+            command,
+            transaction_count,
+            posting_count,
+            date_format,
+            date_format_ambiguous,
+            new: report.new,
+            unchanged: report.unchanged,
+            conflicting: report.conflicting,
+            written: None,
+        });
+    }
+
+    let commit = crate::qb_journal_api::commit_journal(state, &parsed, git)?;
+    let journals: Vec<String> = commit
+        .ordering
+        .files
+        .iter()
+        .map(|file| file.journal_id.clone())
+        .collect();
+
+    // Only when it is both asked for and needed, exactly the CSV path's own
+    // rule — but per FILE, since a multi-year import can touch more than
+    // one (`qb_journal_api`'s own module docs).
+    let sorted = if args.sort {
+        let mut moved = 0usize;
+        for file in &commit.ordering.files {
+            if file.in_order {
+                continue;
+            }
+            moved += run_sort(
+                state,
+                &WireSortRequest {
+                    journal_id: file.journal_id.clone(),
+                },
+                git,
+            )?
+            .moved;
+        }
+        Some(moved)
+    } else {
+        None
+    };
+
+    Ok(CliQbReport {
+        command,
+        transaction_count,
+        posting_count,
+        date_format,
+        date_format_ambiguous,
+        new: report.new,
+        unchanged: report.unchanged,
+        conflicting: report.conflicting,
+        written: Some(CliQbWritten {
+            journals,
+            imported: commit.imported,
+            in_order: commit.ordering.in_order || sorted.is_some(),
+            sorted,
+        }),
+    })
+}
+
+/// The `ledgeline import …` line for a QuickBooks Journal run — the
+/// QuickBooks-Journal analogue of [`cli_invocation`]. Not that function
+/// reused: this format has no rules file, CSV destination, or balance to
+/// name (see [`CliQbReport::command`]'s own docs), so [`CliRun`]'s
+/// [`WireDryRunRequest`]-shaped `plan` field has nothing to hold here.
+fn qb_cli_invocation(
+    input: &str,
+    journal_id: &str,
+    root_journal: Option<&str>,
+    sort: bool,
+    dry_run: bool,
+    no_git: bool,
+) -> String {
+    let mut argv: Vec<String> = ["ledgeline", "import", "-i", input, "-j", journal_id]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    if let Some(root) = root_journal {
+        argv.push("--root-journal".to_string());
+        argv.push(root.to_string());
+    }
+    if sort {
+        argv.push("--sort".to_string());
+    }
+    if dry_run {
+        argv.push("--dry-run".to_string());
+    }
+    if no_git {
+        argv.push("--no-git".to_string());
+    }
+    argv.iter()
+        .map(|argument| shell_quote(argument))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The `--input` file's own name, validated exactly as an upload's
@@ -6245,8 +6613,11 @@ mod tests {
         // The four handles come back as paths naming the same files, relative to
         // the journal's own directory — which is where the panel says to run it.
         assert_eq!(parsed.input, Path::new("statement.qfx"));
-        assert_eq!(parsed.output, Path::new("import/bank.csv"));
-        assert_eq!(parsed.rules, Path::new("import/bank.csv.rules"));
+        assert_eq!(parsed.output.as_deref(), Some(Path::new("import/bank.csv")));
+        assert_eq!(
+            parsed.rules.as_deref(),
+            Some(Path::new("import/bank.csv.rules"))
+        );
         assert_eq!(parsed.journal, Path::new("2026/2026.journal"));
         assert_eq!(
             parsed.root_journal.as_deref(),

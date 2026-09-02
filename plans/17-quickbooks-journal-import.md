@@ -766,6 +766,160 @@ Unmapped accounts on the CLI path have no one to prompt, so the run refuses and 
 "ask, don't guess" policy, a non-interactive shape of it, using the same refusal message text
 `run_commit`'s HTTP handler already produces.
 
+### Contract amendments made during implementation (Phase D)
+
+Per convention #9 in `plans/00-overview.md`, following Phases A, B and C's own amendments sections
+above.
+
+**`CliImport`'s `-o`/`-r` became `Option<PathBuf>` exactly as this section already specified**
+(`crates/ledgeline-server/src/import_api.rs`, `struct CliImport`, now around line 4680) — no
+surprise there. What the plan's sketch did not resolve, because it could not without the real
+`clap` behavior in hand, is **what the runtime refusal text should be**. Characterized first, per
+this section's own instruction ("write a characterization test proving this first"): before
+touching anything, `cargo build -p ledgeline` then running `ledgeline import -i statement.csv -r
+rules -j main.journal` (omitting `--output`) against `HEAD` on this branch printed `clap`'s own
+message verbatim —
+
+```
+error: the following required arguments were not provided:
+  --output <OUTPUT>
+
+Usage: ledgeline import --input <INPUT> --output <OUTPUT> --rules <RULES> --journal <JOURNAL>
+
+For more information, try '--help'.
+```
+
+— exit code 2. That exact text turns out **not preservable**, for a reason worth stating plainly:
+once `--output`/`--rules` are `Option`, `clap` itself no longer considers them required and could
+not regenerate that `Usage:` line even if asked to — the whole point of the change is that
+required-ness now depends on `--input`'s content, which `clap` cannot see while parsing arguments.
+Reproducing the string by hand would mean this library crate depending on `main.rs`'s own
+`Cli`/`Command` derive (to get a synopsis that stays in sync), which it must not: `main.rs` already
+depends on `ledgeline-server`'s library, not the other way around. So the runtime check
+(`cli_import_csv`, `import_api.rs`) refuses in this crate's own established one-sentence
+`AppError::BadRequest` style — the same style every other `cli_*` runtime refusal in this file
+already uses (`cli_journal_id`'s "is not part of this journal", `cli_csv_path`'s "is not inside
+this journal's own directory", etc.) — naming the missing flag(s) by long name and, when both are
+missing, both in one sentence (`missing_sentence`, mirroring `clap`'s own "list everything that's
+missing, not just the first" property). Exit code becomes 1 (`ExitCode::FAILURE`, via
+`AppError::Import`) rather than `clap`'s 2. This is a real, deliberate difference from a strict
+byte-for-byte reading of "same error message clap would have given" — but no test in
+`import_cli.rs`, before or after this phase, ever asserted a *specific* exit code, only
+`!status.success()`, so no existing script contract this codebase actually tests for is broken.
+Three new hermetic tests in `import_cli.rs`
+(`a_missing_output_flag_is_refused_before_anything_runs`,
+`a_missing_rules_flag_is_refused_before_anything_runs`,
+`omitting_both_output_and_rules_names_both_in_one_refusal`) are the regression guard going forward,
+proving: refused before anything runs, on stderr, naming the missing flag(s), tree byte-identical
+afterward. All 15 of `import_cli.rs`'s pre-existing tests pass unmodified alongside them (18 total)
+— the CSV path's own behavior (including its exit-non-zero-on-refusal property) is unchanged.
+
+**No second write path: `qb_journal_api::run_commit`'s body from "unmapped accounts block the
+write" onward is now `qb_journal_api::commit_journal(state, parsed: &QbJournal, git: GitPolicy) ->
+Result<WireQbCommit, AppError>`**, `pub(crate)`, exactly as this section specified — `run_commit`
+is now `resolve_stage` + one call to it. One deviation the sketch did not anticipate: **`git` had
+to become a parameter**. The original `run_commit` hardcoded `GitPolicy::FromPrefs` twice inside
+the body (the pre-write `blocked_by_git` check and the post-write `commit_targets` call), which was
+correct when the HTTP route was the only caller — it has no `--no-git`-equivalent request field and
+never has, git behavior there is governed purely by Preferences. But `CliImport::no_git` has no
+representation on the HTTP wire at all, so the only way for it to reach `commit_journal` is as an
+argument; threading `GitPolicy` through (the exact pattern `run_dry_run`/`run_commit`/`run_sort`
+already use in `import_api.rs`, for the identical reason) was the natural fix. `run_commit` now
+passes `GitPolicy::FromPrefs` explicitly, which is bit-for-bit what the two `GitPolicy::FromPrefs
+.enabled(&prefs)` call sites already did — `GitPolicy::enabled`'s own definition
+(`self == Self::FromPrefs && autocommit_enabled(prefs)`) makes this substitution provably behavior-
+preserving — and `qb_journal_endpoints.rs`'s existing 14 tests pass **unmodified**, which is the
+"prove it" this section itself asked for. `WireQbCommit`/`WireQbIdMatches`/`WireQbOrdering`/
+`WireQbFileOrdering` gained `pub(crate)` on the handful of fields the CLI path reads (`imported`,
+`id_matches.{new,unchanged,conflicting_total}`, `ordering.{in_order,files}`,
+`WireQbFileOrdering.{journal_id,in_order}`) — the same "widen a wire struct's field visibility for
+cross-module reuse, change no behavior" move Phase B's own amendments already made in
+`import_api.rs`/`edit_api.rs`/`stage.rs`.
+
+**The dry-run decision (the plan's point 6): a second read-only function, not a `write: bool`
+parameter on `commit_journal`.** `qb_journal_api::classify_report(state, &parsed) ->
+Result<QbClassifyReport, AppError>` shares `commit_journal`'s own refusal-or-classify prefix
+(factored once more into a private `classify_parsed` helper both call, so the unmapped-accounts
+refusal text — `unmapped_refusal`, one function — is written exactly once and reached from three
+places: the HTTP `commit` route, `classify_report`, and `commit_journal`'s own pre-write check).
+`cli_import_qb_journal` (`import_api.rs`) always calls `classify_report` first, mirroring
+`cli_import_csv`'s own "the dry run always happens" rule (see `run_cli_import`'s doc comment) for
+an analogous reason: it is the only way to know, before writing, whether any account is unmapped or
+any id would conflict. Unlike the CSV path, this costs **nothing** worth avoiding — an alias scan
+plus an in-memory classify over at most a few dozen fixtures'-worth of transactions, no subprocess,
+no I/O beyond one `state.snapshot()` — so a committing CLI run classifies twice (once via
+`classify_report` for the report, once more inside `commit_journal` for the write) exactly as a
+committing CSV run pays for one real `hledger import --dry-run` subprocess it does not strictly
+need either. The alternative (threading `write: bool` through `commit_journal`) was rejected on
+purpose: it would leave that function's own name and doc comment — "the part of `run_commit` from
+'unmapped accounts block the write' onward," which this section itself specifies as always
+writing — no longer an accurate description, and would open the door to a future caller passing
+`write: false` into the HTTP `commit` handler by mistake. Both functions are reached from
+`cli_import_qb_journal` only; the HTTP surface still calls only `commit_journal` (via `run_commit`),
+unchanged.
+
+**Output shape (the plan's point 7): a new `CliRunReport` enum, not one struct wide enough for
+both formats.** `run_cli_import` now returns `Result<CliRunReport, String>` where `CliRunReport` is
+`Csv(CliImportReport) | QbJournal(CliQbReport)` — `CliImportReport`/`CliImportWritten` are
+untouched. A shared subset was considered and rejected: `CliImportReport::balance`/`status` name a
+single statement-closing balance and hledger's own dry-run status line, neither of which exists on
+this path, and `CliQbReport::new`/`unchanged`/`conflicting` (the id-match counts) have no CSV-path
+analogue at all (the CSV path's own preview never separates these out — `run_dry_run`'s proposal is
+pre-dedup). Forcing one struct to cover both would leave fields that can never be populated on one
+variant or the other, which is exactly the "the type can express a state that cannot happen" gap
+this codebase's conventions warn against (the same reasoning Phase C's own amendments used for why
+`QbIdMatches` does not reuse the CSV path's `IdMatches` on the SPA side — this is the identical call
+made again on the Rust side). `CliQbReport`/`CliQbWritten` (new, `import_api.rs`, re-exported from
+`lib.rs`) follow `CliImportReport`/`CliImportWritten`'s own convention exactly: one printable fact
+per field, no ANSI, `main.rs` decides rendering. `main.rs::run_import` now matches on `CliRunReport`
+and dispatches to `print_csv_report`/`print_qb_report` — `print_csv_report` is `run_import`'s own
+prior body, unmoved in substance, just extracted into its own function; `print_qb_report` is new
+and mirrors its shape (command line to stderr; counts, what was written, an out-of-order note, a
+re-sort report, to stdout).
+
+**`-j` is resolved via `cli_journal_id` on both branches, as this section said it must be, but its
+resolved handle is used only for the echoed command line on the QuickBooks Journal branch** — there
+is still no `journalId` anywhere `commit_journal`/`edit_api::add_transactions` touch (Phase B's own
+"No `journalId`, anywhere on this surface" amendment stands unchanged; `InsertPosition::DateOrdered`
+still decides every transaction's destination file from the journal's own chronology). Resolving it
+anyway buys two things: a bogus `-j` refuses with the same "is not part of this journal, it
+includes: …" message on both branches rather than a QuickBooks-Journal-specific one, and the
+re-runnable command line the QuickBooks branch echoes (`qb_cli_invocation`, new — the
+QuickBooks-Journal analogue of `cli_invocation`/`CliRun`, not those reused, since this format has no
+rules file, CSV path, or balance to hold in a `WireDryRunRequest`-shaped `plan` field) names `-j`
+the same portable, relative way the CSV branch's does.
+
+**`--sort` sums across every touched file, per the plan's own note that a multi-year import can
+touch more than one.** `cli_import_qb_journal` loops `commit.ordering.files`, calling the existing
+`run_sort` (unchanged, `import_api.rs`) once per file reported not-in-order, and
+`CliQbWritten.sorted` is the total moved across all of them — `CliQbWritten.in_order` is `true` once
+every touched file either started in order or was just fixed, mirroring the CSV path's own
+`commit.ordering.in_order || sorted.is_some()` idiom exactly.
+
+**No new `LEDGELINE_HLEDGER_QBJOURNAL_CHECK`-style opt-in test was added**, per this section's own
+"use your judgment, but don't add one just to have one." The CLI path calls `commit_journal` — the
+identical function, unchanged — that `qb_journal_hledger_check.rs`'s two existing opt-in tests
+(`hledger_accepts_and_balances_the_journal_qb_journal_commit_writes`,
+`hledger_accepts_the_full_report_fixture`) already prove `hledger check`/`hledger print` accept.
+There is no new hledger-facing surface a CLI-specific opt-in test would exercise that those two
+do not already cover; re-run as part of `just hledger-checks` for this phase, both still pass.
+
+**New files and test counts.** `crates/ledgeline-server/tests/import_cli_qb_journal.rs` (new, 8
+hermetic tests: detected-and-committed happy path plus the command-line echo; `-o`/`-r` refused by
+name; `--balance`/`--balance-account`/`--write-assertion` refused by name; unmapped accounts refuse
+and list them; `--dry-run` reports and writes nothing; a second commit of the same export imports
+nothing new; the out-of-order note without `--sort`; `--sort` restoring date order). `import_cli.rs`
+gained 3 (the `-o`/`-r` runtime-refusal characterization above); its pre-existing 15 pass unmodified
+(18 total). `qb_journal_endpoints.rs`'s existing 14 tests pass unmodified (the "prove it" for the
+`commit_journal`/`GitPolicy` extraction). No `ledgeline-core` changes were needed for this phase —
+everything new lives in `ledgeline-server` (`import_api.rs`, `qb_journal_api.rs`, `main.rs`,
+`lib.rs`'s re-exports).
+
+**Verification commands, all clean:** `cargo fmt --check`; `cargo clippy --workspace --all-targets
+-- -D warnings`; `cargo test --workspace` (hermetic, every pre-existing suite still green); `just
+hledger-checks` (every opt-in suite, including the two QuickBooks-Journal ones, still green against
+real `hledger 1.52`).
+
 ## Definition of done (per phase)
 
 - `cargo test` stays hermetic; the new opt-in `LEDGELINE_HLEDGER_QBJOURNAL_CHECK` suite passes

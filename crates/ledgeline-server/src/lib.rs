@@ -78,11 +78,18 @@ pub use security::{
 };
 // `ledgeline import` (WP-16 Phase 3). The binary is a SEPARATE crate from this
 // library, so the `pub(crate)` the rest of `import_api` uses would not reach it —
-// these four names are the whole of the CLI's surface, and the request/response
+// these names are the whole of the CLI's surface, and the request/response
 // wire types stay module-private behind them. `run_cli_import` deliberately
 // takes `CliImport` (the `clap` derive) rather than loose arguments: one
-// definition of what an import run can be asked to do.
-pub use import_api::{CliImport, CliImportReport, CliImportWritten, run_cli_import};
+// definition of what an import run can be asked to do. `CliRunReport` (WP-17
+// Phase D) is the CSV/QuickBooks-Journal-branching return type `run_cli_import`
+// now hands back; `CliQbReport`/`CliQbWritten` are its QuickBooks Journal
+// variant's own payload, alongside the CSV path's pre-existing
+// `CliImportReport`/`CliImportWritten`.
+pub use import_api::{
+    CliImport, CliImportReport, CliImportWritten, CliQbReport, CliQbWritten, CliRunReport,
+    run_cli_import,
+};
 // `PriceFeed` (+ `FetchedPrice`/`YahooError`, reachable through its method
 // signature) is re-exported so the integration tests can build a fake and hand
 // it to `AppState::with_price_source` — the only way `/api/prices/update` is

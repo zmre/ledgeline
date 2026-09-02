@@ -212,7 +212,16 @@ fn run_import(args: &ledgeline::CliImport) -> Result<(), AppError> {
         })?;
 
     let report = ledgeline::run_cli_import(&state, args).map_err(AppError::Import)?;
+    match report {
+        ledgeline::CliRunReport::Csv(report) => print_csv_report(&report),
+        ledgeline::CliRunReport::QbJournal(report) => print_qb_report(&report),
+    }
+    Ok(())
+}
 
+/// Render a CSV/OFX/spreadsheet run's report — exactly what `run_import`
+/// printed before WP-17 Phase D split this into two branches.
+fn print_csv_report(report: &ledgeline::CliImportReport) {
     // The command line goes to stderr, so a script's stdout stays the result and
     // a log of an unattended run still says what it did in a re-runnable form.
     eprintln!("ledgeline: {}", report.command);
@@ -249,7 +258,69 @@ fn run_import(args: &ledgeline::CliImport) -> Result<(), AppError> {
     if let Some(balance) = &report.balance {
         println!("statement balance: {balance}");
     }
-    Ok(())
+}
+
+/// Render a QuickBooks Journal run's report (WP-17 Phase D). The QuickBooks
+/// analogue of [`print_csv_report`] — a separate function, not a shared one,
+/// for the same reason [`ledgeline::CliRunReport`] is an enum rather than one
+/// struct wide enough for both (see that type's own doc comment).
+fn print_qb_report(report: &ledgeline::CliQbReport) {
+    eprintln!("ledgeline: {}", report.command);
+    println!(
+        "{} transaction{}, {} posting{} parsed, dated {}{}",
+        report.transaction_count,
+        plural(report.transaction_count),
+        report.posting_count,
+        plural(report.posting_count),
+        report.date_format,
+        if report.date_format_ambiguous {
+            " (ambiguous: another format in the catalogue reads the same dates — check the \
+             written dates before relying on this)"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "{} new, {} already imported, {} conflicting (left alone, never overwritten)",
+        report.new, report.unchanged, report.conflicting
+    );
+    match &report.written {
+        None => println!(
+            "{} transaction{} would be imported. Nothing was written (--dry-run).",
+            report.new,
+            plural(report.new)
+        ),
+        Some(written) if written.journals.is_empty() => {
+            // Every id was already `unchanged`/`conflicting` — nothing new,
+            // so nothing was touched and there is no file to name.
+            println!(
+                "appended {} transaction{}",
+                written.imported,
+                plural(written.imported)
+            );
+        }
+        Some(written) => {
+            println!(
+                "appended {} transaction{} to {}",
+                written.imported,
+                plural(written.imported),
+                written.journals.join(", ")
+            );
+            match written.sorted {
+                Some(0) => {}
+                Some(moved) => println!(
+                    "re-sorted {}, moving {moved} transaction{} in total",
+                    written.journals.join(", "),
+                    plural(moved)
+                ),
+                None if !written.in_order => println!(
+                    "note: {} is no longer in date order; re-run with --sort to fix it",
+                    written.journals.join(", ")
+                ),
+                None => {}
+            }
+        }
+    }
 }
 
 /// The `s` in "3 transactions".

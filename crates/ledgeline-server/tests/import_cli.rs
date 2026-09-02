@@ -378,6 +378,94 @@ fn a_balance_without_its_account_is_refused_by_the_parser() {
     );
 }
 
+/// `--output`/`--rules` are `Option<PathBuf>` on [`ledgeline::CliImport`], not
+/// plain required paths, since WP-17 Phase D (see
+/// `plans/17-quickbooks-journal-import.md`'s Phase D section): whether they
+/// are required depends on `--input`'s own CONTENT (a QuickBooks Journal
+/// export takes neither), which `clap` cannot see while parsing arguments, so
+/// it can no longer enforce this itself. These three tests are the
+/// characterization work that section calls for — they replace what used to
+/// be `clap`'s own "the following required arguments were not provided" /
+/// exit-2 refusal (captured by hand against this branch before Phase D
+/// touched anything: `error: the following required arguments were not
+/// provided:\n  --output <OUTPUT>\n\nUsage: …\n\nFor more information, try
+/// '--help'.`, exit code 2) with the runtime check `cli_import_csv` now
+/// performs. The exact text and exit code are deliberately NOT preserved
+/// byte-for-byte — once these fields are `Option`, `clap` itself no longer
+/// considers them required and could not regenerate that Usage line even if
+/// asked to, and reproducing it by hand would mean this library crate
+/// depending on `main.rs`'s own `Cli`/`Command` definitions, which it must
+/// not. What IS preserved, and is what a script actually depends on: refused
+/// before anything runs, on stderr, non-zero exit, naming the missing flag by
+/// its long name. No existing test in this file (including the two above)
+/// ever asserted a specific exit code, only `!status.success()`, so this is
+/// not a behavior change any existing caller could observe.
+#[test]
+fn a_missing_output_flag_is_refused_before_anything_runs() {
+    let tree = Tree::split_year();
+    let before = tree.snapshot();
+    let output = tree.import(&[
+        "-i",
+        "statement.csv",
+        "-r",
+        "import/bank.csv.rules",
+        "-j",
+        "2026/2026.journal",
+        "--root-journal",
+        "main.journal",
+    ]);
+    assert!(!output.status.success(), "{}", transcript(&output));
+    assert!(stderr(&output).contains("--output"), "{}", stderr(&output));
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        Vec::<String>::new(),
+        "a refused run writes nothing"
+    );
+}
+
+#[test]
+fn a_missing_rules_flag_is_refused_before_anything_runs() {
+    let tree = Tree::split_year();
+    let before = tree.snapshot();
+    let output = tree.import(&[
+        "-i",
+        "statement.csv",
+        "-o",
+        "import/bank.csv",
+        "-j",
+        "2026/2026.journal",
+        "--root-journal",
+        "main.journal",
+    ]);
+    assert!(!output.status.success(), "{}", transcript(&output));
+    assert!(stderr(&output).contains("--rules"), "{}", stderr(&output));
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        Vec::<String>::new(),
+        "a refused run writes nothing"
+    );
+}
+
+/// Omitting BOTH names both in the one refusal, the same "say everything
+/// that's missing, not just the first" property `clap`'s own multi-line
+/// refusal had.
+#[test]
+fn omitting_both_output_and_rules_names_both_in_one_refusal() {
+    let tree = Tree::split_year();
+    let output = tree.import(&[
+        "-i",
+        "statement.csv",
+        "-j",
+        "2026/2026.journal",
+        "--root-journal",
+        "main.journal",
+    ]);
+    assert!(!output.status.success(), "{}", transcript(&output));
+    let said = stderr(&output);
+    assert!(said.contains("--output"), "{said}");
+    assert!(said.contains("--rules"), "{said}");
+}
+
 /// A rules file that is not beside this journal cannot be named, whichever door
 /// the request arrives at. The refusal lists what IS available, because "no"
 /// with no alternatives is a bad error message for a command line.
