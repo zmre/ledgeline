@@ -314,10 +314,18 @@ guessed at).
    proven by its existing tests still passing unmodified). A transaction whose id already exists
    and disagrees in some field is reported, never overwritten — same rule as the CSV path, for the
    same reason (a hand-edit is more likely than the export having changed).
-6. Write via `JournalEditor::add_transaction` (`edit.rs`) for each new transaction, then one save —
-   check whether multiple `add_transaction` calls can be batched before a single
-   `save_and_publish`, matching how `edit_api.rs`'s multi-step patches already do this, rather than
-   saving once per transaction.
+6. Write via `JournalEditor::add_transaction` (`edit.rs`) for each new transaction, using
+   **`InsertPosition::DateOrdered`** — the same default `edit_api.rs` already uses for every GUI
+   "add transaction" call — so a multi-year import routes each transaction into whichever
+   `include`d per-year/per-month file its chronological neighbors already live in, matching
+   `placement_for`'s existing behavior (`edit.rs`), rather than piling the whole batch into
+   whatever single file the CSV `hledger import` path defaults to. **Edge case to carry into the
+   UI**: `JournalEditor` never creates a new file, so a transaction older than everything the
+   journal currently holds has no predecessor and lands in the *earliest existing* file — a QB
+   export reaching back further than any file on disk does not auto-split into a new year file,
+   and Phase C should surface that rather than let it land silently. Then one save — check whether
+   multiple `add_transaction` calls can be batched before a single `save_and_publish`, matching how
+   `edit_api.rs`'s multi-step patches already do this, rather than saving once per transaction.
 7. **Sort afterwards** (direct instruction): after writing, run the same `sort::plan`/ordering-check
    this app already uses post-CSV-commit, and offer the same re-sort flow — reuse, not a new
    mechanism.
