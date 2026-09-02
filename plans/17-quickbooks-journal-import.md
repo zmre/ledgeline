@@ -48,6 +48,31 @@ shape of input.
 equivalent; per direct instruction, they are preserved as tags on the written transaction/posting
 rather than discarded (`class:…`, `customer:…`, `vendor:…`).
 
+## Getting the export, and why re-downloading is safe
+
+User-facing documentation requirement, per direct instruction — this needs to land in **two**
+places, not one: `docs/imports.md` (or a new `docs/quickbooks-journal-import.md` this WP's Phase B/C
+docs pass should decide between) for the durable reference, **and** as in-app copy on Phase C's new
+panel, since that is where someone doing this for the first time is actually looking. Whichever
+phase writes user-facing text should carry this forward rather than re-deriving it:
+
+1. In QuickBooks Online: **Reports → Journal**.
+2. Choose the time frame.
+3. Optionally **Customize → Rows/Columns** to add the `Vendor`, `Customer` and `Class` columns —
+   this WP reads and preserves them as tags when present, and does nothing different when absent.
+4. **Export to Excel** (not CSV — the customized-column xlsx is what Phase A parses).
+
+**Re-downloading is safe, including with overlapping or repeated time frames, including "All
+Dates" every time.** This is a direct, load-bearing consequence of Phase B's id-based dedup (the
+same `reimport.rs` machinery the CSV/OFX path already uses): every transaction is tagged with
+QuickBooks' own Trans #, so a transaction already in the journal is recognized and left alone (or
+status-synced) no matter how many times its row reappears in a wider re-download. This is worth
+stating plainly and confidently in the docs — it is *why* re-running "All Dates" is the
+recommended habit rather than something to work around by fiddling with date ranges to avoid
+overlap. Phase B's test suite should include a case proving exactly this: parsing and importing
+the same export twice, and a *wider* export that re-contains already-imported transactions
+alongside new ones, in both cases with no duplication.
+
 ## Phase A — parse and group (`crates/ledgeline-core`, pure, no I/O beyond a byte slice)
 
 New top-level module (`crates/ledgeline-core/src/qb_journal.rs` — a sibling of `reimport.rs`,
