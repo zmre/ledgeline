@@ -19,7 +19,7 @@ import {describe, expect, it, vi} from "vitest";
 import {decodeRulesDraft} from "$lib/api/nativeDecode";
 import type {RulesDraft} from "../types";
 import {draftForm} from "../createModel";
-import {withSetting, type FormItem, type RulesForm} from "../model";
+import {withFieldNames, withSetting, type FormItem, type RulesForm} from "../model";
 import CreateRulesPanel from "./CreateRulesPanel.svelte";
 
 /** The engine's own answer for a three-column export, one column of it uncertain. */
@@ -160,6 +160,20 @@ describe("CreateRulesPanel", () => {
         const button = screen.getByTestId("imports-create-save");
         expect(button).toHaveProperty("disabled", false);
         expect(screen.queryByTestId("imports-create-blocker")).toBeNull();
+        button.click();
+        expect(onSave).toHaveBeenCalledOnce();
+    });
+
+    it("becomes pressable when a column is mapped to account1 instead, and says so", () => {
+        // A QuickBooks-style export naming a different account per row: the
+        // fixed text field stays blank on purpose, and that has to be enough.
+        const mapped = form();
+        mapped.items = withFieldNames(mapped.items, ["date", "account1", "amount"]);
+        const {onSave} = mount({form: mapped});
+        const button = screen.getByTestId("imports-create-save");
+        expect(button).toHaveProperty("disabled", false);
+        expect(screen.queryByTestId("imports-create-blocker")).toBeNull();
+        expect(screen.getByTestId("imports-create-account1-mapped").textContent).toContain("account1");
         button.click();
         expect(onSave).toHaveBeenCalledOnce();
     });

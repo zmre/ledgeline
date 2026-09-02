@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {decodeRulesDoc, decodeRulesDraft} from "$lib/api/nativeDecode";
 import {checkRulesId, createBlocker, createSaveRequest, defaultRulesId, draftForm, draftLines, NEW_FILE_REVISION} from "./createModel";
-import {toForm, withSetting} from "./model";
+import {fieldNames, toForm, withFieldNames, withSetting} from "./model";
 import type {RulesDocument} from "./types";
 
 // The wire body a real `POST /api/rules-create` answers with, for the plain
@@ -165,6 +165,19 @@ describe("createBlocker", () => {
         // the button disabled for a reason that had moved.
         const form = draftForm(draftDoc());
         expect(createBlocker("bank.csv", form)).toMatch(/\.rules/);
+    });
+
+    it("is satisfied by a column mapped to account1, with no top-level default set", () => {
+        // The multi-account case: a QuickBooks-style export names a different
+        // account per row rather than one for the whole statement, and the
+        // idiomatic hledger fix is to map a column straight onto `account1` in
+        // `fields` — a column carries account1's value per row exactly as
+        // `AccountsPanel`'s text field carries one fixed value for the whole
+        // file. Both are "account1 is covered"; only one used to be checked.
+        const form = draftForm(draftDoc());
+        const names = fieldNames(form.items) ?? [];
+        const mapped = {...form, items: withFieldNames(form.items, [names[0]!, "account1", names[2]!])};
+        expect(createBlocker("bank.csv.rules", mapped)).toBeNull();
     });
 
     it("still defers to the shared form validation", () => {

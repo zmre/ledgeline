@@ -22,7 +22,7 @@
 // spelled.
 
 import type {SaveRulesBody} from "$lib/api/native";
-import {toForm, toSaveRequest, validateForm, type FormItem, type RulesForm} from "./model";
+import {fieldNames, toForm, toSaveRequest, validateForm, type FormItem, type RulesForm} from "./model";
 import type {RulesDocument} from "./types";
 
 /**
@@ -125,12 +125,23 @@ export function draftForm(doc: RulesDocument): RulesForm {
  * needs in general; what a NEW one needs on top is the two things only a person
  * can supply — a name, and the account this statement belongs to. Anything
  * subtler is the engine's to refuse.
+ *
+ * "The account this statement belongs to" has two honest spellings, and both
+ * satisfy this check: a fixed value (`AccountsPanel`'s text field, a top-level
+ * `account1` assignment) for a statement that is all one account, or a column
+ * NAMED `account1` in `fields` (`RowMappingPanel`) for a statement — a
+ * QuickBooks-style export naming a different account per row is the motivating
+ * case — where it varies row by row. Checking only the first used to leave the
+ * button disabled for someone who had already answered the question the
+ * second way.
  */
 export function createBlocker(id: string, form: RulesForm): string | null {
     const idProblem = checkRulesId(id);
     if (idProblem !== null) return idProblem;
     const account1 = form.items.find((item) => item.kind === "assignment" && item.field === "account1");
-    if (account1 === undefined || account1.kind !== "assignment" || account1.value.trim() === "") {
+    const fixed = account1 !== undefined && account1.kind === "assignment" && account1.value.trim() !== "";
+    const perRow = (fieldNames(form.items) ?? []).includes("account1");
+    if (!fixed && !perRow) {
         return "Say which account this statement is for — every imported row needs one leg there.";
     }
     const errors = validateForm(form);

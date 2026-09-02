@@ -36,7 +36,7 @@
     // synthesising one would be exactly the misuse that comment warns about.
     import {createBlocker, draftLines} from "../createModel";
     import type {RulesDraft} from "../types";
-    import {settingText, withSetting, type FormItem, type RulesForm} from "../model";
+    import {fieldNames, settingText, withSetting, type FormItem, type RulesForm} from "../model";
     import AccountsPanel from "./AccountsPanel.svelte";
     import RowMappingPanel from "./RowMappingPanel.svelte";
 
@@ -140,6 +140,17 @@
             </div>
 
             <AccountsPanel items={form.items} {accountNames} disabled={saving} onChange={onItems} />
+            {#if (fieldNames(form.items) ?? []).includes("account1")}
+                <!-- account1 is already covered by a column mapping below (a
+                     QuickBooks-style export naming a different account per row,
+                     say), so leaving this field blank is not a blocker — see
+                     `createBlocker`. Said here rather than left silent, since a
+                     Create button that enables itself with an empty-looking
+                     field above it reads as a bug otherwise. -->
+                <p class="-mt-2 text-xs text-base-content/60" data-testid="imports-create-account1-mapped">
+                    A column below is already mapped to <code>account1</code>, so this can stay blank — each row will use its own.
+                </p>
+            {/if}
 
             <!-- The currency, and it is here because a WARNING points at it.
                  hledger reads a commodity-less amount as a commodity of its own,
