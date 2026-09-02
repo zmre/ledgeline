@@ -551,17 +551,38 @@ behavior.
 ## Phase C — SPA
 
 Per direct instruction: drop a file into the existing New Transactions drop target; if
-`qb_journal::detect` (surfaced through `capabilities`/`stage`) says yes with high confidence, the
-screen switches to a **different** panel automatically rather than the ordinary
-rules-candidate-matching flow; a lower-confidence detection prompts instead of silently switching.
-New panel shows: the parsed groups (a count/preview is enough — this is not the rules editor),
-input fields for every unmapped account (writing aliases through the existing alias-editing wire,
-not a new one), and a commit action; after commit, the existing "journal is out of order, re-sort?"
-prompt if the write left it out of order (reuse, not a new component). Component-test the
-detection branch and the unmapped-account resolution flow; drive it in a real browser if the
-sandbox allows (recent sessions on this branch have had Chromium/Firefox blocked here — fall back
-to a live HTTP-route drive, as several prior phases on this branch did, and say so plainly if that
-happens again rather than claiming a browser check that didn't occur).
+`qb_journal::detect` (surfaced through `capabilities`/`stage`) says yes, the screen switches to a
+**different** panel automatically rather than the ordinary rules-candidate-matching flow.
+
+**Resolved before Phase C started (the sketch above assumed a confidence gradient that does not
+exist): always auto-switch, never prompt first.** `qb_journal::detect` is a plain `bool`, not a
+score — there is no "lower confidence" reading for a prompt to gate. It was proven accurate over
+the whole fixture corpus in Phase A (zero false positives, including against a bank export built
+specifically to look like a near miss) and it deliberately says **yes** even on a damaged real
+export, so a truncated file still reaches the QuickBooks panel and gets the specific named parse
+refusal (`qb_journal::parse`'s error, surfaced by `stage_upload`'s eager parse — see Phase B's
+amendments) rather than silently falling through to the CSV rules screen it cannot actually match.
+`POST /api/import/stage` already makes this decision server-side, before the SPA sees anything: the
+response's `format` field is `"quickbooks-journal"` XOR the ordinary CSV/spreadsheet formats,
+verified by Phase B's `a_quickbooks_journal_upload_is_detected_and_diverted` /
+`an_ordinary_csv_still_takes_the_csv_path`. So the SPA's job is only to branch on `format`, nothing
+more — no new client-side detection, confidence UI, or confirmation step.
+
+New panel shows: the parsed groups (a count/preview is enough — this is not the rules editor, and
+`WireQbPreview.sample` already gives up to 20 flattened transactions with descriptions and
+postings for exactly this), input fields for every unmapped account (`WireQbPreview
+.unmappedAccounts`; writing aliases through the existing alias-editing wire, `PUT
+/api/aliases/{*journalId}`, not a new one — re-`GET /api/import/qb-journal/{stageId}` afterward to
+see them drop off the list, same as Phase B's own test does), and a commit action
+(`POST /api/import/qb-journal/commit`, body `{stageId}`, disabled while `unmappedAccounts` is
+non-empty). After commit, the existing "journal is out of order, re-sort?" prompt if
+`WireQbCommit.ordering.inOrder` is false for any file — `WireQbCommit.ordering.files[].journalId`
+is a relative handle usable directly with the existing `POST /api/import/sort` route (reuse, not a
+new component); Phase B deliberately made this per-file since a multi-year import can touch more
+than one. Component-test the format-branch and the unmapped-account resolution flow; drive it in a
+real browser if the sandbox allows (recent sessions on this branch have had Chromium/Firefox
+blocked here — fall back to a live HTTP-route drive, as several prior phases on this branch did,
+and say so plainly if that happens again rather than claiming a browser check that didn't occur).
 
 ## Phase D — CLI (deprioritized; do after A-C land and are verified)
 
