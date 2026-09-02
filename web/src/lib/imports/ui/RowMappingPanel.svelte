@@ -50,9 +50,27 @@
         return preview?.header?.[index] ?? "";
     }
 
-    /** The first sample value for a column, when the preview read a row. */
+    /**
+     * An example value for a column: the first NON-EMPTY cell the preview read
+     * for it, which is not always the first row's.
+     *
+     * This used to be `rows[0][index]`, and a real user found the hole. Their
+     * export's first data row was a leftover report label — every cell blank
+     * except one, in a column with no header — so the Example column showed one
+     * stray word and three dashes, which is a mapping table nobody can check
+     * their columns against. The engine now excludes such a row from its
+     * guesses and drafts a rule excluding it from the import, but the preview
+     * still carries it on purpose: it is what is in the file, the warning names
+     * it by row number, and silently dropping a row from the one view labelled
+     * "what your file looks like" would be its own kind of confusing.
+     *
+     * So the fix belongs here instead, and it is broader than that one file: a
+     * column legitimately blank on the first row — a check number, a memo — got
+     * no example either. The header stays `Example` (singular, per column), so
+     * nothing here promised the values came from one row.
+     */
     function sample(index: number): string {
-        return preview?.rows[0]?.[index] ?? "";
+        return preview?.rows.map((row) => row[index] ?? "").find((cell) => cell.trim() !== "") ?? "";
     }
 
     function nameAt(index: number): string {

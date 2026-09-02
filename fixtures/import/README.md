@@ -198,6 +198,31 @@ that emitted no `decimal-mark` whatsoever. `the_decimal_mark_the_generator_chose
 therefore runs each file **twice** — as drafted, and with the `decimal-mark` line stripped out —
 and asserts the **wrong** answer as well as the right one.
 
+## `generate/isolated/` — report litter left in the data area
+
+Two files, driven by the same `rules_generate.rs`. A **sibling** of `headers/` rather than two
+more files in it, because `headers/`'s corpus-wide properties are stated in absolute terms —
+`hledger_reads_what_the_generator_drafts` asserts every data row becomes a transaction — and the
+whole point of the first file here is that it deliberately imports one row **fewer** than it
+carries.
+
+| File | What it proves |
+| --- | --- |
+| `quickbooks-label.csv` | The reported shape. A header row, then **one** row holding the words `General Ledger` in a column that has no header and nothing else in it anywhere, then seven transactions. `convert` cannot help: preamble and trailer trimming work from the *ends* of a table, so a one-cell row sandwiched between the header and the data is neither, and it arrives as a record. Handed to hledger it is not one odd row among seven good ones — hledger **abandons the entire read** on the first record it cannot date, so the answer is a hard failure and *zero* transactions |
+| `check-number.csv` | The false positive, and the reason the detector needs two conditions rather than one. `Check Number` is populated on three rows of eight — **sparser** than the label column above — and a detector keyed on column sparsity alone drafts a rule dropping every check the user wrote, silently, at exit 0. Those rows carry a date, a payee and an amount, so they are not isolated however empty the column is |
+
+### Why the wrong answer is asserted here too
+
+`the_drafted_exclusion_leaves_out_the_label_row_and_nothing_else` runs `quickbooks-label.csv`
+**twice**: once as drafted, and once with the trailing `if`/`skip` block stripped out — what a
+generator that never looked for a report label would have written. The second run is asserted to
+be a *failure*, and to be one whose message names `General Ledger`.
+
+Without that half the test would pass against a generator that had instead learnt to drop the row
+during **conversion**, which is a different and much more dangerous fix: it would take the row out
+of the file hledger reads without leaving anything in the rules file to say so, and the next
+statement dropped on the same rules file would behave differently for reasons nothing recorded.
+
 ## Running the checks
 
 ```sh

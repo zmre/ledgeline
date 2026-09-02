@@ -67,12 +67,72 @@ function draft(): RulesDraft {
 }
 
 /**
+ * The reported file's shape, as the engine now drafts it: a header row followed
+ * by ONE row holding a stray report label in a column with no header of its
+ * own, and the real transactions below it.
+ *
+ * The preview carries that row because it is the truth of the file and the
+ * warning names it by number — what must NOT happen is the mapping table
+ * sampling it and showing three empty examples.
+ */
+function labelledDraft(): RulesDraft {
+    const base = draft();
+    return decodeRulesDraft({
+        doc: {
+            id: "import/2026/bank.csv.rules",
+            label: "bank",
+            revision: "",
+            editable: true,
+            newline: "lf",
+            settings: {
+                skip: {value: 1, itemId: 0},
+                dateFormat: {value: "%m/%d/%Y", itemId: 1},
+                fields: {names: ["column1", "date", "description", "amount"], itemId: 2},
+                account1: {value: "", itemId: 3},
+                account2: {value: "expenses:unknown", itemId: 4},
+            },
+            items: [
+                {id: 0, line: 1, lines: 1, kind: "directive", name: "skip", value: "1"},
+                {id: 1, line: 2, lines: 1, kind: "directive", name: "date-format", value: "%m/%d/%Y"},
+                {id: 2, line: 3, lines: 1, kind: "fields", names: ["column1", "date", "description", "amount"]},
+                {id: 3, line: 4, lines: 1, kind: "assignment", field: "account1", value: ""},
+                {id: 4, line: 5, lines: 1, kind: "assignment", field: "account2", value: "expenses:unknown"},
+            ],
+            warnings: [],
+        },
+        preview: {
+            available: true,
+            separator: ",",
+            header: ["", "Posted Date", "Memo", "Gross"],
+            rows: [
+                ["General Ledger", "", "", ""],
+                ["", "01/02/2026", "COFFEE ROASTERS", "-4.50"],
+                ["", "01/03/2026", "BOOK DEPOT", "-12.00"],
+            ],
+            columns: 4,
+            truncated: false,
+        },
+        columns: [
+            {index: 0, confidence: 0},
+            {index: 1, field: "date", confidence: 0.95},
+            {index: 2, field: "description", confidence: 0.85},
+            {index: 3, field: "amount", confidence: 0.35},
+        ],
+        warnings: [
+            "Only one cell is filled in on data row 1 (`General Ledger`), and it sits in a column that holds nothing in any " +
+                "other row. The draft therefore ends with `if %column1 .` and a `skip`, leaving that row out.",
+            ...base.warnings,
+        ],
+    });
+}
+
+/**
  * The working form, DEEPLY reactive — the mapping and account panels bind into
  * these objects, and a plain array renders once and then stops agreeing with
  * itself (the trap `RulesList.svelte.test.ts` and `AliasPanel` both document).
  */
-function form(items?: FormItem[]): RulesForm {
-    const base = draftForm(draft().doc);
+function form(items?: FormItem[], from: RulesDraft = draft()): RulesForm {
+    const base = draftForm(from.doc);
     const list = $state(items ?? base.items);
     return {...base, items: list};
 }
@@ -112,6 +172,34 @@ describe("CreateRulesPanel", () => {
         expect(screen.getByText("01/02/2026")).toBeTruthy();
         expect(screen.getByLabelText("Field name for column 1")).toHaveProperty("value", "date");
         expect(screen.getByLabelText("Field name for column 3")).toHaveProperty("value", "amount");
+    });
+
+    it("shows a real example for every column even when the first previewed row is a report label", () => {
+        // The reported bug's visible half. The engine now excludes that row
+        // from its guesses and drafts a rule excluding it from the import, but
+        // the preview still carries it — deliberately, because it is what is in
+        // the file and the warning names it by number. Sampling row 1 for the
+        // "Example" column therefore showed one label and three blanks, which
+        // is a mapping table nobody can check their columns against.
+        const labelled = labelledDraft();
+        mount({draft: labelled, form: form(undefined, labelled)});
+        expect(screen.getByText("01/02/2026")).toBeTruthy();
+        expect(screen.getByText("COFFEE ROASTERS")).toBeTruthy();
+        expect(screen.getByText("-4.50")).toBeTruthy();
+        // The label is still shown for the column it is actually in — nothing
+        // about the file is hidden here.
+        expect(screen.getByText("General Ledger")).toBeTruthy();
+        // And no column is left with nothing to show, which is what the blanks
+        // rendered as.
+        expect(screen.queryAllByText("—")).toHaveLength(1);
+    });
+
+    it("surfaces the isolated-row warning and the rule it drafted", () => {
+        const labelled = labelledDraft();
+        mount({draft: labelled, form: form(undefined, labelled)});
+        const warnings = screen.getByTestId("imports-create-warnings").textContent;
+        expect(warnings).toContain("data row 1");
+        expect(warnings).toContain("if %column1 .");
     });
 
     it("marks the uncertain guess and leaves the confident ones unmarked", () => {

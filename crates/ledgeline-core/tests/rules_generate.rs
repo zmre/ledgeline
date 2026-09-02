@@ -32,6 +32,7 @@ mod common;
 use ledgeline_core::convert::{self, SourceFormat, Tabular};
 use ledgeline_core::rules::generate::{self, DEFAULT_ACCOUNT2};
 use ledgeline_core::rules::{HledgerField, NumberedField, RulesDoc};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -46,13 +47,28 @@ fn headers_dir() -> PathBuf {
     common::fixtures_dir().join("import/generate/headers")
 }
 
+/// `fixtures/import/generate/isolated/` — the report-litter corpus.
+///
+/// A sibling directory rather than two more files in `headers/`, because the
+/// corpus-wide properties below are stated over `headers/` in absolute terms
+/// ("every data row becomes a transaction"), and the whole point of these two
+/// is that one of them deliberately imports one row FEWER than it carries.
+fn isolated_dir() -> PathBuf {
+    common::fixtures_dir().join("import/generate/isolated")
+}
+
 /// One fixture, converted exactly as a staged upload is.
-fn converted(name: &str) -> Tabular {
-    let path = headers_dir().join(name);
+fn converted_in(dir: &Path, name: &str) -> Tabular {
+    let path = dir.join(name);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{} readable: {e}", path.display()));
     let format = convert::detect(name, &bytes).expect("a committed fixture converts");
     assert_eq!(format, SourceFormat::Csv, "{name} is a CSV");
     convert::convert(format, &bytes).expect("a committed fixture converts")
+}
+
+/// One `headers/` fixture, converted exactly as a staged upload is.
+fn converted(name: &str) -> Tabular {
+    converted_in(&headers_dir(), name)
 }
 
 /// The `fields` names a draft settled on, in column order.
@@ -230,6 +246,76 @@ fn an_ambiguous_date_file_says_so_and_picks_one_amount_scheme() {
             .any(|warning| warning.contains("more than one way")),
         "{:?}",
         drafted.warnings
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `isolated/` — a label the original report left in the data area
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_report_label_survives_conversion_and_is_excluded_by_the_draft() {
+    // First half: `convert` cannot help here, and that is why this exists at
+    // all. Preamble and trailer trimming work from the ENDS of a table, so a
+    // one-cell row sandwiched between the header and the transactions is not
+    // preamble and not a trailer -- it arrives in the `Tabular` as a record.
+    let table = converted_in(&isolated_dir(), "quickbooks-label.csv");
+    assert_eq!(table.rows.len(), 8, "the label row is still a row");
+    assert_eq!(table.rows[0][0], "General Ledger");
+
+    // Second half: the draft names it, excludes it, and says so.
+    let drafted = generate::generate(&table, ACCOUNT1).expect("drafts");
+    assert_eq!(
+        generate::isolated_columns(&table),
+        vec![generate::IsolatedColumn {
+            column: 0,
+            rows: vec![0]
+        }]
+    );
+    assert_eq!(
+        field_names(&drafted.doc),
+        ["column1", "date", "description", "amount"],
+        "the header-less column gets a machine name so `%column1` resolves"
+    );
+    assert!(
+        drafted.doc.text().ends_with("if %column1 .\n    skip\n\n"),
+        "{}",
+        drafted.doc.text()
+    );
+    // The guesses are the ones the data supports, not the ones the label
+    // dragged them to: every date sample is now a real date.
+    assert_eq!(date_format(&drafted.doc).as_deref(), Some("%m/%d/%Y"));
+    assert!(
+        drafted
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("data row 1") && warning.contains("General Ledger")),
+        "{:?}",
+        drafted.warnings
+    );
+}
+
+#[test]
+fn a_sometimes_blank_real_column_is_never_excluded() {
+    // THE false positive. `Check Number` is populated on three rows of eight --
+    // sparser than the label column in the fixture above -- and a detector
+    // keyed on column sparsity alone would draft a rule dropping every check
+    // the user wrote, silently and at exit 0. Those rows carry a date, a payee
+    // and an amount, so they are not isolated however empty the column is.
+    let table = converted_in(&isolated_dir(), "check-number.csv");
+    assert_eq!(table.rows.len(), 8);
+    assert_eq!(generate::isolated_columns(&table), Vec::new());
+
+    let drafted = generate::generate(&table, ACCOUNT1).expect("drafts");
+    assert!(
+        !drafted.doc.text().contains("if "),
+        "no exclusion rule: {}",
+        drafted.doc.text()
+    );
+    assert_eq!(
+        field_names(&drafted.doc),
+        ["date", "description", "code", "amount"],
+        "the column is real data, and is mapped as such"
     );
 }
 
@@ -522,6 +608,115 @@ fn without_decimal_mark(text: &str) -> String {
         .filter(|line| !line.starts_with("decimal-mark"))
         .map(|line| format!("{line}\n"))
         .collect()
+}
+
+/// The draft's own text with every conditional block taken off the end — what a
+/// generator that never looked for a report label would have written.
+///
+/// The exclusions are the last items in a draft and nothing follows them, so
+/// truncating at the first `if` line takes exactly them and nothing else.
+fn without_exclusions(text: &str) -> String {
+    text.lines()
+        .take_while(|line| !line.starts_with("if "))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+/// `hledger print`'s answer, or its complaint, without deciding which is wrong.
+fn print_or_error(
+    scratch: &Scratch,
+    name: &str,
+    table: &Tabular,
+    rules: &str,
+) -> Result<Value, String> {
+    let csv = scratch.0.join(name);
+    std::fs::write(&csv, convert::to_csv(table)).expect("write the converted CSV");
+    std::fs::write(scratch.0.join(format!("{name}.rules")), rules).expect("write the rules file");
+    hledger_print(&csv)
+}
+
+#[test]
+fn the_drafted_exclusion_leaves_out_the_label_row_and_nothing_else() {
+    if std::env::var_os(OPT_IN).is_none_or(|value| value.is_empty()) {
+        eprintln!("skipping: set {OPT_IN}=1 to run the hledger generator check");
+        return;
+    }
+    // The test that would have caught the reported bug, and — like the
+    // decimal-mark one above — it has to assert the WRONG answer too. Without
+    // the exclusion this is not "seven transactions and one odd one": hledger
+    // abandons the ENTIRE read on the first record it cannot date, so the
+    // answer is a hard failure and zero transactions. A test that only checked
+    // "seven came back" would pass against a generator that had instead learnt
+    // to drop the row during conversion, which is a different and much more
+    // dangerous fix.
+    let scratch = Scratch::new("isolated");
+
+    let table = converted_in(&isolated_dir(), "quickbooks-label.csv");
+    let rows = table.rows.len();
+    let drafted = generate::generate(&table, ACCOUNT1).expect("drafts");
+
+    let right = print_or_error(&scratch, "label.csv", &table, drafted.doc.text())
+        .unwrap_or_else(|error| panic!("the drafted rules file failed:\n{error}"));
+    let transactions = right.as_array().expect("hledger emits an array");
+    assert_eq!(
+        transactions.len(),
+        rows - 1,
+        "{rows} rows, one of them a label, became {} transactions",
+        transactions.len()
+    );
+    // Exactly the right one is gone: every transaction has a real date, a real
+    // amount and the two accounts, and none of them is the label.
+    for transaction in transactions {
+        let postings = transaction["tpostings"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no postings in {transaction}"));
+        assert_eq!(postings.len(), 2, "{transaction}");
+        assert_eq!(postings[0]["paccount"].as_str(), Some(ACCOUNT1));
+        assert_eq!(postings[1]["paccount"].as_str(), Some(DEFAULT_ACCOUNT2));
+        assert_eq!(postings[0]["pamount"].as_array().map(Vec::len), Some(1));
+        assert!(
+            transaction["tdate"].as_str().is_some_and(|d| d.len() == 10),
+            "{transaction}"
+        );
+        assert_ne!(
+            transaction["tdescription"].as_str(),
+            Some("General Ledger"),
+            "the label imported as a transaction"
+        );
+    }
+    // And the payees that ARE there are the file's own, so nothing was dropped
+    // along with the label.
+    let payees: Vec<&str> = transactions
+        .iter()
+        .filter_map(|transaction| transaction["tdescription"].as_str())
+        .collect();
+    assert!(payees.contains(&"COFFEE ROASTERS"), "{payees:?}");
+    assert!(payees.contains(&"INTEREST PAID"), "{payees:?}");
+
+    // The wrong answer, asserted: without the rule there is no import at all.
+    let wrong = print_or_error(
+        &scratch,
+        "label.csv",
+        &table,
+        &without_exclusions(drafted.doc.text()),
+    );
+    let complaint = wrong.expect_err("without the exclusion hledger refuses the file");
+    assert!(
+        complaint.contains("General Ledger"),
+        "hledger's own complaint names the row: {complaint}"
+    );
+
+    // The other half of the corpus: a sparse but REAL column changes nothing.
+    // Every row imports, including the three carrying a check number.
+    let checks = converted_in(&isolated_dir(), "check-number.csv");
+    let drafted = generate::generate(&checks, ACCOUNT1).expect("drafts");
+    let json = print_or_error(&scratch, "checks.csv", &checks, drafted.doc.text())
+        .unwrap_or_else(|error| panic!("the drafted rules file failed:\n{error}"));
+    assert_eq!(
+        json.as_array().map(Vec::len),
+        Some(checks.rows.len()),
+        "a sometimes-blank real column must not cost a single transaction"
+    );
 }
 
 #[test]

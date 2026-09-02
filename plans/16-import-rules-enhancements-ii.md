@@ -577,6 +577,175 @@ The create branch differs in exactly three ways, each load-bearing:
   export the thousands separator in the other column was missed, and twelve hundred dollars imported
   as one dollar twenty, silently.
 
+### Contract amendments: isolated cells, and the rule that excludes them (2026-09-02 follow-up)
+
+Per convention #9. A follow-up to Phase 2, raised by a **real user** running the Create Rules wizard
+over a QuickBooks-exported spreadsheet. Their converted CSV's header row was followed by exactly one
+anomalous row: every cell blank except column 1 — which had **no header name** — holding the stray
+label `General Ledger`, with nothing else in that row or anywhere else in that column.
+
+Three things went wrong at once, and the third is the one that made it a bug report rather than a
+nuisance:
+
+1. **Every heuristic sampled it.** `guess_columns`, `guess_date_format` and `guess_decimal_mark` all
+   read that row along with the data, which degrades the guesses. The sharp version: a label reading
+   as an amount or a date claims its column from the *values*, at the same confidence a real money or
+   date column with an unrecognised header (`Gross`, `Booked`) has to fall back to — and ties break by
+   position, so the **label's column wins**, takes the field, and the real column goes unmapped. Exit
+   0, no diagnostic.
+2. **The preview was confusing.** `RowMappingPanel`'s "Example" column sampled `preview.rows[0]`, and
+   row 0 *was* the anomalous row, so the mapping table showed one stray word and three dashes.
+3. **The obvious workaround is a trap.** The user bumped the top-level `skip`, which in this codebase
+   does **not** mean "skip N literal rows of the converted file": it compensates for `N-1` lines of
+   preamble the conversion already stripped (`convert::align_to_skip`, applied by `Stage::materialize`
+   on every dry-run and commit). Bumping it inserted a **fake padding row** instead of skipping the
+   real one, and the import failed with a date-parse error on the literal text `General Ledger`.
+
+**Verified against hledger 1.52** (new findings, none anticipated):
+
+- **hledger does not skip an undatable record — it abandons the whole read.** The reported file
+  yields *zero* transactions and a hard failure, not seven transactions and one warning. This is why
+  `fixtures/import/README.md`'s trailer story ("not 34 transactions with one skipped, but zero")
+  repeats here in another lane, and why the fix has to be a rules-file rule rather than advice.
+- **`if %col .` over a bare `skip` is a safe, no-op-on-real-data exclusion.** It drops every record
+  whose `col` holds something and leaves every record whose `col` is empty **alone** — the three data
+  rows below the label imported unchanged.
+- **A whitespace-only field does not match `.`**, because hledger trims a field before matching it.
+  That matters: it makes the rule agree with the detector, which also reads a blank-but-not-empty
+  cell as empty. The two agree by construction rather than by luck.
+
+#### The detection signal, and the thresholds chosen
+
+New pure `pub fn isolated_columns(tabular: &Tabular) -> Vec<IsolatedColumn>`, where
+`IsolatedColumn { column: usize, rows: Vec<usize> }`. Grouped by **column**, because that is the unit
+of the fix — one `if %name .` block excludes all of its rows at once — so a report that left three
+section labels in one column is one finding and one rule, not three of each.
+
+A cell is isolated only when **both** conditions hold. Either alone is dangerous:
+
+1. **Its row holds nothing else** — *exactly* one populated cell in the whole row (whitespace-only
+   counts as empty). Not "few", not "mostly blank". This is the condition that saves a legitimately
+   sometimes-blank real field: a check-number column populated only on check payments is *sparser*
+   than the label column was, but those rows still carry a date, a payee and an amount, so they are
+   not isolated however empty the column is. Keying on column sparsity alone would silently drop
+   every check the user wrote. Exactly one rather than "one or two": a row with two populated cells
+   could be a real (if broken) record, and the asymmetry is stark — missing a detection costs the
+   user the status quo, a false one costs them data.
+2. **Its column holds nothing else** — every populated cell in that column sits in a row that is
+   itself condition-1 isolated. **100%, no fudge factor**, deliberately: the claim being made is
+   "this column is never used for data", and one counter-example is a refutation rather than noise.
+   What would have wanted slack — several labels in one column — needs none, because those rows are
+   themselves isolated and so are not "else". This formulation is what makes the strict threshold
+   both safe and sufficient.
+
+Three caps, all of which must pass or the answer is the empty list:
+
+| Cap | Value | Why |
+| --- | --- | --- |
+| `MIN_ISOLATION_WIDTH` | 3 columns | `single-column.xlsx`'s lesson in another lane: in a one-wide table *every* row has exactly one populated cell, and in a two-wide one a populated cell is half the record |
+| `MAX_ISOLATED_ROWS` | 8 | Bounds the blast radius absolutely, and is about as many row numbers as one warning can name and stay checkable at a glance |
+| `ROWS_PER_ISOLATED_ROW` | 4 (≤ 25% of the table) | Below this the "outliers" are the file's shape. With the absolute cap it only bites under ~32 rows — exactly where a wrong guess is proportionally worst |
+
+The caps guard against a degenerate **table shape**, not against losing money, and the reason is
+worth recording: an isolated row's one populated cell sits in a column that holds nothing in any other
+row, so that column is neither the date nor the amount column (both populated on every real record).
+An isolated row therefore *has no date and no amount* and could never have imported as a transaction.
+
+The refusal when a cap trips is **silent** — no warning. There is no confident sentence to write
+about a file whose shape this is, and the module's existing doctrine is that a list of hedges is a
+list nobody reads.
+
+#### The generated rule, and how it is named
+
+For the reported file the whole drafted document is:
+
+```
+skip 1
+date-format %m/%d/%Y
+fields column1, date, description, amount
+account1 assets:bank:checking
+account2 expenses:unknown
+if %column1 .
+    skip
+```
+
+- **`rules.rs` needed no change at all.** The block is built through the existing
+  `ItemBody::IfBlock { control: Some(ControlField::Skip), assignments: vec![] }` shape that the
+  2026-09-01 `skip`/`end` work landed — `skip` is control flow, not an assignment, and the model
+  already said so. `check_body` already permits an empty assignment list when `control` is set.
+- **`column1` is a machine name, and it had to be invented.** The user's column had no header, and
+  Phase 2 names an unmapped header-less column `""` — hledger's "ignore this column", which no
+  matcher can refer to. The name is carried by the existing `ColumnGuess.name` (no second naming
+  channel), chosen by substituting a placeholder into the header `guess_columns` is shown. It is
+  disambiguated against every other header by a bounded search (`column1`, `column1x1`, …) because a
+  file may genuinely have a column headed `Column 1`, and a duplicate `fields` name is resolved by
+  hledger as "first one wins", in silence.
+- **Isolation beats a confident field guess, always.** The substitution is uniform — an isolated
+  column's own header is *withdrawn*, whatever it said. A column empty on every importable row is not
+  that field, and letting it keep an exact header match would be worse than useless: it would
+  outscore the value-shaped guess a real money column falls back to and take the field from it.
+- **The exclusions go last**, where a rules file's rules go. Position among rules is free (verified
+  in the 2026-09-01 work: moving a `skip` block changes not one imported row), and a draft has no
+  other rules for them to sit among.
+- **`draft()` gained a fifth parameter**, `isolated: &[IsolatedColumn]`, and requires `tabular` to be
+  the table with those rows already removed. That coupling is the point — see below.
+
+#### The invariant, and what the warning says
+
+**The rows excluded from the guessing are exactly the rows the drafted rules exclude from the
+import.** `generate()` builds the filtered table once and every heuristic reads it; when a cap
+refuses, there is no rule *and* no filtering. A draft whose `date-format` was read off rows hledger
+will never see would describe a different file from the one it is handed. Pinned by
+`a_refused_exclusion_is_also_a_row_the_guesses_still_read`.
+
+One warning per isolated column, into the existing `Draft.warnings: Vec<String>` — **no new wire
+field**, since `CreateRulesPanel` already renders that list verbatim. It names the row numbers, the
+values found and the generated rule, all three checkable at a glance:
+
+> Only one cell is filled in on data row 1 (`General Ledger`), and it sits in a column that holds
+> nothing in any other row. That is a label the original report left behind rather than transaction
+> data, and hledger abandons the whole import — not just that row — when a record has no date. The
+> draft therefore ends with `if %column1 .` and a `skip`, leaving that row out. Check that row
+> against your file and delete that rule if the data is real.
+
+It is emitted **first**, ahead of the date and amount warnings: it is the only one here about which
+*rows* import at all. An isolated column is also filtered out of the "Not imported, only named" list,
+which would otherwise offer it as something a later rule might usefully interpolate — the opposite of
+what this warning just said about it.
+
+#### The preview: changed in the SPA, not in the engine
+
+Deliberately split, and this was the one genuine judgement call:
+
+- **`draft_preview` is unchanged.** `preview.rows` stays the literal truth of the file, anomalous row
+  and all. It is the one view labelled "what your file looks like", the warning names the row *by
+  number* so it has to be findable, and silently dropping a row from it would be its own confusion.
+- **`RowMappingPanel.sample()` now takes the first NON-EMPTY cell** among the previewed rows for a
+  column, rather than `rows[0]`. That is where the confusion actually lived — the column is headed
+  `Example` (singular, per column), so nothing there ever promised the values came from one row. The
+  fix is broader than this bug: a column legitimately blank on the first row, a check number or a
+  memo, got no example either. No wire change, and it benefits the edit panel unchanged.
+
+#### Fixtures and tests
+
+New `fixtures/import/generate/isolated/` — a **sibling** of `headers/`, because `headers/`'s
+corpus-wide properties are absolute ("every data row becomes a transaction") and the point of the
+first file here is that it imports one row fewer than it carries. `quickbooks-label.csv` is the
+reported shape; `check-number.csv` is the false positive. Both are documented in
+`fixtures/import/README.md`.
+
+`the_drafted_exclusion_leaves_out_the_label_row_and_nothing_else` extends the gated
+`LEDGELINE_HLEDGER_GENERATE_CHECK` suite and, like the decimal-mark check beside it, **asserts the
+wrong answer too**: run without the drafted `if`/`skip`, hledger must *fail*, with a complaint naming
+`General Ledger`. Without that half the test would pass against a generator that had instead learnt
+to drop the row during **conversion** — a different and much more dangerous fix, since it would take
+the row out of the file hledger reads with nothing in the rules file to say so.
+
+One more thing `convert` cannot do, worth recording because it looks like the obvious home for this:
+preamble and trailer trimming work from the **ends** of a table, so a one-cell row sandwiched between
+the header and the transactions is neither, and arrives as a record. That is why the user hit this at
+all, and why the fix is a rules-file rule.
+
 ## Phase 3 — scriptable CLI import
 
 ### Extraction

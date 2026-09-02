@@ -81,8 +81,8 @@
 use crate::convert::Tabular;
 use crate::rules::matching;
 use crate::rules::{
-    DirectiveName, DirectiveValue, EditPlan, HledgerField, ItemBody, RulesDoc, RulesError, Slot,
-    field_name_text, hledger_field,
+    ControlField, DirectiveName, DirectiveValue, EditPlan, HledgerField, ItemBody, MatchScope,
+    MatcherGroupSpec, MatcherSpec, RulesDoc, RulesError, Slot, field_name_text, hledger_field,
 };
 
 // ---------------------------------------------------------------------------
@@ -757,6 +757,228 @@ pub fn guess_columns(header: &[String], sample_rows: &[Vec<String>]) -> Vec<Colu
 }
 
 // ---------------------------------------------------------------------------
+// Isolated cells: a report's litter, left in the data area
+// ---------------------------------------------------------------------------
+
+/// The most isolated rows a draft will write exclusions for.
+///
+/// Past this the answer stops being "an anomaly" and starts being "the file's
+/// shape", and drafting exclusions across a large part of the data is a
+/// different and much riskier act than leaving out one or two clear outliers.
+/// Eight is also about as many row numbers as a warning can name and still be
+/// checkable at a glance, which is the same limit from the other side.
+const MAX_ISOLATED_ROWS: usize = 8;
+
+/// How many rows the table must carry for each isolated row found.
+///
+/// Four, i.e. at most a quarter of the table. Together with
+/// [`MAX_ISOLATED_ROWS`] this only bites on tables under thirty-odd rows —
+/// exactly where a wrong guess is proportionally worst, and where the user can
+/// see the whole file anyway.
+const ROWS_PER_ISOLATED_ROW: usize = 4;
+
+/// The narrowest table in which one populated cell says anything.
+///
+/// `single-column.xlsx`'s lesson from `fixtures/import/README.md`, in another
+/// lane: in a one-wide table *every* row holds exactly one populated cell, and
+/// in a two-wide one a populated cell is half the record. A statement carries a
+/// date, a payee and an amount, so three is where the signal starts.
+const MIN_ISOLATION_WIDTH: usize = 3;
+
+/// The longest a cell may be when a warning quotes it back.
+const MAX_WARNING_CELL_CHARS: usize = 40;
+
+/// One column holding cells that are not data, and the rows they sit in.
+///
+/// Grouped by **column** because that is the unit of the fix: a single
+/// `if %name .` block excludes every one of `rows` at once, so a report that
+/// left three section labels in one column is one finding and one rule rather
+/// than three of each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IsolatedColumn {
+    /// The column's 0-based position.
+    pub column: usize,
+    /// The 0-based indices into `Tabular::rows` of the rows whose only
+    /// populated cell is in this column. Ascending, and never empty.
+    pub rows: Vec<usize>,
+}
+
+/// The index of a row's only populated cell, when it has exactly one.
+///
+/// Whitespace-only is empty, which is not a detail: hledger trims a field before
+/// matching it (verified against 1.52 — a cell holding one space does **not**
+/// match `.`), so reading a blank-but-not-empty cell as populated here would
+/// draft a rule that then failed to exclude the row it was written for.
+fn lone_cell(row: &[String]) -> Option<usize> {
+    let mut populated = row
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| !cell.trim().is_empty());
+    let (index, _) = populated.next()?;
+    populated.next().is_none().then_some(index)
+}
+
+/// The columns whose only content is a cell that cannot be part of a record.
+///
+/// Pure. This exists because of a real report: a spreadsheet exported from
+/// accounting software whose header row was followed by one row holding the
+/// words `General Ledger` in a column with no header and nothing else in it
+/// anywhere. Every heuristic below sampled that row along with the data, and
+/// hledger — handed a record with no date — **abandoned the entire import**
+/// rather than skipping the row (verified against 1.52).
+///
+/// # Two conditions, and neither is safe on its own
+///
+/// A cell is isolated only when **both** hold:
+///
+/// 1. **Its row holds nothing else.** Exactly one populated cell in the whole
+///    row — not "few", not "mostly blank". This is the condition that saves a
+///    legitimately sometimes-blank field: a check-number column populated only
+///    on check payments is sparse, but those rows still carry a date, a payee
+///    and an amount, so they are not isolated and nothing excludes them. Keying
+///    on column sparsity alone would silently drop every check the user wrote.
+/// 2. **Its column holds nothing else.** Every populated cell in that column
+///    sits in a row that is itself condition-1 isolated. "Nothing else" is
+///    literal — one real value anywhere in the column disqualifies the whole
+///    column, and with it every row in it. There is no fudge factor and
+///    deliberately none: the claim being made is "this column is never used for
+///    data", and a single counter-example is a refutation, not noise. What
+///    would have wanted slack — a report that left several labels in one column
+///    — needs none, because those rows are themselves isolated and so are not
+///    "else".
+///
+/// Together they are narrow. Apart, either is dangerous.
+///
+/// # Why a false positive cannot cost a transaction
+///
+/// An isolated row's one populated cell sits in a column that holds nothing in
+/// any other row — so that column is neither the date column nor the amount
+/// column, both of which are populated on every real record. An isolated row
+/// therefore has no date and no amount, and is a row hledger would refuse (or
+/// import as an amountless posting) rather than one carrying money. The caps
+/// below guard against a degenerate *table shape*, not against losing data.
+///
+/// # The caps
+///
+/// [`MIN_ISOLATION_WIDTH`], [`MAX_ISOLATED_ROWS`] and
+/// [`ROWS_PER_ISOLATED_ROW`], all three of which must pass or the answer is
+/// the empty list. The refusal is silent on purpose: there is no confident
+/// sentence to write about a file whose shape this is, and the module's
+/// warnings are for things it *knows*.
+#[must_use]
+pub fn isolated_columns(tabular: &Tabular) -> Vec<IsolatedColumn> {
+    let width = tabular
+        .header
+        .as_ref()
+        .map_or(0, Vec::len)
+        .max(tabular.rows.iter().map(Vec::len).max().unwrap_or(0));
+    if width < MIN_ISOLATION_WIDTH {
+        return Vec::new();
+    }
+    // Condition 1, for every row at once: where its only populated cell is.
+    let lone: Vec<Option<usize>> = tabular.rows.iter().map(|row| lone_cell(row)).collect();
+
+    let found: Vec<IsolatedColumn> = (0..width)
+        .filter_map(|column| {
+            let rows: Vec<usize> = lone
+                .iter()
+                .enumerate()
+                .filter(|(_, at)| **at == Some(column))
+                .map(|(row, _)| row)
+                .collect();
+            if rows.is_empty() {
+                return None;
+            }
+            // Condition 2. "Every other row" means every row that is not one of
+            // these, which is what lets several labels in one column count as
+            // one finding instead of disqualifying each other.
+            let unused_elsewhere = tabular.rows.iter().enumerate().all(|(row, cells)| {
+                lone[row] == Some(column)
+                    || cells.get(column).is_none_or(|cell| cell.trim().is_empty())
+            });
+            unused_elsewhere.then_some(IsolatedColumn { column, rows })
+        })
+        .collect();
+
+    let total: usize = found.iter().map(|found| found.rows.len()).sum();
+    if total > MAX_ISOLATED_ROWS || total * ROWS_PER_ISOLATED_ROW > tabular.rows.len() {
+        return Vec::new();
+    }
+    found
+}
+
+/// A `fields` name for an isolated column, so a rule can say `%name`.
+///
+/// The reported file's isolated column had **no header at all**, and an
+/// unmapped column with no header is named `""` — hledger's "ignore this
+/// column" — which no matcher can refer to. So one is made up, through
+/// [`ColumnGuess::name`] rather than through any second naming channel: this
+/// only chooses the *text*, and `guess_columns`' own pass 3 still decides
+/// whether it survives.
+///
+/// Disambiguated against every other header because a file may genuinely have a
+/// column headed `Column 1`, and a duplicate `fields` name is resolved by
+/// hledger as "first one wins", in silence. At most `taken.len()` spellings can
+/// be spoken for, so one of the `taken.len() + 1` candidates tried is always
+/// free — the search is bounded, not hopeful.
+fn placeholder_name(column: usize, header: &[String]) -> String {
+    let taken: Vec<String> = header.iter().map(|text| normalize(text)).collect();
+    let base = format!("column{}", column + 1);
+    (0..=taken.len())
+        .map(|suffix| {
+            if suffix == 0 {
+                base.clone()
+            } else {
+                format!("{base}x{suffix}")
+            }
+        })
+        .find(|candidate| !taken.contains(candidate))
+        .unwrap_or(base)
+}
+
+/// The header [`guess_columns`] is shown, with every isolated column renamed.
+///
+/// The substitution does two jobs at once, and both are needed:
+///
+/// - **It supplies the name** an exclusion rule interpolates.
+/// - **It withdraws the column's claim on a field.** A column that is empty on
+///   every importable row is not that field, whatever its header says — and
+///   mapping it would be worse than useless, because an exact header match
+///   outscores the value-shaped guess a *real* money or date column has to fall
+///   back on, so the label's column would take the field and the real one would
+///   go unmapped. Isolation therefore wins over a confident field guess, always:
+///   the header said something about a column the data contradicts.
+///
+/// Uniform rather than conditional — an isolated column's own header, where it
+/// has one, is precisely the thing that misdescribed it, and the warning names
+/// the generated rule verbatim so the identifier does not have to be pretty.
+fn mapping_header(header: &[String], width: usize, isolated: &[IsolatedColumn]) -> Vec<String> {
+    (0..width)
+        .map(|column| {
+            if isolated.iter().any(|found| found.column == column) {
+                placeholder_name(column, header)
+            } else {
+                header.get(column).cloned().unwrap_or_default()
+            }
+        })
+        .collect()
+}
+
+/// The table's rows with the isolated ones taken out.
+///
+/// The rows left out here are **exactly** the rows the drafted rules leave out
+/// of the import, and that equality is the point: a draft whose `date-format`
+/// was read off rows hledger will never see describes a different file from the
+/// one it will be handed.
+fn retained_rows(rows: &[Vec<String>], isolated: &[IsolatedColumn]) -> Vec<Vec<String>> {
+    rows.iter()
+        .enumerate()
+        .filter(|(row, _)| !isolated.iter().any(|found| found.rows.contains(row)))
+        .map(|(_, cells)| cells.clone())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Date formats
 // ---------------------------------------------------------------------------
 
@@ -1028,6 +1250,36 @@ fn assignment(field: HledgerField, value: &str) -> Slot {
     })
 }
 
+/// The pattern an exclusion rule matches with: hledger's "anything at all".
+///
+/// Verified against 1.52 over the reported file's exact shape. `if %col .` with
+/// a bare `skip` drops every record whose `col` holds something and leaves every
+/// record whose `col` is empty **alone** — the three data rows below the label
+/// imported unchanged. A cell holding only whitespace does not match either,
+/// because hledger trims a field before matching it, which is the same reading
+/// [`lone_cell`] takes; the two agree by construction rather than by luck.
+const ANY_CONTENT: &str = ".";
+
+/// `if %NAME .` over a bare `skip` — one column's exclusion rule.
+///
+/// Built through [`ItemBody::IfBlock`]'s existing `control` field rather than as
+/// an assignment, because `skip` does not assign anything: it changes which CSV
+/// records are read at all. Nothing in `rules.rs` needed changing for this — the
+/// shape has been writable since same-line `&&` and `skip`/`end` blocks became
+/// editable.
+fn exclusion(name: &str) -> Slot {
+    Slot::Insert(ItemBody::IfBlock {
+        groups: vec![MatcherGroupSpec {
+            matchers: vec![MatcherSpec {
+                scope: MatchScope::Field(name.to_string()),
+                pattern: ANY_CONTENT.to_string(),
+            }],
+        }],
+        assignments: Vec::new(),
+        control: Some(ControlField::Skip),
+    })
+}
+
 /// Render a starting-point rules file from a mapping.
 ///
 /// The text is produced by [`RulesDoc::apply`] over an **empty** document rather
@@ -1041,6 +1293,11 @@ fn assignment(field: HledgerField, value: &str) -> Slot {
 /// file saved that way is not one hledger can use, which is the caller's to
 /// enforce.
 ///
+/// `isolated` names the columns [`isolated_columns`] found, each of which earns
+/// one trailing `if %name .` / `skip` block. `tabular` must be the table with
+/// those rows **already removed** — see [`retained_rows`] for why the two have
+/// to agree.
+///
 /// # Errors
 /// [`RulesError`] if the renderer refuses a value, which for a caller-supplied
 /// `account1` means a control character or an over-long line. Everything else in
@@ -1051,6 +1308,7 @@ pub fn draft(
     columns: &[ColumnGuess],
     date_format: Option<&str>,
     account1: &str,
+    isolated: &[IsolatedColumn],
 ) -> Result<RulesDoc, RulesError> {
     let empty = RulesDoc::parse("");
     let mut order = Vec::new();
@@ -1101,6 +1359,20 @@ pub fn draft(
         },
         DEFAULT_ACCOUNT2,
     ));
+    // The exclusions go last, where a rules file's rules go. Position among
+    // them is free — a `skip` block moved relative to other rules changes not
+    // one imported row (verified against 1.52) — and a draft has no other rules
+    // for these to sit among anyway.
+    //
+    // `get` rather than an index because nothing here may panic; it cannot miss,
+    // since `columns` is as wide as the table `isolated` was read from.
+    order.extend(
+        isolated
+            .iter()
+            .filter_map(|found| columns.get(found.column))
+            .filter(|column| !column.name.is_empty())
+            .map(|column| exclusion(&column.name)),
+    );
 
     let plan = EditPlan {
         order,
@@ -1125,25 +1397,103 @@ fn statement_currency(tabular: &Tabular) -> Option<String> {
 /// # Errors
 /// [`RulesError`] from [`draft`]; see there.
 pub fn generate(tabular: &Tabular, account1: &str) -> Result<Draft, RulesError> {
-    let header = tabular.header.clone().unwrap_or_default();
-    let columns = guess_columns(&header, &tabular.rows);
+    let isolated = isolated_columns(tabular);
+    let raw_header = tabular.header.clone().unwrap_or_default();
+    let width = raw_header
+        .len()
+        .max(tabular.rows.iter().map(Vec::len).max().unwrap_or(0));
+    let header = mapping_header(&raw_header, width, &isolated);
+    // Every heuristic below reads `data`, never `tabular`: an isolated row is
+    // the row the draft is about to exclude from the import, so it was never
+    // evidence about the file's dates, its decimal mark or which column is
+    // which. Reading it was the whole of the reported bug.
+    let data = Tabular {
+        rows: retained_rows(&tabular.rows, &isolated),
+        ..tabular.clone()
+    };
+    let columns = guess_columns(&header, &data.rows);
     let date_samples = column_for(&columns, HledgerField::Date)
-        .map(|index| samples(&tabular.rows, index))
+        .map(|index| samples(&data.rows, index))
         .unwrap_or_default();
     let date_format = guess_date_format(&date_samples);
     let doc = draft(
-        tabular,
+        &data,
         &columns,
         date_format.as_ref().map(|guess| guess.format.as_str()),
         account1,
+        &isolated,
     )?;
-    let warnings = explain(tabular, &columns, date_format.as_ref(), &header);
+    let warnings = explain(
+        &data,
+        &columns,
+        date_format.as_ref(),
+        &header,
+        &isolated,
+        &tabular.rows,
+    );
     Ok(Draft {
         doc,
         columns,
         date_format,
         warnings,
     })
+}
+
+/// `1`, `1 and 4`, `1, 4 and 7` — a list a sentence can carry.
+fn conjoin(parts: &[String]) -> String {
+    match parts.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// One cell as a warning quotes it: short, and with nothing in it a sentence
+/// cannot carry. A statement's cells are the user's own bytes, and this one is
+/// about to be read back to them mid-prose.
+fn quoted_cell(cell: &str) -> String {
+    let text: String = cell
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_WARNING_CELL_CHARS)
+        .collect();
+    format!("`{text}`")
+}
+
+/// The sentence one isolated column earns.
+///
+/// It names the row numbers, the values found and the rule generated, because
+/// all three are checkable at a glance against the file the user is looking at
+/// — and because this is the one guess in the wizard that changes which rows
+/// import rather than how they are read.
+fn isolated_warning(found: &IsolatedColumn, name: &str, all_rows: &[Vec<String>]) -> String {
+    let numbers = conjoin(
+        &found
+            .rows
+            .iter()
+            .map(|row| (row + 1).to_string())
+            .collect::<Vec<String>>(),
+    );
+    let values = found
+        .rows
+        .iter()
+        .filter_map(|&row| all_rows.get(row)?.get(found.column))
+        .map(|cell| quoted_cell(cell))
+        .collect::<Vec<String>>()
+        .join(", ");
+    let plural = found.rows.len() > 1;
+    format!(
+        "Only one cell is filled in on data {} {numbers} ({values}), and {} in a column that \
+         holds nothing in any other row. That is a label the original report left behind rather \
+         than transaction data, and hledger abandons the whole import — not just that row — when \
+         a record has no date. The draft therefore ends with `if %{name} .` and a `skip`, leaving \
+         {} out. Check {} against your file and delete that rule if the data is real.",
+        if plural { "rows" } else { "row" },
+        if plural { "they sit" } else { "it sits" },
+        if plural { "those rows" } else { "that row" },
+        if plural { "those rows" } else { "that row" },
+    )
 }
 
 /// Everything about this draft the user has to be told, in sentences.
@@ -1157,8 +1507,19 @@ fn explain(
     columns: &[ColumnGuess],
     date_format: Option<&DateFormatGuess>,
     header: &[String],
+    isolated: &[IsolatedColumn],
+    all_rows: &[Vec<String>],
 ) -> Vec<String> {
-    let mut warnings = Vec::new();
+    // First, because it is the only warning here about which ROWS import at
+    // all, and because the shape it describes is one nothing else in the panel
+    // makes visible.
+    let mut warnings: Vec<String> = isolated
+        .iter()
+        .filter_map(|found| {
+            let name = &columns.get(found.column)?.name;
+            (!name.is_empty()).then(|| isolated_warning(found, name, all_rows))
+        })
+        .collect();
     let has = |field| column_for(columns, field).is_some();
 
     if has(HledgerField::Date) {
@@ -1260,6 +1621,11 @@ fn explain(
     let unmapped: Vec<String> = columns
         .iter()
         .filter(|column| column.field.is_none() && !column.name.is_empty())
+        // An isolated column is named and unmapped too, but it has its own
+        // warning saying so at length. Listing it here as well would offer it
+        // to the user as something a later rule might usefully interpolate,
+        // which is the opposite of what the other warning just said about it.
+        .filter(|column| !isolated.iter().any(|found| found.column == column.index))
         .filter_map(|column| header.get(column.index).cloned())
         .collect();
     if !unmapped.is_empty() {
@@ -1750,6 +2116,425 @@ mod tests {
             "{:?}",
             drafted.warnings
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Isolated cells
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_report_label_a_user_hit_is_isolated() {
+        // The reported shape, exactly: a QuickBooks export converted to CSV
+        // whose header row is followed by ONE row holding a stray section
+        // label in a column that has no header and no other value anywhere.
+        let data = table(
+            &["", "Date", "Description", "Amount"],
+            &[
+                &["General Ledger", "", "", ""],
+                &["", "2026-01-02", "COFFEE", "-4.50"],
+                &["", "2026-01-03", "BOOKS", "-12.00"],
+                &["", "2026-01-04", "PAYROLL", "2400.00"],
+            ],
+        );
+        assert_eq!(
+            isolated_columns(&data),
+            vec![IsolatedColumn {
+                column: 0,
+                rows: vec![0]
+            }]
+        );
+    }
+
+    #[test]
+    fn a_check_number_column_is_never_isolated() {
+        // THE false positive, and the one that would be actively harmful: a
+        // real field populated only on some rows. Keyed on column sparsity
+        // alone this fires and silently drops every check payment. It must not
+        // fire, because those rows have a date, a payee and an amount too --
+        // they fail "the row is isolated" however empty the column is.
+        let data = table(
+            &["Date", "Description", "Check Number", "Amount"],
+            &[
+                &["2026-01-02", "COFFEE", "", "-4.50"],
+                &["2026-01-03", "RENT", "1041", "-1200.00"],
+                &["2026-01-04", "BOOKS", "", "-12.00"],
+                &["2026-01-05", "PLUMBER", "1042", "-300.00"],
+                &["2026-01-06", "PAYROLL", "", "2400.00"],
+                &["2026-01-07", "COFFEE", "", "-4.50"],
+                &["2026-01-08", "BOOKS", "", "-9.00"],
+                &["2026-01-09", "COFFEE", "", "-4.50"],
+            ],
+        );
+        assert_eq!(isolated_columns(&data), Vec::new());
+    }
+
+    #[test]
+    fn several_labels_in_one_column_are_one_finding() {
+        // One rule covers all of them -- `if %column1 .` matches any of the
+        // three -- so reporting three near-identical findings would be three
+        // ways to say one thing.
+        let data = table(
+            &["", "Date", "Description", "Amount"],
+            &[
+                &["General Ledger", "", "", ""],
+                &["", "2026-01-02", "COFFEE", "-4.50"],
+                &["", "2026-01-03", "BOOKS", "-12.00"],
+                &["Checking Account", "", "", ""],
+                &["", "2026-01-04", "PAYROLL", "2400.00"],
+                &["", "2026-01-05", "RENT", "-1200.00"],
+                &["", "2026-01-06", "COFFEE", "-4.50"],
+                &["", "2026-01-07", "BOOKS", "-9.00"],
+            ],
+        );
+        assert_eq!(
+            isolated_columns(&data),
+            vec![IsolatedColumn {
+                column: 0,
+                rows: vec![0, 3]
+            }]
+        );
+    }
+
+    #[test]
+    fn labels_in_two_columns_are_two_findings() {
+        // A report can leave litter in more than one place, and the two need
+        // different rules -- `%column1` will not match `%column5`.
+        let data = table(
+            &["", "Date", "Description", "Amount", ""],
+            &[
+                &["General Ledger", "", "", "", ""],
+                &["", "2026-01-02", "COFFEE", "-4.50", ""],
+                &["", "2026-01-03", "BOOKS", "-12.00", ""],
+                &["", "", "", "", "Report total"],
+                &["", "2026-01-04", "PAYROLL", "2400.00", ""],
+                &["", "2026-01-05", "RENT", "-1200.00", ""],
+                &["", "2026-01-06", "COFFEE", "-4.50", ""],
+                &["", "2026-01-07", "BOOKS", "-9.00", ""],
+            ],
+        );
+        assert_eq!(
+            isolated_columns(&data),
+            vec![
+                IsolatedColumn {
+                    column: 0,
+                    rows: vec![0]
+                },
+                IsolatedColumn {
+                    column: 4,
+                    rows: vec![3]
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_mostly_one_cell_rows_is_a_shape_not_an_anomaly() {
+        // The sanity cap. Every row here is a single populated cell in a column
+        // that holds nothing else -- so every row satisfies both conditions,
+        // and acting on that would draft rules excluding the entire file. At
+        // that point it is not an anomaly, it is what the file IS.
+        let data = table(
+            &["", "", "", ""],
+            &[
+                &["Alpha", "", "", ""],
+                &["", "Bravo", "", ""],
+                &["", "", "Charlie", ""],
+                &["", "", "", "Delta"],
+            ],
+        );
+        assert_eq!(isolated_columns(&data), Vec::new());
+    }
+
+    #[test]
+    fn the_absolute_cap_bites_even_when_the_fraction_is_comfortable() {
+        // The two caps are independent, and this pins the one the other test
+        // cannot reach: nine isolated rows in a forty-row table is well inside
+        // the quarter-of-the-file limit (9 * 4 = 36 <= 40) and still refused,
+        // because nine is more than a report's worth of section labels and more
+        // than a warning can name and stay checkable.
+        let mut rows: Vec<Vec<String>> = (0..9)
+            .map(|n| vec![format!("Section {n}"), String::new(), String::new()])
+            .collect();
+        rows.extend((0..31).map(|n| {
+            vec![
+                String::new(),
+                format!("2026-01-{:02}", (n % 28) + 1),
+                "-4.50".to_string(),
+            ]
+        }));
+        let nine = Tabular {
+            header: Some(vec!["".into(), "Date".into(), "Amount".into()]),
+            rows,
+            ..Tabular::default()
+        };
+        assert_eq!(nine.rows.len(), 40);
+        assert_eq!(isolated_columns(&nine), Vec::new());
+
+        // One fewer, and the same file is an anomaly again — so the refusal
+        // above is the cap talking, not some other condition failing.
+        let eight = Tabular {
+            rows: nine.rows[1..].to_vec(),
+            ..nine
+        };
+        assert_eq!(
+            isolated_columns(&eight)
+                .first()
+                .map(|found| found.rows.len()),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn a_narrow_table_carries_no_isolation_signal() {
+        // `single-column.xlsx`'s lesson from `fixtures/import/README.md`, in
+        // another lane: one populated cell out of two says nothing about
+        // whether a row is a record.
+        let data = table(
+            &["", "Amount"],
+            &[
+                &["General Ledger", ""],
+                &["", "-4.50"],
+                &["", "-12.00"],
+                &["", "2400.00"],
+                &["", "-9.00"],
+                &["", "-1.00"],
+                &["", "-2.00"],
+                &["", "-3.00"],
+            ],
+        );
+        assert_eq!(isolated_columns(&data), Vec::new());
+    }
+
+    #[test]
+    fn an_ordinary_export_has_no_isolated_cells() {
+        let data = table(
+            &["Date", "Description", "Amount"],
+            &[
+                &["2026-01-02", "COFFEE", "-4.50"],
+                &["2026-01-03", "BOOKS", "-12.00"],
+            ],
+        );
+        assert_eq!(isolated_columns(&data), Vec::new());
+    }
+
+    // -----------------------------------------------------------------------
+    // What an isolated row must not be allowed to decide
+    // -----------------------------------------------------------------------
+
+    /// The user's shape with an amount-shaped label, and real money columns
+    /// nothing in the synonym table recognises.
+    fn label_beside_unrecognised_columns(label: &str) -> Tabular {
+        table(
+            &["", "Booked", "Details", "Gross"],
+            &[
+                &[label, "", "", ""],
+                &["", "31/01/2026", "COFFEE", "-4.50"],
+                &["", "28/02/2026", "BOOKS", "-12.00"],
+                &["", "15/03/2026", "PAYROLL", "2400.00"],
+            ],
+        )
+    }
+
+    #[test]
+    fn an_isolated_row_does_not_become_the_amount_column() {
+        // The sharpest form of the skew. `1,234` reads as an amount, the real
+        // money column is headed `Gross` which nothing recognises, and both
+        // therefore claim `amount` from their VALUES at the same confidence --
+        // where the tie is broken by position, and the label is column 1. The
+        // draft would map the money to a column holding one label, declare a
+        // `decimal-mark` from it, and leave the real amounts unmapped. Exit 0.
+        let drafted = generate(&label_beside_unrecognised_columns("1,234"), "assets:b").unwrap();
+        assert_eq!(
+            column_for(&drafted.columns, HledgerField::Amount),
+            Some(3),
+            "the money is in `Gross`, not in the label"
+        );
+        assert_eq!(drafted.columns[0].field, None);
+        assert_eq!(
+            drafted.doc.settings().decimal_mark.map(|s| s.value),
+            None,
+            "the real amounts are plain, so no directive is owed"
+        );
+    }
+
+    #[test]
+    fn an_isolated_row_does_not_decide_the_date_format() {
+        // Same shape, date-shaped label. Read with the label in, the mapped
+        // date column is the label's, its single sample reads two ways, and the
+        // draft declares an ambiguous month-first format over data that is
+        // unambiguously day-first.
+        let drafted =
+            generate(&label_beside_unrecognised_columns("01/02/2026"), "assets:b").unwrap();
+        assert_eq!(column_for(&drafted.columns, HledgerField::Date), Some(1));
+        let guess = drafted.date_format.clone().expect("a format");
+        assert_eq!(guess.format, "%d/%m/%Y");
+        assert!(!guess.ambiguous, "some day is > 12 once the label is gone");
+    }
+
+    // -----------------------------------------------------------------------
+    // The rule, and the sentence explaining it
+    // -----------------------------------------------------------------------
+
+    /// The reported file, as a `Tabular`.
+    fn quickbooks_export() -> Tabular {
+        table(
+            &["", "Date", "Description", "Amount"],
+            &[
+                &["General Ledger", "", "", ""],
+                &["", "2026-01-02", "COFFEE", "-4.50"],
+                &["", "2026-01-03", "BOOKS", "-12.00"],
+                &["", "2026-01-04", "PAYROLL", "2400.00"],
+            ],
+        )
+    }
+
+    #[test]
+    fn the_draft_excludes_the_isolated_row_with_a_skip_block() {
+        let drafted = generate(&quickbooks_export(), "assets:bank:checking").unwrap();
+        assert_eq!(
+            text(&drafted.doc),
+            "skip 1\n\
+             date-format %Y-%m-%d\n\
+             fields column1, date, description, amount\n\
+             account1 assets:bank:checking\n\
+             account2 expenses:unknown\n\
+             if %column1 .\n    \
+             skip\n\n"
+        );
+        // The column is NAMED -- otherwise `%column1` refers to nothing and the
+        // rule silently matches every row's whole record instead.
+        assert_eq!(
+            names(&drafted.doc),
+            ["column1", "date", "description", "amount"]
+        );
+    }
+
+    #[test]
+    fn the_warning_names_the_row_the_value_and_the_rule() {
+        let drafted = generate(&quickbooks_export(), "assets:bank:checking").unwrap();
+        let warning = drafted
+            .warnings
+            .iter()
+            .find(|warning| warning.contains("Only one cell"))
+            .unwrap_or_else(|| panic!("{:?}", drafted.warnings));
+        assert!(warning.contains("data row 1"), "{warning}");
+        assert!(warning.contains("General Ledger"), "{warning}");
+        assert!(warning.contains("if %column1 ."), "{warning}");
+    }
+
+    #[test]
+    fn a_placeholder_name_never_collides_with_a_real_header() {
+        // The machine name is `column1`, and a file may genuinely have a column
+        // headed `Column 1`. hledger resolves two `fields` entries with the same
+        // name as "first one wins", in silence — so a collision would either
+        // lose the real column or leave the exclusion rule pointing at a name
+        // that is not there, which makes `%column1` a whole-record regex
+        // matching every row.
+        let data = table(
+            &["", "Date", "Column 1", "Amount"],
+            &[
+                &["General Ledger", "", "", ""],
+                &["", "2026-01-02", "A", "-4.50"],
+                &["", "2026-01-03", "B", "-12.00"],
+                &["", "2026-01-04", "C", "2400.00"],
+            ],
+        );
+        let drafted = generate(&data, "assets:bank:checking").unwrap();
+        assert_eq!(
+            names(&drafted.doc),
+            ["column1x1", "date", "column1", "amount"]
+        );
+        assert!(
+            text(&drafted.doc).contains("if %column1x1 .\n    skip\n"),
+            "{}",
+            text(&drafted.doc)
+        );
+    }
+
+    #[test]
+    fn an_ordinary_export_drafts_no_exclusion_rule() {
+        let data = table(
+            &["Date", "Description", "Amount"],
+            &[&["2026-01-02", "COFFEE", "-4.50"]],
+        );
+        let drafted = generate(&data, "assets:bank:checking").unwrap();
+        assert!(
+            !text(&drafted.doc).contains("if "),
+            "{}",
+            text(&drafted.doc)
+        );
+        assert!(
+            !drafted
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Only one cell")),
+            "{:?}",
+            drafted.warnings
+        );
+    }
+
+    #[test]
+    fn a_refused_exclusion_is_also_a_row_the_guesses_still_read() {
+        // The invariant that keeps a draft self-consistent: the rows left out
+        // of the guessing are EXACTLY the rows the drafted rules leave out of
+        // the import. When the cap refuses there is no rule, so the rows have
+        // to be data again -- otherwise the draft describes settings read off a
+        // file that is not the one hledger will be handed.
+        let data = table(
+            &["", "", "", ""],
+            &[
+                &["2026-01-02", "", "", ""],
+                &["", "2026-02-03", "", ""],
+                &["", "", "2026-03-04", ""],
+                &["", "", "", "2026-04-05"],
+            ],
+        );
+        assert_eq!(isolated_columns(&data), Vec::new(), "the cap refuses");
+        let drafted = generate(&data, "assets:bank:checking").unwrap();
+        assert!(
+            !text(&drafted.doc).contains("if "),
+            "{}",
+            text(&drafted.doc)
+        );
+        assert_eq!(
+            column_for(&drafted.columns, HledgerField::Date),
+            Some(0),
+            "column 1 is still data, and still reads as dates"
+        );
+    }
+
+    #[test]
+    fn a_draft_carrying_an_exclusion_is_still_writable_through_the_create_route() {
+        // `every_drafted_item_can_be_written_back`'s question for the one item
+        // kind this feature adds: an `ifBlock` the create `PUT` must be able to
+        // name, since a draft carrying an unnameable item is one nobody can
+        // save.
+        let drafted = generate(&quickbooks_export(), "assets:bank:checking").unwrap();
+        assert!(
+            drafted
+                .doc
+                .items()
+                .iter()
+                .any(|item| matches!(item.kind, crate::rules::ItemKind::IfBlock(_))),
+            "the exclusion is there to be checked"
+        );
+        for item in drafted.doc.items() {
+            assert!(
+                matches!(
+                    item.kind,
+                    crate::rules::ItemKind::Directive(_)
+                        | crate::rules::ItemKind::Fields(_)
+                        | crate::rules::ItemKind::Assignment(_)
+                        | crate::rules::ItemKind::IfBlock(_)
+                ),
+                "a draft may not contain {:?}",
+                item.kind
+            );
+        }
+        let rendered = text(&drafted.doc);
+        let reparsed = RulesDoc::parse(&rendered);
+        assert_eq!(reparsed.text(), rendered);
+        assert!(reparsed.warnings().is_empty(), "{:?}", reparsed.warnings());
     }
 
     #[test]
