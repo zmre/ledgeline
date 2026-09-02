@@ -700,6 +700,29 @@ def qb_orphan_total_xlsx() -> None:
     _qb_patch_formulas(path, {f"{ref[0]}{int(ref[1:]) + 1}": v for ref, v in cached.items()})
 
 
+def qb_overlap_xlsx() -> None:
+    """A WIDER re-download: one group already imported from `simple.xlsx`, one new.
+
+    Built for Phase B's server-side write pipeline, not Phase A's parser: the
+    "re-downloading is safe" property the plan documents rests on a single
+    export mixing ids the journal already holds with ids it does not, in ONE
+    commit. Group `441` is `QB_DEPOSIT` byte-for-byte — the same transaction
+    `simple.xlsx` also carries under that id, so importing `simple.xlsx` and
+    then this file must classify it `Unchanged` and write nothing for it — and
+    group `6` is `QB_BILL`, an id neither `simple.xlsx` nor `default-columns.xlsx`
+    ever uses, so it is the one row a commit of this file actually writes.
+    """
+    _qb_write(
+        "overlap.xlsx",
+        QB_CUSTOM_HEADER,
+        [
+            ("441", QB_DEPOSIT, ("Total for 441", 74999.71, 74999.71)),
+            ("6", QB_BILL, ("Total for 6", 533.94, 533.94)),
+        ],
+        total=75533.65,
+    )
+
+
 def qb_near_miss_xlsx() -> None:
     """NOT a QuickBooks Journal, and the reason detection cannot stop at the header.
 
@@ -793,6 +816,7 @@ def main() -> None:
         qb_malformed_total_xlsx,
         qb_mismatched_total_xlsx,
         qb_orphan_total_xlsx,
+        qb_overlap_xlsx,
         qb_near_miss_xlsx,
         qb_report_xlsx,
     ):

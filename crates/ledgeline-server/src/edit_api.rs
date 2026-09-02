@@ -477,7 +477,12 @@ pub(crate) async fn patch_transaction(
 /// The bound editor inside a held guard, or the `501` that says this server has
 /// none. Every locked operation below starts (and, after `save_and_publish`,
 /// resumes) with this, so the "editing disabled" answer is written once.
-fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEditor, AppError> {
+///
+/// `pub(crate)`: `qb_journal_api`'s commit route batches several
+/// `add_transaction` calls through the same bound editor before its own single
+/// `save_and_publish`, exactly the pattern this module's own multi-step patches
+/// already use.
+pub(crate) fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEditor, AppError> {
     slot.as_mut().ok_or_else(editing_disabled)
 }
 
@@ -753,6 +758,57 @@ fn apply_statuses(
     Ok(())
 }
 
+/// Add several transactions in one edit, saving once.
+///
+/// The QuickBooks Journal import's write step (WP-17 Phase B): the same
+/// `lock_editor` → `bound` → `add_transaction` (repeated) → `save_and_publish`
+/// sequence [`set_statuses`] already uses for a batch of writes, so a
+/// multi-year import costs one save rather than one per transaction — matching
+/// how `patch_transaction_locked`'s several surgical ops already share a save.
+/// Returns the files [`JournalEditor::dirty_files`] reported just before the
+/// save, so a caller that has to know which files were actually touched (the
+/// QuickBooks import's git safety net) does not have to guess from
+/// [`InsertPosition::DateOrdered`]'s placement rule itself.
+///
+/// On a partial failure (transaction 3 of 5 does not balance, say) the editor
+/// is re-synced from disk exactly as [`set_statuses`] does, so the in-memory
+/// editor and the served snapshot never diverge from the file — nothing here
+/// is written unless every transaction in `transactions` added cleanly.
+pub(crate) fn add_transactions(
+    state: &AppState,
+    transactions: &[Transaction],
+    position: InsertPosition,
+) -> Result<Vec<std::path::PathBuf>, AppError> {
+    let mut guard = lock_editor(state)?;
+    let editor = bound(&mut guard)?;
+    if let Err(error) = apply_additions(editor, transactions, position) {
+        resync_from_disk(state, &mut guard)?;
+        return Err(error.into());
+    }
+    let touched: Vec<std::path::PathBuf> = bound(&mut guard)?
+        .dirty_files()
+        .into_iter()
+        .map(std::path::Path::to_path_buf)
+        .collect();
+    save_and_publish(state, &mut guard)?;
+    Ok(touched)
+}
+
+/// Apply each transaction of [`add_transactions`] in order, stopping at the
+/// first error. Separate for the same borrow-checking reason as
+/// [`apply_statuses`]: the mutable borrow of the editor has to end before the
+/// caller can re-sync the slot that lends it.
+fn apply_additions(
+    editor: &mut JournalEditor,
+    transactions: &[Transaction],
+    position: InsertPosition,
+) -> Result<(), EditError> {
+    for transaction in transactions {
+        editor.add_transaction(transaction, position)?;
+    }
+    Ok(())
+}
+
 /// The transaction with `tindex` `index` in the editor's current journal.
 fn find_transaction(editor: &JournalEditor, index: u32) -> Option<&Transaction> {
     editor
@@ -791,7 +847,13 @@ fn apply_patch(
 /// then returned (a `409` tells the client to re-fetch/retry), UNLESS the
 /// re-sync itself failed, in which case its `500` wins: that is the more serious
 /// condition and the one the user has to act on.
-fn save_and_publish(state: &AppState, slot: &mut Option<JournalEditor>) -> Result<(), AppError> {
+///
+/// `pub(crate)`: shared with `qb_journal_api`'s commit route, which needs the
+/// same discard-and-resync behavior after a save that did not land.
+pub(crate) fn save_and_publish(
+    state: &AppState,
+    slot: &mut Option<JournalEditor>,
+) -> Result<(), AppError> {
     let editor = bound(slot)?;
     match editor.save() {
         Ok(()) => {
@@ -821,7 +883,15 @@ fn save_and_publish(state: &AppState, slot: &mut Option<JournalEditor>) -> Resul
 /// and unbind the editor rather than keep one whose rope holds an unpersisted
 /// edit — a later save against it is how that phantom would reach the file.
 /// This mirrors [`AppState::reopen_editor`], which unbinds on the same failure.
-fn resync_from_disk(state: &AppState, slot: &mut Option<JournalEditor>) -> Result<(), AppError> {
+///
+/// `pub(crate)`: `qb_journal_api`'s commit route batches several
+/// `add_transaction` calls the same way [`apply_statuses`]/[`apply_patch`] do,
+/// and needs the same recovery when a later one fails after an earlier one
+/// already committed to memory.
+pub(crate) fn resync_from_disk(
+    state: &AppState,
+    slot: &mut Option<JournalEditor>,
+) -> Result<(), AppError> {
     let Some(path) = slot.as_ref().map(|editor| editor.path().to_path_buf()) else {
         // Nothing bound, so there is no un-saved edit to discard and nothing new
         // to publish; the caller's own error stands.
@@ -868,7 +938,12 @@ fn resync_failed(error: &EditError) -> AppError {
 /// state. If the re-open FAILS we unbind the editor rather than hand back a
 /// half-mutated one, and the caller gets a 500 — never a silent edit against
 /// corrupt state.
-fn lock_editor(state: &AppState) -> Result<MutexGuard<'_, Option<JournalEditor>>, AppError> {
+///
+/// `pub(crate)`: `qb_journal_api`'s commit route locks the same editor mutex,
+/// through the same recovery path, rather than growing a second one.
+pub(crate) fn lock_editor(
+    state: &AppState,
+) -> Result<MutexGuard<'_, Option<JournalEditor>>, AppError> {
     let mutex = state.editor();
     let mut guard = match mutex.lock() {
         Ok(guard) => return Ok(guard),

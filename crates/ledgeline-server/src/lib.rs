@@ -45,6 +45,7 @@ mod hledger;
 mod import_api;
 mod prefs;
 mod prices_api;
+mod qb_journal_api;
 mod reports_api;
 mod rules_api;
 mod security;
@@ -281,6 +282,12 @@ pub struct AppState {
     /// names is not even in the same tree. The whole area is removed when the
     /// last clone of this state drops.
     stages: Arc<stage::StageArea>,
+    /// Where a staged, already-parsed QuickBooks Journal upload lives between
+    /// the upload and the commit (WP-17 Phase B). Per state, for the same
+    /// reason as [`Self::stages`]; a sibling of it rather than a variant added
+    /// to it, because nothing here is ever written to disk or handed to a
+    /// subprocess — see [`qb_journal_api::QbStageArea`].
+    qb_stages: Arc<qb_journal_api::QbStageArea>,
     /// Serializes IMPORTS. Two concurrent commits into one journal would
     /// interleave hledger's appends and each other's `.latest` writes, and
     /// neither the editor mutex (imports do not go through the editor) nor
@@ -325,6 +332,7 @@ impl AppState {
             editor: Arc::new(Mutex::new(None)),
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
             stages: Arc::new(stage::StageArea::default()),
+            qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: default_price_source(),
         }
@@ -346,6 +354,7 @@ impl AppState {
             editor: Arc::new(Mutex::new(Some(editor))),
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
             stages: Arc::new(stage::StageArea::default()),
+            qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: default_price_source(),
         })
@@ -465,6 +474,12 @@ impl AppState {
     /// This session's staging area, shared by all clones. See the field's docs.
     pub(crate) fn stages(&self) -> &stage::StageArea {
         &self.stages
+    }
+
+    /// This session's staged QuickBooks Journal uploads, shared by all clones.
+    /// See the field's docs.
+    pub(crate) fn qb_stages(&self) -> &qb_journal_api::QbStageArea {
+        &self.qb_stages
     }
 
     /// The import write mutex, shared by all clones. See the field's own docs
@@ -687,6 +702,20 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // directory, so it belongs above the `route_layer` with the rest.
         .route("/api/import/save-csv", post(import_api::save_csv))
         .route("/api/import/sort", post(import_api::sort_journal))
+        // The QuickBooks Journal import (WP-17 Phase B): the same upload route
+        // above already detects and stages this second format; these two read
+        // the staged parse and write the journal. THE SAME PLACEMENT TRAP as
+        // the routes above — `POST /api/import/qb-journal/commit` writes
+        // straight into the user's journal. Below the `route_layer` it would
+        // do that with no bearer token at all.
+        .route(
+            "/api/import/qb-journal/{stageId}",
+            get(qb_journal_api::preview),
+        )
+        .route(
+            "/api/import/qb-journal/commit",
+            post(qb_journal_api::commit),
+        )
         // The command-line-parity fix: install the journal's aliases into an
         // `hledger.conf` beside it. A THIRD write target, and the only one that
         // is not a journal or a CSV, so it belongs above the `route_layer` for

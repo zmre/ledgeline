@@ -13,7 +13,7 @@ use ledgeline_core::model::{
     PostingType, SourcePos, Status, Tindex, Transaction,
 };
 use proptest::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -482,6 +482,58 @@ fn add_then_reparse_round_trips_a_cost_transaction() {
     assert_eq!(added.postings[0].amounts[0].quantity, Dec::new(2, 0));
     // The inferred cash leg is -$540.00.
     assert_eq!(added.postings[1].amounts[0].quantity, Dec::new(-54000, 2));
+}
+
+#[test]
+fn dirty_files_lists_exactly_the_files_a_write_touched() {
+    // Two real files on disk, one `include`ing the other, so `dirty_files` has
+    // something to distinguish: an untouched main file that only `include`s,
+    // and the year file a `DateOrdered` add actually lands in.
+    let year = write_temp(
+        "dirty-2025",
+        "2025-06-01 * old\n    expenses:a  $1.00\n    assets:bank\n",
+    );
+    let year_name = year.file_name().unwrap().to_string_lossy().into_owned();
+    let main = write_temp("dirty-main", &format!("include {year_name}\n"));
+
+    let mut editor = JournalEditor::open(&main).unwrap();
+    assert!(
+        editor.dirty_files().is_empty(),
+        "nothing is dirty before any edit"
+    );
+
+    let new_txn = cash_txn(
+        "2025-06-15",
+        "New",
+        vec![
+            leg("expenses:b", Some(dollars(500, 2))),
+            leg("assets:bank", None),
+        ],
+    );
+    editor
+        .add_transaction(&new_txn, InsertPosition::DateOrdered)
+        .unwrap();
+
+    let dirty: Vec<PathBuf> = editor
+        .dirty_files()
+        .into_iter()
+        .map(Path::to_path_buf)
+        .collect();
+    assert_eq!(
+        dirty,
+        vec![year.canonicalize().unwrap()],
+        "only the year file the row landed in is dirty"
+    );
+    assert!(
+        !dirty.contains(&main.canonicalize().unwrap()),
+        "the main file only `include`s and was never touched"
+    );
+
+    editor.save().unwrap();
+    assert!(
+        editor.dirty_files().is_empty(),
+        "save clears the dirty flag"
+    );
 }
 
 // ---------------------------------------------------------------------------

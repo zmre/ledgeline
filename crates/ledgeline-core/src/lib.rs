@@ -41,6 +41,7 @@ pub mod journals;
 pub mod model;
 pub mod parse;
 pub mod periodic;
+pub mod qb_import;
 pub mod qb_journal;
 pub mod reimport;
 pub mod reports;

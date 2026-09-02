@@ -842,9 +842,13 @@ struct WireOrdering {
 }
 
 /// One transaction a re-sort would move.
+///
+/// `pub(crate)`: `qb_journal_api`'s per-file ordering report reuses this
+/// exact shape rather than growing a second one for the same "what a re-sort
+/// would move" fact.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireMove {
+pub(crate) struct WireMove {
     date: String,
     description: String,
     from_line: u32,
@@ -871,14 +875,14 @@ impl From<&sort::Move> for WireMove {
 /// `committed: false`. Additive and omitted on success.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireGitResult {
-    committed: bool,
+pub(crate) struct WireGitResult {
+    pub(crate) committed: bool,
     /// Paths actually committed, relative to their repository toplevel.
     paths: Vec<String>,
     /// Targets not committed: outside any repository, or gitignored.
     skipped: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
+    pub(crate) message: Option<String>,
 }
 
 /// `POST /api/import/sort` — how many transactions moved.
@@ -1220,7 +1224,7 @@ fn main_journal(state: &AppState, what: &str, id: &str) -> Result<PathBuf, AppEr
 
 /// The directory `include` (and therefore everything in this feature) is
 /// confined to: the main journal file's own directory, canonicalized.
-fn include_root(main: &Path) -> Result<PathBuf, AppError> {
+pub(crate) fn include_root(main: &Path) -> Result<PathBuf, AppError> {
     let dir = main.parent().unwrap_or_else(|| Path::new("."));
     std::fs::canonicalize(dir).map_err(|_| {
         AppError::Internal("this journal's own directory could not be resolved".to_string())
@@ -1551,8 +1555,12 @@ impl AliasArguments {
 ///
 /// Longest-first, so `/root/import/bank.csv` becomes `import/bank.csv` rather
 /// than being half-rewritten by the root's own entry.
+///
+/// `pub(crate)`: `qb_journal_api` builds its own and redacts its git errors the
+/// same way, rather than growing a second redaction scheme for one more write
+/// path.
 #[derive(Debug, Default, Clone)]
-struct Redactor {
+pub(crate) struct Redactor {
     swaps: Vec<(String, String)>,
 }
 
@@ -1562,7 +1570,7 @@ impl Redactor {
     /// Both the path as given and its canonical spelling are registered, because
     /// they differ routinely — on macOS `/tmp` is a symlink to `/private/tmp`,
     /// and a subprocess may report either.
-    fn hide(mut self, path: &Path, handle: &str) -> Self {
+    pub(crate) fn hide(mut self, path: &Path, handle: &str) -> Self {
         let mut spellings = vec![path.to_string_lossy().into_owned()];
         if let Ok(canonical) = std::fs::canonicalize(path) {
             spellings.push(canonical.to_string_lossy().into_owned());
@@ -1577,7 +1585,7 @@ impl Redactor {
 
     /// Replace a DIRECTORY prefix: `dir/x` becomes `x`, and a bare mention of the
     /// directory becomes `.`. Same two substitutions `git.rs::scrub` makes.
-    fn hide_prefix(mut self, dir: &Path) -> Self {
+    pub(crate) fn hide_prefix(mut self, dir: &Path) -> Self {
         let spelling = dir.to_string_lossy().into_owned();
         let canonical = std::fs::canonicalize(dir)
             .map(|path| path.to_string_lossy().into_owned())
@@ -1593,7 +1601,7 @@ impl Redactor {
     }
 
     /// `text` with every known path rewritten.
-    fn apply(&self, text: &str) -> String {
+    pub(crate) fn apply(&self, text: &str) -> String {
         let mut swaps: Vec<&(String, String)> = self.swaps.iter().collect();
         swaps.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
         swaps.iter().fold(text.to_string(), |redacted, (from, to)| {
@@ -2195,7 +2203,10 @@ fn reconcile(statement: &str, computed: Option<String>) -> WireBalance {
 
 /// Whether the git safety net is switched on: `None` means "commit when a repo
 /// is present", which is the default posture `git.rs` implements.
-fn autocommit_enabled(prefs: &Prefs) -> bool {
+///
+/// `pub(crate)`: `qb_journal_api` follows the same preference for its own
+/// commit route rather than growing a second reading of it.
+pub(crate) fn autocommit_enabled(prefs: &Prefs) -> bool {
     prefs.git_autocommit.unwrap_or(true)
 }
 
@@ -2224,7 +2235,7 @@ pub(crate) enum GitPolicy {
 
 impl GitPolicy {
     /// Is the safety net live for this run?
-    fn enabled(self, prefs: &Prefs) -> bool {
+    pub(crate) fn enabled(self, prefs: &Prefs) -> bool {
         self == Self::FromPrefs && autocommit_enabled(prefs)
     }
 }
@@ -2238,7 +2249,11 @@ impl GitPolicy {
 ///
 /// Returns the caller's own relative handles rather than git's repo-relative
 /// paths, so the UI names the files with the same strings the form does.
-fn blocked_by_git(targets: &[(&Path, &str)]) -> Vec<String> {
+///
+/// `pub(crate)`: `qb_journal_api`'s commit route re-checks the same "is any
+/// target dirty" question server-side, for the same reason (sequencing rule 3)
+/// this module does.
+pub(crate) fn blocked_by_git(targets: &[(&Path, &str)]) -> Vec<String> {
     targets
         .iter()
         .filter(|(path, _)| !git_status(path).dirty.is_empty())
@@ -2267,7 +2282,14 @@ fn git_status(path: &Path) -> GitStatus {
 /// journal may live in different repositories or one may be outside version
 /// control entirely — `git.rs` makes [`Repo`] `Eq` for exactly this grouping. A
 /// target with no repository is reported as skipped, not as a failure.
-fn commit_targets(targets: &[(&Path, &str)], message: &str, redactor: &Redactor) -> WireGitResult {
+///
+/// `pub(crate)`: the same "commit exactly what was written" safety net
+/// `qb_journal_api`'s commit route offers, reused rather than re-implemented.
+pub(crate) fn commit_targets(
+    targets: &[(&Path, &str)],
+    message: &str,
+    redactor: &Redactor,
+) -> WireGitResult {
     let (in_repo, outside): (Vec<_>, Vec<_>) = targets
         .iter()
         .map(|(path, handle)| (Repo::discover(path), *path, *handle))
@@ -2432,6 +2454,15 @@ pub(crate) async fn stage(
 
 /// The whole of `stage`, synchronously, on the blocking pool.
 fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage, AppError> {
+    // WP-17: a QuickBooks Online "Journal" report cannot go through the
+    // `convert`/CSV-rules pipeline at all (see `qb_journal`'s module docs), so
+    // it is detected and diverted before `convert::detect` gets a look.
+    // `qb_journal::detect` says yes on a damaged export as well as a good one
+    // — see its own docs on why — so a truncated file is refused BY NAME here
+    // rather than falling through to the CSV rules screen.
+    if ledgeline_core::qb_journal::detect(bytes) {
+        return stage_qb_journal(state, name, bytes);
+    }
     let format = convert::detect(name, bytes).map_err(convert_error)?;
     let tabular = convert::convert(format, bytes).map_err(convert_error)?;
     let csv = convert::to_csv(&tabular);
@@ -2496,6 +2527,48 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
         notes: tabular.notes.iter().map(WireNote::from).collect(),
         candidates,
         defaults,
+    })
+}
+
+/// The QuickBooks Journal branch of [`stage_upload`] (WP-17 Phase B).
+///
+/// Parses eagerly, exactly as the CSV branch converts eagerly — a stage
+/// response has always meant "this upload was fully validated", and a
+/// truncated export is refused HERE, by name, rather than staged and refused
+/// later. The parsed [`ledgeline_core::qb_journal::QbJournal`] is kept (not
+/// the raw bytes: nothing downstream ever re-parses them, since this pipeline
+/// never shells out to hledger over this file) so the two follow-up routes
+/// (`qb_journal_api::preview`/`commit`) do not re-parse it.
+///
+/// `preview`/`candidates`/`statement` are left at their empty defaults:
+/// `qb_journal_api::preview` is the dedicated route for the parsed groups and
+/// which accounts are unmapped — recomputed against the journal's CURRENT
+/// aliases on every call, which a value cached here at upload time could not
+/// be.
+fn stage_qb_journal(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage, AppError> {
+    let parsed = ledgeline_core::qb_journal::parse(bytes)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let (id, _staged) = state.qb_stages().put(parsed).ok_or_else(|| {
+        AppError::Internal("the operating system's random source is unavailable".to_string())
+    })?;
+
+    Ok(WireStage {
+        stage_id: id.as_str().to_string(),
+        format: "quickbooks-journal",
+        preview: WirePreview {
+            header: None,
+            rows: Vec::new(),
+            row_count: 0,
+            truncated: false,
+        },
+        statement: None,
+        notes: Vec::new(),
+        candidates: Vec::new(),
+        defaults: WireDefaults {
+            // No CSV is ever written by this pipeline.
+            csv_path: String::new(),
+            journal_id: defaults_for(state, name, None).journal_id,
+        },
     })
 }
 

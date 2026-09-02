@@ -380,6 +380,11 @@ async fn every_import_route_requires_the_token() {
         ("POST", "/api/import/commit"),
         ("POST", "/api/import/save-csv"),
         ("POST", "/api/import/sort"),
+        (
+            "GET",
+            "/api/import/qb-journal/00000000000000000000000000000000",
+        ),
+        ("POST", "/api/import/qb-journal/commit"),
         ("POST", "/api/import/hledger-conf"),
         ("GET", "/api/prefs"),
         ("PUT", "/api/prefs"),

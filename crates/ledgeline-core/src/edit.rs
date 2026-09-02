@@ -343,6 +343,24 @@ impl JournalEditor {
         self.journal.transactions.len()
     }
 
+    /// The files with an unsaved edit right now — i.e. the files
+    /// [`save`](Self::save) would write on the next call, before it clears the
+    /// flag.
+    ///
+    /// For a caller that has to know *which* files a batch of edits touched
+    /// before it saves them (the QuickBooks Journal import's git safety net
+    /// checks every source file up front, because [`InsertPosition::DateOrdered`]
+    /// does not commit to one until [`add_transaction`](Self::add_transaction)
+    /// has actually placed the row, and then needs the precise set to commit).
+    #[must_use]
+    pub fn dirty_files(&self) -> Vec<&Path> {
+        self.files
+            .iter()
+            .filter(|(_, file)| file.dirty)
+            .map(|(path, _)| path.as_path())
+            .collect()
+    }
+
     /// The exact source text of the transaction with `index` (its
     /// `source_span`, excluding any trailing blank line) from its OWN file, or
     /// `None` if there is no such transaction. Handy for byte-identity

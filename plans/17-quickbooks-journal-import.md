@@ -354,6 +354,200 @@ behaves like the CSV path's own `reimport` tests — same fixture-style regressi
 `LEDGELINE_HLEDGER_QBJOURNAL_CHECK`) proving `hledger check`/`hledger print` accept the written
 journal and it balances.
 
+### Contract amendments made during implementation (Phase B)
+
+Per convention #9 in `plans/00-overview.md`, and following Phase A's own amendments section above.
+
+**The pure alias/description logic landed in `ledgeline-core`, not `ledgeline-server`.**
+`crates/ledgeline-core/src/qb_import.rs` is a new sibling of `qb_journal.rs` carrying
+`plain_aliases`, `resolve_account`, `unmapped_accounts` and `description_for` — none of it touches
+I/O or the HTTP layer, and it is unit-tested in isolation (inline `#[cfg(test)]`, plus
+`crates/ledgeline-core/tests/qb_import.rs` against the real `simple.xlsx`/`many-postings.xlsx`
+fixtures) the same way `reimport.rs`/`aliases.rs` are. The HTTP glue, wire types, staging, and the
+`core::Transaction` builder (which needs `edit_api::infer_style`, a server-crate concern) live in
+the new `crates/ledgeline-server/src/qb_journal_api.rs`.
+
+**Which aliases count: `aliases_in_force`, not just `!regex`.** The sketch above says "Journal
+.aliases, filtered to `!regex`" and does not mention `end aliases` scoping. Decided to also exclude
+an alias an `end aliases` line has closed — i.e. `qb_import::plain_aliases` is
+`journal.aliases_in_force().filter(|a| !a.regex)` — because that is the only existing precedent for
+"the aliases in force" (`aliases::forward`'s CSV-path forwarding already excludes them for the same
+reason: the user wrote down where the mapping stops) and using one they explicitly closed for a
+brand-new mapping would contradict their own stated intent.
+
+**The description fallback chain, decided against real data:** `name` when non-empty; otherwise
+`"{transaction_type}: {first posting's memo}"` when the first posting has one; otherwise bare
+`transaction_type`. Verified against `many-postings.xlsx`'s group 612 (a manual Journal Entry with
+no `Name` at all) — `crates/ledgeline-core/tests/qb_import.rs`'s
+`the_manual_journal_entry_has_no_name_and_falls_back_to_type_and_first_memo` pins the exact string
+`"Journal Entry: Opening Balance Entry"`. Reasoning: `transaction_type` alone is a six-word closed
+set, so on its own it gives every un-payee'd transaction of a kind the identical description; the
+first posting's memo is what actually distinguishes one Journal Entry from the file's others.
+
+**`class`/`customer`/`vendor` become a posting comment of `name: value` tags**, comma-joined
+(`"class: Retail, vendor: Acme Cloud\n"`), via `qb_journal_api::posting_comment`. This is exactly
+the tag-comment syntax `parse.rs::parse_tags` already reads (`name` is the last whitespace-run
+before a `:`, value trimmed to the next `,`), so a value containing a comma or colon of its own
+degrades the *derived* `Posting::tags` reading but never corrupts the write — `edit::
+transactions_equivalent`'s round-trip guard does not compare comments/tags at all (only
+date/date2/status/code/description/postings' account+ptype+assertion+amounts), so this was
+verified rather than assumed.
+
+**The commodity for a built amount, corrected during review: `Journal::default_commodity` alone is
+not enough.** The export carries no currency column at all, so something has to decide it. The
+first landed version used `Journal::default_commodity` (a `D AMOUNT` directive), falling back to
+bare `Commodity("")` when the journal declares none — but `default_commodity` requires a literal `D`
+line, which most real journals never write (they just write `$100.00` throughout), so on an
+otherwise-ordinary `$`-denominated journal with no `D` directive every QuickBooks-imported amount
+was silently written with **no commodity symbol at all** — a different style than the rest of the
+file, and not something either the parser or `hledger check` catches, since a bare-number posting
+still balances against another bare-number posting in the same transaction. Caught by strengthening
+`qb_journal_endpoints.rs`'s `commit_writes_every_transaction_tagged_with_its_quickbooks_id` to assert
+the `$` sign survives (its scratch journal fixture writes `$1000.00` but declares no `D`, which is
+exactly the shape that tripped this) — the assertion failed against the landed code, confirming the
+bug before it was fixed. `qb_journal_api::commodity_for` now prefers, in order: the declared
+`default_commodity`; else the commodity used most often across the journal's own posting amounts
+already (first-seen order breaking a tie — the same "first occurrence" precedent
+`Journal::commodity_styles`'s own doc comment names); else bare, for a journal with no default and
+no amount anywhere to learn from, which is the best any answer can be there. Computed once per
+commit/preview (not once per transaction) and threaded through `build_and_classify` →
+`build_transaction` → `build_posting`. `AmountStyle` is still inferred with the *existing*
+`edit_api::infer_style` (`pub(crate)`, reused rather than re-derived), the same function the manual
+"add transaction" editor already uses for a client-supplied amount with no declared style — that part
+of the sketch was right; only *which* commodity was fed to it was wrong. Four new inline tests in
+`qb_journal_api.rs` pin the four cases (declared default wins even over a more-frequent commodity;
+no default falls back to the journal's own amounts; a genuine tie breaks by first occurrence; a
+journal with neither has nothing to prefer).
+
+**`reimport::classify` needed no generalization.** The sketch worried its signature might need
+widening because it "compares field-by-field against hledger's own dry-run proposal" and this path
+has none. In fact `classify(index, id, proposed: &Transaction, status_mapped: bool)` already takes
+a plain `&Transaction` — nothing about it is CSV-specific — so `qb_journal_api::build_and_classify`
+calls it completely unmodified, passing a QuickBooks-built `Transaction` as `proposed` and
+`status_mapped: false` *always* (a QuickBooks-built transaction is always `Status::Unmarked`, since
+nothing in the export maps to hledger's clearing status — see `WireQbIdMatches`'s doc comment for
+why that makes `RowClassification::StatusOnly` unreachable here and folds any status difference
+into `Conflicting`, the same rule the CSV path follows when its own rules file assigns no status).
+`reimport.rs` itself is untouched, and its existing tests pass byte-for-byte unmodified — the
+"prove it" the sketch asked for.
+
+**No `journalId`, anywhere on this surface.** CSV import writes to one file the user names because
+`hledger import` is pointed at one target. This pipeline writes through
+`JournalEditor::add_transaction` with `InsertPosition::DateOrdered`, which already decides — per
+transaction, from the journal's own chronology — which `include`d file receives each row. There is
+therefore no "destination" to name at all, and the commit request carries only a `stageId`.
+
+**Wire surface, pinned exactly (the sketch's "sketch — pin exactly once building against the real
+stage/detect flow" resolved as):**
+- `POST /api/import/stage` (existing route, `import_api.rs`) — `qb_journal::detect` is checked
+  before `convert::detect`; on a match, `stage_qb_journal` parses **eagerly** (so a damaged export
+  is refused by name at upload time, not staged and refused later) and stages the *parsed*
+  `QbJournal` — see the next point — then answers with the **existing** `WireStage` shape:
+  `format: "quickbooks-journal"`, `candidates: []`/`statement: None`/`preview` at its empty
+  defaults (there is no CSV to preview or score rules files against), `defaults.journalId` still
+  populated from the existing `defaults_for` helper purely for display continuity even though this
+  pipeline never reads it back. This is the most literal reading of "reuses the existing stage
+  upload" available: one new wire type for the whole route, not a parallel one.
+- `GET /api/import/qb-journal/{stageId}` (new, `qb_journal_api::preview`) — read-only and
+  idempotent, so `GET` with the handle as a path segment, not the `POST`-with-body shape the sketch
+  implied by grouping it with the write routes. Re-parses nothing (see below) and re-classifies
+  against the journal's aliases *as they stand at call time*, so calling it again after adding an
+  alias through the existing `PUT /api/aliases/{*journalId}` is how "supplying aliases … unblocks
+  it" is proven in the test suite.
+- `POST /api/import/qb-journal/commit` (new, `qb_journal_api::commit`) — the only write route.
+
+**Staging holds the *parsed* `QbJournal`, not raw bytes.** `qb_journal_api::QbStageArea` /
+`QbStage` hold an in-memory `QbJournal` (never written to disk — this pipeline never shells out, so
+there is no file-alignment concern `stage::Stage` has to solve). Parsing happens exactly once, at
+upload time; `preview` and `commit` both read the same parse, so there is no second reader that
+could come to disagree with the first about what the bytes mean, and re-classification against
+fresh aliases costs no re-parse.
+
+**The git safety net is applied, unlike the manual "add transaction" editor's own routes.**
+Investigated per the plan's own instruction: `edit_api.rs`'s ordinary transaction endpoints
+(`POST`/`DELETE`/`PUT`/`PATCH /api/transactions`) carry **no** git integration at all — only
+`import_api.rs`'s CSV commit and sort routes do. Decided QuickBooks import should follow the import
+precedent, not the manual-edit one: it is a bulk write from an external file with the same
+undo-cost profile as a CSV import, not a one-transaction-at-a-time interactive edit. Two
+consequences of not knowing which files `DateOrdered` will touch until after the write:
+- the **pre**-write check (`import_api::blocked_by_git`, now `pub(crate)`) looks at *every* file in
+  `Journal::source_files` — the superset of anything the write could touch — rather than one known
+  target, which is more conservative than the CSV path but the only correct pre-check available;
+  and
+- a new `JournalEditor::dirty_files()` (`crates/ledgeline-core/src/edit.rs`) reports exactly which
+  files ended up written, so the **post**-write git commit (`import_api::commit_targets`, now
+  `pub(crate)`) is narrowed to precisely those — the same "commit exactly what was written"
+  precision the CSV path has, achieved a different way since there is no single target to already
+  know it from. `crates/ledgeline-core/tests/edit.rs`'s
+  `dirty_files_lists_exactly_the_files_a_write_touched` pins this against a real two-file
+  `include` tree.
+- A new `edit_api::add_transactions` (batches several `add_transaction` calls behind one
+  `save_and_publish`, mirroring `set_statuses`'s existing precedent exactly) is what both performs
+  the write and returns the `dirty_files()` snapshot taken just before the save.
+- `qb_journal_api::commit` does **not** additionally take `AppState::import_writes` — it goes
+  through the editor mutex (via `add_transactions`), which already serializes against every other
+  editor-based writer including itself; CSV import and the alias editor take `import_writes`
+  because *they* bypass the editor and write the file directly. The one race this leaves — a QB
+  commit and a concurrent CSV commit both touching the same file — is caught, not silently lost:
+  `JournalEditor::save`'s external-change fingerprint check turns it into an `EditError::
+  ExternalChange` → `409` the client re-fetches and retries, the same outcome the manual editor
+  already accepts for the identical race.
+
+**Ordering is reported per touched file**, not the CSV path's single `WireOrdering`/`WireMove`
+(reused directly — both structs are now `pub(crate)` in `import_api.rs` — but wrapped in new
+`WireQbOrdering { inOrder, files: [{ journalId, inOrder, moves }] }`), because a multi-year import
+can land rows in more than one `include`d file. No new re-sort mechanism was built: each
+`WireQbFileOrdering.journalId` is a relative handle in exactly the shape `journals::targets`
+produces, so a client can hand it straight to the *existing* `POST /api/import/sort` route — reuse,
+per the plan's own instruction, not a new one.
+
+**No response list is capped.** Unlike `import_api::WireIdMatches` (`MAX_ID_REPORTS`/
+`MAX_ID_DIFFS`), `WireQbIdMatches.conflicting` and its diffs are not bounded. A QuickBooks Journal
+export is a spreadsheet within the parser's 16 MiB cap, and every fixture in the corpus tops out at
+45 transactions; this is a deliberate simplification for a first cut, not an oversight, and the
+same caps could be ported over verbatim if a future export size warrants it.
+
+**The date-format ambiguity flag is surfaced, not resolved, at this layer.** `WireQbPreview.
+dateFormat.ambiguous` passes `QbJournal::date_format.ambiguous` straight through so a future caller
+can warn about it; Phase B always proceeds with the ISO dates `qb_journal::parse` already computed
+(there is no interactive resolution mechanism at this layer to defer to). Phase A's amendment
+already flagged this as needing a Phase C UI affordance — still true, still deferred.
+
+**Balance column: still never read.** Nothing in Phase B changes Phase A's settled answer —
+`QbPosting` carries no balance field, and no balance-assertion logic was added anywhere in this
+phase.
+
+**A new fixture, `fixtures/import/qb-journal/overlap.xlsx`, added for the "wider re-download" case.**
+The plan's own "Getting the export, and why re-downloading is safe" section calls for a test proving
+a re-download that mixes already-imported ids with new ones dedupes correctly in one commit; no
+existing fixture's ids overlapped another's (verified directly against the sheet XML), so
+`generate.py` gained `qb_overlap_xlsx`, following its existing `_qb_write`/`_qb_sheet` conventions
+exactly: group `441` is `QB_DEPOSIT` byte-for-byte (the same transaction `simple.xlsx` carries under
+that id), group `6` is `QB_BILL` (an id neither `simple.xlsx` nor `default-columns.xlsx` uses).
+`qb_journal_endpoints.rs`'s `a_wider_re_download_imports_only_the_new_group_and_leaves_the_overlap_alone`
+commits `simple.xlsx` then `overlap.xlsx` and asserts exactly one new transaction lands and the
+overlapping one is not duplicated. (Regenerating fixtures locally requires the exact `nix-shell
+-p python3Packages.openpyxl python3Packages.xlwt python3Packages.odfpy` toolchain the script's own
+header documents — a bare `pip`-installed `openpyxl` produced byte-different output for every
+*existing* fixture too, which is spurious zip/library-version noise, not a content change; only the
+one new file was kept, and every previously-committed fixture was restored via `git checkout --`
+rather than regenerated in place.)
+
+**Test counts.** `ledgeline-core`: 12 inline `qb_import` unit tests + 4 fixture-based
+`tests/qb_import.rs` + 1 new `edit.rs` test (`dirty_files_lists_exactly_the_files_a_write_touched`).
+`ledgeline-server`: 4 inline `qb_journal_api::commodity_for` unit tests + 14 hermetic tests in
+`tests/qb_journal_endpoints.rs` (token gate, stage detection/refusal, preview's unmapped-accounts
+report, commit's refusal-by-name, the write itself (including that an imported amount keeps the
+journal's own commodity symbol), re-commit idempotency, hand-edit-is-conflicting-and-never-
+overwritten, the wider-re-download case, per-file ordering) + 2 opt-in tests in
+`tests/qb_journal_hledger_check.rs` gated on `LEDGELINE_HLEDGER_QBJOURNAL_CHECK` (added to
+`justfile`'s `hledger-checks` target), proving `hledger check` and `hledger print` accept the written
+journal for both the two-transaction `simple.xlsx` and the full 45-transaction `report.xlsx`
+round-trip fixture. The existing CSV-path suites (`import_endpoints.rs`, `import_cli.rs`,
+`reimport.rs`, and the full `just hledger-checks` target) were re-run and pass unmodified, confirming
+the several `pub(crate)` visibility widenings in `import_api.rs`/`edit_api.rs`/`stage.rs` changed no
+behavior.
+
 ## Phase C — SPA
 
 Per direct instruction: drop a file into the existing New Transactions drop target; if

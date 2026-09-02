@@ -735,6 +735,17 @@ account name in someone's books, and Rust's `regex` crate is a different dialect
 would be a silent wrong answer; declining is a visible one. The Account Aliases tab says so in as
 many words, and a test pins the sentence.
 
+**The one narrow, deliberate exception** is the QuickBooks Online Journal import (WP-17;
+`plans/17-quickbooks-journal-import.md`). That pipeline cannot go through `hledger import` at all
+(there is no rules-file construct for "keep reading rows until a total line closes the group"), so
+it has to compute an account's hledger name itself before it can write a transaction. It does the
+narrowest possible version of what this section otherwise refuses: **plain** (non-regex) alias
+matching only — exact string equality, plus hledger's own rule that a plain alias also matches a
+prefix ending at `:` (the same rule `hledger_conf::conf_argument`'s module docs verify: "it
+rewrites `a` and `a:sub` and leaves `abc` alone"; see `ledgeline_core::qb_import`'s module docs for
+the full argument). A `/REGEX/` alias is never eligible there either; the account it might have
+matched is simply reported unmapped.
+
 ### What the editor refuses to model
 
 Same discipline as the rules editor, one line wide. `AliasDoc` splices **only** the pattern and

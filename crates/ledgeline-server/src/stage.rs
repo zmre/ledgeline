@@ -166,7 +166,11 @@ impl StageId {
     /// between one browser tab's staged bank statement and another's, so a
     /// guessable id is a real weakening and refusing the upload is the honest
     /// answer.
-    fn mint() -> Option<Self> {
+    ///
+    /// `pub(crate)`: `qb_journal_api::QbStageArea` mints its own ids the same
+    /// way rather than growing a second CSPRNG-backed id scheme for one more
+    /// staging area.
+    pub(crate) fn mint() -> Option<Self> {
         let mut bytes = [0u8; ID_HEX_CHARS / 2];
         getrandom::fill(&mut bytes).ok()?;
         Some(Self(

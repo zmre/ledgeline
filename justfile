@@ -118,6 +118,7 @@ hledger-checks:
     LEDGELINE_HLEDGER_LAYOUT_CHECK=1 cargo test -p ledgeline-core --test journals
     LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_endpoints
     LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_cli
+    LEDGELINE_HLEDGER_QBJOURNAL_CHECK=1 cargo test -p ledgeline --test qb_journal_hledger_check
 
 # Snapshot raw hledger-web JSON API responses into fixtures/api/vVERSION/
 snapshot-api:
