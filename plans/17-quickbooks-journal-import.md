@@ -725,13 +725,46 @@ from 1894 before this phase, with nothing pre-existing broken.
 
 Per direct instruction: the **same** `ledgeline import` subcommand, not a new one — for this path
 there is no `-o`/rules file, since there's no intermediate CSV. Sketch:
-`ledgeline import -i Journal.xlsx -j main.journal [--sort]`, detected the same way the GUI detects
-it (missing `-r`/`-o` plus content sniffing, or an explicit flag if detection alone feels too
-implicit for a script — decide once Phase A's detector is in hand and its false-positive rate is
-known) — reusing `qb_journal::parse` + Phase B's write pipeline exactly, so GUI and CLI cannot
-diverge, matching this branch's existing CLI's own governing rule. Unmapped accounts on the CLI
-path have no one to prompt, so the run refuses and lists them — same "ask, don't guess" policy, a
-non-interactive shape of it.
+`ledgeline import -i Journal.xlsx -j main.journal [--sort]`.
+
+**Detection, resolved now that it can be:** content sniffing alone, no explicit flag —
+`ledgeline_core::qb_journal::detect(bytes)`, the exact same check `stage_upload` runs for the GUI.
+Phase A proved it accurate over the whole fixture corpus (zero false positives, including a
+deliberate near-miss export) and Phase B/C's own live verification confirmed it in practice; an
+explicit `--quickbooks-journal` flag would be a second way to say the same thing a byte-sniff
+already says reliably, and CLI/GUI detection diverging is exactly what this branch's "GUI and CLI
+cannot diverge" rule (see `run_cli_import`'s own module docs) exists to prevent.
+
+**`CliImport`'s clap struct (`import_api.rs`) needs `-o`/`-r` to become optional, not stay
+mandatory**, since today both are plain `PathBuf` fields clap requires unconditionally
+(`import_api.rs:4680-4737`). They become `Option<PathBuf>`, validated at runtime (not via clap's
+static `required`, since the branch depends on the file's *content*, which clap cannot see before
+parsing) inside `cli_import`, right after `args.input` is read into `bytes`:
+- `qb_journal::detect(&bytes)` true → `-o`/`-r` must be **absent**; if either was given, refuse by
+  name ("`--output`/`--rules` are not used for a QuickBooks Journal export — there is no CSV or
+  rules file in this path"), rather than silently ignoring a flag the user explicitly typed. Also
+  refuse `--balance`/`--balance-account`/`--write-assertion` the same way: a QuickBooks Journal
+  import has no single statement-closing-balance to reconcile against, since it can write into
+  several accounts across several files in one run.
+- `qb_journal::detect(&bytes)` false → `-o`/`-r` **required**, exactly today's behavior, just
+  re-checked at runtime instead of by clap (same error message clap would have given, so a script
+  written against today's CLI sees no behavior change).
+- `-j`/`--sort`/`--dry-run`/`--no-git` apply to both branches unchanged.
+
+**No second write path — extract, don't duplicate.** `qb_journal_api::run_commit` (and
+`preview_of`) are shaped as HTTP handlers reading from `QbStageArea` by `stageId`. The CLI has no
+stage (it reads the file directly), so factor the part of `run_commit` from "unmapped accounts
+block the write" onward into a function taking `&QbJournal` directly rather than a `stageId` —
+mirroring exactly how `run_cli_import` already reuses `run_dry_run`/`run_commit`/`run_sort`'s own
+functions for the CSV path (see that function's "Why this reuses the HTTP routes' own functions"
+doc comment) rather than re-deriving the sequence. The HTTP `commit` handler becomes a thin
+`resolve_stage` + call to that extracted function; behavior must be provably unchanged (its
+existing `qb_journal_endpoints.rs` tests passing unmodified is the proof, exactly as Phase B's own
+amendments used `reimport.rs`'s untouched tests as proof there).
+
+Unmapped accounts on the CLI path have no one to prompt, so the run refuses and lists them — same
+"ask, don't guess" policy, a non-interactive shape of it, using the same refusal message text
+`run_commit`'s HTTP handler already produces.
 
 ## Definition of done (per phase)
 
