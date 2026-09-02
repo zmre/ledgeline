@@ -21,9 +21,11 @@
     import AsyncSection from "$lib/components/AsyncSection.svelte";
     import {actionRunsDryRun, importAction, shows, visibleSections} from "../importModel";
     import {importStore} from "../importStore.svelte";
+    import {isQuickbooksJournalStage} from "../qbJournalModel";
     import DropTarget from "./DropTarget.svelte";
     import DryRunPanel from "./DryRunPanel.svelte";
     import HledgerBanner from "./HledgerBanner.svelte";
+    import QbJournalPanel from "./QbJournalPanel.svelte";
     import ResultPanel from "./ResultPanel.svelte";
     import StagedPanel from "./StagedPanel.svelte";
     import {journal} from "$lib/stores/journal.svelte";
@@ -39,6 +41,17 @@
             committed: importStore.writeRequested,
         })
     );
+
+    /**
+     * The ONE branch WP-17 Phase C's contract allows: `POST /api/import/stage`
+     * already decided, server-side, whether this upload is a QuickBooks
+     * Journal export — `staged.format` is `"quickbooks-journal"` XOR an
+     * ordinary CSV/spreadsheet format. True only once a successful stage has
+     * landed (`importStore.staged` is null while loading or on a staging
+     * failure), so those two cases keep falling through to `StagedPanel`'s own
+     * `AsyncSection`, exactly like the CSV path's loading/error UI.
+     */
+    const qbJournal = $derived(isQuickbooksJournalStage(importStore.staged));
 
     function retryCapabilities(): void {
         const url = settings.serverUrl;
@@ -101,7 +114,14 @@
                 />
             {/if}
 
-            {#if importStore.hasStagedOutcome}
+            {#if qbJournal && importStore.staged !== null}
+                <!-- WP-17 Phase C: a different panel entirely — no CSV, no
+                     rules file, no dry run. `DryRunPanel`/`ResultPanel` below
+                     stay dark for this stage because `dryRunRequested`/
+                     `writeRequested` are only ever set by the ordinary CSV
+                     flow's own buttons, which this branch never presses. -->
+                <QbJournalPanel stageId={importStore.staged.stageId} accountNames={journal.accountNames} />
+            {:else if importStore.hasStagedOutcome}
                 <StagedPanel
                     {sections}
                     view={importStore.stagedView}

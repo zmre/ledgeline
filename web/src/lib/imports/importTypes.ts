@@ -510,3 +510,85 @@ export interface Prefs {
     readonly hledgerPath: string | null;
     readonly gitAutocommit: boolean | null;
 }
+
+// ---------------------------------------------------------------------------
+// QuickBooks Online Journal import (WP-17 Phase C)
+//
+// `StagedFile.format === "quickbooks-journal"` is the ONLY branch point this
+// screen is allowed to make (see plans/17-quickbooks-journal-import.md's
+// Phase C contract) — everything below is what the two dedicated routes,
+// `GET`/`POST /api/import/qb-journal/*`, say once that branch is taken.
+// `crates/ledgeline-server/src/qb_journal_api.rs`'s `Wire*` structs are the
+// ground truth these mirror field by field.
+// ---------------------------------------------------------------------------
+
+/** hledger's own `%m/%d/%Y`-style guess, and whether the export gave enough evidence to be sure. */
+export interface QbDateFormat {
+    readonly format: string;
+    /** True when nothing in the export rules out the other reading (day/month swapped). */
+    readonly ambiguous: boolean;
+}
+
+/** One parsed QuickBooks transaction, flattened for display — text only, nothing here is summed. */
+export interface QbSample {
+    readonly id: string;
+    readonly date: string;
+    readonly description: string;
+    readonly postings: readonly string[];
+}
+
+/**
+ * What matching this export's transactions against the journal by id found —
+ * the QuickBooks-import analogue of {@link IdMatches}. No `statusChanged`:
+ * every transaction this pipeline builds is unmarked, so a status difference
+ * from a hand-marked one is folded into `conflicting` rather than reported as
+ * a sync (see `WireQbIdMatches`'s doc comment in `qb_journal_api.rs`).
+ */
+export interface QbIdMatches {
+    readonly new: number;
+    readonly unchanged: number;
+    readonly conflicting: readonly Conflict[];
+    readonly conflictingTotal: number;
+}
+
+/**
+ * `GET /api/import/qb-journal/{stageId}` — a staged export's parsed groups,
+ * its date-format guess, and which accounts are still unmapped.
+ *
+ * Read-only and idempotent: calling it again after adding an alias through
+ * the existing `PUT /api/aliases/{*journalId}` is how `unmappedAccounts`
+ * shrinks, and `idMatches` goes from null to populated once it is empty.
+ */
+export interface QbPreview {
+    readonly stageId: string;
+    readonly transactionCount: number;
+    readonly postingCount: number;
+    readonly dateFormat: QbDateFormat;
+    /** Distinct QuickBooks account names no plain alias in the journal maps yet. Non-empty blocks a commit. */
+    readonly unmappedAccounts: readonly string[];
+    readonly sample: readonly QbSample[];
+    /** Null while any account is unmapped — nothing can be built (and so nothing classified) without one. */
+    readonly idMatches: QbIdMatches | null;
+}
+
+/** One `include`d file a commit touched, and whether it is still in date order after the write. */
+export interface QbFileOrdering {
+    /** A relative handle usable directly with the existing `POST /api/import/sort` route. */
+    readonly journalId: string;
+    readonly inOrder: boolean;
+    readonly moves: readonly SortMove[];
+}
+
+/** Whether the journal is still in date order after the import, per touched file (a multi-year import can touch more than one). */
+export interface QbOrdering {
+    readonly inOrder: boolean;
+    readonly files: readonly QbFileOrdering[];
+}
+
+/** `POST /api/import/qb-journal/commit` — what was written. */
+export interface QbCommitResult {
+    readonly imported: number;
+    readonly idMatches: QbIdMatches;
+    readonly ordering: QbOrdering;
+    readonly git: GitReport | null;
+}

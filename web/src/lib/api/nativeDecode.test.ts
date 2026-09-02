@@ -16,6 +16,8 @@ import {
     decodeJournalInfo,
     decodeOtherHoldingsReport,
     decodePeriodReport,
+    decodeQbCommitResult,
+    decodeQbPreview,
     decodeRulesDoc,
     decodeRulesIndex,
     decodeRulesPreview,
@@ -1556,6 +1558,96 @@ describe("UNIT nativeDecode — journal identity (which ledger is on screen)", (
         // to be absorbed as {title: null, file: null}, an answer no engine gave.
         expect(() => decodeJournalInfo([])).toThrow(ApiShapeError);
         expect(() => decodeJournalInfo(["Acme Books"])).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — QuickBooks Journal preview (qb_journal_api.rs, WP-17 Phase C)", () => {
+    // No `fixtures/native/v1/*.json` golden for this route (it is not replayed
+    // against `fixtures/sample.journal` — see that helper's own doc comment on
+    // why the import-rules goldens live elsewhere too), so this is hand-written
+    // literal wire JSON, matching `WireQbPreview` field for field.
+    const PREVIEW = {
+        stageId: "abc123",
+        transactionCount: 2,
+        postingCount: 4,
+        dateFormat: {format: "%m/%d/%Y", ambiguous: false},
+        unmappedAccounts: ["Riverbank BUSINESS CHECKING (0002)", "3000 Member Equity"],
+        sample: [
+            {
+                id: "441",
+                date: "2026-01-05",
+                description: "Deposit",
+                postings: ["Riverbank BUSINESS CHECKING (0002)  1000.00", "3000 Member Equity  -1000.00"],
+            },
+        ],
+        idMatches: null,
+    };
+
+    it("decodes the parsed groups and which accounts are unmapped", () => {
+        expect(decodeQbPreview(PREVIEW)).toEqual(PREVIEW);
+    });
+
+    it("decodes idMatches once every account resolves — null while any account is still unmapped", () => {
+        const resolved = {...PREVIEW, unmappedAccounts: [], idMatches: {new: 2, unchanged: 0, conflicting: [], conflictingTotal: 0}};
+        expect(decodeQbPreview(resolved).idMatches).toEqual({new: 2, unchanged: 0, conflicting: [], conflictingTotal: 0});
+        expect(decodeQbPreview(PREVIEW).idMatches).toBeNull();
+    });
+
+    it("decodes a conflicting row's field-by-field disagreements — reusing the CSV path's own shape", () => {
+        const withConflict = {
+            ...PREVIEW,
+            unmappedAccounts: [],
+            idMatches: {
+                new: 0,
+                unchanged: 1,
+                conflicting: [{id: "612", diffs: [{field: "description", existing: "old", incoming: "new"}]}],
+                conflictingTotal: 1,
+            },
+        };
+        expect(decodeQbPreview(withConflict).idMatches?.conflicting).toEqual([{id: "612", diffs: [{field: "description", existing: "old", incoming: "new"}]}]);
+    });
+
+    it("throws on a body missing a required field", () => {
+        expect(() => decodeQbPreview(without(PREVIEW, "stageId"))).toThrow(ApiShapeError);
+        expect(() => decodeQbPreview(without(PREVIEW, "dateFormat"))).toThrow(ApiShapeError);
+        expect(() => decodeQbPreview(without(PREVIEW, "transactionCount"))).toThrow(ApiShapeError);
+    });
+
+    it("throws on a body that is not an object", () => {
+        expect(() => decodeQbPreview(null)).toThrow(ApiShapeError);
+        expect(() => decodeQbPreview("nope")).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — QuickBooks Journal commit result", () => {
+    const COMMIT = {
+        imported: 2,
+        idMatches: {new: 2, unchanged: 0, conflicting: [], conflictingTotal: 0},
+        ordering: {
+            inOrder: false,
+            files: [{journalId: "2026/2026.journal", inOrder: false, moves: [{date: "2026-01-05", description: "Deposit", fromLine: 10, toLine: 4}]}],
+        },
+        git: {committed: true, paths: ["2026/2026.journal"], skipped: []},
+    };
+
+    it("decodes what was written, per-file ordering, and the git report", () => {
+        expect(decodeQbCommitResult(COMMIT)).toEqual({...COMMIT, git: {...COMMIT.git, message: null}});
+    });
+
+    it("idMatches is REQUIRED here, unlike the preview's nullable copy — an absent value is a broken contract", () => {
+        expect(() => decodeQbCommitResult(without(COMMIT, "idMatches"))).toThrow(ApiShapeError);
+    });
+
+    it("git is null when nothing touched was under version control", () => {
+        expect(decodeQbCommitResult({...COMMIT, git: null}).git).toBeNull();
+    });
+
+    it("throws on a body missing the ordering report", () => {
+        expect(() => decodeQbCommitResult(without(COMMIT, "ordering"))).toThrow(ApiShapeError);
+    });
+
+    it("throws on a body that is not an object", () => {
+        expect(() => decodeQbCommitResult(null)).toThrow(ApiShapeError);
     });
 });
 

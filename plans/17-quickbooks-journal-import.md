@@ -584,6 +584,143 @@ real browser if the sandbox allows (recent sessions on this branch have had Chro
 blocked here — fall back to a live HTTP-route drive, as several prior phases on this branch did,
 and say so plainly if that happens again rather than claiming a browser check that didn't occur).
 
+### Contract amendments made during implementation (Phase C)
+
+Per convention #9 in `plans/00-overview.md`, following Phases A and B's own amendments sections
+above. Unlike those two, nothing here corrects a wrong assumption about the WIRE — building against
+the real `qb_journal_api.rs` handlers and re-driving the whole flow over HTTP (see "Verification"
+below) confirmed every field name, nullability and status code the plan and Phase B's amendments
+already documented, byte for byte. What follows is Phase C filling in the decisions the plan
+deliberately left to it ("decide the exact fallback chain once you're looking at real variety",
+"Phase C needs a UI affordance for this that the sketch does not mention") plus a couple of
+structural calls the sketch didn't need to make because it wasn't looking at the SPA's existing
+conventions yet.
+
+**New files.** `web/src/lib/imports/qbJournalModel.ts` (pure decisions, mirroring
+`importModel.ts`/`aliasModel.ts`'s own house rule: no Svelte/DOM/`fetch`, tested under the `unit`
+vitest project) — `isQuickbooksJournalStage` (the one branch point), `dateFormatNotice`,
+`mappingDraft`/`mappingProblems`/`mappingEdits`/`hasMappingsToSave`, `defaultAliasTargetFile`,
+`canCommitQbJournal`, `qbIdMatchesSummary`, `filesNeedingSort`/`qbReorderOffer`.
+`web/src/lib/imports/qbJournalStore.svelte.ts` (the data layer: a `preview` and a `commit`
+`createResource`, a mapping-draft dispatcher, a per-file re-sort dispatcher — shaped like
+`importStore.svelte.ts`). `web/src/lib/imports/ui/QbJournalPanel.svelte` (the panel
+`NewTransactionsPanel` mounts instead of `StagedPanel`/`DryRunPanel`/`ResultPanel`) and
+`web/src/lib/imports/ui/QbUnmappedAccounts.svelte` (the mapping form, its own file because it is the
+most stateful piece and the plan calls out testing it specifically). Wire decoders
+(`decodeQbPreview`/`decodeQbCommitResult` plus their private helpers) and the domain types
+(`QbPreview`/`QbCommitResult`/`QbIdMatches`/`QbDateFormat`/`QbSample`/`QbOrdering`/`QbFileOrdering`)
+landed in the existing `nativeDecode.ts`/`importTypes.ts` rather than new files, matching how every
+other `/api/import/*` type already lives there. Two new `LedgelineApi` methods,
+`qbJournalPreview`/`qbJournalCommit`, in the existing `native.ts`.
+
+**`QbIdMatches` deliberately does NOT reuse the CSV path's `IdMatches` domain type**, even though
+`WireQbIdMatches` reuses `conflicting`/`diffs` byte-for-byte (`RawConflict`/`RawFieldDiff` are
+shared as-is). `IdMatches` carries `statusChanged`/`statusChangedTotal`, which `WireQbIdMatches` has
+no wire fields for at all (see that struct's own doc comment in `qb_journal_api.rs`: a
+QuickBooks-built transaction is always `Status::Unmarked`, so `RowClassification::StatusOnly` is
+unreachable here). A shared type would need those two fields to be optional or defaulted on a shape
+that can never actually produce them — exactly the kind of "the type can express a state that cannot
+happen" gap `docs/imports.md`'s conventions warn against — so `QbIdMatches` is its own four-field
+interface and `qbIdMatchesSummary` (the QB analogue of `importModel.idMatchesSummary`) only writes
+the conflict half of that function's sentence, because there is no status-sync half to report.
+
+**Resolving an unmapped account reuses the alias editor's OWN validation, not a re-derived copy.**
+`qbJournalModel.mappingDraft(account, replacement)` builds an `aliasModel.AliasDraft` with the
+QuickBooks account name as a FIXED, non-regex `pattern` and the user's typed text as `replacement`,
+and `mappingProblems`/`mappingEdits` call `aliasModel.validateRow` on it directly. The plan's Phase B
+section already established that a plain alias's prefix rule cascades to sub-accounts
+(`1520 …` also covers `1520 …:1521 …`); this means the SAME rule applies here, for free, with no
+extra code — an alias added for `6000 Sales and Marketing` from this screen also covers
+`6000 Sales and Marketing:6001 Sales & Marketing Tools`, verified directly against the real
+`simple.xlsx` fixture (see "Verification" below). `mappingEdits` silently skips a blank or
+`mappingProblems`-flagged row rather than refusing the whole batch, so typing three good mappings
+and leaving a fourth half-finished still submits the three — the fourth stays listed on the next
+preview rather than blocking on it.
+
+**Which journal file a new alias is appended to, when the SPA has to choose: the first WRITABLE file
+`GET /api/aliases` lists** (`qbJournalModel.defaultAliasTargetFile`), mirroring
+`AliasPanel.svelte`'s own default-selection rule (`files.find(...) ?? files[0]`) rather than
+inventing a second "which file" policy. The plan's wire contract has no field for this (Phase B's
+"No `journalId`, anywhere on this surface" amendment is about the QB *commit* route, not the
+pre-existing alias route this reuses), so Phase C had to decide, and picked the same file the
+Account Aliases tab already defaults to for consistency between the two screens.
+
+**One batched `PUT` per "Map accounts" press, not one per row.** The plan says "writing aliases
+through the existing alias-editing wire… not a new one" but does not say whether each unmapped
+account gets its own round trip or all of them travel together.
+`SaveAliasesBody.edits` is already an array, and `qbJournalStore.saveMappings` sends every valid
+typed row as one `edits` array in a single `aliasStore.save` call — proven against the real server in
+"Verification" below (four accounts, one `PUT`, one new revision, one re-fetched preview with all
+four gone from `unmappedAccounts`).
+
+**The date-format ambiguity affordance Phase A's amendments flagged as missing from the sketch:**
+`qbJournalModel.dateFormatNotice(dateFormat)` reads `WireQbPreview.dateFormat.ambiguous` and, when
+true, tells the user which reading was assumed and asks them to check the sample before committing —
+`QbJournalPanel.svelte`'s `qb-date-notice` testid. Nothing resolves the ambiguity (there is nothing
+to resolve it WITH, per Phase B's own amendment — the ISO dates are already fixed by the time this
+screen sees them); this is surfacing, exactly as Phase A's amendment anticipated.
+
+**No new "confirm before write" step, and no way to hide the commit button once every account
+resolves** — the plan's "always auto-switch, never prompt first" instruction for the format branch
+extends naturally to the commit action too: `canCommitQbJournal` is a pure function of whether
+`unmappedAccounts` is empty, with nothing else gating it (no separate "I've reviewed the sample"
+checkbox). A re-press after a successful commit is left enabled rather than disabled, on purpose:
+Phase B's id-based dedup makes a repeat commit inert (`imported: 0`, every id `unchanged` — verified
+live, see below) exactly the way a repeat CSV import already is, so disabling it would be protecting
+against a failure mode that cannot occur.
+
+**Verification against the real server, not just fixtures (no browser available — see below).**
+Built `cargo build -p ledgeline`, started `ledgeline --server` against a throwaway one-transaction
+journal, and drove the exact sequence the SPA now performs, over `curl`, against `simple.xlsx`:
+`POST /api/import/stage` → `format: "quickbooks-journal"`; `GET /api/import/qb-journal/{stageId}` →
+four `unmappedAccounts` including the colon-bearing `"6000 Sales and Marketing:6001 Sales & Marketing
+Tools"`; `POST …/commit` while unmapped → `400` naming all four; `PUT /api/aliases/main.journal` with
+four batched `append` edits (one of them `6000 Sales and Marketing` — the PARENT, not the child) →
+`200`; re-`GET` the preview → `unmappedAccounts: []`, `idMatches.new: 2`; `POST …/commit` → `200`,
+`imported: 2`, the sub-account's alias-rewritten name
+(`expenses:marketing:6001 Sales & Marketing Tools`) present in the written journal exactly as the
+prefix rule predicts, `class`/`customer`/`vendor` tags present in posting comments, `$` commodity
+matching the journal's own style, `git.committed: true`; a second, identical commit → `200`,
+`imported: 0`, `idMatches.unchanged: 2`, `git: null` (nothing to commit); and
+`POST /api/import/sort` accepting the `journalId` handle the commit response named. Every field name
+and status code matched this doc and `qb_journal_api.rs` exactly — nothing here produced a Rust-side
+contract amendment, so none was needed.
+
+One unintended side effect from that exercise, caught and corrected before finishing: the scratch
+journal directory was created *inside* this git worktree, so the server's own git-autocommit feature
+found the enclosing repo and committed the scratch file into this branch's real history. Caught
+immediately by `git log`, undone with `git reset --mixed` back to this doc's own prior commit (no
+`--hard`, nothing else touched), and the scratch directory itself was deleted rather than left in the
+tree. Worth recording so a future verification pass uses a directory genuinely outside any git
+working tree (`/tmp` in a sandbox that allows writing there) instead.
+
+**No real browser was available.** Chromium failed to launch in this sandbox with
+`Check failed: kr == KERN_SUCCESS. bootstrap_check_in … MachPortRendezvousServer … Permission denied`
+— a macOS sandbox mach-port restriction, not an application bug — confirming the plan's own warning
+that recent sessions on this branch have had this blocked. One attempt was made
+(`chromium.launch()` directly through `@playwright/test`) before falling back to the `curl` sequence
+above, per this doc's own instruction not to claim a browser check that did not occur.
+
+**Test counts.** `qbJournalModel.test.ts`: 25. `qbJournalStore.test.ts`: 14 (every test gets an
+isolated module graph via `vi.resetModules()` + dynamic re-import, because `qbJournalStore` and the
+`aliasStore` singleton it reuses are both module-scope state shared across a test file).
+`nativeDecode.test.ts` gained 10 (the new `decodeQbPreview`/`decodeQbCommitResult` describe blocks —
+hand-written literal wire JSON rather than a `fixtures/native/v1/*.json` golden, since this route
+has no golden fixture the way the reports routes do). Two new component-test files:
+`QbJournalPanel.svelte.test.ts` (6 — lists unmapped accounts and disables Import while any remain;
+submits a mapping through the real alias wire and watches it drop off the list; refuses to call the
+network with nothing typed; shows the imported count on a clean commit; offers and performs a
+per-file re-sort; shows the 400 refusal's exact account list) and
+`NewTransactionsPanel.qbJournal.svelte.test.ts` (2 — the format branch itself, both directions).
+57 new tests total; the full suite (`vitest run`, both projects) is 1951 passed / 26 skipped, up
+from 1894 before this phase, with nothing pre-existing broken.
+
+**Verification commands, all clean:**
+`node node_modules/vitest/vitest.mjs run` (both projects — 1951 passed, 26 skipped, 0 failed);
+`node node_modules/.bin/svelte-kit sync && node node_modules/.bin/tsc --noEmit` (0 errors);
+`node node_modules/.bin/svelte-check --tsconfig ./tsconfig.json` (0 errors, 0 warnings);
+`node node_modules/.bin/prettier --check .` (clean); `node node_modules/.bin/eslint .` (clean).
+
 ## Phase D — CLI (deprioritized; do after A-C land and are verified)
 
 Per direct instruction: the **same** `ledgeline import` subcommand, not a new one — for this path

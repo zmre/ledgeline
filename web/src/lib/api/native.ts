@@ -410,6 +410,19 @@ export interface PrefsBody {
 }
 
 /**
+ * `POST /api/import/qb-journal/commit` (WP-17 Phase C) — just a stage handle.
+ *
+ * No `journalId`, unlike the CSV commit: this pipeline writes through
+ * `JournalEditor::add_transaction` with `InsertPosition::DateOrdered`, which
+ * already decides — per transaction, from the journal's own chronology —
+ * which `include`d file receives each row, so there is no single destination
+ * to name (see `qb_journal_api.rs`'s module docs, "No `journalId`").
+ */
+export interface QbJournalCommitBody {
+    stageId: string;
+}
+
+/**
  * Longest error body worth showing a user. The engine's are single sentences
  * (~90 characters at their longest); anything past this is a document, not a
  * message.
@@ -1015,6 +1028,28 @@ export class LedgelineApi {
     /** The confirmed format-preserving re-sort, offered only after a commit reported `inOrder:false`. */
     importSort(journalId: string): Promise<unknown> {
         return this.mutate<unknown>("POST", "/api/import/sort", 200, {journalId});
+    }
+
+    /**
+     * A staged QuickBooks Journal export's parsed groups and which accounts are
+     * still unmapped (WP-17 Phase C; decode with `decodeQbPreview`).
+     *
+     * Read-only and idempotent — call it again after adding an alias through
+     * `saveAliases` to see `unmappedAccounts` shrink. `stageId` never contains a
+     * slash (see `StageId::parse`), so a plain `encodeURIComponent` is enough —
+     * unlike a rules/alias id, there is no path-segment structure to preserve.
+     */
+    qbJournalPreview(stageId: string): Promise<unknown> {
+        return this.getJson(`/api/import/qb-journal/${encodeURIComponent(stageId)}`);
+    }
+
+    /**
+     * Write every account-resolved QuickBooks transaction. → 200 (decode with
+     * `decodeQbCommitResult`); 400 naming every still-unmapped account when any
+     * remain, refusing to write anything.
+     */
+    qbJournalCommit(body: QbJournalCommitBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/import/qb-journal/commit", 200, body);
     }
 
     /**

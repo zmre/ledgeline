@@ -66,6 +66,13 @@ import type {
     OrderingReport,
     Prefs,
     ProposedTxn,
+    QbCommitResult,
+    QbDateFormat,
+    QbFileOrdering,
+    QbIdMatches,
+    QbOrdering,
+    QbPreview,
+    QbSample,
     RulesCandidate,
     SortMove,
     SortResult,
@@ -918,6 +925,58 @@ interface RawCommitResult {
 
 interface RawSortResult {
     moved?: number;
+    git?: RawGitReport | null;
+}
+
+// --- QuickBooks Online Journal import (qb_journal_api.rs, WP-17 Phase C) ---
+// `WireQbIdMatches` reuses the CSV path's `conflicting`/`diffs` shape
+// byte-for-byte (`RawConflict`/`RawFieldDiff` above), so only the outer
+// object — which drops `statusChanged`/`statusChangedTotal` — is new here.
+
+interface RawQbIdMatches {
+    new?: number;
+    unchanged?: number;
+    conflicting?: RawConflict[];
+    conflictingTotal?: number;
+}
+
+interface RawQbDateFormat {
+    format?: string;
+    ambiguous?: boolean;
+}
+
+interface RawQbSample {
+    id?: string;
+    date?: string;
+    description?: string;
+    postings?: unknown[];
+}
+
+interface RawQbPreview {
+    stageId?: string;
+    transactionCount?: number;
+    postingCount?: number;
+    dateFormat?: RawQbDateFormat;
+    unmappedAccounts?: unknown[];
+    sample?: RawQbSample[];
+    idMatches?: RawQbIdMatches | null;
+}
+
+interface RawQbFileOrdering {
+    journalId?: string;
+    inOrder?: boolean;
+    moves?: RawSortMove[];
+}
+
+interface RawQbOrdering {
+    inOrder?: boolean;
+    files?: RawQbFileOrdering[];
+}
+
+interface RawQbCommitResult {
+    imported?: number;
+    idMatches?: RawQbIdMatches;
+    ordering?: RawQbOrdering;
     git?: RawGitReport | null;
 }
 
@@ -2697,6 +2756,90 @@ export function decodeSortResult(raw: unknown): SortResult {
     return Object.freeze({
         moved: num(result.moved, "sort result moved"),
         git: decodeGitReport(result.git, "sort result git"),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// QuickBooks Online Journal import (qb_journal_api.rs, WP-17 Phase C)
+// ---------------------------------------------------------------------------
+
+/**
+ * `WireQbIdMatches` — REQUIRED, unlike {@link decodeIdMatches}'s nullable copy:
+ * `WireQbCommit.idMatches` is unconditional on the wire (only the preview's is
+ * `Option`, handled separately by `decodeOptQbIdMatches`), so an absent value
+ * here is a broken contract rather than "an older engine has nothing to say".
+ */
+function decodeQbIdMatches(raw: RawQbIdMatches | undefined, context: string): QbIdMatches {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing idMatches`);
+    return Object.freeze({
+        new: num(raw.new, `${context} new`),
+        unchanged: num(raw.unchanged, `${context} unchanged`),
+        conflicting: frozen((raw.conflicting ?? []).map((conflict, i) => decodeConflict(conflict, `${context} conflicting[${i}]`))),
+        conflictingTotal: num(raw.conflictingTotal, `${context} conflictingTotal`),
+    });
+}
+
+/** The preview's copy: null while any account is unmapped (nothing was built, so nothing was classified). */
+function decodeOptQbIdMatches(raw: RawQbIdMatches | null | undefined, context: string): QbIdMatches | null {
+    return raw === null || raw === undefined ? null : decodeQbIdMatches(raw, context);
+}
+
+function decodeQbDateFormat(raw: RawQbDateFormat | undefined, context: string): QbDateFormat {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing dateFormat`);
+    return Object.freeze({format: str(raw.format, `${context} format`), ambiguous: raw.ambiguous === true});
+}
+
+function decodeQbSample(raw: RawQbSample | undefined, context: string): QbSample {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing transaction`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        date: str(raw.date, `${context} date`),
+        description: str(raw.description, `${context} description`),
+        postings: frozen(decodeStrings(raw.postings, `${context} postings`)),
+    });
+}
+
+/** `GET /api/import/qb-journal/{stageId}` → the parsed groups and which accounts are still unmapped. */
+export function decodeQbPreview(raw: unknown): QbPreview {
+    const preview = raw as RawQbPreview;
+    if (typeof preview !== "object" || preview === null) throw new ApiShapeError("qb preview: expected an object");
+    return Object.freeze({
+        stageId: str(preview.stageId, "qb preview stageId"),
+        transactionCount: num(preview.transactionCount, "qb preview transactionCount"),
+        postingCount: num(preview.postingCount, "qb preview postingCount"),
+        dateFormat: decodeQbDateFormat(preview.dateFormat, "qb preview dateFormat"),
+        unmappedAccounts: frozen(decodeStrings(preview.unmappedAccounts, "qb preview unmappedAccounts")),
+        sample: frozen((preview.sample ?? []).map((txn, i) => decodeQbSample(txn, `qb preview sample[${i}]`))),
+        idMatches: decodeOptQbIdMatches(preview.idMatches, "qb preview idMatches"),
+    });
+}
+
+function decodeQbFileOrdering(raw: RawQbFileOrdering | undefined, context: string): QbFileOrdering {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing file ordering`);
+    return Object.freeze({
+        journalId: str(raw.journalId, `${context} journalId`),
+        inOrder: raw.inOrder === true,
+        moves: frozen((raw.moves ?? []).map((move, i) => decodeSortMove(move, `${context} moves[${i}]`))),
+    });
+}
+
+function decodeQbOrdering(raw: RawQbOrdering | undefined, context: string): QbOrdering {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing ordering`);
+    return Object.freeze({
+        inOrder: raw.inOrder === true,
+        files: frozen((raw.files ?? []).map((file, i) => decodeQbFileOrdering(file, `${context} files[${i}]`))),
+    });
+}
+
+/** `POST /api/import/qb-journal/commit` → what was written. */
+export function decodeQbCommitResult(raw: unknown): QbCommitResult {
+    const result = raw as RawQbCommitResult;
+    if (typeof result !== "object" || result === null) throw new ApiShapeError("qb commit result: expected an object");
+    return Object.freeze({
+        imported: num(result.imported, "qb commit result imported"),
+        idMatches: decodeQbIdMatches(result.idMatches, "qb commit result idMatches"),
+        ordering: decodeQbOrdering(result.ordering, "qb commit result ordering"),
+        git: decodeGitReport(result.git, "qb commit result git"),
     });
 }
 
