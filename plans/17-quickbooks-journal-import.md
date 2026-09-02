@@ -135,6 +135,122 @@ docs so a future reader does not go looking for a use of it), and detection true
 cases against ordinary CSV/OFX/spreadsheet fixtures already in the corpus (must never misfire on
 those).
 
+### Contract amendments made during implementation (Phase A)
+
+Per convention #9 in `plans/00-overview.md`. Phase A landed as
+`crates/ledgeline-core/src/qb_journal.rs` — the placement the sketch proposed, and the reasoning
+holds up for a sharper reason than "it isn't `Tabular`-shaped": `convert::spreadsheet::cell_text`
+renders `Data::Error(_)` as an **empty string**, which is correct for a rules-file column and
+fatal here, because `#REF!` in a total row is the loudest sign an export is damaged and blanking
+it makes a corrupted group look balanced at zero. Two more reasons on top: `convert`'s
+preamble/trailer trimming and blank-row dropping *move rows*, and grouping is defined by
+adjacency; and `Tabular` is `Vec<Vec<String>>`, so `Float` and `Error` are already the same thing
+by the time a caller sees it. So the sheet is read directly as `Range<Data>`, while the four
+cell-reading primitives whose reasoning is hard-won (`is_populated`, `float_text`, `date_text`,
+`iso_date_text`) are reused from `convert::spreadsheet` as `pub(crate)` rather than re-derived —
+a second date-serial reader is exactly how the two would come to disagree. `edit::render_dec` is
+`pub(crate)` for the same reason, so error messages render money the way the rest of the app does.
+
+**Findings, all measured against the real export with `calamine` itself before any code existed.
+Several contradict the description above.**
+
+- **The closing row's Debit/Credit cells are FORMULAS** (`=I23+I24+…+I32`), and what a reader
+  sees is the value Excel **cached** beside them. Nothing evaluates a formula. This is the
+  single biggest thing the sketch's description missed, and it has a consequence worth stating
+  because the balance check looks tautological once you know it: in an *untouched* export the
+  total is a sum over the very rows above it and cannot disagree with them. What the check
+  actually catches is **structural** damage — rows deleted, so the references break and the
+  cached value goes stale or becomes `#REF!`, or an amount edited in a spreadsheet that did not
+  recalculate on open. That is still exactly the failure the sample has.
+- **Excel stores those cached values at up to seventeen significant digits** —
+  `70120.850000000006`, `79.989999999999995`. Both are the nearest `f64` to a tidy cent value,
+  and Rust's shortest-round-trip `f64` formatting inverts that *exactly*, so the comparison is
+  exact `Dec` equality with **no tolerance anywhere**. The limit of that is visible in the same
+  file: the whole-report `TOTAL` row, summing four hundred–odd values, drifted past half an ULP
+  and prints as `65510189.6700001`. It is also the one row nothing reads.
+- **The sample's damage is not (only) the `#REF!` the sketch names.** The tell is that the group
+  whose marker says `6` is closed by a surviving `Total for 11024`. Its four postings balance
+  perfectly at 533.94, so every arithmetic check passes and *only the id* knows rows were
+  deleted. Closing rows are therefore matched to markers **by id**, never by position, and this
+  earns its own error — `TotalIdMismatch { opened, closed, row }` — which is what the real file
+  now produces: *"transaction 6 is closed at row 199 by a total for 11024 — the export has had
+  rows removed"*.
+- **Account names DO contain colons.** Ten of the export's eighteen do
+  (`1520 Computer & Office Equipment:1521 Computer & Equipment - Accum Depr`) — QuickBooks renders
+  a sub-account as `parent:child`. **Phase B's alias section below is wrong where it says "QuickBooks
+  account names in the sample never contain a colon" and must be rewritten before it is
+  implemented**: hledger's plain-alias prefix-ending-at-`:` rule is not only reachable here, it is
+  reachable on more than half the accounts, and an alias on `1520 Computer & Office Equipment`
+  will silently also rewrite the `1521` sub-account. That is either the desired behaviour or a
+  bug, and Phase B has to decide which on purpose.
+- **`Item class` is present in the header and empty on all 102 rows.** The column being
+  customizable does not mean a customized column carries data.
+- **`Balance` was worked out rather than left mysterious**, which is what makes it safe to
+  ignore: it accumulates each posting's amount **signed by that account's normal balance side**,
+  resetting at every group (verified across the file — equity credited adds, equity debited
+  subtracts, an asset debited adds). Unusable for three independent reasons: it needs each
+  account's declared type, which is nowhere in the export; it is float-computed (a cell really is
+  stored as `34918.979999999996`); and it is scoped to the report's date range. Never read.
+- **Unused text cells on a posting row are `Data::String("")`, not `Data::Empty`** — so "empty"
+  must mean "nothing printable". Keyed on the variant, every posting acquires `vendor: Some("")`
+  and a `vendor:` tag with nothing after it goes into the user's journal.
+- Confirmed as described: no blank row between groups (all 46); exactly one of Debit/Credit per
+  posting row (54 and 48 over 102, none with both or neither); date, type, `Num` and `Name` repeat
+  on every posting row and **never vary within a group** (checked on all 46); `Description` **does**
+  vary within a group (six distinct memos across one ten-line Journal Entry, and four across a
+  Bill) and so is per-posting. Column A genuinely has no header label.
+
+**Types and signatures as landed**, deviating from the sketch in three places:
+
+- `parse(bytes: &[u8]) -> Result<QbJournal, QbJournalError>` — **not** `Vec<QbTransaction>`.
+  `QbJournal { transactions: Vec<QbTransaction>, date_format: DateFormatGuess }`. The date format
+  turns out to be a whole-file question the sketch did not consider: `01/02/2026` is two different
+  days depending on a QuickBooks *account* preference the export does not record, and the only
+  evidence is whether some other date in the file has a component above twelve. The sample resolves
+  cleanly (`%m/%d/%Y`, `ambiguous: false`) **only because it happens to contain the 17th–20th**; an
+  export confined to one short period does not. `rules::generate::guess_date_format` is reused
+  rather than re-derived — it is already tested against the hledger binary — and its `ambiguous`
+  flag is passed through for Phase B/C to resolve with the user rather than settled by a coin toss
+  here. **Phase C needs a UI affordance for this that the sketch does not mention.**
+- `QbPosting` gained nothing and lost nothing; `QbTransaction` is as sketched. `Distribution
+  account number` is deliberately **not** carried: where populated (78 of 102 rows) it is the
+  leading numeric token of the account name's own leaf segment, so it is redundant with `account`.
+- The error enum is much wider than the sketch's four, because each of these is a distinct thing
+  that can be wrong with a real file and "the import failed" over a 200-row report is not
+  actionable: `Empty`, `TooLarge`, `Unreadable`, `NoHeader`, `PostingOutsideGroup`, `OrphanTotal`,
+  `TotalIdMismatch`, `UnclosedGroup`, `EmptyGroup`, `MissingAccount`, `MissingDate`, `MissingType`,
+  `AmountNotSplit`, `MalformedAmount`, `MalformedTotal`, `UnbalancedGroup`, `MismatchedTotal`,
+  `AmountOverflow`, `UnreadableDates`, `UnreadableDate`, `NoTransactions`. Every variant that is
+  about a group names the group; every variant that is about a row names the **1-based sheet row**,
+  which is the number down the side of the user's own spreadsheet. None can carry a path.
+- `detect(bytes: &[u8]) -> bool` as sketched, content-only and taking no format hint — the
+  opposite of `convert::spreadsheet::parse`, which takes the format from its caller so a file whose
+  extension lies is refused rather than reinterpreted. Here there is no extension in play. It
+  requires **two** conditions: the header triple (something Debit-like AND Credit-like AND
+  account-name-like) *and* the grouping structure (a marker row plus a `Total for {id}` whose id a
+  marker actually opened). The second carries the weight — `fixtures/import/qb-journal/near-miss.xlsx`
+  is an ordinary bank export satisfying the first completely. Detection deliberately says **yes** on
+  a damaged export and lets `parse` refuse it, so a truncated file reaches the named refusal
+  instead of falling back to the CSV rules screen.
+
+**One implementation rule worth carrying into Phase B/C:** a marker row is confirmed by what
+*follows* it, not by its shape. The merged title band above the header and the timestamp footer
+below the data have a marker's exact shape — one populated cell in column A, nothing else — so a
+shape-only rule opens a group on the footer and refuses the file for never closing it.
+
+**Verification against the real file** (which is not committed — it carries a real company's
+accounts, payees and balances, and the corpus rule is that everything in `fixtures/` is synthetic
+or scrubbed): `detect` returns true; `parse` refuses with the `TotalIdMismatch` message quoted
+above; and with the six damaged rows removed it yields **45 transactions and 98 postings, all
+balanced**, at `%m/%d/%Y` unambiguous. Spot-checked signs against what the accounting must mean
+rather than against the arithmetic: a transfer credits checking (−1696.87) and debits the card
+(+1696.87, paying the liability down toward zero); a card expense credits the card (−79.99) and
+debits marketing (+79.99). Fixtures reproducing all nine shapes are in
+`fixtures/import/qb-journal/`, built by the corpus-wide `generate.py` and documented in their own
+`README.md` — including why that script has to rewrite `sheet1.xml` after openpyxl saves it
+(openpyxl cannot write a formula's cached value, and a formula with no cached value is a workbook
+no spreadsheet has ever produced).
+
 ## Phase B — the write pipeline (`crates/ledgeline-server`)
 
 ### The narrow alias exception
@@ -142,13 +258,29 @@ those).
 `docs/imports.md` states, deliberately: "Ledgeline reads aliases; it does not apply them" —
 because reproducing hledger's regex alias dialect would be a near-miss silent-wrong-answer
 generator. That policy is about *regex* aliases. A **plain** (non-regex) alias applied to an
-**exact QuickBooks account string** needs no regex engine at all — it's string equality (and
-hledger's own plain-alias rule, already documented in `aliases.rs`, that a plain alias also
-matches a prefix ending at `:`, which is worth keeping for consistency but confirm it's actually
-reachable here before relying on it, since QuickBooks account names in the sample never contain a
-colon). This is the one place in the codebase Ledgeline computes an aliased name itself rather
-than forwarding to hledger — say so explicitly, add a clear doc-comment cross-reference from both
-this code and `docs/imports.md`'s policy section, and keep the implementation to plain-alias
+**exact QuickBooks account string** needs no regex engine at all — it's string equality, plus
+hledger's own plain-alias rule that a plain alias also matches a prefix ending at `:`
+(`hledger_conf::conf_argument`'s module docs: "verified: it rewrites `a` and `a:sub` and leaves
+`abc` alone").
+
+**Resolved (was an open question after Phase A, now decided):** the prefix rule applies here,
+on purpose, and cascades — an alias on `1520 Computer & Office Equipment` also rewrites
+`1520 Computer & Office Equipment:1521 Computer & Equipment - Accum Depr`, preserving the
+`:1521 …` suffix on the new name. This is not a new call; it is the same behaviour
+`docs/imports.md`'s "Column interpolation composes with it" paragraph already relies on for
+every other import ("a prefix alias rewrites the base and leaves `:cash` intact, so one alias
+covers every subaccount rather than needing one per account × type") — and it is what real
+hledger does with the same alias if the journal contained these account names directly. Ten of
+the real export's eighteen accounts carry a colon (QuickBooks renders a sub-account as
+`parent:child`), so this is the common case here, not an edge case: one alias per QuickBooks
+*parent* account is normally enough, and Phase B's unmapped-account detection (below) must check
+the prefix match too, not just exact equality — an account is "mapped" if some alias's pattern
+equals it OR is a `:`-bounded prefix of it, exactly mirroring `conf_argument`'s own rule, so the
+user is never asked for an alias on a sub-account whose parent already has one.
+
+This is the one place in the codebase Ledgeline computes an aliased name itself rather than
+forwarding to hledger — say so explicitly, add a clear doc-comment cross-reference from both this
+code and `docs/imports.md`'s policy section, and keep the implementation to plain-alias
 exact/prefix matching only. A `/regex/` alias is not eligible and is left alone (the QuickBooks
 account name it might have matched is simply reported as unmapped — see below — rather than
 guessed at).

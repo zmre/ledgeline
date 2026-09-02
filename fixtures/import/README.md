@@ -22,6 +22,14 @@ scoring), `sort/` (date re-ordering), `layouts/` (journal-target ranking) and `r
 appends its own section here rather than starting a second README; the four that grew past a table
 carry their own `README.md` in their own directory instead, which is where to look.
 
+`qb-journal/` is the one directory here that is **not** a `convert` corpus. It belongs to WP-17's
+second import pipeline (`crates/ledgeline-core/src/qb_journal.rs`), which reads QuickBooks
+Online's grouped Journal report — a format no CSV rules file can express, and one this crate
+therefore parses itself rather than handing to hledger. It has its own `README.md`. The one thing
+worth knowing from outside it: its detector is asserted to answer **no** over every other fixture
+in this tree, so adding a file here that a name-based detector would like is something
+`nothing_else_in_the_import_corpus_is_detected_as_a_quickbooks_journal` will tell you about.
+
 ## `delimited/`
 
 | File | What it proves |

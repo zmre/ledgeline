@@ -1838,7 +1838,7 @@ use crate::decimal::MAX_RENDER_PLACES;
 /// [`EditError::RoundTripMismatch`]. Validating `places` at the wire boundary
 /// remains the primary fix; this is the backstop that keeps the core from
 /// panicking or allocating unboundedly if that boundary is ever bypassed.
-fn render_dec(value: Dec, mark: char) -> String {
+pub(crate) fn render_dec(value: Dec, mark: char) -> String {
     let negative = value.mantissa < 0;
     let digits = value.mantissa.unsigned_abs().to_string();
     let places = value.places.min(MAX_RENDER_PLACES) as usize;
