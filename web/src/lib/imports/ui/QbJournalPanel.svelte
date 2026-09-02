@@ -73,6 +73,12 @@
         <div class="flex flex-col gap-3" data-testid="qb-journal-panel">
             <section class="flex flex-col gap-2 rounded-box border border-base-content/10 p-3" aria-label="QuickBooks Journal export">
                 <h2 class="text-sm font-semibold tracking-tight">QuickBooks Journal export</h2>
+                <p class="text-xs text-base-content/60" data-testid="qb-export-help">
+                    From QuickBooks Online: <strong>Reports → Journal</strong> → choose a time frame → optionally <strong>Customize</strong> to add
+                    <strong>Vendor</strong>, <strong>Customer</strong> and <strong>Class</strong> → <strong>Export to Excel</strong>. Re-downloading the same or
+                    overlapping time frame — including "All Dates" — is safe: transactions already imported are recognized by their QuickBooks id and never
+                    duplicated.
+                </p>
                 <p class="text-sm text-base-content/70" data-testid="qb-summary">
                     {preview.transactionCount} transaction{preview.transactionCount === 1 ? "" : "s"} from {preview.postingCount} posting{preview.postingCount ===
                     1

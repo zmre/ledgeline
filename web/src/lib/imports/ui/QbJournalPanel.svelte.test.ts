@@ -56,6 +56,20 @@ const ALIASES = {
 
 afterEach(() => vi.unstubAllGlobals());
 
+describe("COMPONENT QbJournalPanel — the export instructions", () => {
+    it("tells the user where the export comes from and that re-downloading is safe", async () => {
+        await connectFakeEngine({"/api/import/qb-journal/help-1": previewUnmapped("help-1")});
+
+        render(QbJournalPanel, {props: {stageId: "help-1", accountNames: []}});
+
+        await vi.waitFor(() => expect(screen.getByTestId("qb-export-help")).toBeTruthy());
+        const help = screen.getByTestId("qb-export-help").textContent ?? "";
+        expect(help).toMatch(/Reports.*Journal/);
+        expect(help).toMatch(/Export to Excel/);
+        expect(help).toMatch(/safe/i);
+    });
+});
+
 describe("COMPONENT QbJournalPanel — resolving unmapped accounts", () => {
     it("lists every unmapped account and keeps the Import button disabled while any remain", async () => {
         await connectFakeEngine({"/api/import/qb-journal/unmapped-1": previewUnmapped("unmapped-1")});

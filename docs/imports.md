@@ -795,6 +795,39 @@ config file with the reason, and offers the one-click fix. `web/src/lib/imports/
 every sentence and every decision (`parityNotice`, `parityWarning`, `parityFixLabel`,
 `canInstallParityFix`); `ui/DryRunPanel.svelte` only renders them.
 
+## Importing a QuickBooks Online Journal export
+
+A second, separate import pipeline (WP-17; `plans/17-quickbooks-journal-import.md` has the full
+design). QuickBooks Online's "Journal" report is multi-row-per-transaction and already
+double-entry — hledger's CSV rules engine has no construct for "keep reading rows until a total
+line closes the group," so this format cannot go through `hledger import` at all. Ledgeline parses
+it itself (`ledgeline_core::qb_journal`) and writes transactions directly
+(`ledgeline_core::edit::JournalEditor::add_transaction`), matching each QuickBooks account against
+the journal's own plain aliases (see "The one narrow, deliberate exception" above) rather than
+guessing. Dropping a `.xlsx` export onto New Transactions is detected automatically and switches to
+a dedicated panel; the same file also works from the command line
+(`ledgeline import -i Journal.xlsx -j main.journal`, no `-o`/`-r` — see `ledgeline import --help`).
+
+**Getting the export**, in QuickBooks Online:
+
+1. **Reports → Journal.**
+2. Choose the time frame.
+3. Optionally **Customize → Rows/Columns** to add the `Vendor`, `Customer` and `Class` columns —
+   Ledgeline reads and preserves them as tags (`vendor:`/`customer:`/`class:`) when present, and
+   does nothing different when they are absent.
+4. **Export to Excel** (not CSV — the customized-column `.xlsx` is what Ledgeline reads; a plain CSV
+   export loses the columns that make detection and the class/customer/vendor tags possible).
+
+**Re-downloading is safe, including overlapping time frames, including re-running "All Dates" every
+time.** Every transaction is tagged with QuickBooks' own Trans # (`id:…`), so one already in the
+journal is recognized and left alone no matter how many times its row reappears in a wider export —
+the same id-based matching the CSV/OFX path's re-download handling uses (see "Matching a re-download
+by row id" above). This is worth relying on deliberately: re-running "All Dates" is the recommended
+habit, not something to work around by fiddling with date ranges to avoid overlap. A transaction
+already in the journal but changed on QuickBooks' side (a hand-edit, most likely, since it is more
+probable the user changed it locally than that history changed) is reported as a conflict and never
+silently overwritten.
+
 ## Security
 
 A `PUT` keyed by a client-supplied path is a **write-anywhere primitive** — strictly worse than the
