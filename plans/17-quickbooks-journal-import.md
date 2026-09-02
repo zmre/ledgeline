@@ -191,6 +191,12 @@ Several contradict the description above.**
   subtracts, an asset debited adds). Unusable for three independent reasons: it needs each
   account's declared type, which is nowhere in the export; it is float-computed (a cell really is
   stored as `34918.979999999996`); and it is scoped to the report's date range. Never read.
+  **Confirmed directly with the user (asked explicitly whether this should drive hledger balance
+  assertions, since a customized export can carry it): skip it entirely.** It is not any account's
+  balance at all — a single running figure crosses every account touched by a group, not one
+  account's history — so it cannot become an `= amount` assertion (which claims the account's
+  *whole-ledger* cumulative balance) without producing assertions that fail on the first
+  `hledger balance`. `Layout` has no `balance` field; the column is not even located.
 - **Unused text cells on a posting row are `Data::String("")`, not `Data::Empty`** — so "empty"
   must mean "nothing printable". Keyed on the variant, every posting acquires `vendor: Some("")`
   and a `vendor:` tag with nothing after it goes into the user's journal.
