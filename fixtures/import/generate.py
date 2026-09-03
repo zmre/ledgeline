@@ -758,6 +758,42 @@ def qb_zero_placeholder_xlsx() -> None:
     )
 
 
+# A group large enough (in a real export) for Excel's own SUM formula to
+# drift a few units past the tidy cent value it is summing to -- reported
+# directly against a real, larger export than the 204-row sample this module
+# was originally built against. Two postings are enough to carry the exact
+# reported cached digits; the drift itself is a property of summing many
+# terms in a real spreadsheet, not something this small fixture reproduces
+# from scratch -- the point is only that the PARSER must accept a total-row
+# cached value that has drifted this way, whatever produced it.
+QB_SUMMATION_DRIFT_GROUP = [
+    ["", "01/17/2026", "Journal Entry", "", "", "", "", "Checking", None, 975546.67,
+     "", 975546.67, "", ""],
+    ["", "01/17/2026", "Journal Entry", "", "", "", "", "Supplies", 975546.67, None,
+     "", 975546.67, "", ""],
+]
+
+
+def qb_summation_drift_xlsx() -> None:
+    """The real export's own drifted total-row cache, reproduced.
+
+    Reported directly against a real, larger export: group `7237`'s total
+    row cached `975546.6699999999` for a group whose own postings sum to
+    exactly `975546.67`. Excel's SUM is IEEE 754 addition over many terms and
+    is under no obligation to land on the double nearest the tidy decimal
+    answer -- this is not corruption, and refusing it as MismatchedTotal was
+    too strict. `qb_journal::close` must round the reported total to the
+    computed sum's own precision before comparing.
+    """
+    _qb_write(
+        "summation-drift.xlsx",
+        QB_CUSTOM_HEADER,
+        [("7237", QB_SUMMATION_DRIFT_GROUP,
+          ("Total for 7237", "975546.6699999999", "975546.6699999999"))],
+        total=975546.67,
+    )
+
+
 def qb_near_miss_xlsx() -> None:
     """NOT a QuickBooks Journal, and the reason detection cannot stop at the header.
 
@@ -853,6 +889,7 @@ def main() -> None:
         qb_orphan_total_xlsx,
         qb_overlap_xlsx,
         qb_zero_placeholder_xlsx,
+        qb_summation_drift_xlsx,
         qb_near_miss_xlsx,
         qb_report_xlsx,
     ):

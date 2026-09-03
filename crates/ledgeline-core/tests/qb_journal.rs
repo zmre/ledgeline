@@ -328,6 +328,22 @@ fn every_group_in_the_full_report_is_parsed_and_balances() {
     );
 }
 
+#[test]
+fn a_drifted_total_row_cache_is_accepted_not_refused_as_mismatched() {
+    // Reported directly against a real, larger export: group `7237`'s total
+    // row cached `975546.6699999999` against postings that sum to exactly
+    // `975546.67`. IEEE 754 summation over enough terms is under no
+    // obligation to land on the double nearest the tidy decimal answer; the
+    // parser must round the reported side to the computed sum's own
+    // precision before comparing, not refuse a well-formed file.
+    let journal = parse("summation-drift.xlsx");
+    let [transaction] = &journal.transactions[..] else {
+        panic!("one group");
+    };
+    assert_eq!(transaction.id, "7237");
+    assert_eq!(transaction.postings.len(), 2);
+}
+
 // ---------------------------------------------------------------------------
 // Refusals: one named error per way a damaged export is wrong
 // ---------------------------------------------------------------------------
@@ -415,6 +431,7 @@ fn every_quickbooks_journal_shape_is_detected() {
         "mismatched-total.xlsx",
         "orphan-total.xlsx",
         "zero-placeholder.xlsx",
+        "summation-drift.xlsx",
     ] {
         assert!(
             qb_journal::detect(&qb_fixture(name)),

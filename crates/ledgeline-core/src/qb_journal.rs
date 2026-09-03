@@ -117,21 +117,36 @@
 //! sample carries exactly this: rows were removed, and the group whose marker
 //! says `6` is closed by a surviving `Total for 11024` whose cells are `#REF!`.
 //!
-//! ## …and the stored digits are not the value
+//! ## …and the stored digits are not always the value
 //!
 //! Excel writes up to seventeen significant digits, so that group's total is
 //! stored as `70120.850000000006` and another as `79.989999999999995`. Both are
 //! the nearest `f64` to a tidy cent value, and Rust's shortest-round-trip
-//! `f64` formatting inverts that exactly — `70120.85` and `79.99` — which is why
-//! [`amount_of`] goes through [`float_text`] and the comparison is then **exact**
-//! [`Dec`] equality with no tolerance anywhere.
+//! `f64` formatting inverts that exactly — `70120.85` and `79.99` — which is
+//! why [`amount_of`] goes through [`float_text`] rather than reading the raw
+//! stored digits as text.
 //!
-//! The limit of that is real and is visible in the same file: the whole-report
-//! `TOTAL` row, summing four hundred–odd values, drifted far enough that its
-//! shortest form is `65510189.6700001` rather than `65510189.67`. Group totals
-//! are sums of at most ten values and stay well inside half an ULP. If one ever
-//! did not, the result is a [`QbJournalError::MismatchedTotal`] naming both
-//! numbers — a refusal the user can see, never a silently wrong amount.
+//! That inversion is exact for a **single** stored value, but a formula's
+//! result is not one — it is the output of Excel's own `SUM`, and IEEE 754
+//! addition is not associative: summing enough terms can land on a double
+//! that is not the one nearest the "true" decimal answer, even when every
+//! addend was itself exact to the cent. The whole-report `TOTAL` row (four
+//! hundred–odd values) was already known to drift this way — its shortest
+//! form is `65510189.6700001` rather than `65510189.67` — but it was
+//! originally assumed a **group**'s total, summing at most ten values in the
+//! 204-row sample this module was built against, would always stay inside
+//! half a ULP of the tidy value. A real, larger export disproved that: a
+//! group with enough postings produced a stored total of
+//! `975546.6699999999` against an independently computed `975546.67`.
+//!
+//! So the comparison is **not** bit-for-bit [`Dec`] equality — it is
+//! [`Dec::rounded`] to `computed`'s own precision (see [`close`]). `computed`
+//! is an exact sum of exact cent-precision postings and is never itself
+//! rounded, so this can only absorb drift on the reported side; it cannot
+//! manufacture agreement where a real, cent-or-larger disagreement exists. A
+//! group whose stored total genuinely disagrees — an edited amount, a
+//! deleted row — still produces [`QbJournalError::MismatchedTotal`] naming
+//! both numbers, unchanged.
 //!
 //! # What is refused, and why nothing is partially imported
 //!
@@ -708,6 +723,16 @@ fn close(
     // formula over the rows just checked and in a damaged one are the only thing
     // that knows it. Both columns are compared: a truncation can leave one
     // stale.
+    //
+    // The comparison is `reported` ROUNDED to `computed`'s own precision, not
+    // bit-for-bit equality — see `Dec::rounded`'s own docs for why: a real
+    // export was found where a group's total is a `SUM` formula over enough
+    // terms that IEEE 754 summation drifts a few units past the last
+    // meaningful digit (`975546.6699999999` for a `computed` of `975546.67`).
+    // `computed` itself is never rounded — it is an exact sum of exact
+    // cent-precision postings and cannot drift — so this can only ever absorb
+    // noise on the REPORTED side, never manufacture agreement neither side
+    // actually has.
     for (column, computed) in [(layout.debit, debit_total), (layout.credit, credit_total)] {
         let reported = amount_of(total.get(column))
             .map_err(|cell| QbJournalError::MalformedTotal {
@@ -715,7 +740,10 @@ fn close(
                 cell,
             })?
             .unwrap_or_else(Dec::zero);
-        if reported != computed {
+        let agrees = reported
+            .rounded(computed.places)
+            .is_ok_and(|rounded| rounded == computed);
+        if !agrees {
             return Err(QbJournalError::MismatchedTotal {
                 id: id.to_string(),
                 computed,
@@ -1251,6 +1279,24 @@ mod tests {
             amount_of(Some(&Data::Float(79.989999999999995))),
             Ok(Some(Dec::parse("79.99", '.').expect("literal")))
         );
+    }
+
+    #[test]
+    fn a_total_that_drifted_past_a_cent_of_float_summation_noise_still_agrees() {
+        // The exact discrepancy reported against a real, larger export: a
+        // group's total-row formula, cached after summing enough terms, does
+        // not land on the double nearest the tidy cent value — the parser
+        // must round the REPORTED side to the computed sum's own precision
+        // before comparing, not refuse a well-formed file.
+        let rows = sheet(&[
+            ". | Transaction date | Transaction type | Account Name | Debit | Credit",
+            "7237 | . | . | . | . | .",
+            ". | 01/17/2026 | Journal Entry | Checking | . | 975546.67",
+            ". | 01/17/2026 | Journal Entry | Supplies | 975546.67 | .",
+            "Total for 7237 | . | . | . | 975546.6699999999 | 975546.6699999999",
+        ]);
+        let journal = parsed(&rows).expect("parses despite the drifted total");
+        assert_eq!(journal.transactions[0].postings.len(), 2);
     }
 
     #[test]
