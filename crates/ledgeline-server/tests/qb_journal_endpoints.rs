@@ -436,6 +436,79 @@ async fn a_semicolon_in_a_payee_name_is_replaced_rather_than_refused() {
     );
 }
 
+/// Reported against a real export: group `913`, a payroll Journal Entry
+/// QuickBooks split across eight rows touching only four distinct accounts,
+/// two of the repeats at `$0.00`. Merging removes both the visual repetition
+/// and the "more than one zero-amount posting" fragility a downstream
+/// hledger-based formatter turned into an outright `hledger check` failure
+/// on the reporter's real file (blanking an explicit `0.00` down to an
+/// elided amount, twice in the same transaction).
+#[tokio::test]
+async fn repeated_same_account_postings_merge_and_the_zero_rows_disappear() {
+    let tree = Tree::bare();
+    let id = staged(&tree, "repeated-account.xlsx").await;
+    map_every_unmapped_account(&tree, &id).await;
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["imported"], 1, "{body}");
+
+    let text = tree.journal_text();
+    assert!(text.contains("id: 913"), "{text}");
+    // Every repeated account collapses to exactly one POSTING line —
+    // `map_every_unmapped_account` names the first-seen unmapped accounts
+    // `assets:qb:0`.. in order: the checking account, then Wages & Salaries,
+    // Benefits, Payroll Tax. Matched with its posting indentation so the
+    // count is not also picking up the `alias … = assets:qb:N` declaration
+    // line the same string legitimately appears on once.
+    assert_eq!(
+        text.matches("    assets:qb:1").count(),
+        1,
+        "Wages & Salaries (two rows) merges to one posting: {text}"
+    );
+    assert_eq!(
+        text.matches("    assets:qb:2").count(),
+        1,
+        "Benefits (three rows, one of them $0.00) merges to one posting: {text}"
+    );
+    assert_eq!(
+        text.matches("    assets:qb:3").count(),
+        1,
+        "Payroll Tax (two rows, one of them $0.00) merges to one posting: {text}"
+    );
+    // The merged sums land in the file, ungrouped, matching how every other
+    // written amount in this pipeline renders.
+    assert!(
+        text.contains("28003.82"),
+        "Wages & Salaries: 27099.39 + 904.43: {text}"
+    );
+    assert!(
+        text.contains("6221.53"),
+        "Benefits: 6087.02 + 0.00 + 134.51: {text}"
+    );
+    assert!(
+        text.contains("2167.95"),
+        "Payroll Tax: 2167.95 + 0.00, unchanged by the merge: {text}"
+    );
+    // No explicit zero-amount posting survives — every zero row's account had
+    // a nonzero sibling to merge into. This is the property that matters:
+    // nothing here is one stray external reformat away from hledger's
+    // "more than one real posting with no amount" refusal. Matched as
+    // "$0.00" (the exact shape a zero POSTING renders as in this
+    // $-denominated journal), not bare "0.00" — the scratch journal's own
+    // opening balance is `$1000.00`, which contains "0.00" as a harmless
+    // substring of a wholly unrelated, nonzero amount.
+    assert!(
+        !text.contains("$0.00"),
+        "the merge must absorb every zero row, leaving none behind: {text}"
+    );
+}
+
 /// The "re-downloading is safe" property `plans/17-quickbooks-journal-import.md`
 /// documents: a WIDER export that re-contains an already-imported transaction
 /// alongside a new one commits only the new one, with no duplication.

@@ -263,6 +263,48 @@ async fn hledger_accepts_and_balances_the_journal_qb_journal_commit_writes() {
     assert!(tagged.contains(&"33"));
 }
 
+/// The real report: `hledger check`/`hledger print` accept the merged,
+/// repeated-account transaction on the real binary, not just this crate's own
+/// balance arithmetic — the exact class of check that failed on the
+/// reporter's real file once a downstream formatter blanked its explicit
+/// `0.00` amounts down to elided ones.
+#[tokio::test]
+async fn hledger_accepts_the_merged_repeated_account_transaction() {
+    require_hledger!();
+    let tree = Tree::bare();
+    let id = staged(&tree, "repeated-account.xlsx").await;
+    map_every_unmapped_account(&tree, &id).await;
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["imported"], 1, "{body}");
+
+    hledger_check(&tree.journal_path()).expect("hledger check accepts the merged transaction");
+    let printed =
+        hledger_print_json(&tree.journal_path()).expect("hledger print re-reads the journal");
+    let transactions = printed.as_array().expect("an array");
+    assert_eq!(
+        transactions.len(),
+        2,
+        "the opening balance plus the payroll entry: {printed}"
+    );
+    let payroll = transactions
+        .iter()
+        .find(|txn| txn["tdescription"] == "1/15 Payroll")
+        .expect("the payroll transaction round-trips");
+    let postings = payroll["tpostings"].as_array().expect("postings array");
+    assert_eq!(
+        postings.len(),
+        4,
+        "hledger itself sees four postings, not the export's original eight: {printed}"
+    );
+}
+
 /// The full-size round-trip fixture: 45 groups, 100 posting rows, every
 /// transaction type the real export uses.
 #[tokio::test]

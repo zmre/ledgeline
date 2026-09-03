@@ -1066,6 +1066,86 @@ pre-existing labeling unit tests pass unmodified (above). Every pre-existing tes
 hledger-checks` (every opt-in suite, including both QuickBooks-Journal ones, still green against real
 `hledger`).
 
+## Real-world finding: missing commodity symbols and fragile repeated-account postings (2026-09-03)
+
+A user's real QuickBooks Online export, committed against a freshly multi-file-split journal
+(`main.journal` declaring `commodity $1,000.00` but no `D` directive, and no transactions of its
+own yet for a frequency count to learn from), imported every amount with NO commodity symbol —
+silently a different journal style than the rest of the file. Separately, one real transaction
+(a payroll entry) repeated `…:Wages & Salaries` twice and `…:Benefits` three times, two of those
+repeats landing on `$0.00`. An external hledger-based format-on-save tool the user runs turned
+those explicit `0.00` amounts into elided (blank) ones, and hledger then refused the file: "There
+can't be more than one real posting with no amount." Ledgeline's own written journal was valid
+hledger at the moment it was written; the crash came from the user's own downstream formatter, not
+this pipeline. Both issues were correctly self-diagnosed by the user before either fix started.
+
+**The commodity fix — `commodity_for` (`qb_journal_api.rs`) gains a third fallback step.** The
+function already preferred (1) a `D AMOUNT` directive's declared default, then (2) the
+most-frequently-used commodity across the journal's own posting amounts (first-seen order breaking
+a tie). Both require either a `D` line or existing transactions to learn from — neither exists in
+a freshly split, still-empty year file that only carries a `commodity $1,000.00` style directive.
+New step 3: if the journal's `commodity_styles` (hledger's DISPLAY-STYLE directive — decimal
+places, symbol position; a distinct concept from `D`'s "default commodity" role, per
+[`Journal::commodity_styles`]'s own docs) has EXACTLY ONE declared entry, use it — "a journal that
+states, in the author's own words, which commodity it is denominated in," the same class of signal
+`default_commodity` exists to capture, just spelled with the other directive. Two or more declared
+styles is genuine ambiguity, so this step declines rather than guessing between them, falling
+through to step 4 (no commodity — unchanged, pre-existing behavior).
+
+**The merge fix — new `merge_same_account_postings(id, postings) -> Result<Vec<Posting>, AppError>`,
+called from `build_transaction` before a `Transaction` is assembled.** Repeated postings to the
+same account are valid hledger on their own (they simply sum for balance purposes) — the user
+correctly guessed this needed verification, not a firm bug report — but writing them out separately
+means an explicit `0.00` whenever same-account rows happen to net to zero, and a transaction with
+more than one such explicit zero is one stray external reformat away from exactly the crash
+reported. Merging removes the zero rows structurally rather than writing defensively around them.
+
+Two postings merge only when they resolve to the SAME account AND carry IDENTICAL `class`/
+`customer`/`vendor` tags — already folded into each [`Posting::comment`] by `build_posting`/
+`posting_comment` by the time this runs, so comparing the rendered comment IS comparing all three
+tags at once. This was an explicit product decision, put to the user as a three-way choice
+(combine distinct tag values / merge on exact match only / keep first and drop the rest); the user
+chose **exact match only** over my own recommended default (combine distinct values), specifically
+so no vendor/customer/class detail is ever silently combined or dropped — postings whose tags
+differ stay separate, full stop. Merging is order-preserving (a merged posting stays at its FIRST
+occurrence's position, matching this module's own established "account/date/type repeat, per-row
+detail varies" precedent for a QuickBooks group) and refuses (`AppError::BadRequest`, naming the
+transaction id) rather than panics on `Dec` mantissa overflow, matching every other arithmetic
+refusal already established elsewhere in this pipeline (`qb_journal::close`'s own balance sum).
+
+### Contract amendments made during implementation
+
+Per convention #9 in `plans/00-overview.md`.
+
+**`build_transaction`, `build_and_classify`, `preview_of`, and `run_preview` all changed their
+return type to thread a `Result`, not just `build_transaction`.** Merging can fail (overflow), and
+`build_transaction` is called from inside `build_and_classify`'s per-transaction closure, which
+itself is called from `preview_of`, which `run_preview` wraps — the `Result` had to thread the
+whole way up rather than stopping at the innermost function, since none of these existed as
+fallible before this fix (every prior QuickBooks-journal step that could fail already returned
+`Result`; only the pure "shape the postings" step was newly fallible). `build_and_classify`'s inner
+closure now returns `Ok(Classified {...})` per item and relies on `.collect::<Result<Vec<_>, _>>()`
+via return-type inference rather than a new explicit loop.
+
+**New tests, all hermetic.** `qb_journal_api.rs` (`#[cfg(test)] mod tests`): 2 new for the
+commodity fallback (`a_lone_declared_commodity_style_wins_when_there_is_nothing_else_to_go_on`,
+`two_declared_commodity_styles_with_nothing_else_to_go_on_stays_bare`) alongside the 4 pre-existing
+commodity-preference tests, all still passing unmodified; 4 new for the merge
+(`repeated_postings_to_the_same_account_with_matching_tags_merge_and_sum`,
+`postings_with_differing_tags_are_never_merged`,
+`a_merge_group_that_sums_to_zero_still_writes_an_explicit_posting`,
+`merging_preserves_first_occurrence_order_and_leaves_unrelated_accounts_alone`).
+`qb_journal_endpoints.rs`: 1 new (`repeated_same_account_postings_merge_and_the_zero_rows_disappear`)
+against a new fixture, `fixtures/import/qb-journal/repeated-account.xlsx` (8 rows, structure-scrubbed
+from the user's real reported group, dollar amounts kept since they identify nothing). Also new,
+env-gated: `qb_journal_hledger_check.rs::hledger_accepts_the_merged_repeated_account_transaction`,
+run directly against real hledger 1.52 reproducing the user's exact transaction shape (four merged
+postings, not the export's original eight) — passed on first run.
+
+**Verification commands, all clean:** `cargo fmt --check`; `cargo clippy --workspace --all-targets --
+-D warnings`; `cargo test --workspace`; `just hledger-checks` (including the new opt-in test above,
+directly against real hledger).
+
 ## Definition of done (per phase)
 
 - `cargo test` stays hermetic; the new opt-in `LEDGELINE_HLEDGER_QBJOURNAL_CHECK` suite passes

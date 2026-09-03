@@ -839,6 +839,53 @@ QB_SEMICOLON_GROUP = [
 ]
 
 
+# A payroll Journal Entry that touches the SAME three expense accounts more
+# than once, two of the repeats at $0.00 -- reported against a real export.
+# Structure only (dollar amounts scrubbed): Wages & Salaries and Payroll Tax
+# each appear twice, Benefits appears three times, and two of the repeats
+# ($0.00 Benefits, $0.00 Payroll Tax) are the exact shape that becomes TWO
+# elided amounts -- and an hledger refusal -- the moment anything downstream
+# reformats an explicit "0.00" down to blank.
+QB_REPEATED_ACCOUNT_GROUP = [
+    ["", "01/15/2018", "Journal Entry", "51", "1/15 Payroll", "", "",
+     "Elevations DIVIDEND CHECKING (0002)", None, 36393.30, "", -36393.30, "", ""],
+    ["", "01/15/2018", "Journal Entry", "51", "1/15 Payroll", "", "6410",
+     "6400 People Costs:6410 Wages & Salaries", 27099.39, None, "", -9293.91, "", ""],
+    ["", "01/15/2018", "Journal Entry", "51", "1/15 Payroll", "", "6420",
+     "6400 People Costs:6420 Benefits", 6087.02, None, "", -3206.89, "", ""],
+    ["", "01/15/2018", "Journal Entry", "51", "1/15 Payroll", "", "6415",
+     "6400 People Costs:6415 Payroll Tax", 2167.95, None, "", -1038.94, "", ""],
+    ["", "01/15/2018", "Journal Entry", "51", "1/15 Payroll", "", "6420",
+     "6400 People Costs:6420 Benefits", 0.0, None, "", -1038.94, "", ""],
+    ["", "01/15/2018", "Journal Entry", "51", "1/15 Payroll", "", "6415",
+     "6400 People Costs:6415 Payroll Tax", 0.0, None, "", -1038.94, "", ""],
+    ["", "01/15/2018", "Journal Entry", "51", "1/15 Payroll", "", "6410",
+     "6400 People Costs:6410 Wages & Salaries", 904.43, None, "", -134.51, "", ""],
+    ["", "01/15/2018", "Journal Entry", "51", "1/15 Payroll", "", "6420",
+     "6400 People Costs:6420 Benefits", 134.51, None, "", 0.0, "", ""],
+]
+
+
+def qb_repeated_account_xlsx() -> None:
+    """The real export's own repeated-account payroll entry, reproduced.
+
+    Reported against a real export: group `913`, a payroll Journal Entry
+    QuickBooks split across eight rows touching only four distinct accounts.
+    `qb_journal_api::merge_same_account_postings` must collapse each
+    account's repeats -- Wages & Salaries (27099.39 + 904.43), Benefits
+    (6087.02 + 0.00 + 134.51), Payroll Tax (2167.95 + 0.00) -- into one
+    posting each, so the written transaction has no more-than-one-zero-amount
+    fragility at all, rather than depending on nobody ever reformatting an
+    explicit 0.00 down to blank.
+    """
+    _qb_write(
+        "repeated-account.xlsx",
+        QB_CUSTOM_HEADER,
+        [("913", QB_REPEATED_ACCOUNT_GROUP, ("Total for 913", 36393.30, 36393.30))],
+        total=36393.30,
+    )
+
+
 def qb_semicolon_in_payee_xlsx() -> None:
     """The real export's own semicolon-bearing payee name, reproduced.
 
@@ -955,6 +1002,7 @@ def main() -> None:
         qb_summation_drift_xlsx,
         qb_zero_net_leg_xlsx,
         qb_semicolon_in_payee_xlsx,
+        qb_repeated_account_xlsx,
         qb_near_miss_xlsx,
         qb_report_xlsx,
     ):

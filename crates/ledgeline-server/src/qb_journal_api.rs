@@ -308,7 +308,7 @@ pub(crate) async fn preview(
 
 fn run_preview(state: &AppState, stage_id: &str) -> Result<WireQbPreview, AppError> {
     let (id, stage) = resolve_stage(state, stage_id)?;
-    Ok(preview_of(state, id, stage.journal()))
+    preview_of(state, id, stage.journal())
 }
 
 /// `POST /api/import/qb-journal/commit`.
@@ -354,15 +354,21 @@ fn stage_not_found(raw: &str) -> AppError {
 // Preview: classify against the journal as it stands, report
 // ===========================================================================
 
-fn preview_of(state: &AppState, stage_id: String, parsed: &QbJournal) -> WireQbPreview {
+fn preview_of(
+    state: &AppState,
+    stage_id: String,
+    parsed: &QbJournal,
+) -> Result<WireQbPreview, AppError> {
     let snapshot = state.snapshot();
     let aliases = plain_aliases(&snapshot.journal);
     let unmapped = qb_import::unmapped_accounts(&aliases, &parsed.transactions);
 
-    let id_matches = unmapped.is_empty().then(|| {
-        let built = build_and_classify(&snapshot.journal, &aliases, &parsed.transactions);
-        wire_id_matches(&built)
-    });
+    let id_matches = if unmapped.is_empty() {
+        let built = build_and_classify(&snapshot.journal, &aliases, &parsed.transactions)?;
+        Some(wire_id_matches(&built))
+    } else {
+        None
+    };
 
     let posting_count = parsed
         .transactions
@@ -376,7 +382,7 @@ fn preview_of(state: &AppState, stage_id: String, parsed: &QbJournal) -> WireQbP
         .map(wire_sample)
         .collect();
 
-    WireQbPreview {
+    Ok(WireQbPreview {
         stage_id,
         transaction_count: parsed.transactions.len(),
         posting_count,
@@ -387,7 +393,7 @@ fn preview_of(state: &AppState, stage_id: String, parsed: &QbJournal) -> WireQbP
         unmapped_accounts: unmapped,
         sample,
         id_matches,
-    }
+    })
 }
 
 fn wire_sample(txn: &QbTransaction) -> WireQbSample {
@@ -447,23 +453,23 @@ fn build_and_classify(
     journal: &Journal,
     aliases: &[&AliasDirective],
     transactions: &[QbTransaction],
-) -> Vec<Classified> {
+) -> Result<Vec<Classified>, AppError> {
     let index = reimport::build_index(journal, reimport::ID_TAG);
     let commodity = commodity_for(journal);
     transactions
         .iter()
         .map(|qb_txn| {
-            let transaction = build_transaction(journal, qb_txn, aliases, &commodity);
+            let transaction = build_transaction(journal, qb_txn, aliases, &commodity)?;
             // Every built transaction is `Status::Unmarked` (see
             // `WireQbIdMatches`'s docs), so `status_mapped` is always `false`:
             // any status difference from a hand-marked transaction is a
             // conflict, never a silent "status-only" sync.
             let classification = reimport::classify(&index, &qb_txn.id, &transaction, false);
-            Classified {
+            Ok(Classified {
                 id: qb_txn.id.clone(),
                 transaction,
                 classification,
-            }
+            })
         })
         .collect()
 }
@@ -513,13 +519,26 @@ fn wire_id_matches(built: &[Classified]) -> WireQbIdMatches {
 /// export carries no currency information of its own at all — every amount is
 /// a bare number.
 ///
-/// Preferred in order: the journal's own declared default (a `D AMOUNT`
-/// directive — [`Journal::default_commodity`]); else the commodity used most
-/// often across the journal's own posting amounts already, first-seen order
-/// breaking a tie (the same "first occurrence" precedent
-/// [`Journal::commodity_styles`]'s own docs name); else — a journal with no
-/// default and no amount anywhere to learn from — no commodity at all, which
-/// is the best any answer can be there.
+/// Preferred in order:
+/// 1. The journal's own declared default (a `D AMOUNT` directive —
+///    [`Journal::default_commodity`]).
+/// 2. The commodity used most often across the journal's own posting amounts
+///    already, first-seen order breaking a tie (the same "first occurrence"
+///    precedent [`Journal::commodity_styles`]'s own docs name).
+/// 3. The journal's ONE declared [`Journal::commodity_styles`] entry, if it
+///    has exactly one — found necessary against a real, freshly-split
+///    multi-file journal: a `commodity $1,000.00` line (hledger's DISPLAY-
+///    STYLE directive — decimal places, symbol position — distinct from `D`,
+///    which is the only thing step 1 reads) with no transactions anywhere
+///    yet for step 2 to learn from is exactly "a journal that states, in the
+///    author's own words, which commodity it is denominated in" without a
+///    `D` line or existing data — the same class of signal `default_commodity`
+///    exists to capture, just spelled with the OTHER directive. Two or more
+///    declared commodities is genuine ambiguity, so this step declines rather
+///    than guessing between them.
+/// 4. No commodity at all — a journal with no default, no amount anywhere to
+///    learn from, and no (or an ambiguous) declared style — which is the best
+///    any answer can be there.
 ///
 /// **Not** `default_commodity` alone. Most real journals write `$100.00`
 /// throughout and never declare a `D` line (the scratch journal
@@ -554,7 +573,13 @@ fn commodity_for(journal: &Journal) -> Commodity {
             best = Some((commodity, count));
         }
     }
-    best.map_or_else(|| Commodity(String::new()), |(commodity, _)| commodity)
+    if let Some((commodity, _)) = best {
+        return commodity;
+    }
+    match &journal.commodity_styles[..] {
+        [(commodity, _)] => commodity.clone(),
+        _ => Commodity(String::new()),
+    }
 }
 
 fn build_transaction(
@@ -562,13 +587,14 @@ fn build_transaction(
     qb_txn: &QbTransaction,
     aliases: &[&AliasDirective],
     commodity: &Commodity,
-) -> Transaction {
-    let postings = qb_txn
+) -> Result<Transaction, AppError> {
+    let postings: Vec<Posting> = qb_txn
         .postings
         .iter()
         .map(|posting| build_posting(journal, posting, aliases, commodity))
         .collect();
-    Transaction {
+    let postings = merge_same_account_postings(&qb_txn.id, postings)?;
+    Ok(Transaction {
         // Placeholder; the editor reassigns file-order indices on reparse —
         // the same convention `edit_api::build_transaction` follows.
         index: Tindex(0),
@@ -587,7 +613,67 @@ fn build_transaction(
             SourcePos { line: 1, column: 1 },
         ),
         source_file: PathBuf::new(),
+    })
+}
+
+/// Combine postings that resolved to the SAME account and carry IDENTICAL
+/// `class`/`customer`/`vendor` tags, summing their amounts.
+///
+/// QuickBooks can legitimately split one account's real effect across
+/// several rows of one Journal Entry — a payroll entry touching `…:Benefits`
+/// three times, one of them `$0.00`, is a real, reported shape. Repeated
+/// postings to the same account are valid hledger on their own (they simply
+/// sum for balance purposes), but writing them out separately means writing
+/// an EXPLICIT `0.00` whenever rows to the same account happen to cancel —
+/// and a transaction with more than one such explicit zero is one stray
+/// external reformat away from hledger's "there can't be more than one real
+/// posting with no amount" refusal (an hledger-based format-on-save tool
+/// doing exactly that, turning `0.00` into a blank/elided amount, is what
+/// surfaced this). Merging first removes the zero rows this way rather than
+/// just writing around them.
+///
+/// class/customer/vendor must match EXACTLY (confirmed with the user, since
+/// this is real financial data): two postings to the same account with
+/// DIFFERING tags — already folded into each [`Posting::comment`] by
+/// [`build_posting`]/[`posting_comment`] by the time this runs, so comparing
+/// the rendered comment IS comparing the three tags — are kept separate
+/// rather than merged, so no vendor/customer/class detail is ever silently
+/// combined or dropped. Order-preserving: a merged posting stays at its
+/// FIRST occurrence's position: `qb_journal.rs`'s own module docs establish
+/// that account/date/type repeat across a group's rows while the per-posting
+/// detail (originally memo, here class/customer/vendor) is what varies, so
+/// the first occurrence's tags are exactly the ones a reader would expect to
+/// see once the repeats are gone.
+///
+/// # Errors
+/// [`AppError::BadRequest`], naming `id`, if summing two real QuickBooks
+/// amounts overflows `Dec`'s `i128` mantissa — not reachable by any
+/// real-world dollar figure, but every other arithmetic step in this
+/// pipeline (`qb_journal::close`'s own balance sum chief among them) refuses
+/// rather than panics on the same, so this does too.
+fn merge_same_account_postings(id: &str, postings: Vec<Posting>) -> Result<Vec<Posting>, AppError> {
+    let mut merged: Vec<Posting> = Vec::with_capacity(postings.len());
+    for posting in postings {
+        let existing = merged
+            .iter_mut()
+            .find(|other| other.account == posting.account && other.comment == posting.comment);
+        match existing {
+            Some(target) => {
+                let summed = target.amounts[0]
+                    .quantity
+                    .add(posting.amounts[0].quantity)
+                    .map_err(|_| {
+                        AppError::BadRequest(format!(
+                            "transaction {id}: merging repeated postings to {} overflowed",
+                            posting.account.0
+                        ))
+                    })?;
+                target.amounts[0].quantity = summed;
+            }
+            None => merged.push(posting),
+        }
     }
+    Ok(merged)
 }
 
 fn build_posting(
@@ -848,7 +934,7 @@ fn classify_parsed(
     if !unmapped.is_empty() {
         return Err(unmapped_refusal(&unmapped));
     }
-    let built = build_and_classify(&snapshot.journal, &aliases, &parsed.transactions);
+    let built = build_and_classify(&snapshot.journal, &aliases, &parsed.transactions)?;
     Ok((snapshot, built))
 }
 
@@ -980,6 +1066,153 @@ mod tests {
             commodity_for(&journal),
             Commodity("$".to_string()),
             "both commodities appear once; the one seen first wins"
+        );
+    }
+
+    /// The real report: a freshly-split multi-file journal whose main file
+    /// declares `commodity $1,000.00` (hledger's DISPLAY-STYLE directive) but
+    /// has no `D` line and, because the split just happened, no transactions
+    /// anywhere yet for the frequency fallback to learn from.
+    #[test]
+    fn a_lone_declared_commodity_style_wins_when_there_is_nothing_else_to_go_on() {
+        let journal = journal("commodity $1,000.00\n");
+        assert_eq!(journal.default_commodity, None);
+        assert!(journal.transactions.is_empty());
+        assert_eq!(
+            commodity_for(&journal),
+            Commodity("$".to_string()),
+            "one declared commodity, with nothing else to prefer, is unambiguous"
+        );
+    }
+
+    #[test]
+    fn two_declared_commodity_styles_with_nothing_else_to_go_on_stays_bare() {
+        let journal = journal("commodity $1,000.00\ncommodity EUR 1.000,00\n");
+        assert!(journal.transactions.is_empty());
+        assert_eq!(
+            commodity_for(&journal),
+            Commodity(String::new()),
+            "two declared commodities is genuine ambiguity, not a signal to guess from"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // merge_same_account_postings
+    // -----------------------------------------------------------------------
+
+    fn dollar_style() -> ledgeline_core::model::AmountStyle {
+        ledgeline_core::model::AmountStyle {
+            side: ledgeline_core::model::CommoditySide::Left,
+            spaced: false,
+            decimal_mark: Some('.'),
+            digit_groups: None,
+            precision: 2,
+        }
+    }
+
+    fn posting(account: &str, comment: &str, cents: i128) -> Posting {
+        Posting {
+            status: Status::Unmarked,
+            ptype: PostingType::Regular,
+            account: AccountName(account.to_string()),
+            amounts: vec![Amount {
+                commodity: Commodity("$".to_string()),
+                quantity: ledgeline_core::Dec::new(cents, 2),
+                style: dollar_style(),
+                cost: None,
+            }],
+            balance_assertion: None,
+            date: None,
+            date2: None,
+            comment: comment.to_string(),
+            tags: Vec::new(),
+        }
+    }
+
+    fn cents_of(posting: &Posting) -> i128 {
+        posting.amounts[0].quantity.mantissa
+    }
+
+    #[test]
+    fn repeated_postings_to_the_same_account_with_matching_tags_merge_and_sum() {
+        // The exact reported shape: three "Benefits" rows, one of them $0.00.
+        let postings = vec![
+            posting("expenses:benefits", "", 608702),
+            posting("expenses:benefits", "", 0),
+            posting("expenses:benefits", "", 13451),
+        ];
+        let merged = merge_same_account_postings("913", postings).expect("no overflow");
+        assert_eq!(merged.len(), 1, "all three collapse into one posting");
+        assert_eq!(cents_of(&merged[0]), 622153);
+    }
+
+    #[test]
+    fn postings_with_differing_tags_are_never_merged() {
+        let postings = vec![
+            posting("expenses:benefits", "vendor: Acme", 10000),
+            posting("expenses:benefits", "vendor: Beta", 5000),
+        ];
+        let merged = merge_same_account_postings("1", postings).expect("no overflow");
+        assert_eq!(
+            merged.len(),
+            2,
+            "differing class/customer/vendor keeps postings separate, confirmed with the user"
+        );
+    }
+
+    #[test]
+    fn a_merge_group_that_sums_to_zero_still_writes_an_explicit_posting() {
+        let postings = vec![
+            posting("expenses:payroll-tax", "", 216795),
+            posting("expenses:payroll-tax", "", -216795),
+        ];
+        let merged = merge_same_account_postings("1", postings).expect("no overflow");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            cents_of(&merged[0]),
+            0,
+            "a net-zero merge stays visible as an explicit posting, not dropped"
+        );
+    }
+
+    #[test]
+    fn merging_preserves_first_occurrence_order_and_leaves_unrelated_accounts_alone() {
+        // Mirrors the reported transaction's own shape: Wages, Benefits,
+        // PayrollTax, Benefits(0), PayrollTax(0), Wages, Benefits.
+        let postings = vec![
+            posting("assets:checking", "", -3639330),
+            posting("expenses:wages", "", 2709939),
+            posting("expenses:benefits", "", 608702),
+            posting("expenses:payroll-tax", "", 216795),
+            posting("expenses:benefits", "", 0),
+            posting("expenses:payroll-tax", "", 0),
+            posting("expenses:wages", "", 90443),
+            posting("expenses:benefits", "", 13451),
+        ];
+        let merged = merge_same_account_postings("913", postings).expect("no overflow");
+        let accounts: Vec<&str> = merged.iter().map(|p| p.account.0.as_str()).collect();
+        assert_eq!(
+            accounts,
+            [
+                "assets:checking",
+                "expenses:wages",
+                "expenses:benefits",
+                "expenses:payroll-tax"
+            ],
+            "one posting per account, in first-occurrence order"
+        );
+        let by_account: std::collections::HashMap<&str, i128> = merged
+            .iter()
+            .map(|p| (p.account.0.as_str(), cents_of(p)))
+            .collect();
+        assert_eq!(by_account["assets:checking"], -3639330);
+        assert_eq!(by_account["expenses:wages"], 2709939 + 90443);
+        assert_eq!(by_account["expenses:benefits"], 608702 + 13451);
+        assert_eq!(by_account["expenses:payroll-tax"], 216795);
+        let sum: i128 = merged.iter().map(cents_of).sum();
+        assert_eq!(
+            sum, 0,
+            "the merge changes nothing about the transaction's own balance"
         );
     }
 }
