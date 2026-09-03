@@ -827,6 +827,36 @@ def qb_zero_net_leg_xlsx() -> None:
     )
 
 
+# A payee name containing a semicolon -- reported against a real export. Not
+# invented punctuation: a law-firm-style name ("Smith; Jones LLP") is exactly
+# the shape real QuickBooks vendor lists turn up, and hledger's own grammar
+# has no way to write a literal `;` in a transaction's description at all.
+QB_SEMICOLON_GROUP = [
+    ["", "01/12/2026", "Expense", "", "Smith; Jones LLP", "", "",
+     "Checking", None, 250.0, "", 250.0, "", "Smith; Jones LLP"],
+    ["", "01/12/2026", "Expense", "", "Smith; Jones LLP", "", "",
+     "6300 Professional Fees:6310 Legal Fees", 250.0, None, "", 500.0, "", "Smith; Jones LLP"],
+]
+
+
+def qb_semicolon_in_payee_xlsx() -> None:
+    """The real export's own semicolon-bearing payee name, reproduced.
+
+    Reported against a real export large enough to contain one: a payee name
+    with a `;` reached `JournalEditor::add_transaction`'s round-trip guard as
+    an unnamed `EditError::RoundTripMismatch`, because `parse::split_comment`
+    is a plain `line.find(';')` -- the semicolon silently ends the written
+    description right there. `qb_import::journal_safe` must replace it before
+    the transaction is ever built.
+    """
+    _qb_write(
+        "semicolon-in-payee.xlsx",
+        QB_CUSTOM_HEADER,
+        [("8801", QB_SEMICOLON_GROUP, ("Total for 8801", 250.0, 250.0))],
+        total=250.0,
+    )
+
+
 def qb_near_miss_xlsx() -> None:
     """NOT a QuickBooks Journal, and the reason detection cannot stop at the header.
 
@@ -924,6 +954,7 @@ def main() -> None:
         qb_zero_placeholder_xlsx,
         qb_summation_drift_xlsx,
         qb_zero_net_leg_xlsx,
+        qb_semicolon_in_payee_xlsx,
         qb_near_miss_xlsx,
         qb_report_xlsx,
     ):

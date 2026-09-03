@@ -105,20 +105,59 @@ pub fn unmapped_accounts(
 /// real ten-line manual Journal Entry has no `Name` at all and would otherwise
 /// read as bare "Journal Entry" no matter which of the file's several journal
 /// entries it was.
+///
+/// Run through [`journal_safe`] before it is returned — see that function's
+/// own docs for why a raw payee name cannot always be written verbatim.
 #[must_use]
 pub fn description_for(transaction: &QbTransaction) -> String {
-    if let Some(name) = transaction.name.as_deref().filter(|name| !name.is_empty()) {
-        return name.to_string();
-    }
-    match transaction
-        .postings
-        .first()
-        .and_then(|posting| posting.memo.as_deref())
-        .filter(|memo| !memo.is_empty())
-    {
-        Some(memo) => format!("{}: {memo}", transaction.transaction_type),
-        None => transaction.transaction_type.clone(),
-    }
+    let raw = if let Some(name) = transaction.name.as_deref().filter(|name| !name.is_empty()) {
+        name.to_string()
+    } else {
+        match transaction
+            .postings
+            .first()
+            .and_then(|posting| posting.memo.as_deref())
+            .filter(|memo| !memo.is_empty())
+        {
+            Some(memo) => format!("{}: {memo}", transaction.transaction_type),
+            None => transaction.transaction_type.clone(),
+        }
+    };
+    journal_safe(&raw)
+}
+
+/// `text`, made safe to write literally into hledger's line-based grammar —
+/// wherever it lands: a transaction's header (its description), or a
+/// posting's `class:`/`customer:`/`vendor:` comment tag.
+///
+/// Found necessary against a real, much larger export: a payee name
+/// containing a `;` (not unusual — a law firm's "Smith; Jones LLP"-style
+/// name is exactly the shape a real vendor list turned up) reached
+/// [`JournalEditor::add_transaction`](crate::edit::JournalEditor::add_transaction)'s
+/// round-trip guard as `EditError::RoundTripMismatch`, correctly refusing —
+/// but naming no transaction, because nothing that far downstream still
+/// knows which one it was.
+///
+/// Two characters this format has no escape for, ever, so both are replaced
+/// rather than the whole transaction refused over one punctuation mark most
+/// people reviewing their books would not even notice changed:
+///
+/// - A newline would split one journal line into two, corrupting the
+///   structure of every line below it. `parse.rs` has no continuation syntax
+///   that could ever put it back together as one field.
+/// - A `;` starts a comment with no way to write a literal one —
+///   `parse::split_comment` is a plain `line.find(';')` — so the FIRST one
+///   anywhere in a transaction's header line ends its description right
+///   there and starts reading the rest as a tag comment instead, silently
+///   changing what was written.
+///
+/// Safe to apply unconditionally, everywhere free text from the export is
+/// about to be written: replacing a `;` that would have landed inside an
+/// *already-started* comment (harmless there — `split_comment` only ever
+/// looks for the first one) changes nothing a reader would notice either.
+#[must_use]
+pub fn journal_safe(text: &str) -> String {
+    text.replace(['\n', '\r'], " ").replace(';', ",")
 }
 
 #[cfg(test)]
@@ -286,5 +325,37 @@ mod tests {
             description_for(&txn),
             "Journal Entry: Opening Balance Entry"
         );
+    }
+
+    #[test]
+    fn journal_safe_replaces_a_semicolon_which_hledger_has_no_escape_for() {
+        // `parse::split_comment` is a plain `line.find(';')` — the FIRST one
+        // anywhere in a header ends the description there, silently.
+        assert_eq!(journal_safe("Smith; Jones LLP"), "Smith, Jones LLP");
+    }
+
+    #[test]
+    fn journal_safe_collapses_embedded_newlines() {
+        // A raw newline would split one journal line into two.
+        assert_eq!(journal_safe("Acme\nCorp"), "Acme Corp");
+        assert_eq!(journal_safe("Acme\r\nCorp"), "Acme  Corp");
+    }
+
+    #[test]
+    fn journal_safe_leaves_ordinary_text_untouched() {
+        assert_eq!(
+            journal_safe("Ridgeline Partners, LP"),
+            "Ridgeline Partners, LP"
+        );
+    }
+
+    #[test]
+    fn a_semicolon_in_the_payee_name_does_not_reach_the_description_verbatim() {
+        // The exact failure mode reported against a real export: a payee
+        // name with a semicolon reached the journal-writing round-trip guard
+        // as an unnamed EditError::RoundTripMismatch.
+        let mut txn = transaction("1", vec![posting("Checking")]);
+        txn.name = Some("Smith; Jones LLP".to_string());
+        assert_eq!(description_for(&txn), "Smith, Jones LLP");
     }
 }

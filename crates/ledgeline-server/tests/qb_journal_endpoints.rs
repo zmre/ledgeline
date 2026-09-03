@@ -403,6 +403,39 @@ async fn commit_writes_every_transaction_tagged_with_its_quickbooks_id() {
     );
 }
 
+/// Reported against a real, much larger export: a payee name containing a
+/// `;` reached `JournalEditor::add_transaction`'s round-trip guard as an
+/// unnamed `EditError::RoundTripMismatch`, because `parse::split_comment` is
+/// a plain `line.find(';')` and silently truncates a written description at
+/// the first one. The commit must succeed, with the semicolon replaced
+/// rather than the transaction refused.
+#[tokio::test]
+async fn a_semicolon_in_a_payee_name_is_replaced_rather_than_refused() {
+    let tree = Tree::bare();
+    let id = staged(&tree, "semicolon-in-payee.xlsx").await;
+    map_every_unmapped_account(&tree, &id).await;
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["imported"], 1, "{body}");
+
+    let text = tree.journal_text();
+    assert!(text.contains("id: 8801"), "{text}");
+    assert!(
+        text.contains("Smith, Jones LLP"),
+        "the semicolon is replaced, not dropped, and the rest of the name survives: {text}"
+    );
+    assert!(
+        !text.contains("Smith; Jones LLP"),
+        "the raw semicolon must never reach the written file: {text}"
+    );
+}
+
 /// The "re-downloading is safe" property `plans/17-quickbooks-journal-import.md`
 /// documents: a WIDER export that re-contains an already-imported transaction
 /// alongside a new one commits only the new one, with no duplication.

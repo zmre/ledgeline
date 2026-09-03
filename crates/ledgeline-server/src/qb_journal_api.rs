@@ -621,6 +621,14 @@ fn build_posting(
 /// direct instruction (see `plans/17-quickbooks-journal-import.md`), preserved
 /// rather than discarded even though hledger has no equivalent field for any
 /// of the three.
+///
+/// Each value goes through [`qb_import::journal_safe`] first. A `;` here is
+/// harmless to the comment boundary itself (this text always lands after the
+/// line's OWN leading `; `, so the first `;` `split_comment` finds is already
+/// spent) but a raw newline is not — it would still split this posting's one
+/// line into two — so the same sanitizer used for the description is reused
+/// rather than reasoning about which of its two replacements this call site
+/// still needs.
 fn posting_comment(posting: &QbPosting) -> String {
     let tags: Vec<String> = [
         ("class", posting.class.as_deref()),
@@ -628,7 +636,9 @@ fn posting_comment(posting: &QbPosting) -> String {
         ("vendor", posting.vendor.as_deref()),
     ]
     .into_iter()
-    .filter_map(|(name, value)| value.map(|value| format!("{name}: {value}")))
+    .filter_map(|(name, value)| {
+        value.map(|value| format!("{name}: {}", qb_import::journal_safe(value)))
+    })
     .collect();
     if tags.is_empty() {
         String::new()
@@ -682,11 +692,26 @@ pub(crate) fn commit_journal(
 ) -> Result<WireQbCommit, AppError> {
     let (snapshot, built) = classify_parsed(state, parsed)?;
     let id_matches = wire_id_matches(&built);
-    let new_transactions: Vec<Transaction> = built
+    let new: Vec<Classified> = built
         .into_iter()
         .filter(|row| row.classification == RowClassification::New)
-        .map(|row| row.transaction)
         .collect();
+    // The QuickBooks Trans #, date and description of each — so a write
+    // failure names the one transaction it happened on rather than an index
+    // into a batch that can run into the thousands. See
+    // `edit_api::add_transactions`'s own docs on why this has to be supplied
+    // here: nothing past this point still knows which QuickBooks id a given
+    // `Transaction` came from.
+    let labels: Vec<String> = new
+        .iter()
+        .map(|row| {
+            format!(
+                "{} — {} {}",
+                row.id, row.transaction.date, row.transaction.description
+            )
+        })
+        .collect();
+    let new_transactions: Vec<Transaction> = new.into_iter().map(|row| row.transaction).collect();
 
     if new_transactions.is_empty() {
         return Ok(WireQbCommit {
@@ -727,8 +752,12 @@ pub(crate) fn commit_journal(
         )));
     }
 
-    let touched =
-        edit_api::add_transactions(state, &new_transactions, InsertPosition::DateOrdered)?;
+    let touched = edit_api::add_transactions(
+        state,
+        &new_transactions,
+        &labels,
+        InsertPosition::DateOrdered,
+    )?;
 
     let touched_handles: Vec<String> = touched
         .iter()

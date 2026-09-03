@@ -774,16 +774,40 @@ fn apply_statuses(
 /// is re-synced from disk exactly as [`set_statuses`] does, so the in-memory
 /// editor and the served snapshot never diverge from the file — nothing here
 /// is written unless every transaction in `transactions` added cleanly.
+///
+/// # Naming which one failed
+///
+/// `labels[i]`, when present, is prepended to the error a failure at
+/// `transactions[i]` produces — found necessary against a real, several-
+/// thousand-transaction QuickBooks import: an `EditError` (this function's
+/// own [`EditError::RoundTripMismatch`] in particular) names a LINE or a
+/// mismatch, never which of several thousand attempted transactions it was,
+/// because by the time it is raised nothing here still has that context. A
+/// caller with thousands of these to add and a natural per-transaction label
+/// (a QuickBooks Trans #, a bank statement's own row id) can supply one;
+/// `labels` may be shorter than `transactions` or omitted (`&[]`), in which
+/// case an out-of-range index falls back to a plain position.
 pub(crate) fn add_transactions(
     state: &AppState,
     transactions: &[Transaction],
+    labels: &[String],
     position: InsertPosition,
 ) -> Result<Vec<std::path::PathBuf>, AppError> {
     let mut guard = lock_editor(state)?;
     let editor = bound(&mut guard)?;
-    if let Err(error) = apply_additions(editor, transactions, position) {
+    if let Err((index, error)) = apply_additions(editor, transactions, position) {
         resync_from_disk(state, &mut guard)?;
-        return Err(error.into());
+        let label = labels
+            .get(index)
+            .map_or_else(|| format!("#{}", index + 1), Clone::clone);
+        return Err(labeled(
+            error,
+            format!(
+                "transaction {label} ({} of {})",
+                index + 1,
+                transactions.len()
+            ),
+        ));
     }
     let touched: Vec<std::path::PathBuf> = bound(&mut guard)?
         .dirty_files()
@@ -795,18 +819,38 @@ pub(crate) fn add_transactions(
 }
 
 /// Apply each transaction of [`add_transactions`] in order, stopping at the
-/// first error. Separate for the same borrow-checking reason as
-/// [`apply_statuses`]: the mutable borrow of the editor has to end before the
-/// caller can re-sync the slot that lends it.
+/// first error and reporting which INDEX it was — plain `EditError` alone,
+/// once it crosses into `AppError`, no longer carries anything positional.
+/// Separate for the same borrow-checking reason as [`apply_statuses`]: the
+/// mutable borrow of the editor has to end before the caller can re-sync the
+/// slot that lends it.
 fn apply_additions(
     editor: &mut JournalEditor,
     transactions: &[Transaction],
     position: InsertPosition,
-) -> Result<(), EditError> {
-    for transaction in transactions {
-        editor.add_transaction(transaction, position)?;
+) -> Result<(), (usize, EditError)> {
+    for (index, transaction) in transactions.iter().enumerate() {
+        editor
+            .add_transaction(transaction, position)
+            .map_err(|error| (index, error))?;
     }
     Ok(())
+}
+
+/// [`EditError`] converted through the canonical [`AppError`] mapping, with
+/// `context` prepended to its message — same status code (a `RoundTripMismatch`
+/// is still the client's `400` to act on, not a `500`), strictly more for a
+/// person to act on.
+fn labeled(error: EditError, context: String) -> AppError {
+    let message = format!("{context}: {error}");
+    match AppError::from(error) {
+        AppError::BadRequest(_) => AppError::BadRequest(message),
+        AppError::NotFound(_) => AppError::NotFound(message),
+        AppError::Conflict(_) => AppError::Conflict(message),
+        AppError::EditingDisabled(_) => AppError::EditingDisabled(message),
+        AppError::Unavailable(_) => AppError::Unavailable(message),
+        AppError::Internal(_) => AppError::Internal(message),
+    }
 }
 
 /// The transaction with `tindex` `index` in the editor's current journal.
@@ -1433,5 +1477,150 @@ mod tests {
             guard.is_none(),
             "the un-recoverable editor must have been unbound, not kept"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // add_transactions: naming which one failed
+    // -----------------------------------------------------------------------
+
+    fn dollar_style() -> AmountStyle {
+        AmountStyle {
+            side: CommoditySide::Left,
+            spaced: false,
+            decimal_mark: Some('.'),
+            digit_groups: None,
+            precision: 2,
+        }
+    }
+
+    fn dollars(mantissa: i128, places: u32) -> Amount {
+        Amount {
+            commodity: Commodity("$".into()),
+            quantity: Dec::new(mantissa, places),
+            style: dollar_style(),
+            cost: None,
+        }
+    }
+
+    fn leg(account: &str, amount: Option<Amount>) -> Posting {
+        Posting {
+            status: Status::Unmarked,
+            ptype: PostingType::Regular,
+            account: AccountName(account.into()),
+            amounts: amount.into_iter().collect(),
+            balance_assertion: None,
+            date: None,
+            date2: None,
+            comment: String::new(),
+            tags: vec![],
+        }
+    }
+
+    fn cash_txn(date: &str, description: &str, postings: Vec<Posting>) -> Transaction {
+        Transaction {
+            index: Tindex(1),
+            date: date.into(),
+            date2: None,
+            status: Status::Unmarked,
+            code: String::new(),
+            description: description.into(),
+            comment: String::new(),
+            preceding_comment: String::new(),
+            tags: vec![],
+            postings,
+            source_span: (
+                SourcePos { line: 1, column: 1 },
+                SourcePos { line: 1, column: 1 },
+            ),
+            source_file: std::path::PathBuf::new(),
+        }
+    }
+
+    /// A batch's second transaction is deliberately unbalanced (two real,
+    /// disagreeing amounts and no elided leg to absorb the difference) — a
+    /// controlled, immediate `EditError::Unbalanced` that needs no formatting
+    /// or reparse to trigger, so the test proves the LABELING wiring rather
+    /// than any particular `EditError` variant's own trigger condition.
+    #[test]
+    fn add_transactions_names_which_one_failed_and_writes_nothing() {
+        let dir = std::env::temp_dir().join("ledgeline-add-transactions-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!("labels-{}.journal", std::process::id()));
+        std::fs::write(&path, ONE_TXN).expect("write journal");
+        let before = std::fs::read_to_string(&path).expect("journal readable");
+
+        let state = AppState::from_journal_path(&path).expect("editor opens");
+
+        let good = cash_txn(
+            "2024-02-01",
+            "Good",
+            vec![
+                leg("expenses:a", Some(dollars(500, 2))),
+                leg("assets:bank", None),
+            ],
+        );
+        let bad = cash_txn(
+            "2024-02-02",
+            "Bad",
+            vec![
+                leg("expenses:b", Some(dollars(500, 2))),
+                leg("assets:bank", Some(dollars(-100, 2))),
+            ],
+        );
+        let labels = vec![
+            "QB-100 — 2024-02-01 Good".to_string(),
+            "QB-200 — 2024-02-02 Bad".to_string(),
+        ];
+
+        let error = add_transactions(&state, &[good, bad], &labels, InsertPosition::Append)
+            .expect_err("the second transaction does not balance");
+        let message = error.to_string();
+        assert!(
+            message.contains("QB-200"),
+            "names the transaction that actually failed: {message}"
+        );
+        assert!(
+            !message.contains("QB-100"),
+            "does not name the one that was fine: {message}"
+        );
+        assert!(
+            message.contains("2 of 2"),
+            "names its position too: {message}"
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("journal still readable"),
+            before,
+            "a partial failure writes nothing at all, not even the transaction that was fine"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn add_transactions_falls_back_to_a_position_when_no_label_was_given() {
+        let dir = std::env::temp_dir().join("ledgeline-add-transactions-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!("no-labels-{}.journal", std::process::id()));
+        std::fs::write(&path, ONE_TXN).expect("write journal");
+
+        let state = AppState::from_journal_path(&path).expect("editor opens");
+        let bad = cash_txn(
+            "2024-02-02",
+            "Bad",
+            vec![
+                leg("expenses:b", Some(dollars(500, 2))),
+                leg("assets:bank", Some(dollars(-100, 2))),
+            ],
+        );
+
+        let error =
+            add_transactions(&state, &[bad], &[], InsertPosition::Append).expect_err("unbalanced");
+        assert!(
+            error.to_string().contains('#'),
+            "falls back to a plain position rather than panicking on a short labels slice: {error}"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }
