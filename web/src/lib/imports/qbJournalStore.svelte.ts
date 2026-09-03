@@ -25,13 +25,34 @@ import {defaultAliasTargetFile, mappingEdits} from "./qbJournalModel";
 import {createResource} from "$lib/stores/resource.svelte";
 import {settings} from "$lib/stores/settings.svelte";
 
+/**
+ * How long a QuickBooks Journal COMMIT may run before the client gives up on
+ * it, instead of `client.ts`'s shared `REQUEST_TIMEOUT_MS` (30s) every other
+ * route uses.
+ *
+ * That 30s figure exists to catch a connection that has gone truly dead — see
+ * its own docs — not as a performance budget, and a bulk write of several
+ * thousand transactions in one request is a different shape of operation
+ * than anything else in this app makes: a real 10,500-transaction import (the
+ * one that motivated WP-17's bulk-insert rewrite) still takes single-digit
+ * seconds end to end against a release build, but a slower machine, a
+ * several-times-larger export, or a debug build (measurably an order of
+ * magnitude slower for this CPU-bound path — confirmed directly against this
+ * commit route) can all plausibly need more than 30s for a request that is
+ * genuinely still working, not stuck. Ten minutes is generous headroom for
+ * all of those without being unbounded — this route still fails closed
+ * against an actually-dead connection, just on a timescale that matches what
+ * it is actually being asked to do.
+ */
+export const QB_JOURNAL_COMMIT_TIMEOUT_MS = 10 * 60 * 1000;
+
 export const preview = createResource<string, QbPreview>(async (serverUrl, stageId) =>
     decodeQbPreview(await new LedgelineApi(serverUrl).qbJournalPreview(stageId))
 );
 
 /** Keyed on `stageId`, exactly like the request body — there is nothing else the request could vary by. */
 export const commit = createResource<string, QbCommitResult>(async (serverUrl, stageId) =>
-    decodeQbCommitResult(await new LedgelineApi(serverUrl).qbJournalCommit({stageId}))
+    decodeQbCommitResult(await new LedgelineApi(serverUrl, {timeoutMs: QB_JOURNAL_COMMIT_TIMEOUT_MS}).qbJournalCommit({stageId}))
 );
 
 /** Which stage `preview` was last asked to load — so `ensurePreview` fetches once per stage, not once per render. */

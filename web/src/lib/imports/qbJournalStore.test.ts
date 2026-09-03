@@ -223,6 +223,40 @@ describe("UNIT qbJournalStore — commit", () => {
         expect(store.commitView).toBe("error");
         expect(store.commitError?.message).toMatch(/3000 Member Equity/);
     });
+
+    it("outlives the shared 30s request timeout — a bulk write of thousands of rows is not a hung connection", async () => {
+        // The exact shape `client.test.ts`'s own "passes an abort signal to
+        // fetch and fails a response that never arrives" test uses for
+        // REQUEST_TIMEOUT_MS, aimed at this route's own, longer deadline.
+        vi.useFakeTimers();
+        vi.resetModules();
+        const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+            if ((url as string).endsWith("/version")) return Promise.resolve(json("1.52"));
+            return new Promise((_resolve, reject) => {
+                init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {once: true});
+            });
+        });
+        vi.stubGlobal("fetch", fetchMock);
+        const {settings} = await import("$lib/stores/settings.svelte");
+        await settings.setServerUrl("http://engine.test");
+        const {qbJournalStore, QB_JOURNAL_COMMIT_TIMEOUT_MS} = await import("./qbJournalStore.svelte");
+        const {REQUEST_TIMEOUT_MS} = await import("$lib/api/client");
+
+        const pending = qbJournalStore.commitStage("http://engine.test", "s1");
+        // Past the shared 30s default: a hung connection would already have
+        // been aborted by now under the old, shared timeout. This route must
+        // still be waiting.
+        await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+        expect(qbJournalStore.commitView).not.toBe("error");
+
+        // Past ITS OWN, longer deadline: still fails closed eventually,
+        // rather than hanging forever.
+        await vi.advanceTimersByTimeAsync(QB_JOURNAL_COMMIT_TIMEOUT_MS - REQUEST_TIMEOUT_MS + 1);
+        await pending;
+        expect(qbJournalStore.commitView).toBe("error");
+
+        vi.useRealTimers();
+    });
 });
 
 describe("UNIT qbJournalStore — the post-commit re-sort", () => {
