@@ -723,6 +723,41 @@ def qb_overlap_xlsx() -> None:
     )
 
 
+# A row a real, full-size export was found to contain that the original
+# 204-row sample did not: right after the marker, repeating the transaction's
+# own date/type/Num, but naming NO account and posting $0.00 on both sides.
+# Not corruption -- every other cell on it is exactly what a real posting
+# row's would be. `qb_journal::posting` must skip it (it moves no money
+# either way) rather than refuse the group for "no account name".
+QB_ZERO_PLACEHOLDER_ROW = [
+    "", "02/28/2021", "Journal Entry", "360", "", "", "", "", 0.0, None, "", 0.0, "", "",
+]
+QB_ZERO_PLACEHOLDER_GROUP = [
+    QB_ZERO_PLACEHOLDER_ROW,
+    ["", "02/28/2021", "Journal Entry", "360", "", "Prepaids", "6160",
+     "6100 G&A:6160 Insurance", 100.0, None, "", 100.0, "", "Acme Insurance Co"],
+    ["", "02/28/2021", "Journal Entry", "360", "", "Prepaids", "1300",
+     "1300 Prepayments", None, 100.0, "", 100.0, "", ""],
+]
+
+
+def qb_zero_placeholder_xlsx() -> None:
+    """The real export's own $0.00/no-account placeholder row, reproduced.
+
+    Reported directly against a real, full-size export (not synthesized from
+    imagination): the first row after marker `5221` had a date, a type and a
+    Num, but no account name and `$0.00` on both Debit and Credit. The two
+    real postings below it are the ordinary shape; only the leading row is
+    the new thing.
+    """
+    _qb_write(
+        "zero-placeholder.xlsx",
+        QB_CUSTOM_HEADER,
+        [("5221", QB_ZERO_PLACEHOLDER_GROUP, ("Total for 5221", 100.0, 100.0))],
+        total=100.0,
+    )
+
+
 def qb_near_miss_xlsx() -> None:
     """NOT a QuickBooks Journal, and the reason detection cannot stop at the header.
 
@@ -817,6 +852,7 @@ def main() -> None:
         qb_mismatched_total_xlsx,
         qb_orphan_total_xlsx,
         qb_overlap_xlsx,
+        qb_zero_placeholder_xlsx,
         qb_near_miss_xlsx,
         qb_report_xlsx,
     ):

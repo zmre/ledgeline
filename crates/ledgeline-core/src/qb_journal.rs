@@ -74,14 +74,33 @@
 //!
 //! # Signed amounts need no account types
 //!
-//! Exactly one of Debit/Credit is populated on every posting row — 54 and 48 of
-//! the real export's 102, with no row carrying both or neither — and
-//! `amount = debit if debit else -credit` yields the hledger-signed amount
-//! directly. Spot-checked against what the accounting must mean, not against the
-//! arithmetic: a deposit debits the bank account (+) and credits equity (−); a
-//! card charge credits the card (−, which is how hledger holds a liability) and
-//! debits the expense (+); a card payment credits checking (−) and debits the
+//! Exactly one of Debit/Credit is populated on every REAL posting row — 54 and
+//! 48 of the real 102-row sample used to build this module, with no row
+//! carrying both or neither — and `amount = debit if debit else -credit`
+//! yields the hledger-signed amount directly. Spot-checked against what the
+//! accounting must mean, not against the arithmetic: a deposit debits the
+//! bank account (+) and credits equity (−); a card charge credits the card
+//! (−, which is how hledger holds a liability) and debits the expense (+); a
+//! card payment credits checking (−) and debits the
 //! card (+, paying the liability down toward zero).
+//!
+//! ## A row can be "posting-shaped" and carry no posting at all
+//!
+//! Found in a real, full-size export (not the 204-row sample this module was
+//! originally built against): a row directly below the marker, repeating the
+//! transaction's own date/type/`Num`, with **no account name** and `$0.00` on
+//! both Debit and Credit. It is not corrupt — every other cell on it is
+//! exactly what a real posting row's would be — it simply names nothing to
+//! categorize and moves no money. [`posting`] treats a row as this kind of
+//! placeholder, and skips it rather than building a [`QbPosting`] from it,
+//! exactly when it has no account **and** both Debit and Credit are absent or
+//! exactly zero. That is a safe thing to skip and not merely a convenient
+//! one: a `$0.00` posting included in [`close`]'s balance sum or left out of
+//! it changes the sum by exactly nothing, so dropping the row cannot turn a
+//! balanced group into an unbalanced-looking one or vice versa. A row that
+//! names no account but carries a **real, nonzero** amount is a different
+//! thing — a genuine "which account does this money belong to" gap — and is
+//! still refused as [`QbJournalError::MissingAccount`], unchanged.
 //!
 //! # The total row is a formula, and its value is the cached one
 //!
@@ -660,7 +679,13 @@ fn close(
     let lines: Vec<Posted> = postings
         .iter()
         .map(|at| posting(id, &body[*at], layout, sheet_row(*at)))
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<Vec<Option<Posted>>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    if lines.is_empty() {
+        return Err(QbJournalError::EmptyGroup { id: id.to_string() });
+    }
 
     let sum = |take: fn(&Posted) -> Option<Dec>| {
         lines
@@ -726,7 +751,16 @@ struct Posted {
     credit: Option<Dec>,
 }
 
-fn posting(id: &str, row: &[Data], layout: &Layout, at: usize) -> Result<Posted, QbJournalError> {
+/// One posting row, or `Ok(None)` when it is a placeholder that names no
+/// account and moves no money — see the module docs on the row Debit=`$0.00`,
+/// no account, immediately after a marker, that a real export was found to
+/// contain.
+fn posting(
+    id: &str,
+    row: &[Data],
+    layout: &Layout,
+    at: usize,
+) -> Result<Option<Posted>, QbJournalError> {
     let malformed = |cell| QbJournalError::MalformedAmount {
         id: id.to_string(),
         row: at,
@@ -734,11 +768,25 @@ fn posting(id: &str, row: &[Data], layout: &Layout, at: usize) -> Result<Posted,
     };
     let debit = amount_of(row.get(layout.debit)).map_err(malformed)?;
     let credit = amount_of(row.get(layout.credit)).map_err(&malformed)?;
+    let account = cell(row, Some(layout.account));
 
-    // Exactly one side, always — 54 debits and 48 credits over the real
-    // export's 102 posting rows, with no row carrying both or neither. A row
-    // that carries both is refused rather than guessed at: which of two numbers
-    // is the real amount is not something this module can know.
+    // A row naming no account and moving no money on either side is not a
+    // posting at all — real double-entry bookkeeping has no such thing, so
+    // this is not a corrupted account name, it is a row with nothing in it to
+    // categorize. Dropping it changes no arithmetic anywhere: a $0 posting
+    // included or excluded sums to the same debit/credit totals, which is
+    // exactly what lets this be a skip rather than a guess. A row with a REAL
+    // amount and no account is a different thing entirely and still refused
+    // below, unchanged.
+    if account.is_none() && debit.is_none_or(|d| d.is_zero()) && credit.is_none_or(|c| c.is_zero())
+    {
+        return Ok(None);
+    }
+
+    // Otherwise exactly one side, always — 54 debits and 48 credits over the
+    // real export's 102 posting rows, with no row carrying both or neither. A
+    // row that carries both is refused rather than guessed at: which of two
+    // numbers is the real amount is not something this module can know.
     let amount = match (debit, credit) {
         (Some(debit), None) => debit,
         (None, Some(credit)) => credit
@@ -752,13 +800,11 @@ fn posting(id: &str, row: &[Data], layout: &Layout, at: usize) -> Result<Posted,
         }
     };
 
-    Ok(Posted {
+    Ok(Some(Posted {
         posting: QbPosting {
-            account: cell(row, Some(layout.account)).ok_or_else(|| {
-                QbJournalError::MissingAccount {
-                    id: id.to_string(),
-                    row: at,
-                }
+            account: account.ok_or_else(|| QbJournalError::MissingAccount {
+                id: id.to_string(),
+                row: at,
             })?,
             amount,
             memo: cell(row, layout.memo),
@@ -768,7 +814,7 @@ fn posting(id: &str, row: &[Data], layout: &Layout, at: usize) -> Result<Posted,
         },
         debit,
         credit,
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,6 +1119,82 @@ mod tests {
             parsed(&rows),
             Err(QbJournalError::AmountNotSplit { .. })
         ));
+    }
+
+    #[test]
+    fn a_zero_amount_row_with_no_account_is_skipped_not_refused() {
+        // The shape a real, full-size export was found to contain: a row
+        // right after the marker repeating the date/type but naming no
+        // account, with $0.00 on both sides. Refusing it for "no account
+        // name" is too strict — it moves no money either way.
+        let rows = sheet(&[
+            ". | Transaction date | Transaction type | Account Name | Debit | Credit",
+            "7 | . | . | . | . | .",
+            ". | 01/17/2026 | Journal Entry | . | 0.00 | .",
+            ". | 01/17/2026 | Journal Entry | Checking | . | 25.00",
+            ". | 01/17/2026 | Journal Entry | Supplies | 25.00 | .",
+            "Total for 7 | . | . | . | 25.00 | 25.00",
+        ]);
+        let journal = parsed(&rows).expect("parses");
+        let [transaction] = &journal.transactions[..] else {
+            panic!("one group");
+        };
+        assert_eq!(
+            transaction.postings.len(),
+            2,
+            "the zero/no-account placeholder row is not counted as a posting"
+        );
+    }
+
+    #[test]
+    fn a_zero_amount_row_with_no_account_and_a_blank_debit_too_is_also_skipped() {
+        // The placeholder need not populate Debit at all — Credit blank AND
+        // Debit blank, only date/type/Num, is the same "moves no money" case.
+        let rows = sheet(&[
+            ". | Transaction date | Transaction type | Account Name | Debit | Credit",
+            "7 | . | . | . | . | .",
+            ". | 01/17/2026 | Journal Entry | . | . | .",
+            ". | 01/17/2026 | Journal Entry | Checking | . | 25.00",
+            ". | 01/17/2026 | Journal Entry | Supplies | 25.00 | .",
+            "Total for 7 | . | . | . | 25.00 | 25.00",
+        ]);
+        let journal = parsed(&rows).expect("parses");
+        assert_eq!(journal.transactions[0].postings.len(), 2);
+    }
+
+    #[test]
+    fn a_row_with_a_real_amount_and_no_account_is_still_refused() {
+        // The safety property the skip above must never weaken: real money
+        // with nowhere to categorize it is exactly the case this format's
+        // strictness exists to catch, and stays a hard refusal.
+        let rows = sheet(&[
+            ". | Transaction date | Transaction type | Account Name | Debit | Credit",
+            "7 | . | . | . | . | .",
+            ". | 01/17/2026 | Journal Entry | . | 25.00 | .",
+            ". | 01/17/2026 | Journal Entry | Supplies | . | 25.00",
+            "Total for 7 | . | . | . | 25.00 | 25.00",
+        ]);
+        match parsed(&rows) {
+            Err(QbJournalError::MissingAccount { id, .. }) => assert_eq!(id, "7"),
+            other => panic!("expected MissingAccount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_group_of_only_zero_amount_no_account_rows_is_refused_as_empty() {
+        // The pathological case: every row after the marker is a placeholder,
+        // so nothing real was ever posted. Still refused, just under the same
+        // "no posting rows" message an actually-empty group gets.
+        let rows = sheet(&[
+            ". | Transaction date | Transaction type | Account Name | Debit | Credit",
+            "7 | . | . | . | . | .",
+            ". | 01/17/2026 | Journal Entry | . | 0.00 | .",
+            "Total for 7 | . | . | . | . | .",
+        ]);
+        assert_eq!(
+            parsed(&rows),
+            Err(QbJournalError::EmptyGroup { id: "7".into() })
+        );
     }
 
     #[test]

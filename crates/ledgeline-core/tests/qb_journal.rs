@@ -243,6 +243,34 @@ fn the_stock_column_set_parses_to_what_the_customized_one_does() {
     }
 }
 
+#[test]
+fn a_zero_amount_no_account_placeholder_row_is_skipped_not_refused() {
+    // Reported directly against a real, full-size export: the row right
+    // after marker `5221` repeats the date/type/Num but names no account and
+    // posts $0.00 both ways. `qb_journal::posting` must skip it rather than
+    // refuse the group for "no account name" — it moves no money either way.
+    let journal = parse("zero-placeholder.xlsx");
+    let [transaction] = &journal.transactions[..] else {
+        panic!("one group");
+    };
+    assert_eq!(transaction.id, "5221");
+    assert_eq!(
+        transaction.postings.len(),
+        2,
+        "the placeholder row is not counted as a posting"
+    );
+    let accounts: Vec<&str> = transaction
+        .postings
+        .iter()
+        .map(|posting| posting.account.as_str())
+        .collect();
+    assert_eq!(
+        accounts,
+        ["6100 G&A:6160 Insurance", "1300 Prepayments"],
+        "only the two real postings survive"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Round trip: the whole report
 // ---------------------------------------------------------------------------
@@ -386,6 +414,7 @@ fn every_quickbooks_journal_shape_is_detected() {
         "report.xlsx",
         "mismatched-total.xlsx",
         "orphan-total.xlsx",
+        "zero-placeholder.xlsx",
     ] {
         assert!(
             qb_journal::detect(&qb_fixture(name)),
