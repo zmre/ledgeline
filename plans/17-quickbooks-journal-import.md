@@ -1146,6 +1146,58 @@ postings, not the export's original eight) — passed on first run.
 -D warnings`; `cargo test --workspace`; `just hledger-checks` (including the new opt-in test above,
 directly against real hledger).
 
+## Real-world finding: a subaccount's alias was shadowed by its parent's (2026-09-03)
+
+Going through a real import, the user found several QuickBooks accounts of the shape `4000 Sales
+Revenue` (a real account with its own postings) alongside a subaccount `4000 Sales Revenue:4021
+Enterprise Subscription`. Both showed up unmapped in the same preview and were mapped together in
+one batch — the parent to `revenue:sales`, the child to something more specific
+(`revenue:sales:enterprise-subscription`, in the user's own manual fix). The parent's pattern is a
+colon-segment PREFIX of the child's raw QuickBooks name, and `qb_import::resolve_account`
+(`crates/ledgeline-core/src/qb_import.rs`) is strictly first-match-in-file-order: if the parent's
+alias line happened to land before the child's in the file, its own prefix-cascade rule (an alias
+on `4000 Sales Revenue` also rewrites anything starting `4000 Sales Revenue:…`) silently resolved
+the child's account through the PARENT's mapping before the child's own, more specific alias was
+ever reached — even though both were typed into the *same* batch. The user correctly guessed the
+fix: order the more specific pattern first.
+
+**The fix lives in the shared alias engine (`crates/ledgeline-core/src/aliases.rs`), not in the
+QuickBooks-specific code**, since the same first-match-wins shadowing risk exists for hledger's own
+`--alias` composition on the CSV/OFX import path, not only for `resolve_account`. New private
+`AliasDoc::specificity_ordered(edits: &[AliasEdit]) -> Vec<AliasEdit>`: reorders only the
+`AliasEdit::Append` entries in a plan, by descending pattern length, leaving every `Replace`/
+`Delete` exactly where it was (they're keyed to an existing line by `index`, never by position, so
+their order was never meaningful). A colon-segment prefix is always shorter than what it prefixes,
+so sorting longest-first guarantees a subaccount's own alias is written ahead of any ancestor's,
+without parsing colon structure at all; ties (unrelated patterns of equal length) keep their
+original relative order, since the sort is stable and two patterns that don't prefix one another
+are never order-dependent to begin with. Both `AliasDoc::splices` (used by `apply`) and
+`AliasDoc::verify` now call this helper rather than iterating `plan.edits` directly, so the two stay
+consistent by construction — `verify`'s appended-line tail-matching has to walk the SAME order
+`splices` actually wrote, or every multi-append batch would fail its own round-trip check.
+
+### Contract amendments made during implementation
+
+Per convention #9 in `plans/00-overview.md`.
+
+**`AliasPlan`'s doc comment ("the changes, in any order") gets a carve-out**, since order among
+`Append` edits is no longer purely cosmetic even though the plan's public contract still does not
+require the caller to submit them in any particular order — the engine now normalizes internally.
+
+**New tests, all hermetic.** `aliases.rs` (`#[cfg(test)] mod tests`): 2 new —
+`a_batch_of_appends_writes_the_more_specific_pattern_first_regardless_of_input_order` (the exact
+reported shape, parent submitted before child, asserted against both the written bytes and
+`qb_import::resolve_account`'s actual output) and
+`appends_of_equal_length_keep_their_original_relative_order` (the stability guarantee, so this
+doesn't turn into an unwanted alphabetical or otherwise-surprising reorder for unrelated aliases).
+`alias_endpoints.rs`: 1 new, `a_batch_of_appends_orders_the_more_specific_pattern_first`, exercising
+the real `PUT /api/aliases/{*id}` HTTP path end to end with the parent submitted first (the "wrong"
+order) to prove the server reorders rather than merely preserving whatever order happened to
+already be safe.
+
+**Verification commands, all clean:** `cargo fmt --check`; `cargo clippy --workspace --all-targets --
+-D warnings`; `cargo test --workspace`.
+
 ## Definition of done (per phase)
 
 - `cargo test` stays hermetic; the new opt-in `LEDGELINE_HLEDGER_QBJOURNAL_CHECK` suite passes
