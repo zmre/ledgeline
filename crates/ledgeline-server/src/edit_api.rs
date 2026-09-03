@@ -478,8 +478,8 @@ pub(crate) async fn patch_transaction(
 /// none. Every locked operation below starts (and, after `save_and_publish`,
 /// resumes) with this, so the "editing disabled" answer is written once.
 ///
-/// `pub(crate)`: `qb_journal_api`'s commit route batches several
-/// `add_transaction` calls through the same bound editor before its own single
+/// `pub(crate)`: `qb_journal_api`'s commit route makes its own bulk
+/// `add_transactions` call through the same bound editor before its own single
 /// `save_and_publish`, exactly the pattern this module's own multi-step patches
 /// already use.
 pub(crate) fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEditor, AppError> {
@@ -760,33 +760,45 @@ fn apply_statuses(
 
 /// Add several transactions in one edit, saving once.
 ///
-/// The QuickBooks Journal import's write step (WP-17 Phase B): the same
-/// `lock_editor` → `bound` → `add_transaction` (repeated) → `save_and_publish`
-/// sequence [`set_statuses`] already uses for a batch of writes, so a
-/// multi-year import costs one save rather than one per transaction — matching
-/// how `patch_transaction_locked`'s several surgical ops already share a save.
-/// Returns the files [`JournalEditor::dirty_files`] reported just before the
-/// save, so a caller that has to know which files were actually touched (the
-/// QuickBooks import's git safety net) does not have to guess from
+/// The QuickBooks Journal import's write step (WP-17): calls
+/// [`ledgeline_core::JournalEditor::add_transactions`] (the CORE bulk path,
+/// added to fix WP-17's real-world scale finding — see
+/// `plans/17-quickbooks-journal-import.md`'s dated note) through the same
+/// `lock_editor` → `bound` → `save_and_publish` sequence [`set_statuses`]
+/// already uses for a batch of writes, so a multi-year import costs ONE
+/// whole-journal reparse and ONE save, not one of each per transaction —
+/// which is what made a real, several-thousand-transaction QuickBooks import
+/// never complete before this fix (`add_transaction`, called once per row in
+/// a loop, is `O(N)` full reparses of an ever-growing journal). Returns the
+/// files [`JournalEditor::dirty_files`] reported just before the save, so a
+/// caller that has to know which files were actually touched (the QuickBooks
+/// import's git safety net) does not have to guess from
 /// [`InsertPosition::DateOrdered`]'s placement rule itself.
 ///
-/// On a partial failure (transaction 3 of 5 does not balance, say) the editor
-/// is re-synced from disk exactly as [`set_statuses`] does, so the in-memory
-/// editor and the served snapshot never diverge from the file — nothing here
-/// is written unless every transaction in `transactions` added cleanly.
+/// On ANY failure the editor is re-synced from disk exactly as
+/// [`set_statuses`] does, so the in-memory editor and the served snapshot
+/// never diverge from the file — nothing here is written unless every
+/// transaction in `transactions` added cleanly (the bulk core method itself
+/// guarantees this: it validates the WHOLE batch before mutating anything).
 ///
 /// # Naming which one failed
 ///
-/// `labels[i]`, when present, is prepended to the error a failure at
-/// `transactions[i]` produces — found necessary against a real, several-
-/// thousand-transaction QuickBooks import: an `EditError` (this function's
-/// own [`EditError::RoundTripMismatch`] in particular) names a LINE or a
-/// mismatch, never which of several thousand attempted transactions it was,
-/// because by the time it is raised nothing here still has that context. A
-/// caller with thousands of these to add and a natural per-transaction label
-/// (a QuickBooks Trans #, a bank statement's own row id) can supply one;
-/// `labels` may be shorter than `transactions` or omitted (`&[]`), in which
-/// case an out-of-range index falls back to a plain position.
+/// `labels[i]`, when present, is prepended to the error a failure
+/// ATTRIBUTABLE to `transactions[i]` produces — found necessary against a
+/// real, several-thousand-transaction QuickBooks import: an `EditError` names
+/// a LINE or a mismatch, never which of several thousand attempted
+/// transactions it was, because by the time it is raised nothing here still
+/// has that context. A caller with thousands of these to add and a natural
+/// per-transaction label (a QuickBooks Trans #, a bank statement's own row
+/// id) can supply one; `labels` may be shorter than `transactions` or omitted
+/// (`&[]`), in which case an out-of-range index falls back to a plain
+/// position.
+///
+/// Not every bulk failure is attributable to one transaction — e.g. the
+/// combined result failing to re-parse at all, which
+/// [`ledgeline_core::EditError::BulkTransaction`] deliberately does NOT wrap
+/// (see its own docs). Those fall back to a "batch of N" framing instead of
+/// naming one row.
 pub(crate) fn add_transactions(
     state: &AppState,
     transactions: &[Transaction],
@@ -797,17 +809,20 @@ pub(crate) fn add_transactions(
     let editor = bound(&mut guard)?;
     if let Err((index, error)) = apply_additions(editor, transactions, position) {
         resync_from_disk(state, &mut guard)?;
-        let label = labels
-            .get(index)
-            .map_or_else(|| format!("#{}", index + 1), Clone::clone);
-        return Err(labeled(
-            error,
-            format!(
-                "transaction {label} ({} of {})",
-                index + 1,
-                transactions.len()
-            ),
-        ));
+        let context = match index {
+            Some(index) => {
+                let label = labels
+                    .get(index)
+                    .map_or_else(|| format!("#{}", index + 1), Clone::clone);
+                format!(
+                    "transaction {label} ({} of {})",
+                    index + 1,
+                    transactions.len()
+                )
+            }
+            None => format!("batch of {} transactions", transactions.len()),
+        };
+        return Err(labeled(error, context));
     }
     let touched: Vec<std::path::PathBuf> = bound(&mut guard)?
         .dirty_files()
@@ -818,23 +833,24 @@ pub(crate) fn add_transactions(
     Ok(touched)
 }
 
-/// Apply each transaction of [`add_transactions`] in order, stopping at the
-/// first error and reporting which INDEX it was — plain `EditError` alone,
-/// once it crosses into `AppError`, no longer carries anything positional.
-/// Separate for the same borrow-checking reason as [`apply_statuses`]: the
-/// mutable borrow of the editor has to end before the caller can re-sync the
-/// slot that lends it.
+/// Call the core bulk [`JournalEditor::add_transactions`] once and unwrap its
+/// error into `(attributable index, underlying EditError)` — `Some` when the
+/// core reports [`ledgeline_core::EditError::BulkTransaction`] (a failure
+/// pinned on one specific input transaction), `None` otherwise (a whole-batch
+/// failure not attributable to one row). Separate for the same
+/// borrow-checking reason as [`apply_statuses`]: the mutable borrow of the
+/// editor has to end before the caller can re-sync the slot that lends it.
 fn apply_additions(
     editor: &mut JournalEditor,
     transactions: &[Transaction],
     position: InsertPosition,
-) -> Result<(), (usize, EditError)> {
-    for (index, transaction) in transactions.iter().enumerate() {
-        editor
-            .add_transaction(transaction, position)
-            .map_err(|error| (index, error))?;
-    }
-    Ok(())
+) -> Result<(), (Option<usize>, EditError)> {
+    editor
+        .add_transactions(transactions, position)
+        .map_err(|error| match error {
+            EditError::BulkTransaction { index, source } => (Some(index), *source),
+            other => (None, other),
+        })
 }
 
 /// [`EditError`] converted through the canonical [`AppError`] mapping, with
@@ -928,10 +944,15 @@ pub(crate) fn save_and_publish(
 /// edit — a later save against it is how that phantom would reach the file.
 /// This mirrors [`AppState::reopen_editor`], which unbinds on the same failure.
 ///
-/// `pub(crate)`: `qb_journal_api`'s commit route batches several
-/// `add_transaction` calls the same way [`apply_statuses`]/[`apply_patch`] do,
-/// and needs the same recovery when a later one fails after an earlier one
-/// already committed to memory.
+/// `pub(crate)`: `qb_journal_api`'s commit route makes its own bulk
+/// `add_transactions` call the same way [`apply_statuses`]/[`apply_patch`]
+/// make theirs. The bulk core method itself already guarantees `self` is left
+/// completely unchanged on any failure — unlike the per-op loops
+/// [`apply_statuses`]/[`apply_patch`] run, there is no "transaction 3 of 5
+/// already committed to memory" partial state to discard — but calling this
+/// anyway on the failure path keeps the same belt-and-braces symmetry every
+/// other locked operation in this module has, at the cost of one redundant
+/// (no-op, since nothing changed) re-read from disk.
 pub(crate) fn resync_from_disk(
     state: &AppState,
     slot: &mut Option<JournalEditor>,

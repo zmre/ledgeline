@@ -1450,3 +1450,382 @@ proptest! {
         prop_assert_eq!(&after[n], &format_transaction(&new_txn));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Bulk add (WP-17 perf fix): `JournalEditor::add_transactions`.
+//
+// The core safety anchor is EQUIVALENCE: a bulk call must produce the same
+// journal, byte for byte, as adding the same transactions one at a time via
+// the existing (unchanged) `add_transaction`, in whatever order they were
+// given — `InsertPosition::DateOrdered` always finds the chronologically
+// correct spot regardless of call order, so both paths must converge on the
+// identical, date-sorted result.
+// ---------------------------------------------------------------------------
+
+/// A cleared `$` cash transaction with one explicit leg (`amount`) and one
+/// elided leg on `assets:bank`, for the bulk tests below.
+fn bulk_cash(date: &str, description: &str, account: &str, cents: i128) -> Transaction {
+    cash_txn(
+        date,
+        description,
+        vec![
+            leg(account, Some(dollars(cents, 2))),
+            leg("assets:bank", None),
+        ],
+    )
+}
+
+#[test]
+fn bulk_add_matches_sequential_add_in_the_same_gap_regardless_of_input_order() {
+    let two = "\
+2024-01-01 * A
+    expenses:a  $1.00
+    assets:bank
+
+2024-05-01 * E
+    expenses:e  $5.00
+    assets:bank
+";
+    let b1 = bulk_cash("2024-02-01", "B1", "expenses:b1", 200);
+    let b2 = bulk_cash("2024-03-01", "B2", "expenses:b2", 300);
+    let b3 = bulk_cash("2024-04-01", "B3", "expenses:b3", 400);
+
+    // Bulk: fed deliberately out of date order.
+    let mut bulk_editor = JournalEditor::from_text("mem.journal", two).unwrap();
+    bulk_editor
+        .add_transactions(
+            &[b3.clone(), b1.clone(), b2.clone()],
+            InsertPosition::DateOrdered,
+        )
+        .unwrap();
+
+    // Sequential: the SAME out-of-order input, one `add_transaction` call each.
+    let mut seq_editor = JournalEditor::from_text("mem.journal", two).unwrap();
+    for txn in [&b3, &b1, &b2] {
+        seq_editor
+            .add_transaction(txn, InsertPosition::DateOrdered)
+            .unwrap();
+    }
+
+    assert_eq!(bulk_editor.text(), seq_editor.text());
+    assert_eq!(
+        bulk_editor.text(),
+        "\
+2024-01-01 * A
+    expenses:a  $1.00
+    assets:bank
+
+2024-02-01 * B1
+    expenses:b1  $2.00
+    assets:bank
+
+2024-03-01 * B2
+    expenses:b2  $3.00
+    assets:bank
+
+2024-04-01 * B3
+    expenses:b3  $4.00
+    assets:bank
+
+2024-05-01 * E
+    expenses:e  $5.00
+    assets:bank
+"
+    );
+}
+
+/// Exercises BOTH chaining shapes ([`InsertPosition::DateOrdered`]'s
+/// `insert_before`, and the EOF/append shape) in the SAME bulk call: two new
+/// transactions land before the only existing one, two land after it (at
+/// EOF). Cross-checked against the same four transactions added one at a time
+/// in the same (shuffled) order.
+#[test]
+fn bulk_add_handles_insert_before_and_append_style_groups_in_the_same_call() {
+    let one = "\
+2024-06-01 * M
+    expenses:m  $1.00
+    assets:bank
+";
+    let early1 = bulk_cash("2024-01-01", "Early1", "expenses:e1", 100);
+    let early2 = bulk_cash("2024-02-01", "Early2", "expenses:e2", 200);
+    let late1 = bulk_cash("2024-09-01", "Late1", "expenses:l1", 300);
+    let late2 = bulk_cash("2024-10-01", "Late2", "expenses:l2", 400);
+    let shuffled = [late2.clone(), early1.clone(), late1.clone(), early2.clone()];
+
+    let mut editor = JournalEditor::from_text("mem.journal", one).unwrap();
+    editor
+        .add_transactions(&shuffled, InsertPosition::DateOrdered)
+        .unwrap();
+
+    let expected = "\
+2024-01-01 * Early1
+    expenses:e1  $1.00
+    assets:bank
+
+2024-02-01 * Early2
+    expenses:e2  $2.00
+    assets:bank
+
+2024-06-01 * M
+    expenses:m  $1.00
+    assets:bank
+
+2024-09-01 * Late1
+    expenses:l1  $3.00
+    assets:bank
+
+2024-10-01 * Late2
+    expenses:l2  $4.00
+    assets:bank
+";
+    assert_eq!(editor.text(), expected);
+
+    let mut seq_editor = JournalEditor::from_text("mem.journal", one).unwrap();
+    for txn in &shuffled {
+        seq_editor
+            .add_transaction(txn, InsertPosition::DateOrdered)
+            .unwrap();
+    }
+    assert_eq!(editor.text(), seq_editor.text());
+}
+
+/// Two new transactions land in DIFFERENT `include`d (per-year) files in ONE
+/// bulk call: each lands in the file that holds its chronological neighbors,
+/// `dirty_files()` lists exactly the two touched year files (not the main
+/// file, not the untouched 2026 file), and every untouched file is
+/// byte-identical on disk afterward.
+#[test]
+fn bulk_add_lands_across_different_year_files_in_one_call() {
+    let py = write_per_year();
+    let befores: Vec<String> = py.files.iter().map(read_file).collect();
+
+    let new_2025 = bulk_cash("2025-06-15", "New1", "expenses:new1", 500);
+    let new_2023 = bulk_cash("2023-06-01", "New2", "expenses:new2", 500);
+
+    let mut editor = JournalEditor::open(&py.files[PY_MAIN]).unwrap();
+    assert_eq!(editor.transaction_count(), 5);
+    editor
+        .add_transactions(&[new_2025, new_2023], InsertPosition::DateOrdered)
+        .unwrap();
+    assert_eq!(editor.transaction_count(), 7);
+
+    let dirty: Vec<PathBuf> = editor
+        .dirty_files()
+        .into_iter()
+        .map(Path::to_path_buf)
+        .collect();
+    assert_eq!(
+        dirty.len(),
+        2,
+        "exactly the two files a new row actually landed in: {dirty:?}"
+    );
+    assert!(dirty.contains(&py.files[PY_2024]));
+    assert!(dirty.contains(&py.files[PY_2025]));
+    assert!(!dirty.contains(&py.files[PY_MAIN]));
+    assert!(!dirty.contains(&py.files[PY_2026]));
+
+    editor.save().unwrap();
+
+    assert_eq!(
+        read_file(&py.files[PY_2024]),
+        "\
+2023-06-01 * New2
+    expenses:new2  $5.00
+    assets:bank
+
+2024-03-01 * Jan 2024
+    expenses:a  $10.00
+    assets:bank
+
+2024-09-01 * Fall 2024
+    expenses:b  $20.00
+    assets:bank
+"
+    );
+    assert_eq!(
+        read_file(&py.files[PY_2025]),
+        "\
+2025-02-01 * Early 2025
+    expenses:c  $30.00
+    assets:bank
+
+2025-06-15 * New1
+    expenses:new1  $5.00
+    assets:bank
+
+2025-11-01 * Late 2025
+    expenses:d  $40.00
+    assets:bank
+"
+    );
+    assert_eq!(read_file(&py.files[PY_MAIN]), befores[PY_MAIN]);
+    assert_eq!(read_file(&py.files[PY_2026]), befores[PY_2026]);
+
+    let _ = std::fs::remove_dir_all(&py.dir);
+}
+
+#[test]
+fn bulk_add_unbalanced_member_anywhere_in_the_batch_rejects_the_whole_batch_and_writes_nothing() {
+    let mut editor = JournalEditor::from_text("mem.journal", THREE_TXNS).unwrap();
+    let before = editor.text();
+
+    let good1 = bulk_cash("2024-04-01", "good1", "expenses:g1", 100);
+    // Two explicit legs that do not balance, no elided leg to absorb it.
+    let bad = cash_txn(
+        "2024-04-02",
+        "bad",
+        vec![
+            leg("expenses:x", Some(dollars(500, 2))),
+            leg("assets:bank", Some(dollars(-400, 2))),
+        ],
+    );
+    let good2 = bulk_cash("2024-04-03", "good2", "expenses:g2", 200);
+
+    let err = editor
+        .add_transactions(&[good1, bad, good2], InsertPosition::Append)
+        .unwrap_err();
+    assert!(
+        matches!(err, EditError::BulkTransaction { index: 1, .. }),
+        "must name the SECOND (0-based index 1) transaction: {err}"
+    );
+    assert_eq!(
+        editor.text(),
+        before,
+        "a rejected batch writes NOTHING, not even the good ones"
+    );
+    assert_eq!(editor.transaction_count(), 3);
+}
+
+#[test]
+fn bulk_add_round_trip_mismatch_member_rejects_the_whole_batch_and_writes_nothing() {
+    // The journal declares EUR with a comma decimal mark (mirrors
+    // `add_with_mismatched_decimal_mark_is_caught_by_round_trip_guard`, the
+    // singular-path version of this same guard).
+    let journal = "\
+commodity 1.000,00 EUR
+
+2024-01-01 * A
+    expenses:a  10,00 EUR
+    assets:wise
+";
+    let mut editor = JournalEditor::from_text("mem.journal", journal).unwrap();
+    let before = editor.text();
+
+    let good = bulk_cash("2024-02-01", "Good", "expenses:g", 100);
+    let wrong_style = AmountStyle {
+        side: CommoditySide::Right,
+        spaced: true,
+        decimal_mark: Some('.'), // WRONG: EUR uses ','
+        digit_groups: None,
+        precision: 2,
+    };
+    let bad = Transaction {
+        postings: vec![
+            Posting {
+                amounts: vec![Amount {
+                    commodity: Commodity("EUR".into()),
+                    quantity: Dec::new(123_450, 2), // 1234.50
+                    style: wrong_style,
+                    cost: None,
+                }],
+                ..leg("expenses:travel", None)
+            },
+            leg("assets:wise", None),
+        ],
+        ..cash_txn("2024-02-02", "Hotel", vec![])
+    };
+
+    let err = editor
+        .add_transactions(&[good, bad], InsertPosition::Append)
+        .unwrap_err();
+    assert!(
+        matches!(err, EditError::BulkTransaction { index: 1, .. }),
+        "must name the SECOND (0-based index 1) transaction: {err}"
+    );
+    assert_eq!(editor.text(), before);
+}
+
+/// A batch member with an uncheckable structural problem (an invalid calendar
+/// date) fails the COMBINED reparse itself — a failure that cannot be pinned
+/// on one input transaction — so it must NOT be reported as
+/// [`EditError::BulkTransaction`], unlike the two tests above.
+#[test]
+fn bulk_add_invalid_date_member_is_a_batch_level_failure_not_a_bulk_transaction_error() {
+    let mut editor = JournalEditor::from_text("mem.journal", THREE_TXNS).unwrap();
+    let before = editor.text();
+
+    let good = bulk_cash("2024-04-01", "good", "expenses:g", 100);
+    let bad = bulk_cash("2024-13-40", "bad date", "expenses:x", 100);
+
+    let err = editor
+        .add_transactions(&[good, bad], InsertPosition::Append)
+        .unwrap_err();
+    assert!(
+        matches!(err, EditError::ParseInvalidAfterEdit(_)),
+        "a batch-level failure, not attributed to one transaction: {err}"
+    );
+    assert_eq!(editor.text(), before);
+}
+
+#[test]
+fn bulk_add_empty_batch_is_a_no_op() {
+    let mut editor = JournalEditor::from_text("mem.journal", THREE_TXNS).unwrap();
+    let before = editor.text();
+    editor
+        .add_transactions(&[], InsertPosition::Append)
+        .unwrap();
+    assert_eq!(editor.text(), before);
+    assert_eq!(editor.transaction_count(), 3);
+    assert!(editor.dirty_files().is_empty());
+}
+
+/// The property WP-17 exists to fix: bulk-inserting several hundred
+/// transactions in ONE call must not scale like one whole-journal reparse per
+/// transaction. A generous wall-clock margin (the hermetic, deterministic
+/// proof — a reparse call counter asserted to be exactly 1 regardless of
+/// batch size — lives in `edit.rs`'s own `#[cfg(test)]` unit tests, which can
+/// see that test-only instrumentation; this integration test proves the same
+/// property from the public API).
+#[test]
+fn bulk_add_of_many_transactions_into_an_existing_journal_completes_quickly() {
+    let mut seed = String::new();
+    for i in 0..300 {
+        let date = format!("2020-{:02}-{:02}", (i % 12) + 1, (i % 28) + 1);
+        seed.push_str(&format!(
+            "{date} * seed {i}\n    expenses:seed  $1.00\n    assets:bank\n\n"
+        ));
+    }
+    let mut editor = JournalEditor::from_text("mem.journal", &seed).unwrap();
+    let existing = editor.transaction_count();
+
+    let batch: Vec<Transaction> = (0..1000)
+        .map(|i| {
+            let date = format!("2024-{:02}-{:02}", (i % 12) + 1, (i % 28) + 1);
+            bulk_cash(&date, &format!("bulk {i}"), "expenses:bulk", 100 + i)
+        })
+        .collect();
+
+    let start = std::time::Instant::now();
+    editor
+        .add_transactions(&batch, InsertPosition::DateOrdered)
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    assert_eq!(editor.transaction_count(), existing + 1000);
+    // A VERY generous margin (20s): this test runs alongside every other test
+    // binary in `cargo test --workspace`, where CPU contention alone pushed a
+    // sub-second-in-isolation run past 4s. The margin exists to catch a
+    // regression back to O(N) reparises — which, per WP-17's real import,
+    // means the operation does not finish in any practical time at all for a
+    // batch this size, not "a few seconds slower" — while tolerating ordinary
+    // parallel-test-suite noise. The deterministic, contention-proof version
+    // of this proof is `add_transactions_reparses_the_whole_journal_exactly_once_regardless_of_batch_size`
+    // in `edit.rs`'s own unit tests (a reparse-call counter asserted to be
+    // exactly 1), which this integration test complements rather than
+    // replaces.
+    assert!(
+        elapsed.as_secs_f64() < 20.0,
+        "a 1000-transaction bulk add took {elapsed:?}; the whole point of the bulk path is that \
+         this does not scale with N whole-journal reparses"
+    );
+}

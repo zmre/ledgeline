@@ -103,6 +103,32 @@ pub enum EditError {
     /// formatting/round-trip guard tripped, so the edit was rejected.
     #[error("the formatted transaction did not round-trip to the intended value")]
     RoundTripMismatch,
+    /// [`JournalEditor::add_transactions`] (the bulk path) rejected one
+    /// SPECIFIC input transaction — `index` is its 0-based position in the
+    /// slice the caller passed — while every other transaction in the batch
+    /// was structurally fine on its own. `source` is the underlying failure
+    /// (typically [`EditError::Unbalanced`], [`EditError::Unsupported`], or
+    /// [`EditError::RoundTripMismatch`]) exactly as [`add_transaction`]
+    /// (singular) would have raised it for that one transaction alone.
+    ///
+    /// Distinguishing this from a whole-batch failure (every other variant,
+    /// when raised by the bulk path) is what lets a caller adding thousands of
+    /// rows at once — the QuickBooks Journal import chief among them — name
+    /// the ONE row a QuickBooks Trans # or bank row id identifies, rather than
+    /// reporting a bare "batch of 4000 failed". A failure that genuinely
+    /// cannot be pinned on one input transaction (an unparseable combined
+    /// result, or a stray change to a transaction outside the batch) is raised
+    /// as a plain (non-`BulkTransaction`) [`EditError`] instead — see
+    /// [`JournalEditor::add_transactions`]'s own docs for exactly which
+    /// failures are attributable and which are not.
+    #[error("transaction {index} of the batch failed: {source}")]
+    BulkTransaction {
+        /// 0-based index into the slice [`JournalEditor::add_transactions`]
+        /// was called with.
+        index: usize,
+        #[source]
+        source: Box<EditError>,
+    },
     /// The file on disk changed since it was loaded; `save` refuses to overwrite
     /// it rather than clobber an external edit.
     #[error("the journal file changed on disk since it was loaded; refusing to overwrite")]
@@ -118,6 +144,23 @@ pub enum EditError {
     #[error("internal edit error: {0}")]
     Internal(String),
 }
+
+/// Test-only instrumentation: incremented once per whole-journal reparse
+/// [`JournalEditor::add_transactions`] (the bulk path) performs, via
+/// [`JournalEditor::validate_bulk_with`]. WP-17's root cause was exactly this
+/// count scaling with the batch size (one reparse PER transaction, O(N) of
+/// them for a batch of N); the fix's whole point is that this count is 1
+/// regardless of N. A wall-clock timing test can be fooled by a fast machine
+/// or a slow CI runner; this counter cannot — see the `bulk_reparses_once_*`
+/// tests below.
+///
+/// `#[cfg(test)]`, so it exists only in THIS crate's own unit-test build
+/// (visible to the child `tests` module below, which shares its module tree);
+/// it is not linked into `ledgeline-core`'s normal build or into the
+/// integration tests in `tests/edit.rs`, which prove the same property at the
+/// public API through wall-clock timing instead.
+#[cfg(test)]
+static BULK_REPARSE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Where [`JournalEditor::add_transaction`] places the new transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -595,6 +638,432 @@ impl JournalEditor {
         }
 
         self.commit(&file_key, candidate, reparsed)
+    }
+
+    /// Add several transactions to the journal in ONE edit (WP-17).
+    ///
+    /// [`add_transaction`](Self::add_transaction) (singular), called once per
+    /// transaction, re-parses and re-verifies the WHOLE journal on every call
+    /// — the journal growing by one transaction each time. For a batch of `N`
+    /// that is `O(N)` full reparses of an ever-growing journal, i.e.
+    /// `O(N × (existing size + N))` overall: genuinely too slow to finish for
+    /// a several-thousand-row import (a real QuickBooks Online export timed
+    /// out client-side well before it could complete). This method performs
+    /// the SAME validation, to the SAME standard, but exactly ONE reparse for
+    /// the whole batch, by:
+    ///
+    /// 1. Structurally validating every input transaction (the same
+    ///    multiple-commodity-amount and balance checks
+    ///    [`add_transaction`](Self::add_transaction) does) BEFORE touching any
+    ///    rope, so a bad transaction anywhere in the batch is caught before
+    ///    any edit is attempted.
+    /// 2. Computing where every transaction lands — via the SAME private
+    ///    [`placement_for`](Self::placement_for) [`add_transaction`](Self::add_transaction)
+    ///    uses — against the CURRENT, unmodified journal. Every placement is
+    ///    computed against the identical starting state, so N independent
+    ///    calls are as cheap as one.
+    /// 3. Grouping transactions that land at the identical (file, offset) —
+    ///    i.e. anchored on the same neighbor(s) — into ONE combined,
+    ///    date-ordered insertion per gap, built to read identically
+    ///    (blank-line for blank-line) to what N sequential single inserts at
+    ///    that position would have produced. See [`build_bulk_groups`](Self::build_bulk_groups).
+    /// 4. Splicing each file's combined insertions in DESCENDING offset order,
+    ///    so every offset (computed once, in step 2, against the original
+    ///    rope) stays valid as later, lower-offset insertions are applied.
+    ///    See [`apply_bulk_groups`](Self::apply_bulk_groups).
+    /// 5. Reparsing the whole journal EXACTLY ONCE and verifying: the new
+    ///    count is `original + N`; every one of the N new transactions
+    ///    (located by file + header line, like [`locate_in_file`]) balances
+    ///    and round-trips to the transaction that was meant to land there;
+    ///    and every OTHER transaction — everything not part of this batch —
+    ///    is still byte-identical to its pre-edit source (generalizing
+    ///    [`check_single_change`]'s "at most one may differ" to "exactly
+    ///    these N, and no others, may differ"). See
+    ///    [`validate_bulk_with`](Self::validate_bulk_with).
+    /// 6. Only once every check has passed: adopting every touched file's
+    ///    candidate rope (marking each dirty) and the reparsed journal. On ANY
+    ///    failure `self` is left completely unchanged, exactly like
+    ///    [`add_transaction`](Self::add_transaction).
+    ///
+    /// [`add_transaction`](Self::add_transaction) itself, and
+    /// [`check_single_change`]'s "at most one transaction may differ"
+    /// invariant, are UNCHANGED and unused by this path — every other edit in
+    /// the app (the manual add-transaction UI, status changes, description
+    /// edits, deletes) keeps exactly the strictness it always had.
+    ///
+    /// An empty `transactions` is a no-op success.
+    ///
+    /// # Errors
+    /// [`EditError::BulkTransaction`] when the failure is attributable to ONE
+    /// specific input transaction (it fails the same structural check, or the
+    /// same balance/round-trip guard, [`add_transaction`](Self::add_transaction)
+    /// would have raised for it alone) — `index` is that transaction's 0-based
+    /// position in `transactions`. A failure that cannot be pinned on one
+    /// transaction (the combined result does not re-parse at all, or some
+    /// transaction OUTSIDE the batch was found to have moved) is raised as a
+    /// plain [`EditError::ParseInvalidAfterEdit`] or [`EditError::Internal`]
+    /// instead. On any error `self` is unchanged.
+    pub fn add_transactions(
+        &mut self,
+        transactions: &[Transaction],
+        position: InsertPosition,
+    ) -> Result<(), EditError> {
+        if transactions.is_empty() {
+            return Ok(());
+        }
+
+        // 1. Structural validation for every input, before any rope is
+        // touched — mirrors add_transaction's own two checks exactly.
+        for (index, txn) in transactions.iter().enumerate() {
+            if txn.postings.iter().any(|p| p.amounts.len() > 1) {
+                return Err(EditError::BulkTransaction {
+                    index,
+                    source: Box::new(EditError::Unsupported(
+                        "a posting carries multiple commodity amounts".to_string(),
+                    )),
+                });
+            }
+            if !is_balanced(&txn.postings)? {
+                return Err(EditError::BulkTransaction {
+                    index,
+                    source: Box::new(EditError::Unbalanced),
+                });
+            }
+        }
+
+        // 2. Placement for every input, against the SAME unmodified
+        // journal/files — `placement_for` reads only `self.journal`/
+        // `self.files`, never mutates, so N calls against the untouched start
+        // state are safe and cheap.
+        let mut placements: Vec<Placement> = Vec::with_capacity(transactions.len());
+        for txn in transactions {
+            let body = format_transaction(txn);
+            placements.push(self.placement_for(&body, txn, position)?);
+        }
+
+        // 3. Group by (file, offset); date-order within each group; build ONE
+        // combined insertion per group.
+        let groups_by_file = self.build_bulk_groups(transactions, &placements)?;
+
+        // 4. Apply per-file, highest-offset-first, against the ORIGINAL
+        // ropes; compute every new transaction's FINAL header position
+        // analytically (accounting for every other, lower-offset insertion in
+        // the same file that will shift it).
+        let (candidates, positions) = self.apply_bulk_groups(&groups_by_file, transactions)?;
+
+        // 5. Exactly ONE reparse-and-validate pass for the whole batch.
+        let expected = self.journal.transactions.len() + transactions.len();
+        let reparsed = self.validate_bulk_with(&candidates, expected, &positions, transactions)?;
+
+        // 6. Commit every touched file + adopt the reparsed journal.
+        for (key, candidate) in candidates {
+            let file = self.files.get_mut(&key).ok_or_else(|| {
+                EditError::Internal(format!(
+                    "no loaded buffer for source file {}",
+                    key.display()
+                ))
+            })?;
+            file.rope = candidate;
+            file.dirty = true;
+        }
+        self.journal = Arc::new(reparsed);
+        Ok(())
+    }
+
+    /// Group `placements` (one per `transactions[i]`, same order) by the
+    /// (file, offset) they resolved to, and build ONE combined insertion per
+    /// group: the group's members sorted by date ascending, chained together
+    /// exactly as N sequential single inserts at that position would read.
+    ///
+    /// # Why grouping by (file, offset) is exactly "the same gap"
+    /// [`placement_for`](Self::placement_for)'s offset depends only on the
+    /// anchor (predecessor/successor) it chose, never on the transaction's own
+    /// body — so two transactions land at the identical (file, offset) EXACTLY
+    /// when they resolved to the identical anchor, i.e. the identical textual
+    /// gap. (In principle a different anchor could numerically coincide at the
+    /// same offset in a contrived journal; treating that as "the same gap"
+    /// too is still correct — it just means both really do insert at the
+    /// identical position.)
+    ///
+    /// # Chaining N single-insert bodies into one
+    /// Reading [`insert_after`](Self::insert_after)/[`insert_before`](Self::insert_before)/
+    /// [`append_to_main`](Self::append_to_main): for a SINGLE transaction, exactly
+    /// one of two shapes results —
+    /// - **insert_after (not at EOF) / append-like (EOF or [`append_to_main`](Self::append_to_main)):**
+    ///   `insertion.body` is the transaction's OWN formatted body, unchanged
+    ///   (`prefix` supplies the separating blank).
+    /// - **insert_before:** `insertion.body` is the transaction's own body PLUS
+    ///   one extra trailing terminator (`prefix` is empty; the extra
+    ///   terminator IS the separating blank before the untouched successor).
+    ///
+    /// Chaining a sorted group of `k` transactions therefore needs: for every
+    /// member EXCEPT the last, its own formatted body plus one glue terminator
+    /// (opening the blank line before the next member); for the LAST member,
+    /// its own SINGLE-insert `insertion.body` exactly as
+    /// [`placement_for`](Self::placement_for) computed it — which already
+    /// carries the correct trailing shape (nothing extra for
+    /// insert_after/append-like, one extra terminator for insert_before) for
+    /// whatever sits immediately after the group. This was verified by hand
+    /// against sequential single-inserts for both shapes (see
+    /// `plans/17-quickbooks-journal-import.md`'s dated note on this fix) and
+    /// is proven by `bulk_add_matches_sequential_add_in_the_same_gap_regardless_of_input_order`
+    /// and `bulk_add_handles_insert_before_and_append_style_groups_in_the_same_call`
+    /// in `tests/edit.rs`.
+    fn build_bulk_groups(
+        &self,
+        transactions: &[Transaction],
+        placements: &[Placement],
+    ) -> Result<HashMap<PathBuf, Vec<BulkGroup>>, EditError> {
+        let mut by_key: HashMap<(PathBuf, usize), Vec<usize>> = HashMap::new();
+        for (index, placement) in placements.iter().enumerate() {
+            by_key
+                .entry((placement.file_key.clone(), placement.insertion.offset))
+                .or_default()
+                .push(index);
+        }
+
+        let mut by_file: HashMap<PathBuf, Vec<BulkGroup>> = HashMap::new();
+        for ((file_key, offset), mut indices) in by_key {
+            // Date-ascending, stable — a same-date tie keeps the input
+            // batch's own relative order, same spirit as `placement_for`'s
+            // own tie-breaks elsewhere in this file.
+            indices.sort_by(|&a, &b| {
+                transactions[a]
+                    .date
+                    .as_str()
+                    .cmp(transactions[b].date.as_str())
+            });
+
+            let prefix = placements[indices[0]].insertion.prefix.clone();
+            let terminator = dominant_terminator(self.rope_for(&file_key)?);
+            let mut text = prefix.clone();
+            let mut members = Vec::with_capacity(indices.len());
+            let mut cursor = prefix.chars().count();
+            for (pos, &txn_idx) in indices.iter().enumerate() {
+                members.push((txn_idx, cursor));
+                if pos + 1 == indices.len() {
+                    let body = &placements[txn_idx].insertion.body;
+                    text.push_str(body);
+                    cursor += body.chars().count();
+                } else {
+                    let plain = with_line_terminator(
+                        &format_transaction(&transactions[txn_idx]),
+                        terminator,
+                    );
+                    text.push_str(&plain);
+                    text.push_str(terminator);
+                    cursor += plain.chars().count() + terminator.chars().count();
+                }
+            }
+            let len = text.chars().count();
+            by_file.entry(file_key).or_default().push(BulkGroup {
+                offset,
+                text,
+                len,
+                members,
+            });
+        }
+        Ok(by_file)
+    }
+
+    /// Apply every file's [`BulkGroup`]s to a clone of that file's ORIGINAL
+    /// rope, and compute each new transaction's FINAL header char offset in
+    /// the resulting candidate rope.
+    ///
+    /// # Applying highest-offset-first
+    /// Every group's `offset` was computed against the SAME original,
+    /// unmodified rope (step 2 of [`add_transactions`](Self::add_transactions)).
+    /// Splicing a file's groups in DESCENDING offset order means each
+    /// splice's own insertion point is never invalidated by one applied
+    /// before it — a lower-offset splice shifts everything after it,
+    /// including every already-applied (higher-offset) splice, but never
+    /// moves anything BEFORE its own insertion point, which is exactly where
+    /// every not-yet-applied (lower-offset) splice's own offset lives.
+    ///
+    /// # The analytical position (not read back from the rope)
+    /// A group's own inserted text sits at exactly `offset` only until a
+    /// LOWER-offset group is spliced in ahead of it, which shifts it right by
+    /// that group's length. So a group's FINAL position is `offset + (sum of
+    /// the `len` of every other group in the same file with a STRICTLY LOWER
+    /// offset)`. Computed here directly (ascending offset, running prefix
+    /// sum) rather than by re-scanning the mutated rope, which would cost
+    /// another full pass per file.
+    fn apply_bulk_groups(
+        &self,
+        groups_by_file: &HashMap<PathBuf, Vec<BulkGroup>>,
+        transactions: &[Transaction],
+    ) -> Result<(BulkCandidates, BulkPositions), EditError> {
+        let mut candidates: BulkCandidates = HashMap::new();
+        let mut positions: BulkPositions = vec![(PathBuf::new(), 0); transactions.len()];
+
+        for (file_key, groups) in groups_by_file {
+            // Ascending, for the analytical final-position prefix sum.
+            let mut ascending: Vec<&BulkGroup> = groups.iter().collect();
+            ascending.sort_by_key(|g| g.offset);
+            let mut shift = 0usize;
+            for group in &ascending {
+                for &(txn_idx, local_offset) in &group.members {
+                    positions[txn_idx] = (file_key.clone(), group.offset + shift + local_offset);
+                }
+                shift += group.len;
+            }
+
+            // Descending, to splice the rope itself safely.
+            let mut candidate = self.rope_for(file_key)?.clone();
+            let mut descending: Vec<&BulkGroup> = groups.iter().collect();
+            descending.sort_by_key(|g| std::cmp::Reverse(g.offset));
+            for group in descending {
+                candidate.insert(group.offset, &group.text);
+            }
+            candidates.insert(file_key.clone(), candidate);
+        }
+        Ok((candidates, positions))
+    }
+
+    /// The bulk-path analogue of [`validate_with`](Self::validate_with):
+    /// reparse the whole journal ONCE with every touched file's `candidates`
+    /// rope substituted in, then prove the edit did EXACTLY what was asked —
+    /// generalizing [`validate_with`](Self::validate_with)'s three checks from
+    /// "one transaction may have changed" to "exactly these N new
+    /// transactions, and nothing else".
+    ///
+    /// `positions[i]` is `transactions[i]`'s computed `(file, header char
+    /// offset)` in that file's CANDIDATE rope, from
+    /// [`apply_bulk_groups`](Self::apply_bulk_groups).
+    ///
+    /// # What is checked
+    /// 1. **The count** is `expected` (`original + N`), as
+    ///    [`validate_with`](Self::validate_with) checks 1-for-1.
+    /// 2. **Every one of the N new transactions balances and round-trips.**
+    ///    Each is located in the reparsed journal by (file, header line) —
+    ///    generalizing [`locate_in_file`] to N known locations instead of
+    ///    one — and checked with the SAME [`is_balanced`]/
+    ///    [`transactions_equivalent`] guards [`add_transaction`](Self::add_transaction)
+    ///    applies to its own one new transaction. A failure here is
+    ///    attributable to that ONE input transaction, so it is raised as
+    ///    [`EditError::BulkTransaction`].
+    /// 3. **Every OTHER transaction is byte-identical to before.** Rather than
+    ///    [`check_single_change`]'s prefix/suffix scan (built for "at most
+    ///    one changed, and it could be anywhere in that one gap" — an
+    ///    assumption that does not generalize to N insertions scattered
+    ///    across possibly-many gaps), the N reparsed transactions located in
+    ///    step 2 are removed from the reparsed sequence AT THEIR KNOWN
+    ///    reparsed indices; what remains is compared, element for element, IN
+    ///    ORDER, against the pre-edit sequence. This is simpler to reason
+    ///    about than a generalized prefix/suffix scan and just as strong: the
+    ///    parser visits every file in the same deterministic order it always
+    ///    does, so removing exactly the N known-new entries must leave the
+    ///    original sequence, in the original order, if — and only if —
+    ///    nothing else moved. A mismatch here cannot be pinned on one
+    ///    transaction (it means something OUTSIDE the batch changed), so it is
+    ///    raised as a plain [`EditError::Internal`].
+    /// 4. **No new unbalanced transaction anywhere**, via the existing,
+    ///    already whole-journal-scoped [`check_no_new_imbalance`] — unchanged,
+    ///    and correct as-is: it compares SETS of imbalance keys between the
+    ///    before and after journals and does not care whether one or several
+    ///    transactions were added.
+    ///
+    /// `self` is never mutated here; on success the caller adopts
+    /// `candidates` and the returned [`Journal`] (mirroring
+    /// [`commit`](Self::commit)'s role for the singular path).
+    fn validate_bulk_with(
+        &self,
+        candidates: &BulkCandidates,
+        expected: usize,
+        positions: &BulkPositions,
+        inputs: &[Transaction],
+    ) -> Result<Journal, EditError> {
+        let mut texts: HashMap<PathBuf, String> = self
+            .files
+            .iter()
+            .map(|(key, file)| (key.clone(), file.rope.to_string()))
+            .collect();
+        let before = transaction_sources(&self.journal, &texts)?;
+
+        for (key, candidate) in candidates {
+            texts.insert(key.clone(), candidate.to_string());
+        }
+        #[cfg(test)]
+        BULK_REPARSE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let reparsed = parse_journal_with_overrides(&self.source_name, &texts)
+            .map_err(EditError::ParseInvalidAfterEdit)?;
+        if reparsed.transactions.len() != expected {
+            return Err(EditError::Internal(format!(
+                "expected {expected} transactions after the bulk edit, found {}",
+                reparsed.transactions.len()
+            )));
+        }
+
+        let after = transaction_sources(&reparsed, &texts)?;
+
+        // Locate each of the N new transactions by (file, header line), and
+        // check it balances and round-trips — attributable per-transaction.
+        let mut new_reparsed_indices: Vec<usize> = Vec::with_capacity(inputs.len());
+        for (batch_index, (file_key, header_char)) in positions.iter().enumerate() {
+            let candidate_rope = candidates.get(file_key).ok_or_else(|| {
+                EditError::Internal(format!(
+                    "no candidate rope recorded for {}",
+                    file_key.display()
+                ))
+            })?;
+            let line0 = Lines::new(candidate_rope).char_to_line(*header_char)?;
+            let line1 = u32::try_from(line0 + 1)
+                .map_err(|_| EditError::Internal("line index overflow".into()))?;
+            let (reparsed_index, located) = reparsed
+                .transactions
+                .iter()
+                .enumerate()
+                .find(|(_, t)| t.source_file == *file_key && t.source_span.0.line == line1)
+                .ok_or_else(|| {
+                    EditError::Internal(format!(
+                        "could not locate new transaction {batch_index} of the batch after the bulk edit"
+                    ))
+                })?;
+            if !is_balanced(&located.postings)? {
+                return Err(EditError::BulkTransaction {
+                    index: batch_index,
+                    source: Box::new(EditError::Unbalanced),
+                });
+            }
+            if !transactions_equivalent(&inputs[batch_index], located) {
+                return Err(EditError::BulkTransaction {
+                    index: batch_index,
+                    source: Box::new(EditError::RoundTripMismatch),
+                });
+            }
+            new_reparsed_indices.push(reparsed_index);
+        }
+
+        // Every OTHER transaction — remove the N known-new entries at their
+        // known reparsed indices and diff what remains against `before`.
+        let new_set: std::collections::HashSet<usize> =
+            new_reparsed_indices.iter().copied().collect();
+        if new_set.len() != inputs.len() {
+            return Err(EditError::Internal(
+                "two or more new transactions resolved to the same position after the bulk edit"
+                    .to_string(),
+            ));
+        }
+        let remaining: Vec<&TxnSource> = after
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !new_set.contains(index))
+            .map(|(_, source)| source)
+            .collect();
+        let unchanged = remaining.len() == before.len()
+            && remaining.iter().zip(&before).all(|(after, before)| {
+                after.0 == before.0 && strip_terminator(&after.1) == strip_terminator(&before.1)
+            });
+        if !unchanged {
+            return Err(EditError::Internal(
+                "the bulk edit changed a transaction outside the batch; only the new \
+                 transactions may change"
+                    .to_string(),
+            ));
+        }
+
+        check_no_new_imbalance(&self.journal, &before, &reparsed, &after)?;
+        Ok(reparsed)
     }
 
     /// Change **only** the description of the transaction with `index`.
@@ -1508,6 +1977,38 @@ struct Placement {
     file_key: PathBuf,
     insertion: Insertion,
 }
+
+/// One (file, offset) gap's COMBINED insertion for
+/// [`JournalEditor::add_transactions`] (the bulk path): several new
+/// transactions that all resolved to the same anchor, landing in one splice
+/// instead of N. See [`JournalEditor::build_bulk_groups`] for how `text` is
+/// built and why it reads identically to N sequential single inserts.
+struct BulkGroup {
+    /// The char offset in the file's ORIGINAL (pre-batch) rope this group
+    /// splices in at.
+    offset: usize,
+    /// `prefix` + every member's formatted body, chained together, ready to
+    /// `Rope::insert` at `offset` as one splice.
+    text: String,
+    /// `text.chars().count()` — how far this splice shifts everything after
+    /// `offset`, needed to compute another (lower-offset) group's members'
+    /// FINAL position once both are applied.
+    len: usize,
+    /// This group's members, in date-ascending (chained) order: `(batch
+    /// index into the `transactions` slice, that transaction's header's char
+    /// offset WITHIN `text`, i.e. relative to `offset`)`.
+    members: Vec<(usize, usize)>,
+}
+
+/// Every touched file's candidate rope, keyed by resolved absolute path —
+/// [`JournalEditor::apply_bulk_groups`]'s first result, adopted into
+/// `self.files` on a successful [`JournalEditor::add_transactions`].
+type BulkCandidates = HashMap<PathBuf, Rope>;
+
+/// One entry per input transaction (same order as the `transactions` slice
+/// [`JournalEditor::add_transactions`] was called with): the file it landed
+/// in and its header's char offset in that file's [`BulkCandidates`] rope.
+type BulkPositions = Vec<(PathBuf, usize)>;
 
 /// The [`Insertion`] that appends `body` at the end of `rope` with exactly one
 /// blank separator line, matching whatever trailing-newline shape is already
@@ -2952,5 +3453,97 @@ mod tests {
         assert_eq!(dominant_terminator(&Rope::from_str("")), "\n");
         // Mixed, LF in the majority.
         assert_eq!(dominant_terminator(&Rope::from_str("a\r\nb\nc\n")), "\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // Bulk add (WP-17 perf fix): exactly ONE whole-journal reparse per batch,
+    // regardless of the batch size.
+    //
+    // This is the strong, deterministic proof the root cause is actually
+    // fixed — a wall-clock timing test (see `tests/edit.rs`) can be fooled by
+    // machine speed either direction; a call counter cannot. See
+    // `BULK_REPARSE_COUNT`'s own docs for why this lives here rather than in
+    // the integration tests (which cannot see a `#[cfg(test)]` item of this
+    // crate).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn add_transactions_reparses_the_whole_journal_exactly_once_regardless_of_batch_size() {
+        BULK_REPARSE_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        let mut editor = JournalEditor::from_text(
+            "mem.journal",
+            "2020-01-01 * seed\n    expenses:a  $1.00\n    assets:bank\n",
+        )
+        .unwrap();
+
+        // 500 new transactions, all landing in the same gap (the only existing
+        // transaction is the 2020 seed) — the worst case for the grouping /
+        // chaining logic, and exactly the shape of a real QuickBooks import.
+        let batch: Vec<Transaction> = (0..500)
+            .map(|i| {
+                let date = format!("2024-{:02}-{:02}", (i % 12) + 1, (i % 28) + 1);
+                txn(
+                    &date,
+                    &format!("bulk {i}"),
+                    vec![
+                        posting("expenses:bulk", vec![dollars(100 + i128::from(i), 2)]),
+                        posting("assets:bank", vec![]),
+                    ],
+                )
+            })
+            .collect();
+
+        editor
+            .add_transactions(&batch, InsertPosition::DateOrdered)
+            .expect("a large, well-formed batch must add cleanly");
+
+        assert_eq!(editor.transaction_count(), 501);
+        assert_eq!(
+            BULK_REPARSE_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the whole-journal reparse must run exactly once for the whole batch, not once per \
+             transaction"
+        );
+        // The journal that was actually written still parses and balances.
+        assert!(JournalEditor::from_text("x.journal", &editor.text()).is_ok());
+    }
+
+    #[test]
+    fn add_transactions_bad_batch_member_does_not_reparse_at_all() {
+        BULK_REPARSE_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        let mut editor = JournalEditor::from_text(
+            "mem.journal",
+            "2020-01-01 * seed\n    expenses:a  $1.00\n    assets:bank\n",
+        )
+        .unwrap();
+        let good = txn(
+            "2024-01-01",
+            "good",
+            vec![
+                posting("expenses:bulk", vec![dollars(500, 2)]),
+                posting("assets:bank", vec![]),
+            ],
+        );
+        // Two explicit legs that do not balance and no elided leg to absorb it.
+        let bad = txn(
+            "2024-01-02",
+            "bad",
+            vec![
+                posting("expenses:bulk", vec![dollars(500, 2)]),
+                posting("assets:bank", vec![dollars(-400, 2)]),
+            ],
+        );
+        let before = editor.text();
+
+        let err = editor
+            .add_transactions(&[good, bad], InsertPosition::Append)
+            .unwrap_err();
+        assert!(matches!(err, EditError::BulkTransaction { index: 1, .. }));
+        // Caught by the cheap, all-N-first structural pass — no reparse needed.
+        assert_eq!(
+            BULK_REPARSE_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(editor.text(), before);
     }
 }

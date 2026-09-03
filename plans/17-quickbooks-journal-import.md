@@ -920,6 +920,152 @@ everything new lives in `ledgeline-server` (`import_api.rs`, `qb_journal_api.rs`
 hledger-checks` (every opt-in suite, including the two QuickBooks-Journal ones, still green against
 real `hledger 1.52`).
 
+## Real-world scale finding: the write pipeline was O(N²) (2026-09-02)
+
+A user's real QuickBooks Online export — 10,515 transactions, 23,890 postings, a scale none of
+Phases A-D's fixtures approach (`report.xlsx`, the corpus-level fixture, is 45 groups) — timed out
+client-side at 30 seconds and never completed. Root cause, traced to `JournalEditor::add_transaction`
+(`crates/ledgeline-core/src/edit.rs`): every call — singular, one transaction — calls
+`self.validate_with(...)`, which materializes every loaded file's rope to a full `String` and
+re-parses the ENTIRE journal from scratch via `parse_journal_with_overrides`. `edit_api::add_transactions`
+(the server function `commit_journal` calls) looped this once per new transaction, with the journal
+growing by one row each iteration. For a batch of N added to a journal of size M that is `O(N × (M +
+N))` — genuinely too slow to ever finish for a several-thousand-row batch, not merely slow. Nothing in
+Phases A-D caught this because every existing test — hermetic and the two opt-in
+`LEDGELINE_HLEDGER_QBJOURNAL_CHECK` suites alike — adds at most a handful of transactions per batch;
+the quadratic term is invisible until N reaches the thousands.
+
+**The fix: a genuine bulk-insert path in `ledgeline-core`, not a client-side timeout increase.**
+Raising the HTTP timeout would still hold the single global editor mutex — blocking every other
+request — for however many minutes the O(N²) loop actually took; the number of expensive whole-journal
+reparses had to drop from O(N) to O(1) per batch.
+
+**`JournalEditor::add_transactions(&mut self, transactions: &[Transaction], position: InsertPosition)
+-> Result<(), EditError>`** (plural — new, `crates/ledgeline-core/src/edit.rs`) is a NEW public method
+alongside the existing singular `add_transaction`, which is completely UNCHANGED — its own
+`check_single_change` "at most one transaction may differ" invariant still governs every other edit in
+the app (the manual add-transaction UI, status changes, description edits, deletes) with the exact
+strictness it always had. The bulk method:
+
+1. Structurally validates every input transaction (the same multiple-commodity-amount and
+   balance checks `add_transaction` already does) BEFORE touching any rope, so a bad transaction
+   anywhere in a several-thousand-row batch is caught before any edit is attempted.
+2. Computes placement for every transaction — via the SAME private `placement_for` (and, through
+   it, `insert_after`/`insert_before`/`append_to_main`), reused verbatim — against the CURRENT,
+   UNMODIFIED journal/files. Every call sees the identical starting state, so N calls are as cheap
+   as one; none of them needs a reparse.
+3. Groups transactions that resolved to the identical (file, offset) — i.e. the identical
+   anchor/gap — into ONE combined, date-ordered insertion per gap (`build_bulk_groups`).
+4. Splices each file's combined insertions in DESCENDING offset order against that file's
+   ORIGINAL rope (`apply_bulk_groups`), so an offset computed in step 2 is never invalidated by an
+   insertion still pending at a lower position in the same file; this also computes every new
+   transaction's FINAL header position analytically (accounting for every other, lower-offset
+   insertion that will shift it), rather than re-scanning the mutated rope.
+5. Runs EXACTLY ONE whole-journal reparse-and-validate for the entire batch (`validate_bulk_with`,
+   a new function; `check_single_change` is untouched and unused here), checking the new count is
+   `original + N`, that every one of the N new transactions (located by file + header line, a
+   generalization of the existing `locate_in_file`) balances and round-trips, and that every OTHER
+   transaction is still byte-identical to its pre-edit source — proven by removing the N known-new
+   entries from the reparsed sequence at their known indices and diffing what remains against the
+   original sequence element-for-element (see that function's own docs for why this is cleaner than
+   generalizing `check_single_change`'s prefix/suffix scan, whose "at most one" assumption does not
+   extend gracefully to N insertions scattered across possibly-many gaps). The existing
+   `check_no_new_imbalance` is reused with NO changes — verified it generalizes as-is, since it
+   compares SETS of imbalance keys and never assumed exactly one transaction changed.
+6. On success, adopts every touched file's candidate rope (dirty flag set) and the reparsed
+   journal; `dirty_files()` correctly reflects every file the batch touched, not just one. On ANY
+   validation failure `self` is left completely unchanged — nothing is mutated until every check has
+   passed.
+
+### Contract amendments made during implementation
+
+Per convention #9 in `plans/00-overview.md`, following Phases A-D's own amendments sections above.
+
+**Attributing a bulk failure to one transaction needed a new `EditError` variant, not a bare
+`(usize, EditError)` tuple threaded through the core API.** The brief's own sketch left this to
+judgment. `EditError::BulkTransaction { index: usize, source: Box<EditError> }` (new variant) lets
+the core method's return type stay exactly `Result<(), EditError>` — no second error type, no change
+to `EditError`'s existing shape for every other caller — while still letting `edit_api::apply_additions`
+recover which of the N inputs failed, when that's determinable. `edit_api.rs`'s `labels: &[String]`
+mechanism (added recently for exactly this "which of several thousand failed" naming problem) is
+preserved and works unchanged against the new bulk path: `apply_additions` now calls the bulk core
+method ONCE and destructures its error — `EditError::BulkTransaction { index, source }` becomes
+`(Some(index), *source)` (the existing "transaction {label} (N of M)" framing); any other `EditError`
+(a whole-batch failure — the combined text failed to reparse at all, or a stray change was found
+outside the batch, neither attributable to one row) becomes `(None, error)`, which
+`edit_api::add_transactions` frames as "batch of N transactions" instead of naming one. Both
+pre-existing labeling unit tests (`add_transactions_names_which_one_failed_and_writes_nothing`,
+`add_transactions_falls_back_to_a_position_when_no_label_was_given`) pass **unmodified** — the
+structural pre-check (step 1 above) that both tests exercise is cleanly attributable, so nothing about
+their expected wording changed. `crates/ledgeline-server/src/error.rs`'s `From<EditError> for AppError`
+match gained a `BulkTransaction` arm for exhaustiveness (delegates to the wrapped `source`'s own HTTP
+classification, keeping the outer message) — reached only if a `BulkTransaction` ever escapes
+`apply_additions` unwrapped, which nothing in the current wiring does; added for correctness under a
+future caller, not because today's code path needs it.
+
+**Chaining N single-transaction insertions into one combined splice, byte-for-byte identical to N
+sequential `add_transaction` calls, required reverse-engineering (not inventing) the existing
+single-insert shapes.** Reading `insert_after`/`insert_before`/`append_to_main`: for ONE transaction,
+either (a) `insertion.body` is the formatted transaction unchanged and `insertion.prefix` supplies the
+separating blank (`insert_after` not at EOF; `append_to_main`/EOF), or (b) `insertion.body` is the
+formatted transaction PLUS one extra trailing terminator and `insertion.prefix` is empty
+(`insert_before` — the extra terminator IS the separating blank before the untouched successor).
+Verified by hand (and now by `bulk_add_matches_sequential_add_in_the_same_gap_regardless_of_input_order`
+and `bulk_add_handles_insert_before_and_append_style_groups_in_the_same_call`, the latter exercising
+BOTH shapes in one call) that chaining a date-sorted group of transactions this way — every member but
+the last gets its own body plus one glue terminator, the last member reuses its own single-insert
+`insertion.body` exactly as computed — reproduces N sequential `add_transaction` calls exactly,
+regardless of the batch's input order (`InsertPosition::DateOrdered` always finds the chronologically
+correct spot per call, so sequential adds converge on the same sorted result regardless of call order
+too — the equivalence property this whole design leans on).
+
+**A `#[cfg(test)]` reparse-call counter, not only wall-clock timing, for the "not quadratic" proof.**
+`BULK_REPARSE_COUNT` (a `static AtomicUsize`, `edit.rs`) is incremented exactly where
+`validate_bulk_with` calls `parse_journal_with_overrides`, and two in-crate unit tests
+(`add_transactions_reparses_the_whole_journal_exactly_once_regardless_of_batch_size`,
+`add_transactions_bad_batch_member_does_not_reparse_at_all`) assert it is exactly 1 for a
+500-transaction batch and exactly 0 when the batch is rejected before any rope is touched — a
+deterministic, machine-speed-independent proof the reparse count is genuinely O(1) per batch, stronger
+than the wall-clock evidence below. It lives in `edit.rs`'s own `#[cfg(test)]` unit tests (not
+`tests/edit.rs`) because a `#[cfg(test)]` item of a library crate is not visible to that crate's own
+integration tests — they link the NORMAL (non-test-cfg) build of the library.
+
+**No new opt-in `LEDGELINE_HLEDGER_*_CHECK` suite, and no new multi-thousand-row synthetic fixture,
+for a real-hledger check at true QuickBooks-import scale.** The existing opt-in
+`hledger_accepts_the_full_report_fixture` (`qb_journal_hledger_check.rs`) already runs the FULL
+`commit_journal` → `edit_api::add_transactions` → (now) the bulk core path against `report.xlsx` (45
+groups) and real `hledger check`/`hledger print`, so the wiring is proven against the real binary at
+that scale without a new suite. A genuinely multi-thousand-transaction fixture large enough to
+reproduce this bug's actual scale would be slow to generate and slow to run routinely, and the
+hermetic core-level tests above (byte-identical equivalence to sequential adds at small scale, plus
+the deterministic O(1)-reparse-count proof at 500 transactions, plus a 1000-transaction wall-clock
+test — `bulk_add_of_many_transactions_into_an_existing_journal_completes_quickly`, under a
+deliberately generous 20-second margin (needed in practice: under full `cargo test --workspace`
+parallel contention this took ~4s, vs well under 1s run in isolation — the margin is sized to still
+catch a real regression to O(N) reparses, which per this section's own root cause would mean the
+operation does not finish in any practical time at all for a batch this size, not "a few seconds
+slower")) already prove both correctness and the absence of the specific quadratic
+behavior that broke the real import. Judged not worth adding; revisit if a future real-world import at
+this scale surfaces something these tests do not cover.
+
+**New tests, all hermetic unless noted.** `edit.rs` (core, `#[cfg(test)] mod tests`): 2 new (the
+reparse-call-counter proofs above). `tests/edit.rs` (core, integration): 8 new — equivalence to
+sequential add in the same gap regardless of input order; both chaining shapes in one call, also
+cross-checked against sequential add; landing across different `include`d year files in one call (with
+`dirty_files()` proven to list exactly the two touched files); an unbalanced batch member anywhere in
+the batch rejects the WHOLE batch and writes nothing; a round-trip-mismatch member (the EUR
+decimal-mark guard, mirroring the existing singular-path test) likewise; an uncheckable (invalid-date)
+member is a BATCH-level failure, not a `BulkTransaction`, proving the attributable/non-attributable
+split; an empty batch is a no-op; the 1000-transaction wall-clock proof. `edit_api.rs`'s two
+pre-existing labeling unit tests pass unmodified (above). Every pre-existing test in
+`crates/ledgeline-core/tests/edit.rs`, `crates/ledgeline-server/tests/qb_journal_endpoints.rs`, and
+`crates/ledgeline-server/tests/import_cli_qb_journal.rs` passes unmodified.
+
+**Verification commands, all clean:** `cargo fmt --check`; `cargo clippy --workspace --all-targets --
+-D warnings`; `cargo test --workspace` (hermetic, every pre-existing suite still green); `just
+hledger-checks` (every opt-in suite, including both QuickBooks-Journal ones, still green against real
+`hledger`).
+
 ## Definition of done (per phase)
 
 - `cargo test` stays hermetic; the new opt-in `LEDGELINE_HLEDGER_QBJOURNAL_CHECK` suite passes
