@@ -344,6 +344,24 @@ fn a_drifted_total_row_cache_is_accepted_not_refused_as_mismatched() {
     assert_eq!(transaction.postings.len(), 2);
 }
 
+#[test]
+fn a_zero_net_bill_payment_posts_a_single_zero_amount_transaction() {
+    // Reported directly against a real export: group `7513`, a Bill Payment
+    // (Check) an offsetting credit memo reduced to net $0.00. Its Accounts
+    // Payable leg names a real account with neither Debit nor Credit
+    // populated, and must post at exactly zero rather than refuse as
+    // AmountNotSplit; its other row has no account and is dropped by the
+    // existing no-account/zero-amount rule.
+    let journal = parse("zero-net-leg.xlsx");
+    let [transaction] = &journal.transactions[..] else {
+        panic!("one group");
+    };
+    assert_eq!(transaction.id, "7513");
+    assert_eq!(transaction.postings.len(), 1);
+    assert_eq!(transaction.postings[0].account, "2000 Accounts Payable");
+    assert_eq!(transaction.postings[0].amount, Dec::zero());
+}
+
 // ---------------------------------------------------------------------------
 // Refusals: one named error per way a damaged export is wrong
 // ---------------------------------------------------------------------------
@@ -432,6 +450,7 @@ fn every_quickbooks_journal_shape_is_detected() {
         "orphan-total.xlsx",
         "zero-placeholder.xlsx",
         "summation-drift.xlsx",
+        "zero-net-leg.xlsx",
     ] {
         assert!(
             qb_journal::detect(&qb_fixture(name)),

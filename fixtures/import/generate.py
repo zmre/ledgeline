@@ -794,6 +794,39 @@ def qb_summation_drift_xlsx() -> None:
     )
 
 
+# A Bill Payment (Check) fully offset by a credit memo, so the net effect is
+# $0.00 -- reported directly against a real export. The first row names no
+# account (dropped by the existing no-account/zero-amount rule); the second
+# names a real account, "2000 Accounts Payable", but leaves BOTH Debit and
+# Credit blank, since QuickBooks apparently writes nothing once a leg nets to
+# zero rather than an explicit $0.00.
+QB_ZERO_NET_LEG_GROUP = [
+    ["", "01/10/2023", "Bill Payment (Check)", "2", "Catalyst Law Group, LLP", "", "",
+     "", 0.0, None, "", 0.0, "", "Catalyst Law Group, LLP"],
+    ["", "01/10/2023", "Bill Payment (Check)", "2", "Catalyst Law Group, LLP", "", "2000",
+     "2000 Accounts Payable", None, None, "", 0.0, "", "Catalyst Law Group, LLP"],
+]
+
+
+def qb_zero_net_leg_xlsx() -> None:
+    """The real export's own zero-net Bill Payment, reproduced.
+
+    Reported directly against a real export: group `7513`, a Bill Payment
+    (Check) an offsetting credit memo reduced to a net $0.00. Its Accounts
+    Payable leg names a real account with neither Debit nor Credit populated
+    -- `qb_journal::posting` must read that as an explicit zero rather than
+    refuse it as AmountNotSplit. The other row has no account at all and is
+    dropped, so the group becomes a single $0.00 posting -- verified against
+    real hledger to be a transaction it accepts.
+    """
+    _qb_write(
+        "zero-net-leg.xlsx",
+        QB_CUSTOM_HEADER,
+        [("7513", QB_ZERO_NET_LEG_GROUP, ("Total for 7513", 0.0, 0.0))],
+        total=0.0,
+    )
+
+
 def qb_near_miss_xlsx() -> None:
     """NOT a QuickBooks Journal, and the reason detection cannot stop at the header.
 
@@ -890,6 +923,7 @@ def main() -> None:
         qb_overlap_xlsx,
         qb_zero_placeholder_xlsx,
         qb_summation_drift_xlsx,
+        qb_zero_net_leg_xlsx,
         qb_near_miss_xlsx,
         qb_report_xlsx,
     ):

@@ -74,33 +74,53 @@
 //!
 //! # Signed amounts need no account types
 //!
-//! Exactly one of Debit/Credit is populated on every REAL posting row — 54 and
-//! 48 of the real 102-row sample used to build this module, with no row
-//! carrying both or neither — and `amount = debit if debit else -credit`
-//! yields the hledger-signed amount directly. Spot-checked against what the
+//! Exactly one of Debit/Credit is populated on almost every posting row — 54
+//! and 48 of the real 102-row sample used to build this module, with no row
+//! carrying both nonzero — and `amount = debit if debit else -credit` yields
+//! the hledger-signed amount directly. Spot-checked against what the
 //! accounting must mean, not against the arithmetic: a deposit debits the
 //! bank account (+) and credits equity (−); a card charge credits the card
 //! (−, which is how hledger holds a liability) and debits the expense (+); a
 //! card payment credits checking (−) and debits the
-//! card (+, paying the liability down toward zero).
+//! card (+, paying the liability down toward zero). Two zero-amount shapes,
+//! both found in real exports larger than the original sample, are exceptions
+//! to "exactly one" — neither is a guess, because zero has no sign to guess:
 //!
 //! ## A row can be "posting-shaped" and carry no posting at all
 //!
-//! Found in a real, full-size export (not the 204-row sample this module was
-//! originally built against): a row directly below the marker, repeating the
-//! transaction's own date/type/`Num`, with **no account name** and `$0.00` on
-//! both Debit and Credit. It is not corrupt — every other cell on it is
-//! exactly what a real posting row's would be — it simply names nothing to
-//! categorize and moves no money. [`posting`] treats a row as this kind of
-//! placeholder, and skips it rather than building a [`QbPosting`] from it,
-//! exactly when it has no account **and** both Debit and Credit are absent or
-//! exactly zero. That is a safe thing to skip and not merely a convenient
-//! one: a `$0.00` posting included in [`close`]'s balance sum or left out of
-//! it changes the sum by exactly nothing, so dropping the row cannot turn a
-//! balanced group into an unbalanced-looking one or vice versa. A row that
-//! names no account but carries a **real, nonzero** amount is a different
-//! thing — a genuine "which account does this money belong to" gap — and is
-//! still refused as [`QbJournalError::MissingAccount`], unchanged.
+//! Found in a real, full-size export: a row directly below the marker,
+//! repeating the transaction's own date/type/`Num`, with **no account name**
+//! and `$0.00` on both Debit and Credit. It is not corrupt — every other cell
+//! on it is exactly what a real posting row's would be — it simply names
+//! nothing to categorize and moves no money. [`posting`] treats a row as this
+//! kind of placeholder, and skips it rather than building a [`QbPosting`]
+//! from it, exactly when it has no account **and** both Debit and Credit are
+//! absent or exactly zero. That is a safe thing to skip and not merely a
+//! convenient one: a `$0.00` posting included in [`close`]'s balance sum or
+//! left out of it changes the sum by exactly nothing, so dropping the row
+//! cannot turn a balanced group into an unbalanced-looking one or vice versa.
+//! A row that names no account but carries a **real, nonzero** amount is a
+//! different thing — a genuine "which account does this money belong to"
+//! gap — and is still refused as [`QbJournalError::MissingAccount`],
+//! unchanged.
+//!
+//! ## A real account can carry a zero-net leg, with neither side populated
+//!
+//! Found in a different real export: a Bill Payment (Check) fully offset by
+//! a credit memo, whose "2000 Accounts Payable" posting row names a real
+//! account but leaves BOTH Debit and Credit blank — QuickBooks apparently
+//! sees nothing to write once a leg nets to zero, rather than writing `$0.00`
+//! into either column. [`posting`] treats `(None, None)` — and, by the same
+//! reasoning, `(Some(zero), Some(zero))`, since a `$0.00` written into either
+//! or both columns is the identical amount — as an explicit zero rather than
+//! the [`QbJournalError::AmountNotSplit`] refusal a row with a REAL,
+//! disagreeing pair of numbers still gets. There is nothing to guess: a debit
+//! of zero and a credit of zero are the same value (`-0 == 0`), so no
+//! "which number is real" question exists when neither carries any
+//! magnitude — unlike two REAL, differing numbers, which stays refused.
+//! Verified against real hledger 1.52: a single-posting, `$0.00` transaction
+//! (which is what this group becomes once its OTHER row is dropped by the
+//! no-account/zero-amount rule above) is accepted — `hledger check` exits 0.
 //!
 //! # The total row is a formula, and its value is the cached one
 //!
@@ -811,15 +831,29 @@ fn posting(
         return Ok(None);
     }
 
-    // Otherwise exactly one side, always — 54 debits and 48 credits over the
-    // real export's 102 posting rows, with no row carrying both or neither. A
-    // row that carries both is refused rather than guessed at: which of two
-    // numbers is the real amount is not something this module can know.
+    // Otherwise exactly one side, almost always — 54 debits and 48 credits
+    // over the real 102-row sample this module was built against, with no
+    // row carrying both or neither. A row that carries both NONZERO numbers
+    // is still refused rather than guessed at: which of two numbers is the
+    // real amount is not something this module can know.
+    //
+    // The one exception: a row that names a real account (checked above —
+    // this point is only reached once `account` is known to be `Some`) but
+    // carries no money on EITHER side. Found in a real export as a genuine
+    // zero-net leg of a Bill Payment that a fully offsetting credit reduced
+    // to nothing — real, if unusual, business event, not corruption. There
+    // is no ambiguity to refuse: a debit of zero and a credit of zero are
+    // the identical amount (`-0 == 0`), so whether the cell was left BLANK
+    // or written out as literal `$0.00` on one or both sides, the result can
+    // only ever be zero. Verified against real hledger: a single-posting,
+    // `$0.00` transaction is accepted (`hledger check` exits 0).
     let amount = match (debit, credit) {
         (Some(debit), None) => debit,
         (None, Some(credit)) => credit
             .neg()
             .map_err(|_| QbJournalError::AmountOverflow { id: id.to_string() })?,
+        (None, None) => Dec::zero(),
+        (Some(debit), Some(credit)) if debit.is_zero() && credit.is_zero() => Dec::zero(),
         _ => {
             return Err(QbJournalError::AmountNotSplit {
                 id: id.to_string(),
@@ -1223,6 +1257,57 @@ mod tests {
             parsed(&rows),
             Err(QbJournalError::EmptyGroup { id: "7".into() })
         );
+    }
+
+    #[test]
+    fn a_real_account_with_neither_debit_nor_credit_populated_posts_zero() {
+        // The exact shape reported against a real export: a Bill Payment
+        // (Check) fully offset by a credit memo, whose Accounts Payable leg
+        // names a real account but leaves both Debit and Credit blank.
+        let rows = sheet(&[
+            ". | Transaction date | Transaction type | Account Name | Debit | Credit",
+            "7513 | . | . | . | . | .",
+            ". | 01/10/2023 | Bill Payment (Check) | . | 0.00 | .",
+            ". | 01/10/2023 | Bill Payment (Check) | 2000 Accounts Payable | . | .",
+            "Total for 7513 | . | . | . | 0.00 | 0.00",
+        ]);
+        let journal = parsed(&rows).expect("parses despite the zero-net leg");
+        let [transaction] = &journal.transactions[..] else {
+            panic!("one group");
+        };
+        // The first row has no account and is dropped by the existing
+        // no-account/zero-amount rule; only the Accounts Payable leg
+        // survives, posted at exactly zero.
+        assert_eq!(transaction.postings.len(), 1);
+        assert_eq!(transaction.postings[0].account, "2000 Accounts Payable");
+        assert_eq!(transaction.postings[0].amount, Dec::zero());
+    }
+
+    #[test]
+    fn a_real_account_with_both_sides_explicitly_zero_also_posts_zero() {
+        // The same reasoning applies whether the zero was left BLANK or
+        // written out as literal `$0.00` on one or both sides: there is no
+        // "which number is real" question when neither carries any
+        // magnitude.
+        let rows = sheet(&[
+            ". | Transaction date | Transaction type | Account Name | Debit | Credit",
+            "7 | . | . | . | . | .",
+            ". | 01/17/2026 | Journal Entry | Checking | . | 25.00",
+            ". | 01/17/2026 | Journal Entry | Suspense | 0.00 | 0.00",
+            ". | 01/17/2026 | Journal Entry | Supplies | 25.00 | .",
+            "Total for 7 | . | . | . | 25.00 | 25.00",
+        ]);
+        let journal = parsed(&rows).expect("parses");
+        let [transaction] = &journal.transactions[..] else {
+            panic!("one group");
+        };
+        assert_eq!(transaction.postings.len(), 3);
+        let suspense = transaction
+            .postings
+            .iter()
+            .find(|posting| posting.account == "Suspense")
+            .expect("the suspense posting survives");
+        assert_eq!(suspense.amount, Dec::zero());
     }
 
     #[test]
