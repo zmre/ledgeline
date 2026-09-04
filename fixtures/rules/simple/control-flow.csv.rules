@@ -1,0 +1,32 @@
+# The control-flow fixture: hledger's two block-level control words.
+#
+# `skip` and `end` inside a conditional block do not assign a value — they
+# change which CSV records are read at all — so they are carried as
+# `IfBlock::control` rather than as an assignment. Only the BARE form is
+# modelled: verified against the hledger 1.52 binary, `skip 2` drops the
+# matching record AND the one after it, which is a different construct.
+#
+# `just rules-check` drives hledger from `control-flow.csv` beside this file,
+# and `crates/ledgeline-core/tests/rules_hledger_render.rs` asserts hledger
+# drops exactly the rows these blocks say it should — before and after a save.
+
+skip 1
+fields date, description, amount, card
+date-format %Y-%m-%d
+currency $
+account1 assets:bank:checking
+account2 expenses:unknown
+
+# A bare `skip` drops just the ONE matching row. Row 2 never imports.
+if PENDING
+    skip
+
+# An ordinary value rule, here so the fixture proves control blocks and
+# assignment blocks coexist in one file rather than being alternatives.
+if GROCERY
+    account2 expenses:food:groceries
+
+# A bare `end` stops reading at the matching row: it and every row after it are
+# excluded, so rows 4 and 5 never import.
+if STATEMENT TOTAL
+    end

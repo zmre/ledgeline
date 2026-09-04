@@ -1,7 +1,7 @@
 <script lang="ts">
     // The dry run: everything that must be seen before anything is written.
     //
-    // Five things in one panel, in the order they matter:
+    // Seven things in one panel, in the order they matter:
     //
     //  1. A FAILURE renders hledger's stderr VERBATIM in a `<pre>` and is never
     //     paraphrased. hledger's import errors echo the offending CSV record
@@ -19,9 +19,23 @@
     //     does on the ordinary import. It was two alerts here and they were read
     //     as one thing said twice.
     //  4. The balance reconciliation — statement vs computed vs the difference.
-    //  5. The git block. A modified target refuses the import until it is
+    //  5. Rows matched by id (WP-16 Phase 4) — a status sync about to happen, or
+    //     a conflict the import will leave untouched. Only rows a rules file
+    //     tags with `comment id:%fitid` reach this at all; every other import
+    //     has nothing here (`run.idMatches` is null) and shows nothing. This is
+    //     the "warn that it changed and how" half of the feature — the engine
+    //     already refuses to overwrite a conflicting row, but silently refusing
+    //     is not the same as telling anyone it happened.
+    //  6. The git block. A modified target refuses the import until it is
     //     committed, and the ENGINE enforces that too; this panel is not the
     //     only thing standing between an import and an unrecoverable overwrite.
+    //  7. The equivalent command line. Everything above is a choice the user has
+    //     just made in a wizard, and next month they will make the same one
+    //     again; `run.cliCommand` is those choices as a `ledgeline import` line
+    //     they can keep. It is rendered VERBATIM and never assembled here — the
+    //     engine builds it with the same argv builder `ledgeline import` is
+    //     parsed into, so a string this panel composed itself could say
+    //     something the CLI does not do.
     //
     // The proposed entries are hledger's stdout — valid, re-parseable journal
     // text, not scraped human-readable output — so they are shown as they are.
@@ -31,7 +45,7 @@
     // as narrow side-by-side columns without it. `routes/alertStacking.test.ts`
     // enforces that across every component.
     import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {balanceVerdict, canWrite, gitBlockMessage, skippedWarning} from "../importModel";
+    import {balanceVerdict, canWrite, conflictDetail, gitBlockMessage, idMatchesSummary, skippedWarning} from "../importModel";
     import type {AliasEntry, ConfWritten, DryRunResult} from "../importTypes";
     import AliasEffectPanel from "./AliasEffectPanel.svelte";
 
@@ -66,6 +80,29 @@
         onWrite: () => void;
         onInstallConf: (revision: string) => void;
     } = $props();
+
+    /** The "Copy"/"Copied!" latch for the equivalent command line. */
+    let copied = $state(false);
+
+    /**
+     * Put the command line on the clipboard, as `ServerSetupModal` does for its
+     * launch command — the one existing copy affordance in this app, and copied
+     * rather than abstracted because two call sites is not yet a component.
+     *
+     * The failure is swallowed on purpose: `navigator.clipboard` is undefined in
+     * an insecure context, and the `select-all` on the block means the command is
+     * still usable with the mouse when it is. A thrown error here would be an
+     * error popup over a working screen.
+     */
+    async function copyCommand(command: string): Promise<void> {
+        try {
+            await navigator.clipboard.writeText(command);
+            copied = true;
+            setTimeout(() => (copied = false), 1500);
+        } catch {
+            // Clipboard unavailable; the command stays selectable.
+        }
+    }
 </script>
 
 <AsyncSection {view} value={result} {error} testid="imports-dry-run-error" label="the dry run" loadingLabel="Running the import as a dry run" {onRetry}>
@@ -111,6 +148,38 @@
                     </div>
                 {/if}
 
+                <!-- (5) Rows matched by id. Two lists in one alert, on the same
+                     reasoning `AliasEffectPanel` argues for a merge: they are
+                     both "what matching by id found", and splitting them into
+                     two alerts reads as two features rather than one. -->
+                {#if idMatchesSummary(run.idMatches) !== null}
+                    {@const ids = run.idMatches}
+                    <!-- `flex` before `flex-col`: see the alertStacking note above. -->
+                    <div
+                        class="alert flex flex-col items-start gap-2 rounded-box py-2 text-sm {ids !== null && ids.conflictingTotal > 0
+                            ? 'alert-warning'
+                            : 'alert-info'}"
+                        role="status"
+                        data-testid="imports-id-matches"
+                    >
+                        <span>{idMatchesSummary(run.idMatches)}</span>
+                        {#if ids !== null && ids.statusChanged.length > 0}
+                            <ul class="list-inside list-disc font-mono text-xs" data-testid="imports-status-changed">
+                                {#each ids.statusChanged as change (change.id)}
+                                    <li>{change.id}: {change.from} → {change.to}</li>
+                                {/each}
+                            </ul>
+                        {/if}
+                        {#if ids !== null && ids.conflicting.length > 0}
+                            <ul class="list-inside list-disc font-mono text-xs break-all" data-testid="imports-conflicting">
+                                {#each ids.conflicting as conflict (conflict.id)}
+                                    <li>{conflict.id}: {conflictDetail(conflict)}</li>
+                                {/each}
+                            </ul>
+                        {/if}
+                    </div>
+                {/if}
+
                 {#if gitBlockMessage(run.blockedByGit) !== null}
                     <!-- `flex` before `flex-col`: `.alert` is a grid with
                          `grid-auto-flow:column`, so without it the sentence and
@@ -147,6 +216,23 @@
                     {#if run.count === 0}
                         <span class="text-xs text-base-content/60">There is nothing new to import — every row is already in your journal.</span>
                     {/if}
+                </div>
+
+                <!-- (7) The same import, as a command. VERBATIM from the engine:
+                     see the head of this file for why nothing here builds it. -->
+                <div>
+                    <h3 class="mb-1 text-xs font-semibold tracking-tight">Do this again from a terminal</h3>
+                    <p class="mb-1 text-xs text-base-content/60">
+                        Run from the folder holding your journal. The paths are relative to it, so this works next month with a new statement file.
+                    </p>
+                    <div class="flex items-center gap-2">
+                        <code class="grow overflow-x-auto rounded bg-base-300 p-2 text-xs whitespace-nowrap select-all" data-testid="imports-cli-command"
+                            >{run.cliCommand}</code
+                        >
+                        <button type="button" class="btn shrink-0 btn-sm" onclick={() => copyCommand(run.cliCommand)} data-testid="imports-copy-cli-command">
+                            {copied ? "Copied!" : "Copy"}
+                        </button>
+                    </div>
                 </div>
             {/if}
         </section>

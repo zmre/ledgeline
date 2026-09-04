@@ -573,7 +573,7 @@ async fn an_inserted_conditional_block_is_rendered_from_typed_fields() {
         after_last_block,
         json!({
             "kind": "ifBlock",
-            "matchers": [{"field": "description", "pattern": "PHARMACY"}],
+            "groups": [{"matchers": [{"field": "description", "pattern": "PHARMACY"}]}],
             "assignments": [{"field": "account2", "value": "expenses:health"}],
         }),
     );
@@ -591,6 +591,67 @@ async fn an_inserted_conditional_block_is_rendered_from_typed_fields() {
     assert!(
         after.contains("if %description PHARMACY\n    account2 expenses:health\n"),
         "the renderer's own output, not the client's text:\n{after}"
+    );
+}
+
+/// The AND/OR nesting, both directions, over the same item.
+///
+/// `groups` is the one field on this wire whose *shape* carries meaning rather
+/// than a value: a client that flattened it would send matchers the engine
+/// would OR where the user asked it to AND, and every existing test would still
+/// pass because the file would still be valid hledger. So this reads a
+/// `&`-chain block back, asserts the nesting, and saves a re-grouped one.
+#[tokio::test]
+async fn an_and_group_survives_the_wire_in_both_directions() {
+    let tree = Tree::new(&[(
+        "import/2026/bank.csv.rules",
+        "skip 1\nfields date, description, amount\naccount1 assets:bank:checking\n\n\
+         if\nCOFFEE\n& HOUSE\nLANDLORD\n    account2 expenses:food:coffee\n",
+    )]);
+    let (revision, items) = load(&tree.state).await;
+
+    let block = items
+        .iter()
+        .find(|item| item["kind"] == "ifBlock")
+        .expect("an editable block");
+    assert_eq!(
+        block["groups"],
+        json!([
+            {"matchers": [{"pattern": "COFFEE"}, {"pattern": "HOUSE"}]},
+            {"matchers": [{"pattern": "LANDLORD"}]},
+        ]),
+        "the `&` line is nesting, not text: {block}"
+    );
+
+    // Move `HOUSE` out into its own OR branch and give the second group an AND
+    // condition — the two edits the grouped shape exists to express.
+    let mut order = keep_all(&items);
+    order[block["id"].as_u64().expect("an id") as usize] = json!({
+        "kind": "ifBlock",
+        "id": block["id"],
+        "groups": [
+            {"matchers": [{"pattern": "COFFEE"}]},
+            {"matchers": [{"pattern": "HOUSE"}]},
+            {"matchers": [{"pattern": "LANDLORD"}, {"field": "amount", "pattern": "^-"}]},
+        ],
+        "assignments": [{"field": "account2", "value": "expenses:food:coffee"}],
+    });
+
+    let (status, saved) = json(
+        &tree.state,
+        "PUT",
+        BANK,
+        Some(json!({"revision": revision, "items": order})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+
+    // `HOUSE` lost its `&` and `%amount ^-` gained one, on their own lines and
+    // nowhere else.
+    assert_eq!(
+        tree.read("import/2026/bank.csv.rules"),
+        "skip 1\nfields date, description, amount\naccount1 assets:bank:checking\n\n\
+         if\nCOFFEE\nHOUSE\nLANDLORD\n& %amount ^-\n    account2 expenses:food:coffee\n"
     );
 }
 
@@ -617,7 +678,7 @@ async fn a_rule_appended_after_a_trailing_table_lands_last() {
     let mut order = keep_all(&items);
     order.push(json!({
         "kind": "ifBlock",
-        "matchers": [{"field": "description", "pattern": "PHARMACY"}],
+        "groups": [{"matchers": [{"field": "description", "pattern": "PHARMACY"}]}],
         "assignments": [{"field": "account2", "value": "expenses:health"}],
     }));
 
@@ -641,7 +702,7 @@ async fn a_rule_appended_after_a_trailing_table_lands_last() {
     let saved_items = saved["items"].as_array().expect("items");
     let last = saved_items.last().expect("a last item");
     assert_eq!(last["kind"], "ifBlock", "{saved}");
-    assert_eq!(last["matchers"][0]["pattern"], "PHARMACY");
+    assert_eq!(last["groups"][0]["matchers"][0]["pattern"], "PHARMACY");
     let table = &saved_items[saved_items.len() - 2];
     assert_eq!(table["kind"], "opaque");
     assert_eq!(
@@ -1192,6 +1253,10 @@ async fn every_rules_route_requires_the_token() {
             "/api/rules-preview/import/2026/bank.csv.rules".to_string(),
         ),
         ("PUT", BANK.to_string()),
+        // The draft route writes nothing, and is still behind the guard: it
+        // reads the journal's own directory tree and another tab's staged
+        // upload, both of which are this server's business and nobody else's.
+        ("POST", "/api/rules-create".to_string()),
     ] {
         assert_eq!(
             probe(method, uri.clone(), None).await,

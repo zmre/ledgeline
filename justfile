@@ -112,9 +112,13 @@ hledger-checks:
     LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
     LEDGELINE_HLEDGER_CONVERT_CHECK=1 cargo test -p ledgeline-core --test convert_tabular
     LEDGELINE_HLEDGER_MATCH_CHECK=1 cargo test -p ledgeline-core --test matching
+    LEDGELINE_HLEDGER_GENERATE_CHECK=1 cargo test -p ledgeline-core --test rules_generate
+    LEDGELINE_HLEDGER_REIMPORT_CHECK=1 cargo test -p ledgeline-core --test reimport
     LEDGELINE_HLEDGER_SORT_CHECK=1 cargo test -p ledgeline-core --test sort
     LEDGELINE_HLEDGER_LAYOUT_CHECK=1 cargo test -p ledgeline-core --test journals
     LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_endpoints
+    LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_cli
+    LEDGELINE_HLEDGER_QBJOURNAL_CHECK=1 cargo test -p ledgeline --test qb_journal_hledger_check
 
 # Snapshot raw hledger-web JSON API responses into fixtures/api/vVERSION/
 snapshot-api:

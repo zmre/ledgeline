@@ -327,6 +327,29 @@ struct DataHints {
     skip: u32,
 }
 
+/// Why a **new** rules file may not be created at an id.
+///
+/// One variant per guard in [`Discovery::resolve_new`], and the split matters to
+/// a caller: two of them are about places this module declined to look and must
+/// be reported indistinguishably, while the third is about the set a client can
+/// already enumerate. See that method's docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CreateRefusal {
+    /// Not a shape a scan could ever have produced, or one it would skip: a
+    /// traversal, a hidden component, a `SKIP_DIRS` directory, a name not
+    /// ending `.rules`.
+    Malformed,
+    /// Resolves outside the journal's own directory.
+    OutsideRoot,
+    /// The directory it would go in is not there, or is not a directory, or is
+    /// a symlink. **No directory is ever created** — a rules file goes beside a
+    /// journal that already exists.
+    DirectoryMissing,
+    /// Something is already at that name. Creating and editing are separate
+    /// operations on purpose; this is where that separation is enforced.
+    Exists,
+}
+
 /// The result of one scan: what was found, and whether it is all of it.
 #[derive(Debug, Clone)]
 pub struct Discovery {
@@ -490,6 +513,106 @@ impl Discovery {
             || "journal".to_string(),
             |name| name.to_string_lossy().into_owned(),
         )
+    }
+
+    /// Where a **new** rules file called `id` would go — the one path in this
+    /// crate built by joining a caller's string onto the root.
+    ///
+    /// # Why this exists at all, given [`resolve`](Self::resolve)
+    ///
+    /// [`resolve`](Self::resolve) can only ever return a file the scan already
+    /// found, which is the whole of its security value and is exactly why it
+    /// cannot serve a *create*: the file is not there yet, so there is nothing
+    /// to match against. `root.join(id)` is unavoidable here, and this is the
+    /// only function in either crate that performs it. It is `join`ed once,
+    /// under every guard below, and the result is a [`RulesPath`] — so the write
+    /// path downstream is unchanged and still cannot be handed a path from
+    /// anywhere else.
+    ///
+    /// # The guards, in order, and what each is for
+    ///
+    /// 1. **Shape** ([`CreateRefusal::Malformed`]) — before any filesystem call,
+    ///    and deliberately a *second* copy of the question `rules_api`'s own
+    ///    `validate_id` asks. This module does not get to assume its caller
+    ///    checked: a `..` reaching a `join` is the whole traversal bug class.
+    /// 2. **Discoverability** ([`CreateRefusal::Malformed`]) — no component may
+    ///    be hidden or in [`SKIP_DIRS`], because the scan skips those. Creating
+    ///    a file the scan will never list would write something the user cannot
+    ///    then open, which is a worse outcome than refusing.
+    /// 3. **Confinement** ([`CreateRefusal::OutsideRoot`]) — the same
+    ///    [`crate::parse::confine`] every other reach in this module uses, which
+    ///    canonicalizes the deepest existing ancestor and re-appends the rest,
+    ///    so a symlinked journal directory (`/tmp` → `/private/tmp` on macOS)
+    ///    still compares equal.
+    /// 4. **A real parent directory** ([`CreateRefusal::DirectoryMissing`]) —
+    ///    `symlink_metadata`, so a symlinked directory is refused rather than
+    ///    followed, exactly as the scan refuses one. No directory is ever
+    ///    created: a rules file goes beside a journal that already exists.
+    /// 5. **Nothing there already** ([`CreateRefusal::Exists`]) — of any file
+    ///    type, symlinks included.
+    ///
+    /// Guard 5 is **not** what makes the create safe, and must not be relied on
+    /// as if it were: it expires the moment it returns. The write itself has to
+    /// be exclusive (`O_EXCL`), and `rules_api` performs it that way — this is
+    /// the courtesy that produces a good error message, and the open is what
+    /// produces the guarantee.
+    ///
+    /// # What each refusal may be told to a caller
+    ///
+    /// [`OutsideRoot`](CreateRefusal::OutsideRoot) and
+    /// [`DirectoryMissing`](CreateRefusal::DirectoryMissing) are the two that
+    /// could answer a question about the filesystem, so a caller must collapse
+    /// them into the same sentence every other resolution failure returns.
+    /// [`Exists`](CreateRefusal::Exists) is safe to report as itself: it is only
+    /// reachable for a confined, non-hidden `*.rules` name below the root — the
+    /// exact set `GET /api/rules` already publishes.
+    ///
+    /// # Errors
+    /// [`CreateRefusal`], one variant per guard above.
+    pub fn resolve_new(&self, id: &str) -> Result<RulesPath, CreateRefusal> {
+        let parts: Vec<&str> = id.split('/').collect();
+        let well_formed = !id.is_empty()
+            && parts.len() <= MAX_RULES_DEPTH + 1
+            && parts.iter().all(|part| {
+                !part.is_empty()
+                    && *part != "."
+                    && *part != ".."
+                    && !part.starts_with('.')
+                    && !part.contains('\\')
+                    && !part.contains(':')
+                    && !part.chars().any(|c| c.is_ascii_control())
+            })
+            // Every directory component must be one the scan would descend
+            // into, and the file name one it would list. See guard 2.
+            && parts[..parts.len() - 1]
+                .iter()
+                .all(|part| !SKIP_DIRS.contains(part))
+            && parts.last().is_some_and(|name| is_rules_name(name));
+        if !well_formed {
+            return Err(CreateRefusal::Malformed);
+        }
+
+        // THE join. Everything above is what earns it.
+        let candidate = self.root.join(id);
+        let Some(resolved) = parse::confine(&candidate, &self.root) else {
+            return Err(CreateRefusal::OutsideRoot);
+        };
+        let Some(parent) = resolved.parent() else {
+            return Err(CreateRefusal::DirectoryMissing);
+        };
+        // On the CANONICAL path's parent, and with `symlink_metadata`: the
+        // parent of a canonical path exists if anything does, and asking about
+        // the link rather than its target is what refuses a directory symlink.
+        match std::fs::symlink_metadata(parent) {
+            Ok(meta) if meta.file_type().is_dir() => {}
+            _ => return Err(CreateRefusal::DirectoryMissing),
+        }
+        match std::fs::symlink_metadata(&resolved) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RulesPath(resolved)),
+            // Present, or unreadable in a way that is not "absent". Either way
+            // this is not a name a create may have.
+            _ => Err(CreateRefusal::Exists),
+        }
     }
 
     /// Peek at the data file `id`'s rules describe, for column labels in the
@@ -1407,7 +1530,12 @@ fn is_rules_name(name: &str) -> bool {
 /// `bank.csv`, which reads as the data file rather than the rules for it.
 ///
 /// The slice goes through `str::get` for the same reason [`is_rules_name`] does.
-fn label_for(id: &str) -> String {
+///
+/// `pub` for the create path, which has to label a file no scan has produced
+/// yet. Sharing this rather than re-deriving it there is what stops a drafted
+/// document being titled differently from the same file once it is on disk.
+#[must_use]
+pub fn label_for(id: &str) -> String {
     let name = id.rsplit('/').next().unwrap_or(id);
     let lower = name.to_ascii_lowercase();
     for suffix in [".csv.rules", ".rules"] {

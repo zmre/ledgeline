@@ -174,6 +174,45 @@ impl Dec {
         Ok(Self::new(rounded, self.places))
     }
 
+    /// Round to exactly `places` fractional digits, half away from zero.
+    ///
+    /// Growing precision (`places >= self.places`) pads with zeros — the same
+    /// operation [`Dec::rescaled`] does, since nothing is discarded and there
+    /// is nothing to round. Shrinking drops the excess digits with the same
+    /// "half away from zero" convention [`Dec::div_int`] uses, matching
+    /// `Data.Decimal`'s `roundTo`.
+    ///
+    /// # Why this exists
+    /// A value read off a **formula's cached result** (a spreadsheet `SUM`
+    /// over many cells, say) can drift by a few units in its last few digits —
+    /// `975546.6699999999` rather than `975546.67` — because IEEE 754
+    /// summation is not associative and is under no obligation to land on the
+    /// double nearest the "true" decimal answer, even when every addend was
+    /// itself exact to the cent. Comparing such a value against an
+    /// independently computed exact total needs to ask "do these agree to the
+    /// precision that is actually meaningful" rather than "are these
+    /// bit-for-bit identical" — see `qb_journal::close`'s own use of this.
+    ///
+    /// # Errors
+    /// [`DecError::Overflow`] on the same terms as every other exact-decimal
+    /// operation here.
+    pub fn rounded(self, places: u32) -> Result<Self, DecError> {
+        if places >= self.places {
+            return self.rescaled(places);
+        }
+        let factor = pow10(self.places - places)?;
+        let quotient = self.mantissa / factor;
+        let remainder = self.mantissa % factor;
+        // Same convention as `div_int`: the remainder carries the sign of
+        // `mantissa`, so rounding away from zero means adding that sign back.
+        let rounded = if remainder.unsigned_abs() * 2 >= factor.unsigned_abs() {
+            quotient + self.mantissa.signum()
+        } else {
+            quotient
+        };
+        Ok(Self::new(rounded, places))
+    }
+
     /// Strip trailing decimal zeros down to (but not below) scale 0. Zero
     /// normalizes to scale 0.
     #[must_use]
@@ -966,6 +1005,45 @@ mod tests {
         // The mean of no values is not a number, and reporting one would be a
         // confident answer to a question nobody can answer.
         assert_eq!(Dec::new(100, 2).div_int(0), Err(DecError::DivideByZero));
+    }
+
+    #[test]
+    fn rounded_recovers_a_computed_sums_own_precision_from_float_summation_drift() {
+        // The exact shape reported against a real QuickBooks Journal export:
+        // a formula-cached total of `975546.6699999999` (IEEE 754 summation
+        // drift across many terms) must agree with an independently computed
+        // exact `975546.67`.
+        let reported = Dec::parse("975546.6699999999", '.').expect("literal");
+        let computed = Dec::new(97_554_667, 2);
+        assert_eq!(reported.rounded(computed.places).unwrap(), computed);
+    }
+
+    #[test]
+    fn rounded_shrinking_rounds_half_away_from_zero() {
+        assert_eq!(Dec::new(1_005, 3).rounded(2).unwrap(), Dec::new(101, 2)); // 1.005 -> 1.01
+        assert_eq!(Dec::new(-1_005, 3).rounded(2).unwrap(), Dec::new(-101, 2));
+        assert_eq!(Dec::new(1_004, 3).rounded(2).unwrap(), Dec::new(100, 2)); // 1.004 -> 1.00
+    }
+
+    #[test]
+    fn rounded_growing_precision_pads_with_zeros_exactly() {
+        assert_eq!(Dec::new(5, 0).rounded(2).unwrap(), Dec::new(500, 2));
+    }
+
+    #[test]
+    fn rounded_to_the_same_places_is_the_value_itself() {
+        let value = Dec::new(12_345, 2);
+        assert_eq!(value.rounded(2).unwrap(), value);
+    }
+
+    #[test]
+    fn rounded_still_refuses_a_genuine_mismatch() {
+        // The property the whole feature exists to protect: rounding away
+        // sub-cent float noise must never absorb a REAL cent-level
+        // disagreement — an amount that was actually hand-edited, say.
+        let reported = Dec::parse("500.00", '.').expect("literal");
+        let computed = Dec::new(53_394, 2); // 533.94
+        assert_ne!(reported.rounded(computed.places).unwrap(), computed);
     }
 
     proptest! {

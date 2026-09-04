@@ -19,8 +19,13 @@
 //!   the one-line-wide span editor over them (Enhanced imports)
 //! - `periodic` — `~` periodic transaction rules: the span editor that lets a
 //!   budget goal be rewritten in place (Budget editor)
+//! - `reimport` — matching a re-downloaded statement against the journal it was
+//!   already imported into, by the bank's own row id (Import & rules II)
 //! - `convert` — normalize OFX/QFX/spreadsheet/delimited statements to one
 //!   tabular extract (Enhanced imports; see `plans/11-enhanced-import.md`)
+//! - `qb_journal` — QuickBooks Online's grouped "Journal" report, which no CSV
+//!   rules file can express (QuickBooks import; see
+//!   `plans/17-quickbooks-journal-import.md`)
 //! - `hledger_conf` — the `--alias` options an `hledger.conf` declares, and
 //!   writing one into it (Enhanced imports)
 //! - `title` — the derived "what am I looking at" title for the open journal
@@ -36,6 +41,9 @@ pub mod journals;
 pub mod model;
 pub mod parse;
 pub mod periodic;
+pub mod qb_import;
+pub mod qb_journal;
+pub mod reimport;
 pub mod reports;
 pub mod rules;
 pub mod sort;

@@ -1,0 +1,55 @@
+# The AND/OR fixture: hledger's line-prefix `&`, in every layout it occurs in.
+#
+# A matcher line beginning `&` is AND-ed onto the line above it, and a plain
+# line starts a fresh OR branch, so a block's matchers are an OR of AND-groups.
+# Verified against the hledger 1.52 binary, not the manual — `just rules-check`
+# drives hledger from `and-groups.csv` beside this file, and
+# `crates/ledgeline-core/tests/rules_hledger_render.rs` asserts hledger routes
+# each row the way this file's groups say it should.
+
+skip 1
+fields date, description, amount, card
+date-format %Y-%m-%d
+currency $
+account1 assets:bank:checking
+account2 expenses:unknown
+
+# An AND chain under an INLINE header: the header's own matcher heads the group
+# and the `&` line continues it, so BOTH must match.
+if AMAZON
+& %card personal
+    account2 expenses:shopping:online
+
+# An OR of two AND-groups, stacked. `(GROCER and personal)` or
+# `(FARMERS and business)` — the shape the whole feature exists for.
+if
+GROCER
+& %card personal
+FARMERS
+& %card business
+    account2  expenses:food:groceries
+    comment   weekly shop
+
+# A plain OR list, which is one matcher per group. It is here so the fixture
+# proves the two shapes coexist in one file rather than being alternatives.
+if
+SHELL
+CHEVRON
+    account2 expenses:auto:fuel
+
+# hledger's OTHER spelling of the same AND: `&&` in the middle of ONE line.
+# Verified against 1.52 — the split is unconditional and needs no surrounding
+# whitespace, and each piece keeps its own `%field` scope. Row 9 (business)
+# must land here and row 10 (personal) must not; a reader that took this for an
+# OR would take both.
+if %description TARGET && %card business
+    account2 expenses:shopping:target
+
+# The two spellings composed. Line 2's leading `&` continues the group line 1
+# opened, and that same line's own `&&` splits it further, so this is ONE group
+# of three: STAPLES and business and -85. Rows 11, 12 and 13 differ in exactly
+# one of the three, so only row 11 may land here.
+if
+STAPLES
+& %card business && %amount -85
+    account2 expenses:office:supplies

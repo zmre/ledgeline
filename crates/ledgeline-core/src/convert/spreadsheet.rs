@@ -408,7 +408,7 @@ fn extent(populated: impl Iterator<Item = bool>) -> Option<(usize, usize)> {
 /// dozen — a space typed to "clear" a cell, a formula returning `""` — and
 /// letting one of them anchor the top-left corner would drag the header row out
 /// of the table.
-fn is_populated(cell: &Data) -> bool {
+pub(crate) fn is_populated(cell: &Data) -> bool {
     match cell {
         Data::Empty => false,
         Data::String(text) => !text.trim().is_empty(),
@@ -461,7 +461,7 @@ fn cell_text(cell: &Data) -> (String, bool) {
 /// The 1904 epoch is *not* re-applied here: `calamine` records the workbook's
 /// epoch inside every [`ExcelDateTime`] it builds, so `as_datetime` has already
 /// accounted for it. See the module docs.
-fn date_text(stamp: &ExcelDateTime) -> (String, bool) {
+pub(crate) fn date_text(stamp: &ExcelDateTime) -> (String, bool) {
     if stamp.is_duration() || is_phantom_leap_day(stamp) {
         return (float_text(stamp.as_f64()), false);
     }
@@ -494,12 +494,12 @@ fn is_phantom_leap_day(stamp: &ExcelDateTime) -> bool {
 /// never uses exponent notation — so `1234.56` stays `1234.56` rather than
 /// becoming `1234.5600000000001` or `1.23456e3`, and hledger can read every one
 /// of them.
-fn float_text(value: f64) -> String {
+pub(crate) fn float_text(value: f64) -> String {
     value.to_string()
 }
 
 /// The date half of an ISO 8601 timestamp.
-fn iso_date_text(text: &str) -> String {
+pub(crate) fn iso_date_text(text: &str) -> String {
     text.split_once('T')
         .map_or(text, |(date, _)| date)
         .to_string()

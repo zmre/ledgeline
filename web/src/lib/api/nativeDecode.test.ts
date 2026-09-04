@@ -16,6 +16,8 @@ import {
     decodeJournalInfo,
     decodeOtherHoldingsReport,
     decodePeriodReport,
+    decodeQbCommitResult,
+    decodeQbPreview,
     decodeRulesDoc,
     decodeRulesIndex,
     decodeRulesPreview,
@@ -1224,13 +1226,13 @@ describe("UNIT nativeDecode — RulesIndex over the rules-index golden", () => {
         expect(index.files[0]).toEqual({
             id: "import/2026/bank.csv.rules",
             label: "bank",
-            revision: "665-f7dafa70ae699ef1",
-            sizeBytes: 1637,
+            revision: "807-cdb071b43e7abbba",
+            sizeBytes: 2055,
             parsed: true,
             account1: "assets:bank:checking",
             account2: "expenses:unknown",
-            ifBlockCount: 4,
-            editableBlockCount: 3,
+            ifBlockCount: 5,
+            editableBlockCount: 4,
             opaqueItemCount: 1,
             warnings: [],
         });
@@ -1263,7 +1265,7 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
         const doc = decodeRulesDoc(raw);
         expect(doc.id).toBe("import/2026/bank.csv.rules");
         expect(doc.label).toBe("bank");
-        expect(doc.revision).toBe("665-f7dafa70ae699ef1");
+        expect(doc.revision).toBe("807-cdb071b43e7abbba");
         expect(doc.editable).toBe(true);
         expect(doc.newline).toBe("lf");
         expect(doc.warnings).toEqual([]);
@@ -1294,9 +1296,10 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
             "ifBlock",
             "ifBlock",
             "ifBlock",
+            "ifBlock",
             "opaque",
         ]);
-        expect(doc.items.map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        expect(doc.items.map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 
         const trivia = doc.items[0];
         expect(trivia).toMatchObject({kind: "trivia", line: 1, lines: 13, truncated: false});
@@ -1312,16 +1315,16 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
         expect(doc.items[7]).toMatchObject({
             kind: "ifBlock",
             layout: "inline",
-            matchers: [{field: null, pattern: "COFFEE"}],
+            groups: [{matchers: [{field: null, pattern: "COFFEE"}]}],
             assignments: [{field: "account2", value: "expenses:food:coffee"}],
         });
+        // A plain OR list is ONE MATCHER PER GROUP, not one group holding both:
+        // the two readings differ in which rows the file matches, and only the
+        // nesting says which one this file means.
         expect(doc.items[9]).toMatchObject({
             kind: "ifBlock",
             layout: "stacked",
-            matchers: [
-                {field: "description", pattern: "SUPERMARKET"},
-                {field: "description", pattern: "GROCER"},
-            ],
+            groups: [{matchers: [{field: "description", pattern: "SUPERMARKET"}]}, {matchers: [{field: "description", pattern: "GROCER"}]}],
             assignments: [
                 {field: "account2", value: "expenses:food:groceries"},
                 {field: "comment", value: "weekly shop"},
@@ -1329,8 +1332,121 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
         });
     });
 
+    // The AND is carried by NESTING, and this is the item that pins it: two
+    // matchers inside ONE group, which is a different rule from the two-group
+    // OR above and would decode identically under a flattened reading.
+    it("reads an AND-group as two matchers inside one group", () => {
+        expect(decodeRulesDoc(raw).items[10]).toMatchObject({
+            kind: "ifBlock",
+            layout: "stacked",
+            groups: [
+                {
+                    matchers: [
+                        {field: "description", pattern: "AIRLINE"},
+                        {field: "amount", pattern: "^-"},
+                    ],
+                },
+            ],
+            assignments: [{field: "account2", value: "expenses:travel:airfare"}],
+        });
+    });
+
+    // VERBATIM from the contract in `rules_api.rs` (`WireItemBody::IfBlock` /
+    // `WireMatcherGroup`), not round-tripped through our own encoder — the same
+    // discipline `importModel.test.ts` documents. A literal that was generated
+    // from this decoder's own idea of the shape would agree with it by
+    // construction and could never catch the engine renaming a key.
+    it("decodes a multi-group block from the wire's own JSON", () => {
+        const doc = decodeRulesDoc({
+            id: "x.rules",
+            label: "x",
+            revision: "1-0",
+            editable: true,
+            newline: "lf",
+            settings: {},
+            items: [
+                {
+                    id: 0,
+                    line: 1,
+                    lines: 5,
+                    kind: "ifBlock",
+                    layout: "stacked",
+                    groups: [
+                        {
+                            matchers: [
+                                {field: "description", pattern: "AMAZON"},
+                                {field: "card", pattern: "personal"},
+                            ],
+                        },
+                        {matchers: [{pattern: "COSTCO"}]},
+                    ],
+                    assignments: [{field: "account2", value: "expenses:shopping:online"}],
+                },
+            ],
+            warnings: [],
+        });
+        const block = doc.items[0];
+        if (block?.kind !== "ifBlock") throw new Error("expected an ifBlock");
+        expect(block.groups.map((group) => group.matchers.map((matcher) => [matcher.field, matcher.pattern]))).toEqual([
+            [
+                ["description", "AMAZON"],
+                ["card", "personal"],
+            ],
+            [[null, "COSTCO"]],
+        ]);
+    });
+
+    // VERBATIM from `WireItemBody::IfBlock` again, for the key the engine only
+    // emits sometimes. Both halves matter: `"skip"` has to arrive as `"skip"`,
+    // and an ABSENT key has to become `null` rather than `undefined` — the
+    // engine omits it with `skip_serializing_if`, exactly as it omits a
+    // whole-record matcher's `field`, and every rules file that predates this
+    // feature sends blocks without it.
+    it("decodes an if-block control word, and an absent one as null", () => {
+        const wire = (item: Record<string, unknown>) => ({
+            id: "x.rules",
+            label: "x",
+            revision: "1-0",
+            editable: true,
+            newline: "lf",
+            settings: {},
+            items: [
+                {
+                    id: 0,
+                    line: 1,
+                    lines: 2,
+                    kind: "ifBlock",
+                    layout: "inline",
+                    groups: [{matchers: [{field: "description", pattern: "PENDING"}]}],
+                    assignments: [],
+                    ...item,
+                },
+            ],
+            warnings: [],
+        });
+
+        expect(decodeRulesDoc(wire({control: "skip"})).items[0]).toMatchObject({kind: "ifBlock", control: "skip"});
+        expect(decodeRulesDoc(wire({control: "end"})).items[0]).toMatchObject({kind: "ifBlock", control: "end"});
+        expect(decodeRulesDoc(wire({})).items[0]).toMatchObject({kind: "ifBlock", control: null});
+
+        // A third control word would mean the engine grew one. Rendering that
+        // block as "imports as usual" would hide an instruction to drop rows,
+        // so it is refused instead.
+        expect(() => decodeRulesDoc(wire({control: "halt"}))).toThrow(ApiShapeError);
+    });
+
+    // Flattening `groups` into a matcher list would turn an AND into an OR —
+    // the rule would start matching either condition instead of both — so a
+    // body without the nesting is refused rather than read the old way.
+    it("refuses an ifBlock that sends a flat matcher list instead of groups", () => {
+        const items = (raw as {items: Record<string, unknown>[]}).items;
+        const flattened = {...items[7], groups: undefined, matchers: [{pattern: "COFFEE"}]};
+        expect(() => decodeRulesDoc({...(raw as object), items: [flattened]})).toThrow(ApiShapeError);
+        expect(() => decodeRulesDoc({...(raw as object), items: [{...items[7], groups: [{}]}]})).toThrow(ApiShapeError);
+    });
+
     it("carries an opaque construct's reason, label and raw text", () => {
-        const opaque = decodeRulesDoc(raw).items[10];
+        const opaque = decodeRulesDoc(raw).items[11];
         expect(opaque).toMatchObject({kind: "opaque", reason: "ifTable", label: "if,account2,comment", truncated: false});
         expect(opaque?.kind === "opaque" && opaque.text).toContain("ATM WITHDRAWAL,assets:cash,cash out");
     });
@@ -1340,14 +1456,14 @@ describe("UNIT nativeDecode — RulesDocument over the rules-doc golden", () => 
     // document is the honest failure.
     it("throws on an unknown item kind rather than inventing a carry-through", () => {
         const doc = raw as {items: unknown[]};
-        const mutated = {...doc, items: [...doc.items, {id: 11, line: 50, lines: 1, kind: "somethingNew"}]};
+        const mutated = {...doc, items: [...doc.items, {id: 12, line: 60, lines: 1, kind: "somethingNew"}]};
         expect(() => decodeRulesDoc(mutated)).toThrow(ApiShapeError);
     });
 
     it("throws on an unknown opaque reason, layout or newline", () => {
         expect(() => decodeRulesDoc({...(raw as object), newline: "cr"})).toThrow(ApiShapeError);
         const items = (raw as {items: Record<string, unknown>[]}).items;
-        expect(() => decodeRulesDoc({...(raw as object), items: [{...items[10], reason: "somethingNew"}]})).toThrow(ApiShapeError);
+        expect(() => decodeRulesDoc({...(raw as object), items: [{...items[11], reason: "somethingNew"}]})).toThrow(ApiShapeError);
         expect(() => decodeRulesDoc({...(raw as object), items: [{...items[7], layout: "table"}]})).toThrow(ApiShapeError);
     });
 
@@ -1442,6 +1558,96 @@ describe("UNIT nativeDecode — journal identity (which ledger is on screen)", (
         // to be absorbed as {title: null, file: null}, an answer no engine gave.
         expect(() => decodeJournalInfo([])).toThrow(ApiShapeError);
         expect(() => decodeJournalInfo(["Acme Books"])).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — QuickBooks Journal preview (qb_journal_api.rs, WP-17 Phase C)", () => {
+    // No `fixtures/native/v1/*.json` golden for this route (it is not replayed
+    // against `fixtures/sample.journal` — see that helper's own doc comment on
+    // why the import-rules goldens live elsewhere too), so this is hand-written
+    // literal wire JSON, matching `WireQbPreview` field for field.
+    const PREVIEW = {
+        stageId: "abc123",
+        transactionCount: 2,
+        postingCount: 4,
+        dateFormat: {format: "%m/%d/%Y", ambiguous: false},
+        unmappedAccounts: ["Riverbank BUSINESS CHECKING (0002)", "3000 Member Equity"],
+        sample: [
+            {
+                id: "441",
+                date: "2026-01-05",
+                description: "Deposit",
+                postings: ["Riverbank BUSINESS CHECKING (0002)  1000.00", "3000 Member Equity  -1000.00"],
+            },
+        ],
+        idMatches: null,
+    };
+
+    it("decodes the parsed groups and which accounts are unmapped", () => {
+        expect(decodeQbPreview(PREVIEW)).toEqual(PREVIEW);
+    });
+
+    it("decodes idMatches once every account resolves — null while any account is still unmapped", () => {
+        const resolved = {...PREVIEW, unmappedAccounts: [], idMatches: {new: 2, unchanged: 0, conflicting: [], conflictingTotal: 0}};
+        expect(decodeQbPreview(resolved).idMatches).toEqual({new: 2, unchanged: 0, conflicting: [], conflictingTotal: 0});
+        expect(decodeQbPreview(PREVIEW).idMatches).toBeNull();
+    });
+
+    it("decodes a conflicting row's field-by-field disagreements — reusing the CSV path's own shape", () => {
+        const withConflict = {
+            ...PREVIEW,
+            unmappedAccounts: [],
+            idMatches: {
+                new: 0,
+                unchanged: 1,
+                conflicting: [{id: "612", diffs: [{field: "description", existing: "old", incoming: "new"}]}],
+                conflictingTotal: 1,
+            },
+        };
+        expect(decodeQbPreview(withConflict).idMatches?.conflicting).toEqual([{id: "612", diffs: [{field: "description", existing: "old", incoming: "new"}]}]);
+    });
+
+    it("throws on a body missing a required field", () => {
+        expect(() => decodeQbPreview(without(PREVIEW, "stageId"))).toThrow(ApiShapeError);
+        expect(() => decodeQbPreview(without(PREVIEW, "dateFormat"))).toThrow(ApiShapeError);
+        expect(() => decodeQbPreview(without(PREVIEW, "transactionCount"))).toThrow(ApiShapeError);
+    });
+
+    it("throws on a body that is not an object", () => {
+        expect(() => decodeQbPreview(null)).toThrow(ApiShapeError);
+        expect(() => decodeQbPreview("nope")).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — QuickBooks Journal commit result", () => {
+    const COMMIT = {
+        imported: 2,
+        idMatches: {new: 2, unchanged: 0, conflicting: [], conflictingTotal: 0},
+        ordering: {
+            inOrder: false,
+            files: [{journalId: "2026/2026.journal", inOrder: false, moves: [{date: "2026-01-05", description: "Deposit", fromLine: 10, toLine: 4}]}],
+        },
+        git: {committed: true, paths: ["2026/2026.journal"], skipped: []},
+    };
+
+    it("decodes what was written, per-file ordering, and the git report", () => {
+        expect(decodeQbCommitResult(COMMIT)).toEqual({...COMMIT, git: {...COMMIT.git, message: null}});
+    });
+
+    it("idMatches is REQUIRED here, unlike the preview's nullable copy — an absent value is a broken contract", () => {
+        expect(() => decodeQbCommitResult(without(COMMIT, "idMatches"))).toThrow(ApiShapeError);
+    });
+
+    it("git is null when nothing touched was under version control", () => {
+        expect(decodeQbCommitResult({...COMMIT, git: null}).git).toBeNull();
+    });
+
+    it("throws on a body missing the ordering report", () => {
+        expect(() => decodeQbCommitResult(without(COMMIT, "ordering"))).toThrow(ApiShapeError);
+    });
+
+    it("throws on a body that is not an object", () => {
+        expect(() => decodeQbCommitResult(null)).toThrow(ApiShapeError);
     });
 });
 

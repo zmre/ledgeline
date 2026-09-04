@@ -27,8 +27,10 @@ import type {
     BalanceCheck,
     CandidateSignals,
     CommitResult,
+    Conflict,
     ConvertNote,
     DryRunResult,
+    IdMatches,
     ImportCapabilities,
     JournalTarget,
     RulesCandidate,
@@ -570,6 +572,39 @@ export function gitBlockMessage(blockedByGit: readonly string[]): string | null 
     return `Commit first: ${files} uncommitted changes. An import rewrites ${blockedByGit.length === 1 ? "it" : "them"} in place, and \`git diff\` is how you would undo that — which only works if what is there now is committed.`;
 }
 
+/**
+ * The id-matching section's headline, or null when there is nothing worth a
+ * section for.
+ *
+ * `new`/`unchanged` alone say nothing new: `new` is already reflected in the
+ * transaction count above, and `unchanged` is the ordinary "already imported"
+ * case `.latest` already handled before this feature existed. What is worth a
+ * sentence is a status sync (something is ABOUT to change) or a conflict — and
+ * a conflict is worth one even alone, which is the whole point of the feature:
+ * warn that a row disagrees, rather than silently importing it as new or
+ * silently overwriting what may be a hand-edit.
+ */
+export function idMatchesSummary(idMatches: IdMatches | null): string | null {
+    if (idMatches === null) return null;
+    const parts: string[] = [];
+    if (idMatches.statusChangedTotal > 0) {
+        const n = idMatches.statusChangedTotal;
+        parts.push(`${n} row${n === 1 ? "" : "s"} would have its clearing status synced (matched by id, not by date).`);
+    }
+    if (idMatches.conflictingTotal > 0) {
+        const n = idMatches.conflictingTotal;
+        parts.push(
+            `${n} row${n === 1 ? "" : "s"} the journal already holds differently — left untouched, since a field disagreement more likely means you edited it on purpose than that the bank's data changed.`
+        );
+    }
+    return parts.length === 0 ? null : parts.join(" ");
+}
+
+/** One conflicting row's disagreements, as a single readable line. */
+export function conflictDetail(conflict: Conflict): string {
+    return conflict.diffs.map((diff) => `${diff.field}: ${diff.existing} → ${diff.incoming}`).join("; ");
+}
+
 /** Whether `Write changes` may be offered at all. Git blocks it, and so does a failed dry run. */
 export function canWrite(dryRun: DryRunResult | null): boolean {
     return dryRun !== null && dryRun.ok && dryRun.blockedByGit.length === 0;
@@ -646,6 +681,17 @@ export function writtenLines(result: CommitResult): string[] {
         if (result.git.skipped.length > 0) lines.push(`Not committed: ${result.git.skipped.join(", ")}.`);
     }
     return lines;
+}
+
+/**
+ * A rejecting pre-commit hook, a GPG prompt, an unset `user.email` — surfaced
+ * distinctly from {@link writtenLines} rather than folded into that plain list,
+ * because the journal is already correctly written at this point (`git.rs`'s
+ * own rule): this is a bonus step that failed, not part of what was written.
+ * Null when there is nothing to report (including when git never ran at all).
+ */
+export function gitCommitFailure(result: CommitResult): string | null {
+    return result.git?.message ?? null;
 }
 
 /** The re-sort offer, or null when the journal came out in date order. */

@@ -344,6 +344,50 @@ async fn an_append_joins_the_existing_alias_block() {
     assert_eq!(body["aliases"][3]["forwarded"], json!(true));
 }
 
+/// A batch that appends both a parent account's alias and one of its
+/// subaccounts' — the real-world shape a QuickBooks import reported: the
+/// parent's pattern is a colon-segment PREFIX of the subaccount's raw name,
+/// so if it lands first, `resolve_account`'s prefix cascade would resolve the
+/// subaccount through the parent's alias before ever reaching the
+/// subaccount's own. Submitted in the "wrong" (parent-first) order on
+/// purpose, to prove the server reorders rather than merely preserving
+/// whatever order happened to already be safe.
+#[tokio::test]
+async fn a_batch_of_appends_orders_the_more_specific_pattern_first() {
+    let tree = Tree::aliased();
+    let revision = revision(&tree).await;
+    let (status, body) = put(
+        &tree,
+        "/api/aliases/main.journal",
+        json!({
+            "revision": revision,
+            "edits": [
+                {"kind": "append", "pattern": "4000 Sales Revenue",
+                 "replacement": "revenue:sales", "regex": false},
+                {"kind": "append", "pattern": "4000 Sales Revenue:4021 Enterprise Subscription",
+                 "replacement": "revenue:sales:enterprise-subscription", "regex": false},
+            ],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tree.read("main.journal"),
+        JOURNAL.replace(
+            "alias legacy = old:name ; kept for the 2024 statements\n",
+            "alias legacy = old:name ; kept for the 2024 statements\n\
+             alias 4000 Sales Revenue:4021 Enterprise Subscription = revenue:sales:enterprise-subscription\n\
+             alias 4000 Sales Revenue = revenue:sales\n",
+        ),
+        "the longer, more specific pattern is written first even though it was submitted second"
+    );
+    assert_eq!(
+        body["aliases"][3]["pattern"],
+        json!("4000 Sales Revenue:4021 Enterprise Subscription")
+    );
+    assert_eq!(body["aliases"][4]["pattern"], json!("4000 Sales Revenue"));
+}
+
 /// Deleting removes the line and its terminator, and nothing else.
 #[tokio::test]
 async fn a_delete_removes_exactly_one_line() {

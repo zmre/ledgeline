@@ -216,11 +216,32 @@ export interface RulesMatcherInput {
     pattern: string;
 }
 
+/**
+ * One OR-branch on the write wire: its matchers are AND-ed.
+ *
+ * A client says "these matchers are AND-ed" by NESTING them and never by
+ * writing a combinator — the engine still refuses a pattern that starts with
+ * `&` or `!`, so there is no text path from here to one.
+ */
+export interface RulesMatcherGroupInput {
+    matchers: RulesMatcherInput[];
+}
+
 export interface IfBlockRulesItem {
     kind: "ifBlock";
     id?: number;
-    matchers: RulesMatcherInput[];
+    groups: RulesMatcherGroupInput[];
     assignments: {field: string; value: string}[];
+    /**
+     * hledger's `skip`/`end`, OMITTED when the rule only sets fields.
+     *
+     * Omitted rather than `null` for the same reason `id` is: the body is
+     * `deny_unknown_fields` server-side and the engine reads an absent key as
+     * "no control word". There is deliberately no way to ask for `skip N` from
+     * here — that skips N records rather than the matched one, and the engine
+     * does not model it.
+     */
+    control?: "skip" | "end";
 }
 
 export type SaveRulesItem = KeepRulesItem | DirectiveRulesItem | FieldsRulesItem | AssignmentRulesItem | IfBlockRulesItem;
@@ -232,6 +253,26 @@ export interface SaveRulesBody {
     items: SaveRulesItem[];
     /** Items dropped on purpose. Omitting an item is NEVER an implicit delete. */
     delete: number[];
+}
+
+/**
+ * `POST /api/rules-create` — draft a rules file for a staged upload.
+ *
+ * Note what is NOT here: no column mapping and no date format. The draft is the
+ * engine's own reading of the data, and the user corrects it by editing the
+ * returned document and saving THAT, through the ordinary `PUT` and the
+ * ordinary typed item vocabulary. Sending overrides here would be a second way
+ * to say the same thing, and the two would drift.
+ *
+ * This route writes nothing. `saveRules(id, createRulesBody(...))` does.
+ */
+export interface CreateRulesBody {
+    /** The SAME handle the candidate list already has — the file is already staged. */
+    stageId: string;
+    /** The id the new file will have, exactly as every other rules route takes one. */
+    id: string;
+    /** The account this statement IS. May be empty; the form fills it in. */
+    account1: string;
 }
 
 /**
@@ -366,6 +407,19 @@ export interface SaveBudgetLinesBody {
 export interface PrefsBody {
     hledgerPath: string | null;
     gitAutocommit: boolean | null;
+}
+
+/**
+ * `POST /api/import/qb-journal/commit` (WP-17 Phase C) — just a stage handle.
+ *
+ * No `journalId`, unlike the CSV commit: this pipeline writes through
+ * `JournalEditor::add_transaction` with `InsertPosition::DateOrdered`, which
+ * already decides — per transaction, from the journal's own chronology —
+ * which `include`d file receives each row, so there is no single destination
+ * to name (see `qb_journal_api.rs`'s module docs, "No `journalId`").
+ */
+export interface QbJournalCommitBody {
+    stageId: string;
 }
 
 /**
@@ -792,6 +846,19 @@ export class LedgelineApi {
         return this.mutate<unknown>("PUT", `/api/rules/${encodeRulesId(id)}`, 200, body);
     }
 
+    /**
+     * Draft a rules file for a staged upload. → 200, the draft (decode with
+     * `decodeRulesDraft`); 409 when a file of that id already exists.
+     *
+     * WRITES NOTHING — `saveRules` does, once the user is happy with the draft.
+     * A `POST` on its own prefix rather than on `/api/rules`, because the id it
+     * takes names a file that does not exist yet and so belongs to no id-keyed
+     * route.
+     */
+    createRules(body: CreateRulesBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/rules-create", 200, body);
+    }
+
     /** Every `alias` the journal declares (decode with `decodeAliasListing`). */
     listAliases(): Promise<unknown> {
         return this.getJson("/api/aliases");
@@ -961,6 +1028,28 @@ export class LedgelineApi {
     /** The confirmed format-preserving re-sort, offered only after a commit reported `inOrder:false`. */
     importSort(journalId: string): Promise<unknown> {
         return this.mutate<unknown>("POST", "/api/import/sort", 200, {journalId});
+    }
+
+    /**
+     * A staged QuickBooks Journal export's parsed groups and which accounts are
+     * still unmapped (WP-17 Phase C; decode with `decodeQbPreview`).
+     *
+     * Read-only and idempotent — call it again after adding an alias through
+     * `saveAliases` to see `unmappedAccounts` shrink. `stageId` never contains a
+     * slash (see `StageId::parse`), so a plain `encodeURIComponent` is enough —
+     * unlike a rules/alias id, there is no path-segment structure to preserve.
+     */
+    qbJournalPreview(stageId: string): Promise<unknown> {
+        return this.getJson(`/api/import/qb-journal/${encodeURIComponent(stageId)}`);
+    }
+
+    /**
+     * Write every account-resolved QuickBooks transaction. → 200 (decode with
+     * `decodeQbCommitResult`); 400 naming every still-unmapped account when any
+     * remain, refusing to write anything.
+     */
+    qbJournalCommit(body: QbJournalCommitBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/import/qb-journal/commit", 200, body);
     }
 
     /**

@@ -17,8 +17,18 @@ balance.
 
 `delimited/` and `spreadsheet/` are documented below. The sibling directories belong to the
 other WP-11 lanes and are documented by them — `ofx/` (OFX 1.x/2.x and QFX), `match/` (rules
-scoring), `sort/` (date re-ordering) and `layouts/` (journal-target ranking). Each lane appends
-its own section here rather than starting a second README.
+scoring), `sort/` (date re-ordering), `layouts/` (journal-target ranking) and `reimport/`
+(matching a re-downloaded statement against the journal it was already imported into). Each lane
+appends its own section here rather than starting a second README; the four that grew past a table
+carry their own `README.md` in their own directory instead, which is where to look.
+
+`qb-journal/` is the one directory here that is **not** a `convert` corpus. It belongs to WP-17's
+second import pipeline (`crates/ledgeline-core/src/qb_journal.rs`), which reads QuickBooks
+Online's grouped Journal report — a format no CSV rules file can express, and one this crate
+therefore parses itself rather than handing to hledger. It has its own `README.md`. The one thing
+worth knowing from outside it: its detector is asserted to answer **no** over every other fixture
+in this tree, so adding a file here that a name-based detector would like is something
+`nothing_else_in_the_import_corpus_is_detected_as_a_quickbooks_journal` will tell you about.
 
 ## `delimited/`
 
@@ -147,10 +157,87 @@ Regenerate **only when a fixture's meaning changes on purpose**, and re-run the 
 assertions in `crates/ledgeline-core/tests/convert_tabular.rs` name specific cells, sheet names
 and note counts.
 
+## `generate/headers/` — the rules-file GENERATOR's corpus
+
+Seven real-shaped bank export **header rows** (plus a few data rows each), for
+`crates/ledgeline-core/src/rules/generate.rs` — the module that drafts a `*.rules` file for a CSV
+that has none. Driven by `crates/ledgeline-core/tests/rules_generate.rs`.
+
+The house rule above carries over unchanged: every file is a shape some real exporter writes, and
+each exists to make exactly **one wrong implementation** fail. What is different is the oracle.
+These fixtures have two, and both are used:
+
+| Oracle | What it proves |
+| --- | --- |
+| the per-fixture assertions | the mapping, the date format and the decimal mark are the ones we meant |
+| **real hledger** (`LEDGELINE_HLEDGER_GENERATE_CHECK=1`) | the drafted file actually imports — every row arrives, every posting has an amount, and the numbers are right |
+
+The second is the one that matters, for `docs/imports.md`'s fact 4: **parse success is not a
+matching signal.** A drafted file that is valid hledger syntax and produces garbage exits 0.
+
+| File | What it proves |
+| --- | --- |
+| `chase-checking.csv` | The date column is `Posting Date`, not `Date` — a synonym table that only knows the bare word maps nothing here. `Details` holds the *words* `DEBIT`/`CREDIT` and must not become an amount column; `Type` and `Check or Slip #` are nobody's field and are **named, not mapped**, so `%type` stays reachable |
+| `capitalone-card.csv` | **Two** date columns. The second is `date2` rather than dropped — a demotion, so its confidence is lower than the winner's. Also the split `Debit`/`Credit` scheme, and a `Category` column that must stay `%category` rather than being guessed at |
+| `uk-current-account.csv` | Day-first dates (`31/01/2026`), unambiguously — some sample has a day > 12. Every cell carries `£`, so **no `currency` is declared**: the directive is a blind string prefix and would produce `££3.60`, a distinct commodity, at exit 0 |
+| `euro-decimal-comma.csv` | Decimal commas, dotted day-first dates, and a per-row `Currency` column. The `-1.500` row is the one that bites — see below |
+| `paypal-activity.csv` | Three amount-shaped columns (`Gross`, `Fee`, `Net`) and not one named anything hledger knows, so the **value-shaped fallback** claims the first at low confidence. And `Status`, whose values are `Completed`/`Pending`, which must never reach hledger's own `status` field (it wants `*`/`!`) |
+| `ambiguous-dates.csv` | Every date component ≤ 12, so nothing in the data can tell month-first from day-first: the draft must say so rather than pick silently. Also offers a signed `Amount` *and* `Debit`/`Credit`, and hledger errors on a record with two non-zero amounts — so exactly one scheme may be mapped |
+| `thousands-trap.csv` | The US mirror of the euro trap: `-1,200` is twelve hundred dollars |
+
+### The whole-thousands row, and why both files have one
+
+`euro-decimal-comma.csv` carries `-1.500` and `thousands-trap.csv` carries `-1,200`, and both
+rows exist for one reason: **they are the only shape that discriminates.**
+
+A lone separator followed by exactly three digits is ambiguous, and hledger resolves it by
+assuming a decimal point. So `-1,200` is read as −1.2 and `-1.500` as −1.5 — a factor of a
+thousand — and `print` re-renders each one *exactly as it was written*, so the error appears
+nowhere in hledger's own output. Measured against 1.52:
+
+| cell | no `decimal-mark` | `decimal-mark .` | `decimal-mark ,` |
+| --- | --- | --- | --- |
+| `-1,200` | −1.200 | **−1200** | −1.200 |
+| `-1.500` | −1.500 | −1.500 | **−1500** |
+
+A value carrying **both** separators (`2.400,00`) is resolved correctly with no directive at all,
+which is why the original fixtures could not prove anything: the check passed against a generator
+that emitted no `decimal-mark` whatsoever. `the_decimal_mark_the_generator_chose_is_the_one_that_changes_the_number`
+therefore runs each file **twice** — as drafted, and with the `decimal-mark` line stripped out —
+and asserts the **wrong** answer as well as the right one.
+
+## `generate/isolated/` — report litter left in the data area
+
+Two files, driven by the same `rules_generate.rs`. A **sibling** of `headers/` rather than two
+more files in it, because `headers/`'s corpus-wide properties are stated in absolute terms —
+`hledger_reads_what_the_generator_drafts` asserts every data row becomes a transaction — and the
+whole point of the first file here is that it deliberately imports one row **fewer** than it
+carries.
+
+| File | What it proves |
+| --- | --- |
+| `quickbooks-label.csv` | The reported shape. A header row, then **one** row holding the words `General Ledger` in a column that has no header and nothing else in it anywhere, then seven transactions. `convert` cannot help: preamble and trailer trimming work from the *ends* of a table, so a one-cell row sandwiched between the header and the data is neither, and it arrives as a record. Handed to hledger it is not one odd row among seven good ones — hledger **abandons the entire read** on the first record it cannot date, so the answer is a hard failure and *zero* transactions |
+| `check-number.csv` | The false positive, and the reason the detector needs two conditions rather than one. `Check Number` is populated on three rows of eight — **sparser** than the label column above — and a detector keyed on column sparsity alone drafts a rule dropping every check the user wrote, silently, at exit 0. Those rows carry a date, a payee and an amount, so they are not isolated however empty the column is |
+
+### Why the wrong answer is asserted here too
+
+`the_drafted_exclusion_leaves_out_the_label_row_and_nothing_else` runs `quickbooks-label.csv`
+**twice**: once as drafted, and once with the trailing `if`/`skip` block stripped out — what a
+generator that never looked for a report label would have written. The second run is asserted to
+be a *failure*, and to be one whose message names `General Ledger`.
+
+Without that half the test would pass against a generator that had instead learnt to drop the row
+during **conversion**, which is a different and much more dangerous fix: it would take the row out
+of the file hledger reads without leaving anything in the rules file to say so, and the next
+statement dropped on the same rules file would behave differently for reasons nothing recorded.
+
 ## Running the checks
 
 ```sh
 cargo test -p ledgeline-core --test convert_tabular   # every fixture here, plus the properties
+cargo test -p ledgeline-core --test rules_generate    # the generator, hermetically
+LEDGELINE_HLEDGER_GENERATE_CHECK=1 \
+  cargo test -p ledgeline-core --test rules_generate  # ...and against the real binary
 ```
 
 ## Adding a fixture

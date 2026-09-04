@@ -175,6 +175,22 @@ impl From<EditError> for AppError {
             | EditError::Parse(_)
             | EditError::Decimal(_)
             | EditError::Internal(_) => Self::Internal(message),
+            // Reached only if a `BulkTransaction` escapes unwrapped — in the
+            // current wiring `edit_api::apply_additions` always destructures it
+            // (to recover the attributable index) before any `EditError` of
+            // this shape reaches a `?`/`From` conversion, so this arm exists
+            // for exhaustiveness rather than a route anything takes today. A
+            // `BulkTransaction` is exactly its wrapped failure, just attributed
+            // to one input transaction, so it gets the SAME classification —
+            // with THIS variant's own message (which names the batch position).
+            EditError::BulkTransaction { source, .. } => match Self::from(*source) {
+                Self::BadRequest(_) => Self::BadRequest(message),
+                Self::NotFound(_) => Self::NotFound(message),
+                Self::Conflict(_) => Self::Conflict(message),
+                Self::EditingDisabled(_) => Self::EditingDisabled(message),
+                Self::Unavailable(_) => Self::Unavailable(message),
+                Self::Internal(_) => Self::Internal(message),
+            },
         }
     }
 }

@@ -14,7 +14,7 @@
     // inline rather than replacing this panel with a spinner. The commit it sits
     // inside is the async surface.
     import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {reorderOffer, writtenLines} from "../importModel";
+    import {gitCommitFailure, reorderOffer, writtenLines} from "../importModel";
     import type {CommitResult} from "../importTypes";
 
     let {
@@ -48,6 +48,15 @@
                     <li>{line}</li>
                 {/each}
             </ul>
+
+            {#if gitCommitFailure(commit) !== null}
+                <!-- The journal itself was already written correctly (git.rs's own rule) —
+                     this is the bonus commit step failing, e.g. a rejecting pre-commit hook,
+                     surfaced rather than silently dropped. -->
+                <p class="text-sm text-warning" role="alert" data-testid="imports-git-commit-failed">
+                    Git commit failed: {gitCommitFailure(commit)}
+                </p>
+            {/if}
 
             {#if reorderOffer(commit) !== null && sortMoved === null}
                 <!-- `flex` before `flex-col`: `.alert` is a grid with

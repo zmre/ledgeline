@@ -9,9 +9,9 @@ Three surfaces behind one nav item, each with its own tab:
   hands to `hledger --alias`. See § Account aliases, and § The two homes an alias can live in for
   why the same mapping in an `hledger.conf` is a different thing.
 
-Rules-file scope: **discover, present, edit, save.** Still not in scope: generating a rules file
-from a CSV, and writing a chosen category back as a new `if` rule. The model below is shaped so
-each of those slots in additively.
+Rules-file scope: **discover, present, edit, save, and draft a new one from a dropped CSV.** Still
+not in scope: writing a chosen category back as a new `if` rule. The model below is shaped so that
+slots in additively.
 
 Raw text editing is deliberately *not* offered — that is what a terminal is for. The GUI covers
 preferences, the row mapping, the two default accounts, and an ordered list of `if` rules.
@@ -28,12 +28,14 @@ why.
 | `crates/ledgeline-core/src/rules.rs` | The format-preserving document model: parse, classify, render, `EditPlan`/`apply`/`verify` |
 | `crates/ledgeline-core/src/rules/discovery.rs` | The directory scan, `RulesPath`, `Discovery::resolve`, the CSV preview |
 | `crates/ledgeline-core/src/rules/matching.rs` | Scoring a rules file against dropped data — the two-stage matcher |
+| `crates/ledgeline-core/src/rules/generate.rs` | Drafting a NEW rules file from a CSV: column guessing, `date-format`, `decimal-mark` |
 | `crates/ledgeline-core/src/convert/` | Statement preprocessors: `ofx`, `spreadsheet`, `delimited`, shared `encoding` |
+| `crates/ledgeline-core/src/reimport.rs` | Matching a re-downloaded statement against the journal by row id, and the four-way split that follows |
 | `crates/ledgeline-core/src/sort.rs` | Format-preserving date sort of a journal file |
 | `crates/ledgeline-core/src/journals.rs` | Ranking candidate target journals, by content only |
 | `crates/ledgeline-core/src/aliases.rs` | `alias` directives: forwarding them to `--alias`, and the one-line-wide span editor |
 | `crates/ledgeline-core/src/hledger_conf.rs` | `hledger.conf`: reading its `--alias` options, and the escaping rule for writing one |
-| `crates/ledgeline-server/src/rules_api.rs` | `/api/rules`, `/api/rules/{*id}`, `/api/rules-preview/{*id}` |
+| `crates/ledgeline-server/src/rules_api.rs` | `/api/rules`, `/api/rules/{*id}`, `/api/rules-preview/{*id}`, `/api/rules-create` |
 | `crates/ledgeline-server/src/alias_api.rs` | `/api/aliases`, `/api/aliases/{*journalId}` |
 | `crates/ledgeline-server/src/{hledger,git,prefs}.rs` | Subprocess invocation, the git safety net, the preferences store |
 | `web/src/lib/imports/` | Pure form model, reorder, date-format catalogue, store, UI |
@@ -372,6 +374,113 @@ into a copy of the same journal by a real `hledger import`, and the two files ar
 byte. With nothing re-styling the proposal in between, that now describes **every** journal rather
 than only the ones declaring no commodity style.
 
+## Matching a re-download by row id
+
+> **hledger de-duplicates by DATE. A statement you download twice is not a date problem.**
+
+`.latest.NAME` holds the newest imported date, and every row at or before it is dropped. That is
+exactly right for an append-only download and exactly wrong for the YTD-redownload workflow, where
+the same row arrives twice: once as an authorization hold, and again once it settles. The second
+copy sits *behind* the marker, is never proposed, and the journal keeps the pending version
+forever. `TODO.md` names it, and names the sharper half — the dry-run's "N rows skipped" count
+**cannot distinguish "already imported identically" from "already imported differently"**.
+
+### The id is the bank's, and it needs no new grammar
+
+OFX/QFX/QBO give every transaction a `FITID`, which `convert::ofx` already emits as the `fitid`
+column. A rules file names it as the dedup id with one ordinary line:
+
+```
+comment id:%fitid
+```
+
+`comment` is a top-level assignable field, so this needs nothing added to `rules.rs`. Verified end
+to end against hledger 1.52:
+
+```console
+$ hledger print -f bank.csv --rules bank.csv.rules
+2026-01-05 ! COFFEE SHOP  ; id:FIT0001
+    assets:bank:checking           -4.50
+    expenses:unknown                4.50
+$ hledger print -f bank.csv --rules bank.csv.rules -O json | jq '.[0].ttags'
+[["id","FIT0001"]]
+```
+
+…and, the half that actually matters, through **our own** parser: `parse.rs`'s tag extraction lands
+`("id", "FIT0001")` in `Transaction.tags`, which is what `reimport.rs` reads. hledger's JSON is
+never consulted at runtime. The tag key is plain `id` rather than a Ledgeline-private spelling,
+because the rules file has to stay readable to somebody running hledger from a terminal.
+
+### An id may subtract from an import. It may never add to one.
+
+This is the safety property the whole feature rests on, and it is asymmetric on purpose.
+
+Journals hold transactions imported **before** the rules file grew its `comment id:` line, and
+those carry no id at all. If a missing id were ever read as "this row is new", the first
+re-download after adding that line would duplicate every untagged transaction in the file. So:
+
+- rows are **classified** against the dedup-free proposal — the run with no `.latest` beside the
+  CSV, which `skipped_by_dedup` already performed and now shares — because the rows worth talking
+  about are precisely the ones the marker hides;
+- rows are **filtered out of** the ordinary proposal, which is the text a commit appends. Nothing
+  is ever filtered *in*.
+
+Four outcomes per row, and only two of them touch anything:
+
+| | what happens |
+| --- | --- |
+| `new` | no transaction carries this id — imported as usual, still subject to `.latest` |
+| `unchanged` | the journal already holds it, identically — not imported, not edited, counted |
+| `statusChanged` | **only** the clearing status differs — the hold that settled. Synced |
+| `conflicting` | something a status flip cannot express differs — reported with the diff, **never** imported and **never** edited |
+
+**"Status-only" means only status.** A hold that settled for a different amount (the tip added at
+the till) is `conflicting`, not a sync. And a rules file that assigns no `status` field at all can
+produce no status-only row *whatsoever*: every proposed row is then unmarked, so a `*` the user
+typed by hand would read as a status-only difference and syncing it would rub out their own mark.
+Whether the file assigns one is answered from hledger's own output — `import` never marks a
+transaction by itself — rather than by reading the rules file.
+
+The comment is deliberately **not** compared. It is where a person annotates a transaction they
+have already imported (`; id:FIT0001, reimbursed by work`), and reading a note as a conflict would
+report one for every transaction anybody had ever written on.
+
+### The status flip is the ordinary transaction editor
+
+No new write path was built for this. `JournalEditor::set_status` already rewrites exactly one
+header line's `*`/`!` marker and re-parses to prove it, and `edit_api::set_statuses` drives it
+through the same `lock_editor` → `bound` → `save_and_publish` sequence, with the same re-sync on a
+partial failure, that `PATCH /api/transactions/{index}` has always used.
+
+Three things about *when* and *where*:
+
+- **It is the last write of a commit**, after the append and the catch-up. The rows it touches are
+  rows this import did not import, so nothing above depends on it, and a failure leaves an import
+  that landed rather than a journal half-written — a state the next run of the same import repairs
+  by itself, which the error says.
+- **It resolves rows by id under the editor lock, never by a `Tindex` taken earlier.** The append
+  moved every transaction after the target file's own end, so `set_statuses` takes a callback and is
+  handed the journal the editor is holding at the moment of the write. A stale index is
+  unrepresentable rather than merely avoided.
+- **It is confined to the import's own target file.** The id index spans the whole tree — a row
+  already imported into an `include`d file is still a row this statement must not import again — but
+  the *write* is confined to `journalId`: the one file whose git state this request checked before
+  committing, and the one its git commit carries. A match outside it is reported with
+  `applied: false` rather than written somewhere the request had no way to offer to undo. A status
+  sync therefore adds **no path** to a commit's blast radius.
+
+Nothing is ever written on a dry-run, so `applied` is `false` throughout a preview.
+
+### Opt-in, byte for byte
+
+A rules file that names no id gets `"idMatches": null` — not an empty object; "there is no id to
+match on" and "there is, and nothing matched" are different answers — and the proposal is passed on
+as the same `String` hledger produced, never through the filter at all. Even when the filter *does*
+run and finds nothing to drop it hands back the borrowed input, so the untouched path cannot differ
+by a byte. `fixtures/import/reimport/pending-then-cleared/` carries `no-id.csv.rules` beside
+`bank.csv.rules` — the same file minus that one line — precisely so the two can be run against the
+same statement and compared.
+
 ## The one invariant everything rests on
 
 > **Item spans partition the file exactly.** `items[0].span.start == 0`, each item ends where the
@@ -402,17 +511,33 @@ Two obligations, kept strictly separate. Conflating them is how a span editor co
 > **(B) Classification may be as narrow as we like.** Anything unclassified is opaque:
 > byte-preserved, listed in order, still reorderable. When in doubt, opaque.
 
-An `if` block is editable only if every matcher is plain (no `&`, `&&`, `!`), has no match group, and
-does not begin with `;`/`#`/`*`; every body line is a known field assignment; and there is no
-`skip`/`end`. Everything else — `if` tables, combined matchers, match groups, control flow — renders
-as a dimmed read-only card that says *why* it is locked, and can still be moved.
+An `if` block is editable only if every matcher is plain, a **plain line-prefix `&`
+AND-continuation**, or one piece of a **same-line `&&` join** (no `!`, no leading `&`/`&&` on the
+*first* matcher line), has no match group, and does not begin with `;`/`#`/`*`; every body line is a
+known field assignment or a **bare** `skip`/`end`. Everything else — `if` tables, negated matchers,
+match groups, `skip N` — renders as a dimmed read-only card that says *why* it is locked, and can
+still be moved.
+
+A block's matchers are therefore an **OR of AND-groups**: a plain line opens a new OR branch, and
+each `&` line below it — plus each `&&`-joined piece on any of those lines — is AND-ed onto that
+branch. `if\nA\n& B\nC\n& D` selects `(A and B) or (C and D)`, and so does `if\nA && B\nC && D`. The
+two spellings compose: `if\nFIRST\n& SECOND && THIRD\nFOURTH` is `(FIRST and SECOND and THIRD) or
+FOURTH`. Neither combinator is content — the model carries the AND as *nesting*
+(`groups[].matchers[]` on the wire), so no matcher pattern anywhere can contain one, and the renderer
+only ever *writes* the line-prefix form.
+
+A block may also carry hledger's control flow, as `control: "skip" | "end"` beside the assignments
+rather than as an assignment: `skip` drops the matching row and `end` stops reading at it. A block
+whose whole body is one of those is legal and needs no assignment at all. Reordering such a block
+among other blocks does not change a single imported row (verified), so the rules list moves it like
+any other.
 
 Order is semantics: every matching block applies and the **last** assignment to a field wins. The UI
 says "later matches win" for that reason.
 
-### Three grammar facts that are easy to get wrong
+### Grammar facts that are easy to get wrong
 
-Verified against hledger 1.52's `RulesReader.hs`, not just the manual:
+Verified against hledger 1.52's `RulesReader.hs` **and the binary**, not just the manual:
 
 - A **matcher line must start at column 1** with a non-space character. A body line must be indented.
   An indented *blank* line is consumed by the block; a truly empty line ends it.
@@ -420,6 +545,29 @@ Verified against hledger 1.52's `RulesReader.hs`, not just the manual:
   a block rather than cement a reading the author almost certainly did not intend.
 - Field-assignment values run **verbatim to end of line** — no comment stripping. `account2 x ; note`
   assigns the literal `x ; note`.
+- The `&` AND-prefix takes **optional** whitespace: `&B`, `& B` and `&\tB   ` are one matcher, and
+  the pattern is trimmed at both ends. It works under an inline `if X` header as well as under a
+  bare `if`. An **indented** `& B` is not a matcher line at all and hledger rejects the file for it.
+- `&` is a prefix only at the head of a matcher line. In `%description &COFFEE` the `&` is a literal
+  ampersand in the regex, so that matcher hits nothing containing plain `COFFEE`.
+- A **leading `&` on the first matcher line** (`if\n& X`) is accepted by hledger and is a no-op — it
+  imports exactly what `if\nX` does. We keep it opaque rather than promise to preserve it.
+- A **same-line `&&` is unconditionally** hledger's AND operator, and we read it as one. The split
+  needs no surrounding whitespace (`foo&&bar` splits), and there is **no escape**: `[&][&]` and
+  `\&\&` read as one regex only because neither holds two *adjacent* ampersands. A single `&` is
+  ordinary content, so `A&B && C` is `AND(A&B, C)`.
+- **Three or more consecutive ampersands** stay opaque. hledger splits at the *first* `&&` and reads
+  the remainder verbatim — `A&&&B` is `AND(A, &B)` and `A&&&&B` is `AND(A, &&B)` — so splitting on
+  every `&&` would silently mean something else. An **empty piece** stays opaque too: hledger rejects
+  `if A &&` outright, and `if && A` is an AND with an everything-matching empty regex.
+- A **line-leading `&&`** really is an AND-continuation to hledger, same as `&` (`if A\n&& B` and
+  `if A\n& B` import identically). We keep it opaque anyway: one `&` already spells continuation, and
+  a second spelling buys nothing but a second thing to get wrong.
+- **Block-level `skip`/`end` take no argument**, and `skip N` is a *different* construct: verified,
+  `skip 2` drops the matching record **and the one after it**, so only the bare form is modelled.
+  hledger accepts a control word alongside ordinary assignments (the assignment is simply never
+  used), and accepts both words in one block (`end` wins) — the second we keep opaque, because one
+  `control` field cannot say there are two.
 
 An `if` **table**'s extent is terminated by a blank line, so when something is placed after a table
 that ran to EOF, the renderer supplies that blank line. Without it the new rule would be read back as
@@ -587,6 +735,17 @@ account name in someone's books, and Rust's `regex` crate is a different dialect
 would be a silent wrong answer; declining is a visible one. The Account Aliases tab says so in as
 many words, and a test pins the sentence.
 
+**The one narrow, deliberate exception** is the QuickBooks Online Journal import (WP-17;
+`plans/17-quickbooks-journal-import.md`). That pipeline cannot go through `hledger import` at all
+(there is no rules-file construct for "keep reading rows until a total line closes the group"), so
+it has to compute an account's hledger name itself before it can write a transaction. It does the
+narrowest possible version of what this section otherwise refuses: **plain** (non-regex) alias
+matching only — exact string equality, plus hledger's own rule that a plain alias also matches a
+prefix ending at `:` (the same rule `hledger_conf::conf_argument`'s module docs verify: "it
+rewrites `a` and `a:sub` and leaves `abc` alone"; see `ledgeline_core::qb_import`'s module docs for
+the full argument). A `/REGEX/` alias is never eligible there either; the account it might have
+matched is simply reported unmapped.
+
 ### What the editor refuses to model
 
 Same discipline as the rules editor, one line wide. `AliasDoc` splices **only** the pattern and
@@ -636,6 +795,39 @@ config file with the reason, and offers the one-click fix. `web/src/lib/imports/
 every sentence and every decision (`parityNotice`, `parityWarning`, `parityFixLabel`,
 `canInstallParityFix`); `ui/DryRunPanel.svelte` only renders them.
 
+## Importing a QuickBooks Online Journal export
+
+A second, separate import pipeline (WP-17; `plans/17-quickbooks-journal-import.md` has the full
+design). QuickBooks Online's "Journal" report is multi-row-per-transaction and already
+double-entry — hledger's CSV rules engine has no construct for "keep reading rows until a total
+line closes the group," so this format cannot go through `hledger import` at all. Ledgeline parses
+it itself (`ledgeline_core::qb_journal`) and writes transactions directly
+(`ledgeline_core::edit::JournalEditor::add_transaction`), matching each QuickBooks account against
+the journal's own plain aliases (see "The one narrow, deliberate exception" above) rather than
+guessing. Dropping a `.xlsx` export onto New Transactions is detected automatically and switches to
+a dedicated panel; the same file also works from the command line
+(`ledgeline import -i Journal.xlsx -j main.journal`, no `-o`/`-r` — see `ledgeline import --help`).
+
+**Getting the export**, in QuickBooks Online:
+
+1. **Reports → Journal.**
+2. Choose the time frame.
+3. Optionally **Customize → Rows/Columns** to add the `Vendor`, `Customer` and `Class` columns —
+   Ledgeline reads and preserves them as tags (`vendor:`/`customer:`/`class:`) when present, and
+   does nothing different when they are absent.
+4. **Export to Excel** (not CSV — the customized-column `.xlsx` is what Ledgeline reads; a plain CSV
+   export loses the columns that make detection and the class/customer/vendor tags possible).
+
+**Re-downloading is safe, including overlapping time frames, including re-running "All Dates" every
+time.** Every transaction is tagged with QuickBooks' own Trans # (`id:…`), so one already in the
+journal is recognized and left alone no matter how many times its row reappears in a wider export —
+the same id-based matching the CSV/OFX path's re-download handling uses (see "Matching a re-download
+by row id" above). This is worth relying on deliberately: re-running "All Dates" is the recommended
+habit, not something to work around by fiddling with date ranges to avoid overlap. A transaction
+already in the journal but changed on QuickBooks' side (a hand-edit, most likely, since it is more
+probable the user changed it locally than that history changed) is reported as a conflict and never
+silently overwritten.
+
 ## Security
 
 A `PUT` keyed by a client-supplied path is a **write-anywhere primitive** — strictly worse than the
@@ -663,6 +855,38 @@ through the user's shell. So `source`, `archive` and `include` can be kept, move
 written. Without that rule this endpoint would be a remote-code-execution primitive. For the same
 reason the test suite **never runs hledger against a user's file**, only against fixtures we author.
 
+### Creating a file: the one place a client string becomes a path
+
+> **Layer 2 cannot serve a CREATE.** `Discovery::resolve` only ever returns a file the scan already
+> found; a file that does not exist yet cannot be found. So `Discovery::resolve_new` performs the
+> **only `root.join(id)` in either crate**, and every guard below is what earns it.
+
+1. **Shape**, before any filesystem call — deliberately a *second* copy of the question
+   `validate_id` asks, because neither layer may assume the other ran.
+2. **Discoverability.** No hidden component, and none in the scan's `SKIP_DIRS`. Not a security
+   guard so much as a coherence one: creating a file the scan will never list would write something
+   the user cannot then open, which is worse than refusing.
+3. **Confinement**, via the same `parse::confine` everything else here uses.
+4. **A real, non-symlink parent directory.** **No directory is ever created** — a rules file goes
+   beside a journal that already exists.
+5. **Nothing already at the name.**
+
+Guard 5 is *not* what makes it safe, and must not be read as if it were: it expires the moment it
+returns. The write is `create_new` — `O_EXCL` — so the refusal is the **kernel's**, decided
+atomically at the open. `edit::atomic_write` is deliberately not used: its rename-over-the-top is
+exactly the property that makes it right for a save and wrong for a create.
+
+Two of the four refusals collapse into the ordinary `404`. "Resolves outside the root" and "that
+directory is not there" are answers *about the filesystem*, and a route that told them apart would
+report whether `/etc/ledgeline/` exists. "Already exists" is safe to report as itself, because it is
+only reachable for a confined, non-hidden `*.rules` name below the root — precisely the set
+`GET /api/rules` already publishes.
+
+Content provenance is unchanged, and that is the point of routing the write through the ordinary
+`PUT`: a create is a `revision: ""` request over the same typed item vocabulary, rendered by the
+same renderer. `POST /api/rules-create` itself **writes nothing at all** — it drafts, and the user
+saves. Drafting a plausible file and writing one stay separate, separately-testable operations.
+
 ## Concurrency
 
 Each response carries a `revision` — a fingerprint of the file's **raw bytes**. A save must echo it,
@@ -680,7 +904,9 @@ no transaction, so routing it through a reload would cost a full reparse for not
 just rules-check           # every fixture is a rules file REAL hledger accepts
 cargo test -p ledgeline-core --test rules            # round-trip + isolation + properties
 cargo test -p ledgeline-core --test rules_security   # the scan's guards
+cargo test -p ledgeline-core --test rules_generate   # drafting a new file from a CSV
 cargo test -p ledgeline --test rules_endpoints
+cargo test -p ledgeline --test rules_create_endpoints  # the create boundary
 just snapshot-rules-wire   # ONLY when the wire contract changed on purpose
 
 # New Transactions
@@ -689,21 +915,31 @@ cargo test -p ledgeline-core --test convert_tabular  # delimited + spreadsheet
 cargo test -p ledgeline-core --test matching         # rules-file scoring
 cargo test -p ledgeline-core --test sort             # format-preserving date sort
 cargo test -p ledgeline-core --test journals         # target ranking, by content only
+cargo test -p ledgeline-core --lib reimport          # the id classifier's four-way split
+cargo test -p ledgeline-core --test reimport         # …over the committed re-download corpus
 cargo test -p ledgeline --test prefs          # prefs store + hledger resolution
 cargo test -p ledgeline --test git_commit     # the git safety net
 cargo test -p ledgeline --test import_endpoints  # the /api/import/* routes
 ```
 
-Five opt-in checks shell out to a real binary and are therefore **not** part of `cargo test`,
-which stays hermetic:
+The opt-in checks shell out to a real binary and are therefore **not** part of `cargo test`, which
+stays hermetic. `just hledger-checks` runs all of them:
 
 ```sh
 LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
 LEDGELINE_HLEDGER_MATCH_CHECK=1  cargo test -p ledgeline-core --test matching
+LEDGELINE_HLEDGER_GENERATE_CHECK=1 cargo test -p ledgeline-core --test rules_generate
+LEDGELINE_HLEDGER_REIMPORT_CHECK=1 cargo test -p ledgeline-core --test reimport
 LEDGELINE_HLEDGER_SORT_CHECK=1   cargo test -p ledgeline-core --test sort
 LEDGELINE_HLEDGER_LAYOUT_CHECK=1 cargo test -p ledgeline-core --test journals
 LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_endpoints
+LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_cli
 ```
+
+`reimport`'s variant is the only thing that proves the one hledger-facing grammar claim this
+feature makes: that `comment id:%fitid` becomes a tag hledger writes, hledger reads back, **and our
+own parser reads back**. The first two could both hold while the third failed, and then nothing
+would ever match.
 
 `import_endpoints`' gated half is where the whole import *sequence* is proved: that the
 proposed entries come from stdout and the status line from stderr, that a row `.latest` would

@@ -84,6 +84,7 @@
 
 use crate::model::{AliasDirective, Journal};
 use crate::rules::Newline;
+use std::cmp::Reverse;
 use std::ops::Range;
 use std::path::Path;
 use thiserror::Error;
@@ -386,9 +387,16 @@ pub enum AliasEdit {
 ///
 /// Unlike `rules::EditPlan` there is no `order`, and omission is *not* an error:
 /// this plan cannot reorder or delete by omission, so a client that sends one
-/// edit changes one line. Reordering aliases is deliberately not offered —
-/// aliases are positional, so a reorder is a semantic change wearing a
-/// cosmetic's clothes.
+/// edit changes one line. Reordering EXISTING aliases is deliberately not
+/// offered — aliases are positional, so a reorder is a semantic change
+/// wearing a cosmetic's clothes.
+///
+/// The one exception: multiple [`AliasEdit::Append`]s in the same plan are
+/// free to arrive in any order, but are always WRITTEN in descending pattern
+/// length (see [`AliasDoc::specificity_ordered`]) — not the client's array
+/// order — so a batch that appends both a parent account's alias and one of
+/// its subaccounts' never lets the shorter, broader pattern shadow the
+/// longer, more specific one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AliasPlan {
     /// The changes, in any order. At most one per existing line.
@@ -548,9 +556,11 @@ impl AliasDoc {
             }
         }
 
-        // Then the appended ones, which sit after every survivor.
+        // Then the appended ones, which sit after every survivor, in the same
+        // specificity order `splices` actually wrote them in — not
+        // `plan.edits`'s own order.
         let mut tail = reparsed.lines[survivors.len()..].iter();
-        for edit in &plan.edits {
+        for edit in &Self::specificity_ordered(&plan.edits) {
             if let AliasEdit::Append {
                 pattern,
                 replacement,
@@ -574,8 +584,9 @@ impl AliasDoc {
     /// The ordered, non-overlapping `(span, text)` list one plan splices.
     fn splices(&self, plan: &AliasPlan) -> Result<Vec<(Span, String)>, AliasError> {
         self.check_plan(plan)?;
+        let ordered = Self::specificity_ordered(&plan.edits);
         let mut splices: Vec<(Span, String)> = Vec::new();
-        for edit in &plan.edits {
+        for edit in &ordered {
             match edit {
                 AliasEdit::Replace {
                     index,
@@ -606,6 +617,51 @@ impl AliasDoc {
         }
         splices.sort_by_key(|(span, _)| (span.start, span.end));
         Ok(splices)
+    }
+
+    /// Reorder one plan's [`AliasEdit::Append`]s by descending pattern length,
+    /// leaving every other edit exactly where it was.
+    ///
+    /// All appends in one plan land at the same [`Self::insertion_point`], so
+    /// their relative order among themselves is otherwise whatever order the
+    /// client happened to send — and both `resolve_account`
+    /// (`crate::qb_import`) and hledger's own `--alias` composition are
+    /// first-match-wins in file order. A parent account's alias
+    /// (`4000 Sales Revenue = revenue:sales`) is a colon-segment PREFIX of one
+    /// of its subaccounts' raw name (`4000 Sales Revenue:4021 Enterprise
+    /// Subscription`), so if the parent's line lands first, its own
+    /// prefix-cascade rule silently resolves the subaccount before the
+    /// subaccount's own, more specific alias is ever reached — even though
+    /// both were typed in the same batch. A colon-segment prefix is always
+    /// shorter than what it prefixes, so sorting by descending length puts
+    /// every subaccount's own alias ahead of any ancestor's, without needing
+    /// to parse the colon structure at all. Ties (unrelated patterns of equal
+    /// length) keep their original relative order — the sort is stable, and
+    /// two patterns that don't prefix one another are never order-dependent
+    /// in the first place.
+    fn specificity_ordered(edits: &[AliasEdit]) -> Vec<AliasEdit> {
+        let mut appends: Vec<AliasEdit> = edits
+            .iter()
+            .filter(|edit| matches!(edit, AliasEdit::Append { .. }))
+            .cloned()
+            .collect();
+        appends.sort_by_key(|edit| match edit {
+            AliasEdit::Append { pattern, .. } => Reverse(pattern.len()),
+            AliasEdit::Replace { .. } | AliasEdit::Delete { .. } => {
+                unreachable!("filtered to Append above")
+            }
+        });
+        let mut appends = appends.into_iter();
+        edits
+            .iter()
+            .map(|edit| {
+                if matches!(edit, AliasEdit::Append { .. }) {
+                    appends.next().expect("as many appends as were filtered in")
+                } else {
+                    edit.clone()
+                }
+            })
+            .collect()
     }
 
     /// Where an [`AliasEdit::Append`] puts its line.
@@ -1151,6 +1207,79 @@ mod tests {
             .map(|alias| alias.pattern.as_str())
             .collect();
         assert_eq!(in_force, vec!["two"], "the new alias must be in force");
+    }
+
+    #[test]
+    fn a_batch_of_appends_writes_the_more_specific_pattern_first_regardless_of_input_order() {
+        // The reported real-world shape: a parent account's own alias is a
+        // colon-segment prefix of one of its subaccounts', and both are typed
+        // into the same "map every unmapped account" batch. If the shorter,
+        // parent pattern lands first, `qb_import::resolve_account`'s
+        // first-match-wins prefix cascade would resolve the subaccount via
+        // the PARENT's alias before ever reaching the subaccount's own.
+        let parsed = doc("2026-01-01 x\n    a  $1\n    b\n");
+        let plan = AliasPlan {
+            edits: vec![
+                AliasEdit::Append {
+                    pattern: "4000 Sales Revenue".to_string(),
+                    replacement: "revenue:sales".to_string(),
+                    regex: false,
+                },
+                AliasEdit::Append {
+                    pattern: "4000 Sales Revenue:4021 Enterprise Subscription".to_string(),
+                    replacement: "revenue:sales:enterprise-subscription".to_string(),
+                    regex: false,
+                },
+            ],
+        };
+        let out = parsed.apply(&plan).unwrap();
+        assert_eq!(
+            out,
+            "2026-01-01 x\n    a  $1\n    b\n\
+             alias 4000 Sales Revenue:4021 Enterprise Subscription = revenue:sales:enterprise-subscription\n\
+             alias 4000 Sales Revenue = revenue:sales\n"
+        );
+        parsed.verify(&plan, &out).unwrap();
+
+        let journal = parse_journal(&out, "t.journal").unwrap();
+        let aliases: Vec<&AliasDirective> = journal.aliases_in_force().collect();
+        assert_eq!(
+            crate::qb_import::resolve_account(
+                "4000 Sales Revenue:4021 Enterprise Subscription",
+                &aliases
+            ),
+            Some("revenue:sales:enterprise-subscription".to_string()),
+            "the subaccount's own, more specific alias must win, not the parent's cascade"
+        );
+        assert_eq!(
+            crate::qb_import::resolve_account("4000 Sales Revenue", &aliases),
+            Some("revenue:sales".to_string())
+        );
+    }
+
+    #[test]
+    fn appends_of_equal_length_keep_their_original_relative_order() {
+        let parsed = doc("2026-01-01 x\n    a  $1\n    b\n");
+        let plan = AliasPlan {
+            edits: vec![
+                AliasEdit::Append {
+                    pattern: "aaa".to_string(),
+                    replacement: "one".to_string(),
+                    regex: false,
+                },
+                AliasEdit::Append {
+                    pattern: "bbb".to_string(),
+                    replacement: "two".to_string(),
+                    regex: false,
+                },
+            ],
+        };
+        let out = parsed.apply(&plan).unwrap();
+        assert_eq!(
+            out,
+            "2026-01-01 x\n    a  $1\n    b\nalias aaa = one\nalias bbb = two\n"
+        );
+        parsed.verify(&plan, &out).unwrap();
     }
 
     #[test]

@@ -51,6 +51,7 @@
 // prove the panel renders what it is handed — and it renders what it is handed
 // perfectly well. What broke was WHICH value it reached for.
 
+import type {SaveRulesBody} from "$lib/api/native";
 import {rulesStore} from "$lib/imports/rulesStore.svelte";
 import {settings} from "$lib/stores/settings.svelte";
 import {FAKE_ENGINE} from "$lib/testing/fakeEngine";
@@ -124,8 +125,8 @@ const index = (revision: string) => ({
             revision,
             sizeBytes: 512,
             parsed: true,
-            ifBlockCount: 3,
-            editableBlockCount: 3,
+            ifBlockCount: 5,
+            editableBlockCount: 4,
             opaqueItemCount: 1,
             warnings: [],
         },
@@ -134,6 +135,8 @@ const index = (revision: string) => ({
 
 /** Every request the panel made, so a test can prove the PUT happened. */
 let calls: string[] = [];
+/** Every save body the panel sent, so a test can prove WHAT it saved and not merely that it did. */
+let puts: SaveRulesBody[] = [];
 
 /** One answer to one preview request. `park` holds the response open until a test releases it. */
 type PreviewReply = {json: unknown} | {fail: true};
@@ -190,7 +193,10 @@ function stubEngine(): void {
             if ("park" in answer) return new Promise<Response>((done) => parked.push((reply) => done(replyOf(reply))));
             return Promise.resolve(replyOf(answer));
         }
-        if (url.includes(`/api/rules/${ID}`)) return Promise.resolve(json(method === "PUT" ? AFTER : BEFORE));
+        if (url.includes(`/api/rules/${ID}`)) {
+            if (method === "PUT") puts.push(JSON.parse(String(init?.body)) as SaveRulesBody);
+            return Promise.resolve(json(method === "PUT" ? AFTER : BEFORE));
+        }
         if (url.endsWith("/api/rules")) return Promise.resolve(json(index(method === "PUT" ? AFTER.revision : GOLDEN.revision)));
         return Promise.resolve(new Response(`no route for ${url}`, {status: 404}));
     });
@@ -211,6 +217,7 @@ async function saveSkip(value: string): Promise<void> {
 
 beforeEach(async () => {
     calls = [];
+    puts = [];
     previewPlan = [{json: PREVIEW_OPENED}];
     previewCalls = 0;
     parked = [];
@@ -306,6 +313,92 @@ describe("COMPONENT EditRulesPanel", () => {
         expect(screen.queryByText("OLD-PREVIEW-ROW")).toBeNull();
         expect(screen.queryByTestId("imports-server-error")).toBeNull();
         expect(screen.getByTestId("imports-saved")).toBeDefined();
+    });
+
+    // The grouped shape, driven the way a user drives it: open one rule, add a
+    // condition to the group it already has, save, and read the body that went
+    // out. A rules file's AND is NESTING — flattening these two matchers into
+    // two groups would change the rule from "both" to "either" and every other
+    // assertion in this file would still pass.
+    it("saves an AND condition added to an existing group as nesting, not as a second group", async () => {
+        render(EditRulesPanel);
+        await screen.findByTestId("imports-open-file");
+
+        // Rules-list position 5 is the golden's AND-group block; 1 is the file's
+        // leading comment run, which is why the rules do not start at 1.
+        await fireEvent.click(await screen.findByRole("button", {name: "Edit rule 5"}));
+        expect((screen.getByLabelText("Rule 5, group 1, match 1 text") as HTMLInputElement).value).toBe("AIRLINE");
+        expect((screen.getByLabelText("Rule 5, group 1, match 2 text") as HTMLInputElement).value).toBe("^-");
+
+        await fireEvent.click(screen.getByRole("button", {name: "Add an AND condition to group 1 of rule 5"}));
+        await fireEvent.input(screen.getByLabelText("Rule 5, group 1, match 3 text"), {target: {value: "SEAT"}});
+        await fireEvent.click(screen.getByRole("button", {name: /^Save$/}));
+        await vi.waitFor(() => expect(puts).toHaveLength(1));
+
+        // Client validation never ran a complaint, and the one edited item is
+        // the only body — everything else is a `keep`.
+        expect(screen.queryByTestId("imports-client-errors")).toBeNull();
+        const bodies = puts[0]!.items.filter((item) => item.kind !== "keep");
+        expect(bodies).toEqual([
+            {
+                kind: "ifBlock",
+                id: 10,
+                groups: [
+                    {
+                        matchers: [
+                            {field: "description", pattern: "AIRLINE"},
+                            {field: "amount", pattern: "^-"},
+                            // Added conditions default to the whole row, which
+                            // the wire spells as an ABSENT `field` — `""` would
+                            // be a field named "" and the engine refuses it.
+                            {pattern: "SEAT"},
+                        ],
+                    },
+                ],
+                assignments: [{field: "account2", value: "expenses:travel:airfare"}],
+            },
+        ]);
+    });
+
+    it("saves a new OR group beside the one already there", async () => {
+        render(EditRulesPanel);
+        await screen.findByTestId("imports-open-file");
+
+        await fireEvent.click(await screen.findByRole("button", {name: "Edit rule 2"}));
+        await fireEvent.click(screen.getByRole("button", {name: "Add an OR group to rule 2"}));
+        await fireEvent.input(screen.getByLabelText("Rule 2, group 2, match 1 text"), {target: {value: "ESPRESSO"}});
+        await fireEvent.click(screen.getByRole("button", {name: /^Save$/}));
+        await vi.waitFor(() => expect(puts).toHaveLength(1));
+
+        expect(puts[0]!.items.filter((item) => item.kind !== "keep")).toEqual([
+            {
+                kind: "ifBlock",
+                id: 7,
+                groups: [{matchers: [{pattern: "COFFEE"}]}, {matchers: [{pattern: "ESPRESSO"}]}],
+                assignments: [{field: "account2", value: "expenses:food:coffee"}],
+            },
+        ]);
+    });
+
+    // The rules list is a display surface first: opening one rule must not open
+    // the file, and a save has to hand the list back to the summaries.
+    it("shows collapsed rules, opens one, and closes it again when the save lands", async () => {
+        render(EditRulesPanel);
+        await screen.findByTestId("imports-open-file");
+
+        // Four editable rules, all collapsed, plus the comment run and the `if`
+        // table — none of which has an editable field on screen.
+        const summaries = await screen.findAllByRole("button", {name: /^Edit rule /});
+        expect(summaries).toHaveLength(4);
+        expect(screen.getByText("IF description ~ AIRLINE AND amount ~ ^- → account2 = expenses:travel:airfare")).toBeDefined();
+
+        await fireEvent.click(screen.getByRole("button", {name: "Edit rule 2"}));
+        await fireEvent.input(screen.getByLabelText("Rule 2, group 1, match 1 text"), {target: {value: "ESPRESSO"}});
+        expect(screen.getByTestId("imports-dirty")).toBeDefined();
+
+        await fireEvent.click(screen.getByRole("button", {name: /^Save$/}));
+        await vi.waitFor(() => expect(screen.queryByRole("button", {name: "Close rule 2"})).toBeNull());
+        expect(screen.getAllByRole("button", {name: /^Edit rule /})).toHaveLength(4);
     });
 
     it("drops a preview response that a newer save has already superseded", async () => {

@@ -115,6 +115,8 @@ use ledgeline_core::decimal::{Dec, MAX_RENDER_PLACES};
 use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
 use ledgeline_core::journals::{self, JournalTarget};
+use ledgeline_core::model::Status;
+use ledgeline_core::reimport::{self, RowClassification};
 use ledgeline_core::rules::matching::{self, Candidate, Ranking, Score, Signals};
 use ledgeline_core::rules::{self, Discovery, RulesDoc};
 use ledgeline_core::sort;
@@ -182,6 +184,22 @@ const MAX_FILENAME_BYTES: usize = 255;
 /// error messages and one of them is written into a journal, so both are bounded
 /// before they are used.
 const MAX_FIELD_CHARS: usize = 128;
+
+/// How many status changes / conflicts one response lists individually.
+///
+/// The lists exist to be read, and nobody reads two thousand of them; a user who
+/// reformatted their journal could otherwise turn every row of a year's
+/// statement into a conflict entry. The counts beside each list are **not**
+/// capped, so the number is always the true one and only the detail is bounded —
+/// the same trade `PREVIEW_ROWS` makes. It bounds the reporting only: the status
+/// flips a commit actually applies are not capped, because a cap on those would
+/// silently leave a statement half-synced.
+const MAX_ID_REPORTS: usize = 200;
+
+/// How many field disagreements one conflicting row lists. A transaction has a
+/// handful of fields and a couple of postings; past that the row is not "a
+/// changed amount" but "a different transaction", and the first few say so.
+const MAX_ID_DIFFS: usize = 8;
 
 /// Wall-clock budget for an `import` or `print` run over a whole statement.
 ///
@@ -519,6 +537,33 @@ struct WireProposal {
     aliases: Option<WireAliasEffect>,
     /// Targets git reports as modified. Non-empty means `commit` will refuse.
     blocked_by_git: Vec<String>,
+    /// The `ledgeline import …` command line that reproduces this import
+    /// non-interactively, for the panel's copy affordance.
+    ///
+    /// **Contract amendment (WP-16 Phase 3):** additive, and always present on a
+    /// successful preview — there is no state in which this run exists and has no
+    /// command line, so it is a `String` rather than an `Option`.
+    ///
+    /// **Not [`WireCliParity`], which is a different "cli" entirely** and sits a
+    /// few fields above inside `aliases`. That one asks whether a *terminal
+    /// `hledger`* would produce the same accounts as this screen, and is about
+    /// `hledger.conf`'s `--alias`. This one is Ledgeline's own invocation. The
+    /// names are deliberately unalike so a reader is never asked to tell them
+    /// apart by context.
+    ///
+    /// Built by [`cli_argv`], the same function `ledgeline import` is parsed
+    /// into, so what this says and what that does cannot drift. Carries only the
+    /// relative handles this request already used — never an absolute path — so
+    /// it is run from the journal's own directory, which is what the panel says.
+    cli_command: String,
+    /// What matching this statement's rows against the journal by id found, or
+    /// `null` when the rules file declares no id. See [`WireIdMatches`].
+    ///
+    /// **Contract amendment (WP-16 Phase 4):** additive and opt-in. `entries`
+    /// and `count` above are already net of it — a row the journal demonstrably
+    /// holds is not in the proposal this preview shows, and therefore not in the
+    /// bytes the commit appends.
+    id_matches: Option<WireIdMatches>,
 }
 
 /// The account rewrites the forwarded aliases performed on this import.
@@ -653,6 +698,86 @@ struct WireSkipped {
     count: usize,
 }
 
+/// What this statement's rows turned out to be, matched against the journal by
+/// the row id its rules file writes (`comment id:%fitid`).
+///
+/// **`null` when the rules file declares no id**, which is every rules file
+/// written before this feature existed and is byte-for-byte today's behaviour —
+/// see [`reconcile_ids`]. Never an empty object: "there is no id to match on"
+/// and "there is, and nothing matched" are different answers and the UI has to
+/// be able to tell them apart.
+///
+/// The two counts answer "how much of this statement did I already have?"; the
+/// two lists carry the rows a person has to look at. See
+/// [`reimport`](ledgeline_core::reimport) for what may and may not follow from a
+/// match — in short, an id match may keep a row *out* of an import and may sync
+/// a clearing status, and may never do anything else.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireIdMatches {
+    /// Rows no transaction in the journal claims. Imported as usual — subject,
+    /// still, to hledger's own `.latest` dedup.
+    new: usize,
+    /// Rows the journal already holds, identically. Not imported, not edited.
+    unchanged: usize,
+    /// Rows whose only difference is the clearing status: the authorization
+    /// hold that settled. Capped at [`MAX_ID_REPORTS`]; `statusChangedTotal` is
+    /// the real number.
+    status_changed: Vec<WireStatusChange>,
+    /// How many there are, whether or not they all fit in the list.
+    status_changed_total: usize,
+    /// Rows the journal holds *differently* in some way a status flip cannot
+    /// express. Never imported and **never edited** — this is the hand-edit the
+    /// feature exists to protect. Capped at [`MAX_ID_REPORTS`].
+    conflicting: Vec<WireConflict>,
+    /// How many there are, whether or not they all fit in the list.
+    conflicting_total: usize,
+}
+
+/// One clearing status this statement moved.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireStatusChange {
+    /// The row id, as the rules file wrote it.
+    id: String,
+    /// What the journal says today: `unmarked`, `pending` or `cleared`.
+    from: &'static str,
+    /// What this statement says.
+    to: &'static str,
+    /// Whether it was actually written.
+    ///
+    /// Always `false` on a **dry-run**, which previews and writes nothing — the
+    /// same rule the rest of this screen follows. On a **commit** it is `false`
+    /// only for a transaction that lives outside the file this import writes to:
+    /// the flip is confined to `journalId`, the one file whose git state was
+    /// checked before the commit and whose new bytes the commit's own git commit
+    /// carries. Syncing a status into some other included file would write
+    /// somewhere this request had neither permission for nor a way to undo.
+    applied: bool,
+}
+
+/// One row the journal already holds differently.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireConflict {
+    /// The row id, as the rules file wrote it.
+    id: String,
+    /// Every disagreement, in field order. Capped at [`MAX_ID_DIFFS`].
+    diffs: Vec<WireFieldDiff>,
+}
+
+/// One field a conflicting row disagrees on.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireFieldDiff {
+    /// What disagrees: `date`, `description`, `posting 2 amount`, …
+    field: String,
+    /// What the journal says today.
+    existing: String,
+    /// What this statement proposes.
+    incoming: String,
+}
+
 /// The statement-balance reconciliation.
 ///
 /// **All three amounts are in ONE representation** — the commodity hledger
@@ -685,6 +810,11 @@ struct WireCommit {
     ordering: WireOrdering,
     /// `null` when neither target is under version control.
     git: Option<WireGitResult>,
+    /// What matching this statement's rows against the journal by id found, or
+    /// `null` when the rules file declares no id. See [`WireIdMatches`]. The
+    /// same type the dry-run carries, so one decoder serves both; here its
+    /// `statusChanged[].applied` reports what was actually written.
+    id_matches: Option<WireIdMatches>,
 }
 
 /// `POST /api/import/save-csv` — the CSV was kept, and nothing else happened.
@@ -712,9 +842,13 @@ struct WireOrdering {
 }
 
 /// One transaction a re-sort would move.
+///
+/// `pub(crate)`: `qb_journal_api`'s per-file ordering report reuses this
+/// exact shape rather than growing a second one for the same "what a re-sort
+/// would move" fact.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireMove {
+pub(crate) struct WireMove {
     date: String,
     description: String,
     from_line: u32,
@@ -741,14 +875,14 @@ impl From<&sort::Move> for WireMove {
 /// `committed: false`. Additive and omitted on success.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireGitResult {
-    committed: bool,
+pub(crate) struct WireGitResult {
+    pub(crate) committed: bool,
     /// Paths actually committed, relative to their repository toplevel.
     paths: Vec<String>,
     /// Targets not committed: outside any repository, or gitignored.
     skipped: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
+    pub(crate) message: Option<String>,
 }
 
 /// `POST /api/import/sort` — how many transactions moved.
@@ -1090,7 +1224,7 @@ fn main_journal(state: &AppState, what: &str, id: &str) -> Result<PathBuf, AppEr
 
 /// The directory `include` (and therefore everything in this feature) is
 /// confined to: the main journal file's own directory, canonicalized.
-fn include_root(main: &Path) -> Result<PathBuf, AppError> {
+pub(crate) fn include_root(main: &Path) -> Result<PathBuf, AppError> {
     let dir = main.parent().unwrap_or_else(|| Path::new("."));
     std::fs::canonicalize(dir).map_err(|_| {
         AppError::Internal("this journal's own directory could not be resolved".to_string())
@@ -1421,8 +1555,12 @@ impl AliasArguments {
 ///
 /// Longest-first, so `/root/import/bank.csv` becomes `import/bank.csv` rather
 /// than being half-rewritten by the root's own entry.
+///
+/// `pub(crate)`: `qb_journal_api` builds its own and redacts its git errors the
+/// same way, rather than growing a second redaction scheme for one more write
+/// path.
 #[derive(Debug, Default, Clone)]
-struct Redactor {
+pub(crate) struct Redactor {
     swaps: Vec<(String, String)>,
 }
 
@@ -1432,7 +1570,7 @@ impl Redactor {
     /// Both the path as given and its canonical spelling are registered, because
     /// they differ routinely — on macOS `/tmp` is a symlink to `/private/tmp`,
     /// and a subprocess may report either.
-    fn hide(mut self, path: &Path, handle: &str) -> Self {
+    pub(crate) fn hide(mut self, path: &Path, handle: &str) -> Self {
         let mut spellings = vec![path.to_string_lossy().into_owned()];
         if let Ok(canonical) = std::fs::canonicalize(path) {
             spellings.push(canonical.to_string_lossy().into_owned());
@@ -1447,7 +1585,7 @@ impl Redactor {
 
     /// Replace a DIRECTORY prefix: `dir/x` becomes `x`, and a bare mention of the
     /// directory becomes `.`. Same two substitutions `git.rs::scrub` makes.
-    fn hide_prefix(mut self, dir: &Path) -> Self {
+    pub(crate) fn hide_prefix(mut self, dir: &Path) -> Self {
         let spelling = dir.to_string_lossy().into_owned();
         let canonical = std::fs::canonicalize(dir)
             .map(|path| path.to_string_lossy().into_owned())
@@ -1463,7 +1601,7 @@ impl Redactor {
     }
 
     /// `text` with every known path rewritten.
-    fn apply(&self, text: &str) -> String {
+    pub(crate) fn apply(&self, text: &str) -> String {
         let mut swaps: Vec<&(String, String)> = self.swaps.iter().collect();
         swaps.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
         swaps.iter().fold(text.to_string(), |redacted, (from, to)| {
@@ -2065,8 +2203,41 @@ fn reconcile(statement: &str, computed: Option<String>) -> WireBalance {
 
 /// Whether the git safety net is switched on: `None` means "commit when a repo
 /// is present", which is the default posture `git.rs` implements.
-fn autocommit_enabled(prefs: &Prefs) -> bool {
+///
+/// `pub(crate)`: `qb_journal_api` follows the same preference for its own
+/// commit route rather than growing a second reading of it.
+pub(crate) fn autocommit_enabled(prefs: &Prefs) -> bool {
     prefs.git_autocommit.unwrap_or(true)
+}
+
+/// Whether THIS run may use the git safety net at all, before the preferences
+/// are even consulted.
+///
+/// Every HTTP caller passes [`FromPrefs`](Self::FromPrefs), which is exactly the
+/// behaviour that existed before this type: the stored preference decides. It is
+/// a parameter rather than another read of `prefs::load()` because
+/// `ledgeline import --no-git` has to turn the net off for **one invocation**
+/// without writing anything into a store that outlives it — a CLI flag that
+/// silently edited the desktop app's preferences would be a considerably worse
+/// bargain than the one the flag offers.
+///
+/// Both halves of the net move together, deliberately: with [`Off`](Self::Off)
+/// a dirty target no longer blocks the commit AND nothing is committed
+/// afterwards. Suppressing only the second would leave the refusal in place
+/// with no safety left to justify it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GitPolicy {
+    /// Ask the preferences store, as every `/api/import/*` request does.
+    FromPrefs,
+    /// Off for this run only, whatever the preferences say (`--no-git`).
+    Off,
+}
+
+impl GitPolicy {
+    /// Is the safety net live for this run?
+    pub(crate) fn enabled(self, prefs: &Prefs) -> bool {
+        self == Self::FromPrefs && autocommit_enabled(prefs)
+    }
 }
 
 /// Which of `targets` git reports as MODIFIED, repository by repository.
@@ -2078,7 +2249,11 @@ fn autocommit_enabled(prefs: &Prefs) -> bool {
 ///
 /// Returns the caller's own relative handles rather than git's repo-relative
 /// paths, so the UI names the files with the same strings the form does.
-fn blocked_by_git(targets: &[(&Path, &str)]) -> Vec<String> {
+///
+/// `pub(crate)`: `qb_journal_api`'s commit route re-checks the same "is any
+/// target dirty" question server-side, for the same reason (sequencing rule 3)
+/// this module does.
+pub(crate) fn blocked_by_git(targets: &[(&Path, &str)]) -> Vec<String> {
     targets
         .iter()
         .filter(|(path, _)| !git_status(path).dirty.is_empty())
@@ -2107,7 +2282,14 @@ fn git_status(path: &Path) -> GitStatus {
 /// journal may live in different repositories or one may be outside version
 /// control entirely — `git.rs` makes [`Repo`] `Eq` for exactly this grouping. A
 /// target with no repository is reported as skipped, not as a failure.
-fn commit_targets(targets: &[(&Path, &str)], message: &str, redactor: &Redactor) -> WireGitResult {
+///
+/// `pub(crate)`: the same "commit exactly what was written" safety net
+/// `qb_journal_api`'s commit route offers, reused rather than re-implemented.
+pub(crate) fn commit_targets(
+    targets: &[(&Path, &str)],
+    message: &str,
+    redactor: &Redactor,
+) -> WireGitResult {
     let (in_repo, outside): (Vec<_>, Vec<_>) = targets
         .iter()
         .map(|(path, handle)| (Repo::discover(path), *path, *handle))
@@ -2272,11 +2454,20 @@ pub(crate) async fn stage(
 
 /// The whole of `stage`, synchronously, on the blocking pool.
 fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage, AppError> {
+    // WP-17: a QuickBooks Online "Journal" report cannot go through the
+    // `convert`/CSV-rules pipeline at all (see `qb_journal`'s module docs), so
+    // it is detected and diverted before `convert::detect` gets a look.
+    // `qb_journal::detect` says yes on a damaged export as well as a good one
+    // — see its own docs on why — so a truncated file is refused BY NAME here
+    // rather than falling through to the CSV rules screen.
+    if ledgeline_core::qb_journal::detect(bytes) {
+        return stage_qb_journal(state, name, bytes);
+    }
     let format = convert::detect(name, bytes).map_err(convert_error)?;
     let tabular = convert::convert(format, bytes).map_err(convert_error)?;
     let csv = convert::to_csv(&tabular);
 
-    let (id, staged) = state.stages().put(&csv, format).map_err(|error| {
+    let (id, staged) = state.stages().put(&csv, format, name).map_err(|error| {
         AppError::Internal(format!("could not stage this upload: {}", error.kind()))
     })?;
 
@@ -2336,6 +2527,48 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
         notes: tabular.notes.iter().map(WireNote::from).collect(),
         candidates,
         defaults,
+    })
+}
+
+/// The QuickBooks Journal branch of [`stage_upload`] (WP-17 Phase B).
+///
+/// Parses eagerly, exactly as the CSV branch converts eagerly — a stage
+/// response has always meant "this upload was fully validated", and a
+/// truncated export is refused HERE, by name, rather than staged and refused
+/// later. The parsed [`ledgeline_core::qb_journal::QbJournal`] is kept (not
+/// the raw bytes: nothing downstream ever re-parses them, since this pipeline
+/// never shells out to hledger over this file) so the two follow-up routes
+/// (`qb_journal_api::preview`/`commit`) do not re-parse it.
+///
+/// `preview`/`candidates`/`statement` are left at their empty defaults:
+/// `qb_journal_api::preview` is the dedicated route for the parsed groups and
+/// which accounts are unmapped — recomputed against the journal's CURRENT
+/// aliases on every call, which a value cached here at upload time could not
+/// be.
+fn stage_qb_journal(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage, AppError> {
+    let parsed = ledgeline_core::qb_journal::parse(bytes)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let (id, _staged) = state.qb_stages().put(parsed).ok_or_else(|| {
+        AppError::Internal("the operating system's random source is unavailable".to_string())
+    })?;
+
+    Ok(WireStage {
+        stage_id: id.as_str().to_string(),
+        format: "quickbooks-journal",
+        preview: WirePreview {
+            header: None,
+            rows: Vec::new(),
+            row_count: 0,
+            truncated: false,
+        },
+        statement: None,
+        notes: Vec::new(),
+        candidates: Vec::new(),
+        defaults: WireDefaults {
+            // No CSV is ever written by this pipeline.
+            csv_path: String::new(),
+            journal_id: defaults_for(state, name, None).journal_id,
+        },
     })
 }
 
@@ -2634,7 +2867,7 @@ pub(crate) async fn dry_run(
     payload: Result<Json<WireDryRunRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let request = json_body(payload)?;
-    let Json(body) = compute(move || run_dry_run(&state, &request)).await?;
+    let Json(body) = compute(move || run_dry_run(&state, &request, GitPolicy::FromPrefs)).await?;
     Ok(no_store(body))
 }
 
@@ -2772,6 +3005,16 @@ impl Plan {
         self.destination.parent().unwrap_or_else(|| Path::new("."))
     }
 
+    /// The root journal's own handle, relative to [`root_dir`](Self::root_dir).
+    ///
+    /// It is by construction a file IN that directory (the directory is defined
+    /// as its parent), so the handle is its file name — the same string
+    /// [`journals::targets`] derives for it. Only [`cli_argv`] needs it, to
+    /// decide whether `--root-journal` has to be said at all.
+    fn root_journal_id(&self) -> Option<&str> {
+        self.root_journal.file_name().and_then(|name| name.to_str())
+    }
+
     /// The dedup marker `hledger import --catchup` maintains beside the
     /// destination, with the relative handle to report it by — or `None` when
     /// there is no file there yet.
@@ -2810,7 +3053,11 @@ impl Plan {
 }
 
 /// The whole of `dry-run`, synchronously.
-fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryRun, AppError> {
+fn run_dry_run(
+    state: &AppState,
+    request: &WireDryRunRequest,
+    git: GitPolicy,
+) -> Result<WireDryRun, AppError> {
     let plan = Plan::resolve(state, request)?;
     let staged = plan
         .staged
@@ -2844,11 +3091,26 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
     // `commit` will append. Nothing re-renders it in between; see `run_commit`,
     // and `docs/imports.md` § "Commodity style" for why re-printing it under the
     // tree's `commodity` directives is deliberately NOT done.
-    let entries = output.stdout_lossy();
+    let proposal = output.stdout_lossy();
     let status = output.stderr_lossy();
-    let count = count_transactions(&entries)
-        .or_else(|| reported_count(&status, "would import"))
-        .unwrap_or(0);
+
+    // One extra `--dry-run`, and only when the destination carries a `.latest`.
+    // Two things read it: what dedup would drop, and — when the rules file names
+    // a row id — what those dropped rows actually ARE.
+    let bare = bare_proposal(&plan)?;
+    let ids = reconcile_ids(state, &plan, &proposal, bare.as_ref());
+    // `entries` is what the commit appends, so it is what the preview shows: a
+    // row the journal demonstrably already holds is taken out of both, together.
+    // With no id in the rules file `ids` is `None` and this is `proposal` itself.
+    let (entries, count) = match &ids {
+        Some(ids) => (ids.entries.as_str(), ids.count),
+        None => (
+            proposal.as_str(),
+            count_transactions(&proposal)
+                .or_else(|| reported_count(&status, "would import"))
+                .unwrap_or(0),
+        ),
+    };
 
     let balance = request
         .balance
@@ -2868,39 +3130,67 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
             // The ROOT, not the file being written: the balance the user is
             // reconciling against their statement is the tree's, and in a split
             // layout the target holds only part of it. See `verify_balance`.
-            let computed = verify_balance(&plan.hledger, &plan.root_journal, &entries, &account)?;
+            let computed = verify_balance(&plan.hledger, &plan.root_journal, entries, &account)?;
             Ok::<_, AppError>(reconcile(&statement, computed))
         })
         .transpose()?;
 
     Ok(WireDryRun::Proposed(Box::new(WireProposal {
         ok: true,
-        entries: plan.redactor.apply(&entries),
+        entries: plan.redactor.apply(entries),
         count,
         status: plan.redactor.apply(&status),
-        skipped: skipped_by_dedup(&plan, count)?,
+        skipped: skipped_by_dedup(count, bare.as_ref()),
         balance,
-        aliases: alias_effect(&plan, &staged, &entries)?,
-        blocked_by_git: if autocommit_enabled(&prefs::load()) {
+        // The UNFILTERED proposal, deliberately. This measures the aliases by
+        // diffing two runs posting-for-posting, and both baselines are whole
+        // proposals; handing it a filtered one would be a shape mismatch and the
+        // renames would silently vanish. What an alias rewrites is a property of
+        // the rules file, not of which rows are new.
+        aliases: alias_effect(&plan, &staged, &proposal)?,
+        blocked_by_git: if git.enabled(&prefs::load()) {
             blocked_by_git(&plan.targets(request))
         } else {
             Vec::new()
         },
+        // The choices this REQUEST carries and no others: a dry-run has not been
+        // asked whether to sort or to write an assertion, so the command it
+        // advertises is the plain import it is previewing.
+        cli_command: cli_invocation(&CliRun {
+            input: plan.staged.upload_name(),
+            plan: request,
+            root_journal: plan
+                .root_journal_id()
+                .filter(|id| id != &request.journal_id),
+            write_assertion: false,
+            sort: false,
+            dry_run: false,
+            no_git: false,
+        }),
+        // `applied: false` throughout: a dry-run previews and writes nothing,
+        // the same rule every other field on this screen follows.
+        id_matches: ids.as_ref().map(|ids| ids.wire(&plan.redactor, false)),
     })))
 }
 
-/// How many rows `.latest` dedup would silently drop, and from when.
+/// The same import proposed **without** hledger's date-based dedup: the run in a
+/// directory with no `.latest` beside the CSV.
 ///
-/// Measured rather than inferred: the same dry-run is repeated in a run
-/// directory with **no** `.latest` beside the CSV, and the difference in
-/// transaction counts is exactly what dedup removed. That is rules-agnostic —
-/// nothing here has to know which column holds the date, or how the rules file
-/// formats it — and it is the only way to be sure, because hledger reports a
-/// dropped row nowhere at all.
+/// Two callers want it and it is one subprocess, so it is run once and shared.
+/// [`skipped_by_dedup`] wants the *count* — the difference between the two
+/// proposals is exactly what dedup removed, measured rather than inferred, which
+/// is the only way to be sure because hledger reports a dropped row nowhere at
+/// all. [`reconcile_ids`] wants the *entries*, and for a sharper reason: the rows
+/// `.latest` hides are precisely the ones an id match has something to say about.
+/// A hold that settled two weeks ago is behind the marker, so the ordinary
+/// proposal does not contain it and no amount of matching against that proposal
+/// could ever notice. That is `TODO.md`'s bug, restated as a data-flow fact.
 ///
-/// `None` when the destination has no dedup state, in which case there is
-/// nothing that could have been dropped.
-fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, AppError> {
+/// `None` when the destination carries no dedup state: there is then nothing
+/// `.latest` could be hiding, and the ordinary proposal already *is* this one.
+/// Also `None` when hledger refused the second run, which is the same
+/// "say nothing rather than guess" answer this function has always given.
+fn bare_proposal(plan: &Plan) -> Result<Option<BareProposal>, AppError> {
     let Some(marker) = stage::latest_marker(plan.destination_dir(), &plan.csv_name) else {
         return Ok(None);
     };
@@ -2922,16 +3212,314 @@ fn skipped_by_dedup(plan: &Plan, count: usize) -> Result<Option<WireSkipped>, Ap
     if !output.success() {
         return Ok(None);
     }
-    let without = count_transactions(&output.stdout_lossy())
-        .or_else(|| reported_count(&output.stderr_lossy(), "would import"))
+    Ok(Some(BareProposal {
+        marker,
+        entries: output.stdout_lossy(),
+        status: output.stderr_lossy(),
+    }))
+}
+
+/// What every row of this statement would import into, ignoring `.latest`.
+struct BareProposal {
+    /// The newest date `.latest` records — what rows are being hidden *from*.
+    marker: String,
+    /// hledger's stdout: every row the rules file proposes, deduped by nothing.
+    entries: String,
+    /// hledger's stderr, for the count fallback [`reported_count`] reads.
+    status: String,
+}
+
+/// What matching this statement's rows against the journal by id turned up, and
+/// the proposal with the rows the journal already holds taken out of it.
+struct IdReconciliation {
+    /// `entries`, minus every row whose id the journal already carries. When
+    /// nothing was removed this is `entries` byte for byte — see
+    /// [`reimport::retain_new`].
+    entries: String,
+    /// How many transactions that leaves: the `count` a preview reports and the
+    /// `imported` a commit reports.
+    count: usize,
+    /// Rows whose only difference is the clearing status, in proposal order.
+    flips: Vec<StatusFlip>,
+    /// Rows no transaction in the journal claims.
+    new: usize,
+    /// Rows the journal already holds, identically.
+    unchanged: usize,
+    /// Rows the journal holds differently, in proposal order: the row's id and
+    /// every disagreement, both **raw**. Kept whole and untreated —
+    /// [`IdReconciliation::wire`] is the one place that redacts and clips for a
+    /// response body, so the count beside the list is always the true one and
+    /// there is a single place to check the hygiene was applied.
+    conflicting: Vec<(String, Vec<reimport::FieldDiff>)>,
+}
+
+/// One clearing status this statement moved.
+struct StatusFlip {
+    /// The row id, as the rules file wrote it.
+    id: String,
+    /// What the journal says today.
+    from: &'static str,
+    /// What this statement says.
+    to: &'static str,
+    /// The status to write.
+    new_status: Status,
+    /// Whether the transaction lives in the file this import writes to, which is
+    /// the only file a flip is ever applied in. See
+    /// [`WireStatusChange::applied`].
+    in_target: bool,
+}
+
+impl IdReconciliation {
+    /// The report for one call site.
+    ///
+    /// `applied` is `false` for a dry-run, which previews and writes nothing; a
+    /// commit passes `true` and each row is then reported as written exactly
+    /// when it was in range to be.
+    ///
+    /// Every string that leaves here goes through [`reported`] first. These are
+    /// a bank's own ids and a journal's own descriptions and amounts rather than
+    /// paths this server resolved, so security layer 5 is not obviously in play
+    /// — which is the argument for applying it here anyway, rather than for
+    /// reasoning once that it need not be.
+    fn wire(&self, redactor: &Redactor, applied: bool) -> WireIdMatches {
+        WireIdMatches {
+            new: self.new,
+            unchanged: self.unchanged,
+            status_changed: self
+                .flips
+                .iter()
+                .take(MAX_ID_REPORTS)
+                .map(|flip| WireStatusChange {
+                    id: reported(redactor, &flip.id),
+                    from: flip.from,
+                    to: flip.to,
+                    applied: applied && flip.in_target,
+                })
+                .collect(),
+            status_changed_total: self.flips.len(),
+            conflicting: self
+                .conflicting
+                .iter()
+                .take(MAX_ID_REPORTS)
+                .map(|(id, diffs)| WireConflict {
+                    id: reported(redactor, id),
+                    diffs: diffs
+                        .iter()
+                        .take(MAX_ID_DIFFS)
+                        .map(|diff| WireFieldDiff {
+                            // Our own phrase, not the user's own text.
+                            field: diff.field.clone(),
+                            existing: reported(redactor, &diff.existing),
+                            incoming: reported(redactor, &diff.incoming),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            conflicting_total: self.conflicting.len(),
+        }
+    }
+}
+
+/// Match this statement's rows against the journal by the id its rules file
+/// writes — or answer `None`, which is "behave exactly as before".
+///
+/// # The opt-in, and where it actually lives
+///
+/// `None` comes back whenever no proposed row carries the `id` tag, which is
+/// every rules file written before this feature existed. Everything downstream
+/// then reads the untouched `entries`, so an import with no id in its rules file
+/// is byte-for-byte the import it was — not "equivalent to", the same bytes,
+/// because [`reimport::retain_new`] hands back the very `&str` it was given when
+/// there is nothing to drop.
+///
+/// It is decided **observationally**, from hledger's own output, rather than by
+/// reading the rules file for a `comment id:` line. A rules file that declares
+/// one over a column that turns out to be empty then gets the same silence as
+/// one that declares nothing, which is the honest answer: there are no ids here.
+///
+/// # Which proposal is classified, and which is filtered
+///
+/// They are not the same one, and that is the whole fix. Rows are **classified**
+/// against [`bare_proposal`] — the dedup-free run — because the rows worth
+/// talking about are exactly the ones `.latest` hides: a hold that settled last
+/// week is behind the marker, so it is not in the ordinary proposal at all and
+/// matching against that proposal could never see it. Rows are **filtered** out
+/// of the ordinary proposal, because that is the text a commit appends.
+///
+/// The asymmetry is deliberate and is the safety property. Reading the id as
+/// authority to *import* a row `.latest` declined would resurrect rows a journal
+/// holds untagged — every transaction imported before the rules file grew its
+/// `comment id:` line — and duplicate them. So an id may only ever subtract.
+fn reconcile_ids(
+    state: &AppState,
+    plan: &Plan,
+    entries: &str,
+    bare: Option<&BareProposal>,
+) -> Option<IdReconciliation> {
+    let proposed = ledgeline_core::parse_journal(entries, "proposed").ok()?;
+    // Parsed only when it is a DIFFERENT text: with no `.latest` beside the CSV
+    // the two runs produce the same proposal and there is nothing to re-read.
+    let dedup_free = match bare {
+        Some(bare) => Some(ledgeline_core::parse_journal(&bare.entries, "proposed").ok()?),
+        None => None,
+    };
+    let classified = dedup_free
+        .as_ref()
+        .map_or(&proposed.transactions, |journal| &journal.transactions);
+
+    let snapshot = state.snapshot();
+    let index = reimport::build_index(&snapshot.journal, reimport::ID_TAG);
+    let rows = reimport::reconcile(&index, classified, reimport::ID_TAG)?;
+
+    let mut new = 0;
+    let mut unchanged = 0;
+    let mut flips = Vec::new();
+    let mut conflicting = Vec::new();
+    for row in &rows {
+        match &row.classification {
+            RowClassification::New => new += 1,
+            RowClassification::Unchanged => unchanged += 1,
+            RowClassification::StatusOnly {
+                existing_status,
+                new_status,
+                ..
+            } => flips.push(StatusFlip {
+                id: row.id.clone(),
+                from: reimport::status_word(*existing_status),
+                to: reimport::status_word(*new_status),
+                new_status: *new_status,
+                // Decided here, from the journal as it stands before anything is
+                // written, because the answer cannot change afterwards: the only
+                // rows an import appends are `New` ones, whose ids are by
+                // definition not in this list.
+                in_target: index
+                    .get(&row.id)
+                    .is_some_and(|(txn, _)| txn.source_file == plan.target),
+            }),
+            // Raw and whole; `IdReconciliation::wire` does the redacting and the
+            // clipping, in one place, for both lists.
+            RowClassification::Conflicting { diffs, .. } => {
+                conflicting.push((row.id.clone(), diffs.clone()));
+            }
+        }
+    }
+
+    let kept = reimport::retain_new(entries, &proposed.transactions, &index, reimport::ID_TAG);
+    // The kept text is hledger's own, minus whole transactions, so it is still a
+    // journal — `reimport`'s own round-trip tests pin that — and our parser is
+    // the authority on how many it holds.
+    let count = count_transactions(&kept).unwrap_or(proposed.transactions.len());
+    Some(IdReconciliation {
+        entries: kept.into_owned(),
+        count,
+        flips,
+        new,
+        unchanged,
+        conflicting,
+    })
+}
+
+/// Sync the clearing statuses an id match found, on a **commit**.
+///
+/// The one place the import pipeline writes an *existing* transaction, and it
+/// does so through [`edit_api::set_statuses`](crate::edit_api::set_statuses) —
+/// the same `lock_editor` → `bound` → `set_status` → `save_and_publish`
+/// sequence, with the same re-sync on a partial failure, that
+/// `PATCH /api/transactions/{index}` has always used. Nothing new writes a
+/// journal.
+///
+/// Confined to [`Plan::target`]. That file is the one whose git state was
+/// checked before the commit, and the one the commit's own git commit carries,
+/// so a flip cannot land anywhere this request had neither permission for nor a
+/// way to undo. A status-only match in some other included file is reported with
+/// `applied: false` rather than written.
+///
+/// Runs **after** the append and the catch-up, so it is the last write and a
+/// failure here leaves an import that landed and statuses that did not — a state
+/// the next run of the same import repairs by itself, which the message says.
+fn apply_status_flips(
+    state: &AppState,
+    plan: &Plan,
+    ids: Option<&IdReconciliation>,
+) -> Result<(), AppError> {
+    let wanted: Vec<(String, Status)> = ids
+        .into_iter()
+        .flat_map(|ids| ids.flips.iter())
+        .filter(|flip| flip.in_target)
+        .map(|flip| (flip.id.clone(), flip.new_status))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(());
+    }
+
+    // The append moved every transaction after the target file's own end, so a
+    // `Tindex` taken before it may now name a neighbour. Re-read, then resolve
+    // each row against THAT journal by its id — see `set_statuses`, which takes
+    // a callback for exactly this reason.
+    let pending = wanted.len();
+    if let Some(Err(error)) = state.reopen_editor() {
+        return Err(AppError::Internal(format!(
+            "the import landed, but the journal could not be re-read to sync {pending} cleared \
+             status(es): {}. Run the same import again to retry them — an id match means nothing \
+             will be imported twice.",
+            plan.redactor.apply(&error.to_string())
+        )));
+    }
+    let target = plan.target.clone();
+    crate::edit_api::set_statuses(state, &move |journal| {
+        let index = reimport::build_index(journal, reimport::ID_TAG);
+        wanted
+            .iter()
+            .filter_map(|(id, status)| {
+                let (txn, carriers) = index.get(id)?;
+                // Re-asked of the journal actually being written: exactly one
+                // transaction to name, in the file this import may write, and
+                // not already saying what would be set.
+                (carriers == 1 && txn.source_file == target && txn.status != *status)
+                    .then_some((txn.index, *status))
+            })
+            .collect()
+    })
+    .map(|_| ())
+}
+
+/// A value from a bank's statement or a user's own journal, made safe for a
+/// response body: any path this server resolved rewritten back into the handle
+/// the caller already has (security layer 5), then bounded.
+///
+/// Verbatim otherwise, on the same terms as [`WireProposal::entries`] and
+/// [`WireRename`]: this is the user's own text coming back to them, and
+/// paraphrasing it would defeat the point of showing a diff at all.
+fn reported(redactor: &Redactor, value: &str) -> String {
+    clipped(&redactor.apply(value))
+}
+
+/// [`reported`]'s length bound, on its own so it can be tested as itself.
+fn clipped(value: &str) -> String {
+    let mut clipped: String = value.chars().take(MAX_FIELD_CHARS).collect();
+    if clipped.len() < value.len() {
+        clipped.push('…');
+    }
+    clipped
+}
+
+/// How many rows `.latest` dedup would silently drop, and from when.
+///
+/// Pure, over the two proposals [`bare_proposal`] already measured. `None` when
+/// the destination has no dedup state, in which case there is nothing that could
+/// have been dropped.
+fn skipped_by_dedup(count: usize, bare: Option<&BareProposal>) -> Option<WireSkipped> {
+    let bare = bare?;
+    let without = count_transactions(&bare.entries)
+        .or_else(|| reported_count(&bare.status, "would import"))
         .unwrap_or(count);
-    Ok(without
+    without
         .checked_sub(count)
         .filter(|dropped| *dropped > 0)
         .map(|dropped| WireSkipped {
-            older_than: marker,
+            older_than: bare.marker.clone(),
             count: dropped,
-        }))
+        })
 }
 
 /// Which accounts the forwarded aliases rewrote, measured against a second
@@ -3189,7 +3777,7 @@ pub(crate) async fn commit(
     // mutex the clone locks is the one the closure's state would have locked.
     let guard = state.clone();
     let _write = guard.import_writes().lock().await;
-    let Json(body) = compute(move || run_commit(&state, &request)).await?;
+    let Json(body) = compute(move || run_commit(&state, &request, GitPolicy::FromPrefs)).await?;
     Ok(no_store(body))
 }
 
@@ -3229,14 +3817,18 @@ pub(crate) async fn commit(
 /// established for a mistyped balance. If the roll-back itself fails, the error
 /// says so in as many words and names the duplication risk, because that is a
 /// state a person has to be told about rather than one to paper over.
-fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommit, AppError> {
+fn run_commit(
+    state: &AppState,
+    request: &WireCommitRequest,
+    git: GitPolicy,
+) -> Result<WireCommit, AppError> {
     let plan = Plan::resolve(state, &request.plan)?;
     let targets = plan.targets(&request.plan);
     let prefs = prefs::load();
 
     // Sequencing rule 3: re-checked HERE. The dry-run's answer is a report, not
     // an authorization, and the UI is not a security boundary.
-    let blocked = if autocommit_enabled(&prefs) {
+    let blocked = if git.enabled(&prefs) {
         blocked_by_git(&targets)
     } else {
         Vec::new()
@@ -3299,12 +3891,26 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
     }
     // The same one step the dry-run route ran, from the same `Plan` — which is
     // what makes the preview the bytes.
-    let entries = output.stdout_lossy();
-    let imported = count_transactions(&entries)
-        .or_else(|| reported_count(&output.stderr_lossy(), "would import"))
-        .unwrap_or(0);
+    let proposal = output.stdout_lossy();
 
-    let appended = appended_text(&entries);
+    // …and the same id reconciliation the dry-run ran, for the same reason: the
+    // two must not be able to disagree about which rows are new. It is run here
+    // rather than trusted from the preview's response because the UI is not a
+    // security boundary — sequencing rule 3's argument, applied to a second
+    // thing a client could otherwise skip.
+    let bare = bare_proposal(&plan)?;
+    let ids = reconcile_ids(state, &plan, &proposal, bare.as_ref());
+    let (entries, imported) = match &ids {
+        Some(ids) => (ids.entries.as_str(), ids.count),
+        None => (
+            proposal.as_str(),
+            count_transactions(&proposal)
+                .or_else(|| reported_count(&output.stderr_lossy(), "would import"))
+                .unwrap_or(0),
+        ),
+    };
+
+    let appended = appended_text(entries);
     if !appended.is_empty() {
         let combined = [before.as_slice(), appended.as_bytes()].concat();
         ledgeline_core::edit::atomic_write(&plan.target, &combined).map_err(|error| {
@@ -3340,6 +3946,14 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
     if request.write_assertion {
         write_assertion(&plan, &request.plan)?;
     }
+
+    // The status sync, and it is deliberately the LAST write: the rows it
+    // touches are ones this import did not import, so nothing above depends on
+    // it, and a failure here leaves an import that landed rather than a journal
+    // half-written. Both reads below then see the flipped bytes — the ordering
+    // check because it reads the file, and the git commit because the target is
+    // already in its path set. See `apply_status_flips`.
+    apply_status_flips(state, &plan, ids.as_ref())?;
 
     // The ordering check reads the TARGET, and correctly so: date order is a
     // per-file property (`hledger check ordereddates` is per-file too, and a
@@ -3388,7 +4002,8 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
         )
         .collect();
 
-    let git = autocommit_enabled(&prefs)
+    let git = git
+        .enabled(&prefs)
         .then(|| {
             commit_targets(
                 &committed,
@@ -3412,6 +4027,10 @@ fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommi
         imported,
         ordering,
         git,
+        // `applied: true` for every flip that was in range — `apply_status_flips`
+        // above returned `Ok`, so those landed, and the ones out of range are
+        // reported unwritten.
+        id_matches: ids.as_ref().map(|ids| ids.wire(&plan.redactor, true)),
     })
 }
 
@@ -3837,7 +4456,7 @@ pub(crate) async fn sort_journal(
     }
     let guard = state.clone();
     let _write = guard.import_writes().lock().await;
-    let Json(body) = compute(move || run_sort(&state, &request)).await?;
+    let Json(body) = compute(move || run_sort(&state, &request, GitPolicy::FromPrefs)).await?;
     Ok(no_store(body))
 }
 
@@ -3861,7 +4480,11 @@ pub(crate) async fn sort_journal(
 /// the user has explicitly asked for this rewrite of it. Blocking would refuse
 /// the sort precisely when the import that dirtied the file could not be
 /// committed, which is the case where it helps least.
-fn run_sort(state: &AppState, request: &WireSortRequest) -> Result<WireSorted, AppError> {
+fn run_sort(
+    state: &AppState,
+    request: &WireSortRequest,
+    git: GitPolicy,
+) -> Result<WireSorted, AppError> {
     let main = main_journal(state, "journal", &request.journal_id)?;
     let root = include_root(&main)?;
     let (journal, _) = resolve_journal(state, &root, &request.journal_id)?;
@@ -3892,7 +4515,8 @@ fn run_sort(state: &AppState, request: &WireSortRequest) -> Result<WireSorted, A
         .hide_prefix(&root)
         .hide_prefix(&std::env::temp_dir());
     let targets = vec![(journal.as_path(), request.journal_id.as_str())];
-    let git = autocommit_enabled(&prefs::load())
+    let git = git
+        .enabled(&prefs::load())
         .then(|| {
             commit_targets(
                 &targets,
@@ -3913,6 +4537,950 @@ fn sort_message(journal_id: &str, moved: usize) -> String {
     let name = journal_id.rsplit('/').next().unwrap_or(journal_id);
     let plural = if moved == 1 { "" } else { "s" };
     format!("sort {name} into date order, moving {moved} transaction{plural}")
+}
+
+// ===========================================================================
+// The command line: one builder, two ends
+// ===========================================================================
+//
+// `ledgeline import` runs an import without a browser, and the dry-run panel
+// shows the invocation that would reproduce what is on screen. Those are the two
+// ends of one thing, and the failure mode worth designing against is that they
+// DRIFT — a displayed command that quietly does something else is worse than no
+// command at all, because it is copied into a script and trusted.
+//
+// So there is exactly one function that knows which flag carries which handle
+// ([`cli_argv`]), and exactly one definition of what those flags are
+// ([`CliImport`], a `clap` derive). The renderer emits an argv; `clap` parses an
+// argv; `a_rendered_command_round_trips_through_clap` runs the first into the
+// second. Neither side hand-writes the other's list.
+
+/// One `ledgeline import` run, as the set of choices that define it.
+///
+/// The handles are the **relative** ones the request already carries — the same
+/// strings `Plan::resolve` resolved — never absolute paths. That is the
+/// no-path-disclosure rule (§ Security layer 5) applied to a new string on the
+/// wire, and it is also what makes the rendered command runnable: the CLI
+/// resolves its paths against the process's working directory, so the command
+/// reproduces this run when it is run from the journal's own directory, which is
+/// what the panel tells the user.
+struct CliRun<'a> {
+    /// The statement file, by the name it arrived under — see
+    /// [`Stage::upload_name`]. It is the one thing here that names a file
+    /// outside the journal's tree, and the only honest answer available: a
+    /// dropped upload has a name, not a location.
+    input: &'a str,
+    /// The four handles plus the balance, exactly as resolved.
+    plan: &'a WireDryRunRequest,
+    /// The root journal's handle, and `None` when it IS the file being written
+    /// to. Omitted in that case because `--root-journal 2026.journal -j
+    /// 2026.journal` is noise, and because the flag's default is precisely that.
+    root_journal: Option<&'a str>,
+    write_assertion: bool,
+    sort: bool,
+    dry_run: bool,
+    no_git: bool,
+}
+
+/// The argument vector that reproduces `run`, `ledgeline` first.
+///
+/// **The single source of truth for the flag mapping.** It is what
+/// [`cli_invocation`] renders for the screen and what the round-trip test feeds
+/// back through `clap`; nothing else anywhere builds an import command line.
+///
+/// Unquoted, deliberately: this is an argv, the shape `Command::args` takes,
+/// where a quote would become part of the file name. Quoting belongs to the
+/// display string alone — see [`shell_quote`].
+fn cli_argv(run: &CliRun<'_>) -> Vec<String> {
+    let mut argv: Vec<String> = ["ledgeline", "import"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let mut push = |flag: &str, value: &str| {
+        argv.push(flag.to_string());
+        argv.push(value.to_string());
+    };
+    push("-i", run.input);
+    push("-o", &run.plan.csv_path);
+    push("-r", &run.plan.rules_id);
+    push("-j", &run.plan.journal_id);
+    if let Some(root) = run.root_journal {
+        push("--root-journal", root);
+    }
+    if let Some(balance) = run.plan.balance.as_deref() {
+        push("--balance", balance);
+    }
+    if let Some(account) = run.plan.balance_account.as_deref() {
+        push("--balance-account", account);
+    }
+    for (chosen, flag) in [
+        (run.write_assertion, "--write-assertion"),
+        (run.sort, "--sort"),
+        (run.dry_run, "--dry-run"),
+        (run.no_git, "--no-git"),
+    ] {
+        if chosen {
+            argv.push(flag.to_string());
+        }
+    }
+    argv
+}
+
+/// [`cli_argv`] as one line a person can copy into a shell.
+fn cli_invocation(run: &CliRun<'_>) -> String {
+    cli_argv(run)
+        .iter()
+        .map(|argument| shell_quote(argument))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One argument, safe to paste into a POSIX shell.
+///
+/// Single quotes rather than backslashes because inside `'…'` a shell
+/// reinterprets **nothing at all**, so one rule covers spaces, `;`, `$`, `*` and
+/// everything else in one go. The apostrophe is the sole exception — it cannot
+/// appear inside its own quoting — and the standard spelling for it is to close
+/// the quote, escape a bare `'`, and reopen.
+///
+/// Left bare when there is nothing to protect, so an ordinary handle reads as
+/// itself: a command line decorated with quotes it does not need looks like it
+/// is hiding something.
+fn shell_quote(argument: &str) -> String {
+    /// Characters a shell leaves entirely alone, and which therefore need no
+    /// quoting. Conservative on purpose — anything not on this list is quoted,
+    /// so a character nobody thought about is safe by default rather than
+    /// dangerous by default.
+    fn is_bare(c: char) -> bool {
+        c.is_ascii_alphanumeric() || "._-/:=+,@".contains(c)
+    }
+    if !argument.is_empty() && argument.chars().all(is_bare) {
+        return argument.to_string();
+    }
+    format!("'{}'", argument.replace('\'', r"'\''"))
+}
+
+// ===========================================================================
+// `ledgeline import` — the same import, without a browser
+// ===========================================================================
+
+/// The flags `ledgeline import` takes.
+///
+/// **Also the type the runner is handed**, rather than a parallel struct the
+/// binary would have to copy into: one definition means the flags a user can
+/// type and the choices a run can make are provably the same list.
+///
+/// Every path is an ordinary filesystem path, resolved against the process's
+/// working directory exactly as any other command-line tool resolves one. They
+/// are turned into the journal-relative handles the engine works in by
+/// [`run_cli_import`], through the *same* resolution the HTTP routes use — the
+/// journal target list and the rules discovery scan — so the CLI can name
+/// exactly the files the screen can and no others.
+#[derive(clap::Args, Debug, Clone)]
+pub struct CliImport {
+    /// The statement to import: CSV/TSV, OFX/QFX/QBO, a spreadsheet, or a
+    /// QuickBooks Online "Journal" report export. Which one is decided by
+    /// sniffing the file's own bytes
+    /// ([`ledgeline_core::qb_journal::detect`]) — the exact same check the
+    /// screen's upload makes — not by `--output`/`--rules` being present or
+    /// absent.
+    #[arg(short = 'i', long)]
+    input: PathBuf,
+
+    /// Where to keep the converted CSV. Must be inside the journal's own
+    /// directory, and is also the file `hledger` keys its de-duplication state
+    /// to, so re-importing the same statement later needs the same `--output`.
+    ///
+    /// **Required** for a CSV/OFX/spreadsheet `--input`; **refused** for a
+    /// QuickBooks Journal export, which never produces an intermediate CSV
+    /// at all. `Option` rather than a plain required path because which rule
+    /// applies is decided by the file's *content*, which `clap` cannot see
+    /// while parsing arguments — see `cli_import`'s own docs.
+    #[arg(short = 'o', long)]
+    output: Option<PathBuf>,
+
+    /// The hledger CSV rules file to import with.
+    ///
+    /// **Required**/**refused** on exactly the same terms as `--output` — see
+    /// that field's own docs.
+    #[arg(short = 'r', long)]
+    rules: Option<PathBuf>,
+
+    /// The journal file to append the imported transactions to.
+    #[arg(short = 'j', long)]
+    journal: PathBuf,
+
+    /// The journal to reckon balances against — the root that `include`s
+    /// `--journal`. Defaults to `--journal` itself, which is right for a
+    /// single-file journal and wrong for every split one.
+    #[arg(long)]
+    root_journal: Option<PathBuf>,
+
+    /// The statement's closing balance, which may be negative. The import is
+    /// REFUSED if the journal does not reconcile to it.
+    ///
+    /// **Refused** for a QuickBooks Journal export: that format has no single
+    /// statement-closing balance to reconcile against, since one export can
+    /// write into several accounts across several files in one run.
+    // `allow_hyphen_values` because **a credit-card statement balance is
+    // negative**, and without it `--balance -3238.65` is read as the unknown
+    // flag `-3` — which would make this option unusable for exactly the accounts
+    // people most want to reconcile. The same case `plain_field` permits a
+    // leading `-` for. Found by the round-trip test rather than by inspection,
+    // which is what that test is for. A `//` comment, not a `///` one: this is
+    // an argument to the next maintainer, not to someone reading `--help`.
+    #[arg(long, allow_hyphen_values = true, requires = "balance_account")]
+    balance: Option<String>,
+
+    /// The account `--balance` is a balance of.
+    #[arg(long, requires = "balance")]
+    balance_account: Option<String>,
+
+    /// Write `--balance` into the journal as a balance assertion.
+    #[arg(long, requires = "balance")]
+    write_assertion: bool,
+
+    /// Re-sort the journal into date order afterwards, if the import left it out
+    /// of order.
+    #[arg(long)]
+    sort: bool,
+
+    /// Report what would be imported and write nothing at all.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Do not commit to git around this import, whatever the preferences say.
+    #[arg(long)]
+    no_git: bool,
+}
+
+impl CliImport {
+    /// The journal to OPEN: the root of the `include` tree this import is
+    /// reckoned against, which is `--journal` itself unless `--root-journal`
+    /// says otherwise.
+    ///
+    /// The binary needs this before the runner exists — it is what the
+    /// [`AppState`] is built from — so the defaulting rule lives here rather
+    /// than being spelled out at the one call site that would then own it.
+    #[must_use]
+    pub fn root_journal_path(&self) -> &Path {
+        self.root_journal.as_deref().unwrap_or(&self.journal)
+    }
+}
+
+/// What a `ledgeline import` run did.
+///
+/// Everything the binary needs for stdout and an exit code, and nothing about
+/// how it is printed — the rendering is `main.rs`'s, so this crate never decides
+/// what a terminal looks like.
+#[derive(Debug, Clone)]
+pub struct CliImportReport {
+    /// The `ledgeline import …` line that reproduces this run, from the same
+    /// builder the dry-run panel shows. Echoed so a log of a scripted run says
+    /// what it did in a form that can be re-run.
+    pub command: String,
+    /// hledger's own status line for the preview.
+    pub status: String,
+    /// Transactions the preview proposed.
+    pub count: usize,
+    /// The statement-balance reconciliation, when one was asked for.
+    pub balance: Option<String>,
+    /// `None` on `--dry-run`, where the whole point is that there is nothing to
+    /// report because nothing was written.
+    pub written: Option<CliImportWritten>,
+}
+
+/// What a committing run actually wrote.
+#[derive(Debug, Clone)]
+pub struct CliImportWritten {
+    /// The CSV's handle, relative to the journal's directory.
+    pub csv: String,
+    /// The journal's handle, likewise.
+    pub journal: String,
+    /// Transactions appended.
+    pub imported: usize,
+    /// The journal is in date order after the import.
+    pub in_order: bool,
+    /// Transactions a `--sort` moved, or `None` when it was not asked for.
+    pub sorted: Option<usize>,
+}
+
+/// What one `ledgeline import` run did — the CSV/OFX/spreadsheet path or the
+/// QuickBooks Journal one, whichever [`ledgeline_core::qb_journal::detect`]
+/// picked (see `cli_import`'s own docs).
+///
+/// An enum rather than one struct wide enough for both: [`CliImportReport`]'s
+/// `balance`/`status` and [`CliImportWritten`]'s `csv` name concepts (a
+/// single statement balance, an intermediate CSV file) a QuickBooks Journal
+/// import has none of, and [`CliQbReport`]'s `new`/`unchanged`/`conflicting`
+/// id-match counts have no CSV-path analogue either — forcing the two shapes
+/// together would leave fields on one variant or the other that can never be
+/// populated, which is exactly the "the type can express a state that cannot
+/// happen" gap this codebase's own conventions warn against (see
+/// `plans/17-quickbooks-journal-import.md`'s Phase D amendments). `main.rs`
+/// matches on this to pick which fields to print, the same way it already
+/// decides everything else about rendering.
+#[derive(Debug, Clone)]
+pub enum CliRunReport {
+    Csv(CliImportReport),
+    QbJournal(CliQbReport),
+}
+
+/// What a `ledgeline import` run against a QuickBooks Journal export did —
+/// the QuickBooks-Journal analogue of [`CliImportReport`]/[`CliImportWritten`],
+/// not a reuse of either (see [`CliRunReport`]'s own docs for why).
+#[derive(Debug, Clone)]
+pub struct CliQbReport {
+    /// The `ledgeline import …` line that reproduces this run. Built by
+    /// [`qb_cli_invocation`], the QuickBooks-Journal analogue of
+    /// [`cli_invocation`] — this format has no rules file, CSV destination,
+    /// or balance to name, so it is not that function called with blanks.
+    pub command: String,
+    /// Transactions the parse found, before id-based dedup against the
+    /// journal.
+    pub transaction_count: usize,
+    pub posting_count: usize,
+    /// hledger date-format directive the parser guessed, e.g. `%-m/%-d/%Y`.
+    pub date_format: String,
+    /// `true` when another format in the catalogue reads the same sample
+    /// dates — see [`ledgeline_core::qb_journal::QbJournal::date_format`]'s
+    /// own docs. Surfaced, not resolved: there is nothing to resolve it with
+    /// at this layer, same as the GUI's own panel.
+    pub date_format_ambiguous: bool,
+    /// Ids not already in the journal — what a commit would write.
+    pub new: usize,
+    /// Ids already in the journal, identical to the freshly-parsed
+    /// transaction — skipped, not re-written.
+    pub unchanged: usize,
+    /// Ids already in the journal but differing from the freshly-parsed
+    /// transaction — a hand-edit outranks a re-download, so these are never
+    /// overwritten (see `qb_journal_api`'s own docs).
+    pub conflicting: usize,
+    /// `None` on `--dry-run`.
+    pub written: Option<CliQbWritten>,
+}
+
+/// What a committing QuickBooks Journal run actually wrote.
+#[derive(Debug, Clone)]
+pub struct CliQbWritten {
+    /// Every `include`d file the write actually touched, relative handles.
+    /// Plural, unlike [`CliImportWritten::journal`]: `InsertPosition::
+    /// DateOrdered` can route a multi-year import's rows into more than one
+    /// file — see `qb_journal_api`'s module docs.
+    pub journals: Vec<String>,
+    /// Transactions appended — every `new` id from [`CliQbReport`] is
+    /// written; every `unchanged`/`conflicting` one never is.
+    pub imported: usize,
+    /// Every touched file is in date order after the import (and after a
+    /// `--sort`, if one was asked for and needed).
+    pub in_order: bool,
+    /// Transactions a `--sort` moved, summed across every file it touched,
+    /// or `None` when `--sort` was not asked for.
+    pub sorted: Option<usize>,
+}
+
+/// Run one non-interactive import against `state`.
+///
+/// # Why this reuses the HTTP routes' own functions
+///
+/// It stages the file through [`stage_upload`] and then calls
+/// [`run_dry_run`]/[`run_commit`]/[`run_sort`] — the very functions the axum
+/// handlers call, with the very request types they deserialize. Nothing about
+/// the import sequence is re-implemented here, and there is no second code path
+/// that could import differently: `docs/imports.md` describes one pipeline, and
+/// this is a second caller of it rather than a second copy of it. In particular
+/// every subprocess still goes through `hledger.rs`/`git.rs`, which stay the only
+/// two modules in this crate that may spawn one.
+///
+/// The only genuinely new work is turning command-line **paths** into the
+/// journal-relative **handles** the engine speaks, and it is done by asking the
+/// same two scans the routes ask.
+///
+/// # No write mutex, and why that is not an omission
+///
+/// The `commit` and `sort` handlers take `AppState::import_writes` because two
+/// concurrent HTTP requests can reach them and would interleave hledger's
+/// appends. This process has one import in it and no socket, so there is no
+/// second writer to serialize against and the guard would only ever be
+/// uncontended. Two `ledgeline import` processes racing on one journal are not
+/// covered by an in-process mutex in either design.
+///
+/// # The dry run always happens
+///
+/// Even for a committing run, which costs one extra `hledger import --dry-run`.
+/// It buys two things worth more than the subprocess: the report says what is
+/// about to happen in the same words the screen would, and a `--balance` that
+/// does not reconcile can refuse **before** anything is written. A script has
+/// nobody to look at a red number and decide.
+///
+/// # Detection decides the branch, not a flag (WP-17 Phase D)
+///
+/// `--input`'s bytes are sniffed with [`ledgeline_core::qb_journal::detect`]
+/// — the exact same check `stage_upload` runs for the GUI — right after they
+/// are read, and that decides which of [`cli_import_csv`]/
+/// [`cli_import_qb_journal`] handles the rest of the run. There is
+/// deliberately no `--quickbooks-journal` flag: that would be a second way to
+/// say what a byte-sniff already says reliably (proven accurate over the
+/// whole fixture corpus, including a deliberate near-miss export — see
+/// `ledgeline_core::qb_journal`'s own module docs), and CLI/GUI detection
+/// diverging is exactly what this rule exists to prevent.
+///
+/// `--output`/`--rules` are therefore [`Option`] on [`CliImport`] rather than
+/// plain required paths: `clap` cannot see the file's content while parsing
+/// arguments, so it cannot enforce "required for CSV, refused for QuickBooks
+/// Journal" itself. Both branch functions re-check this at runtime, right
+/// after detection, in the first few lines of their own bodies.
+///
+/// # Errors
+///
+/// One sentence, ready to print. The engine's own [`AppError`] is deliberately
+/// not exposed: its variants are HTTP conditions, which a command line has no
+/// use for, and its `Display` is already the sentence a person needs.
+pub fn run_cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, String> {
+    cli_import(state, args).map_err(|error| error.to_string())
+}
+
+/// [`run_cli_import`], in the crate's own error type.
+fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppError> {
+    // The journal this process was opened with — `--root-journal`, or `--journal`
+    // when it was not given. `main_journal`'s own 404 is not used here: its
+    // wording is for a caller that supplied a handle, and this state was built
+    // from a parsed journal file, so an empty source list is impossible rather
+    // than merely unlikely.
+    let root_journal = state
+        .source_files()
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("this process has no journal open".to_string()))?;
+    let root_dir = include_root(&root_journal)?;
+
+    // Layer 2/3 resolution, through the SAME scan the routes use: a path that
+    // does not name a file the engine already knows about cannot be imported to,
+    // whichever door it arrives at, and whichever branch below handles it.
+    let journal_id = cli_journal_id(state, &root_dir, &args.journal)?;
+    let root_id = cli_journal_id(state, &root_dir, &root_journal)?;
+
+    // The upload, read the way the browser's drop reads it — before either
+    // branch is chosen, because which one applies is a question about these
+    // bytes (see this function's own docs on detection).
+    let name = cli_upload_name(&args.input)?;
+    let bytes = std::fs::read(&args.input).map_err(|error| {
+        AppError::BadRequest(format!(
+            "{} could not be read: {}",
+            quoted(&args.input.display().to_string()),
+            error.kind()
+        ))
+    })?;
+    if bytes.len() > stage::MAX_UPLOAD_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "this file is larger than the {} MiB import limit",
+            stage::MAX_UPLOAD_BYTES / (1024 * 1024)
+        )));
+    }
+
+    if ledgeline_core::qb_journal::detect(&bytes) {
+        return cli_import_qb_journal(state, args, &bytes, &name, &journal_id, &root_id)
+            .map(CliRunReport::QbJournal);
+    }
+    cli_import_csv(
+        state,
+        args,
+        &root_journal,
+        &root_dir,
+        &journal_id,
+        &root_id,
+        &name,
+        &bytes,
+    )
+    .map(CliRunReport::Csv)
+}
+
+/// The CSV/OFX/spreadsheet branch of [`cli_import`] — everything
+/// `cli_import` did before WP-17 Phase D added a second one, unchanged in
+/// behavior (see the plan's Phase D amendments for the characterization work
+/// that established this).
+#[allow(clippy::too_many_arguments)]
+fn cli_import_csv(
+    state: &AppState,
+    args: &CliImport,
+    root_journal: &Path,
+    root_dir: &Path,
+    journal_id: &str,
+    root_id: &str,
+    name: &str,
+    bytes: &[u8],
+) -> Result<CliImportReport, AppError> {
+    // `-o`/`-r` are required here, exactly as they always were — re-checked
+    // at runtime now that `clap` cannot enforce it statically (see
+    // `CliImport`'s own field docs and `cli_import`'s "Detection decides the
+    // branch" section).
+    let mut missing = Vec::new();
+    if args.output.is_none() {
+        missing.push("--output");
+    }
+    if args.rules.is_none() {
+        missing.push("--rules");
+    }
+    if !missing.is_empty() {
+        return Err(AppError::BadRequest(format!(
+            "{} required: this input is not a QuickBooks Journal export, so it needs a CSV \
+             destination and a rules file, like every other import.",
+            missing_sentence(&missing),
+        )));
+    }
+    let output = args.output.as_deref().expect("checked above");
+    let rules = args.rules.as_deref().expect("checked above");
+
+    let rules_id = cli_rules_id(&rules::discover(root_journal), rules)?;
+    let csv_path = cli_csv_path(root_dir, output)?;
+
+    let staged = stage_upload(state, name, bytes)?;
+
+    let request = WireDryRunRequest {
+        stage_id: staged.stage_id,
+        rules_id,
+        csv_path,
+        journal_id: journal_id.to_string(),
+        balance: args.balance.clone(),
+        balance_account: args.balance_account.clone(),
+    };
+    let git = if args.no_git {
+        GitPolicy::Off
+    } else {
+        GitPolicy::FromPrefs
+    };
+    let command = cli_invocation(&CliRun {
+        input: name,
+        plan: &request,
+        root_journal: (root_id != request.journal_id).then_some(root_id),
+        write_assertion: args.write_assertion,
+        sort: args.sort,
+        dry_run: args.dry_run,
+        no_git: args.no_git,
+    });
+
+    let (count, status, balance) = match run_dry_run(state, &request, git)? {
+        WireDryRun::Failed(failed) => {
+            return Err(AppError::BadRequest(format!(
+                "the import preview failed and nothing was written. hledger said:\n{}",
+                failed.stderr
+            )));
+        }
+        WireDryRun::Proposed(proposal) => {
+            // A statement balance that does not reconcile REFUSES the run, which
+            // is stricter than the screen — there the number is shown in red and
+            // the person decides. A script has no such person, and "imported
+            // anyway, into books that no longer agree with the statement" is not
+            // a thing to do quietly.
+            if let Some(balance) = &proposal.balance
+                && !balance.matches
+            {
+                return Err(AppError::BadRequest(format!(
+                    "the statement balance {} does not match the journal's {}, so nothing was \
+                     written. Difference: {}.",
+                    balance.statement,
+                    balance.computed,
+                    balance.difference.as_deref().unwrap_or("not a number"),
+                )));
+            }
+            let balance = proposal
+                .balance
+                .as_ref()
+                .map(|balance| format!("{} matches the journal", balance.computed));
+            (proposal.count, proposal.status, balance)
+        }
+    };
+
+    if args.dry_run {
+        return Ok(CliImportReport {
+            command,
+            status,
+            count,
+            balance,
+            written: None,
+        });
+    }
+
+    let journal_id = request.journal_id.clone();
+    let commit = run_commit(
+        state,
+        &WireCommitRequest {
+            plan: request,
+            write_assertion: args.write_assertion,
+        },
+        git,
+    )?;
+
+    // Only when it is both asked for and needed. `run_sort` is a no-op on a
+    // journal already in order, but saying so costs a whole-file read and a
+    // second git commit message about nothing.
+    let sorted = match (args.sort, commit.ordering.in_order) {
+        (true, false) => Some(
+            run_sort(
+                state,
+                &WireSortRequest {
+                    journal_id: journal_id.clone(),
+                },
+                git,
+            )?
+            .moved,
+        ),
+        (true, true) => Some(0),
+        (false, _) => None,
+    };
+
+    Ok(CliImportReport {
+        command,
+        status,
+        count,
+        balance,
+        written: Some(CliImportWritten {
+            csv: commit.csv_written,
+            journal: commit.journal_written,
+            imported: commit.imported,
+            in_order: commit.ordering.in_order || sorted.is_some(),
+            sorted,
+        }),
+    })
+}
+
+/// "`--output` is required" / "`--output` and `--rules` are required" — the
+/// grammar for [`cli_import_csv`]'s missing-flag refusal.
+fn missing_sentence(missing: &[&str]) -> String {
+    match missing {
+        [one] => format!("{one} is"),
+        many => format!("{} are", many.join(" and ")),
+    }
+}
+
+/// The QuickBooks Journal branch of [`cli_import`] (WP-17 Phase D).
+///
+/// No stage: unlike the GUI (`stage_upload` → `qb_journal_api::preview`/
+/// `commit`, reading a parsed [`ledgeline_core::qb_journal::QbJournal`] back
+/// out of [`crate::qb_journal_api::QbStageArea`] by `stageId`), this process
+/// already has `bytes` in hand and parses them directly — a stage exists to
+/// let a *later, separate* HTTP request find the same parse again, and there
+/// is no later request here.
+///
+/// # No second write path
+///
+/// The unmapped-accounts check, the build, the classify, the git-check, the
+/// write, and the post-write ordering report are exactly
+/// `qb_journal_api::commit_journal`'s body — the same function `commit`'s
+/// HTTP handler now calls too (see that function's own docs). This function
+/// is glue: turn `CliImport`'s flags into a refusal-or-report, and turn
+/// `commit_journal`'s [`WireQbCommit`](crate::qb_journal_api::WireQbCommit)
+/// into [`CliQbReport`].
+///
+/// # The dry run always happens
+///
+/// Mirrors [`cli_import_csv`]'s own rule (see `cli_import`'s docs) for the
+/// same reason: `qb_journal_api::classify_report` always runs first (an alias
+/// scan plus an in-memory classify — no subprocess, so unlike the CSV path's
+/// real `hledger import --dry-run` cost, this buys the same "know before you
+/// write" guarantee for nothing), and only when `--dry-run` was **not** given
+/// does this go on to call `commit_journal`, which is the one function that
+/// actually writes. See `classify_report`'s own doc comment for why this is a
+/// second function rather than a `write: bool` parameter threaded through
+/// `commit_journal`.
+fn cli_import_qb_journal(
+    state: &AppState,
+    args: &CliImport,
+    bytes: &[u8],
+    name: &str,
+    journal_id: &str,
+    root_id: &str,
+) -> Result<CliQbReport, AppError> {
+    // `-o`/`-r`/`--balance`/`--balance-account`/`--write-assertion` are
+    // refused BY NAME, never silently ignored — there is no CSV or rules
+    // file in this path, and no single statement balance to reconcile
+    // against, since one export can write into several accounts across
+    // several files in one run.
+    let mut extra = Vec::new();
+    if args.output.is_some() {
+        extra.push("--output");
+    }
+    if args.rules.is_some() {
+        extra.push("--rules");
+    }
+    if args.balance.is_some() {
+        extra.push("--balance");
+    }
+    if args.balance_account.is_some() {
+        extra.push("--balance-account");
+    }
+    if args.write_assertion {
+        extra.push("--write-assertion");
+    }
+    if !extra.is_empty() {
+        return Err(AppError::BadRequest(format!(
+            "{} not used for a QuickBooks Journal export: there is no CSV or rules file in this \
+             path, and no single statement balance to reconcile against, since one export can \
+             write into several accounts across several files in one run.",
+            missing_sentence(&extra),
+        )));
+    }
+
+    let parsed = ledgeline_core::qb_journal::parse(bytes)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+
+    let git = if args.no_git {
+        GitPolicy::Off
+    } else {
+        GitPolicy::FromPrefs
+    };
+    let command = qb_cli_invocation(
+        name,
+        journal_id,
+        (root_id != journal_id).then_some(root_id),
+        args.sort,
+        args.dry_run,
+        args.no_git,
+    );
+
+    let report = crate::qb_journal_api::classify_report(state, &parsed)?;
+    let transaction_count = parsed.transactions.len();
+    let posting_count = parsed
+        .transactions
+        .iter()
+        .map(|txn| txn.postings.len())
+        .sum();
+    let date_format = parsed.date_format.format.clone();
+    let date_format_ambiguous = parsed.date_format.ambiguous;
+
+    if args.dry_run {
+        return Ok(CliQbReport {
+            command,
+            transaction_count,
+            posting_count,
+            date_format,
+            date_format_ambiguous,
+            new: report.new,
+            unchanged: report.unchanged,
+            conflicting: report.conflicting,
+            written: None,
+        });
+    }
+
+    let commit = crate::qb_journal_api::commit_journal(state, &parsed, git)?;
+    let journals: Vec<String> = commit
+        .ordering
+        .files
+        .iter()
+        .map(|file| file.journal_id.clone())
+        .collect();
+
+    // Only when it is both asked for and needed, exactly the CSV path's own
+    // rule — but per FILE, since a multi-year import can touch more than
+    // one (`qb_journal_api`'s own module docs).
+    let sorted = if args.sort {
+        let mut moved = 0usize;
+        for file in &commit.ordering.files {
+            if file.in_order {
+                continue;
+            }
+            moved += run_sort(
+                state,
+                &WireSortRequest {
+                    journal_id: file.journal_id.clone(),
+                },
+                git,
+            )?
+            .moved;
+        }
+        Some(moved)
+    } else {
+        None
+    };
+
+    Ok(CliQbReport {
+        command,
+        transaction_count,
+        posting_count,
+        date_format,
+        date_format_ambiguous,
+        new: report.new,
+        unchanged: report.unchanged,
+        conflicting: report.conflicting,
+        written: Some(CliQbWritten {
+            journals,
+            imported: commit.imported,
+            in_order: commit.ordering.in_order || sorted.is_some(),
+            sorted,
+        }),
+    })
+}
+
+/// The `ledgeline import …` line for a QuickBooks Journal run — the
+/// QuickBooks-Journal analogue of [`cli_invocation`]. Not that function
+/// reused: this format has no rules file, CSV destination, or balance to
+/// name (see [`CliQbReport::command`]'s own docs), so [`CliRun`]'s
+/// [`WireDryRunRequest`]-shaped `plan` field has nothing to hold here.
+fn qb_cli_invocation(
+    input: &str,
+    journal_id: &str,
+    root_journal: Option<&str>,
+    sort: bool,
+    dry_run: bool,
+    no_git: bool,
+) -> String {
+    let mut argv: Vec<String> = ["ledgeline", "import", "-i", input, "-j", journal_id]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    if let Some(root) = root_journal {
+        argv.push("--root-journal".to_string());
+        argv.push(root.to_string());
+    }
+    if sort {
+        argv.push("--sort".to_string());
+    }
+    if dry_run {
+        argv.push("--dry-run".to_string());
+    }
+    if no_git {
+        argv.push("--no-git".to_string());
+    }
+    argv.iter()
+        .map(|argument| shell_quote(argument))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The `--input` file's own name, validated exactly as an upload's
+/// `X-Ledgeline-Filename` is.
+///
+/// The same check rather than a laxer one because the name does the same two
+/// jobs here that it does there — it decides the format and it is echoed back —
+/// and because a CLI is not a reason to relax a rule the HTTP surface keeps.
+fn cli_upload_name(input: &Path) -> Result<String, AppError> {
+    let malformed = || {
+        AppError::BadRequest(format!(
+            "{} does not end in a usable file name",
+            quoted(&input.display().to_string())
+        ))
+    };
+    let name = input
+        .file_name()
+        .ok_or_else(malformed)?
+        .to_str()
+        .ok_or_else(malformed)?;
+    let well_formed = !name.is_empty()
+        && name.len() <= MAX_FILENAME_BYTES
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', ':'])
+        && !name.chars().any(|c| c.is_ascii_control());
+    well_formed.then(|| name.to_string()).ok_or_else(malformed)
+}
+
+/// Which journal handle `path` names, by matching it against the same target
+/// list [`resolve_journal`] resolves against.
+///
+/// Deliberately a search of [`journals::targets`] rather than
+/// `path.strip_prefix(root)`: the handles are the engine's, derived from the
+/// files this parse actually read, so a path that is not one of them is not a
+/// file this journal includes — and saying which ones it *does* include is the
+/// useful half of that refusal.
+fn cli_journal_id(state: &AppState, root_dir: &Path, path: &Path) -> Result<String, AppError> {
+    let wanted = std::fs::canonicalize(path).map_err(|error| {
+        AppError::BadRequest(format!(
+            "{} could not be resolved: {}",
+            quoted(&path.display().to_string()),
+            error.kind()
+        ))
+    })?;
+    let snapshot = state.snapshot();
+    let targets = journals::targets(&snapshot.journal);
+    targets
+        .iter()
+        .find(|target| {
+            std::fs::canonicalize(root_dir.join(&target.id)).is_ok_and(|known| known == wanted)
+        })
+        .map(|target| target.id.clone())
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "{} is not part of this journal. It includes: {}",
+                quoted(&path.display().to_string()),
+                targets
+                    .iter()
+                    .map(|target| target.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })
+}
+
+/// Which rules-file handle `path` names, by matching it against the discovery
+/// scan — the only id → rules-file resolution this codebase has.
+fn cli_rules_id(discovery: &Discovery, path: &Path) -> Result<String, AppError> {
+    let wanted = std::fs::canonicalize(path).map_err(|error| {
+        AppError::BadRequest(format!(
+            "{} could not be resolved: {}",
+            quoted(&path.display().to_string()),
+            error.kind()
+        ))
+    })?;
+    discovery
+        .files
+        .iter()
+        .find(|found| {
+            discovery
+                .resolve(&found.id)
+                .and_then(|found| std::fs::canonicalize(found.path().as_path()).ok())
+                .is_some_and(|known| known == wanted)
+        })
+        .map(|found| found.id.clone())
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "{} is not a rules file beside this journal. Found: {}",
+                quoted(&path.display().to_string()),
+                if discovery.files.is_empty() {
+                    "none".to_string()
+                } else {
+                    discovery
+                        .files
+                        .iter()
+                        .map(|found| found.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            ))
+        })
+}
+
+/// The `csvPath` handle for `path`: its location relative to the journal's own
+/// directory, with `/` separators.
+///
+/// The one handle naming a file that need not exist, so — exactly as
+/// [`resolve_destination`] does for the same reason — the **parent** is
+/// canonicalized and required to be inside the root, and the file name is joined
+/// on afterwards. `resolve_destination` then re-checks all of it when the plan
+/// resolves; this only has to produce a handle, not to trust one.
+fn cli_csv_path(root_dir: &Path, path: &Path) -> Result<String, AppError> {
+    let outside = || {
+        AppError::BadRequest(format!(
+            "{} is not inside this journal's own directory, so an import cannot write there",
+            quoted(&path.display().to_string())
+        ))
+    };
+    let (parent, name) = path
+        .parent()
+        .zip(path.file_name().and_then(|name| name.to_str()))
+        .ok_or_else(outside)?;
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let parent = std::fs::canonicalize(parent).map_err(|_| outside())?;
+    let relative = parent.strip_prefix(root_dir).map_err(|_| outside())?;
+    let mut components: Vec<String> = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    components.push(name.to_string());
+    Ok(components.join("/"))
 }
 
 /// `POST /api/import/hledger-conf` — install the journal's aliases into an
@@ -4903,5 +6471,278 @@ mod tests {
                 "{argv:?} must NOT disable assertions"
             );
         }
+    }
+
+    // =======================================================================
+    // The command line the GUI shows and the CLI runs
+    // =======================================================================
+
+    /// A dry-run request built from handles, for the renderer's tests.
+    fn plan_request(balance: Option<&str>, account: Option<&str>) -> WireDryRunRequest {
+        WireDryRunRequest {
+            stage_id: "0123456789abcdef0123456789abcdef".to_string(),
+            rules_id: "import/bank.csv.rules".to_string(),
+            csv_path: "import/bank.csv".to_string(),
+            journal_id: "2026/2026.journal".to_string(),
+            balance: balance.map(str::to_string),
+            balance_account: account.map(str::to_string),
+        }
+    }
+
+    /// Re-parse a rendered argv through the **same** clap derive `ledgeline
+    /// import` itself uses, so a round-trip proves the two agree rather than
+    /// proving that two hand-written lists happen to match.
+    fn reparse(argv: &[String]) -> CliImport {
+        use clap::{Args as _, FromArgMatches as _};
+        assert_eq!(
+            &argv[..2],
+            ["ledgeline".to_string(), "import".to_string()],
+            "a rendered command must be a `ledgeline import` invocation"
+        );
+        let matches = CliImport::augment_args(clap::Command::new("ledgeline-import"))
+            .try_get_matches_from(
+                std::iter::once("ledgeline-import".to_string()).chain(argv[2..].iter().cloned()),
+            )
+            .expect("the rendered command line parses");
+        CliImport::from_arg_matches(&matches).expect("the parsed matches rebuild the arguments")
+    }
+
+    /// The minimal run: four handles and nothing else. Every optional flag is
+    /// absent, because a flag that is always printed says nothing.
+    #[test]
+    fn a_rendered_command_names_only_the_choices_that_were_made() {
+        let request = plan_request(None, None);
+        let argv = cli_argv(&CliRun {
+            input: "bank.csv",
+            plan: &request,
+            root_journal: None,
+            write_assertion: false,
+            sort: false,
+            dry_run: false,
+            no_git: false,
+        });
+        assert_eq!(
+            argv,
+            [
+                "ledgeline",
+                "import",
+                "-i",
+                "bank.csv",
+                "-o",
+                "import/bank.csv",
+                "-r",
+                "import/bank.csv.rules",
+                "-j",
+                "2026/2026.journal",
+            ]
+        );
+        assert_eq!(
+            cli_invocation(&CliRun {
+                input: "bank.csv",
+                plan: &request,
+                root_journal: None,
+                write_assertion: false,
+                sort: false,
+                dry_run: false,
+                no_git: false,
+            }),
+            "ledgeline import -i bank.csv -o import/bank.csv -r import/bank.csv.rules \
+             -j 2026/2026.journal"
+        );
+    }
+
+    /// Every choice a run can carry reaches the command line, and the root
+    /// journal appears exactly when it is not the file being written to — the
+    /// two-journals distinction `Plan`'s own docs are about.
+    #[test]
+    fn a_rendered_command_names_every_choice_including_the_second_journal() {
+        let request = plan_request(Some("2949.80"), Some("assets:bank:checking"));
+        let argv = cli_argv(&CliRun {
+            input: "Statement.xlsx",
+            plan: &request,
+            root_journal: Some("main.journal"),
+            write_assertion: true,
+            sort: true,
+            dry_run: true,
+            no_git: true,
+        });
+        assert_eq!(
+            argv,
+            [
+                "ledgeline",
+                "import",
+                "-i",
+                "Statement.xlsx",
+                "-o",
+                "import/bank.csv",
+                "-r",
+                "import/bank.csv.rules",
+                "-j",
+                "2026/2026.journal",
+                "--root-journal",
+                "main.journal",
+                "--balance",
+                "2949.80",
+                "--balance-account",
+                "assets:bank:checking",
+                "--write-assertion",
+                "--sort",
+                "--dry-run",
+                "--no-git",
+            ]
+        );
+    }
+
+    /// The whole point of the feature: the string the GUI SHOWS parses back into
+    /// the flags the CLI would RUN. One builder, both ends, proved by clap's own
+    /// derive rather than by inspection.
+    #[test]
+    fn a_rendered_command_round_trips_through_clap() {
+        let request = plan_request(Some("-3238.65"), Some("liabilities:card"));
+        let run = CliRun {
+            input: "statement.qfx",
+            plan: &request,
+            root_journal: Some("main.journal"),
+            write_assertion: true,
+            sort: true,
+            dry_run: false,
+            no_git: true,
+        };
+        let parsed = reparse(&cli_argv(&run));
+
+        // The four handles come back as paths naming the same files, relative to
+        // the journal's own directory — which is where the panel says to run it.
+        assert_eq!(parsed.input, Path::new("statement.qfx"));
+        assert_eq!(parsed.output.as_deref(), Some(Path::new("import/bank.csv")));
+        assert_eq!(
+            parsed.rules.as_deref(),
+            Some(Path::new("import/bank.csv.rules"))
+        );
+        assert_eq!(parsed.journal, Path::new("2026/2026.journal"));
+        assert_eq!(
+            parsed.root_journal.as_deref(),
+            Some(Path::new("main.journal"))
+        );
+        assert_eq!(parsed.balance.as_deref(), Some("-3238.65"));
+        assert_eq!(parsed.balance_account.as_deref(), Some("liabilities:card"));
+        assert!(parsed.write_assertion);
+        assert!(parsed.sort);
+        assert!(!parsed.dry_run);
+        assert!(parsed.no_git);
+
+        // …and re-rendering the re-parsed run reproduces the string, so the loop
+        // is closed rather than merely one-way.
+        assert_eq!(
+            cli_argv(&CliRun {
+                input: "statement.qfx",
+                plan: &request,
+                root_journal: parsed.root_journal.as_deref().and_then(Path::to_str),
+                write_assertion: parsed.write_assertion,
+                sort: parsed.sort,
+                dry_run: parsed.dry_run,
+                no_git: parsed.no_git,
+            }),
+            cli_argv(&run)
+        );
+    }
+
+    /// A name with a space in it is a real bank export (`Statement Feb 2026.xlsx`)
+    /// and must survive being pasted into a shell. The argv is unquoted — it is
+    /// handed to `Command::args`, which needs no quoting and must not receive
+    /// any — and only the DISPLAY string carries the quotes.
+    #[test]
+    fn a_handle_with_a_space_is_quoted_only_for_display() {
+        let request = plan_request(None, None);
+        let run = CliRun {
+            input: "Statement Feb 2026.xlsx",
+            plan: &request,
+            root_journal: None,
+            write_assertion: false,
+            sort: false,
+            dry_run: false,
+            no_git: false,
+        };
+        assert!(
+            cli_argv(&run).contains(&"Statement Feb 2026.xlsx".to_string()),
+            "argv carries the name as-is"
+        );
+        assert!(
+            cli_invocation(&run).contains("'Statement Feb 2026.xlsx'"),
+            "the display string quotes it: {}",
+            cli_invocation(&run)
+        );
+
+        // An apostrophe is the one character single-quoting cannot carry, so it
+        // is closed, escaped and reopened — the only shell-safe spelling.
+        assert_eq!(shell_quote("Bob's bank.csv"), r"'Bob'\''s bank.csv'");
+        // Nothing a shell would reinterpret is left bare.
+        assert_eq!(shell_quote("a;rm -rf /"), "'a;rm -rf /'");
+        // …and an ordinary handle is not decorated for nothing.
+        assert_eq!(shell_quote("import/bank.csv"), "import/bank.csv");
+    }
+
+    /// The report lists are bounded, and the counts beside them are not.
+    ///
+    /// A user who reformatted their journal turns every row of a year's
+    /// statement into a conflict, and a response body is not the place to put
+    /// two thousand of them. Silently truncating would be worse than the size,
+    /// so the totals are the true numbers and only the detail is clipped.
+    #[test]
+    fn the_id_report_clips_its_lists_but_never_its_counts() {
+        let conflicts = MAX_ID_REPORTS + 5;
+        let reconciliation = IdReconciliation {
+            entries: String::new(),
+            count: 0,
+            flips: (0..conflicts)
+                .map(|n| StatusFlip {
+                    id: format!("FIT{n:05}"),
+                    from: "pending",
+                    to: "cleared",
+                    new_status: Status::Cleared,
+                    in_target: true,
+                })
+                .collect(),
+            new: 0,
+            unchanged: 0,
+            conflicting: (0..conflicts)
+                .map(|n| (format!("FIT{n:05}"), Vec::new()))
+                .collect(),
+        };
+
+        let redactor = Redactor::default();
+        let wire = reconciliation.wire(&redactor, true);
+        assert_eq!(wire.status_changed.len(), MAX_ID_REPORTS);
+        assert_eq!(
+            wire.status_changed_total, conflicts,
+            "the count is the truth"
+        );
+        assert_eq!(wire.conflicting.len(), MAX_ID_REPORTS);
+        assert_eq!(wire.conflicting_total, conflicts);
+
+        // A dry-run writes nothing, so nothing it reports was applied.
+        assert!(
+            reconciliation
+                .wire(&redactor, false)
+                .status_changed
+                .iter()
+                .all(|f| !f.applied)
+        );
+        assert!(wire.status_changed.iter().all(|f| f.applied));
+    }
+
+    /// A bank's own string comes back verbatim, and bounded.
+    #[test]
+    fn a_reported_value_is_the_users_own_text_clipped() {
+        assert_eq!(clipped("FIT0001"), "FIT0001");
+        let long = "x".repeat(MAX_FIELD_CHARS * 2);
+        let bounded = clipped(&long);
+        assert_eq!(bounded.chars().count(), MAX_FIELD_CHARS + 1);
+        assert!(
+            bounded.ends_with('\u{2026}'),
+            "the clip is visible: {bounded}"
+        );
+        // Multi-byte characters are counted as characters, not bytes, so a
+        // clip can never land inside one.
+        assert_eq!(clipped("kaffee-über"), "kaffee-über");
     }
 }

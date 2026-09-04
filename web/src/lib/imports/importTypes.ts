@@ -267,6 +267,68 @@ export interface BalanceCheck {
     readonly difference: string | null;
 }
 
+/** One clearing status a re-downloaded statement moved: an authorization hold that settled. */
+export interface StatusChange {
+    /** The row id, as the rules file wrote it (`comment id:%fitid`). */
+    readonly id: string;
+    /** What the journal says today: `unmarked`, `pending` or `cleared`. */
+    readonly from: string;
+    /** What this statement says. */
+    readonly to: string;
+    /**
+     * Whether it was actually written. Always false on a dry run, which
+     * previews and writes nothing. On a commit, false only for a match outside
+     * the file this import writes to — syncing into some other included file
+     * would write somewhere this request had neither checked nor could undo.
+     */
+    readonly applied: boolean;
+}
+
+/** One field a conflicting row disagrees on. */
+export interface FieldDiff {
+    /** What disagrees: `date`, `description`, `posting 2 amount`, … */
+    readonly field: string;
+    /** What the journal says today. */
+    readonly existing: string;
+    /** What this statement proposes. */
+    readonly incoming: string;
+}
+
+/** One row the journal already holds differently — the hand-edit this feature exists to protect. */
+export interface Conflict {
+    /** The row id, as the rules file wrote it. */
+    readonly id: string;
+    /** Every disagreement, in field order. */
+    readonly diffs: readonly FieldDiff[];
+}
+
+/**
+ * What matching this statement's rows against the journal by id found, or null
+ * when the rules file declares no id (`comment id:%fitid` — see `docs/imports.md`).
+ *
+ * Never an empty object when present: "there is no id to match on" and "there
+ * is, and nothing matched" are different facts, and this type lets the UI tell
+ * them apart. An id match may keep a row OUT of the import (already held) or
+ * sync a clearing status; it never does anything else — a conflicting row is
+ * reported and left exactly as the user wrote it, never overwritten, on the
+ * premise that a field disagreement more likely means the journal was hand-
+ * edited on purpose than that the bank's own data changed.
+ */
+export interface IdMatches {
+    /** Rows no transaction in the journal claims. Imported as usual. */
+    readonly new: number;
+    /** Rows the journal already holds, identically. Not imported, not edited. */
+    readonly unchanged: number;
+    /** Status flips this statement would make (or, on commit, did make). */
+    readonly statusChanged: readonly StatusChange[];
+    /** How many there are — `statusChanged` may be capped by the engine. */
+    readonly statusChangedTotal: number;
+    /** Rows the journal holds differently in some way a status flip can't express. */
+    readonly conflicting: readonly Conflict[];
+    /** How many there are — `conflicting` may be capped by the engine. */
+    readonly conflictingTotal: number;
+}
+
 /** A successful dry run: what hledger would write, and everything that must be seen before it is. */
 export interface DryRunOk {
     readonly ok: true;
@@ -284,6 +346,18 @@ export interface DryRunOk {
     readonly aliases: AliasEffect | null;
     /** Modified targets that make `commit` refuse. Empty when clear. */
     readonly blockedByGit: readonly string[];
+    /**
+     * The `ledgeline import …` line that reproduces this import from a terminal,
+     * built by the engine's own argv builder — the same one `ledgeline import`
+     * is parsed into, so what it says and what it does cannot drift.
+     *
+     * Carries relative handles only, so it is run from the journal's own
+     * directory (which is what the panel says beside it). Not {@link CliParity},
+     * which asks a different question about a different `cli`.
+     */
+    readonly cliCommand: string;
+    /** What matching this statement against the journal by id found. See {@link IdMatches}. */
+    readonly idMatches: IdMatches | null;
 }
 
 /** One account rewrite an alias performed on this import. */
@@ -391,6 +465,8 @@ export interface GitReport {
     readonly paths: readonly string[];
     /** Targets deliberately not committed (gitignored, or in another repo). Reported, never force-added. */
     readonly skipped: readonly string[];
+    /** A commit failure's stderr (a rejecting pre-commit hook, a GPG prompt, ...). Null on success. */
+    readonly message: string | null;
 }
 
 /**
@@ -406,6 +482,13 @@ export interface CommitResult {
     readonly imported: number;
     readonly ordering: OrderingReport;
     readonly git: GitReport | null;
+    /**
+     * What matching this statement against the journal by id found, or null
+     * when the rules file declares no id. See {@link IdMatches}. Unlike the
+     * dry run's copy, `statusChanged[].applied` here reports what was actually
+     * written, and `entries`/`imported` above are already net of it.
+     */
+    readonly idMatches: IdMatches | null;
 }
 
 /**
@@ -426,4 +509,86 @@ export interface SortResult {
 export interface Prefs {
     readonly hledgerPath: string | null;
     readonly gitAutocommit: boolean | null;
+}
+
+// ---------------------------------------------------------------------------
+// QuickBooks Online Journal import (WP-17 Phase C)
+//
+// `StagedFile.format === "quickbooks-journal"` is the ONLY branch point this
+// screen is allowed to make (see plans/17-quickbooks-journal-import.md's
+// Phase C contract) — everything below is what the two dedicated routes,
+// `GET`/`POST /api/import/qb-journal/*`, say once that branch is taken.
+// `crates/ledgeline-server/src/qb_journal_api.rs`'s `Wire*` structs are the
+// ground truth these mirror field by field.
+// ---------------------------------------------------------------------------
+
+/** hledger's own `%m/%d/%Y`-style guess, and whether the export gave enough evidence to be sure. */
+export interface QbDateFormat {
+    readonly format: string;
+    /** True when nothing in the export rules out the other reading (day/month swapped). */
+    readonly ambiguous: boolean;
+}
+
+/** One parsed QuickBooks transaction, flattened for display — text only, nothing here is summed. */
+export interface QbSample {
+    readonly id: string;
+    readonly date: string;
+    readonly description: string;
+    readonly postings: readonly string[];
+}
+
+/**
+ * What matching this export's transactions against the journal by id found —
+ * the QuickBooks-import analogue of {@link IdMatches}. No `statusChanged`:
+ * every transaction this pipeline builds is unmarked, so a status difference
+ * from a hand-marked one is folded into `conflicting` rather than reported as
+ * a sync (see `WireQbIdMatches`'s doc comment in `qb_journal_api.rs`).
+ */
+export interface QbIdMatches {
+    readonly new: number;
+    readonly unchanged: number;
+    readonly conflicting: readonly Conflict[];
+    readonly conflictingTotal: number;
+}
+
+/**
+ * `GET /api/import/qb-journal/{stageId}` — a staged export's parsed groups,
+ * its date-format guess, and which accounts are still unmapped.
+ *
+ * Read-only and idempotent: calling it again after adding an alias through
+ * the existing `PUT /api/aliases/{*journalId}` is how `unmappedAccounts`
+ * shrinks, and `idMatches` goes from null to populated once it is empty.
+ */
+export interface QbPreview {
+    readonly stageId: string;
+    readonly transactionCount: number;
+    readonly postingCount: number;
+    readonly dateFormat: QbDateFormat;
+    /** Distinct QuickBooks account names no plain alias in the journal maps yet. Non-empty blocks a commit. */
+    readonly unmappedAccounts: readonly string[];
+    readonly sample: readonly QbSample[];
+    /** Null while any account is unmapped — nothing can be built (and so nothing classified) without one. */
+    readonly idMatches: QbIdMatches | null;
+}
+
+/** One `include`d file a commit touched, and whether it is still in date order after the write. */
+export interface QbFileOrdering {
+    /** A relative handle usable directly with the existing `POST /api/import/sort` route. */
+    readonly journalId: string;
+    readonly inOrder: boolean;
+    readonly moves: readonly SortMove[];
+}
+
+/** Whether the journal is still in date order after the import, per touched file (a multi-year import can touch more than one). */
+export interface QbOrdering {
+    readonly inOrder: boolean;
+    readonly files: readonly QbFileOrdering[];
+}
+
+/** `POST /api/import/qb-journal/commit` — what was written. */
+export interface QbCommitResult {
+    readonly imported: number;
+    readonly idMatches: QbIdMatches;
+    readonly ordering: QbOrdering;
+    readonly git: GitReport | null;
 }

@@ -48,6 +48,11 @@
 
 ## Misc
 - chore: Add screenshots and better descriptions to the readme
+- ledgeline looks great, but it inherits the complexity and issues of web apps due to our architecture choices
+  - these were the right choices for mbr (cuz markdown) but maybe not here
+  - what if we used <https://iced.rs> or [GPUI](https://github.com/longbridge/gpui-component) or something? libcosmic? [freya?](https://github.com/marc2332/freya)
+  - for forms and displays of numbers and such, it would probably be a great improvement
+  - for charts, i expect we'd be in trouble; egui has some libraries that might do
 
 ## Performance
 - perf: **`/api/insights` misses its gate by 2.4×** — 968 ms at 200k against a 400 ms target, and it
@@ -127,24 +132,13 @@ user's first click on "All time".
   the list the way `TransactionTable` already virtualizes rows.
 
 ## Import improvements
-- fix: **the SPA drops `WireGitResult.message` entirely** (`nativeDecode.ts`'s `RawGitReport` has no
-  `message` field), so a rejecting pre-commit hook is silent in the UI on the import path. The Rust
-  field exists precisely to prevent that.
-- fix: a row that was **pending when imported and later settled** with a different date or amount
-  sits before `.latest` and is never re-imported, so the journal silently keeps the pending version.
-  Inherent to hledger's date-based dedup rather than a bug of ours, but the YTD-redownload workflow
-  hits it routinely and the dry-run's "N rows skipped" count cannot distinguish "already imported
-  identically" from "already imported differently".
 - chore: `AmountStyle.digit_groups` is cloned per amount. The payload is bounded
   (`MAX_DIGIT_GROUPS`) so there is no amplification, but the real fix is
   `digit_groups: Option<Arc<DigitGroups>>` in `model.rs` — deferred because it is a cross-cutting
   change to a widely-used type. There is a `TODO:` at the field.
 - feat: quickbooks import handling
   - transaction matching and skipping
-  - account mapping (prompt for unmapped) (aliases?)
-- feat: import drag/drop
-  - command line options
-  - fix styling of numbers issues; infected the entire ui now
+  - account mapping (prompt for unmapped or use aliases?)
 - feat: create new import rules files
   - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
 
@@ -154,10 +148,6 @@ user's first click on "All time".
   - For each account, we should provide an editor for comments/notes, type, tags in general, and our special tags used in various reports
   - Lets put this under a Settings top level tab or gear icon. And lets figure out what else might go in here, like the number format stuff -- basically whatever hledger provides that we might want to set or edit
     - commodity, decimal-mark, tag list, and we should probably move aliases to here under "settings" too
-- Rules editor ui improvements
-  - we need to figure out a new rules editor approach because the current one is ugly, hard to find what you're looking for, very long vertically and not scannable
-  - also: we can't do more sophisticated rules (with conditional logic in them) so we need to add that and figure out ways to display and edit them
-  - perhaps instead of one giant form, we have display separate from edit and can therefore make this nicer
 
 ## AI
 - feat: private AI integration

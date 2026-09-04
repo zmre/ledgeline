@@ -20,7 +20,16 @@ import {CAPABILITIES, STAGE, upload} from "$lib/testing/importFixtures";
 import {actionBlocker, importAction} from "./importModel";
 import {importStore} from "./importStore.svelte";
 
-const DRY_RUN = {ok: true, entries: "…", count: 3, status: "would import 3", skipped: null, balance: null, blockedByGit: []};
+const DRY_RUN = {
+    ok: true,
+    entries: "…",
+    count: 3,
+    status: "would import 3",
+    skipped: null,
+    balance: null,
+    blockedByGit: [],
+    cliCommand: "ledgeline import -i bank.csv -o import/bank.csv -r bank.csv.rules -j 2026/2026.journal",
+};
 
 const COMMIT = {csvWritten: "import/2026/bank.csv", journalWritten: "2026/2026.journal", imported: 3, ordering: {inOrder: true, moves: []}, git: null};
 

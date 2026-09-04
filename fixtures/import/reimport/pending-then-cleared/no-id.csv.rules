@@ -1,0 +1,19 @@
+# `bank.csv.rules` with the `comment id:%fitid` line removed, and NOTHING else
+# changed. It exists to be diffed against its sibling: an import run with this
+# file must produce byte-for-byte what one run with the other file produced
+# before id matching existed, and `idMatches` must be `null` rather than an empty
+# object. A statement whose rules file never names an id is the case this whole
+# feature has to leave alone.
+skip 1
+fields date,amount,name,memo,trntype,fitid,checknum
+date-format %Y-%m-%d
+description %name
+account1 assets:bank:checking
+account2 expenses:unknown
+
+if %trntype HOLD
+  status !
+if %trntype DEBIT
+  status *
+if %trntype CREDIT
+  status *

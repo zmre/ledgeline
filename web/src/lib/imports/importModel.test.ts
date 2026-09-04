@@ -35,6 +35,7 @@ import {
     candidateById,
     candidateCards,
     canWrite,
+    conflictDetail,
     csvPathForRules,
     defaultBalanceAccount,
     defaultJournalId,
@@ -44,8 +45,10 @@ import {
     formatScore,
     formIsBusy,
     gitBlockMessage,
+    gitCommitFailure,
     headerFilename,
     hledgerBannerCopy,
+    idMatchesSummary,
     importAction,
     isInFlight,
     journalOptionLabel,
@@ -67,7 +70,7 @@ import {
     writtenLines,
     type ImportFlowState,
 } from "./importModel";
-import type {CommitResult, ImportCapabilities, JournalTarget, StagedFile} from "./importTypes";
+import type {CommitResult, Conflict, ImportCapabilities, JournalTarget, StagedFile} from "./importTypes";
 
 // ---------------------------------------------------------------------------
 // Wire fixtures — the contract's own JSON, verbatim
@@ -101,6 +104,13 @@ const STAGE_JSON = {
     defaults: {csvPath: "import/2026/bank.csv", journalId: "2026/2026.journal"},
 };
 
+/** A copy of `obj` with one key removed — for asserting a decoder NOTICES an absent field rather than defaulting it. (As `nativeDecode.test.ts`.) */
+function without<T extends object>(obj: T, key: keyof T): Partial<T> {
+    const copy: Partial<T> = {...obj};
+    delete copy[key];
+    return copy;
+}
+
 const DRY_RUN_JSON = {
     ok: true,
     entries: "2026-02-01 GROCERY STORE\n    expenses:groceries  $12.34\n",
@@ -109,6 +119,8 @@ const DRY_RUN_JSON = {
     skipped: {olderThan: "2026-02-05", count: 1},
     balance: {statement: "$2945.05", computed: "$2945.05", matches: true, difference: "$0.00"},
     blockedByGit: ["2026/2026.journal"],
+    cliCommand: "ledgeline import -i bank.csv -o import/2026/bank.csv -r import/2026/bank.csv.rules -j 2026/2026.journal",
+    idMatches: null,
 };
 
 const COMMIT_JSON = {
@@ -117,6 +129,17 @@ const COMMIT_JSON = {
     imported: 3,
     ordering: {inOrder: false, moves: [{date: "2026-01-20", description: "BACK DATED", fromLine: 812, toLine: 540}]},
     git: {committed: true, paths: ["import/2026/bank.csv", "2026/2026.journal"], skipped: []},
+    idMatches: null,
+};
+
+/** WP-16 Phase 4's wire, literal, one row of each kind. */
+const ID_MATCHES_JSON = {
+    new: 1,
+    unchanged: 2,
+    statusChanged: [{id: "FIT0001", from: "pending", to: "cleared", applied: true}],
+    statusChangedTotal: 1,
+    conflicting: [{id: "FIT0002", diffs: [{field: "posting 1 amount", existing: "-35.60", incoming: "-32.10"}]}],
+    conflictingTotal: 1,
 };
 
 /** The staged file as the SPA holds it — decoded once, reused by the model tests. */
@@ -304,6 +327,53 @@ describe("UNIT import wire decoders", () => {
         expect(() => decodeDryRun({entries: "", count: 0})).toThrow(ApiShapeError);
     });
 
+    it("decodes cliCommand, the line the panel offers to copy", () => {
+        // WP-16 Phase 3. The engine builds this with the same argv builder
+        // `ledgeline import` is PARSED into, so the SPA's only job is to carry
+        // the string through unaltered — there is deliberately nothing here that
+        // splits, re-joins or re-quotes it.
+        const run = decodeDryRun(DRY_RUN_JSON);
+        if (!run.ok) throw new Error("unreachable");
+        expect(run.cliCommand).toBe("ledgeline import -i bank.csv -o import/2026/bank.csv -r import/2026/bank.csv.rules -j 2026/2026.journal");
+    });
+
+    it("refuses a successful dry run with no command line", () => {
+        // Required, not optional: a preview that succeeded always has an
+        // invocation that reproduces it, so an absent field is a decode failure
+        // rather than "there is none". Contrast `git.message`, which is genuinely
+        // absent on success.
+        expect(() => decodeDryRun(without(DRY_RUN_JSON, "cliCommand"))).toThrow(ApiShapeError);
+    });
+
+    it("reads a null idMatches as 'no id column, nothing to match'", () => {
+        // Every rules file this feature did not exist for behaves this way —
+        // WP-16 Phase 4's opt-in invariant, on the decode side.
+        const run = decodeDryRun(DRY_RUN_JSON);
+        if (!run.ok) throw new Error("unreachable");
+        expect(run.idMatches).toBeNull();
+    });
+
+    it("decodes idMatches, one row of each kind", () => {
+        const run = decodeDryRun({...DRY_RUN_JSON, idMatches: ID_MATCHES_JSON});
+        if (!run.ok) throw new Error("unreachable");
+        expect(run.idMatches).toEqual({
+            new: 1,
+            unchanged: 2,
+            statusChanged: [{id: "FIT0001", from: "pending", to: "cleared", applied: true}],
+            statusChangedTotal: 1,
+            conflicting: [{id: "FIT0002", diffs: [{field: "posting 1 amount", existing: "-35.60", incoming: "-32.10"}]}],
+            conflictingTotal: 1,
+        });
+    });
+
+    it("decodes a commit's idMatches, where applied reports what was actually written", () => {
+        const commit = decodeCommitResult({
+            ...COMMIT_JSON,
+            idMatches: {...ID_MATCHES_JSON, statusChanged: [{id: "FIT0001", from: "pending", to: "cleared", applied: true}]},
+        });
+        expect(commit.idMatches?.statusChanged[0]).toEqual({id: "FIT0001", from: "pending", to: "cleared", applied: true});
+    });
+
     // An engine older than this build has nothing to say about command-line
     // parity, and "nothing to say" must decode as agreement. Claiming a
     // divergence because a field was absent would put a warning on a correct
@@ -378,7 +448,27 @@ describe("UNIT import wire decoders", () => {
         expect(commit.imported).toBe(3);
         expect(commit.ordering.inOrder).toBe(false);
         expect(commit.ordering.moves[0]).toEqual({date: "2026-01-20", description: "BACK DATED", fromLine: 812, toLine: 540});
-        expect(commit.git).toEqual({committed: true, paths: ["import/2026/bank.csv", "2026/2026.journal"], skipped: []});
+        expect(commit.git).toEqual({committed: true, paths: ["import/2026/bank.csv", "2026/2026.journal"], skipped: [], message: null});
+    });
+
+    it("decodes git.message, the contract amendment for a rejecting pre-commit hook", () => {
+        // The Rust field is additive and omitted on success (see import_api.rs's
+        // WireGitResult doc comment) — this is the one case where it is present.
+        const commit = decodeCommitResult({
+            ...COMMIT_JSON,
+            git: {
+                committed: false,
+                paths: [],
+                skipped: ["import/2026/bank.csv", "2026/2026.journal"],
+                message: "hook rejected: no swearing in commit messages",
+            },
+        });
+        expect(commit.git).toEqual({
+            committed: false,
+            paths: [],
+            skipped: ["import/2026/bank.csv", "2026/2026.journal"],
+            message: "hook rejected: no swearing in commit messages",
+        });
     });
 
     it("decodes the Save-CSV-only commit, where no journal was touched", () => {
@@ -398,7 +488,7 @@ describe("UNIT import wire decoders", () => {
         expect(decodeSortResult({moved: 3})).toEqual({moved: 3, git: null});
         expect(decodeSortResult({moved: 2, git: {committed: true, paths: ["main.journal"], skipped: []}})).toEqual({
             moved: 2,
-            git: {committed: true, paths: ["main.journal"], skipped: []},
+            git: {committed: true, paths: ["main.journal"], skipped: [], message: null},
         });
     });
 
@@ -913,6 +1003,66 @@ describe("UNIT dry run rendering", () => {
         expect(gitBlockMessage(["a", "b"])).toContain("2 files");
     });
 
+    it("says nothing about id matches when the rules file has no id column", () => {
+        expect(idMatchesSummary(null)).toBeNull();
+    });
+
+    it("says nothing when there is an id column but nothing to report about it", () => {
+        // `new`/`unchanged` alone are not worth a section — they are already
+        // reflected in the transaction count and the ordinary skip warning.
+        expect(idMatchesSummary({new: 3, unchanged: 5, statusChanged: [], statusChangedTotal: 0, conflicting: [], conflictingTotal: 0})).toBeNull();
+    });
+
+    it("reports a status sync", () => {
+        // The headline is a count; the per-row from/to detail is the template's
+        // job to render from `idMatches.statusChanged` directly, the same split
+        // `gitBlockMessage`'s sentence vs. `blockedByGit`'s list already uses.
+        const summary = idMatchesSummary({
+            new: 0,
+            unchanged: 0,
+            statusChanged: [{id: "FIT0001", from: "pending", to: "cleared", applied: false}],
+            statusChangedTotal: 1,
+            conflicting: [],
+            conflictingTotal: 0,
+        });
+        expect(summary).toContain("1");
+        expect(summary?.toLowerCase()).toContain("status");
+    });
+
+    it("warns about a conflict rather than staying quiet about it", () => {
+        // This is the whole point of the feature per the person who asked for
+        // it: warn that a row changed, don't wipe out what may be a hand-edit.
+        const summary = idMatchesSummary({
+            new: 0,
+            unchanged: 0,
+            statusChanged: [],
+            statusChangedTotal: 0,
+            conflicting: [{id: "FIT0002", diffs: [{field: "amount", existing: "-35.60", incoming: "-32.10"}]}],
+            conflictingTotal: 1,
+        });
+        expect(summary).toContain("1");
+        expect(summary?.toLowerCase()).toMatch(/not (?:been )?(?:changed|touched|imported|edited)|left (?:as|alone)|untouched/);
+    });
+
+    it("counts conflicts by their real total, not the capped list length", () => {
+        const conflict: Conflict = {id: "x", diffs: [{field: "amount", existing: "1", incoming: "2"}]};
+        const summary = idMatchesSummary({new: 0, unchanged: 0, statusChanged: [], statusChangedTotal: 0, conflicting: [conflict], conflictingTotal: 200});
+        expect(summary).toContain("200");
+    });
+
+    it("renders a conflict's diffs as one readable line", () => {
+        const line = conflictDetail({
+            id: "FIT0002",
+            diffs: [
+                {field: "amount", existing: "-35.60", incoming: "-32.10"},
+                {field: "description", existing: "COFFEE SHOP", incoming: "COFFEE SHOP #2"},
+            ],
+        });
+        expect(line).toContain("-35.60");
+        expect(line).toContain("-32.10");
+        expect(line).toContain("COFFEE SHOP #2");
+    });
+
     it("refuses to offer a write with no dry run, a failed one, or a git block", () => {
         expect(canWrite(null)).toBe(false);
         expect(canWrite({ok: false, stderr: "boom"})).toBe(false);
@@ -1016,6 +1166,23 @@ describe("UNIT result rendering", () => {
     it("reports what git declined to commit rather than hiding it", () => {
         const result = decodeCommitResult({...COMMIT_JSON, git: {committed: true, paths: ["a"], skipped: ["b"]}});
         expect(writtenLines(result)).toContain("Not committed: b.");
+    });
+
+    it("reports a git commit failure separately from what was written, rather than dropping it", () => {
+        const clean = decodeCommitResult({...COMMIT_JSON, git: {committed: true, paths: ["a"], skipped: []}});
+        expect(gitCommitFailure(clean)).toBeNull();
+
+        const failed = decodeCommitResult({
+            ...COMMIT_JSON,
+            git: {committed: false, paths: [], skipped: ["a", "b"], message: "hook rejected: no swearing in commit messages"},
+        });
+        expect(gitCommitFailure(failed)).toBe("hook rejected: no swearing in commit messages");
+        // Not duplicated into the plain "what was written" list.
+        expect(writtenLines(failed).join(" ")).not.toContain("hook rejected");
+    });
+
+    it("has nothing to report when git never ran (no repository)", () => {
+        expect(gitCommitFailure(decodeCommitResult({csvWritten: "bank.csv"}))).toBeNull();
     });
 
     it("offers the re-sort only when the journal came out of order", () => {

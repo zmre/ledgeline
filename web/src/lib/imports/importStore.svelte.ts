@@ -29,9 +29,14 @@ import {
     decodeDryRun,
     decodeImportCapabilities,
     decodePrefs,
+    decodeRulesDoc,
+    decodeRulesDraft,
     decodeSortResult,
     decodeStagedFile,
 } from "$lib/api/nativeDecode";
+import {createSaveRequest, defaultRulesId, draftForm} from "./createModel";
+import type {RulesDraft} from "./types";
+import type {FormItem, RulesForm} from "./model";
 import {dataView, type DataView} from "$lib/stores/loadState";
 import {createResource} from "$lib/stores/resource.svelte";
 import {settings} from "$lib/stores/settings.svelte";
@@ -123,6 +128,34 @@ let balanceAccount = $state("");
 let balanceAccountTouched = $state(false);
 let writeAssertion = $state(true);
 
+// --- creating a rules file (WP-16 Phase 2) --------------------------------
+//
+// Reached from the candidate list when NOTHING scored against the drop, which
+// is the one state where the New Transactions tab has nothing else to offer.
+// It lives in this store rather than its own because it is keyed on the staged
+// upload — the whole point is that the user has already dropped the file, so
+// asking them to upload it again to describe it would be asking twice.
+
+/** The panel is open. Closed is the resting state; nothing is fetched until it opens. */
+let creating = $state(false);
+/** The engine's draft, or null before the first one arrives. */
+let draft = $state<RulesDraft | null>(null);
+/**
+ * The editable form built from the draft.
+ *
+ * A `$state` object, deliberately: the mapping and account panels write into it
+ * through the same `withFieldNames`/`withSetting` the Edit Rules tab uses, and
+ * those return new arrays that this field is reassigned to.
+ */
+let createForm = $state<RulesForm | null>(null);
+/** The new file's id. Seeded from the CSV destination, then the user's to change. */
+let createId = $state("");
+let createDrafting = $state(false);
+let createSaving = $state(false);
+let createError = $state<string | null>(null);
+/** The id that was written, once one has been. Null until then. */
+let createdId = $state<string | null>(null);
+
 /** A file refused before it was uploaded (a `.pdf`, an extension the engine does not read). */
 let rejection = $state<string | null>(null);
 /** `Save and Import` / `Save CSV` has been pressed at least once for the current staging. */
@@ -165,6 +198,8 @@ function failureMessage(error: unknown): string {
 
 /** Forget everything downstream of the staged file — a new file invalidates all of it. */
 function resetFlow(): void {
+    closeCreate();
+    createdId = null;
     selectedRulesId = null;
     csvPath = "";
     csvPathTouched = false;
@@ -239,6 +274,15 @@ function writeRequest(): WriteRequest | null {
     const run = runBody();
     if (run === null) return {kind: "saveCsv", body: {stageId: file.stageId, csvPath: csvPath.trim()}};
     return {kind: "import", body: {...run, writeAssertion}};
+}
+
+/** Drop the draft and everything derived from it. */
+function closeCreate(): void {
+    creating = false;
+    draft = null;
+    createForm = null;
+    createId = "";
+    createError = null;
 }
 
 export const importStore = {
@@ -494,6 +538,130 @@ export const importStore = {
         sortMoved = null;
         sortError = null;
         await committed.load(url, request);
+    },
+
+    // --- creating a rules file --------------------------------------------
+    get creating(): boolean {
+        return creating;
+    },
+    get draft(): RulesDraft | null {
+        return draft;
+    },
+    get createForm(): RulesForm | null {
+        return createForm;
+    },
+    get createId(): string {
+        return createId;
+    },
+    get createDrafting(): boolean {
+        return createDrafting;
+    },
+    get createSaving(): boolean {
+        return createSaving;
+    },
+    get createError(): string | null {
+        return createError;
+    },
+    /** The rules file this flow wrote, or null. Survives `closeCreate` so the panel can say so. */
+    get createdId(): string | null {
+        return createdId;
+    },
+
+    /**
+     * Open the Create panel and ask the engine for a draft.
+     *
+     * The id is defaulted from the CSV destination — a rules file is found by
+     * being named after its data file, so that default is the convention rather
+     * than a convenience — and the account starts empty for the form to fill.
+     */
+    async openCreate(): Promise<void> {
+        const file = staged.value;
+        if (file === null) return;
+        creating = true;
+        createdId = null;
+        createId = defaultRulesId(csvPath);
+        await this.redraft();
+    },
+
+    closeCreate(): void {
+        closeCreate();
+    },
+
+    /** Rename the file being created. Local only — the engine re-checks on save. */
+    setCreateId(value: string): void {
+        createId = value;
+        // A name that was rejected is a name the user is now changing, so the
+        // stale refusal must not sit under the field they are fixing.
+        createError = null;
+    },
+
+    /** Replace the working form after a panel edited it. */
+    setCreateItems(items: FormItem[]): void {
+        if (createForm !== null) createForm = {...createForm, items};
+    },
+
+    /**
+     * Ask the engine to draft (or re-draft) a rules file for the staged upload.
+     *
+     * Called once when the panel opens. It is NOT called again as the user
+     * edits: the draft is a starting point, and everything after it is an edit
+     * of the returned document through the same typed vocabulary the Edit Rules
+     * tab uses — so a re-draft would discard the user's corrections, which is
+     * the opposite of what a "give a starting point, then show the preview"
+     * flow is for.
+     */
+    async redraft(): Promise<void> {
+        const url = settings.serverUrl;
+        const file = staged.value;
+        if (url === null || file === null) return;
+        createDrafting = true;
+        createError = null;
+        try {
+            const answer = decodeRulesDraft(await new LedgelineApi(url).createRules({stageId: file.stageId, id: createId.trim(), account1: ""}));
+            draft = answer;
+            createForm = draftForm(answer.doc);
+        } catch (error) {
+            draft = null;
+            createForm = null;
+            createError = failureMessage(error);
+        } finally {
+            createDrafting = false;
+        }
+    },
+
+    /**
+     * Write the drafted file, then re-stage so the candidate list can score it.
+     *
+     * The re-stage is the point of the whole flow: the user dropped a file that
+     * nothing could read, and the answer is that it can be read NOW. Re-uploading
+     * the same `File` is how the candidate list learns that — the engine scores
+     * candidates at stage time, and there is no cheaper way to ask it again.
+     */
+    async saveCreate(): Promise<boolean> {
+        const url = settings.serverUrl;
+        const form = createForm;
+        if (url === null || form === null) return false;
+        const id = createId.trim();
+        createSaving = true;
+        createError = null;
+        try {
+            const saved = decodeRulesDoc(await new LedgelineApi(url).saveRules(id, createSaveRequest(form)));
+            createdId = saved.id;
+            closeCreate();
+            // Re-upload, which re-scores every candidate against the new file
+            // and re-seeds the form. `offerFile` resets `createdId`, so it is
+            // restored afterwards — the banner saying what was written outlives
+            // the staging it came from.
+            const written = saved.id;
+            await this.retryStage();
+            createdId = written;
+            return true;
+        } catch (error) {
+            createError = failureMessage(error);
+            return false;
+        } finally {
+            createSaving = false;
+        }
     },
 
     // --- the post-import re-sort -----------------------------------------

@@ -1,0 +1,5 @@
+Date,Time,TimeZone,Name,Type,Status,Currency,Gross,Fee,Net,Balance
+01/02/2026,13:45:07,PST,Coffee Roasters,Express Checkout Payment,Completed,USD,-4.50,0.00,-4.50,120.10
+01/05/2026,09:12:00,PST,Bookshop Online,Express Checkout Payment,Completed,USD,-32.19,0.00,-32.19,87.91
+01/09/2026,17:02:44,PST,Acme Consulting,Payment Received,Completed,USD,500.00,-14.80,485.20,573.11
+01/11/2026,08:00:01,PST,Bank Account,General Withdrawal,Pending,USD,-500.00,0.00,-500.00,73.11

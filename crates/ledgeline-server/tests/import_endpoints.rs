@@ -380,6 +380,11 @@ async fn every_import_route_requires_the_token() {
         ("POST", "/api/import/commit"),
         ("POST", "/api/import/save-csv"),
         ("POST", "/api/import/sort"),
+        (
+            "GET",
+            "/api/import/qb-journal/00000000000000000000000000000000",
+        ),
+        ("POST", "/api/import/qb-journal/commit"),
         ("POST", "/api/import/hledger-conf"),
         ("GET", "/api/prefs"),
         ("PUT", "/api/prefs"),
@@ -3711,4 +3716,449 @@ async fn a_hijacking_config_breaks_the_terminal_and_not_this_engine() {
         json!("balance"),
         "{preview}"
     );
+}
+
+// ===========================================================================
+// Re-import matching by row id (WP-16 Phase 4)
+// ===========================================================================
+
+/// The scenario tree: `fixtures/import/reimport/pending-then-cleared/`'s rules
+/// file beside an opening journal, with the two OFX downloads to hand.
+///
+/// `rules` selects which of the two sibling rules files is installed — the one
+/// that names a row id, or the control that does not. Both are installed under
+/// the SAME name, so every request below is otherwise identical and the only
+/// variable in these tests is the one line that differs between them.
+fn reimport_tree(rules: &str) -> Tree {
+    let tree = Tree::bare();
+    std::fs::copy(
+        fixtures_dir().join(format!("import/reimport/pending-then-cleared/{rules}")),
+        tree.path("import/bank.csv.rules"),
+    )
+    .expect("copy the rules fixture");
+    tree
+}
+
+/// One of the scenario's two OFX downloads, as bytes to drop on the screen.
+fn statement(name: &str) -> Vec<u8> {
+    std::fs::read(fixtures_dir().join(format!("import/reimport/pending-then-cleared/{name}")))
+        .expect("the committed statement is readable")
+}
+
+/// Upload `name` and commit it to `import/bank.csv` / `main.journal`.
+async fn import_statement(tree: &Tree, name: &str) -> Value {
+    let (status, staged) = upload(tree, name, statement(name)).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    response
+}
+
+/// Upload `name` and preview it, without writing anything.
+async fn preview_statement(tree: &Tree, name: &str) -> Value {
+    let (status, staged) = upload(tree, name, statement(name)).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let (status, response) = post(
+        tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    response
+}
+
+/// **The regression test for `TODO.md`'s pending/settled bug**, end to end.
+///
+/// > a row that was **pending when imported and later settled** with a different
+/// > date or amount sits before `.latest` and is never re-imported, so the
+/// > journal silently keeps the pending version … the dry-run's "N rows skipped"
+/// > count cannot distinguish "already imported identically" from "already
+/// > imported differently".
+///
+/// The whole of that, in one run: a statement is imported, one of its rows is
+/// corrected by hand afterwards, and the same statement is re-downloaded with a
+/// hold now settled and one genuinely new row. All three rows are dated at or
+/// before the first import's `.latest` except the new one, so hledger's own
+/// proposal contains exactly one of them — which is why classifying that
+/// proposal would see none of this.
+///
+/// Three claims, one per row:
+///
+/// * the settled hold's status is **synced**, and nothing else about it moves;
+/// * the hand-edited amount **survives untouched** and is reported as
+///   `conflicting` rather than overwritten — the case the repository's owner
+///   asked for by name;
+/// * the new row **imports normally**, exactly once.
+#[tokio::test]
+async fn a_redownload_syncs_a_settled_hold_and_never_clobbers_a_hand_edit() {
+    require_hledger!();
+    let tree = reimport_tree("bank.csv.rules");
+
+    // Import one. Both rows land, the hold marked pending by the rules file.
+    let first = import_statement(&tree, "first.ofx").await;
+    assert_eq!(first["imported"], json!(2), "{first}");
+    assert_eq!(
+        first["idMatches"]["new"],
+        json!(2),
+        "a first import is all new: {first}"
+    );
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert!(
+        journal.contains("2026-01-05 ! COFFEE SHOP  ; id:FIT0001"),
+        "the hold arrives pending, carrying its id:\n{journal}"
+    );
+    assert!(
+        journal.contains("2026-01-06 * GROCERY MART  ; id:FIT0002"),
+        "{journal}"
+    );
+
+    // The user corrects GROCERY MART by hand, in their editor, afterwards.
+    let edited = journal
+        .replace("-32.10", "-35.60")
+        .replace(" 32.10", " 35.60");
+    assert_ne!(
+        edited, journal,
+        "the hand-edit must actually change something"
+    );
+    std::fs::write(tree.path("main.journal"), &edited).expect("hand-edit the journal");
+    // What the file watcher does in the running app; there is none in a test.
+    tree.state.reopen_editor();
+
+    // The preview of the re-download. NOTHING is written by it.
+    let before = tree.snapshot();
+    let preview = preview_statement(&tree, "redownload.ofx").await;
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        Vec::<String>::new(),
+        "a dry-run writes nothing, id matching or no"
+    );
+
+    let matches = &preview["idMatches"];
+    assert_eq!(matches["new"], json!(1), "{preview}");
+    assert_eq!(
+        matches["unchanged"],
+        json!(0),
+        "the hand-edited row is not unchanged: {preview}"
+    );
+    assert_eq!(
+        matches["statusChanged"],
+        json!([{"id": "FIT0001", "from": "pending", "to": "cleared", "applied": false}]),
+        "a settled hold, and `applied: false` because this is a preview: {preview}"
+    );
+    assert_eq!(matches["statusChangedTotal"], json!(1));
+    assert_eq!(
+        matches["conflicting"][0]["id"],
+        json!("FIT0002"),
+        "{preview}"
+    );
+    assert_eq!(
+        matches["conflicting"][0]["diffs"][0],
+        json!({"field": "posting 1 amount", "existing": "-35.60", "incoming": "-32.10"}),
+        "the user's own figure on the left, the bank's on the right: {preview}"
+    );
+    assert_eq!(matches["conflictingTotal"], json!(1));
+
+    // The preview IS the bytes: only the new row is proposed, and the two the
+    // journal already holds are gone from it.
+    let entries = preview["entries"].as_str().expect("entries");
+    assert_eq!(preview["count"], json!(1), "{preview}");
+    assert!(entries.contains("ACME PAYROLL"), "{entries}");
+    assert!(!entries.contains("COFFEE SHOP"), "{entries}");
+    assert!(!entries.contains("GROCERY MART"), "{entries}");
+
+    // The commit.
+    let commit = import_statement(&tree, "redownload.ofx").await;
+    assert_eq!(commit["imported"], json!(1), "{commit}");
+    assert_eq!(
+        commit["idMatches"]["statusChanged"],
+        json!([{"id": "FIT0001", "from": "pending", "to": "cleared", "applied": true}]),
+        "on a commit the flip is written: {commit}"
+    );
+
+    let after = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    // 1. The hold settled, and ONLY its marker moved.
+    assert!(
+        after.contains("2026-01-05 * COFFEE SHOP  ; id:FIT0001"),
+        "the settled hold must be synced:\n{after}"
+    );
+    assert_eq!(
+        after.matches("id:FIT0001").count(),
+        1,
+        "…and synced, not re-imported alongside itself:\n{after}"
+    );
+    assert_eq!(
+        edited.replacen("2026-01-05 ! COFFEE SHOP", "2026-01-05 * COFFEE SHOP", 1),
+        after
+            .split("\n2026-01-08")
+            .next()
+            .expect("the appended row is last")
+            .to_string(),
+        "one character changed in the pre-existing text, and no other byte"
+    );
+
+    // 2. The hand-edit survived.
+    assert!(
+        after.contains("-35.60"),
+        "the user's correction must survive:\n{after}"
+    );
+    assert!(
+        !after.contains("-32.10"),
+        "and must not have been reverted to the bank's figure:\n{after}"
+    );
+
+    // 3. The new row landed, once.
+    assert_eq!(after.matches("ACME PAYROLL").count(), 1, "{after}");
+    assert_eq!(after.matches("id:FIT0002").count(), 1, "{after}");
+}
+
+/// **The opt-in invariant**, and the single most important property of this
+/// phase: a rules file that names no row id gets the import it always got.
+///
+/// The same two statements, the same tree, the same requests — only the one
+/// `comment id:%fitid` line is missing from the rules file. `idMatches` must be
+/// **`null` and not an empty object** (there being no id to match on and nothing
+/// having matched are different answers), and the pipeline must behave exactly
+/// as it did before this feature existed: the settled hold is NOT synced, and the
+/// re-download imports only what `.latest` lets through.
+///
+/// The byte-level half of the claim is structural rather than asserted here: a
+/// `null` means `reconcile_ids` returned `None`, so the proposal is passed on as
+/// the same `String` hledger produced, never through `retain_new` at all. That
+/// `retain_new` itself hands back the borrowed input when nothing matches is
+/// pinned separately, in `reimport`'s own unit tests.
+#[tokio::test]
+async fn a_rules_file_with_no_id_is_left_exactly_as_it_was() {
+    require_hledger!();
+    let tree = reimport_tree("no-id.csv.rules");
+
+    let first = import_statement(&tree, "first.ofx").await;
+    assert_eq!(first["imported"], json!(2), "{first}");
+    assert_eq!(
+        first["idMatches"],
+        Value::Null,
+        "no id in the rules file means no report at all, not an empty one: {first}"
+    );
+
+    let before = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert!(
+        before.contains("2026-01-05 ! COFFEE SHOP"),
+        "the hold arrives pending: {before}"
+    );
+    assert!(
+        !before.contains("id:"),
+        "and carries no tag, because nothing asked for one: {before}"
+    );
+
+    let preview = preview_statement(&tree, "redownload.ofx").await;
+    assert_eq!(preview["idMatches"], Value::Null, "{preview}");
+    assert_eq!(
+        preview["count"],
+        json!(1),
+        "hledger's own date dedup, unchanged: {preview}"
+    );
+
+    let commit = import_statement(&tree, "redownload.ofx").await;
+    assert_eq!(commit["idMatches"], Value::Null, "{commit}");
+    assert_eq!(commit["imported"], json!(1), "{commit}");
+
+    let after = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert!(
+        after.starts_with(&before),
+        "the import appends and never rewrites:\n{after}"
+    );
+    assert!(
+        after.contains("2026-01-05 ! COFFEE SHOP"),
+        "THE point: with no id declared, the settled hold stays pending — this is \
+         today's behaviour, and it must not have changed:\n{after}"
+    );
+    assert!(after.contains("ACME PAYROLL"), "{after}");
+}
+
+/// A status flip is a journal write, so it lands in the import's own git commit
+/// and touches nothing else on disk.
+///
+/// The blast radius is the same three paths a commit has always written — the
+/// CSV, the journal, and hledger's dedup marker — because the flip is confined
+/// to the file this import was already writing to. A fourth path here would mean
+/// the sync had reached a file whose git state this request never checked.
+#[tokio::test]
+async fn a_status_sync_writes_only_the_import_s_own_target() {
+    require_hledger!();
+    let tree = reimport_tree("bank.csv.rules");
+    import_statement(&tree, "first.ofx").await;
+
+    let before = tree.snapshot();
+    let commit = import_statement(&tree, "redownload.ofx").await;
+    assert_eq!(commit["idMatches"]["statusChangedTotal"], json!(1));
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        vec![
+            "import/.latest.bank.csv".to_string(),
+            "import/bank.csv".to_string(),
+            "main.journal".to_string(),
+        ],
+        "a status sync adds no path to a commit's blast radius"
+    );
+}
+
+/// Re-importing the identical statement is a no-op that says so.
+///
+/// Without an id this is only true because `.latest` happens to cover it; with
+/// one it is true by identity, which is what makes it reportable. `unchanged`
+/// counting every row is the "already imported identically" answer `TODO.md`
+/// says the skipped count could not give.
+#[tokio::test]
+async fn re_importing_the_same_statement_reports_every_row_unchanged() {
+    require_hledger!();
+    let tree = reimport_tree("bank.csv.rules");
+    import_statement(&tree, "first.ofx").await;
+
+    let preview = preview_statement(&tree, "first.ofx").await;
+    assert_eq!(
+        preview["idMatches"],
+        json!({
+            "new": 0,
+            "unchanged": 2,
+            "statusChanged": [],
+            "statusChangedTotal": 0,
+            "conflicting": [],
+            "conflictingTotal": 0,
+        }),
+        "the whole statement is already in the journal, and identically: {preview}"
+    );
+    assert_eq!(preview["count"], json!(0), "{preview}");
+    assert_eq!(
+        preview["entries"].as_str().expect("entries").trim(),
+        "",
+        "nothing left to propose: {preview}"
+    );
+}
+
+/// The same statement, imported to a **different destination**, does not
+/// duplicate what the journal already holds.
+///
+/// hledger's dedup state is keyed to the CSV's own file name, so a statement
+/// saved under a new name has no `.latest` and is proposed in full — every row,
+/// including the ones already in the journal. Today that silently doubles them.
+/// It is not an exotic case: a `bank-2026.csv` beside last year's `bank.csv`, a
+/// marker lost to a `git revert`, or a statement re-saved from the download
+/// folder all reach it.
+///
+/// This is the path where the *filter* does the work rather than `.latest` — the
+/// only test in this file where `reimport::retain_new` actually removes anything
+/// from hledger's proposal — so it is what proves the classification is wired to
+/// what gets appended and not merely to what gets reported.
+#[tokio::test]
+async fn the_same_statement_under_a_new_name_is_not_imported_twice() {
+    require_hledger!();
+    let tree = reimport_tree("bank.csv.rules");
+    import_statement(&tree, "first.ofx").await;
+
+    // A second destination, with no dedup state of its own. hledger will propose
+    // all three rows; two of them are already in the journal.
+    let (_, staged) = upload(&tree, "redownload.ofx", statement("redownload.ofx")).await;
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["csvPath"] = json!("import/bank-2026.csv");
+
+    let (status, preview) = post(&tree, "/api/import/dry-run", body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert_eq!(
+        preview["skipped"],
+        Value::Null,
+        "there is no dedup state here at all, which is the premise: {preview}"
+    );
+    assert_eq!(
+        preview["idMatches"]["unchanged"],
+        json!(1),
+        "GROCERY MART is already in the journal, untouched: {preview}"
+    );
+    assert_eq!(preview["idMatches"]["statusChangedTotal"], json!(1));
+    assert_eq!(
+        preview["count"],
+        json!(1),
+        "and only the genuinely new row is left to import: {preview}"
+    );
+
+    body["writeAssertion"] = json!(false);
+    let (status, commit) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{commit}");
+    assert_eq!(commit["imported"], json!(1), "{commit}");
+
+    let after = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    for id in ["FIT0001", "FIT0002", "FIT0003"] {
+        assert_eq!(
+            after.matches(&format!("id:{id}")).count(),
+            1,
+            "{id} must appear exactly once:\n{after}"
+        );
+    }
+    assert!(
+        after.contains("2026-01-05 * COFFEE SHOP"),
+        "and the hold still settled:\n{after}"
+    );
+}
+
+/// A status sync **never** reaches outside the file the import writes to.
+///
+/// The id index spans the whole journal tree, and it has to — a row already
+/// imported into an `include`d file is still a row this statement must not
+/// import again, and here it is correctly kept out. But the *write* is a
+/// different question with a different answer: `journalId` is the only file
+/// whose git state this request checked before committing and the only one its
+/// git commit carries, so syncing a status into a sibling file would write
+/// somewhere the request had neither permission for nor a way to offer to undo.
+///
+/// So the match is reported, with `applied: false`, and the sibling file comes
+/// out byte-identical.
+#[tokio::test]
+async fn a_status_sync_outside_the_target_is_reported_and_not_written() {
+    require_hledger!();
+    let tree = reimport_tree("bank.csv.rules");
+    // The pending row lives in an INCLUDED file; the import writes the root.
+    std::fs::write(
+        tree.path("extra.journal"),
+        "2026-01-05 ! COFFEE SHOP  ; id:FIT0001\n    assets:bank:checking           -4.50\n    \
+         expenses:unknown                4.50\n",
+    )
+    .expect("write the included file");
+    std::fs::write(
+        tree.path("main.journal"),
+        format!("include extra.journal\n\n{OPENING}"),
+    )
+    .expect("write the root journal");
+    let tree = Tree {
+        state: AppState::from_journal_path(tree.path("main.journal"))
+            .expect("the scratch journal opens"),
+        dir: tree.dir,
+    };
+    let sibling = std::fs::read(tree.path("extra.journal")).expect("read the included file");
+
+    let commit = import_statement(&tree, "redownload.ofx").await;
+    assert_eq!(
+        commit["idMatches"]["statusChanged"],
+        json!([{"id": "FIT0001", "from": "pending", "to": "cleared", "applied": false}]),
+        "matched, reported, and NOT written: {commit}"
+    );
+    assert_eq!(
+        commit["imported"],
+        json!(2),
+        "the matched row is still kept out of the import — the index spans the whole \
+         tree even though the write does not: {commit}"
+    );
+
+    assert_eq!(
+        std::fs::read(tree.path("extra.journal")).expect("read the included file"),
+        sibling,
+        "the file this import was not asked to write is untouched"
+    );
+    let root = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert!(!root.contains("id:FIT0001"), "no duplicate landed:\n{root}");
+    assert!(root.contains("id:FIT0002"), "{root}");
+    assert!(root.contains("id:FIT0003"), "{root}");
 }

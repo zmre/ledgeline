@@ -798,13 +798,13 @@ fn the_committed_tree_fixture_finds_exactly_one_rules_file() {
     assert!(bank.warnings.is_empty());
     assert_eq!(bank.account1.as_deref(), Some("assets:bank:checking"));
     assert_eq!(bank.account2.as_deref(), Some("expenses:unknown"));
-    // Four conditional constructs: three editable blocks (`COFFEE`,
-    // `LANDLORD`, and the two-matcher OR list) plus the conditional TABLE,
-    // which is counted here and is also the file's one opaque item. The file
-    // carries that table because it doubles as the rules-API document golden,
-    // which needs an `opaque` item to describe.
-    assert_eq!(bank.if_block_count, 4);
-    assert_eq!(bank.editable_block_count, 3);
+    // Five conditional constructs: four editable blocks (`COFFEE`,
+    // `LANDLORD`, the two-matcher OR list and the two-matcher AND-group) plus
+    // the conditional TABLE, which is counted here and is also the file's one
+    // opaque item. The file carries that table because it doubles as the
+    // rules-API document golden, which needs an `opaque` item to describe.
+    assert_eq!(bank.if_block_count, 5);
+    assert_eq!(bank.editable_block_count, 4);
     assert_eq!(bank.opaque_item_count, 1);
     assert!(bank.path().as_path().is_absolute());
     assert!(bank.identity_unchanged());

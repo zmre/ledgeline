@@ -7,6 +7,7 @@
 
 use crate::decimal::{Dec, DecError};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// A commodity symbol, e.g. `$`, `EUR`, `AAPL`.
 ///
@@ -93,16 +94,17 @@ pub struct AmountStyle {
     /// appears as integers within priced transactions).
     pub decimal_mark: Option<char>,
     /// Digit grouping, if any.
-    // TODO: make this `Option<Arc<DigitGroups>>`. A `commodity` directive's
-    // style is cloned into every amount of that commodity (`parse::parse_amount`),
-    // so the group vector is retained once per AMOUNT while the directive that
-    // declared it is charged once against the file size — a 127 KB journal
-    // retained 80 MB of group entries. `parse::MAX_DIGIT_GROUPS` bounds the
-    // damage today by capping the vector at the 39 entries an `i128` mantissa can
-    // possibly render, but sharing the allocation is the actual fix. Deferred
-    // because it is a cross-cutting change to a type most of the crate builds
-    // against; `wire.rs` reads it through `Deref` and needs no edit.
-    pub digit_groups: Option<DigitGroups>,
+    //
+    // `Arc`, not an owned `DigitGroups`: a `commodity` directive's style is
+    // cloned into every amount of that commodity (`parse::parse_amount`), so
+    // the group vector used to be retained once per AMOUNT while the directive
+    // that declared it was charged once against the file size — a 127 KB
+    // journal retained 80 MB of group entries. `parse::MAX_DIGIT_GROUPS` still
+    // bounds the size of any one `DigitGroups` (the 39 entries an `i128`
+    // mantissa can possibly render), but sharing the allocation via `Arc` is
+    // what bounds the fan-out. `wire.rs` reads it through `Deref` and needs no
+    // edit.
+    pub digit_groups: Option<Arc<DigitGroups>>,
     /// Display precision (as-written fractional digit count, or the precision
     /// carried through inference).
     pub precision: u32,

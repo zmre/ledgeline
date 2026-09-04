@@ -22,18 +22,38 @@
     // Keyboard: j/k move a cursor between cards and J/K move the CARD, through
     // the same `moveRule` the ↑/↓ buttons use — so the tested arithmetic in
     // `reorder.ts` is reused rather than duplicated, and the buttons stay.
+    //
+    // # Display and edit are two different renderings of the same rule
+    //
+    // Every rule is a one-line summary (`RuleSummaryCard`) until it is opened,
+    // and exactly one can be open at a time. Rendering all of them as full
+    // editors — which is what this list used to do — made a file of any size a
+    // very long column of identical controls with no way to find anything in it.
+    //
+    // WHICH rule is open lives here rather than in `EditRulesPanel`, beside the
+    // keyboard cursor and for the same reason: it is a fact about how this list
+    // is being looked at, not about the document, and nothing outside this
+    // component can act on it. The panel keys this whole subtree on
+    // `form.id#formEpoch`, so switching files or reverting rebuilds the list and
+    // takes the open card with it. A SAVE is the one thing the list cannot see
+    // for itself, so it is passed `savedAt` and closes the card when it moves —
+    // the edit has landed, and leaving the editor open over it invites a second,
+    // accidental edit of a rule the user is finished with.
     import {registerKeys} from "$lib/keys/keymap.svelte";
     import {PRIORITY} from "$lib/keys/types";
     import {listCursor} from "$lib/ui/listCursor.svelte";
-    import {appendRule, blankRule, describeItem, moveRule, ruleIndices, type FormItem} from "../model";
+    import {tick} from "svelte";
+    import {appendRule, blankRule, describeIfBlock, describeItem, moveRule, ruleIndices, type FormItem} from "../model";
     import IfBlockCard from "./IfBlockCard.svelte";
     import KeptItemCard from "./KeptItemCard.svelte";
+    import RuleSummaryCard from "./RuleSummaryCard.svelte";
 
     let {
         items,
         accountNames,
         csvFields,
         fallbackAccount,
+        savedAt,
         onChange,
         disabled,
     }: {
@@ -42,6 +62,8 @@
         csvFields: string[];
         /** The file's `account2`, seeded into a new rule so the commonest edit is one field. */
         fallbackAccount: string;
+        /** When the last successful save landed, or null. Moves once per save; closes the open rule. */
+        savedAt: number | null;
         onChange: (items: FormItem[]) => void;
         disabled: boolean;
     } = $props();
@@ -49,18 +71,58 @@
     const slots = $derived(ruleIndices(items));
     const entries = $derived(slots.map((index) => items[index]).filter((item): item is FormItem => item !== undefined));
 
+    /** The rules-list position of the rule being edited, or null when they are all collapsed. */
+    let openAt = $state<number | null>(null);
+
+    // A LATCH on the value, not on truthiness: `savedAt` stays set after a save,
+    // and reacting to "is set" would make the card impossible to open again
+    // until the next edit. Same shape as the panel's own `seededFrom`.
+    let closedFor: number | null = null;
+    $effect(() => {
+        if (savedAt !== null && savedAt !== closedFor) {
+            closedFor = savedAt;
+            openAt = null;
+        }
+    });
+
+    /**
+     * Where the open card ends up once the entry at `from` has moved to `to`.
+     *
+     * Moving a rule must not silently open a different one: positions are the
+     * only identity these entries have (a rule the user just added has no id at
+     * all), so the one being edited has to be tracked through the same shuffle
+     * its card goes through.
+     */
+    function afterMove(at: number, from: number, to: number): number {
+        if (at === from) return to;
+        if (from < at && at <= to) return at - 1;
+        if (to <= at && at < from) return at + 1;
+        return at;
+    }
+
     function move(from: number, to: number): void {
+        if (openAt !== null) openAt = afterMove(openAt, from, to);
         onChange(moveRule(items, from, to));
     }
 
     function remove(at: number): void {
         const index = slots[at];
         if (index === undefined) return;
+        openAt = null;
         onChange(items.filter((_, position) => position !== index));
     }
 
+    /**
+     * Append a rule and open it.
+     *
+     * Computed from the array being sent rather than read back off `entries`,
+     * which has not been rebuilt from the new props yet — and a new rule is
+     * blank, so its summary line says nothing worth collapsing.
+     */
     function add(): void {
-        onChange(appendRule(items, blankRule(fallbackAccount)));
+        const next = appendRule(items, blankRule(fallbackAccount));
+        openAt = ruleIndices(next).length - 1;
+        onChange(next);
     }
 
     // Keyed on POSITION, not on the item. These entries have no stable id
@@ -92,6 +154,36 @@
         focusCursor();
     }
 
+    /**
+     * Open the cursored rule, or close it again.
+     *
+     * Enter used to focus the first control of an always-expanded card, which
+     * was the honest answer while there was no collapsed state to open. Now
+     * there is one, so Enter does what it does on every other list in this app
+     * (`BalanceSheetView`, `IncomeStatementView`): it opens the thing under the
+     * cursor. Focus still lands inside, after a tick, because the controls do
+     * not exist until the card renders — so the keystroke that opens a rule is
+     * still the keystroke that starts editing it.
+     *
+     * A kept item has nothing to open and is left alone rather than being given
+     * a card that would only say so.
+     */
+    function toggleOpen(): void {
+        const at = cursor.index;
+        if (at < 0 || entries[at]?.kind !== "ifBlock") return;
+        if (openAt === at) {
+            openAt = null;
+            return;
+        }
+        openAt = at;
+        // The first INPUT, not the first control: in document order the card
+        // opens with its ↑/↓ buttons, and landing on "move this rule up" is not
+        // what "edit this rule" should do.
+        void tick().then(() => {
+            document.querySelector<HTMLElement>(`[data-rule="${at}"] input`)?.focus();
+        });
+    }
+
     registerKeys({
         id: "rules-list",
         priority: PRIORITY.widget,
@@ -104,16 +196,17 @@
             {keys: "G", label: "Last rule", group: "Imports", run: () => (cursor.last(), focusCursor())},
             {keys: "J", label: "Move rule down", group: "Imports", enabled: () => !disabled, run: () => shift(1)},
             {keys: "K", label: "Move rule up", group: "Imports", enabled: () => !disabled, run: () => shift(-1)},
-            {keys: "Escape", label: "Clear the cursor", group: "Imports", run: () => cursor.clear()},
+            // Escape backs out one step at a time — close the open rule first,
+            // clear the cursor once there is nothing open. Same shape as
+            // `TransactionTable`, whose Escape disarms a delete before it
+            // clears.
             {
-                keys: "Enter",
-                // Focus the card's first control rather than expanding it:
-                // IfBlockCard has no collapsed state, and building one is a
-                // separate feature. Handing the user to normal tabbing is honest.
-                label: "Edit this rule",
+                keys: "Escape",
+                label: "Close the open rule, or clear the cursor",
                 group: "Imports",
-                run: () => document.querySelector<HTMLElement>(`[data-rule="${cursor.index}"] input, [data-rule="${cursor.index}"] button`)?.focus(),
+                run: () => (openAt === null ? cursor.clear() : (openAt = null)),
             },
+            {keys: "Enter", label: "Open or close this rule", group: "Imports", run: toggleOpen},
         ],
     });
 </script>
@@ -144,17 +237,30 @@
                     aria-current={cursor.index === at ? "true" : undefined}
                 >
                     {#if item.kind === "ifBlock"}
-                        <IfBlockCard
-                            rule={item}
-                            position={at + 1}
-                            total={entries.length}
-                            {accountNames}
-                            {csvFields}
-                            {disabled}
-                            onMoveUp={() => move(at, at - 1)}
-                            onMoveDown={() => move(at, at + 1)}
-                            onRemove={() => remove(at)}
-                        />
+                        {#if openAt === at}
+                            <IfBlockCard
+                                rule={item}
+                                position={at + 1}
+                                total={entries.length}
+                                {accountNames}
+                                {csvFields}
+                                {disabled}
+                                onMoveUp={() => move(at, at - 1)}
+                                onMoveDown={() => move(at, at + 1)}
+                                onRemove={() => remove(at)}
+                                onClose={() => (openAt = null)}
+                            />
+                        {:else}
+                            <RuleSummaryCard
+                                summary={describeIfBlock(item)}
+                                position={at + 1}
+                                total={entries.length}
+                                {disabled}
+                                onMoveUp={() => move(at, at - 1)}
+                                onMoveDown={() => move(at, at + 1)}
+                                onOpen={() => (openAt = at)}
+                            />
+                        {/if}
                     {:else}
                         <KeptItemCard
                             summary={describeItem(item)}

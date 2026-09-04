@@ -104,6 +104,19 @@ export type OpaqueReason =
 /** `if MATCHER` on the same line, or a bare `if` with its matchers stacked below. */
 export type IfLayout = "inline" | "stacked";
 
+/**
+ * hledger's two conditional-block control words.
+ *
+ * These are not assignments: they change which CSV records are read at all
+ * rather than what a record's postings say. `skip` drops the matching row;
+ * `end` stops reading, so that row and every row after it are dropped.
+ *
+ * Only the BARE word is ever this. `skip N` skips N records rather than the
+ * matched one, which is a different construct, and the engine leaves a block
+ * carrying one `opaque` — see `OPAQUE_REASONS.controlFlowInBlock`.
+ */
+export type RulesControl = "skip" | "end";
+
 /** Common to every item: its id in THIS parse, and where it sits in the file. */
 interface RulesItemBase {
     /**
@@ -153,6 +166,18 @@ export interface RulesMatcher {
     readonly pattern: string;
 }
 
+/**
+ * One OR-branch of a conditional block: its matchers are AND-ed together.
+ *
+ * The AND is hledger's own line-prefix `&`, and the wire carries it as NESTING
+ * rather than as text — no `&` ever appears in a `RulesMatcher.pattern` in
+ * either direction. A plain OR list, which is every rules file this editor
+ * could already open, is simply one matcher per group.
+ */
+export interface RulesMatcherGroup {
+    readonly matchers: readonly RulesMatcher[];
+}
+
 export interface RulesAssignmentSpec {
     readonly field: string;
     readonly value: string;
@@ -161,8 +186,18 @@ export interface RulesAssignmentSpec {
 export interface RulesIfBlockItem extends RulesItemBase {
     readonly kind: "ifBlock";
     readonly layout: IfLayout;
-    readonly matchers: readonly RulesMatcher[];
+    /** The OR-ed groups, in file order. Always at least one, each with at least one matcher. */
+    readonly groups: readonly RulesMatcherGroup[];
     readonly assignments: readonly RulesAssignmentSpec[];
+    /**
+     * The block's `skip`/`end`, or `null` for a block that only sets fields.
+     *
+     * The wire omits the key entirely when there is none, so this is one of the
+     * explicit nulls the header comment describes: "sets fields" and "drops the
+     * row" are different things for the card to render, not a value and its
+     * absence.
+     */
+    readonly control: RulesControl | null;
 }
 
 export interface RulesOpaqueItem extends RulesItemBase {
@@ -189,6 +224,39 @@ export interface RulesDocument {
     readonly settings: RulesSettings;
     readonly items: readonly RulesItem[];
     readonly warnings: readonly RulesWarning[];
+}
+
+/**
+ * How the engine read one CSV column when drafting a new rules file.
+ *
+ * The drafted document's `fields` list already says WHAT each column became;
+ * this says how sure that was, which is the half a mapping screen needs to mark
+ * a guess as a guess. `field: null` is a real answer, not a missing one — the
+ * engine declines to map a column it cannot claim, and the column keeps a plain
+ * name so a rule can still interpolate it.
+ */
+export interface RulesColumnGuess {
+    readonly index: number;
+    readonly field: string | null;
+    /** 0..=1. Orders guesses and marks the shaky ones; nothing computes with it. */
+    readonly confidence: number;
+}
+
+/**
+ * `POST /api/rules-create` — a starting-point rules file for a staged upload.
+ *
+ * `doc` is the same `RulesDocument` every other rules route returns, and
+ * `preview` the same `RulesPreview`, precisely so the create screen renders
+ * through the components and decoders that already exist. `doc.revision` is the
+ * empty string: nothing has been written, and that value is what a follow-up
+ * save carries to mean "there is no file yet".
+ */
+export interface RulesDraft {
+    readonly doc: RulesDocument;
+    readonly preview: RulesPreview;
+    readonly columns: readonly RulesColumnGuess[];
+    /** What the draft assumed, in sentences. Never a refusal. */
+    readonly warnings: readonly string[];
 }
 
 /** Why a preview has nothing to show. On every one of these, nothing on disk was read. */

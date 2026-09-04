@@ -53,16 +53,26 @@ import type {
     CommitResult,
     ConfRefusalReason,
     ConfWritten,
+    Conflict,
     ConvertNote,
     DryRunResult,
+    FieldDiff,
     GitReport,
     HledgerStatus,
     HledgerUnavailableReason,
+    IdMatches,
     ImportCapabilities,
     JournalTarget,
     OrderingReport,
     Prefs,
     ProposedTxn,
+    QbCommitResult,
+    QbDateFormat,
+    QbFileOrdering,
+    QbIdMatches,
+    QbOrdering,
+    QbPreview,
+    QbSample,
     RulesCandidate,
     SortMove,
     SortResult,
@@ -70,16 +80,20 @@ import type {
     StageDefaults,
     StagePreview,
     StatementMeta,
+    StatusChange,
 } from "$lib/imports/importTypes";
 import type {
     IfLayout,
     OpaqueReason,
     PreviewUnavailable,
+    RulesControl,
     RulesDocument,
+    RulesDraft,
     RulesFieldsPref,
     RulesIndex,
     RulesItem,
     RulesMatcher,
+    RulesMatcherGroup,
     RulesPref,
     RulesPreview,
     RulesSettings,
@@ -550,6 +564,10 @@ interface RawRulesMatcher {
     pattern?: string;
 }
 
+interface RawRulesMatcherGroup {
+    matchers?: RawRulesMatcher[];
+}
+
 interface RawRulesAssignment {
     field?: string;
     value?: string;
@@ -575,8 +593,9 @@ interface RawRulesItem {
     field?: string;
     // ifBlock
     layout?: string;
-    matchers?: RawRulesMatcher[];
+    groups?: RawRulesMatcherGroup[];
     assignments?: RawRulesAssignment[];
+    control?: string;
     // opaque
     reason?: string;
     label?: string;
@@ -630,6 +649,19 @@ interface RawRulesPreview {
     rows?: unknown[];
     columns?: number;
     truncated?: boolean;
+}
+
+interface RawRulesColumnGuess {
+    index?: number;
+    field?: string;
+    confidence?: number;
+}
+
+interface RawRulesDraft {
+    doc?: RawRulesDoc;
+    preview?: RawRulesPreview;
+    columns?: RawRulesColumnGuess[];
+    warnings?: unknown[];
 }
 
 // --- New Transactions import flow (import_api.rs) ---------------------------
@@ -809,6 +841,33 @@ interface RawBalanceCheck {
     difference?: string | null;
 }
 
+interface RawStatusChange {
+    id?: string;
+    from?: string;
+    to?: string;
+    applied?: boolean;
+}
+
+interface RawFieldDiff {
+    field?: string;
+    existing?: string;
+    incoming?: string;
+}
+
+interface RawConflict {
+    id?: string;
+    diffs?: RawFieldDiff[];
+}
+
+interface RawIdMatches {
+    new?: number;
+    unchanged?: number;
+    statusChanged?: RawStatusChange[];
+    statusChangedTotal?: number;
+    conflicting?: RawConflict[];
+    conflictingTotal?: number;
+}
+
 interface RawDryRun {
     ok?: boolean;
     entries?: string;
@@ -818,6 +877,16 @@ interface RawDryRun {
     balance?: RawBalanceCheck | null;
     aliases?: RawAliasEffect | null;
     blockedByGit?: unknown[];
+    // Contract amendment (WP-16 Phase 3) — see WireProposal's doc comment in
+    // import_api.rs: additive, and always present on a SUCCESSFUL preview, so it
+    // is required rather than optional here. Not `cliParity`, which is a
+    // different "cli" entirely and lives under `aliases`.
+    cliCommand?: string;
+    // Contract amendment (WP-16 Phase 4) — see WireIdMatches's doc comment:
+    // additive, opt-in, and nullable like `balance`/`skipped` above rather than
+    // required like `cliCommand` — every rules file written before this feature
+    // existed has nothing to say here, and null is that fact, not an absence.
+    idMatches?: RawIdMatches | null;
     stderr?: string;
 }
 
@@ -837,6 +906,9 @@ interface RawGitReport {
     committed?: boolean;
     paths?: unknown[];
     skipped?: unknown[];
+    // Contract amendment — see WireGitResult's doc comment in import_api.rs:
+    // additive, and omitted (not null) on success.
+    message?: string;
 }
 
 interface RawCommitResult {
@@ -845,10 +917,66 @@ interface RawCommitResult {
     imported?: number;
     ordering?: RawOrdering;
     git?: RawGitReport | null;
+    // Contract amendment (WP-16 Phase 4) — same nullable convention as the dry
+    // run's copy; `statusChanged[].applied` here reports what was actually
+    // written rather than what a commit would write.
+    idMatches?: RawIdMatches | null;
 }
 
 interface RawSortResult {
     moved?: number;
+    git?: RawGitReport | null;
+}
+
+// --- QuickBooks Online Journal import (qb_journal_api.rs, WP-17 Phase C) ---
+// `WireQbIdMatches` reuses the CSV path's `conflicting`/`diffs` shape
+// byte-for-byte (`RawConflict`/`RawFieldDiff` above), so only the outer
+// object — which drops `statusChanged`/`statusChangedTotal` — is new here.
+
+interface RawQbIdMatches {
+    new?: number;
+    unchanged?: number;
+    conflicting?: RawConflict[];
+    conflictingTotal?: number;
+}
+
+interface RawQbDateFormat {
+    format?: string;
+    ambiguous?: boolean;
+}
+
+interface RawQbSample {
+    id?: string;
+    date?: string;
+    description?: string;
+    postings?: unknown[];
+}
+
+interface RawQbPreview {
+    stageId?: string;
+    transactionCount?: number;
+    postingCount?: number;
+    dateFormat?: RawQbDateFormat;
+    unmappedAccounts?: unknown[];
+    sample?: RawQbSample[];
+    idMatches?: RawQbIdMatches | null;
+}
+
+interface RawQbFileOrdering {
+    journalId?: string;
+    inOrder?: boolean;
+    moves?: RawSortMove[];
+}
+
+interface RawQbOrdering {
+    inOrder?: boolean;
+    files?: RawQbFileOrdering[];
+}
+
+interface RawQbCommitResult {
+    imported?: number;
+    idMatches?: RawQbIdMatches;
+    ordering?: RawQbOrdering;
     git?: RawGitReport | null;
 }
 
@@ -1890,11 +2018,42 @@ function decodeLayout(raw: string | undefined, context: string): IfLayout {
     throw new ApiShapeError(`${context}: unknown if-block layout ${JSON.stringify(raw)}`);
 }
 
+/**
+ * `skip`, `end`, or nothing.
+ *
+ * Absent is a VALUE here rather than a missing field — the engine omits the key
+ * for a block that only sets fields — so unlike `decodeLayout` this returns
+ * `null` instead of throwing. An unknown non-empty word still throws: it would
+ * mean the engine grew a third control word, and quietly rendering that block as
+ * "sets fields only" would hide an instruction to drop rows.
+ */
+function decodeControl(raw: string | undefined, context: string): RulesControl | null {
+    if (raw === undefined) return null;
+    if (raw === "skip" || raw === "end") return raw;
+    throw new ApiShapeError(`${context}: unknown if-block control ${JSON.stringify(raw)}`);
+}
+
 function decodeMatcher(raw: RawRulesMatcher | undefined, context: string): RulesMatcher {
     if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing matcher`);
     // An absent `field` is a WHOLE-RECORD matcher, not a missing one — the
     // engine omits the key for `MatchScope::WholeRecord`.
     return Object.freeze({field: raw.field === undefined ? null : str(raw.field, `${context} field`), pattern: str(raw.pattern, `${context} pattern`)});
+}
+
+/**
+ * One OR-branch, whose matchers are AND-ed.
+ *
+ * The nesting IS the AND — the engine writes the `&` and never sends one — so a
+ * group that is not an object with a `matchers` array is a wire shape this
+ * decoder cannot represent, and inventing a flat reading of it would silently
+ * turn an AND into an OR: a rule that matched two things at once would start
+ * matching either of them.
+ */
+function decodeMatcherGroup(raw: RawRulesMatcherGroup | undefined, context: string): RulesMatcherGroup {
+    if (raw === undefined || raw === null || !Array.isArray(raw.matchers)) {
+        throw new ApiShapeError(`${context}: a matcher group needs a matchers array`);
+    }
+    return Object.freeze({matchers: frozen(raw.matchers.map((matcher, i) => decodeMatcher(matcher, `${context} matchers[${i}]`)))});
 }
 
 /**
@@ -1920,14 +2079,14 @@ function decodeRulesItem(raw: RawRulesItem | undefined, context: string): RulesI
         case "assignment":
             return Object.freeze({...base, kind: "assignment" as const, field: str(raw.field, `${context} field`), value: str(raw.value, `${context} value`)});
         case "ifBlock":
-            if (!Array.isArray(raw.matchers) || !Array.isArray(raw.assignments)) {
-                throw new ApiShapeError(`${context}: an ifBlock needs matchers and assignments arrays`);
+            if (!Array.isArray(raw.groups) || !Array.isArray(raw.assignments)) {
+                throw new ApiShapeError(`${context}: an ifBlock needs groups and assignments arrays`);
             }
             return Object.freeze({
                 ...base,
                 kind: "ifBlock" as const,
                 layout: decodeLayout(raw.layout, context),
-                matchers: frozen(raw.matchers.map((matcher, i) => decodeMatcher(matcher, `${context} matchers[${i}]`))),
+                groups: frozen(raw.groups.map((group, i) => decodeMatcherGroup(group, `${context} groups[${i}]`))),
                 assignments: frozen(
                     raw.assignments.map((assignment, i) =>
                         Object.freeze({
@@ -1936,6 +2095,7 @@ function decodeRulesItem(raw: RawRulesItem | undefined, context: string): RulesI
                         })
                     )
                 ),
+                control: decodeControl(raw.control, context),
             });
         case "opaque":
             return Object.freeze({
@@ -2054,6 +2214,36 @@ export function decodeRulesPreview(raw: unknown): RulesPreview {
         ),
         columns: num(preview.columns, "rules preview columns"),
         truncated: preview.truncated === true,
+    });
+}
+
+/**
+ * `POST /api/rules-create` → a drafted rules file, its preview and its guesses.
+ *
+ * `doc` and `preview` go through the SAME two decoders the read routes use —
+ * the engine sends the same two shapes on purpose, so a create screen renders
+ * through what already exists. Only `columns` is new, and it is the part a
+ * saved document has no need of: how sure each mapping was.
+ */
+export function decodeRulesDraft(raw: unknown): RulesDraft {
+    const draft = raw as RawRulesDraft;
+    if (typeof draft !== "object" || draft === null) throw new ApiShapeError("rules draft: expected an object");
+    return Object.freeze({
+        doc: decodeRulesDoc(draft.doc),
+        preview: decodeRulesPreview(draft.preview),
+        columns: frozen(
+            (draft.columns ?? []).map((column, i) =>
+                Object.freeze({
+                    index: num(column?.index, `rules draft column #${i} index`),
+                    // An ABSENT field is the engine declining to map the column,
+                    // which is a real answer it makes deliberately — never a
+                    // key that went missing.
+                    field: column?.field === undefined ? null : str(column.field, `rules draft column #${i} field`),
+                    confidence: num(column?.confidence, `rules draft column #${i} confidence`),
+                })
+            )
+        ),
+        warnings: frozen(decodeStrings(draft.warnings, "rules draft warnings")),
     });
 }
 
@@ -2420,6 +2610,50 @@ export function decodeStagedFile(raw: unknown): StagedFile {
     });
 }
 
+function decodeStatusChange(raw: RawStatusChange | undefined, context: string): StatusChange {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing status change`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        from: str(raw.from, `${context} from`),
+        to: str(raw.to, `${context} to`),
+        applied: raw.applied === true,
+    });
+}
+
+function decodeFieldDiff(raw: RawFieldDiff | undefined, context: string): FieldDiff {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing field diff`);
+    return Object.freeze({
+        field: str(raw.field, `${context} field`),
+        existing: str(raw.existing, `${context} existing`),
+        incoming: str(raw.incoming, `${context} incoming`),
+    });
+}
+
+function decodeConflict(raw: RawConflict | undefined, context: string): Conflict {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing conflict`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        diffs: frozen((raw.diffs ?? []).map((diff, i) => decodeFieldDiff(diff, `${context} diffs[${i}]`))),
+    });
+}
+
+/**
+ * Nullable like `balance`/`skipped`, not required like `cliCommand`: every
+ * rules file written before WP-16 Phase 4 existed has nothing to say here, and
+ * null is that fact rather than a decode failure.
+ */
+function decodeIdMatches(raw: RawIdMatches | null | undefined, context: string): IdMatches | null {
+    if (raw === undefined || raw === null) return null;
+    return Object.freeze({
+        new: num(raw.new, `${context} new`),
+        unchanged: num(raw.unchanged, `${context} unchanged`),
+        statusChanged: frozen((raw.statusChanged ?? []).map((change, i) => decodeStatusChange(change, `${context} statusChanged[${i}]`))),
+        statusChangedTotal: num(raw.statusChangedTotal, `${context} statusChangedTotal`),
+        conflicting: frozen((raw.conflicting ?? []).map((conflict, i) => decodeConflict(conflict, `${context} conflicting[${i}]`))),
+        conflictingTotal: num(raw.conflictingTotal, `${context} conflictingTotal`),
+    });
+}
+
 function decodeBalanceCheck(raw: RawBalanceCheck | null | undefined, context: string): BalanceCheck | null {
     if (raw === undefined || raw === null) return null;
     return Object.freeze({
@@ -2459,6 +2693,8 @@ export function decodeDryRun(raw: unknown): DryRunResult {
         balance: decodeBalanceCheck(run.balance, "dry run balance"),
         aliases: decodeAliasEffect(run.aliases, "dry run aliases"),
         blockedByGit: frozen(decodeStrings(run.blockedByGit, "dry run blockedByGit")),
+        cliCommand: str(run.cliCommand, "dry run cliCommand"),
+        idMatches: decodeIdMatches(run.idMatches, "dry run idMatches"),
     });
 }
 
@@ -2487,6 +2723,7 @@ function decodeGitReport(raw: RawGitReport | null | undefined, context: string):
         committed: raw.committed === true,
         paths: frozen(decodeStrings(raw.paths, `${context} paths`)),
         skipped: frozen(decodeStrings(raw.skipped, `${context} skipped`)),
+        message: optStr(raw.message, `${context} message`),
     });
 }
 
@@ -2502,6 +2739,7 @@ export function decodeCommitResult(raw: unknown): CommitResult {
         imported: optNum(result.imported, "commit result imported") ?? 0,
         ordering: decodeOrdering(result.ordering, "commit result ordering"),
         git: decodeGitReport(result.git, "commit result git"),
+        idMatches: decodeIdMatches(result.idMatches, "commit result idMatches"),
     });
 }
 
@@ -2518,6 +2756,90 @@ export function decodeSortResult(raw: unknown): SortResult {
     return Object.freeze({
         moved: num(result.moved, "sort result moved"),
         git: decodeGitReport(result.git, "sort result git"),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// QuickBooks Online Journal import (qb_journal_api.rs, WP-17 Phase C)
+// ---------------------------------------------------------------------------
+
+/**
+ * `WireQbIdMatches` — REQUIRED, unlike {@link decodeIdMatches}'s nullable copy:
+ * `WireQbCommit.idMatches` is unconditional on the wire (only the preview's is
+ * `Option`, handled separately by `decodeOptQbIdMatches`), so an absent value
+ * here is a broken contract rather than "an older engine has nothing to say".
+ */
+function decodeQbIdMatches(raw: RawQbIdMatches | undefined, context: string): QbIdMatches {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing idMatches`);
+    return Object.freeze({
+        new: num(raw.new, `${context} new`),
+        unchanged: num(raw.unchanged, `${context} unchanged`),
+        conflicting: frozen((raw.conflicting ?? []).map((conflict, i) => decodeConflict(conflict, `${context} conflicting[${i}]`))),
+        conflictingTotal: num(raw.conflictingTotal, `${context} conflictingTotal`),
+    });
+}
+
+/** The preview's copy: null while any account is unmapped (nothing was built, so nothing was classified). */
+function decodeOptQbIdMatches(raw: RawQbIdMatches | null | undefined, context: string): QbIdMatches | null {
+    return raw === null || raw === undefined ? null : decodeQbIdMatches(raw, context);
+}
+
+function decodeQbDateFormat(raw: RawQbDateFormat | undefined, context: string): QbDateFormat {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing dateFormat`);
+    return Object.freeze({format: str(raw.format, `${context} format`), ambiguous: raw.ambiguous === true});
+}
+
+function decodeQbSample(raw: RawQbSample | undefined, context: string): QbSample {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing transaction`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        date: str(raw.date, `${context} date`),
+        description: str(raw.description, `${context} description`),
+        postings: frozen(decodeStrings(raw.postings, `${context} postings`)),
+    });
+}
+
+/** `GET /api/import/qb-journal/{stageId}` → the parsed groups and which accounts are still unmapped. */
+export function decodeQbPreview(raw: unknown): QbPreview {
+    const preview = raw as RawQbPreview;
+    if (typeof preview !== "object" || preview === null) throw new ApiShapeError("qb preview: expected an object");
+    return Object.freeze({
+        stageId: str(preview.stageId, "qb preview stageId"),
+        transactionCount: num(preview.transactionCount, "qb preview transactionCount"),
+        postingCount: num(preview.postingCount, "qb preview postingCount"),
+        dateFormat: decodeQbDateFormat(preview.dateFormat, "qb preview dateFormat"),
+        unmappedAccounts: frozen(decodeStrings(preview.unmappedAccounts, "qb preview unmappedAccounts")),
+        sample: frozen((preview.sample ?? []).map((txn, i) => decodeQbSample(txn, `qb preview sample[${i}]`))),
+        idMatches: decodeOptQbIdMatches(preview.idMatches, "qb preview idMatches"),
+    });
+}
+
+function decodeQbFileOrdering(raw: RawQbFileOrdering | undefined, context: string): QbFileOrdering {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing file ordering`);
+    return Object.freeze({
+        journalId: str(raw.journalId, `${context} journalId`),
+        inOrder: raw.inOrder === true,
+        moves: frozen((raw.moves ?? []).map((move, i) => decodeSortMove(move, `${context} moves[${i}]`))),
+    });
+}
+
+function decodeQbOrdering(raw: RawQbOrdering | undefined, context: string): QbOrdering {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing ordering`);
+    return Object.freeze({
+        inOrder: raw.inOrder === true,
+        files: frozen((raw.files ?? []).map((file, i) => decodeQbFileOrdering(file, `${context} files[${i}]`))),
+    });
+}
+
+/** `POST /api/import/qb-journal/commit` → what was written. */
+export function decodeQbCommitResult(raw: unknown): QbCommitResult {
+    const result = raw as RawQbCommitResult;
+    if (typeof result !== "object" || result === null) throw new ApiShapeError("qb commit result: expected an object");
+    return Object.freeze({
+        imported: num(result.imported, "qb commit result imported"),
+        idMatches: decodeQbIdMatches(result.idMatches, "qb commit result idMatches"),
+        ordering: decodeQbOrdering(result.ordering, "qb commit result ordering"),
+        git: decodeGitReport(result.git, "qb commit result git"),
     });
 }
 
