@@ -141,10 +141,6 @@ user's first click on "All time".
   - Do we have any other reasonable sync approaches?
   - Can we run it ourselves?
 
-## Editors
-- Account List Editor — done (see `plans/18-account-list-editor.md`): detects/creates the accounts file, edits each account's type/tags/note, under a new Settings tab (gear icon) that also picked up Account Aliases.
-  - Still open, deferred from that plan: editing `commodity`/`decimal-mark`/`D` (number format), and a tag-glossary/help UI for the report-consumed tags (`type`, `bsgroup`, `holdings`, `valuation`).
-
 ## AI
 - feat: private AI integration
   - Need to make use of a per-user preference specifying the url for the AI and any necessary api keys or whatever
