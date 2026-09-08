@@ -69,7 +69,12 @@
     $effect(() => {
         const files = listing?.files ?? [];
         if (files.length === 0) return;
-        const chosen = files.find((file) => file.journalId === selectedId) ?? files[0];
+        // Prefer, in order: the file the user already picked; the first file
+        // that actually HAS aliases (so opening the tab doesn't land on an
+        // empty main.journal while the real mapping table sits in an
+        // `include`d file); the first file at all (root, empty — the only
+        // thing left to show when nothing anywhere declares an alias yet).
+        const chosen = files.find((file) => file.journalId === selectedId) ?? files.find((file) => file.aliases.length > 0) ?? files[0];
         const key = `${chosen.journalId}#${chosen.revision}`;
         if (key === seededFor) return;
         seededFor = key;

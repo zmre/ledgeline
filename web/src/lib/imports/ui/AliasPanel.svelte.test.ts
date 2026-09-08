@@ -111,6 +111,27 @@ describe("COMPONENT AliasPanel", () => {
         expect(screen.getByDisplayValue("liabilities:card:amex")).toBeDefined();
     });
 
+    it("defaults to the first file that actually HAS aliases, not just the first file listed", async () => {
+        // main.journal is always offered (it is where a first alias would go),
+        // even when the real mapping table lives in an `include`d file — and it
+        // sorts first in `journals::targets` order. Landing there by default
+        // looks like "my aliases disappeared".
+        await connectFakeEngine({
+            "/api/aliases": {
+                editable: true,
+                files: [{journalId: "main.journal", label: "main.journal", revision: "rev-main", writable: true, aliases: []}, ALIASES.files[0]],
+            },
+        });
+        await aliasStore.reload(FAKE_ENGINE);
+
+        render(AliasPanel);
+
+        // The tab strip (only rendered when there is more than one file) shows
+        // main.journal, but the form seeds from the file that has content.
+        expect(screen.getByText("main.journal")).toBeDefined();
+        expect(screen.getByDisplayValue("CHASE CHECKING")).toBeDefined();
+    });
+
     it("keeps the rows already on screen when a new one is added", async () => {
         // What the latch is FOR. A seeding effect that re-runs on every reactive
         // tick — the failure mode one `===` away from the loop above — silently
