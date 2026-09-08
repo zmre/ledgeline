@@ -136,18 +136,8 @@ user's first click on "All time".
   (`MAX_DIGIT_GROUPS`) so there is no amplification, but the real fix is
   `digit_groups: Option<Arc<DigitGroups>>` in `model.rs` — deferred because it is a cross-cutting
   change to a widely-used type. There is a `TODO:` at the field.
-- feat: quickbooks import handling
-  - transaction matching and skipping
-  - account mapping (prompt for unmapped or use aliases?)
 - feat: create new import rules files
   - take a csv file and make intelligent guesses on setup. we want intelligent mapping of headings, ask what account it is and default categorizations, figure out ordering of rows. detect separator, skip rows number, and encoding automatically. figure out date-format automatically. 
-
-## Editors
-- Account List Editor
-  - Most financial apps allow editing of the chart of accounts. We should detect where they live and allow editing. If there aren't any, we should create an accounts.journal and include it from the main file.
-  - For each account, we should provide an editor for comments/notes, type, tags in general, and our special tags used in various reports
-  - Lets put this under a Settings top level tab or gear icon. And lets figure out what else might go in here, like the number format stuff -- basically whatever hledger provides that we might want to set or edit
-    - commodity, decimal-mark, tag list, and we should probably move aliases to here under "settings" too
 
 ## AI
 - feat: private AI integration
