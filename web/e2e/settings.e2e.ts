@@ -39,8 +39,11 @@ test("settings: is reachable from the gear icon and lists a declared account", a
     const editor = page.getByTestId("settings-account-editor");
     await expect(editor).toBeVisible();
     await expect(editor).toContainText("assets:bank:checking");
-    // `fixtures/sample.journal` declares this account `; type: C`.
-    await expect(page.getByLabel("Type")).toHaveValue("C");
+    // `fixtures/sample.journal` declares this account `; type: C`. `exact`,
+    // for the reason `assets:bank:checking` above needs it: the field's own
+    // help button is labelled "About Type", a substring match away from
+    // colliding with the field itself.
+    await expect(page.getByLabel("Type", {exact: true})).toHaveValue("C");
 });
 
 test("settings: a bookmarked /imports?tab=aliases URL is forwarded", async ({page}) => {

@@ -313,40 +313,45 @@
                                 {#each SPECIAL_TAGS as spec (spec.key)}
                                     <div class="flex flex-col gap-1">
                                         <span class="flex items-center gap-1">
-                                            <label class="form-control grow" for={`settings-account-${spec.key}`}>
-                                                <span class="label-text text-xs">{spec.label}</span>
-                                                {#if spec.kind === "closed"}
-                                                    <select
-                                                        id={`settings-account-${spec.key}`}
-                                                        class="select-bordered select w-full select-sm"
-                                                        bind:value={form.special[spec.key]}
-                                                        disabled={disabled || removalStaged}
-                                                    >
-                                                        <option value="">(none)</option>
-                                                        {#each spec.options ?? [] as option (option.value)}
-                                                            <option value={option.value}>{option.label}</option>
-                                                        {/each}
-                                                    </select>
-                                                {:else}
-                                                    <input
-                                                        id={`settings-account-${spec.key}`}
-                                                        type="text"
-                                                        class="input-bordered input w-full input-sm"
-                                                        list={spec.suggestions ? `settings-account-${spec.key}-suggestions` : undefined}
-                                                        disabled={disabled || removalStaged}
-                                                        bind:value={form.special[spec.key]}
-                                                    />
-                                                    {#if spec.suggestions}
-                                                        <datalist id={`settings-account-${spec.key}-suggestions`}>
-                                                            {#each spec.suggestions as suggestion (suggestion)}
-                                                                <option value={suggestion}></option>
-                                                            {/each}
-                                                        </datalist>
-                                                    {/if}
-                                                {/if}
-                                            </label>
+                                            <!-- A SIBLING of the control, not a wrapper around it: a
+                                                 wrapping `<label>` makes some browsers fold the
+                                                 control's own rendered value into the label's
+                                                 accessible name (a `<select>` became "Type (none)"
+                                                 rather than "Type"), which is confusing for a screen
+                                                 reader and ambiguous for `for`-based lookups alike.
+                                                 `for`/`id` alone is the whole association. -->
+                                            <label class="label-text grow text-xs" for={`settings-account-${spec.key}`}>{spec.label}</label>
                                             {@render help(spec.help, spec.label)}
                                         </span>
+                                        {#if spec.kind === "closed"}
+                                            <select
+                                                id={`settings-account-${spec.key}`}
+                                                class="select-bordered select w-full select-sm"
+                                                bind:value={form.special[spec.key]}
+                                                disabled={disabled || removalStaged}
+                                            >
+                                                <option value="">(none)</option>
+                                                {#each spec.options ?? [] as option (option.value)}
+                                                    <option value={option.value}>{option.label}</option>
+                                                {/each}
+                                            </select>
+                                        {:else}
+                                            <input
+                                                id={`settings-account-${spec.key}`}
+                                                type="text"
+                                                class="input-bordered input w-full input-sm"
+                                                list={spec.suggestions ? `settings-account-${spec.key}-suggestions` : undefined}
+                                                disabled={disabled || removalStaged}
+                                                bind:value={form.special[spec.key]}
+                                            />
+                                            {#if spec.suggestions}
+                                                <datalist id={`settings-account-${spec.key}-suggestions`}>
+                                                    {#each spec.suggestions as suggestion (suggestion)}
+                                                        <option value={suggestion}></option>
+                                                    {/each}
+                                                </datalist>
+                                            {/if}
+                                        {/if}
                                     </div>
                                 {/each}
                             </div>
