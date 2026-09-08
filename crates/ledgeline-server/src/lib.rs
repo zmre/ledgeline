@@ -36,6 +36,7 @@
 //! router WITHOUT any of it, for the in-process test harnesses only — read the
 //! threat model on [`security`] before putting either on a real socket.
 
+mod account_api;
 mod alias_api;
 mod budget_api;
 mod edit_api;
@@ -746,6 +747,20 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // `alias_endpoints.rs::every_alias_route_requires_the_token` pins the 401.
         .route("/api/aliases", get(alias_api::index))
         .route("/api/aliases/{*id}", axum::routing::put(alias_api::save))
+        // Account list editor (Settings): `account` declarations, listed and
+        // edited in place, plus the one-time creation of an `accounts.journal`
+        // for a ledger that has nowhere to put a first one.
+        //
+        // THE SAME PLACEMENT TRAP as the routes above, twice over:
+        // `PUT /api/accounts/{*id}` rewrites a line of the user's JOURNAL, and
+        // `POST /api/accounts/file` CREATES a file beside it and appends an
+        // `include` to the main journal. Below the `route_layer` both would
+        // happen unauthenticated.
+        // `account_endpoints.rs::every_account_route_requires_the_token` pins
+        // the 401 for all three.
+        .route("/api/accounts", get(account_api::index))
+        .route("/api/accounts/{*id}", axum::routing::put(account_api::save))
+        .route("/api/accounts/file", post(account_api::create_file))
         // Budget goals: the `~` periodic rules `/api/budget` reports against,
         // listed and edited in place, plus the two routes the editor needs
         // around them — the per-account history strip, and the one-time

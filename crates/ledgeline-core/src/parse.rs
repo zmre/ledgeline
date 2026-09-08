@@ -400,7 +400,7 @@ fn parse_source(
         let keyword = trimmed.split_whitespace().next().unwrap_or("");
         match keyword {
             "account" => {
-                let decl = parse_account_directive(trimmed, line_no)
+                let decl = parse_account_directive(trimmed, line_no, &source_file)
                     .map_err(|e| locate(source_name, line_no, line, e))?;
                 ctx.accounts.push(decl);
             }
@@ -617,7 +617,14 @@ fn locate(source_name: &str, line: u32, line_text: &str, err: ParseError) -> Par
 /// Returns `None` when the text after the separator is neither empty nor a
 /// comment — hledger rejects that outright ("expecting ';', end of input, or
 /// newline") and so do we.
-fn split_account_name(body: &str) -> Option<(String, Option<&str>)> {
+///
+/// The third element of the tuple is the byte offset, relative to `body`,
+/// where the separator run begins (or `body.len()` when there is none) —
+/// `pub(crate)` so [`crate::accounts`] can locate exactly where a
+/// declaration's comment starts without re-deriving this whitespace-run
+/// grammar a second time, which is the kind of silent divergence the doc
+/// comment above already records one instance of.
+pub(crate) fn split_account_name(body: &str) -> Option<(String, Option<&str>, usize)> {
     let mut run_start: Option<usize> = None;
     let mut separator: Option<usize> = None;
     for (at, ch) in body.char_indices() {
@@ -636,6 +643,7 @@ fn split_account_name(body: &str) -> Option<(String, Option<&str>)> {
         }
     }
 
+    let tail = separator.unwrap_or(body.len());
     let (name_part, rest) = match separator {
         Some(at) => (&body[..at], body[at..].trim_start()),
         None => (body, ""),
@@ -647,18 +655,22 @@ fn split_account_name(body: &str) -> Option<(String, Option<&str>)> {
         return None;
     }
     match rest.strip_prefix(';') {
-        Some(comment) => Some((name, Some(comment))),
-        None if rest.is_empty() => Some((name, None)),
+        Some(comment) => Some((name, Some(comment), tail)),
+        None if rest.is_empty() => Some((name, None, tail)),
         None => None,
     }
 }
 
-fn parse_account_directive(line: &str, line_no: u32) -> Result<AccountDeclaration, ParseError> {
+fn parse_account_directive(
+    line: &str,
+    line_no: u32,
+    source_file: &Path,
+) -> Result<AccountDeclaration, ParseError> {
     let after = line
         .strip_prefix("account")
         .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?
         .trim_start();
-    let (name, comment) = split_account_name(after)
+    let (name, comment, _tail) = split_account_name(after)
         .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?;
     let (comment_text, tags) = build_comment(comment);
     Ok(AccountDeclaration {
@@ -671,6 +683,7 @@ fn parse_account_directive(line: &str, line_no: u32) -> Result<AccountDeclaratio
             line: line_no,
             column: 1,
         },
+        source_file: source_file.to_path_buf(),
     })
 }
 
@@ -2424,21 +2437,28 @@ fn build_comment(raw: Option<&str>) -> (String, Vec<(String, String)>) {
     }
 }
 
+/// Whether one comma-separated `segment` of a comment is a `name:value` tag,
+/// and if so, what it names.
+///
+/// `pub(crate)` rather than private, and factored out of [`parse_tags`] rather
+/// than duplicated: [`crate::accounts`] must classify a candidate note
+/// fragment by this *exact* rule before writing it — a second, approximate
+/// copy of "what counts as a tag" is exactly the kind of silent divergence
+/// `parse_account_directive`'s doc comment already records one instance of.
+pub(crate) fn tag_in_segment(segment: &str) -> Option<(String, String)> {
+    let colon = segment.find(':')?;
+    let name = segment[..colon].split_whitespace().next_back()?;
+    if name.is_empty() {
+        return None;
+    }
+    let value = segment[colon + 1..].trim().to_string();
+    Some((name.to_string(), value))
+}
+
 /// Extract `name:value` tags from a comment body. The tag name is the last
 /// whitespace-delimited token before a `:`; its value runs to the next comma.
-fn parse_tags(comment: &str) -> Vec<(String, String)> {
-    comment
-        .split(',')
-        .filter_map(|segment| {
-            let colon = segment.find(':')?;
-            let name = segment[..colon].split_whitespace().next_back()?;
-            if name.is_empty() {
-                return None;
-            }
-            let value = segment[colon + 1..].trim().to_string();
-            Some((name.to_string(), value))
-        })
-        .collect()
+pub(crate) fn parse_tags(comment: &str) -> Vec<(String, String)> {
+    comment.split(',').filter_map(tag_in_segment).collect()
 }
 
 /// Split a posting's `after-status` remainder into `(account, amount)` at the
@@ -2801,7 +2821,8 @@ mod tests {
         use super::*;
 
         fn parsed(line: &str) -> (String, Vec<(String, String)>) {
-            let decl = parse_account_directive(line, 1).expect("directive parses");
+            let decl =
+                parse_account_directive(line, 1, Path::new("t.journal")).expect("directive parses");
             (decl.name.0, decl.tags)
         }
 
@@ -2862,7 +2883,14 @@ mod tests {
         /// after the separator is a hard error, not silently-kept text.
         #[test]
         fn text_after_the_separator_that_is_not_a_comment_is_refused() {
-            assert!(parse_account_directive("account two:words  trailing junk", 1).is_err());
+            assert!(
+                parse_account_directive(
+                    "account two:words  trailing junk",
+                    1,
+                    Path::new("t.journal")
+                )
+                .is_err()
+            );
         }
 
         /// A name-less directive whose body is only a comment is NOT an error:
@@ -2880,8 +2908,8 @@ mod tests {
         /// A bare `account` with no body IS an error, as it is in hledger.
         #[test]
         fn a_bare_directive_is_refused() {
-            assert!(parse_account_directive("account", 1).is_err());
-            assert!(parse_account_directive("account   ", 1).is_err());
+            assert!(parse_account_directive("account", 1, Path::new("t.journal")).is_err());
+            assert!(parse_account_directive("account   ", 1, Path::new("t.journal")).is_err());
         }
     }
 

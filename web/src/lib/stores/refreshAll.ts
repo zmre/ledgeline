@@ -44,6 +44,7 @@
 // pressing refresh reconnects to nothing. Routing an explicit refresh through
 // one of those is how you write a button that does nothing.
 
+import {accountsStore} from "$lib/accounts/accountsStore.svelte";
 import {aliasStore} from "$lib/imports/aliasStore.svelte";
 import {importStore} from "$lib/imports/importStore.svelte";
 import {openRules, rulesStore} from "$lib/imports/rulesStore.svelte";
@@ -53,7 +54,7 @@ import {pricesStore} from "./prices.svelte";
 import {settings} from "./settings.svelte";
 
 /** Every server resource a global refresh re-reads. See the note above before editing. */
-export const REFRESH_TARGETS = ["journal", "importCapabilities", "rulesIndex", "openRules", "aliases", "prices", "holdings"] as const;
+export const REFRESH_TARGETS = ["journal", "importCapabilities", "rulesIndex", "openRules", "aliases", "accounts", "prices", "holdings"] as const;
 
 export type RefreshTargetName = (typeof REFRESH_TARGETS)[number];
 
@@ -124,6 +125,8 @@ async function reload(name: RefreshTargetName, serverUrl: string, state: Refresh
             return;
         case "aliases":
             return aliasStore.reload(serverUrl);
+        case "accounts":
+            return accountsStore.reload(serverUrl);
         case "prices":
             // Which symbols need a quote, and where prices already live. Its
             // own `ensureStatus` key is set the first time /holdings is

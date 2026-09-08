@@ -14,11 +14,12 @@
     // the run where it declines to write. Flat route, `?tab=`, no nested
     // directory: this codebase has none, and Reports does not use one either.
     import {onMount} from "svelte";
+    import {goto} from "$app/navigation";
+    import {resolve} from "$app/paths";
     import ErrorToast from "$lib/components/ErrorToast.svelte";
     import {importStore} from "$lib/imports/importStore.svelte";
-    import {defaultImportParams, paramsToSearch, searchToParams, type ImportParams} from "$lib/imports/params";
+    import {aliasesRedirect, defaultImportParams, paramsToSearch, searchToParams, type ImportParams} from "$lib/imports/params";
     import {rulesStore} from "$lib/imports/rulesStore.svelte";
-    import AliasPanel from "$lib/imports/ui/AliasPanel.svelte";
     import EditRulesPanel from "$lib/imports/ui/EditRulesPanel.svelte";
     import ImportTabs from "$lib/imports/ui/ImportTabs.svelte";
     import NewTransactionsPanel from "$lib/imports/ui/NewTransactionsPanel.svelte";
@@ -52,6 +53,16 @@
 
     // Restore params from the URL exactly once, at startup.
     onMount(() => {
+        // Account Aliases used to be a tab here and lives under Settings now,
+        // so a bookmark still naming it is forwarded rather than quietly
+        // landing on New Transactions. `replaceState` because the old URL is
+        // not a place to go Back to.
+        const forward = aliasesRedirect(window.location.search);
+        if (forward !== null) {
+            // eslint-disable-next-line svelte/no-navigation-without-resolve -- resolve("/settings") IS the route id; the query string is appended
+            void goto(`${resolve("/settings")}${forward}`, {replaceState: true});
+            return;
+        }
         if (window.location.search !== "") Object.assign(params, searchToParams(window.location.search, defaultImportParams()));
         restored = true;
         return () => mirror.stop();
@@ -75,8 +86,6 @@
 
     {#if params.tab === "new"}
         <NewTransactionsPanel />
-    {:else if params.tab === "aliases"}
-        <AliasPanel />
     {:else}
         <EditRulesPanel />
     {/if}

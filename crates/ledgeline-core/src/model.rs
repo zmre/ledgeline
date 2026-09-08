@@ -276,6 +276,8 @@ pub struct AccountDeclaration {
     /// Position of the `account` keyword (column is always 1 for a top-level
     /// directive). Mirrors hledger's `adisourcepos`.
     pub position: SourcePos,
+    /// The resolved file this was declared in, like [`Transaction::source_file`].
+    pub source_file: PathBuf,
 }
 
 /// An `alias OLD = NEW` / `alias /REGEX/ = REPLACEMENT` directive.

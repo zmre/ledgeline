@@ -29,7 +29,11 @@
 //! - `hledger_conf` — the `--alias` options an `hledger.conf` declares, and
 //!   writing one into it (Enhanced imports)
 //! - `title` — the derived "what am I looking at" title for the open journal
+//! - `accounts` — `account NAME  ; tags...` declarations: the format-preserving
+//!   span editor over them (Account list editor; see
+//!   `plans/18-account-list-editor.md`)
 
+pub mod accounts;
 pub mod aliases;
 pub mod assertions;
 pub mod convert;

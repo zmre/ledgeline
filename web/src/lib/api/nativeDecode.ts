@@ -24,6 +24,7 @@
 // reports path runs through decodeMixed, and "absent" silently rendering $0.00
 // was a live bug class (CLEANUP.md DRY-3).
 
+import type {AccountEntry, AccountFile, AccountListing, AccountTag, CreatedAccountsFile} from "$lib/accounts/types";
 import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile} from "$lib/budget/types";
 import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
@@ -726,6 +727,42 @@ interface RawAliasFile {
 interface RawAliasListing {
     editable?: boolean;
     files?: RawAliasFile[];
+}
+
+interface RawAccountTag {
+    name?: string;
+    value?: string;
+}
+
+interface RawAccount {
+    journalId?: string;
+    index?: number;
+    line?: number;
+    name?: string;
+    tags?: RawAccountTag[];
+    note?: string;
+}
+
+interface RawAccountFile {
+    journalId?: string;
+    label?: string;
+    revision?: string;
+    writable?: boolean;
+    accounts?: RawAccount[];
+}
+
+interface RawAccountListing {
+    editable?: boolean;
+    canCreateFile?: boolean;
+    createFileName?: string;
+    files?: RawAccountFile[];
+}
+
+interface RawCreatedAccountsFile {
+    journalId?: string;
+    label?: string;
+    includedAs?: string;
+    mainJournalId?: string;
 }
 
 interface RawAliasEffect {
@@ -2382,6 +2419,65 @@ export function decodeAliasListing(raw: unknown): AliasListing {
 /** `PUT /api/aliases/{*id}` → the file it just wrote, at its new revision. */
 export function decodeAliasFileResponse(raw: unknown): AliasFile {
     return decodeAliasFile(raw as RawAliasFile, "alias save");
+}
+
+function decodeAccountTag(raw: RawAccountTag | undefined, context: string): AccountTag {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing tag`);
+    return Object.freeze({name: str(raw.name, `${context} name`), value: str(raw.value, `${context} value`)});
+}
+
+function decodeAccount(raw: RawAccount | undefined, context: string): AccountEntry {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing account`);
+    return Object.freeze({
+        journalId: str(raw.journalId, `${context} journalId`),
+        index: num(raw.index, `${context} index`),
+        line: num(raw.line, `${context} line`),
+        name: str(raw.name, `${context} name`),
+        tags: frozen((raw.tags ?? []).map((tag, i) => decodeAccountTag(tag, `${context} tags[${i}]`))),
+        note: str(raw.note, `${context} note`),
+    });
+}
+
+function decodeAccountFile(raw: RawAccountFile | undefined, context: string): AccountFile {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing file`);
+    return Object.freeze({
+        journalId: str(raw.journalId, `${context} journalId`),
+        label: str(raw.label, `${context} label`),
+        revision: str(raw.revision, `${context} revision`),
+        writable: raw.writable === true,
+        accounts: frozen((raw.accounts ?? []).map((account, i) => decodeAccount(account, `${context} accounts[${i}]`))),
+    });
+}
+
+/** `GET /api/accounts` → every account the open journal declares. */
+export function decodeAccountListing(raw: unknown): AccountListing {
+    const listing = raw as RawAccountListing;
+    if (typeof listing !== "object" || listing === null || !Array.isArray(listing.files)) {
+        throw new ApiShapeError("account listing: expected a files array");
+    }
+    return Object.freeze({
+        editable: listing.editable === true,
+        canCreateFile: listing.canCreateFile === true,
+        createFileName: str(listing.createFileName, "account listing createFileName"),
+        files: frozen(listing.files.map((file, i) => decodeAccountFile(file, `account listing files[${i}]`))),
+    });
+}
+
+/** `PUT /api/accounts/{*id}` → the file it just wrote, at its new revision. */
+export function decodeAccountFileResponse(raw: unknown): AccountFile {
+    return decodeAccountFile(raw as RawAccountFile, "account save");
+}
+
+/** `POST /api/accounts/file` → the file it created and the include it wrote. */
+export function decodeCreatedAccountsFile(raw: unknown): CreatedAccountsFile {
+    const created = raw as RawCreatedAccountsFile;
+    if (typeof created !== "object" || created === null) throw new ApiShapeError("accounts file: expected an object");
+    return Object.freeze({
+        journalId: str(created.journalId, "accounts file journalId"),
+        label: str(created.label, "accounts file label"),
+        includedAs: str(created.includedAs, "accounts file includedAs"),
+        mainJournalId: str(created.mainJournalId, "accounts file mainJournalId"),
+    });
 }
 
 /**

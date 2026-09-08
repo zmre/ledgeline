@@ -241,6 +241,7 @@ mod tests {
                 .collect(),
             comment: String::new(),
             position: SourcePos { line: 1, column: 1 },
+            source_file: std::path::PathBuf::from("t.journal"),
         }
     }
 

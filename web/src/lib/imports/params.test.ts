@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {defaultImportParams, isTab, paramsToSearch, searchToParams, TAB_LABELS, TAB_ORDER, type ImportParams} from "./params";
+import {aliasesRedirect, defaultImportParams, isTab, paramsToSearch, searchToParams, TAB_LABELS, TAB_ORDER, type ImportParams} from "./params";
 
 const DFLT = defaultImportParams();
 
@@ -18,9 +18,9 @@ describe("UNIT imports/params", () => {
 
     describe("TAB_ORDER", () => {
         it("puts New Transactions first and labels every tab", () => {
-            expect(TAB_ORDER).toEqual(["new", "rules", "aliases"]);
+            expect(TAB_ORDER).toEqual(["new", "rules"]);
             expect(TAB_ORDER[0]).toBe(DFLT.tab);
-            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["New Transactions", "Edit Rules", "Account Aliases"]);
+            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["New Transactions", "Edit Rules"]);
         });
     });
 
@@ -32,8 +32,23 @@ describe("UNIT imports/params", () => {
             expect(isTab("Edit Rules")).toBe(false);
             expect(isTab("")).toBe(false);
             expect(isTab("newx")).toBe(false);
+            // The old third tab: moved to Settings, so it is not a tab HERE any more.
+            expect(isTab("aliases")).toBe(false);
             // `Array.prototype.includes` on a plain array, so no prototype key sneaks through.
             expect(isTab("toString")).toBe(false);
+        });
+    });
+
+    describe("aliasesRedirect", () => {
+        it("forwards a bookmark naming the old Aliases tab", () => {
+            expect(aliasesRedirect("?tab=aliases")).toBe("?tab=aliases");
+            expect(aliasesRedirect("tab=aliases")).toBe("?tab=aliases");
+        });
+
+        it("is null for every other search, including an absent tab", () => {
+            expect(aliasesRedirect("")).toBeNull();
+            expect(aliasesRedirect("?tab=new")).toBeNull();
+            expect(aliasesRedirect("?tab=rules")).toBeNull();
         });
     });
 

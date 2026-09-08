@@ -14,6 +14,7 @@
 
 import {describe, expect, it, vi, beforeEach, afterEach} from "vitest";
 import {readFileSync} from "node:fs";
+import {accountListing, accountsStore} from "$lib/accounts/accountsStore.svelte";
 import {aliasListing, aliasStore} from "$lib/imports/aliasStore.svelte";
 import {importStore} from "$lib/imports/importStore.svelte";
 import {openRules, rulesIndex, rulesStore} from "$lib/imports/rulesStore.svelte";
@@ -77,6 +78,21 @@ const ALIAS_LISTING = {
     ],
 };
 
+const ACCOUNT_LISTING = {
+    editable: true,
+    canCreateFile: false,
+    createFileName: "accounts.journal",
+    files: [
+        {
+            journalId: "2026/2026.journal",
+            label: "2026.journal",
+            revision: "rev-1",
+            writable: true,
+            accounts: [{journalId: "2026/2026.journal", index: 0, line: 1, name: "assets:bank:checking", tags: [{name: "type", value: "A"}], note: ""}],
+        },
+    ],
+};
+
 /** Every URL this test's `fetch` has been asked for, in order. */
 let seen: string[] = [];
 /** Set by the test that takes one resource away mid-session. */
@@ -96,6 +112,9 @@ function respond(url: string): Response {
     // button rather than about the stub.
     if (url.includes("/api/holdings")) return json(url.includes("/series") ? HOLDINGS_SERIES : HOLDINGS_REPORT);
     if (url.endsWith("/api/aliases")) return aliasesUnreachable ? new Response("boom", {status: 500}) : json(ALIAS_LISTING);
+    // Ahead of the bare `/accounts` case below (the hledger-compat account-tree
+    // route), which would otherwise swallow this one too.
+    if (url.endsWith("/api/accounts")) return json(ACCOUNT_LISTING);
     if (url.endsWith("/api/rules")) return json(RULES_INDEX);
     // The preview is decoration and `loadPreview` swallows its failure, so it is
     // deliberately left to 404 — a document that loaded must not be lost with it.
@@ -149,11 +168,11 @@ describe("UNIT refreshAll — the plan", () => {
         expect(refreshPlan({openRulesId: "a.rules", unsaved: []})).toEqual([...REFRESH_TARGETS]);
     });
 
-    it("names the journal, the rules index, the open document, the aliases, the capabilities, the prices and the holdings", () => {
+    it("names the journal, the rules index, the open document, the aliases, the accounts, the capabilities, the prices and the holdings", () => {
         // The list IS the definition of "everything". Pinning it is what makes
         // dropping one a failing test rather than a quiet regression — the exact
         // shape of the bug this module was written for.
-        expect([...REFRESH_TARGETS].sort()).toEqual(["aliases", "holdings", "importCapabilities", "journal", "openRules", "prices", "rulesIndex"]);
+        expect([...REFRESH_TARGETS].sort()).toEqual(["accounts", "aliases", "holdings", "importCapabilities", "journal", "openRules", "prices", "rulesIndex"]);
     });
 
     it("skips the open document when the editor has none open", () => {
@@ -181,6 +200,7 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
         await rulesStore.ensureIndex(FAKE_ENGINE, settings.serverNonce);
         await importStore.ensureCapabilities(FAKE_ENGINE, settings.serverNonce);
         await aliasStore.ensureListing(FAKE_ENGINE, settings.serverNonce);
+        await accountsStore.ensureListing(FAKE_ENGINE, settings.serverNonce);
         await rulesStore.open(FAKE_ENGINE, OPEN_ID);
         // …and the Holdings tab was visited, which is what sets the price
         // status's own (nonce, url) key and loads the report behind the table.
@@ -195,12 +215,13 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
         await rulesStore.ensureIndex(FAKE_ENGINE, settings.serverNonce);
         await importStore.ensureCapabilities(FAKE_ENGINE, settings.serverNonce);
         await aliasStore.ensureListing(FAKE_ENGINE, settings.serverNonce);
+        await accountsStore.ensureListing(FAKE_ENGINE, settings.serverNonce);
         await pricesStore.ensureStatus(FAKE_ENGINE, settings.serverNonce);
 
         expect(seen).toEqual([]);
     });
 
-    it("re-reads the rules index, the open rules file, the aliases and the capabilities anyway", async () => {
+    it("re-reads the rules index, the open rules file, the aliases, the accounts and the capabilities anyway", async () => {
         // The whole bug: "pressing the reload button does reload the aliases,
         // but doesn't seem to reload the rules file". Nothing was reloaded — the
         // aliases had merely been fetched for the first time later in the
@@ -212,6 +233,7 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
         expect(hits("/api/rules")).toBeGreaterThanOrEqual(2); // the index AND the open document
         expect(hits(`/api/rules/${OPEN_ID.split("/").map(encodeURIComponent).join("/")}`)).toBe(1);
         expect(hits("/api/aliases")).toBe(1);
+        expect(hits("/api/accounts")).toBe(1);
         expect(hits("/api/import/capabilities")).toBe(1);
         expect(hits("/transactions")).toBe(1);
     });
@@ -243,6 +265,7 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
         expect(rulesIndex.value?.files[0]?.id).toBe(OPEN_ID);
         expect(openRules.value?.doc.id).toBe(OPEN_ID);
         expect(aliasListing.value?.files[0]?.aliases[0]?.pattern).toBe("CHASE CHECKING");
+        expect(accountListing.value?.files[0]?.accounts[0]?.name).toBe("assets:bank:checking");
         expect(importStore.capabilities?.hledger.available).toBe(true);
         expect(pricesStore.status.value?.defaultTarget).toBe("prices.journal");
     });

@@ -370,6 +370,35 @@ export interface SaveAliasesBody {
     edits: SaveAliasEdit[];
 }
 
+/** One tag, as a save request carries it — `account_api::WireTag`. */
+export interface SaveAccountTag {
+    name: string;
+    value: string;
+}
+
+/**
+ * One change to one `account` line, tagged by `kind`.
+ *
+ * `delete` only removes the chart-of-accounts entry — it cannot and does not
+ * touch any posting that still names the account; hledger infers a type from
+ * the name, or nothing at all, once the declaration is gone.
+ */
+export type SaveAccountEdit =
+    | {kind: "replace"; index: number; tags: SaveAccountTag[]; note: string}
+    | {kind: "declare"; name: string; tags: SaveAccountTag[]; note: string}
+    | {kind: "delete"; index: number};
+
+/**
+ * `PUT /api/accounts/{*journalId}`.
+ *
+ * Like `SaveAliasesBody`: omission is not itself a delete, so naming one line
+ * changes one line and an empty `edits` writes nothing at all.
+ */
+export interface SaveAccountsBody {
+    revision: string;
+    edits: SaveAccountEdit[];
+}
+
 /**
  * One change to one file's budget goals, matching `budget_api::WireChange`.
  *
@@ -875,6 +904,34 @@ export class LedgelineApi {
      */
     saveAliases(journalId: string, body: SaveAliasesBody): Promise<unknown> {
         return this.mutate<unknown>("PUT", `/api/aliases/${encodeRulesId(journalId)}`, 200, body);
+    }
+
+    /** Every account the journal declares (decode with `decodeAccountListing`). */
+    listAccounts(): Promise<unknown> {
+        return this.getJson("/api/accounts");
+    }
+
+    /**
+     * Rewrite one journal file's account lines. → 200, that file at its new
+     * revision (decode with `decodeAccountFileResponse`); 409 when the file
+     * moved underneath the editor.
+     *
+     * The id is encoded segment by segment for the reason `saveAliases`'s is.
+     */
+    saveAccounts(journalId: string, body: SaveAccountsBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", `/api/accounts/${encodeRulesId(journalId)}`, 200, body);
+    }
+
+    /**
+     * Create an `accounts.journal` beside the main journal and `include` it. →
+     * 200 (decode with `decodeCreatedAccountsFile`); 409 when the journal
+     * already declares accounts, or when a file of that name is already there.
+     *
+     * Takes no body, for the reason `createBudgetFile` does not: there is
+     * exactly one file this creates, at one place.
+     */
+    createAccountsFile(): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/accounts/file", 200, {});
     }
 
     /** Every budget goal the journal declares (decode with `decodeBudgetListing`). */
