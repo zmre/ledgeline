@@ -134,6 +134,35 @@ Nix prints.
 nix build .#spaNodeModules   # → error: ... specified: sha256-AAAA…  got: sha256-<real>
 ```
 
+On an Apple Silicon machine with `extra-platforms = x86_64-darwin` in its Nix
+config, the Intel hash can be produced here too, under Rosetta:
+
+```sh
+nix build .#packages.x86_64-darwin.spaNodeModules
+```
+
+#### A stale pin is invisible until the cache drops the path
+
+**Re-pin every hash in the same commit that changes `web/bun.lock`.** This is
+easy to forget because forgetting it is silent: a fixed-output derivation's
+store path is derived from its `outputHash`, so while the OLD path is still in
+your store or on zmre.cachix.org, Nix substitutes it and never runs `bun
+install` to notice the pin no longer describes anything. Every machine keeps
+building happily.
+
+It surfaces when the path is evicted (which the cache does within days — see
+`docs/nix-binary-cache-playbook.md`), and then it surfaces on whatever PR
+happened to be open at the time, which is never the PR that caused it. That is
+exactly what happened on 2026-08-30: `Dependency updates` changed `bun.lock`
+and `package.json` without touching `flake.nix`, all three hashes went stale,
+and CI stayed green for a fortnight before failing on an unrelated branch.
+
+To check a pin honestly, force the build rather than trusting a green run:
+
+```sh
+nix build .#spaNodeModules --rebuild
+```
+
 Two Linux-specific traps live in `spaBuild`, both already handled:
 
 - `patchShebangs node_modules` is required. The `.bin` shims carry
