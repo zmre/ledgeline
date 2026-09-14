@@ -136,6 +136,26 @@ case-insensitively:
 **Equity is never split.** The question the split asks — when does this become
 cash, when does this come due — is not one you ask of capital.
 
+**One other screen reads this tag.** The Journal tab's insights box has a
+**Balances** view showing cash and short-term liabilities as of today, and it
+drops anything resolving to non-current — so `bsterm: noncurrent` on a mortgage
+keeps it out of both that view's short-term figures and this statement's current
+half.
+
+That view differs from this statement in one way, and it is the only place in
+Ledgeline where an account NAME affects a total. When no `bsterm:` is declared
+anywhere in an account's ancestry, Balances will guess "long-term" from a short
+list of words — `mortgage`, `heloc`, `student`, `pension`, and the tag's own
+vocabulary written into the name (`long-term`, `noncurrent`). The balance sheet
+does **not**, so an untagged `liabilities:mortgage` is out of Balances and still
+under `Current` here. Tagging it settles both. The list is short on purpose,
+the guess never overrides a tag in either direction, and the view names every
+account it excluded that way rather than removing it silently — see
+[`plans/19-account-balances.md`](../plans/19-account-balances.md) for the word
+list, the evidence behind it, and the words that were rejected. That plan also
+records the other case where the two screens can disagree: an account moved onto
+or off the Cash line by an explicit `bsgroup:` rather than by its `type:`.
+
 ### Three tags, three questions
 
 It is a third tag rather than a value of `bsgroup:` because they answer different

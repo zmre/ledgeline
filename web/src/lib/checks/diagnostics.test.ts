@@ -15,11 +15,19 @@ import {groupByTxn, maxSeverity, runChecks, type CheckRule, type Problem} from "
 const usdStyle: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
 const usd = (cents: number): Amount => ({commodity: "$", qty: dec(cents, 2), style: usdStyle});
 
-/** A balanced transaction, so ALL_RULES stays silent and only diagnostics show up. */
+/**
+ * A balanced transaction, so ALL_RULES stays silent and only diagnostics show
+ * up.
+ *
+ * The funding leg is a CARD rather than a bank account on purpose: three of
+ * these run the account to −$30.00, and a cash account at −$30.00 is what
+ * `negative-cash` exists to report. A card at −$30.00 is just a card with a
+ * balance on it, which is the silence this fixture needs.
+ */
 function balancedTxn(index: number): Transaction {
     const postings: Posting[] = [
         {account: "expenses:food", amounts: [usd(1000)], status: "unmarked", comment: "", tags: []},
-        {account: "assets:bank", amounts: [usd(-1000)], status: "unmarked", comment: "", tags: []},
+        {account: "liabilities:card", amounts: [usd(-1000)], status: "unmarked", comment: "", tags: []},
     ];
     return {
         index,

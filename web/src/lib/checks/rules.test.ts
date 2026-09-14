@@ -1,4 +1,5 @@
 import {describe, expect, it} from "vitest";
+import type {AccountDecl} from "../domain/accountTypes";
 import {dec} from "../domain/money";
 import type {Amount, AmountStyle, ISODate, Posting, PostingType, Transaction, TxnStatus} from "../domain/types";
 import {today} from "../reports/periods";
@@ -270,6 +271,91 @@ describe("UNIT checks/rules uncategorized", () => {
         const t = txn(3, [post("expenses:unknown"), post("expenses:unknown"), post("income")]);
         const problems = run1(t, "uncategorized");
         expect(problems.map((p) => p.message)).toEqual(['posting to uncategorized account "expenses:unknown"', 'posting to uncategorized account "income"']);
+    });
+});
+
+describe("UNIT checks/rules negative-cash", () => {
+    const decls: AccountDecl[] = [
+        {name: "assets:bank:checking", type: "cash"},
+        {name: "assets:broker:taxable", type: "asset"},
+        {name: "liabilities:card", type: "liability"},
+        {name: "liabilities:mortgage", type: "liability", bsterm: "noncurrent"},
+    ];
+    const ctx = {prices: [], decls};
+    /** Money out of `account` and into an expense, dated in the past so `asOf` (today) includes it. */
+    const spend = (index: number, account: string, cents: number): Transaction =>
+        txn(
+            index,
+            [
+                {account: "expenses:food", amounts: [usd(cents)]},
+                {account, amounts: [usd(-cents)]},
+            ],
+            {date: "2026-01-01"}
+        );
+
+    it("flags a cash account that has run negative, anchored to the ACCOUNT", () => {
+        const problems = byRule(runChecks([spend(1, "assets:bank:checking", 5000)], ctx), "negative-cash");
+        expect(problems).toHaveLength(1);
+        expect(problems[0]).toMatchObject({
+            txnIndex: null,
+            account: "assets:bank:checking",
+            severity: "warning",
+            message: "cash balance is negative: $ -50.00 as of 2026-01-01",
+        });
+    });
+
+    it("says nothing when the account was funded first", () => {
+        const funded = txn(
+            1,
+            [
+                {account: "assets:bank:checking", amounts: [usd(100_000)]},
+                {account: "equity:opening", amounts: [usd(-100_000)]},
+            ],
+            {date: "2025-12-01"}
+        );
+        expect(byRule(runChecks([funded, spend(2, "assets:bank:checking", 5000)], ctx), "negative-cash")).toEqual([]);
+    });
+
+    it("leaves liabilities alone — a negative balance is what owing money looks like", () => {
+        expect(byRule(runChecks([spend(1, "liabilities:card", 5000)], ctx), "negative-cash")).toEqual([]);
+    });
+
+    it("ignores non-cash assets, whose sign is the holdings engine's business", () => {
+        expect(byRule(runChecks([spend(1, "assets:broker:taxable", 5000)], ctx), "negative-cash")).toEqual([]);
+    });
+
+    it("reports each commodity separately", () => {
+        const mixed = txn(
+            1,
+            [
+                {account: "assets:bank:checking", amounts: [usd(-5000), eur(-2500)]},
+                {account: "expenses:food", amounts: [usd(5000), eur(2500)]},
+            ],
+            {date: "2026-01-01"}
+        );
+        const problems = byRule(runChecks([mixed], ctx), "negative-cash");
+        expect(problems.map((p) => p.message)).toEqual([
+            "cash balance is negative: $ -50.00 as of 2026-01-01",
+            "cash balance is negative: EUR -25.00 as of 2026-01-01",
+        ]);
+    });
+
+    it("matches the Balances view's scope: a future-dated overdraft is not one yet", () => {
+        expect(byRule(runChecks([spend(1, "assets:bank:checking", 5000)], ctx), "negative-cash")).toHaveLength(1);
+        const later = txn(
+            2,
+            [
+                {account: "expenses:food", amounts: [usd(5000)]},
+                {account: "assets:bank:checking", amounts: [usd(-5000)]},
+            ],
+            {date: "9999-12-31"}
+        );
+        expect(byRule(runChecks([later], ctx), "negative-cash")).toEqual([]);
+    });
+
+    it("falls back to hledger's name heuristic when the journal declares nothing", () => {
+        const problems = byRule(runChecks([spend(1, "assets:bank:checking", 5000)], NO_PRICES), "negative-cash");
+        expect(problems.map((p) => p.account)).toEqual(["assets:bank:checking"]);
     });
 });
 

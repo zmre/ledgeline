@@ -714,10 +714,26 @@ describe("UNIT normalizeAccounts", () => {
             {aname: "assets:broker", adeclarationinfo: null}, // never declared (tree-only)
         ];
         expect(normalizeAccounts(raw)).toEqual([
-            {name: "assets:bank:checking", type: "cash"},
-            {name: "assets:wallet", type: "cash"},
-            {name: "expenses:food", type: null},
-            {name: "assets:broker", type: null},
+            {name: "assets:bank:checking", type: "cash", bsterm: null},
+            {name: "assets:wallet", type: "cash", bsterm: null},
+            {name: "expenses:food", type: null, bsterm: null},
+            {name: "assets:broker", type: null, bsterm: null},
+        ]);
+    });
+
+    it("extracts the declared `bsterm:` tag, and refuses a spelling outside the closed vocabulary", () => {
+        // The Balances view and the balance sheet both drop non-current
+        // accounts, so a misspelt term that quietly fell back to `current`
+        // would file a mortgage under short-term debt and look fine doing it.
+        const raw = [
+            {aname: "liabilities:mortgage", adeclarationinfo: {aditags: [["bsterm", "noncurrent"]]}},
+            {aname: "liabilities:card", adeclarationinfo: {aditags: [["bsterm", "Short-Term"]]}}, // synonym, any case
+            {aname: "assets:art", adeclarationinfo: {aditags: [["bsterm", "long-ish"]]}}, // outside the vocabulary → null
+        ];
+        expect(normalizeAccounts(raw)).toEqual([
+            {name: "liabilities:mortgage", type: null, bsterm: "noncurrent"},
+            {name: "liabilities:card", type: null, bsterm: "current"},
+            {name: "assets:art", type: null, bsterm: null},
         ]);
     });
 
@@ -726,7 +742,7 @@ describe("UNIT normalizeAccounts", () => {
             {aname: "", adeclarationinfo: null},
             {aname: "assets", adeclarationinfo: {aditags: [["type", "Z"]]}}, // unrecognized → null, not dropped
         ];
-        expect(normalizeAccounts(raw)).toEqual([{name: "assets", type: null}]);
+        expect(normalizeAccounts(raw)).toEqual([{name: "assets", type: null, bsterm: null}]);
     });
 
     it("throws ApiShapeError when the payload is not an array", () => {
@@ -741,7 +757,7 @@ describe("UNIT normalizeAccounts", () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
         try {
             const raw = [{aname: "assets", adeclarationinfo: {aditags: [["type", "A"]]}}, {aname: 42}, {nothing: true}];
-            expect(normalizeAccounts(raw)).toEqual([{name: "assets", type: "asset"}]);
+            expect(normalizeAccounts(raw)).toEqual([{name: "assets", type: "asset", bsterm: null}]);
             expect(lastSkippedAccountCount()).toBe(2);
             expect(warn).toHaveBeenCalledTimes(1);
             expect(String(warn.mock.calls[0][0])).toMatch(/skipped 2 malformed entries/);
@@ -753,7 +769,7 @@ describe("UNIT normalizeAccounts", () => {
     it("stays silent about the empty root account, which every healthy payload has", () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
         try {
-            expect(normalizeAccounts([{aname: "", adeclarationinfo: null}, {aname: "assets"}])).toEqual([{name: "assets", type: null}]);
+            expect(normalizeAccounts([{aname: "", adeclarationinfo: null}, {aname: "assets"}])).toEqual([{name: "assets", type: null, bsterm: null}]);
             expect(lastSkippedAccountCount()).toBe(0);
             expect(warn).not.toHaveBeenCalled();
         } finally {

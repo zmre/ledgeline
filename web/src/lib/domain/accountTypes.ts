@@ -10,14 +10,22 @@
 // `assets:bankofamerica` under an `assets ; type: A` declaration is an Asset,
 // not Cash, even though "bank" appears in it.
 
+import type {BsTerm} from "./accountTerms";
 import {categorize} from "./accounts";
 
 export type AccountType = "asset" | "liability" | "equity" | "revenue" | "expense" | "cash" | "conversion";
 
-/** One account's declared type as normalized from /accounts (null = no `type:` tag). */
+/** One account's declaration as normalized from /accounts (null = the tag is absent or unrecognized). */
 export interface AccountDecl {
     name: string;
     type: AccountType | null;
+    /**
+     * Declared `bsterm:` — the current / non-current half of the balance-sheet
+     * box (see `./accountTerms`). Optional rather than required so the many
+     * fixtures and tests that build a bare `{name, type}` still type-check;
+     * absent and null both mean "not declared".
+     */
+    bsterm?: BsTerm | null;
 }
 
 // hledger's Cash-account name heuristic: an asset account whose path hits a

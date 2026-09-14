@@ -21,17 +21,26 @@ import type {MeasureText} from "$lib/domain/accounts";
 // a theme or a user stylesheet actually changes.
 const CHIP_FONT_SIZE_PX = 12;
 
-// `undefined` = not yet attempted, `null` = attempted and unavailable.
-let context: CanvasRenderingContext2D | null | undefined;
-const widths = new Map<string, number>();
+// Per font size, because a second caller at a different size arrived (the
+// Balances list renders account names at `text-sm`, 14px) and one shared
+// context would have measured its labels a sixth narrow — the exact silent
+// wrongness the note above says is worse than not measuring at all. The size is
+// the key for the contexts AND for the memoized widths; sharing the width cache
+// across sizes would be the same bug wearing a hat.
+//
+// A missing entry = not yet attempted, `null` = attempted and unavailable.
+const contexts = new Map<number, CanvasRenderingContext2D | null>();
+const widths = new Map<number, Map<string, number>>();
 
 // Account names are a bounded set in any real journal, but a pathological
 // import should not be able to grow this without limit.
 const CACHE_LIMIT = 4096;
 
-function chipContext(): CanvasRenderingContext2D | null {
-    if (context !== undefined) return context;
-    context = null;
+function contextFor(fontSizePx: number): CanvasRenderingContext2D | null {
+    const existing = contexts.get(fontSizePx);
+    if (existing !== undefined) return existing;
+    let context: CanvasRenderingContext2D | null = null;
+    contexts.set(fontSizePx, context);
     if (typeof document === "undefined" || document.body === null) return context;
     const canvas = document.createElement("canvas");
     const measured = canvas.getContext("2d");
@@ -49,12 +58,13 @@ function chipContext(): CanvasRenderingContext2D | null {
     // the value back is the only way to know it took; if none of these parse,
     // measuring is abandoned rather than done wrong.
     for (const candidate of [
-        `${style.fontStyle || "normal"} ${style.fontWeight || "400"} ${CHIP_FONT_SIZE_PX}px ${families}`,
-        `${CHIP_FONT_SIZE_PX}px ${families.split(",")[0].trim()}`,
+        `${style.fontStyle || "normal"} ${style.fontWeight || "400"} ${fontSizePx}px ${families}`,
+        `${fontSizePx}px ${families.split(",")[0].trim()}`,
     ]) {
         measured.font = candidate;
-        if (measured.font.includes(`${CHIP_FONT_SIZE_PX}px`)) {
+        if (measured.font.includes(`${fontSizePx}px`)) {
             context = measured;
+            contexts.set(fontSizePx, context);
             return context;
         }
     }
@@ -62,25 +72,40 @@ function chipContext(): CanvasRenderingContext2D | null {
 }
 
 /**
- * A measurer for text rendered in a journal account chip, or `null` on an engine
- * that cannot measure. Callers must handle `null` — see the note above on why it
- * is not a guess.
+ * A measurer for text rendered at `fontSizePx` in the document's body font, or
+ * `null` on an engine that cannot measure. Callers must handle `null` — see the
+ * note above on why it is not a guess.
+ *
+ * Pass the size the text is ACTUALLY rendered at. A measurer borrowed from a
+ * different size answers confidently and wrongly, and the caller has no way to
+ * tell.
  */
-export function chipMeasurer(): MeasureText | null {
-    const ctx = chipContext();
+export function textMeasurer(fontSizePx: number): MeasureText | null {
+    const ctx = contextFor(fontSizePx);
     if (ctx === null) return null;
+    let cache = widths.get(fontSizePx);
+    if (cache === undefined) {
+        cache = new Map();
+        widths.set(fontSizePx, cache);
+    }
+    const sized = cache;
     return (text: string): number => {
-        const cached = widths.get(text);
+        const cached = sized.get(text);
         if (cached !== undefined) return cached;
         const width = ctx.measureText(text).width;
-        if (widths.size >= CACHE_LIMIT) widths.clear();
-        widths.set(text, width);
+        if (sized.size >= CACHE_LIMIT) sized.clear();
+        sized.set(text, width);
         return width;
     };
 }
 
-/** Testing seam: drop the memoized context and widths so a fake can be installed. */
+/** A measurer for text rendered in a journal account chip (daisyUI `badge-sm`, 12px). */
+export function chipMeasurer(): MeasureText | null {
+    return textMeasurer(CHIP_FONT_SIZE_PX);
+}
+
+/** Testing seam: drop every memoized context and width so a fake can be installed. */
 export function resetChipMeasurer(): void {
-    context = undefined;
+    contexts.clear();
     widths.clear();
 }
