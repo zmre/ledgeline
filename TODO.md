@@ -48,11 +48,27 @@
 
 ## Misc
 - chore: Add screenshots and better descriptions to the readme
+- feature: account balances
+  - One of the most basic and important things a finance app does it to help the user understand cash balances.  We implicitly have this under our balance sheet report, but we need a quick view.  The Insights box on the Journal tab needs a toggle that shows balances (balance sheet type info) instead of p&l type info. This should be a sort of tab selection and the whole box should still be closable. We can leave the current P&L style insights as the default
+  - Although it is nice to know value of stocks and such, I'm only interested in cash accounts and liabilities. In short, just the things under cash and cash equivalents on the balance sheet and liabilities on the balance sheet.  If accounts are tagged as current/non-current for assets and liabilities, then filter down further to current.
+  - There are three pieces of information: leaf accounts with cash balances (or liabilities, but don't intermingle), the amount, and an as-of date.
+    - Because we're not doing other assets, last update of pricing information shouldn't matter.
+    - The as-of date is basically the last known transaction or balance date if we have imported a balance check.  This will serve also to help someone know what needs to be updated.
+    - We can filter by currency, but only need the latest info and I can't think of any charts to show here unless there's something useful we can show in a sparkline
+    - Liabilites should show as negative
+    - We probably want to screen out closed accounts somehow. Maybe if they have been zero for more than X months we exclude? Better yet, just make a checkbox for hiding zero balance accounts and have it checked by default.
+    - We should show short-term cash on hand, short-term liabilities, and net cash as the big boxes at the top similar to how we have income/expenses/net at the top of the insights box on the journal tab now.
+    - Display could be tabular, but I bet we can make it look nicer than that maybe two line with As of on the second line and the amounts nicely right aligned.
+      - Any negative balances on cash accounts should be highlighted and should go into the Problems list, too as it may show something as being overdrawn.
+      - Actually, if we have space, we could do a pie on the left showing all cash (ignore liabilities) and which account the cash is in.
+      - Note: we need to constrain the height of this insights box so we have room to see the journal entries below since the whole page doesn't scroll.  Which means the account list might need to scroll.  Consider mobile, too.
+    - Ask questions if needed.
 - ledgeline looks great, but it inherits the complexity and issues of web apps due to our architecture choices
   - these were the right choices for mbr (cuz markdown) but maybe not here
   - what if we used <https://iced.rs> or [GPUI](https://github.com/longbridge/gpui-component) or something? libcosmic? [freya?](https://github.com/marc2332/freya)
   - for forms and displays of numbers and such, it would probably be a great improvement
   - for charts, i expect we'd be in trouble; egui has some libraries that might do
+- chore: publish docs to website using mbr
 
 ## Performance
 - perf: **`/api/insights` misses its gate by 2.4×** — 968 ms at 200k against a 400 ms target, and it
