@@ -5,6 +5,7 @@
 import {declaredTypes, resolveAccountType, type AccountType} from "../domain/accountTypes";
 import {add, isZero, mul, neg, type Dec} from "../domain/money";
 import type {Amount, Transaction} from "../domain/types";
+import {accountBalances} from "../reports/cashBalances";
 import {today} from "../reports/periods";
 import type {CheckContext, CheckRule, Problem} from "./engine";
 
@@ -131,6 +132,44 @@ const uncategorized: CheckRule = {
     },
 };
 
+/**
+ * A cash account whose balance is negative today — you cannot hold less than
+ * nothing in a bank account, so this is either an overdraft or a booking
+ * mistake, and both are worth knowing about.
+ *
+ * ANCHORED TO THE ACCOUNT, not to a transaction: no single entry is at fault,
+ * the running total is. That makes this the second account-anchored rule after
+ * the engine's `account-tag`, and the drawer already renders that shape (it
+ * prints the account name where a transaction finding prints its date and
+ * description, and offers no jump target, because there is no one row to jump
+ * to).
+ *
+ * Scope matches the Balances view exactly — `accountBalances` is the same
+ * memoized pass both use, so a red row there always has a finding here and vice
+ * versa. That includes the current/non-current filter: a non-current account is
+ * out of both. Liabilities are not checked at all; a negative balance is what
+ * owing money LOOKS like.
+ */
+const negativeCash: CheckRule = {
+    id: "negative-cash",
+    run(txns: Transaction[], ctx: CheckContext): Problem[] {
+        const asOf = today();
+        return accountBalances(txns, ctx.decls ?? [], asOf)
+            .filter((balance) => balance.kind === "cash")
+            .flatMap((balance) =>
+                [...balance.amounts.entries()]
+                    .filter(([, qty]) => qty.m < 0n)
+                    .map(([commodity, qty]) => ({
+                        txnIndex: null,
+                        account: balance.account,
+                        rule: "negative-cash",
+                        severity: "warning" as const,
+                        message: `cash balance is negative: ${commodity} ${decToString(qty)} as of ${balance.asOf ?? asOf}`,
+                    }))
+            );
+    },
+};
+
 const missingDescription: CheckRule = {
     id: "missing-description",
     run(txns: Transaction[]): Problem[] {
@@ -167,4 +206,4 @@ const futureDate: CheckRule = {
  * trade the engine-computed `unbalanced` diagnostics already make, and it is the
  * right one — a wrong finding is worse than no finding.
  */
-export const ALL_RULES: CheckRule[] = [unbalanced, pending, uncategorized, missingDescription, futureDate];
+export const ALL_RULES: CheckRule[] = [unbalanced, pending, uncategorized, negativeCash, missingDescription, futureDate];

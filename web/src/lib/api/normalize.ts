@@ -7,6 +7,7 @@
 // with a Number.isSafeInteger guard (never a silent float fallback).
 
 import type {Problem, Severity} from "$lib/checks/engine";
+import {parseBsTermTag} from "$lib/domain/accountTerms";
 import type {AccountDecl} from "$lib/domain/accountTypes";
 import {parseAccountTypeTag} from "$lib/domain/accountTypes";
 import type {Dec} from "$lib/domain/money";
@@ -378,8 +379,17 @@ export function normalizeAccounts(raw: unknown): AccountDecl[] {
             continue;
         }
         if (account.aname === "") continue;
-        const typeTag = toTags(account.adeclarationinfo?.aditags).find(([key]) => key === "type");
-        decls.push(Object.freeze({name: account.aname, type: typeTag !== undefined ? parseAccountTypeTag(typeTag[1]) : null}));
+        const tags = toTags(account.adeclarationinfo?.aditags);
+        const tagValue = (key: string): string | undefined => tags.find(([name]) => name === key)?.[1];
+        const type = tagValue("type");
+        const term = tagValue("bsterm");
+        decls.push(
+            Object.freeze({
+                name: account.aname,
+                type: type !== undefined ? parseAccountTypeTag(type) : null,
+                bsterm: term !== undefined ? parseBsTermTag(term) : null,
+            })
+        );
     }
     skippedAccounts = skipped;
     if (skipped > 0) {

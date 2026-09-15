@@ -122,7 +122,7 @@ export interface RawPriceDirective {
     pdamount?: RawAmount;
 }
 
-/** /accounts element. We only read the name + declaration tags (the `type:` tag); balances (`adata`) and the tree links are ignored. */
+/** /accounts element. We only read the name + declaration tags (`type:`, `bsterm:`); balances (`adata`) and the tree links are ignored. */
 export interface RawAccountDeclarationInfo {
     aditags?: unknown[]; // array of [key, value] pairs, same shape as ttags/ptags
 }

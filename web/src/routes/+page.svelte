@@ -86,7 +86,7 @@
          computed from nothing are indistinguishable from zeroes computed from a
          journal that really nets to zero. -->
     {#if !loadFailed}
-        <InsightsPanel {txns} accounts={filters.value.accounts} allTxns={journal.txns} {declared} />
+        <InsightsPanel {txns} accounts={filters.value.accounts} allTxns={journal.txns} {declared} decls={journal.accountDecls} />
     {/if}
 
     {#if loadFailed}

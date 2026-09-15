@@ -19,6 +19,10 @@
         assertion: "Balance assertion",
         pending: "Pending",
         uncategorized: "Uncategorized",
+        // Account-anchored like "account-tag" below: the running balance is at
+        // fault, not any one entry. Mirrors the red rows in the journal tab's
+        // Balances view — both read lib/reports/cashBalances.
+        "negative-cash": "Negative cash balance",
         "missing-description": "Missing description",
         "future-date": "Future date",
         // Engine-computed, and the only rule anchored to an ACCOUNT rather than

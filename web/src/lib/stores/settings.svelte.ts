@@ -14,6 +14,11 @@ export interface ColumnConfig {
 
 const defaultColumns = (): ColumnConfig => ({date: true, status: true, description: true, accounts: true, amount: true});
 
+/** The insights box's two views. Persisted, so the tab you left it on is the tab you come back to. */
+export type InsightsTab = "activity" | "balances";
+
+const INSIGHTS_TABS: readonly InsightsTab[] = ["activity", "balances"];
+
 interface PersistedSettings {
     serverUrl: string | null;
     /**
@@ -26,6 +31,10 @@ interface PersistedSettings {
     serverToken: string | null;
     columns: ColumnConfig;
     insightsOpen: boolean;
+    /** Which view the insights box shows. "activity" (the period P&L) is the default; "balances" is the cash snapshot. */
+    insightsTab: InsightsTab;
+    /** Balances view: leave out accounts that currently hold nothing. On by default — a closed account is noise, not news. */
+    hideZeroBalances: boolean;
     /**
      * The P&L tab's two Sankey panels, one flag each. They collapse
      * independently: one flag made both arrows move together.
@@ -39,6 +48,8 @@ const defaults = (): PersistedSettings => ({
     serverToken: null,
     columns: defaultColumns(),
     insightsOpen: true,
+    insightsTab: "activity",
+    hideZeroBalances: true,
     flowsInOpen: true,
     flowsOutOpen: true,
 });
@@ -80,6 +91,11 @@ function load(): PersistedSettings {
             serverToken: typeof parsed.serverToken === "string" ? parsed.serverToken : null,
             columns: {...defaultColumns(), ...(typeof parsed.columns === "object" && parsed.columns !== null ? parsed.columns : {})},
             insightsOpen: typeof parsed.insightsOpen === "boolean" ? parsed.insightsOpen : true,
+            // Validated against the union rather than merely typechecked as a
+            // string: a stale blob naming a tab that no longer exists would
+            // otherwise render an empty box with no way back.
+            insightsTab: INSIGHTS_TABS.includes(parsed.insightsTab as InsightsTab) ? (parsed.insightsTab as InsightsTab) : "activity",
+            hideZeroBalances: typeof parsed.hideZeroBalances === "boolean" ? parsed.hideZeroBalances : true,
             flowsInOpen: typeof parsed.flowsInOpen === "boolean" ? parsed.flowsInOpen : true,
             flowsOutOpen: typeof parsed.flowsOutOpen === "boolean" ? parsed.flowsOutOpen : true,
         };
@@ -112,6 +128,8 @@ function persist(): void {
             serverToken: state.serverToken,
             columns: state.columns,
             insightsOpen: state.insightsOpen,
+            insightsTab: state.insightsTab,
+            hideZeroBalances: state.hideZeroBalances,
             flowsInOpen: state.flowsInOpen,
             flowsOutOpen: state.flowsOutOpen,
         })
@@ -143,6 +161,22 @@ export const settings = {
     },
     set insightsOpen(open: boolean) {
         state.insightsOpen = open;
+        persist();
+    },
+    /** Which insights view is showing — see InsightsTab. */
+    get insightsTab(): InsightsTab {
+        return state.insightsTab;
+    },
+    set insightsTab(tab: InsightsTab) {
+        state.insightsTab = tab;
+        persist();
+    },
+    /** Balances view: hide accounts holding exactly nothing. */
+    get hideZeroBalances(): boolean {
+        return state.hideZeroBalances;
+    },
+    set hideZeroBalances(hide: boolean) {
+        state.hideZeroBalances = hide;
         persist();
     },
     /** Whether "Money in" is expanded. Also part of what decides the flows are worth fetching. */

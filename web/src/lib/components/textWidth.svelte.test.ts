@@ -10,7 +10,7 @@
 // the bug this whole change was meant to remove.
 
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {chipMeasurer, resetChipMeasurer} from "./textWidth";
+import {chipMeasurer, resetChipMeasurer, textMeasurer} from "./textWidth";
 
 function withCanvas(context: unknown): void {
     resetChipMeasurer();
@@ -49,6 +49,27 @@ describe("UNIT textWidth", () => {
 
         expect(measure).not.toBeNull();
         expect(measure?.("abcd")).toBe(24);
+    });
+
+    it("keeps a separate context and cache per font size", () => {
+        // Two callers now measure at different sizes (12px chips in the journal
+        // table, 14px names in the Balances list). Sharing one context would
+        // answer the second one about a sixth narrow — the same silent wrongness
+        // the regression above refuses — and sharing one width cache would do it
+        // even with two contexts.
+        // The assigned font is a full shorthand ("normal 400 12px …"), so the
+        // size has to be pulled out of it rather than parsed off the front.
+        const context = {
+            font: "",
+            measureText(this: {font: string}, text: string) {
+                const size = Number(/(\d+)px/.exec(this.font)?.[1]);
+                return {width: text.length * size};
+            },
+        };
+        withCanvas(context);
+
+        expect(chipMeasurer()?.("abcd")).toBe(48); // 4 × 12px
+        expect(textMeasurer(14)?.("abcd")).toBe(56); // 4 × 14px, not the cached 48
     });
 
     it("asks the canvas once per distinct string", () => {
