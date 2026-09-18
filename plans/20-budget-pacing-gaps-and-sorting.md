@@ -414,3 +414,145 @@ already covered as arithmetic in `budgetSummary.test.ts`.
 - `docs/budget.md` amended; the three TODO entries deleted.
 - Any contract in this doc that changed during implementation is amended here in
   the same commit, per `plans/00-overview.md` convention #9.
+
+---
+
+## Contract amendments made during implementation
+
+Per convention #9. Implemented in one pass, phases 1→2→3, with no build or test
+run available in the implementing environment — so everything below was reasoned
+out by inspection, and the items marked **VERIFY** are the ones a green suite has
+not yet confirmed.
+
+### 1. Decision 6 was wrong, and would have shipped an always-empty section
+
+The plan says an account is unbudgeted "exactly when `remap_account` sends it to
+`UNBUDGETED`", using `budget_report:211`'s `budgeted` set verbatim. That set is
+built from `self_and_ancestors()` of every rule posting, so **one** goal anywhere
+under `expenses` puts bare `expenses` into it — and then `remap_account` sends
+`expenses:insurance` to `expenses`, not to `UNBUDGETED`. The gaps list would be
+empty for every journal that has a budget, which is precisely the user's own
+example ("budgets for clothing but not for insurance").
+
+Nor is that money visible anywhere else: the SPA's `budgetLeaves` hides an
+aggregate parent when a deeper budgeted row exists, so the `expenses` row
+carrying the insurance never reaches a bar.
+
+**Amended:** `budget_gaps` builds its own `goal_accounts(rules)` — the rule
+posting accounts themselves, with **no ancestor expansion** — and reuses
+`remap_account` against that. An account remaps to a rule account exactly when
+some goal's bar already includes it, which is the question that was actually
+asked. `budget_report` is untouched; its ancestor expansion is still correct for
+what it does. The divergence is documented at length on `goal_accounts`, and
+`a_budgeted_subtree_is_covered_but_its_sibling_is_still_a_gap` is the regression
+test.
+
+### 2. Type filtering uses `is_account_type`, not `resolve_account_type`
+
+Mechanics step 3 names `resolve_account_type`. `is_account_type` is the same
+resolution plus the subtype fold (`Gain`→Revenue, `Cash`→Asset,
+`Conversion`→Equity), so a declared `type: G` account counts as revenue instead
+of vanishing from both sections. Same DRY-safe source of truth,
+[[account-type-not-name]] satisfied, one fewer place to get the hierarchy wrong.
+Covered by `gaps_classify_by_declared_type_including_the_subtypes`.
+
+Note the consequence, which the plan did not state: with the type resolved on the
+FULL account name (as the plan's step ordering requires) and the clip applied
+afterwards, a clipped name whose descendants resolve to different types appears
+in BOTH sections, each holding only its own type's postings. That is the honest
+reading — neither figure is wrong — and it is documented on `budget_gaps`.
+
+### 3. `barGeometry` gained a third parameter; `over` left `BarGeometry`
+
+The plan reshapes the struct but not the function. The signature is now
+`barGeometry(spent, budget, pace)`, and `over: boolean` is gone from the struct —
+`budgetHealth` is the single decision about colour, and a second, geometry-side
+"is it over" was the duplication that let the fill and the label disagree.
+
+The plan also puts the "renders only when `pacePct` differs from `markerPct` by
+more than a hair" test in the component. It lives in `barGeometry` instead
+(`TICK_EPSILON_PCT`), so `pacePct === null` means exactly "do not draw this" and
+the template stays a declarative `{#if}`.
+
+### 4. `budgetHealth` alone cannot produce the six labels
+
+Three states across two columns is five distinct labels plus "on plan"; the
+table's Revenue rows 1 and 2 (`above target` / `to go`) are BOTH `healthy`, and
+the plan is explicit that `over` is expense-only. `BudgetSummary.svelte`'s
+`labelFor` therefore takes `health` AND compares the actual to the goal to split
+that pair. Keeping the split in the component (rather than adding a fourth health
+state) is what keeps `budgetHealth` a statement about colour, which is what the
+fill reads it for.
+
+Multi-commodity lines keep exactly today's behaviour — `health: null`, neutral
+colour, the words "on plan" — as the Scope section requires.
+
+### 5. `BudgetSummary` takes `sort`/`dir` as well as `asOf`
+
+Phase 1 lists only the `asOf` prop; Phase 3 then asks the same component to sort.
+Both landed in one pass, so the component takes all three.
+
+`sortBudgetLines`'s accessor returns a named exported `SortFields` interface
+rather than an inline type, because two call sites build it. The BARS pass
+`period: "yearly"` (factor 1) — their goal is already the span total, which is
+what the plan means by "needs no annualisation", expressed through the one shared
+comparator rather than a second code path.
+
+### 6. `annualised` reports an unrecognised period by NOT scaling
+
+The plan gives `annualised(amount, period): MixedAmount` and separately says an
+unrecognised period "sorts last". A `MixedAmount` cannot carry "unknown", so
+`annualised` returns the amount unscaled and the sort-last rule lives in
+`sortBudgetLines` (via a private `sortMagnitude` that returns `null`). Same for a
+multi-commodity goal. Both are tested directly.
+
+### 7. The gaps golden was HAND-COMPUTED — **VERIFY**
+
+`just snapshot-native` could not be run (no cargo toolchain in the implementing
+environment). `fixtures/native/v1/budget-gaps.json` was computed by hand from
+`fixtures/sample.journal` over `2026-05-01 … 2026-07-08` at depth 2. **It must be
+regenerated and the diff reviewed before this lands.**
+`native_wire_golden.rs::budget_gaps_matches_the_native_golden` is the check.
+
+Two things the plan did not mention, both required by that suite:
+`requests.tsv`'s entry needs a matching `#[tokio::test]`, and the manifest count
+in `every_manifest_entry_is_covered_by_a_committed_body` had to go 14 → 15.
+
+### 8. The collapsed headline can only speak after the first open
+
+The plan wants the header informative while shut ("12 categories, $41,208 not
+budgeted") AND the disclosure to gate the fetch. Those conflict on a first visit:
+with nothing fetched there is no count to state. Gating won — it is the stated
+reason the section defaults collapsed and the reason the endpoint is separate —
+so the headline appears from the moment the section has been opened once, and is
+what you see when you shut it again. A first-visit header would need the counts
+on the budget report itself, which Scope rules out.
+
+### 9. Smaller things
+
+- **`GapRow` / `BudgetGaps` TS types live in `web/src/lib/reports/types.ts`**,
+  beside `BudgetReport`, not in `web/src/lib/budget/types.ts` (plan 21 owns that
+  file).
+- **The gaps resource is keyed on the existing `BudgetReportQuery`**, not a new
+  query type — that is what makes "same window as the bars" structural.
+- **`budgetStore.afterWrite` reloads the gaps too**, but only when they have
+  already been fetched. A save can move a category from the gaps list onto a bar,
+  and nothing else would pick that up (the page's load effect keys on the query,
+  which a save does not change).
+- **`budget_gaps` answers `from = to = opts.end` for `count == 0`**, mirroring
+  `budget_report`'s SEC-2 empty-report guard. The HTTP layer rejects `count=0`
+  with a 400 before that, but the function is total either way.
+- **`settings.budgetGapsOpen`** (default `false`) is the persisted flag, added
+  beside `flowsInOpen`/`flowsOutOpen`.
+- **`BudgetGaps.svelte` is registered in `routes/branchOrder.test.ts`'s
+  `SURFACES`.** It is a second async surface on the budget page with its own
+  resource, and its shell renders outside `AsyncSection` — the exact shape that
+  invites a hand-rolled branch chain.
+- **`budget/params.test.ts`'s existing assertions changed**: `defaultBudgetParams`
+  and `budgetParamsToSearch` now carry `sort`/`dir`. The `?tab=budget` forwarding
+  case still decodes, falling back on both.
+- **`budget_endpoints.rs`'s "all four routes" became "all five"**, and the gaps
+  route joined both the token-guard loop and the no-absolute-path sweep.
+- **`daysBetween` was ported** to `web/src/lib/reports/periods.ts` as the plan
+  asked, with unit tests across a leap day, a year boundary and both century
+  rules.
