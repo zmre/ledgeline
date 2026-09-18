@@ -41,6 +41,15 @@ interface PersistedSettings {
      */
     flowsInOpen: boolean;
     flowsOutOpen: boolean;
+    /**
+     * The Budget tab's "not budgeted" section. Closed by default, and the flag
+     * is what GATES ITS FETCH — a section nobody has opened costs no request.
+     *
+     * One flag for both lists inside it (income and expenses): they answer one
+     * question, and collapsing half of "how much does my budget miss" is not a
+     * state worth remembering.
+     */
+    budgetGapsOpen: boolean;
 }
 
 const defaults = (): PersistedSettings => ({
@@ -52,6 +61,7 @@ const defaults = (): PersistedSettings => ({
     hideZeroBalances: true,
     flowsInOpen: true,
     flowsOutOpen: true,
+    budgetGapsOpen: false,
 });
 
 /**
@@ -98,6 +108,7 @@ function load(): PersistedSettings {
             hideZeroBalances: typeof parsed.hideZeroBalances === "boolean" ? parsed.hideZeroBalances : true,
             flowsInOpen: typeof parsed.flowsInOpen === "boolean" ? parsed.flowsInOpen : true,
             flowsOutOpen: typeof parsed.flowsOutOpen === "boolean" ? parsed.flowsOutOpen : true,
+            budgetGapsOpen: typeof parsed.budgetGapsOpen === "boolean" ? parsed.budgetGapsOpen : false,
         };
     } catch (cause) {
         storageError = `Saved settings couldn't be read (${cause instanceof Error ? cause.message : String(cause)}) — starting from defaults.`;
@@ -132,6 +143,7 @@ function persist(): void {
             hideZeroBalances: state.hideZeroBalances,
             flowsInOpen: state.flowsInOpen,
             flowsOutOpen: state.flowsOutOpen,
+            budgetGapsOpen: state.budgetGapsOpen,
         })
     );
 }
@@ -193,6 +205,14 @@ export const settings = {
     },
     set flowsOutOpen(open: boolean) {
         state.flowsOutOpen = open;
+        persist();
+    },
+    /** Whether the Budget tab's "not budgeted" section is expanded — and thus whether it is fetched. */
+    get budgetGapsOpen(): boolean {
+        return state.budgetGapsOpen;
+    },
+    set budgetGapsOpen(open: boolean) {
+        state.budgetGapsOpen = open;
         persist();
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */

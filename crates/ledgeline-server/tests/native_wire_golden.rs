@@ -221,6 +221,11 @@ async fn budget_matches_the_native_golden() {
 }
 
 #[tokio::test]
+async fn budget_gaps_matches_the_native_golden() {
+    assert_matches_golden("budget-gaps").await;
+}
+
+#[tokio::test]
 async fn insights_matches_the_native_golden() {
     assert_matches_golden("insights").await;
 }
@@ -263,7 +268,7 @@ fn every_manifest_entry_is_covered_by_a_committed_body() {
     let entries = requests();
     assert_eq!(
         entries.len(),
-        14,
+        15,
         "the manifest gained or lost an endpoint; add/remove the matching \
          #[tokio::test] above and update this count"
     );

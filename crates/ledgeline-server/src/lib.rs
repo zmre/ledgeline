@@ -628,6 +628,17 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/insights", get(reports_api::insights_report))
         .route("/api/subscriptions", get(reports_api::subscriptions))
         .route("/api/budget", get(reports_api::budget))
+        // The unbudgeted categories under those bars. A sibling route, not a
+        // field on the report above: the report is refetched on every control
+        // change and after every goal save, and this one answers a section the
+        // Budget tab opens collapsed.
+        //
+        // Registered HERE, with the reports, rather than beside
+        // `/api/budget/lines` below — it reads the journal and writes nothing,
+        // exactly like its neighbours. Either position is above the
+        // `route_layer`, which is what matters; `budget_endpoints.rs` pins the
+        // 401 for it alongside the editor's four.
+        .route("/api/budget/gaps", get(reports_api::budget_gaps_report))
         .route("/api/holdings", get(reports_api::holdings))
         .route(
             "/api/holdings/series",

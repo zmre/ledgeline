@@ -18,8 +18,8 @@ describe("UNIT budget/params — presets", () => {
         expect(activeBudgetPreset("2020-03-01", "2020-04-15", NOW)).toBe("custom");
     });
 
-    it("opens on year to date", () => {
-        expect(defaultBudgetParams(NOW)).toEqual({from: "2026-01-01", to: "2026-07-21", depth: 3});
+    it("opens on year to date, by account name ascending", () => {
+        expect(defaultBudgetParams(NOW)).toEqual({from: "2026-01-01", to: "2026-07-21", depth: 3, sort: "account", dir: "asc"});
     });
 });
 
@@ -47,14 +47,22 @@ describe("UNIT budget/params — URL codec", () => {
     const DFLT: BudgetParams = defaultBudgetParams(NOW);
 
     it("round-trips every field", () => {
-        const params: BudgetParams = {from: "2025-01-01", to: "2025-06-30", depth: 5};
+        const params: BudgetParams = {from: "2025-01-01", to: "2025-06-30", depth: 5, sort: "amount", dir: "desc"};
         expect(searchToBudgetParams(budgetParamsToSearch(params), DFLT)).toEqual(params);
     });
 
     it("writes the full range, so a shared link survives the default moving on", () => {
         // The default is today-based. A link that leaned on it would show a
         // different budget tomorrow than the one whoever sent it was looking at.
-        expect(budgetParamsToSearch(DFLT)).toBe("from=2026-01-01&to=2026-07-21&depth=3");
+        expect(budgetParamsToSearch(DFLT)).toBe("from=2026-01-01&to=2026-07-21&depth=3&sort=account&dir=asc");
+    });
+
+    it("falls back for a sort key or direction that is not one of the unions", () => {
+        // A link from a future (or past) version naming an order this one does
+        // not have must not reach the comparator.
+        expect(searchToBudgetParams("sort=colour&dir=sideways", DFLT)).toEqual(DFLT);
+        expect(searchToBudgetParams("sort=amount", DFLT)).toEqual({...DFLT, sort: "amount"});
+        expect(searchToBudgetParams("dir=desc", DFLT)).toEqual({...DFLT, dir: "desc"});
     });
 
     it("falls back to defaults for absent params (leading ? tolerated)", () => {
@@ -73,7 +81,14 @@ describe("UNIT budget/params — URL codec", () => {
 
     it("accepts the params a ?tab=budget bookmark carried over", () => {
         // The reports page forwards `/reports?tab=budget&from=…&to=…&depth=…`
-        // here with `tab` dropped, so the very query it sends must decode.
-        expect(searchToBudgetParams("from=2026-01-01&to=2026-12-31&depth=3", DFLT)).toEqual({from: "2026-01-01", to: "2026-12-31", depth: 3});
+        // here with `tab` dropped, so the very query it sends must decode. It
+        // predates the sort control, so those two fall back to the defaults.
+        expect(searchToBudgetParams("from=2026-01-01&to=2026-12-31&depth=3", DFLT)).toEqual({
+            from: "2026-01-01",
+            to: "2026-12-31",
+            depth: 3,
+            sort: "account",
+            dir: "asc",
+        });
     });
 });

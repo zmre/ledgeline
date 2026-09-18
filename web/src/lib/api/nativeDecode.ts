@@ -127,6 +127,7 @@ import type {
     BsTerm,
     BsValuation,
     BudgetCell,
+    BudgetGaps,
     BudgetReport,
     BudgetRow,
     DateRange,
@@ -135,6 +136,7 @@ import type {
     FlowNode,
     FlowReport,
     FlowSide,
+    GapRow,
     GroupSource,
     IncomeStatementReport,
     IsGroup,
@@ -3334,5 +3336,59 @@ export function decodePricesUpdateResponse(raw: unknown): PricesUpdateResponse {
     return Object.freeze({
         file: decodePricesFile(response.file, "prices update file"),
         results: frozen(response.results.map((result, i) => decodePriceResult(result, `prices update results[${i}]`))),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Budget gaps (`/api/budget/gaps`)
+//
+// What the `~` rules do NOT measure, over the same window as the budget report
+// — see `$lib/reports/types.ts`. Its own payload rather than a field on that
+// report, because the section showing it opens collapsed and must not slow down
+// a refetch nobody asked it for.
+// ---------------------------------------------------------------------------
+
+interface RawGapRow {
+    account?: string;
+    depth?: number;
+    total?: RawMixed;
+}
+
+interface RawBudgetGaps {
+    revenue?: RawGapRow[];
+    expense?: RawGapRow[];
+    from?: string;
+    to?: string;
+}
+
+/**
+ * One unbudgeted category.
+ *
+ * `total` goes through `decodeMixed`, which THROWS on an absent value rather
+ * than decoding to an empty Map (DRY-3). Every row here is by construction
+ * non-zero, so an empty total is not a state the engine can produce — which is
+ * exactly why a missing one must not quietly render as `$0`.
+ */
+function decodeGapRow(raw: RawGapRow, context: string): GapRow {
+    return Object.freeze({
+        account: str(raw.account, `${context} account`),
+        depth: num(raw.depth, `${context} depth`),
+        total: decodeMixed(raw.total, `${context} total`),
+    });
+}
+
+/** `GET /api/budget/gaps` → the income and expense no goal covers, largest first. */
+export function decodeBudgetGaps(raw: unknown): BudgetGaps {
+    const gaps = raw as RawBudgetGaps;
+    if (typeof gaps !== "object" || gaps === null || !Array.isArray(gaps.revenue) || !Array.isArray(gaps.expense)) {
+        throw new ApiShapeError("budget gaps: expected revenue and expense arrays");
+    }
+    return Object.freeze({
+        revenue: frozen(gaps.revenue.map((row, i) => decodeGapRow(row, `budget gaps revenue[${i}]`))),
+        expense: frozen(gaps.expense.map((row, i) => decodeGapRow(row, `budget gaps expense[${i}]`))),
+        // Required, not defaulted: these label the figures, and a section headed
+        // with the wrong span is worse than one that refuses to render.
+        from: str(gaps.from, "budget gaps from"),
+        to: str(gaps.to, "budget gaps to"),
     });
 }

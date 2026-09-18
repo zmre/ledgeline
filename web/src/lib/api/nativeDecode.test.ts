@@ -6,6 +6,7 @@ import {ApiShapeError} from "./client";
 import {
     decodeAccountReference,
     decodeBalanceSheetReport,
+    decodeBudgetGaps,
     decodeBudgetListing,
     decodeBudgetReport,
     decodeFlowReport,
@@ -630,6 +631,40 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
 
     it("throws ApiShapeError when totals is missing", () => {
         expect(() => decodePeriodReport({buckets: [], rows: []})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — BudgetGaps over the budget-gaps golden", () => {
+    it("decodes both sections, the span, and exact totals", () => {
+        const gaps = decodeBudgetGaps(golden("budget-gaps"));
+        // The engine echoes the span so the section cannot mislabel its figures.
+        expect(gaps.from).toBe("2026-05-01");
+        expect(gaps.to).toBe("2026-07-08");
+
+        // sample.journal declares no `~` rules at all, so every income and
+        // expense category with activity is a gap — and nothing else is: no
+        // asset, liability or equity account appears in either list.
+        expect(gaps.revenue.map((row) => row.account)).toEqual(["income:salary", "income:dividends"]);
+        expect(gaps.revenue[0]).toMatchObject({account: "income:salary", depth: 2});
+        // Credit-normal, exactly as the journal writes it.
+        expect(gaps.revenue[0].total.get("$")).toEqual({m: -1132000n, p: 2});
+        expect(gaps.expense.every((row) => row.account.startsWith("expenses:"))).toBe(true);
+        // Largest first, and multi-commodity rows survive as multi-commodity.
+        expect(gaps.expense[0].account).toBe("expenses:housing");
+        const food = gaps.expense.find((row) => row.account === "expenses:food");
+        expect(food?.total.get("EUR")).toEqual({m: 1875n, p: 2});
+    });
+
+    it("throws when a row's total is absent, rather than rendering it as zero", () => {
+        const raw = golden("budget-gaps") as {revenue: object[]; expense: object[]; from: string; to: string};
+        const broken = {...raw, expense: [without(raw.expense[0] as {total: unknown}, "total")]};
+        expect(() => decodeBudgetGaps(broken)).toThrow(ApiShapeError);
+    });
+
+    it("throws when a section or the span is missing", () => {
+        expect(() => decodeBudgetGaps({expense: [], from: "2026-01-01", to: "2026-01-31"})).toThrow(ApiShapeError);
+        expect(() => decodeBudgetGaps({revenue: [], expense: [], to: "2026-01-31"})).toThrow(ApiShapeError);
+        expect(() => decodeBudgetGaps(null)).toThrow(ApiShapeError);
     });
 });
 
@@ -1661,6 +1696,7 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         ["cashflow", decodePeriodReport],
         ["networth", decodePeriodReport],
         ["budget", decodeBudgetReport],
+        ["budget-gaps", decodeBudgetGaps],
         ["insights", decodeInsightsReport],
         ["subscriptions", decodeSubscriptionsReport],
         ["holdings", decodeHoldingsReport],

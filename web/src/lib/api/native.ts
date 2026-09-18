@@ -598,6 +598,20 @@ export interface BudgetQuery {
     budgetDesc?: string;
 }
 
+/**
+ * `?end=&interval=&count=&depth=` — the unbudgeted categories under the bars.
+ *
+ * Deliberately the same four params as {@link BudgetQuery} minus `budgetDesc`:
+ * the gaps have to answer for the same window the bars do, and a description
+ * filter over the rules cannot narrow "what does my budget not mention".
+ */
+export interface BudgetGapsQuery {
+    end?: string;
+    interval?: string;
+    count?: number;
+    depth?: number;
+}
+
 /** `?account=&interval=&count=&asOf=` — the budget editor's history strip. */
 export interface BudgetReferenceQuery {
     /** Required: matched inclusively against itself and its subaccounts. */
@@ -796,6 +810,11 @@ export class LedgelineApi {
         return this.getJson(
             `/api/budget${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, budgetDesc: query.budgetDesc})}`
         );
+    }
+
+    /** The revenue and expense no `~` rule budgets, over the same window (decode with `decodeBudgetGaps`). */
+    budgetGaps(query: BudgetGapsQuery = {}): Promise<unknown> {
+        return this.getJson(`/api/budget/gaps${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth})}`);
     }
 
     /** Insights dashboard (period-over-period core metrics). */

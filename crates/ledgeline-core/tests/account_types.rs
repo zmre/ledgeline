@@ -14,8 +14,9 @@ mod common;
 use common::fixtures_dir;
 use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
-    AccountType, InsightsOpts, Interval, MixedAmount, NetWorthOpts, account_decls, balance_sheet,
-    declared_types, income_statement, insights, net_worth,
+    AccountType, BudgetOpts, GapRow, InsightsOpts, Interval, MixedAmount, NetWorthOpts,
+    account_decls, balance_sheet, budget_gaps, declared_types, income_statement, insights,
+    net_worth,
 };
 use ledgeline_core::{Dec, Journal, parse_journal};
 use std::collections::BTreeMap;
@@ -35,6 +36,11 @@ fn types(journal: &Journal) -> BTreeMap<String, AccountType> {
 /// The `$` total of a mixed amount.
 fn usd(ma: &MixedAmount) -> Dec {
     ma.get(&Commodity("$".into())).unwrap_or_else(Dec::zero)
+}
+
+/// The account names of a gaps section, in the order the engine ordered them.
+fn gap_accounts(rows: &[GapRow]) -> Vec<&str> {
+    rows.iter().map(|row| row.account.as_str()).collect()
 }
 
 fn section<'a>(
@@ -158,4 +164,46 @@ fn top_transactions_drop_opening_balances_declared_by_type() {
             ("Papeleria | office supplies", Dec::new(15_000, 2)),
         ]
     );
+}
+
+/// The Budget tab's "what my budget does not cover" section, over a chart of
+/// accounts no English heuristic can read.
+///
+/// This is the one the golden fixtures structurally cannot catch: the gaps list
+/// is filtered by resolved account type, and `sample.journal` uses standard
+/// English roots, so a name-based filter passes every golden and then reports an
+/// empty section for this journal. The symptom of getting it wrong is zero, not
+/// wrong — which is exactly the failure that goes unnoticed.
+#[test]
+fn budget_gaps_classify_by_declared_type() {
+    let journal = fixture();
+    let gaps = budget_gaps(
+        &journal.transactions,
+        &journal.periodic_transactions,
+        &types(&journal),
+        &BudgetOpts {
+            end: "2026-12-31",
+            interval: Interval::Monthly,
+            count: 12,
+            depth: 2,
+            budget_desc: None,
+        },
+    )
+    .unwrap();
+
+    // The fixture declares no `~` rules, so everything with activity is a gap —
+    // and the only things listed are the revenue and the two expenses. The bank,
+    // the cash box, the card and the opening equity are all absent: they fund the
+    // spending, they are not spending.
+    assert_eq!(gap_accounts(&gaps.revenue), ["ingresos:consultoria"]);
+    assert_eq!(
+        gap_accounts(&gaps.expense),
+        ["cogs:infraestructura", "gastos:oficina"]
+    );
+
+    assert_eq!(usd(&gaps.revenue[0].total), Dec::new(-400_000, 2));
+    // Ordered by magnitude: the $600 of servers before the $150 of stationery.
+    assert_eq!(usd(&gaps.expense[0].total), Dec::new(60_000, 2));
+    assert_eq!(usd(&gaps.expense[1].total), Dec::new(15_000, 2));
+    assert_eq!((gaps.from.as_str(), gaps.to.as_str()), ("2026-01-01", "2026-12-31"));
 }

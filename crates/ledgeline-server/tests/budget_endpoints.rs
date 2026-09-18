@@ -1,4 +1,5 @@
-//! The `/api/budget/{lines,file,reference}` HTTP surface — the budget editor.
+//! The `/api/budget/{lines,file,reference,gaps}` HTTP surface — the budget
+//! editor, plus the read-only gaps section the bars sit above.
 //!
 //! Everything here is hermetic: no subprocess, no network, a scratch journal per
 //! test.
@@ -19,7 +20,7 @@
 //! 4. **A stale revision is a 409**, and nothing is written.
 //! 5. **Creating `budget.journal` never overwrites anything**, and writes the
 //!    new file before the `include` that names it.
-//! 6. **The token guard covers all four routes.**
+//! 6. **The token guard covers all five routes.**
 //! 7. **No response body contains an absolute path.**
 
 mod common;
@@ -893,10 +894,85 @@ async fn a_journal_with_rules_is_not_given_another_budget_file() {
 }
 
 // ===========================================================================
+// The gaps section
+// ===========================================================================
+
+/// A journal that budgets ONE of its three categories, so the gaps route has
+/// something to find and something to leave out.
+const GAPS_JOURNAL: &str = "\
+~ monthly  household budget
+    (expenses:food)      $400
+
+2026-01-05 grocery
+    expenses:food       $352.10
+    assets:checking
+
+2026-01-09 car insurance
+    expenses:insurance  $140.00
+    assets:checking
+
+2026-01-25 consulting
+    assets:checking     $900.00
+    income:consulting  $-900.00
+";
+
+/// The body: the two sections, the span they cover, and — the point of the
+/// whole thing — the budgeted category and the funding leg both absent.
+#[tokio::test]
+async fn the_gaps_route_reports_what_the_budget_does_not_cover() {
+    let tree = Tree::with(GAPS_JOURNAL);
+    let (status, body) = get(
+        &tree,
+        "/api/budget/gaps?end=2026-01-31&interval=monthly&count=1&depth=2",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Echoed so the section cannot be labelled with a range it does not cover.
+    assert_eq!(body["from"], json!("2026-01-01"));
+    assert_eq!(body["to"], json!("2026-01-31"));
+
+    let revenue = body["revenue"].as_array().expect("revenue is an array");
+    assert_eq!(revenue.len(), 1);
+    assert_eq!(revenue[0]["account"], json!("income:consulting"));
+    assert_eq!(revenue[0]["depth"], json!(2));
+    // Credit-normal, exactly as the journal writes it — the UI flips it, not us.
+    assert_eq!(revenue[0]["total"]["$"]["mantissa"], json!("-90000"));
+
+    let expense = body["expense"].as_array().expect("expense is an array");
+    assert_eq!(expense.len(), 1);
+    assert_eq!(expense[0]["account"], json!("expenses:insurance"));
+    assert_eq!(expense[0]["total"]["$"]["mantissa"], json!("14000"));
+
+    // `expenses:food` has a goal, so it is covered; `assets:checking` funds all
+    // three transactions and is not spending at all. Neither is a gap.
+    let listed: Vec<&str> = revenue
+        .iter()
+        .chain(expense.iter())
+        .filter_map(|row| row["account"].as_str())
+        .collect();
+    assert!(!listed.contains(&"expenses:food"), "{listed:?}");
+    assert!(!listed.contains(&"assets:checking"), "{listed:?}");
+}
+
+/// The window params go through the same validator the bars' do, so a typo is
+/// a 400 rather than a silently different span.
+#[tokio::test]
+async fn the_gaps_route_refuses_an_unknown_interval() {
+    let tree = Tree::with(GAPS_JOURNAL);
+    let (status, body) = get(
+        &tree,
+        "/api/budget/gaps?end=2026-01-31&interval=fortnightly&count=1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+// ===========================================================================
 // Access control and disclosure
 // ===========================================================================
 
-/// All four routes sit above the token guard. Two of them write to the user's
+/// All five routes sit above the token guard. Two of them write to the user's
 /// journal directory, so this is the test that fails rather than shipping if
 /// anyone moves them below it.
 #[tokio::test]
@@ -936,6 +1012,7 @@ async fn every_budget_route_requires_the_token() {
         ("PUT", "/api/budget/lines/main.journal"),
         ("POST", "/api/budget/file"),
         ("GET", "/api/budget/reference?account=expenses:food"),
+        ("GET", "/api/budget/gaps"),
     ] {
         assert_eq!(
             probe(method, uri, None).await,
@@ -960,6 +1037,8 @@ async fn no_response_body_contains_an_absolute_path() {
     let (_, body) = get(&tree, "/api/budget/lines").await;
     bodies.push(body.to_string());
     let (_, body) = get(&tree, "/api/budget/reference?account=expenses:food").await;
+    bodies.push(body.to_string());
+    let (_, body) = get(&tree, "/api/budget/gaps?end=2026-01-31&count=1").await;
     bodies.push(body.to_string());
     let (_, body) = send_json(&tree, "POST", "/api/budget/file", json!({})).await;
     bodies.push(body.to_string());
