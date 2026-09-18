@@ -80,6 +80,14 @@ const SURFACES = [
     // alias list when the request failed tells the user their journal declares
     // none, which is a different fact entirely.
     {name: "alias panel", file: "lib/imports/ui/AliasPanel.svelte", testid: "imports-aliases-error"},
+    // The Budget tab's "not budgeted" section (plans/20). Registered for the
+    // reason the Other tab is: it is a SECOND async surface on the budget page,
+    // on its own resource and its own request, so a failure there has to be
+    // reachable while the bars above it are perfectly fine. Its shell is also
+    // rendered outside `AsyncSection` (the header and the disclosure arrow stay
+    // operable across load states), which is exactly the shape that tempts
+    // somebody to hand-roll a chain beside the shared one.
+    {name: "budget gaps section", file: "lib/budget/ui/BudgetGaps.svelte", testid: "budget-gaps-error"},
 ] as const;
 
 describe("UNIT data surfaces keep the error branch reachable (FE-1 / FE-5)", () => {

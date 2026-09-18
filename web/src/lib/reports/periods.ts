@@ -169,6 +169,21 @@ export function nextBucket(key: string, interval: Interval): string {
     return bucketKey(toISO(...civilFromDays(daysFromCivil(y, m, d) + 1)), interval);
 }
 
+/**
+ * Number of days from `a` to `b` (`b − a`); negative when `b` precedes `a`.
+ *
+ * The exact twin of `reports::periods::days_between` in the Rust engine — same
+ * Hinnant civil-day arithmetic over ISO strings, and clock-free for the same
+ * reason. It was missing here and present there; the budget's pace mark needs
+ * it, and a second, inline copy of `daysFromCivil` is how the two halves of a
+ * ported module start to disagree.
+ */
+export function daysBetween(a: ISODate, b: ISODate): number {
+    const [ay, am, ad] = parts(a);
+    const [by, bm, bd] = parts(b);
+    return daysFromCivil(by, bm, bd) - daysFromCivil(ay, am, ad);
+}
+
 /** Number of monthly buckets spanning `from`…`to` inclusive (min 1). "2026-01"→"2026-07" = 7. */
 export function monthsBetween(from: ISODate, to: ISODate): number {
     const [fy, fm] = [Number(from.slice(0, 4)), Number(from.slice(5, 7))];

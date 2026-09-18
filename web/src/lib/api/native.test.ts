@@ -119,6 +119,15 @@ describe("UNIT LedgelineApi — query building", () => {
         expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/budget?end=2026-07-31&interval=monthly&count=7&depth=2");
     });
 
+    it("asks for the gaps over the SAME window as the bars", async () => {
+        // Same four params, same values — the section under the chart has to
+        // answer for the span the chart drew, or the two disagree on screen.
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({revenue: [], expense: [], from: "2026-01-01", to: "2026-07-31"}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").budgetGaps({end: "2026-07-31", interval: "monthly", count: 7, depth: 2});
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/budget/gaps?end=2026-07-31&interval=monthly&count=7&depth=2");
+    });
+
     it("comma-joins subtree roots and adds the series window", async () => {
         const fetchMock = vi.fn().mockResolvedValue(jsonResponse({base: "$", points: [], hasBasis: false}));
         vi.stubGlobal("fetch", fetchMock);

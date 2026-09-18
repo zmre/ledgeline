@@ -1,7 +1,19 @@
 import {describe, expect, it} from "vitest";
-import {dec, type MixedAmount} from "../domain/money";
+import {dec, toNumber, type MixedAmount} from "../domain/money";
 import type {BudgetReport} from "./types";
-import {barGeometry, budgetLeaves, budgetTotals, magnitudeAmount, primaryValue, summarizeBudget, UNBUDGETED, type BudgetLine} from "./budgetSummary";
+import {
+    barGeometry,
+    budgetHealth,
+    budgetLeaves,
+    budgetTotals,
+    elapsedFraction,
+    magnitudeAmount,
+    paceAmount,
+    primaryValue,
+    summarizeBudget,
+    UNBUDGETED,
+    type BudgetLine,
+} from "./budgetSummary";
 
 /** A single-commodity `$` amount at places 0. */
 const usd = (n: number): MixedAmount => new Map([["$", dec(n, 0)]]);
@@ -132,27 +144,126 @@ describe("UNIT budgetSummary — primaryValue", () => {
     });
 });
 
+describe("UNIT budgetSummary — elapsedFraction", () => {
+    it("is one day's worth on the span's first day", () => {
+        // 31 days in January; the pace mark is not at zero on the 1st, because
+        // the 1st is a day you have already had.
+        expect(elapsedFraction("2026-01-01", "2026-01-31", "2026-01-01")).toBeCloseTo(1 / 31, 10);
+    });
+
+    it("is half way through a year at the end of June", () => {
+        // 181 of 365 days done — "month six would be half", as asked.
+        expect(elapsedFraction("2026-01-01", "2026-12-31", "2026-06-30")).toBeCloseTo(181 / 365, 10);
+    });
+
+    it("counts the leap day", () => {
+        expect(elapsedFraction("2024-01-01", "2024-12-31", "2024-12-31")).toBe(1);
+        expect(elapsedFraction("2024-02-01", "2024-02-29", "2024-02-15")).toBeCloseTo(15 / 29, 10);
+    });
+
+    it("is 1 for a span that has already ended — a finished period is fully paced", () => {
+        expect(elapsedFraction("2025-01-01", "2025-12-31", "2026-07-08")).toBe(1);
+        expect(elapsedFraction("2025-01-01", "2025-12-31", "2025-12-31")).toBe(1);
+    });
+
+    it("is 0 before the span starts, and 1 on a single-day span's own day", () => {
+        expect(elapsedFraction("2026-05-01", "2026-05-31", "2026-04-30")).toBe(0);
+        expect(elapsedFraction("2026-05-10", "2026-05-10", "2026-05-10")).toBe(1);
+    });
+});
+
+describe("UNIT budgetSummary — paceAmount", () => {
+    it("prorates each commodity exactly, without a float round trip", () => {
+        const goal: MixedAmount = new Map([
+            ["$", dec(400, 0)],
+            ["EUR", dec(100, 0)],
+        ]);
+        const half = paceAmount(goal, 0.5);
+        // Exact Decs, not floats: 200.000000 and 50.000000 at the pace scale.
+        expect(half.get("$")).toEqual({m: 200_000_000n, p: 6});
+        expect(toNumber(half.get("EUR")!)).toBe(50);
+    });
+
+    it("is the whole goal at a fraction of 1 and nothing at 0", () => {
+        const goal = new Map([["$", dec(1200, 0)]]);
+        expect(primaryValue(paceAmount(goal, 1))).toBe(1200);
+        expect(primaryValue(paceAmount(goal, 0))).toBe(0);
+    });
+
+    it("leaves an empty goal empty", () => {
+        expect(paceAmount(new Map(), 0.5).size).toBe(0);
+    });
+});
+
+describe("UNIT budgetSummary — budgetHealth", () => {
+    // The six rows of the label table in plans/20, as arithmetic. Goal 1,000;
+    // pace 500 (half way through the span).
+    it("expense: at or under pace is healthy", () => {
+        expect(budgetHealth(400, 500, 1000, false)).toBe("healthy");
+        expect(budgetHealth(500, 500, 1000, false)).toBe("healthy");
+    });
+
+    it("expense: past pace but still under goal is behind", () => {
+        expect(budgetHealth(700, 500, 1000, false)).toBe("behind");
+    });
+
+    it("expense: past the goal is over, not merely behind", () => {
+        expect(budgetHealth(1100, 500, 1000, false)).toBe("over");
+        // The envelope case that matters most: the span has ended, so pace IS
+        // the goal, and a penny past it still reads `over`.
+        expect(budgetHealth(1001, 1000, 1000, false)).toBe("over");
+    });
+
+    it("revenue: at or past the goal is healthy — this is the whole bug", () => {
+        // Earning 130% of target used to render red and read "$300 over".
+        expect(budgetHealth(1300, 500, 1000, true)).toBe("healthy");
+    });
+
+    it("revenue: at or past pace but under goal is still healthy", () => {
+        expect(budgetHealth(600, 500, 1000, true)).toBe("healthy");
+        expect(budgetHealth(500, 500, 1000, true)).toBe("healthy");
+    });
+
+    it("revenue: short of pace is behind", () => {
+        expect(budgetHealth(400, 500, 1000, true)).toBe("behind");
+    });
+
+    it("treats an exactly-zero actual by the same rule in both columns", () => {
+        expect(budgetHealth(0, 500, 1000, true)).toBe("behind"); // earned nothing, half way through
+        expect(budgetHealth(0, 500, 1000, false)).toBe("healthy"); // spent nothing, half way through
+        expect(budgetHealth(0, 0, 0, false)).toBe("healthy"); // no goal, no spending
+    });
+});
+
 describe("UNIT budgetSummary — barGeometry", () => {
     it("leaves headroom past the marker when under budget", () => {
-        const g = barGeometry(352, 400); // scaleMax = 500
-        expect(g.over).toBe(false);
+        const g = barGeometry(352, 400, 400); // scaleMax = 500
         expect(g.markerPct).toBeCloseTo(80, 5); // 400/500
-        expect(g.underPct).toBeCloseTo(70.4, 5); // 352/500
-        expect(g.overPct).toBe(0);
+        expect(g.fillPct).toBeCloseTo(70.4, 5); // 352/500
         expect(g.ratio).toBeCloseTo(0.88, 5);
     });
 
     it("saturates the fill and slides the marker left when over budget", () => {
-        const g = barGeometry(210, 150); // scaleMax = 210
-        expect(g.over).toBe(true);
+        const g = barGeometry(210, 150, 150); // scaleMax = 210
         expect(g.markerPct).toBeCloseTo(71.4286, 3); // 150/210
-        expect(g.underPct).toBeCloseTo(71.4286, 3); // fill capped at marker for the green part
-        expect(g.overPct).toBeCloseTo(28.5714, 3); // 100 - marker
+        expect(g.fillPct).toBe(100); // one fill, no split at the marker
         expect(g.ratio).toBeCloseTo(1.4, 5);
     });
 
+    it("places the pace mark on the same scale as the marker", () => {
+        const g = barGeometry(352, 400, 200); // half way through the span
+        expect(g.pacePct).toBeCloseTo(40, 5); // 200/500
+        expect(g.markerPct).toBeCloseTo(80, 5);
+    });
+
+    it("drops the pace mark when it would be drawn on top of the goal marker", () => {
+        expect(barGeometry(352, 400, 400).pacePct).toBeNull();
+        // Within half a percentage point of the marker: one tick, not two.
+        expect(barGeometry(352, 400, 399).pacePct).toBeNull();
+    });
+
     it("handles a zero budget (spent with no goal amount)", () => {
-        expect(barGeometry(375, 0)).toEqual({underPct: 100, overPct: 0, markerPct: 100, ratio: null, over: true});
-        expect(barGeometry(0, 0)).toEqual({underPct: 0, overPct: 0, markerPct: 100, ratio: null, over: false});
+        expect(barGeometry(375, 0, 0)).toEqual({fillPct: 100, markerPct: 100, pacePct: null, ratio: null});
+        expect(barGeometry(0, 0, 0)).toEqual({fillPct: 0, markerPct: 100, pacePct: null, ratio: null});
     });
 });

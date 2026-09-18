@@ -26,10 +26,12 @@
         type BudgetPreset,
     } from "$lib/budget/params";
     import {budgetStore, REFERENCE_PERIODS, type BudgetReportQuery} from "$lib/budget/budgetStore.svelte";
+    import {BUDGET_SORT_KEYS, SORT_DIRS, type BudgetSortKey, type SortDir} from "$lib/budget/sort";
     import {alreadyBudgeted, goalChange} from "$lib/budget/target";
     import type {BudgetChange} from "$lib/api/native";
     import type {BudgetGoal, BudgetPeriod, BudgetRule, GoalDraft, GoalSubmission} from "$lib/budget/types";
     import BudgetEditor from "$lib/budget/ui/BudgetEditor.svelte";
+    import BudgetGaps from "$lib/budget/ui/BudgetGaps.svelte";
     import GoalModal from "$lib/budget/ui/GoalModal.svelte";
     import AsyncSection from "$lib/components/AsyncSection.svelte";
     import ErrorToast from "$lib/components/ErrorToast.svelte";
@@ -39,6 +41,7 @@
     import {exportBudgetXlsx} from "$lib/export/xlsx";
     import BudgetSummary from "$lib/reports/ui/BudgetSummary.svelte";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
+    import {today} from "$lib/reports/periods";
     import {reportStyles} from "$lib/reports/ui/styles";
     import {dataView} from "$lib/stores/loadState";
     import {journal} from "$lib/stores/journal.svelte";
@@ -78,6 +81,13 @@
     // journal link under each bar) has to cover the same span or the rows won't
     // add up to the bar.
     const span = $derived(budgetSpan(params.from, params.to));
+
+    /**
+     * "Today", for the bars' pace mark. Read ONCE, here: `lib/reports/` is
+     * purity-guarded and may not read a clock, and re-reading it per render would
+     * let a bar move at midnight under a user who is looking at it.
+     */
+    const asOf = today();
     const reportQuery = $derived<BudgetReportQuery>({from: params.from, end: span.to, count: span.count, depth: params.depth});
     // The nonce is in the key because a reconnect usually leaves the URL
     // identical (the engine restarted on the same port), and keying on the URL
@@ -86,6 +96,22 @@
     $effect(() => {
         const {url, query} = loadKey;
         if (url !== null) void budgetStore.report.load(url, query);
+    });
+
+    // --- The gaps ------------------------------------------------------------
+    //
+    // The disclosure state GATES THE FETCH, which is the whole point of
+    // defaulting it collapsed: a section nobody opens costs no request on a page
+    // that already refetches its report on every control change and every save.
+    // Read once into a local so the effect below depends on it explicitly.
+    const gapsOpen = $derived(settings.budgetGapsOpen);
+    const gaps = $derived(budgetStore.gaps);
+    const gapsView = $derived(dataView(gaps.status, gaps.value !== null));
+    $effect(() => {
+        const {url, query} = loadKey;
+        // `gapsOpen` FIRST, so the effect depends on it even on the run where
+        // there is no server to load from.
+        if (gapsOpen && url !== null) void budgetStore.gaps.load(url, query);
     });
 
     const activePreset = $derived(activeBudgetPreset(params.from, params.to));
@@ -99,6 +125,17 @@
     function setDate(key: "from" | "to", value: string): void {
         if (ISO_DATE.test(value)) params[key] = value;
     }
+
+    /**
+     * The sort control's buttons, derived from the unions rather than written out
+     * — adding a key to `BUDGET_SORT_KEYS` must not leave a control that cannot
+     * reach it. The labels are the human words for the same two things.
+     */
+    const SORT_KEY_LABELS: {id: BudgetSortKey; label: string}[] = BUDGET_SORT_KEYS.map((id) => ({id, label: id === "account" ? "Name" : "Amount"}));
+    /** The arrow is the label a mouse reads; `aria` is the one a screen reader does. */
+    const SORT_DIR_LABELS: {id: SortDir; label: string; aria: string}[] = SORT_DIRS.map((id) =>
+        id === "asc" ? {id, label: "↑", aria: "Ascending"} : {id, label: "↓", aria: "Descending"}
+    );
 
     const held = $derived(budgetStore.report);
     const reportView = $derived(dataView(held.status, held.value !== null));
@@ -274,6 +311,41 @@
         {#key maxDepth}
             <DepthSlider bind:depth={params.depth} max={maxDepth} />
         {/key}
+        <!-- ONE order control for the whole page. The bars above and the goals
+             below are the same subject read two ways, so a screen whose halves
+             disagreed about order would be harder to scan than the file order
+             this replaces. -->
+        <div class="form-control">
+            <span class="label-text mb-1 block text-xs text-base-content/70">Sort by</span>
+            <div class="flex flex-wrap gap-2">
+                <div class="join" role="group" aria-label="Sort budget goals by">
+                    {#each SORT_KEY_LABELS as option (option.id)}
+                        <button
+                            type="button"
+                            class="btn join-item btn-sm {params.sort === option.id ? 'btn-active btn-primary' : ''}"
+                            aria-pressed={params.sort === option.id}
+                            onclick={() => (params.sort = option.id)}
+                        >
+                            {option.label}
+                        </button>
+                    {/each}
+                </div>
+                <div class="join" role="group" aria-label="Sort direction">
+                    {#each SORT_DIR_LABELS as option (option.id)}
+                        <button
+                            type="button"
+                            class="btn join-item btn-sm {params.dir === option.id ? 'btn-active btn-primary' : ''}"
+                            aria-pressed={params.dir === option.id}
+                            aria-label={option.aria}
+                            title={option.aria}
+                            onclick={() => (params.dir = option.id)}
+                        >
+                            {option.label}
+                        </button>
+                    {/each}
+                </div>
+            </div>
+        </div>
     </div>
 
     <AsyncSection
@@ -286,9 +358,24 @@
         onRetry={() => void budgetStore.report.load(settings.serverUrl ?? "", reportQuery)}
     >
         {#snippet children(current)}
-            <BudgetSummary report={current} {styles} {declared} from={span.from} to={span.to} />
+            <BudgetSummary report={current} {styles} {declared} from={span.from} to={span.to} {asOf} sort={params.sort} dir={params.dir} />
         {/snippet}
     </AsyncSection>
+
+    <!-- What the bars are silent about. Below them and collapsed, because it is
+         context for the chart rather than a second chart — and because the
+         disclosure is what decides whether it is fetched at all. -->
+    <BudgetGaps
+        gaps={gaps.value}
+        view={gapsView}
+        error={gaps.error}
+        {styles}
+        from={span.from}
+        to={span.to}
+        open={gapsOpen}
+        onToggle={(open) => (settings.budgetGapsOpen = open)}
+        onRetry={() => void budgetStore.gaps.load(settings.serverUrl ?? "", reportQuery)}
+    />
 
     <div class="divider my-0"></div>
 
@@ -307,6 +394,8 @@
                     listing={current}
                     {styles}
                     busy={budgetStore.saving}
+                    sort={params.sort}
+                    dir={params.dir}
                     onAdd={openAdd}
                     onEdit={openEdit}
                     {removing}

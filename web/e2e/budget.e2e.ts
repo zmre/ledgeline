@@ -72,6 +72,35 @@ test("budget: the period presets drive the range and the URL", async ({page}) =>
     await expect(page).toHaveURL(/from=\d{4}-01-01&to=\d{4}-12-31/);
 });
 
+test("budget: the gaps section starts collapsed and is not fetched until it is opened", async ({page}) => {
+    // Collapsed is not just a default: the disclosure is what GATES the request,
+    // so a section nobody opens costs nothing on a page that already refetches
+    // its report on every control change.
+    const requests: string[] = [];
+    page.on("request", (request) => {
+        if (request.url().includes("/api/budget/gaps")) requests.push(request.url());
+    });
+
+    await page.goto("/budget");
+    const section = page.getByTestId("budget-gaps");
+    await expect(section).toBeVisible();
+    await expect(section).toContainText("Not budgeted");
+
+    // The checkbox daisyUI's `collapse` is driven by — unchecked means shut.
+    const toggle = section.getByRole("checkbox", {name: "Toggle what is not budgeted"});
+    await expect(toggle).not.toBeChecked();
+    await expect(page.getByTestId("budget-gaps-headline")).toHaveCount(0);
+    expect(requests).toEqual([]);
+
+    await toggle.check();
+    // `sample.journal` declares no `~` rules, so every income and expense
+    // category it has is a gap — the section is the one place that shows them.
+    await expect(page.getByTestId("budget-gaps-headline")).toBeVisible();
+    await expect(section).toContainText("Unbudgeted expenses");
+    await expect(section).toContainText("expenses:housing");
+    expect(requests.length).toBeGreaterThan(0);
+});
+
 test("budget: a journal with no goals offers to start one, and says exactly what it will do", async ({page}) => {
     // `fixtures/sample.journal` declares no `~` rules, so this is the state every
     // new user opens the tab in — and the one where getting the wording wrong
