@@ -1,0 +1,79 @@
+; One rule per period expression hledger 1.52 accepts, over a pinned Jan-Jun
+; 2026 span. The grammar in `parse::parse_period_spec` was inferred from the
+; CLI, and the only defensible proof that our occurrences match hledger's is
+; hledger's own output over this file -- see tests/budget_golden.rs.
+;
+; The three forms hledger itself REJECTS (`every last day of month`,
+; `every 15th,last day of month`, `every jan`) are deliberately absent. hledger
+; refuses to read a file containing one, so it cannot be an oracle for them and
+; a golden could not be generated at all. That they degrade to a locked rule
+; rather than failing the whole journal is asserted directly in parse.rs, by
+; `hledger_rejects_degrade_rather_than_failing_the_journal`, which is the only
+; place that claim can be made.
+;
+; Every goal is an unbalanced-virtual `(account)` posting and every account is
+; distinct, so each row of the golden reads as exactly one rule's occurrences.
+
+; -- the five fixed intervals, and the synonyms that mean one of them ---------
+
+~ monthly  simple monthly
+    (expenses:rent)  $100
+
+~ every month  every-month synonym
+    (expenses:phone)  $30
+
+; A rule header carries a comment and tags, which the parser used to discard.
+~ monthly  tagged rule  ; growth: 3%/yr, scenario: base
+    (expenses:insurance)  $50
+
+; -- multipliers -------------------------------------------------------------
+
+~ every 2 weeks  fortnightly pay
+    (income:salary)  $-1000
+
+~ biweekly  biweekly synonym
+    (expenses:groceries)  $200
+
+; -- anchored forms ----------------------------------------------------------
+
+~ every 15th day of month  anchored day of month
+    (expenses:gym)  $40
+
+~ every 3rd tuesday of month  anchored weekday of month
+    (expenses:therapy)  $150
+
+~ every tuesday  anchored weekday
+    (expenses:coffee)  $10
+
+; -- bounds: `from` is a phase anchor, `to` is EXCLUSIVE ---------------------
+
+~ quarterly from 2026-04-01  bounded quarterly
+    (expenses:auto)  $300
+
+~ monthly from 2026-03-01 to 2026-05-01  bounded monthly
+    (expenses:tutoring)  $250
+
+~ every 2 months from 2026-02-01  multiplied and bounded
+    (expenses:haircut)  $60
+
+; -- one-offs, and a rule that never fires in this span ----------------------
+
+~ 2026-04-15  a single occurrence
+    (expenses:taxprep)  $400
+
+~ every 12/25  annual, outside the span
+    (expenses:gifts)  $500
+
+; -- actuals, so the report is not all zeroes --------------------------------
+
+2026-01-05 groceries
+    expenses:groceries   $180.00
+    assets:checking
+
+2026-02-17 therapy
+    expenses:therapy     $150.00
+    assets:checking
+
+2026-03-20 parking
+    expenses:parking      $12.00
+    assets:checking
