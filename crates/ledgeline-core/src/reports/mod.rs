@@ -61,7 +61,10 @@ pub use balance_sheet::{
     BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
     balance_sheet, balance_sheet_grouped, prices_any_on_sheet,
 };
-pub use budget::{BudgetCell, BudgetOpts, BudgetReport, BudgetRow, UNBUDGETED, budget_report};
+pub use budget::{
+    BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,
+    budget_report,
+};
 pub use cash_flow::{cash_flow, is_cash_like};
 pub use flows::{
     FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide, income_statement_flows,

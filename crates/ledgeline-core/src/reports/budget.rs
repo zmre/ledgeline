@@ -37,6 +37,7 @@
 //! surfaced through [`ReportError`].
 
 use super::ReportError;
+use super::account_types::{AccountType, is_account_type};
 use super::aggregate::roll_up;
 use super::mixed_amount::MixedAmount;
 use super::periods::{
@@ -382,6 +383,196 @@ pub fn budget_report(
     })
 }
 
+// ===========================================================================
+// Budget gaps — the income and expense no goal measures
+// ===========================================================================
+
+/// One unbudgeted category: an account with activity that no rule budgets,
+/// clipped to the report depth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GapRow {
+    /// Full, colon-delimited account name, clamped to the report depth.
+    pub account: String,
+    /// Number of `:`-separated segments in `account`.
+    pub depth: usize,
+    /// Own total over the report span, subtree-inclusive by virtue of the clip.
+    pub total: MixedAmount,
+}
+
+/// What a budget does NOT cover, split by resolved account type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetGaps {
+    /// Unbudgeted revenue categories, largest magnitude first.
+    pub revenue: Vec<GapRow>,
+    /// Unbudgeted expense categories, largest magnitude first.
+    pub expense: Vec<GapRow>,
+    /// Inclusive span start — the first day of the oldest bucket, echoed so the
+    /// UI cannot label these figures with a range they do not cover.
+    pub from: String,
+    /// Inclusive span end (`opts.end`).
+    pub to: String,
+}
+
+/// The accounts a goal actually measures: every rule-posting account, WITHOUT
+/// the ancestor expansion [`budget_report`] applies.
+///
+/// This is the one deliberate divergence from `budget_report`'s `budgeted` set,
+/// and the whole feature turns on it. `budget_report` adds every ancestor so
+/// that an unbudgeted sibling re-homes onto the nearest budgeted parent and the
+/// report's totals still add up. That makes `expenses` itself "budgeted" the
+/// moment ANY `expenses:*` goal exists — so with a single clothing goal,
+/// `expenses:insurance` remaps to `expenses` rather than to [`UNBUDGETED`], and
+/// a gaps list built on that set would be empty for every real budget.
+///
+/// Worse, that money is not visible anywhere else either: the SPA's
+/// `budgetLeaves` hides an aggregate parent when a deeper budgeted row exists,
+/// so the `expenses` row carrying the insurance never reaches a bar. Measuring
+/// against the rule accounts themselves asks the question the user asked — "what
+/// does my budget not mention" — and an account remaps to a rule account exactly
+/// when some goal's bar already includes it.
+fn goal_accounts(rules: &[PeriodicTransaction]) -> BTreeSet<String> {
+    rules
+        .iter()
+        .flat_map(|rule| &rule.postings)
+        .map(|posting| posting.account.0.clone())
+        .collect()
+}
+
+/// Order one section's rows: descending by the magnitude of the primary
+/// (lexically first) commodity, ties broken by account name.
+///
+/// Sorting on a magnitude rather than on the signed value is what lets the two
+/// sections read the same way up: revenue is credit-normal, so its totals are
+/// negative, and a signed descending sort would put the smallest earner first.
+/// The account-name tiebreak makes the order TOTAL, so the golden bytes are
+/// stable for a journal with two categories of equal size.
+///
+/// The keys are computed before the sort, not inside the comparator: `Dec::abs`
+/// is fallible (only `i128::MIN`), and a comparator has nowhere to put an error.
+fn gap_rows(totals: BTreeMap<String, MixedAmount>) -> Result<Vec<GapRow>, ReportError> {
+    let mut keyed = Vec::with_capacity(totals.len());
+    for (account, mut total) in totals {
+        total.drop_zeros();
+        if total.is_zero() {
+            continue;
+        }
+        let magnitude = match total.iter().next() {
+            Some((_, qty)) => qty.abs()?,
+            None => crate::decimal::Dec::zero(),
+        };
+        keyed.push((
+            magnitude,
+            GapRow {
+                depth: account.split(':').count(),
+                account,
+                total,
+            },
+        ));
+    }
+    keyed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.account.cmp(&b.1.account)));
+    Ok(keyed.into_iter().map(|(_, row)| row).collect())
+}
+
+/// The revenue and expense categories `rules` do not budget, over the same span
+/// [`budget_report`] would report for `opts`.
+///
+/// Mechanics, in order:
+///
+/// 1. Build the goal-account set (see [`goal_accounts`]).
+/// 2. One pass over every posting dated inside the span, summed per FULL account
+///    name. An account that [`remap_account`] does not send to [`UNBUDGETED`] is
+///    already measured by some bar and is dropped.
+/// 3. Keep only the accounts whose EFFECTIVE type is Revenue or Expense, decided
+///    by [`is_account_type`] — never by the account's name. This is the step that
+///    removes the cash and liability legs of every unbudgeted transaction, which
+///    is what makes the single `<unbudgeted>` row of the report itself useless
+///    (it nets those legs against the spending and answers nothing).
+/// 4. Clip to `opts.depth` and accumulate, dropping zeros as `budget_report`
+///    does — per account BEFORE the clip merges several onto one name, because
+///    merging pruned totals is not the same as merging raw postings.
+///
+/// Rows are not rolled up: each is a distinct subtree clipped to the same depth,
+/// so a section's rows sum to its total without double counting. A clipped name
+/// whose descendants resolve to DIFFERENT types appears in both sections, each
+/// holding only its own type's postings — which is the honest reading, since
+/// neither figure is wrong and neither subtree is the other's.
+///
+/// `budget_desc` is deliberately ignored: the question is "does my budget mention
+/// this", not "is it in the filtered view".
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or unrecognized bucket math.
+pub fn budget_gaps(
+    txns: &[Transaction],
+    rules: &[PeriodicTransaction],
+    declared: &BTreeMap<String, AccountType>,
+    opts: &BudgetOpts,
+) -> Result<BudgetGaps, ReportError> {
+    let buckets = last_n_buckets(opts.end, opts.interval, opts.count)?;
+    // No buckets is no span (`budget_report` returns the empty report here for
+    // the same reason). The dates still have to be well-formed, so the empty
+    // span is the zero-length one ending where the request asked.
+    let Some(first) = buckets.first() else {
+        return Ok(BudgetGaps {
+            revenue: Vec::new(),
+            expense: Vec::new(),
+            from: opts.end.to_string(),
+            to: opts.end.to_string(),
+        });
+    };
+    let from = bucket_start(first)?;
+    let to = opts.end.to_string();
+
+    let budgeted = goal_accounts(rules);
+
+    // Per FULL account name, exactly as `budget_report`'s first pass does, so the
+    // two agree about what a posting's date and amount mean.
+    let mut direct: BTreeMap<&str, MixedAmount> = BTreeMap::new();
+    for txn in txns {
+        for posting in &txn.postings {
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            if compare_iso(date, &from) == Ordering::Less
+                || compare_iso(date, &to) == Ordering::Greater
+            {
+                continue;
+            }
+            let entry = direct.entry(posting.account.0.as_str()).or_default();
+            for amount in &posting.amounts {
+                entry.accumulate(&amount.commodity, amount.quantity)?;
+            }
+        }
+    }
+
+    let mut revenue: BTreeMap<String, MixedAmount> = BTreeMap::new();
+    let mut expense: BTreeMap<String, MixedAmount> = BTreeMap::new();
+    for (&account, ma) in &direct {
+        if remap_account(account, &budgeted) != UNBUDGETED {
+            continue;
+        }
+        // `is_account_type`, not `resolve_account_type`: it folds the subtypes
+        // into their parents, so a declared `type: G` (gain) account counts as
+        // revenue instead of vanishing from both sections.
+        let section = if is_account_type(account, declared, AccountType::Revenue) {
+            &mut revenue
+        } else if is_account_type(account, declared, AccountType::Expense) {
+            &mut expense
+        } else {
+            continue;
+        };
+        let mut pruned = ma.clone();
+        pruned.drop_zeros();
+        let name = clip(account, opts.depth).to_string();
+        accumulate_into(section.entry(name).or_default(), &pruned)?;
+    }
+
+    Ok(BudgetGaps {
+        revenue: gap_rows(revenue)?,
+        expense: gap_rows(expense)?,
+        from,
+        to,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{txn, usd};
@@ -703,5 +894,218 @@ mod tests {
         let food = row(&report, "expenses:food");
         assert_eq!(food.cells[0].goal, Some(usd_ma(40_000)));
         assert_eq!(food.cells[1].goal, Some(usd_ma(40_000)));
+    }
+
+    // -----------------------------------------------------------------------
+    // budget_gaps
+    // -----------------------------------------------------------------------
+
+    /// The declared types a gaps test needs, as the `declared_types` map the
+    /// engine takes.
+    fn declared(pairs: &[(&str, AccountType)]) -> BTreeMap<String, AccountType> {
+        pairs
+            .iter()
+            .map(|(name, ty)| ((*name).to_string(), *ty))
+            .collect()
+    }
+
+    /// The gaps window: one January, at the depth the Budget tab opens on.
+    /// Separate from [`opts`] because that one uses depth 99 (no clip), and the
+    /// clip is half of what these tests are about.
+    fn gap_opts(end: &str, count: usize, depth: usize) -> BudgetOpts<'_> {
+        BudgetOpts {
+            end,
+            interval: Interval::Monthly,
+            count,
+            depth,
+            budget_desc: None,
+        }
+    }
+
+    /// The three transactions every gaps test below shares: a budgeted category,
+    /// an unbudgeted one, and some income — each with a cash leg.
+    fn gap_txns() -> Vec<Transaction> {
+        vec![
+            txn(
+                1,
+                "2026-01-05",
+                vec![
+                    ("expenses:food:groceries", vec![usd(35_200)]),
+                    ("assets:checking", vec![usd(-35_200)]),
+                ],
+            ),
+            txn(
+                2,
+                "2026-01-12",
+                vec![
+                    ("expenses:insurance:auto", vec![usd(14_000)]),
+                    ("liabilities:cc:visa", vec![usd(-14_000)]),
+                ],
+            ),
+            txn(
+                3,
+                "2026-01-25",
+                vec![
+                    ("income:consulting", vec![usd(-90_000)]),
+                    ("assets:checking", vec![usd(90_000)]),
+                ],
+            ),
+        ]
+    }
+
+    fn accounts(rows: &[GapRow]) -> Vec<&str> {
+        rows.iter().map(|row| row.account.as_str()).collect()
+    }
+
+    /// With nothing budgeted, every revenue and expense subtree is a gap — and
+    /// the cash and card legs, which dominate the report's own `<unbudgeted>`
+    /// row and net it to nonsense, are not.
+    #[test]
+    fn gaps_list_income_and_expense_and_never_the_funding_legs() {
+        let gaps = budget_gaps(&gap_txns(), &[], &BTreeMap::new(), &gap_opts("2026-01-31", 1, 2))
+            .unwrap();
+
+        assert_eq!(accounts(&gaps.revenue), ["income:consulting"]);
+        assert_eq!(gaps.revenue[0].total, usd_ma(-90_000));
+        // Ordered by magnitude, so the biggest thing the budget misses is first.
+        assert_eq!(
+            accounts(&gaps.expense),
+            ["expenses:food", "expenses:insurance"]
+        );
+        assert_eq!(gaps.expense[0].total, usd_ma(35_200));
+        assert_eq!(gaps.expense[0].depth, 2);
+        // The span the figures cover, echoed for the UI to label them with.
+        assert_eq!((gaps.from.as_str(), gaps.to.as_str()), ("2026-01-01", "2026-01-31"));
+    }
+
+    /// A budgeted subtree is covered and drops out; its unbudgeted SIBLING does
+    /// not.
+    ///
+    /// This is the regression that decides whether the feature says anything at
+    /// all. `budget_report`'s own `budgeted` set contains every ANCESTOR of a
+    /// goal account, so one `expenses:food` goal makes bare `expenses` budgeted
+    /// and `remap_account` sends insurance there instead of to `<unbudgeted>` —
+    /// an empty gaps list for every journal that has a budget. See
+    /// `goal_accounts`.
+    #[test]
+    fn a_budgeted_subtree_is_covered_but_its_sibling_is_still_a_gap() {
+        let rules = vec![rule(
+            PeriodExpr::Monthly,
+            "household budget",
+            vec![goal_posting("expenses:food", 400)],
+        )];
+        let gaps =
+            budget_gaps(&gap_txns(), &rules, &BTreeMap::new(), &gap_opts("2026-01-31", 1, 2))
+                .unwrap();
+
+        assert_eq!(accounts(&gaps.expense), ["expenses:insurance"]);
+        assert_eq!(accounts(&gaps.revenue), ["income:consulting"]);
+    }
+
+    /// Depth clips exactly as the bars do, so the two halves of the screen name
+    /// categories the same way.
+    #[test]
+    fn gaps_clip_to_the_report_depth() {
+        let deep =
+            budget_gaps(&gap_txns(), &[], &BTreeMap::new(), &gap_opts("2026-01-31", 1, 99)).unwrap();
+        assert_eq!(
+            accounts(&deep.expense),
+            ["expenses:food:groceries", "expenses:insurance:auto"],
+            "an unclipped gap keeps the account's own full name"
+        );
+
+        let rolled =
+            budget_gaps(&gap_txns(), &[], &BTreeMap::new(), &gap_opts("2026-01-31", 1, 1)).unwrap();
+        assert_eq!(accounts(&rolled.expense), ["expenses"]);
+        // $352 groceries + $140 insurance, merged onto one row rather than
+        // double-counted into a row and its parent.
+        assert_eq!(rolled.expense[0].total, usd_ma(49_200));
+        assert_eq!(rolled.expense[0].depth, 1);
+    }
+
+    /// Membership is decided by the DECLARED type, never by the name — the
+    /// `cogs:`/`ingresos:` chart of accounts that a name filter silently reports
+    /// as zero. A declared `type: G` gain counts as revenue, since hledger's own
+    /// `type:R` query matches it.
+    #[test]
+    fn gaps_classify_by_declared_type_including_the_subtypes() {
+        let txns = vec![
+            txn(
+                1,
+                "2026-01-05",
+                vec![
+                    ("cogs:infraestructura", vec![usd(60_000)]),
+                    ("pasivo:tarjeta", vec![usd(-60_000)]),
+                ],
+            ),
+            txn(
+                2,
+                "2026-01-25",
+                vec![
+                    ("ingresos:consultoria", vec![usd(-400_000)]),
+                    ("activo:banco", vec![usd(400_000)]),
+                ],
+            ),
+            txn(
+                3,
+                "2026-01-28",
+                vec![
+                    ("plusvalia:acciones", vec![usd(-5_000)]),
+                    ("activo:banco", vec![usd(5_000)]),
+                ],
+            ),
+        ];
+        let types = declared(&[
+            ("cogs:infraestructura", AccountType::Expense),
+            ("pasivo:tarjeta", AccountType::Liability),
+            ("ingresos:consultoria", AccountType::Revenue),
+            ("activo:banco", AccountType::Asset),
+            ("plusvalia:acciones", AccountType::Gain),
+        ]);
+
+        let gaps = budget_gaps(&txns, &[], &types, &gap_opts("2026-01-31", 1, 2)).unwrap();
+        assert_eq!(accounts(&gaps.expense), ["cogs:infraestructura"]);
+        assert_eq!(
+            accounts(&gaps.revenue),
+            ["ingresos:consultoria", "plusvalia:acciones"]
+        );
+    }
+
+    /// A category whose postings net to zero over the span is not a gap: there
+    /// is nothing there to budget.
+    #[test]
+    fn a_category_that_nets_to_zero_is_dropped() {
+        let txns = vec![
+            txn(
+                1,
+                "2026-01-05",
+                vec![
+                    ("expenses:refunded", vec![usd(5_000)]),
+                    ("assets:checking", vec![usd(-5_000)]),
+                ],
+            ),
+            txn(
+                2,
+                "2026-01-09",
+                vec![
+                    ("expenses:refunded", vec![usd(-5_000)]),
+                    ("assets:checking", vec![usd(5_000)]),
+                ],
+            ),
+        ];
+        let gaps =
+            budget_gaps(&txns, &[], &BTreeMap::new(), &gap_opts("2026-01-31", 1, 2)).unwrap();
+        assert!(gaps.expense.is_empty());
+    }
+
+    /// `count == 0` has no span, and must answer with an empty one rather than
+    /// panicking on `buckets[0]` — the SEC-2 guard `budget_report` carries.
+    #[test]
+    fn zero_count_yields_empty_gaps_not_a_panic() {
+        let gaps = budget_gaps(&gap_txns(), &[], &BTreeMap::new(), &gap_opts("2026-01-31", 0, 2))
+            .unwrap();
+        assert!(gaps.revenue.is_empty());
+        assert!(gaps.expense.is_empty());
+        assert_eq!((gaps.from.as_str(), gaps.to.as_str()), ("2026-01-31", "2026-01-31"));
     }
 }
