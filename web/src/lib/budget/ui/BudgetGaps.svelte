@@ -65,6 +65,18 @@
         return total;
     }
 
+    /**
+     * The two lists, in reading order — income first, because "what am I not
+     * counting" is a smaller question about earnings than about spending and
+     * makes a shorter list to get past.
+     */
+    function sectionsOf(current: BudgetGaps): {title: string; rows: GapRow[]}[] {
+        return [
+            {title: "Unbudgeted income", rows: current.revenue},
+            {title: "Unbudgeted expenses", rows: current.expense},
+        ];
+    }
+
     const shown = $derived(view === "data" ? gaps : null);
     const rowCount = $derived(shown === null ? 0 : shown.revenue.length + shown.expense.length);
 
@@ -121,7 +133,7 @@
                         Every income and expense category with activity in {current.from} – {current.to} is covered by a goal.
                     </p>
                 {:else}
-                    {#each [{title: "Unbudgeted income", rows: current.revenue}, {title: "Unbudgeted expenses", rows: current.expense}] as section (section.title)}
+                    {#each sectionsOf(current) as section (section.title)}
                         {#if section.rows.length > 0}
                             <div class="flex flex-col gap-1">
                                 <div class="flex flex-wrap items-baseline justify-between gap-x-3">
