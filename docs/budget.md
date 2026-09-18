@@ -113,6 +113,42 @@ writing the first.
 hledger's other two intervals, `daily` and `quarterly`, are read and edited
 normally; the tab just does not offer *daily* when creating a new rule.
 
+### Periods that are more than an interval
+
+hledger's period expressions go a long way past those five words. All of these
+are read, and all of them count toward the bars exactly as hledger counts them:
+
+```journal
+~ every 2 weeks  paycheck
+~ biweekly  paycheck                    ; the same thing, spelled differently
+~ every 15th day of month  rent
+~ every 3rd tuesday of month  therapy
+~ every tuesday  coffee
+~ every 12/25  presents
+~ quarterly from 2027  new lease
+~ monthly from 2026 to 2028  car loan
+~ 2027-03-01  one-off
+```
+
+Two rules of hledger's own that are worth knowing, because they are easy to get
+wrong and Ledgeline follows them exactly:
+
+- **`from` sets the rhythm, it does not just clip it.** `~ monthly from
+  2026-01-15` falls on the 15th of every month, not the 1st.
+- **`to` is exclusive.** `~ monthly from 2026 to 2028` is 24 goals — January
+  2026 through December 2027. The month you write as `to` is not included.
+
+These rules are shown under **Other periods**, labelled with their own words, and
+they are read-only: the tab writes headers using one of the five plain interval
+words, so it has no way to write `every 2 weeks` back. Edit those in your
+journal; Ledgeline will keep reporting them.
+
+A period expression Ledgeline cannot make sense of at all is a weaker case: the
+rule is still listed, still shown exactly as written, but it contributes no goals
+to the bars, and it says so. **It does not stop your journal opening** — that is
+worth stating plainly, because it used to. A single unreadable `~` header
+anywhere in a 40,000-line ledger once meant the whole file refused to load.
+
 ## Recent activity, and why it is subaccount-inclusive
 
 When you set a goal, the last four periods of that account's actual activity
@@ -176,7 +212,8 @@ yourself, in your own editor, rather than have it guessed at.
 
 | You will see                                    | Because                                                                                     |
 |--------------------------------------------------|---------------------------------------------------------------------------------------------|
-| the whole rule locked                            | its period is not one of hledger's five fixed intervals (`~ every 2 weeks`, `~ monthly from …`) |
+| the whole rule locked                            | its period says more than a plain interval (`~ every 2 weeks`, `~ every 15th day of month`, `~ monthly from 2027`) |
+| the whole rule locked                            | Ledgeline cannot work out how often its period recurs at all (`~ every weekday`)              |
 | the whole rule locked                            | it uses balanced-virtual `[account]` postings, which balance as a second group                |
 | the whole rule locked                            | its postings are not all in one commodity                                                    |
 | one goal locked                                  | it has no written amount — hledger works it out from the other lines, so it changes when they do |
