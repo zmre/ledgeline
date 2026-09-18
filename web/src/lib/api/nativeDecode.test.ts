@@ -1759,7 +1759,7 @@ describe("UNIT nativeDecode — the budget editor's listing", () => {
                     {
                         block: 0,
                         line: 3,
-                        period: "monthly",
+                        period: {raw: "monthly", simple: "monthly"},
                         description: "household budget",
                         lines: [
                             {
@@ -1810,10 +1810,33 @@ describe("UNIT nativeDecode — the budget editor's listing", () => {
         expect(listing.defaultTarget).toBe("budget.journal");
         expect(listing.files[0].revision).toBe("abc123");
         const rule = listing.files[0].rules[0];
-        expect(rule.period).toBe("monthly");
+        expect(rule.period).toEqual({raw: "monthly", simple: "monthly"});
         expect(rule.description).toBe("household budget");
         expect(rule.locked).toBeNull();
         expect(rule.goals.map((goal) => goal.account)).toEqual(["expenses:food", "income:interest"]);
+    });
+
+    // The two halves of a period are decoded on different terms, and the
+    // asymmetry is the contract: every rule has words in its header, so an
+    // absent `raw` is a malformed body; `simple` is absent for every rule the
+    // editor cannot offer, which is an ordinary state.
+    it("decodes a period the editor cannot offer as a raw string with a null `simple`", () => {
+        const withRaw = (period: unknown) => ({
+            ...LISTING,
+            files: [{...LISTING.files[0], rules: [{...LISTING.files[0].rules[0], period}]}],
+        });
+
+        const locked = decodeBudgetListing(withRaw({raw: "every 2 weeks"}));
+        expect(locked.files[0].rules[0].period).toEqual({raw: "every 2 weeks", simple: null});
+
+        // An explicit null, and a `simple` this client does not know, both mean
+        // "not offerable" rather than "refuse the whole listing".
+        expect(decodeBudgetListing(withRaw({raw: "every 2 weeks", simple: null})).files[0].rules[0].period.simple).toBeNull();
+        expect(decodeBudgetListing(withRaw({raw: "hourly", simple: "hourly"})).files[0].rules[0].period.simple).toBeNull();
+
+        // An absent `raw`, or no period object at all, is a malformed body.
+        expect(() => decodeBudgetListing(withRaw({simple: "monthly"}))).toThrow(ApiShapeError);
+        expect(() => decodeBudgetListing(withRaw(undefined))).toThrow(ApiShapeError);
     });
 
     it("keeps a lock's sentence, which is the only thing that makes a read-only row actionable", () => {

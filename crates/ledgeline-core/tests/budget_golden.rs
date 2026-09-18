@@ -232,6 +232,35 @@ fn descpat_grocer_selection_matches_golden() {
     );
 }
 
+/// The period grammar against its only honest oracle.
+///
+/// `parse::parse_period_spec` was inferred from the hledger CLI — which forms it
+/// accepts, what `from` anchors, that `to` is exclusive, how a multiplier is
+/// phased. None of that is provable by reading our own code back to itself, so
+/// this case runs one rule per accepted form over a six-month span and requires
+/// hledger's own bucket-for-bucket answer. Each row is a single rule's
+/// occurrences, because every rule in the fixture budgets a distinct account:
+///
+/// - `expenses:rent`/`phone`/`insurance` — the plain intervals and their synonyms
+/// - `income:salary`/`expenses:groceries` — `every 2 weeks` and `biweekly`, which
+///   fall 2/2/2/2/2/**3** times across Jan–Jun and so cannot be mistaken for monthly
+/// - `expenses:coffee` — `every tuesday`, 4/4/**5**/4/4/**5**
+/// - `expenses:gym`/`therapy` — the two anchored-within-a-month forms
+/// - `expenses:auto`/`tutoring`/`haircut` — `from`, `from…to`, and a multiplier
+///   with a bound; `tutoring` is the exclusive-`to` case (Mar and Apr, not May)
+/// - `expenses:taxprep` — a bare date, firing once
+/// - `expenses:gifts` — `every 12/25`, which never fires in this span and must
+///   therefore produce no row at all on either side
+#[test]
+fn every_accepted_period_form_matches_golden() {
+    // -b 2026-01-01 -e 2026-07-01 → 6 monthly buckets ending 2026-06-30.
+    run(
+        "period-forms.journal",
+        "period-forms.budget.json",
+        &monthly("2026-06-30", 6, None),
+    );
+}
+
 #[test]
 fn weekly_rule_in_monthly_report_matches_golden() {
     // Cross-interval: a `~ weekly` $10 goal viewed in a monthly report sums the

@@ -142,9 +142,10 @@
             goal: null,
             rule,
             journalId,
-            // A new goal joins the rule it was added from; a brand-new rule opens
-            // on monthly, which is what almost every budget line is.
-            period: rule !== null && isOffered(rule.period) ? (rule.period as BudgetPeriod) : "monthly",
+            // A new goal joins the rule it was added from; a brand-new rule — and
+            // one whose recurrence the editor cannot state — opens on monthly,
+            // which is what almost every budget line is.
+            period: rule?.period.simple ?? "monthly",
             account: "",
             amount: "",
         };
@@ -156,16 +157,12 @@
             goal,
             rule,
             journalId,
-            period: isOffered(rule.period) ? (rule.period as BudgetPeriod) : "monthly",
+            period: rule.period.simple ?? "monthly",
             account: goal.account,
             // The magnitude, exactly as the engine offers it — never the signed
             // amount, so an income goal opens showing what the user typed.
             amount: goal.entry === null ? "" : decToInput(goal.entry.value),
         };
-    }
-
-    function isOffered(period: string): boolean {
-        return period === "daily" || period === "weekly" || period === "monthly" || period === "quarterly" || period === "yearly";
     }
 
     /** The revision to quote for a save into `journalId`, or null when it is not listed. */

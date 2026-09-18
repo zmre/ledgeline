@@ -22,6 +22,12 @@ cases=(
   "descpat|-b 2026-01-01 -e 2026-02-01 --budget=housing|descpat-housing"
   "descpat|-b 2026-01-01 -e 2026-02-01 --budget=grocer|descpat-grocer"
   "weekly|-b 2026-01-01 -e 2026-02-01 --budget|weekly"
+  # One rule per period expression hledger accepts. The grammar in
+  # `parse::parse_period_spec` was inferred from this CLI, so this case is the
+  # only thing that proves our occurrences are hledger's and not our reading of
+  # them. Six months, because the shortest form that distinguishes a multiplier,
+  # a bound and an anchored weekday from a plain `~ monthly` needs that long.
+  "period-forms|-b 2026-01-01 -e 2026-07-01 --budget|period-forms"
 )
 
 for case in "${cases[@]}"; do

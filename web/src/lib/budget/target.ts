@@ -44,7 +44,7 @@ export function joinableRule(listing: BudgetListing, period: string): {file: Bud
         listing.files
             .filter((file) => file.writable)
             .flatMap((file) => file.rules.map((rule) => ({file, rule})))
-            .find(({rule}) => rule.period === period && rule.locked === null) ?? null
+            .find(({rule}) => rule.period.simple === period && rule.locked === null) ?? null
     );
 }
 
@@ -100,7 +100,7 @@ export function alreadyBudgeted(listing: BudgetListing | null, draft: GoalDraft,
 
 /** The rule a new goal joins, preferring the one its modal was opened from. */
 function joinTarget(listing: BudgetListing | null, draft: GoalDraft, period: BudgetPeriod): {journalId: string; rule: BudgetRule} | null {
-    if (draft.rule !== null && draft.rule.period === period) return {journalId: draft.journalId, rule: draft.rule};
+    if (draft.rule !== null && draft.rule.period.simple === period) return {journalId: draft.journalId, rule: draft.rule};
     const found = listing === null ? null : joinableRule(listing, period);
     return found === null ? null : {journalId: found.file.journalId, rule: found.rule};
 }

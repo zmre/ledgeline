@@ -322,12 +322,15 @@ pub struct AliasDirective {
     pub ended: bool,
 }
 
-/// The period of a `~` periodic transaction rule.
+/// One of hledger's five fixed intervals — the *unit* a period expression
+/// counts in, and the same five a report buckets by.
 ///
-/// Only hledger's standard fixed intervals are modeled. Richer period
-/// expressions (`every 2 weeks`, `every 15th of month`, `from…to…`) are
-/// deferred: the parser rejects them with a clear error rather than misreading
-/// them.
+/// This type deliberately does NOT describe a whole period expression. It is one
+/// word (`weekly`, or the `weeks` in `every 2 weeks`); the multiplier, the
+/// anchor and the bounds live in [`PeriodSpec`]. Keeping it a payload-free
+/// five-variant enum is what lets it go on meaning "a report interval" to
+/// [`crate::reports`] and "a recurrence the editor can write" to
+/// [`crate::periodic`], which are the only two questions anything asks of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeriodExpr {
     /// `daily`.
@@ -342,6 +345,142 @@ pub enum PeriodExpr {
     Yearly,
 }
 
+/// Where inside its unit an anchored rule fires.
+///
+/// Weekdays are ISO numbers — 1 = Monday … 7 = Sunday — matching
+/// `reports::periods`' own weekday convention, so an anchor never has to be
+/// translated between two numberings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    /// `every 15th day of month`: the Nth day of each month, clamped to the
+    /// month's length (hledger's `every 31st day of month` fires on Feb 28).
+    DayOfMonth(u32),
+    /// `every 3rd tuesday of month`: the Nth `weekday` of each month.
+    NthWeekday {
+        /// 1-based ordinal within the month.
+        nth: u32,
+        /// ISO weekday, 1 = Monday.
+        weekday: u32,
+    },
+    /// `every tuesday` / `every 2nd day of week`: one weekday each week.
+    Weekday(u32),
+}
+
+/// The shape of a period expression, once its words are understood.
+///
+/// The variants are the ones hledger's grammar actually produces, not a
+/// convenient subset: a journal that hledger opens must open here too, and a
+/// form we cannot compute is [`PeriodKind::Unsupported`] — still parsed, still
+/// carried, still locked — rather than a refused journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeriodKind {
+    /// `daily` … `yearly`, `every month`, `biweekly`, `every 2 weeks`: a fixed
+    /// unit with a multiplier (1 unless written otherwise).
+    Every {
+        /// The unit counted.
+        unit: PeriodExpr,
+        /// How many units per step; 1 for a bare interval.
+        multiplier: u32,
+    },
+    /// `every 15th day of month`, `every 3rd tuesday of month`, `every tuesday`:
+    /// one occurrence per `unit`, on a day the anchor names rather than on the
+    /// unit's first day.
+    Anchored {
+        /// The unit counted — `Monthly` or `Weekly`.
+        unit: PeriodExpr,
+        /// Which day within it.
+        anchor: Anchor,
+    },
+    /// `every 12/25` — one occurrence a year on a fixed month/day.
+    Annual {
+        /// 1-12.
+        month: u32,
+        /// 1-31, clamped to the month's length.
+        day: u32,
+    },
+    /// `~ 2027-03-01`, `~ 2027-03`, `~ from D to D2`: fires exactly once.
+    Once,
+    /// Syntactically well-formed to hledger (or not), but not a recurrence this
+    /// engine can enumerate — `every weekday`, `every weekendday`, anything the
+    /// grammar below does not recognise. Kept whole, via [`PeriodSpec::raw`].
+    ///
+    /// This is the variant that replaces a failed parse. Decision 2 of
+    /// `plans/21-periodic-rule-parser.md`: a period expression is one line of one
+    /// rule, and refusing to open a 40,000-line ledger over it is not a
+    /// proportionate response.
+    Unsupported,
+}
+
+/// One of hledger's period-expression shapes, as written.
+///
+/// `raw` is the bytes between `~` and the double space, preserved so the editor
+/// can quote a rule it will not rewrite and so a rewrite that does not touch the
+/// header is provably byte-identical.
+///
+/// # The two bounds are not symmetric
+///
+/// Verified against hledger 1.52 (`bal -M --budget` over scratch journals):
+///
+/// - `from D` is the **phase anchor**, used raw. `~ monthly from 2026-01-15`
+///   fires on the 15th of each month, not on the 1st; `~ monthly from 2026-01-31`
+///   fires Jan 31, Feb 28, Mar 31 — i.e. `anchor + i months` with the day clamped
+///   per target month, NOT an iterated add (which would stick at Feb 28).
+/// - `to D` is an **exclusive filter** on the occurrence date, with no snapping.
+///   `~ monthly from 2026 to 2028` yields exactly 24 occurrences, 2026-01 through
+///   2027-12.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeriodSpec {
+    /// The period expression exactly as the file writes it, between `~` and the
+    /// two-space gap, trimmed.
+    pub raw: String,
+    /// What the expression says, once understood.
+    pub kind: PeriodKind,
+    /// The `from` date, normalized to ISO `YYYY-MM-DD` (`from 2027` is
+    /// `2027-01-01`). The rule's phase anchor; see the type docs.
+    pub start: Option<String>,
+    /// The `to` date, normalized to ISO `YYYY-MM-DD`. **EXCLUSIVE**, as hledger
+    /// writes it — an occurrence exactly on this date does not fire.
+    pub end: Option<String>,
+}
+
+impl PeriodSpec {
+    /// The fixed interval this rule steps by, or `None` when it is not a **bare**
+    /// one.
+    ///
+    /// "Bare" means all three things at once: one of the five units, no
+    /// multiplier, and no `from`/`to`. Anything else — `every 2 weeks`,
+    /// `every 15th day of month`, `monthly from 2027` — answers `None`, because
+    /// the single word this returns cannot express what it leaves out, and a
+    /// caller that wrote the word back into a journal would silently drop the
+    /// rest of the rule.
+    ///
+    /// This is the editor's question and the lock's question. It is deliberately
+    /// **not** the goal-generation question: `reports::budget::occurrences` reads
+    /// the whole spec, because `~ monthly from 2027 to 2028` does contribute
+    /// goals and hledger says which ones.
+    #[must_use]
+    pub fn interval(&self) -> Option<PeriodExpr> {
+        match self.kind {
+            PeriodKind::Every {
+                unit,
+                multiplier: 1,
+            } if self.start.is_none() && self.end.is_none() => Some(unit),
+            _ => None,
+        }
+    }
+
+    /// True when the editor can add to / rewrite goals in this rule.
+    ///
+    /// The same predicate as [`interval`](Self::interval) being `Some`, spelled
+    /// separately because it is a different *question* asked by a different
+    /// caller: one wants the word, the other wants a yes/no. Should the editor
+    /// ever learn to write a bounded header, this is the one place that changes.
+    #[must_use]
+    pub fn is_simple(&self) -> bool {
+        self.interval().is_some()
+    }
+}
+
 /// A `~ PERIODEXPR  [DESCRIPTION]` periodic transaction rule.
 ///
 /// Its postings are parsed and balanced exactly like a normal transaction's (so
@@ -351,12 +490,29 @@ pub enum PeriodExpr {
 /// position is what lets [`crate::periodic`] edit it in place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeriodicTransaction {
-    /// The rule's recurrence period.
-    pub period: PeriodExpr,
+    /// The rule's recurrence, as written and as understood.
+    ///
+    /// A whole [`PeriodSpec`] rather than a [`PeriodExpr`] beside a bound: two
+    /// fields that can disagree about the same fact are a bug waiting for a
+    /// maintainer. Callers that only want "which of the five intervals is this"
+    /// ask [`PeriodSpec::interval`].
+    pub period: PeriodSpec,
     /// The rule description: the text after the period expression (separated by
     /// two-or-more spaces). `--budget=DESCPAT` matches a case-insensitive
     /// substring of it. Empty when the rule has no description.
     pub description: String,
+    /// Raw header comment text, including a trailing newline, or empty — the
+    /// same shape, and built by the same code, as [`Posting::comment`].
+    ///
+    /// hledger carries this onto every transaction a `~` rule forecasts, so it is
+    /// the one thing a rule's header holds that nothing else can. Postings have
+    /// always kept theirs; the rule keeping its own is the removal of an
+    /// asymmetry, not a new feature.
+    pub comment: String,
+    /// Tags parsed from [`comment`](Self::comment), by the same rule as
+    /// [`Posting::tags`] — so `; growth: 3%/yr` means the same thing on a rule
+    /// header as it does on a posting line.
+    pub tags: Vec<(String, String)>,
     /// The rule's postings, after amount inference/balancing.
     pub postings: Vec<Posting>,
     /// `[first line, line after last posting]`, both at column 1, exactly as

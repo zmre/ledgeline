@@ -67,10 +67,10 @@
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{
-    AccountDeclaration, AccountName, AliasDirective, Amount, AmountStyle, BalanceAssertion,
-    Commodity, CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr,
-    PeriodicTransaction, Posting, PostingType, PriceDirective, SourcePos, Status, Tindex,
-    Transaction,
+    AccountDeclaration, AccountName, AliasDirective, Amount, AmountStyle, Anchor,
+    BalanceAssertion, Commodity, CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr,
+    PeriodKind, PeriodSpec, PeriodicTransaction, Posting, PostingType, PriceDirective, SourcePos,
+    Status, Tindex, Transaction,
 };
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
@@ -97,12 +97,6 @@ pub enum ParseError {
     /// A directive keyword we do not (yet) support was encountered.
     #[error("unsupported directive: '{0}'")]
     UnsupportedDirective(String),
-    /// A `~` periodic rule's period expression is not one of the supported fixed
-    /// intervals (`daily`/`weekly`/`monthly`/`quarterly`/`yearly`). Richer period
-    /// expressions are deferred; the period expr and description must be
-    /// separated by two-or-more spaces.
-    #[error("unsupported period expression: '{0}'")]
-    UnsupportedPeriodExpr(String),
     /// An `include`d file could not be read.
     #[error("include error: {0}")]
     Include(String),
@@ -1259,8 +1253,10 @@ fn skip_comment_block(lines: &[&str], start: usize) -> usize {
 /// (reusing [`parse_posting`]/[`balance_postings`]), so an elided balancing
 /// posting is inferred and unbalanced-virtual `(account)` postings are excluded
 /// from balancing. The period expression and description must be separated by
-/// two-or-more spaces (matching hledger); only the fixed intervals are
-/// supported (see [`parse_period_expr`]).
+/// two-or-more spaces (matching hledger, which errors with "a double space is
+/// required between period expression and description/comment"); the expression
+/// itself is read by the infallible [`parse_period_spec`], so a rule can no
+/// longer refuse the whole journal.
 fn parse_periodic_transaction(
     lines: &[&str],
     start: usize,
@@ -1276,13 +1272,15 @@ fn parse_periodic_transaction(
         .strip_prefix('~')
         .unwrap_or("")
         .trim_start();
-    let (main, _comment) = split_comment(after_tilde);
+    let (main, header_comment) = split_comment(after_tilde);
     // hledger requires a two-space gap between the period expression and the
     // description; `split_account_amount` splits on exactly that.
     let (period_part, desc_part) = split_account_amount(main.trim());
-    let period = parse_period_expr(period_part.trim())
-        .map_err(|e| locate(source_name, header_no, header_line, e))?;
+    let period = parse_period_spec(period_part.trim());
     let description = desc_part.trim().to_string();
+    // The rule's OWN comment, built exactly as `parse_header` builds a
+    // transaction's, so `; growth: 3%/yr` tags the same way in both places.
+    let (mut comment, mut tags) = build_comment(header_comment);
 
     let mut raw_postings: Vec<RawPosting> = Vec::new();
     let mut j = start + 1;
@@ -1292,12 +1290,16 @@ fn parse_periodic_transaction(
             break;
         }
         // PARSE-7: as in a real transaction, a comment-only line belongs to the
-        // preceding posting. A rule has nowhere to keep one written before its
-        // first posting (`PeriodicTransaction` has no comment field), so that
-        // case is still skipped.
+        // preceding posting, or to the rule itself while no posting has been
+        // seen. Verified against hledger 1.52: `print --forecast` emits a
+        // pre-posting comment line above the forecast transaction's first
+        // posting and a post-posting one below it, i.e. exactly this split.
         if let Some(content) = comment_line_content(line) {
-            if let Some(posting) = raw_postings.last_mut() {
-                append_comment_line(&mut posting.comment, &mut posting.tags, content);
+            match raw_postings.last_mut() {
+                Some(posting) => {
+                    append_comment_line(&mut posting.comment, &mut posting.tags, content);
+                }
+                None => append_comment_line(&mut comment, &mut tags, content),
             }
             j += 1;
             continue;
@@ -1331,6 +1333,8 @@ fn parse_periodic_transaction(
         PeriodicTransaction {
             period,
             description,
+            comment,
+            tags,
             postings,
             source_span,
             source_file: source_file.to_path_buf(),
@@ -1339,18 +1343,262 @@ fn parse_periodic_transaction(
     ))
 }
 
-/// Parse a periodic rule's period expression. Only the fixed intervals are
-/// supported; anything else (multi-word/anchored/bounded expressions, or a
-/// description not separated by two spaces) is deferred with a clear error.
-fn parse_period_expr(expr: &str) -> Result<PeriodExpr, ParseError> {
-    match expr {
-        "daily" => Ok(PeriodExpr::Daily),
-        "weekly" => Ok(PeriodExpr::Weekly),
-        "monthly" => Ok(PeriodExpr::Monthly),
-        "quarterly" => Ok(PeriodExpr::Quarterly),
-        "yearly" => Ok(PeriodExpr::Yearly),
-        other => Err(ParseError::UnsupportedPeriodExpr(other.to_string())),
+// ---------------------------------------------------------------------------
+// Period expressions
+// ---------------------------------------------------------------------------
+
+/// The largest `every N …` multiplier this parser will accept.
+///
+/// The cap exists for one reason only: `0` must never reach the occurrence walk,
+/// because a zero step is an infinite loop. A ceiling is thrown in beside the
+/// floor because a five-digit multiplier is not a recurrence anyone wrote on
+/// purpose, and an expression we refuse merely locks its rule rather than
+/// refusing the journal.
+const MAX_PERIOD_MULTIPLIER: u32 = 1000;
+
+/// Read a periodic rule's period expression. **Infallible.**
+///
+/// The grammar is hledger 1.52's, verified by driving `print --forecast` and
+/// `bal -M --budget` over scratch journals (the table in
+/// `plans/21-periodic-rule-parser.md`). Anything it does not recognise —
+/// including the forms hledger itself rejects — becomes
+/// [`PeriodKind::Unsupported`] with [`PeriodSpec::raw`] intact. That is the whole
+/// point: a period expression is one line of one rule, and a journal that
+/// hledger opens must open here too.
+///
+/// Resolution order mirrors hledger's: the interval words first, then an
+/// optional `from DATE`, then an optional `to DATE`. A bare date is a single
+/// occurrence.
+///
+/// `pub(crate)` for [`crate::periodic`], whose scan must reach the *same* verdict
+/// about a header as this parse does — a block's ordinal is joined against
+/// `Journal::periodic_transactions` by position, so two readings that disagreed
+/// about whether a line is a rule would land an edit on the wrong one. It used to
+/// be a hand-kept copy of the five-word match, with a doc comment asking the next
+/// maintainer to keep them in step. Sharing the function is the version of that
+/// request which cannot be forgotten.
+pub(crate) fn parse_period_spec(raw: &str) -> PeriodSpec {
+    let raw = raw.trim();
+    let build = |kind, start, end| PeriodSpec {
+        raw: raw.to_string(),
+        kind,
+        start,
+        end,
+    };
+    let unsupported = || build(PeriodKind::Unsupported, None, None);
+
+    // Case is not significant to hledger, but `raw` keeps the original bytes.
+    let lower = raw.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    let Some((head, start, end)) = split_period_bounds(&tokens) else {
+        return unsupported();
+    };
+
+    // `~ 2027-03-01` / `~ 2027-03` / `~ 2027`: one occurrence, and the date is
+    // its own anchor. A `from` beside a bare date is not a form hledger
+    // produces, so it is refused rather than silently preferred.
+    if let [only] = head
+        && let Some(date) = parse_period_date(only)
+    {
+        return if start.is_some() {
+            unsupported()
+        } else {
+            build(PeriodKind::Once, Some(date), end)
+        };
     }
+    // `~ from D to D2` / `~ to D`: no interval words at all is one period, so
+    // one occurrence.
+    if head.is_empty() {
+        return build(PeriodKind::Once, start, end);
+    }
+    match parse_interval_words(head) {
+        Some(kind) => build(kind, start, end),
+        None => unsupported(),
+    }
+}
+
+/// Split a tokenized period expression into its interval words and its
+/// `from`/`to` dates.
+///
+/// `None` — i.e. the whole expression is unsupported — when a bound is
+/// malformed: a missing or unreadable date, more than one token where a date
+/// belongs, or `to` written before `from`. Refusing the expression is the safe
+/// reading: a bound we misread would silently change which buckets a goal lands
+/// in, which is worse than locking the rule.
+fn split_period_bounds<'t>(
+    tokens: &'t [&'t str],
+) -> Option<(&'t [&'t str], Option<String>, Option<String>)> {
+    let from_at = tokens.iter().position(|token| *token == "from");
+    let to_at = tokens.iter().position(|token| *token == "to");
+    let head_len = match (from_at, to_at) {
+        (Some(from), Some(to)) if to < from => return None,
+        (Some(from), _) => from,
+        (None, Some(to)) => to,
+        (None, None) => tokens.len(),
+    };
+    // Exactly one token between a bound keyword and the next keyword / the end.
+    let one_date = |at: usize, stop: usize| match tokens.get(at + 1..stop) {
+        Some([date]) => parse_period_date(date),
+        _ => None,
+    };
+    let start = match from_at {
+        Some(from) => Some(one_date(from, to_at.unwrap_or(tokens.len()))?),
+        None => None,
+    };
+    let end = match to_at {
+        Some(to) => Some(one_date(to, tokens.len())?),
+        None => None,
+    };
+    Some((&tokens[..head_len], start, end))
+}
+
+/// A date as a period bound writes it: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`, with
+/// `-`, `/` or `.` separators. A missing month or day is the first of its unit,
+/// which is how hledger expands `from 2027` to `2027-01-01` and `to 2027-06` to
+/// `2027-06-01` (both verified).
+///
+/// Deliberately **not** [`normalize_date`]. That function reads a two-component
+/// token as a yearless `MM-DD` against the `Y` default year — the right reading
+/// for a transaction date and the wrong one here, because hledger reads
+/// `from 2027-01` as January 2027, not as the 1st of some other year. The year
+/// must therefore be written in full, which is also what disambiguates the two.
+fn parse_period_date(token: &str) -> Option<String> {
+    fn number(text: &str) -> Option<i32> {
+        text.parse::<i32>().ok()
+    }
+    let components: Vec<&str> = token.split(['-', '/', '.']).collect();
+    // Four digits, always: it is what tells `2027-01` (a month) apart from a
+    // yearless `MM-DD`, and it is what hledger's own period grammar requires.
+    if components.first()?.len() != 4 {
+        return None;
+    }
+    let (year, month, day) = match components.as_slice() {
+        [year] => (number(year)?, 1, 1),
+        [year, month] => (number(year)?, number(month)?, 1),
+        [year, month, day] => (number(year)?, number(month)?, number(day)?),
+        _ => return None,
+    };
+    if !(1..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=days_in_month(year, month)).contains(&day)
+    {
+        return None;
+    }
+    Some(format!("{year:04}-{month:02}-{day:02}"))
+}
+
+/// The interval half of a period expression — everything before `from`/`to`.
+fn parse_interval_words(tokens: &[&str]) -> Option<PeriodKind> {
+    let every = |unit, multiplier| Some(PeriodKind::Every { unit, multiplier });
+    match tokens {
+        ["daily"] => every(PeriodExpr::Daily, 1),
+        ["weekly"] => every(PeriodExpr::Weekly, 1),
+        ["monthly"] => every(PeriodExpr::Monthly, 1),
+        ["quarterly"] => every(PeriodExpr::Quarterly, 1),
+        ["yearly"] => every(PeriodExpr::Yearly, 1),
+        // hledger's own synonyms, verified to step by two units each.
+        ["biweekly"] | ["fortnightly"] => every(PeriodExpr::Weekly, 2),
+        ["bimonthly"] => every(PeriodExpr::Monthly, 2),
+        ["every", rest @ ..] => parse_every(rest),
+        _ => None,
+    }
+}
+
+/// The words after `every`.
+///
+/// `every weekday` and `every weekendday` are real hledger expressions and are
+/// deliberately absent: neither is one occurrence per unit, so neither can be
+/// expressed as a step, and modelling them wrongly would be worse than locking
+/// the rule.
+fn parse_every(tokens: &[&str]) -> Option<PeriodKind> {
+    match tokens {
+        [word] => {
+            if let Some(unit) = period_unit(word) {
+                return Some(PeriodKind::Every { unit, multiplier: 1 });
+            }
+            if let Some(weekday) = weekday_number(word) {
+                return Some(PeriodKind::Anchored {
+                    unit: PeriodExpr::Weekly,
+                    anchor: Anchor::Weekday(weekday),
+                });
+            }
+            // `every 12/25`: one occurrence a year on a fixed month/day.
+            month_day(word).map(|(month, day)| PeriodKind::Annual { month, day })
+        }
+        [count, unit] => {
+            let multiplier = period_multiplier(count)?;
+            period_unit(unit).map(|unit| PeriodKind::Every { unit, multiplier })
+        }
+        [nth, "day", "of", "month"] => ordinal(nth, 31).map(|day| PeriodKind::Anchored {
+            unit: PeriodExpr::Monthly,
+            anchor: Anchor::DayOfMonth(day),
+        }),
+        [nth, "day", "of", "week"] => ordinal(nth, 7).map(|weekday| PeriodKind::Anchored {
+            unit: PeriodExpr::Weekly,
+            anchor: Anchor::Weekday(weekday),
+        }),
+        // Must follow the two literal arms above, which are more specific.
+        [nth, weekday, "of", "month"] => {
+            // Five is the most any weekday can occur in a month.
+            let nth = ordinal(nth, 5)?;
+            weekday_number(weekday).map(|weekday| PeriodKind::Anchored {
+                unit: PeriodExpr::Monthly,
+                anchor: Anchor::NthWeekday { nth, weekday },
+            })
+        }
+        _ => None,
+    }
+}
+
+/// One of the five units, singular or plural (`week`, `weeks`, `weekly`).
+fn period_unit(word: &str) -> Option<PeriodExpr> {
+    Some(match word {
+        "day" | "days" | "daily" => PeriodExpr::Daily,
+        "week" | "weeks" | "weekly" => PeriodExpr::Weekly,
+        "month" | "months" | "monthly" => PeriodExpr::Monthly,
+        "quarter" | "quarters" | "quarterly" => PeriodExpr::Quarterly,
+        "year" | "years" | "yearly" => PeriodExpr::Yearly,
+        _ => return None,
+    })
+}
+
+/// The `N` of `every N units`. Zero is refused — see [`MAX_PERIOD_MULTIPLIER`].
+fn period_multiplier(word: &str) -> Option<u32> {
+    word.parse::<u32>()
+        .ok()
+        .filter(|n| (1..=MAX_PERIOD_MULTIPLIER).contains(n))
+}
+
+/// An ordinal (`15th`, `3rd`, `1st`, or a bare integer), bounded by `max`.
+fn ordinal(word: &str, max: u32) -> Option<u32> {
+    let digits = ["st", "nd", "rd", "th"]
+        .iter()
+        .find_map(|suffix| word.strip_suffix(*suffix))
+        .unwrap_or(word);
+    digits.parse::<u32>().ok().filter(|n| (1..=max).contains(n))
+}
+
+/// A weekday name or its three-letter abbreviation, as an ISO number
+/// (1 = Monday), matching `reports::periods`' convention.
+fn weekday_number(word: &str) -> Option<u32> {
+    Some(match word {
+        "mon" | "monday" => 1,
+        "tue" | "tuesday" => 2,
+        "wed" | "wednesday" => 3,
+        "thu" | "thursday" => 4,
+        "fri" | "friday" => 5,
+        "sat" | "saturday" => 6,
+        "sun" | "sunday" => 7,
+        _ => return None,
+    })
+}
+
+/// The `12/25` of `every 12/25` — a month and a day, with no year.
+fn month_day(token: &str) -> Option<(u32, u32)> {
+    let (month, day) = token.split_once(['/', '-', '.'])?;
+    let month = month.parse::<u32>().ok()?;
+    let day = day.parse::<u32>().ok()?;
+    ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some((month, day))
 }
 
 // ---------------------------------------------------------------------------
@@ -3103,7 +3351,8 @@ mod tests {
         // The periodic rule is captured separately, with its balancing leg.
         assert_eq!(journal.periodic_transactions.len(), 1);
         let periodic = &journal.periodic_transactions[0];
-        assert_eq!(periodic.period, PeriodExpr::Monthly);
+        assert_eq!(periodic.period.interval(), Some(PeriodExpr::Monthly));
+        assert_eq!(periodic.period.raw, "monthly");
         assert_eq!(periodic.description, "household budget");
         assert_eq!(periodic.postings.len(), 2);
         assert_eq!(
@@ -3152,35 +3401,218 @@ mod tests {
         assert!(journal.source_files.contains(&rules[0].source_file));
     }
 
-    #[test]
-    fn periodic_rule_period_forms_and_deferrals() {
-        // The five fixed intervals parse; a two-space gap separates an optional
-        // description; a single space (or a richer period expression) is a clear
-        // deferral error rather than a misparse.
-        for (src, expected) in [
-            ("~ daily\n    (a)  $1\n", PeriodExpr::Daily),
-            ("~ weekly\n    (a)  $1\n", PeriodExpr::Weekly),
-            ("~ monthly\n    (a)  $1\n", PeriodExpr::Monthly),
-            ("~ quarterly\n    (a)  $1\n", PeriodExpr::Quarterly),
-            ("~ yearly\n    (a)  $1\n", PeriodExpr::Yearly),
-        ] {
-            let journal = parse_journal(src, "t.journal").unwrap();
-            assert_eq!(journal.periodic_transactions[0].period, expected);
-            assert_eq!(journal.periodic_transactions[0].description, "");
-        }
+    /// The one rule of this fixture family: whatever the header says, the
+    /// journal opens. Returns the single rule's spec.
+    fn period_spec(expr: &str) -> PeriodSpec {
+        let src = format!("~ {expr}\n    (a)  $1\n");
+        let journal = parse_journal(&src, "t.journal")
+            .unwrap_or_else(|e| panic!("`~ {expr}` must not fail the journal: {e}"));
+        journal.periodic_transactions[0].period.clone()
+    }
 
-        // Single-space "description" is part of the period expression → deferred.
-        let err = parse_journal("~ monthly budget\n    (a)  $1\n", "t.journal").unwrap_err();
-        assert!(
-            err.to_string().contains("unsupported period expression"),
-            "{err}"
+    /// Every accepted row of the table in `plans/21-periodic-rule-parser.md`,
+    /// each verified against `hledger 1.52` before it was written down here.
+    #[test]
+    fn periodic_rule_accepts_every_form_hledger_accepts() {
+        let every = |unit, multiplier| PeriodKind::Every { unit, multiplier };
+
+        for (expr, kind, start, end) in [
+            ("daily", every(PeriodExpr::Daily, 1), None, None),
+            ("weekly", every(PeriodExpr::Weekly, 1), None, None),
+            ("monthly", every(PeriodExpr::Monthly, 1), None, None),
+            ("quarterly", every(PeriodExpr::Quarterly, 1), None, None),
+            ("yearly", every(PeriodExpr::Yearly, 1), None, None),
+            // `every UNIT` is a synonym for the bare word.
+            ("every month", every(PeriodExpr::Monthly, 1), None, None),
+            ("every day", every(PeriodExpr::Daily, 1), None, None),
+            // Multipliers, and the two words that are one.
+            ("every 2 weeks", every(PeriodExpr::Weekly, 2), None, None),
+            ("biweekly", every(PeriodExpr::Weekly, 2), None, None),
+            ("fortnightly", every(PeriodExpr::Weekly, 2), None, None),
+            ("bimonthly", every(PeriodExpr::Monthly, 2), None, None),
+            // Anchored forms.
+            (
+                "every 15th day of month",
+                PeriodKind::Anchored {
+                    unit: PeriodExpr::Monthly,
+                    anchor: Anchor::DayOfMonth(15),
+                },
+                None,
+                None,
+            ),
+            (
+                "every 3rd tuesday of month",
+                PeriodKind::Anchored {
+                    unit: PeriodExpr::Monthly,
+                    anchor: Anchor::NthWeekday { nth: 3, weekday: 2 },
+                },
+                None,
+                None,
+            ),
+            (
+                "every tuesday",
+                PeriodKind::Anchored {
+                    unit: PeriodExpr::Weekly,
+                    anchor: Anchor::Weekday(2),
+                },
+                None,
+                None,
+            ),
+            (
+                "every 2nd day of week",
+                PeriodKind::Anchored {
+                    unit: PeriodExpr::Weekly,
+                    anchor: Anchor::Weekday(2),
+                },
+                None,
+                None,
+            ),
+            (
+                "every 12/25",
+                PeriodKind::Annual { month: 12, day: 25 },
+                None,
+                None,
+            ),
+            // Bounds. A partial date is the first of its unit, and `to` is the
+            // EXCLUSIVE end hledger writes.
+            (
+                "quarterly from 2027",
+                every(PeriodExpr::Quarterly, 1),
+                Some("2027-01-01"),
+                None,
+            ),
+            (
+                "every 2 months from 2027-01",
+                every(PeriodExpr::Monthly, 2),
+                Some("2027-01-01"),
+                None,
+            ),
+            (
+                "monthly from 2026 to 2028",
+                every(PeriodExpr::Monthly, 1),
+                Some("2026-01-01"),
+                Some("2028-01-01"),
+            ),
+            // Single occurrences.
+            ("2027-03-01", PeriodKind::Once, Some("2027-03-01"), None),
+            ("2027-03", PeriodKind::Once, Some("2027-03-01"), None),
+            (
+                "from 2027-03-01 to 2027-04-01",
+                PeriodKind::Once,
+                Some("2027-03-01"),
+                Some("2027-04-01"),
+            ),
+        ] {
+            let spec = period_spec(expr);
+            assert_eq!(spec.kind, kind, "kind of `{expr}`");
+            assert_eq!(spec.start.as_deref(), start, "start of `{expr}`");
+            assert_eq!(spec.end.as_deref(), end, "end of `{expr}`");
+            // `raw` is the bytes between `~` and the double space, verbatim.
+            assert_eq!(spec.raw, expr, "raw of `{expr}`");
+        }
+    }
+
+    /// Only a BARE fixed interval answers `interval()`. The single word it
+    /// returns cannot express a multiplier, an anchor or a bound, so a caller
+    /// that wrote it back would drop the rest of the rule.
+    #[test]
+    fn only_a_bare_fixed_interval_is_simple() {
+        for expr in ["daily", "weekly", "monthly", "quarterly", "yearly"] {
+            let spec = period_spec(expr);
+            assert!(spec.interval().is_some(), "`{expr}` is a bare interval");
+            assert!(spec.is_simple(), "`{expr}` is editable");
+        }
+        for expr in [
+            "every 2 weeks",
+            "biweekly",
+            "every 15th day of month",
+            "every tuesday",
+            "every 12/25",
+            "monthly from 2027",
+            "monthly to 2027",
+            "2027-03-01",
+        ] {
+            let spec = period_spec(expr);
+            assert_eq!(spec.interval(), None, "`{expr}` is not a bare interval");
+            assert!(!spec.is_simple(), "`{expr}` is not editable");
+        }
+    }
+
+    /// The three forms hledger ITSELF rejects, plus a single-space description
+    /// (which hledger reads as part of the period expression, and errors on).
+    /// All four degrade to a locked rule with `raw` intact — **the journal still
+    /// opens**, which is the whole point of this change.
+    #[test]
+    fn hledger_rejects_degrade_rather_than_failing_the_journal() {
+        for expr in [
+            "every last day of month",
+            "every 15th,last day of month",
+            "every jan",
+            // hledger: "a double space is required between period expression and
+            // description/comment". A single space means the rest is part of the
+            // expression, which is what makes this unreadable rather than a rule
+            // named "budget".
+            "monthly budget",
+            // Real hledger expressions we decline to model: neither is one
+            // occurrence per unit, so neither is a step.
+            "every weekday",
+            "every weekendday",
+        ] {
+            let spec = period_spec(expr);
+            assert_eq!(spec.kind, PeriodKind::Unsupported, "`{expr}` is unsupported");
+            assert_eq!(spec.raw, expr, "`{expr}` keeps its raw text");
+            assert_eq!(spec.interval(), None);
+        }
+    }
+
+    /// A rule's header comment and its tags are kept, by the same code that
+    /// keeps a posting's — so `growth: 3%/yr` means the same thing in both
+    /// places. Before this, the header comment was read and thrown away.
+    #[test]
+    fn periodic_rule_keeps_its_comment_and_tags() {
+        let journal = parse_journal(
+            "~ monthly  rent  ; growth: 3%/yr, scenario: base\n    (a)  $1\n",
+            "t.journal",
+        )
+        .unwrap();
+        let rule = &journal.periodic_transactions[0];
+        assert_eq!(rule.description, "rent");
+        assert_eq!(rule.comment, "growth: 3%/yr, scenario: base\n");
+        assert_eq!(
+            rule.tags,
+            vec![
+                ("growth".to_string(), "3%/yr".to_string()),
+                ("scenario".to_string(), "base".to_string()),
+            ]
         );
-        // A richer period expression is deferred too.
-        let err = parse_journal("~ every 2 weeks\n    (a)  $1\n", "t.journal").unwrap_err();
-        assert!(
-            err.to_string().contains("unsupported period expression"),
-            "{err}"
+    }
+
+    /// A comment-only line before the first posting belongs to the RULE; one
+    /// after a posting belongs to that posting. Verified against hledger 1.52:
+    /// `print --forecast` emits the first above the forecast transaction's
+    /// postings and the second below them.
+    #[test]
+    fn periodic_rule_comment_continuation_splits_at_the_first_posting() {
+        let journal = parse_journal(
+            "~ monthly  rent  ; own: x\n    ; more: y\n    (a)  $1\n    ; posting: z\n",
+            "t.journal",
+        )
+        .unwrap();
+        let rule = &journal.periodic_transactions[0];
+        assert_eq!(rule.comment, "own: x\nmore: y\n");
+        assert_eq!(
+            rule.tags,
+            vec![
+                ("own".to_string(), "x".to_string()),
+                ("more".to_string(), "y".to_string()),
+            ]
         );
+        assert_eq!(rule.postings[0].comment, "\nposting: z\n");
+        assert_eq!(
+            rule.postings[0].tags,
+            vec![("posting".to_string(), "z".to_string())]
+        );
+    }
     }
 
     #[test]

@@ -82,7 +82,7 @@
         BUDGET_PERIODS.map(({id, label}) => ({
             period: id,
             label,
-            rows: rows.filter((row) => row.rule.period === id),
+            rows: rows.filter((row) => row.rule.period.simple === id),
             // The rule a new goal joins. Asked of `joinableRule` rather than
             // worked out here, because the page asks the same question again when
             // the modal comes back — and two Add paths answering it differently
@@ -91,8 +91,16 @@
         })).filter((group) => group.rows.length > 0)
     );
 
-    /** Goals in a period the editor does not offer (a `~ daily` rule, say) still have to appear. */
-    const otherRows = $derived(rows.filter((row) => !BUDGET_PERIODS.some((p) => p.id === row.rule.period)));
+    /**
+     * Goals in a period the editor does not offer still have to appear.
+     *
+     * Two kinds land here: a period hledger has and the tab does not offer (a
+     * `~ daily` rule), and a period the engine will not rewrite at all, whose
+     * `simple` is null (`~ every 2 weeks`, `~ monthly from 2027`). The null
+     * falls into this bucket on its own — no new UI was needed for the period
+     * grammar, only the raw text to label it with.
+     */
+    const otherRows = $derived(rows.filter((row) => !BUDGET_PERIODS.some((p) => p.id === row.rule.period.simple)));
 
     /** The file a brand-new rule goes in: the engine's own default target. */
     const defaultFile = $derived(listing.files.find((file) => file.journalId === listing.defaultTarget) ?? null);
@@ -243,7 +251,7 @@
                     {#each otherRows as row (`${row.file.journalId}#${row.goal.index}`)}
                         <li class="flex flex-wrap items-center gap-x-3 border-b border-base-content/5 px-1 py-2 last:border-b-0">
                             <span class="min-w-0 grow truncate font-medium" title={whereabouts(row)}>{row.goal.account}</span>
-                            <span class="badge badge-ghost badge-sm">{row.rule.period}</span>
+                            <span class="badge badge-ghost badge-sm">{row.rule.period.raw}</span>
                             <span class="font-mono text-sm tabular-nums">{shown(row.goal)}</span>
                         </li>
                     {/each}
