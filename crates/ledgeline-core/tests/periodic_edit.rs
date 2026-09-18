@@ -222,6 +222,15 @@ fn removing_a_goal_removes_it_and_leaves_the_rest() {
         let doc = PeriodicDoc::parse(&text);
         let parsed = rules(&text, &name);
         for line in doc.lines() {
+            // A read-only line — or one in a read-only rule — has no Remove to
+            // offer. `plan` is not where that is enforced (`apply`'s
+            // `check_plan` is), so the guard has to be here, exactly as
+            // `setting_a_goal_moves_one_number_and_nothing_else` guards. Until
+            // `period-forms.journal` arrived no fixture held a locked block, so
+            // this loop had never met one.
+            if doc.line_lock(line.index).is_some() {
+                continue;
+            }
             let request = GoalRequest::Remove { index: line.index };
             let Ok(plan) = plan(&doc, &parsed, &request) else {
                 continue;
@@ -288,13 +297,13 @@ fn a_new_rule_is_appended_without_disturbing_the_file() {
         assert_eq!(now.len(), parsed.len() + 1);
         for (before, after) in parsed.iter().zip(&now) {
             assert_eq!(
-                (before.period, &before.description, before.postings.len()),
-                (after.period, &after.description, after.postings.len()),
+                (&before.period, &before.description, before.postings.len()),
+                (&after.period, &after.description, after.postings.len()),
                 "{name}: an existing rule changed"
             );
         }
         let added = now.last().expect("the appended rule");
-        assert_eq!(added.period, PeriodExpr::Yearly);
+        assert_eq!(added.period.interval(), Some(PeriodExpr::Yearly));
         assert_eq!(added.description, "annual budget");
         assert_eq!(added.postings[0].account.0, "income:interest");
         assert_eq!(added.postings[0].ptype, PostingType::Virtual);
@@ -360,8 +369,8 @@ fn a_goal_joins_an_existing_rule_without_disturbing_the_file() {
                     "{name}: rule {at} gained or lost postings it should not have"
                 );
                 assert_eq!(
-                    (before.period, &before.description),
-                    (after.period, &after.description),
+                    (&before.period, &before.description),
+                    (&after.period, &after.description),
                     "{name}: rule {at} was renamed"
                 );
             }
@@ -410,7 +419,15 @@ fn every_fixtures_blocks_line_up_with_its_parsed_rules() {
             "{name}: the scan and the parse disagree about how many rules there are"
         );
         for (block, rule) in doc.blocks().iter().zip(&parsed) {
-            assert_eq!(block.period, Some(rule.period), "{name}: rule period");
+            // Both readings come off the same `parse_period_spec`, so this is a
+            // check that the scan and the parse are looking at the same HEADER —
+            // i.e. that the ordinals line up — rather than that two grammars
+            // agree.
+            assert_eq!(block.period, rule.period.interval(), "{name}: rule period");
+            assert_eq!(
+                block.period_text, rule.period.raw,
+                "{name}: rule period text"
+            );
             assert_eq!(block.description, rule.description, "{name}: rule name");
             assert_eq!(
                 block.lines.len(),

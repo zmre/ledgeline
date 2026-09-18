@@ -16,8 +16,26 @@ function goal(index: number, account: string): BudgetGoal {
     return {index, line: index + 2, account, unbalanced: true, amount: null, entry: null, inverted: false, locked: null};
 }
 
-function rule(block: number, period: string, description: string, extra: Partial<BudgetRule> = {}): BudgetRule {
-    return {block, line: 1, period, description, locked: null, goals: [goal(block, "expenses:food")], ...extra};
+/**
+ * A rule of an OFFERED period. `simple` and `raw` agree here because a bare
+ * interval is written with the word it is offered as; a rule where they differ
+ * is `unofferedRule`.
+ */
+function rule(block: number, period: BudgetPeriod, description: string, extra: Partial<BudgetRule> = {}): BudgetRule {
+    return {block, line: 1, period: {raw: period, simple: period}, description, locked: null, goals: [goal(block, "expenses:food")], ...extra};
+}
+
+/** A rule whose header says more than a bare interval — `~ every 2 weeks`. */
+function unofferedRule(block: number, raw: string, description: string, extra: Partial<BudgetRule> = {}): BudgetRule {
+    return {
+        block,
+        line: 1,
+        period: {raw, simple: null},
+        description,
+        locked: "its period says more than a plain interval",
+        goals: [goal(block, "expenses:food")],
+        ...extra,
+    };
 }
 
 function file(journalId: string, rules: BudgetRule[], extra: Partial<BudgetFile> = {}): BudgetFile {
@@ -54,6 +72,18 @@ describe("joinableRule", () => {
 
     test("is null when no rule states the period", () => {
         expect(joinableRule(listing([file("main.journal", [rule(0, "monthly", "monthly budget")])]), "yearly")).toBeNull();
+    });
+
+    // `~ every 2 weeks` recurs on a fortnight, not on any period the tab offers,
+    // so there is no period it could be joined FOR. Its `simple` is null, which
+    // matches no offered period, and its lock would refuse the append anyway —
+    // two independent reasons, which is the point: the grouping key and the
+    // editability verdict are now separate fields and neither one alone has to
+    // carry both facts.
+    test("never joins a rule whose period is not a bare interval", () => {
+        const files = [file("main.journal", [unofferedRule(0, "every 2 weeks", "paycheck"), rule(1, "monthly", "usable")])];
+        expect(joinableRule(listing(files), "monthly")?.rule.description).toBe("usable");
+        expect(joinableRule(listing(files), "weekly")).toBeNull();
     });
 });
 

@@ -25,7 +25,8 @@
 // was a live bug class (CLEANUP.md DRY-3).
 
 import type {AccountEntry, AccountFile, AccountListing, AccountTag, CreatedAccountsFile} from "$lib/accounts/types";
-import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile} from "$lib/budget/types";
+import {isBudgetPeriod} from "$lib/budget/types";
+import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile, RulePeriod} from "$lib/budget/types";
 import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
 import type {
@@ -3017,10 +3018,15 @@ interface RawBudgetGoal {
     locked?: string;
 }
 
+interface RawBudgetPeriod {
+    raw?: string;
+    simple?: string | null;
+}
+
 interface RawBudgetRule {
     block?: number;
     line?: number;
-    period?: string;
+    period?: RawBudgetPeriod;
     description?: string;
     locked?: string;
     lines?: RawBudgetGoal[];
@@ -3096,11 +3102,30 @@ function decodeBudgetGoal(raw: RawBudgetGoal, context: string): BudgetGoal {
     });
 }
 
+/**
+ * A rule's recurrence.
+ *
+ * `raw` is required and `simple` is not, deliberately. Every rule has words in
+ * its header, so an absent `raw` is a malformed body and throws; `simple` is
+ * absent for every rule the editor cannot offer, which is an ordinary state and
+ * decodes to null. An unrecognised `simple` is also null rather than a throw —
+ * the engine and this file share a vocabulary, but a client that is a version
+ * behind should degrade to "not offerable" rather than refuse the whole listing.
+ */
+function decodeRulePeriod(raw: RawBudgetPeriod | undefined, context: string): RulePeriod {
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected an object`);
+    const simple = raw.simple;
+    return Object.freeze({
+        raw: str(raw.raw, `${context} raw`),
+        simple: typeof simple === "string" && isBudgetPeriod(simple) ? simple : null,
+    });
+}
+
 function decodeBudgetRule(raw: RawBudgetRule, context: string): BudgetRule {
     return Object.freeze({
         block: num(raw.block, `${context} block`),
         line: num(raw.line, `${context} line`),
-        period: str(raw.period, `${context} period`),
+        period: decodeRulePeriod(raw.period, `${context} period`),
         description: str(raw.description, `${context} description`),
         locked: optStr(raw.locked, `${context} locked`),
         // The wire calls them `lines` (they are lines of a file); the domain

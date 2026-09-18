@@ -40,9 +40,10 @@ use super::ReportError;
 use super::aggregate::roll_up;
 use super::mixed_amount::MixedAmount;
 use super::periods::{
-    Interval, bucket_key, bucket_span, bucket_start, compare_iso, last_n_buckets, next_bucket,
+    Interval, add_days, add_months, bucket_key, bucket_span, bucket_start, clamped_date,
+    compare_iso, days_between, last_n_buckets, parts, weekday_of,
 };
-use crate::model::{PeriodExpr, PeriodicTransaction, Transaction};
+use crate::model::{Anchor, PeriodExpr, PeriodKind, PeriodSpec, PeriodicTransaction, Transaction};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -102,16 +103,223 @@ pub struct BudgetOpts<'a> {
     pub budget_desc: Option<&'a str>,
 }
 
-/// Map a rule's [`PeriodExpr`] to the report [`Interval`] used to step its
-/// occurrences.
-fn period_interval(period: PeriodExpr) -> Interval {
-    match period {
+/// Map a rule's fixed-interval UNIT to the report [`Interval`] its occurrences
+/// are phased against.
+const fn period_interval(unit: PeriodExpr) -> Interval {
+    match unit {
         PeriodExpr::Daily => Interval::Daily,
         PeriodExpr::Weekly => Interval::Weekly,
         PeriodExpr::Monthly => Interval::Monthly,
         PeriodExpr::Quarterly => Interval::Quarterly,
         PeriodExpr::Yearly => Interval::Yearly,
     }
+}
+
+/// Hard cap on how many times one rule may fire inside one report span.
+///
+/// The span itself already bounds the walk — every step advances at least a day,
+/// and the loop stops past the report end — so this is a backstop, not the
+/// control. It bounds the one combination the span does not: [`MAX_BUCKETS`] is
+/// 1200, and 1200 *yearly* buckets is twelve centuries, over which a daily rule
+/// fires some 438,000 times. The pre-existing bucket-stepping walk had the same
+/// exposure; this puts a number on it.
+///
+/// [`MAX_BUCKETS`]: super::periods::MAX_BUCKETS
+const MAX_OCCURRENCES: usize = 100_000;
+
+/// Whole calendar months from `a`'s month to `b`'s month (`b − a`), ignoring the
+/// day. Negative when `b` precedes `a`.
+fn months_between(a: &str, b: &str) -> i64 {
+    let (ay, am, _) = parts(a);
+    let (by, bm, _) = parts(b);
+    (by * 12 + bm) - (ay * 12 + am)
+}
+
+/// The last day number of `year`-`month`.
+///
+/// Read back out of [`clamped_date`] rather than from a second month-length
+/// table: 31 is at least as long as any month, so the clamp *is* the answer.
+fn last_day_of(year: i64, month: i64) -> i64 {
+    parts(&clamped_date(year, month, 31)).2
+}
+
+/// `steps` units after `anchor`, counted from the anchor rather than walked.
+///
+/// Counting matters for the month family. `~ monthly from 2026-01-31` fires
+/// 01-31, 02-28, **03-31** (verified against hledger 1.52): each occurrence is
+/// `anchor + n months` with the day clamped for its own target month. Walking
+/// month by month would clamp once and stick at the 28th forever.
+fn step_from(anchor: &str, unit: PeriodExpr, steps: i64) -> String {
+    match unit {
+        PeriodExpr::Daily => add_days(anchor, steps),
+        PeriodExpr::Weekly => add_days(anchor, steps * 7),
+        PeriodExpr::Monthly => add_months(anchor, steps),
+        PeriodExpr::Quarterly => add_months(anchor, steps * 3),
+        PeriodExpr::Yearly => add_months(anchor, steps * 12),
+    }
+}
+
+/// The date an anchored rule fires on in `year`-`month`, or `None` when that
+/// month has no such day (a 5th Tuesday in a four-Tuesday month).
+fn anchored_in_month(year: i64, month: i64, anchor: Anchor) -> Option<String> {
+    match anchor {
+        Anchor::DayOfMonth(day) => Some(clamped_date(year, month, i64::from(day))),
+        Anchor::NthWeekday { nth, weekday } => {
+            let first = clamped_date(year, month, 1);
+            // Days from the 1st to the first `weekday` of the month.
+            let offset = (i64::from(weekday) - weekday_of(&first)).rem_euclid(7);
+            let day = 1 + offset + 7 * (i64::from(nth) - 1);
+            let (year, month, _) = parts(&first);
+            (day <= last_day_of(year, month)).then(|| clamped_date(year, month, day))
+        }
+        // A weekday anchor belongs to the weekly family, which never asks.
+        Anchor::Weekday(_) => None,
+    }
+}
+
+/// The dates `spec` fires on within the inclusive report span `[start, end]`.
+///
+/// # What each bound means
+///
+/// Both were established by driving `hledger 1.52 bal -M --budget` over scratch
+/// journals, because neither is guessable from the manual:
+///
+/// - **`from` is a phase anchor, not a filter.** `~ monthly from 2026-01-15`
+///   fires on the 15th of every month. With no `from`, the phase comes from the
+///   report span instead — the start of the rule-unit period containing the
+///   report start — which is what makes a bare `~ weekly` report on Mondays.
+/// - **`to` is exclusive.** `~ monthly from 2026 to 2028` fires exactly 24
+///   times, 2026-01 through 2027-12.
+///
+/// A partial leading period is NOT counted: for a weekly rule reported from a
+/// non-Monday start, the ISO week that merely *contains* the start began before
+/// it and does not fire. That is hledger's behaviour and the pre-existing one,
+/// pinned by the `weekly.journal` golden.
+///
+/// [`PeriodKind::Unsupported`] fires never. It is the one place this engine
+/// knowingly under-reports rather than guessing at a recurrence it cannot state,
+/// and the rule is locked in the editor so the user is told.
+fn occurrences(start: &str, end: &str, spec: &PeriodSpec) -> Result<Vec<String>, ReportError> {
+    let dates = match spec.kind {
+        PeriodKind::Every { unit, multiplier } => every_dates(start, end, spec, unit, multiplier)?,
+        PeriodKind::Anchored { anchor, .. } => anchored_dates(start, end, spec, anchor),
+        PeriodKind::Annual { month, day } => annual_dates(start, end, spec, month, day),
+        // `~ 2027-03-01`, or `~ from D to D2` spanning one period: the `from`
+        // date is the occurrence. With neither, the span's own start is.
+        PeriodKind::Once => vec![spec.start.clone().unwrap_or_else(|| start.to_string())],
+        PeriodKind::Unsupported => Vec::new(),
+    };
+    Ok(dates
+        .into_iter()
+        .filter(|date| {
+            compare_iso(date, start) != Ordering::Less
+                && compare_iso(date, end) != Ordering::Greater
+                && spec
+                    .end
+                    .as_deref()
+                    .is_none_or(|to| compare_iso(date, to) == Ordering::Less)
+        })
+        .collect())
+}
+
+/// `daily` … `yearly`, with or without a multiplier.
+fn every_dates(
+    start: &str,
+    end: &str,
+    spec: &PeriodSpec,
+    unit: PeriodExpr,
+    multiplier: u32,
+) -> Result<Vec<String>, ReportError> {
+    let anchor = match spec.start.clone() {
+        Some(from) => from,
+        None => bucket_start(&bucket_key(start, period_interval(unit)))?,
+    };
+    // `.max(1)`: the parser refuses `every 0 weeks`, so a zero can only arrive
+    // from a hand-built spec — but it would divide by zero below, and a report
+    // is not a place to learn that. A zero step reads as one.
+    let step = i64::from(multiplier).max(1);
+    // Skip forward to the span rather than walking to it: a `from 1900-01-01`
+    // daily rule would otherwise take 45,000 steps to reach a report it may not
+    // even touch. Floor division (and `max(0)`), so the index this lands on is
+    // never PAST the first occurrence inside the span — the occurrence one
+    // before it necessarily falls in an earlier day/month than `start`.
+    let span = match unit {
+        PeriodExpr::Daily => days_between(&anchor, start) / step,
+        PeriodExpr::Weekly => days_between(&anchor, start) / (step * 7),
+        PeriodExpr::Monthly => months_between(&anchor, start) / step,
+        PeriodExpr::Quarterly => months_between(&anchor, start) / (step * 3),
+        PeriodExpr::Yearly => months_between(&anchor, start) / (step * 12),
+    };
+    let mut out = Vec::new();
+    for n in span.max(0).. {
+        let date = step_from(&anchor, unit, n * step);
+        if compare_iso(&date, end) == Ordering::Greater || out.len() >= MAX_OCCURRENCES {
+            break;
+        }
+        out.push(date);
+    }
+    Ok(out)
+}
+
+/// `every 15th day of month`, `every 3rd tuesday of month`, `every tuesday`.
+///
+/// The two families treat `from` differently, and hledger is the reason rather
+/// than this module:
+///
+/// - **Monthly-anchored** periods are calendar months whose occurrence sits on
+///   the anchored day, so `from` is an ordinary lower bound.
+///   `every 15th day of month from 2026-03-16` first fires 04-15, not 03-15.
+/// - **Weekly-anchored** periods run from the anchored weekday to the next one,
+///   so `from` snaps DOWN onto one and the first occurrence may precede it.
+///   `every tuesday from 2026-03-02` (a Monday) first fires 2026-02-24.
+///
+/// Both verified. They are two code paths in hledger and so are two here.
+fn anchored_dates(start: &str, end: &str, spec: &PeriodSpec, anchor: Anchor) -> Vec<String> {
+    let base = spec.start.as_deref().unwrap_or(start);
+    if let Anchor::Weekday(weekday) = anchor {
+        // Back up onto the anchored weekday on-or-before `base`.
+        let back = (weekday_of(base) - i64::from(weekday)).rem_euclid(7);
+        let first = add_days(base, -back);
+        let skip = (days_between(&first, start) / 7).max(0);
+        let mut out = Vec::new();
+        for n in skip.. {
+            let date = add_days(&first, n * 7);
+            if compare_iso(&date, end) == Ordering::Greater || out.len() >= MAX_OCCURRENCES {
+                break;
+            }
+            out.push(date);
+        }
+        return out;
+    }
+    // Monthly-anchored: one candidate month per month of the span. Bounded by
+    // the span itself, so a month with no such day can simply be skipped without
+    // risking a loop that never reaches its stop condition.
+    let (year, month, _) = parts(base);
+    let first = months_between(base, start).max(0);
+    (first..=months_between(base, end).max(-1))
+        .filter_map(|n| anchored_in_month(year, month + n, anchor))
+        // `from` is a plain lower bound for this family.
+        .filter(|date| {
+            spec.start
+                .as_deref()
+                .is_none_or(|from| compare_iso(date, from) != Ordering::Less)
+        })
+        .collect()
+}
+
+/// `every 12/25` — once a year on a fixed month/day.
+fn annual_dates(start: &str, end: &str, spec: &PeriodSpec, month: u32, day: u32) -> Vec<String> {
+    let base = spec.start.as_deref().unwrap_or(start);
+    let (base_year, _, _) = parts(base);
+    let (last_year, _, _) = parts(end);
+    (base_year..=last_year)
+        .map(|year| clamped_date(year, i64::from(month), i64::from(day)))
+        .filter(|date| {
+            spec.start
+                .as_deref()
+                .is_none_or(|from| compare_iso(date, from) != Ordering::Less)
+        })
+        .collect()
 }
 
 /// Clamp a full account name to at most `depth` segments (`min` 1). Deeper
@@ -149,28 +357,6 @@ fn remap_account<'a>(account: &'a str, budgeted: &BTreeSet<String>) -> &'a str {
         }
     }
     UNBUDGETED
-}
-
-/// The dates a rule of interval `ri` fires on within the inclusive report span
-/// `[start, end]`: each occurrence is the start of an `ri`-period whose boundary
-/// falls within the span. hledger does NOT include a partial first period whose
-/// boundary precedes the report start — e.g. for a weekly rule reported from a
-/// non-Monday `start`, the ISO week that merely *contains* `start` (and begins
-/// the prior week) does not count; only the boundaries at or after `start` do.
-fn occurrences(start: &str, end: &str, ri: Interval) -> Result<Vec<String>, ReportError> {
-    let mut out = Vec::new();
-    let mut key = bucket_key(start, ri);
-    loop {
-        let period_start = bucket_start(&key)?;
-        if compare_iso(&period_start, end) == Ordering::Greater {
-            break;
-        }
-        if compare_iso(&period_start, start) != Ordering::Less {
-            out.push(period_start);
-        }
-        key = next_bucket(&key, ri)?;
-    }
-    Ok(out)
 }
 
 /// Add every commodity of `src` into `dst` (in place), preserving zeros for a
@@ -306,8 +492,7 @@ pub fn budget_report(
     let mut goal_own: Vec<BTreeMap<String, MixedAmount>> =
         (0..buckets.len()).map(|_| BTreeMap::new()).collect();
     for rule in &selected {
-        let ri = period_interval(rule.period);
-        for date in occurrences(&report_start, opts.end, ri)? {
+        for date in occurrences(&report_start, opts.end, &rule.period)? {
             let Some(&index) = bucket_index.get(bucket_key(&date, opts.interval).as_str()) else {
                 continue;
             };
@@ -425,10 +610,33 @@ mod tests {
         }
     }
 
+    /// A bare fixed-interval rule — `~ monthly`, `~ weekly`. The shape every
+    /// fixture in this repo used before period expressions grew a grammar, kept
+    /// as the default so those tests go on asserting what they always did.
     fn rule(period: PeriodExpr, description: &str, postings: Vec<Posting>) -> PeriodicTransaction {
+        spec_rule(
+            PeriodSpec {
+                raw: crate::periodic::period_word(period).to_string(),
+                kind: PeriodKind::Every { unit: period, multiplier: 1 },
+                start: None,
+                end: None,
+            },
+            description,
+            postings,
+        )
+    }
+
+    /// A rule with an arbitrary period spec.
+    fn spec_rule(
+        period: PeriodSpec,
+        description: &str,
+        postings: Vec<Posting>,
+    ) -> PeriodicTransaction {
         PeriodicTransaction {
             period,
             description: description.to_string(),
+            comment: String::new(),
+            tags: Vec::new(),
             postings,
             // The report never reads a rule's position; only the editor does.
             source_span: (
@@ -703,5 +911,209 @@ mod tests {
         let food = row(&report, "expenses:food");
         assert_eq!(food.cells[0].goal, Some(usd_ma(40_000)));
         assert_eq!(food.cells[1].goal, Some(usd_ma(40_000)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Period grammar: every expectation below was read off `hledger 1.52
+    // bal -M --budget` before it was written down.
+    // -----------------------------------------------------------------------
+
+    /// A spec built the way the parser builds one, for a test that cares about
+    /// the shape rather than the spelling.
+    fn spec(kind: PeriodKind, start: Option<&str>, end: Option<&str>) -> PeriodSpec {
+        PeriodSpec {
+            raw: "(test)".to_string(),
+            kind,
+            start: start.map(str::to_string),
+            end: end.map(str::to_string),
+        }
+    }
+
+    /// The goal in each bucket of a one-rule report over Jan–Jun 2026, in whole
+    /// dollars, so a test reads as the row hledger prints.
+    fn monthly_goals(period: PeriodSpec) -> Vec<i128> {
+        let rules = vec![spec_rule(period, "", vec![goal_posting("expenses:x", 10)])];
+        let report = budget_report(&[], &rules, &opts("2026-06-30", 6, None)).unwrap();
+        match report.rows.iter().find(|r| r.account == "expenses:x") {
+            Some(row) => row
+                .cells
+                .iter()
+                .map(|cell| {
+                    // Whole dollars, whatever scale the accumulation settled on.
+                    cell.goal.as_ref().map_or(0, |goal| {
+                        goal.iter().next().map_or(0, |(_, dec)| {
+                            dec.mantissa / 10_i128.pow(dec.places)
+                        })
+                    })
+                })
+                .collect(),
+            // No row at all is the honest answer for a rule that never fires.
+            None => vec![0; 6],
+        }
+    }
+
+    /// `from` is a phase ANCHOR, not a lower bound: a mid-month `from` moves
+    /// every occurrence to that day of the month. `to` is EXCLUSIVE.
+    #[test]
+    fn from_anchors_the_phase_and_to_is_exclusive() {
+        let monthly = PeriodKind::Every { unit: PeriodExpr::Monthly, multiplier: 1 };
+        // Unbounded: every month.
+        assert_eq!(monthly_goals(spec(monthly, None, None)), [10; 6]);
+        // `from` in the middle of the span: March onward.
+        assert_eq!(
+            monthly_goals(spec(monthly, Some("2026-03-01"), None)),
+            [0, 0, 10, 10, 10, 10]
+        );
+        // `to 2026-05-01` is exclusive, so May does NOT fire.
+        assert_eq!(
+            monthly_goals(spec(monthly, Some("2026-03-01"), Some("2026-05-01"))),
+            [0, 0, 10, 10, 0, 0]
+        );
+        // `to 2026-05-15` DOES admit the May 1 occurrence — the bound is
+        // compared against the occurrence date, with no snapping.
+        assert_eq!(
+            monthly_goals(spec(monthly, Some("2026-03-01"), Some("2026-05-15"))),
+            [0, 0, 10, 10, 10, 0]
+        );
+        // A mid-month anchor fires on the 15th, so `to 2026-05-15` now excludes
+        // May: the occurrence falls exactly on the exclusive bound.
+        assert_eq!(
+            monthly_goals(spec(monthly, Some("2026-03-15"), Some("2026-05-15"))),
+            [0, 0, 10, 10, 0, 0]
+        );
+    }
+
+    /// A multiplier steps N units at a time, phased from `from` when there is
+    /// one and from the report span otherwise.
+    #[test]
+    fn multiplier_steps_and_takes_its_phase_from_the_bound() {
+        let every_2_months = PeriodKind::Every { unit: PeriodExpr::Monthly, multiplier: 2 };
+        // No bound: phase comes from the span start (January).
+        assert_eq!(
+            monthly_goals(spec(every_2_months, None, None)),
+            [10, 0, 10, 0, 10, 0]
+        );
+        // `from` February shifts the whole sequence.
+        assert_eq!(
+            monthly_goals(spec(every_2_months, Some("2026-02-01"), None)),
+            [0, 10, 0, 10, 0, 10]
+        );
+        // A `from` BEFORE the span still sets the phase.
+        assert_eq!(
+            monthly_goals(spec(every_2_months, Some("2025-12-01"), None)),
+            [0, 10, 0, 10, 0, 10]
+        );
+    }
+
+    /// `~ 2026-04-15` contributes to exactly one bucket, and nothing outside the
+    /// span contributes at all.
+    #[test]
+    fn once_fires_in_a_single_bucket() {
+        assert_eq!(
+            monthly_goals(spec(PeriodKind::Once, Some("2026-04-15"), None)),
+            [0, 0, 0, 10, 0, 0]
+        );
+        assert_eq!(
+            monthly_goals(spec(PeriodKind::Once, Some("2027-04-15"), None)),
+            [0; 6]
+        );
+    }
+
+    /// `every 12/25` fires once a year, so a Jan–Jun report sees it never.
+    #[test]
+    fn annual_fires_on_its_month_and_day() {
+        let christmas = PeriodKind::Annual { month: 12, day: 25 };
+        assert_eq!(monthly_goals(spec(christmas, None, None)), [0; 6]);
+        let june = PeriodKind::Annual { month: 6, day: 30 };
+        assert_eq!(monthly_goals(spec(june, None, None)), [0, 0, 0, 0, 0, 10]);
+    }
+
+    /// An anchored rule fires once per month regardless of which day it names,
+    /// so a monthly report cannot tell it from `~ monthly` — which is exactly
+    /// what hledger shows.
+    #[test]
+    fn monthly_anchored_fires_once_per_month() {
+        for anchor in [
+            Anchor::DayOfMonth(15),
+            Anchor::NthWeekday { nth: 3, weekday: 2 },
+        ] {
+            let kind = PeriodKind::Anchored { unit: PeriodExpr::Monthly, anchor };
+            assert_eq!(monthly_goals(spec(kind, None, None)), [10; 6], "{anchor:?}");
+        }
+        // A `from` past the anchored day skips that month: hledger's
+        // `every 15th day of month from 2026-03-16` first fires 04-15.
+        let fifteenth = PeriodKind::Anchored {
+            unit: PeriodExpr::Monthly,
+            anchor: Anchor::DayOfMonth(15),
+        };
+        assert_eq!(
+            monthly_goals(spec(fifteenth, Some("2026-03-16"), None)),
+            [0, 0, 0, 10, 10, 10]
+        );
+    }
+
+    /// A weekday-anchored rule fires 4 or 5 times a month. 2026 Tuesdays:
+    /// Jan 4, Feb 4, Mar 5, Apr 4, May 4, Jun 5 — verified against hledger.
+    #[test]
+    fn weekly_anchored_counts_its_weekday_per_month() {
+        let tuesdays = PeriodKind::Anchored {
+            unit: PeriodExpr::Weekly,
+            anchor: Anchor::Weekday(2),
+        };
+        assert_eq!(
+            monthly_goals(spec(tuesdays, None, None)),
+            [40, 40, 50, 40, 40, 50]
+        );
+    }
+
+    /// A rule whose period this engine cannot state contributes no goals. It is
+    /// deliberate under-reporting rather than a guess — and the editor locks the
+    /// rule, so the user is told rather than left to wonder.
+    #[test]
+    fn unsupported_period_contributes_nothing() {
+        assert_eq!(
+            monthly_goals(spec(PeriodKind::Unsupported, None, None)),
+            [0; 6]
+        );
+    }
+
+    /// The regression that matters most: a bare fixed interval must produce the
+    /// dates the pre-grammar bucket walk produced, or every committed golden
+    /// moves. Asserted directly on `occurrences` for all five units.
+    #[test]
+    fn bare_intervals_still_walk_bucket_starts() {
+        let bare = |unit| spec(PeriodKind::Every { unit, multiplier: 1 }, None, None);
+        // Monthly/quarterly/yearly from a bucket-aligned start.
+        assert_eq!(
+            occurrences("2026-01-01", "2026-06-30", &bare(PeriodExpr::Monthly)).unwrap(),
+            [
+                "2026-01-01",
+                "2026-02-01",
+                "2026-03-01",
+                "2026-04-01",
+                "2026-05-01",
+                "2026-06-01"
+            ]
+        );
+        assert_eq!(
+            occurrences("2026-01-01", "2026-12-31", &bare(PeriodExpr::Quarterly)).unwrap(),
+            ["2026-01-01", "2026-04-01", "2026-07-01", "2026-10-01"]
+        );
+        assert_eq!(
+            occurrences("2026-01-01", "2027-12-31", &bare(PeriodExpr::Yearly)).unwrap(),
+            ["2026-01-01", "2027-01-01"]
+        );
+        // Weekly phases on ISO Mondays and drops the partial leading week —
+        // 2026-01-01 is a Thursday, and its week began 2025-12-29.
+        assert_eq!(
+            occurrences("2026-01-01", "2026-01-31", &bare(PeriodExpr::Weekly)).unwrap(),
+            ["2026-01-05", "2026-01-12", "2026-01-19", "2026-01-26"]
+        );
+        assert_eq!(
+            occurrences("2026-01-01", "2026-01-04", &bare(PeriodExpr::Daily))
+                .unwrap()
+                .len(),
+            4
+        );
     }
 }

@@ -314,3 +314,123 @@ one, by design; the test that it stays read-only is the lock assertion in
 - `docs/budget.md` amended.
 - Any contract in this doc that changed during implementation is amended here in
   the same commit, per `plans/00-overview.md` convention #9.
+
+---
+
+## Contract amendments made during implementation
+
+### 1. `interval()` is the editor's question, NOT the goal-generation question
+
+The Phase 2 table said `period_interval` "takes `&PeriodSpec`; `None` ⇒ the rule
+contributes no goals to the bars". **That is wrong and would have been a silent
+under-report.** `~ monthly from 2027 to 2028` is not a bare interval, so
+`interval()` answers `None` — but hledger emits goals for it, and the Phase 3
+golden requires us to match bucket for bucket. Wiring goal generation through
+`interval()` would have made every bounded, multiplied and anchored rule
+contribute nothing while claiming to have been parsed.
+
+So the two questions are separated:
+
+- `PeriodSpec::interval()` / `is_simple()` — "is this a BARE fixed interval?"
+  (one of the five units, multiplier 1, no `from`/`to`). This is what the editor
+  and `BlockLock` ask, because `periodic::period_word` can only restate a bare
+  interval.
+- `reports::budget::occurrences(start, end, &PeriodSpec)` — reads the whole spec
+  and enumerates every kind. `period_interval` survives as a private
+  `PeriodExpr -> Interval` helper used only to phase a bare unit.
+
+`interval()` and `is_simple()` are therefore the same predicate. Both are kept,
+spelled as one calling the other, so a future decision to let the editor write a
+bounded header has one place to change.
+
+### 2. `tags: Vec<Tag>` — there is no `Tag` type
+
+The model spells posting and transaction tags `Vec<(String, String)>`.
+`PeriodicTransaction::tags` matches them rather than introducing a newtype.
+
+### 3. `BlockLock` cannot quote `raw`, and wanted two variants rather than one
+
+The plan asked for "a reason for `PeriodKind::Unsupported` that quotes `raw`".
+`BlockLock::message()` returns `&'static str`, and so do
+`PeriodicError::LockedBlock::why`, `WireBudgetRule::locked` and
+`WireBudgetLine::locked`. Quoting would have forced `BlockLock` to own a `String`
+— losing `Copy` — and changed four public shapes for a sentence the client can
+already compose, because `raw` now travels beside the lock as `period.raw`.
+
+The lock also needed **two** new readings, not one, because the consequences
+differ and a user is owed the difference:
+
+| variant | when | what it costs the user |
+|---|---|---|
+| `BlockLock::Period` | understood but more than a bare interval (`every 2 weeks`, `monthly from 2027`) | cannot be edited here; goals still count |
+| `BlockLock::UnsupportedPeriod` | `PeriodKind::Unsupported` | cannot be edited **and contributes no goals to the bars** |
+
+### 4. `period_of` is deleted, not re-pointed
+
+The plan had `periodic.rs`'s `period_of` "map a `PeriodSpec` back to the editor's
+period vocabulary". Instead `parse::parse_period_spec` is `pub(crate)` and
+`periodic::header` calls it directly. The old doc comment asked a maintainer to
+keep two copies of the grammar in lockstep; sharing the function is that request
+in a form that cannot be forgotten, and it is what pins a block's ordinal to its
+parsed rule's.
+
+### 5. The fixture cannot hold the three forms hledger rejects
+
+Phase 3 asked for `period-forms.journal` to contain "the three hledger rejects".
+It cannot: **hledger refuses to read a file containing one**, so
+`gen-budget-golden.sh` would fail and no golden could exist. hledger cannot be an
+oracle for input it will not parse.
+
+They are asserted instead in `parse.rs`'s
+`hledger_rejects_degrade_rather_than_failing_the_journal`, together with
+`every weekday` / `every weekendday` (which hledger *does* accept and we decline
+to model) and a single-space description. The fixture holds only accepted forms.
+
+### 6. `just snapshot-native` does not change
+
+The plan said to re-run it, review and commit the diff. `/api/budget/lines` is
+not in `fixtures/native/v1/requests.tsv` — only the budget *report* is
+snapshotted — and `fixtures/sample.journal` declares no `~` rules at all, so the
+reshaped `period` field appears in no committed native fixture. The wire change
+is covered by `budget_endpoints.rs` and `nativeDecode.test.ts` instead.
+
+### 7. What the CLI actually says about bounds (the plan did not state this)
+
+Established by driving `bal -M --budget` and `print --forecast` over scratch
+journals. None of it is guessable, and all of it is load-bearing:
+
+- **`from` is a phase anchor, not a lower bound.** `~ monthly from 2026-01-15`
+  fires on the 15th of every month. `~ every 2 months from 2026-02-01` fires
+  Feb/Apr/Jun even when the report starts in March. With no `from`, the phase
+  comes from the start of the rule-unit period containing the report start.
+- **Month stepping counts from the anchor, it does not walk.**
+  `~ monthly from 2026-01-31` fires 01-31, 02-28, **03-31**. Walking would clamp
+  once and stick at the 28th. This is why `periods::clamped_date` was added.
+- **`to` is an exclusive comparison against the occurrence date, with no
+  snapping.** `to 2026-04-02` admits the Apr 1 occurrence; `to 2026-04-01` does
+  not.
+- **The two anchored families treat `from` differently.** Monthly-anchored
+  (`every 15th day of month`) applies it as an ordinary lower bound — `from
+  2026-03-16` first fires 04-15. Weekly-anchored (`every tuesday`) snaps it DOWN
+  onto the anchored weekday, so `from 2026-03-02` (a Monday) first fires
+  **2026-02-24**, before the bound. Both are reproduced.
+- Synonyms: `biweekly` and `fortnightly` are `every 2 weeks`; `bimonthly` is
+  `every 2 months`. `semiannually` and `annually` are rejected by hledger.
+
+### 8. Guards the plan did not call for
+
+- `MAX_PERIOD_MULTIPLIER` (1000) in the parser: `every 0 weeks` must never reach
+  the walk, because a zero step divides by zero and never terminates.
+  `every_dates` also floors the step at 1, since a hand-built spec bypasses the
+  parser.
+- `MAX_OCCURRENCES` (100 000) in the walk. The report span already bounds it;
+  this puts a number on the one combination it does not — 1200 *yearly* buckets
+  is twelve centuries, over which a daily rule fires ~438 000 times. The
+  pre-existing bucket-stepping walk had the same exposure.
+
+### 9. Not verified against hledger
+
+`every 3rd tuesday of month from DATE` and `every 12/25 from DATE` apply a
+`>= from` lower bound **by analogy** with `every 15th day of month`, which was
+verified. The combination is not in the fixture and not in the golden. If plan 22
+needs a bounded anchored or annual rule, verify it against the CLI first.

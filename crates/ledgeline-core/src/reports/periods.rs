@@ -371,6 +371,32 @@ pub fn add_months(date: &str, months: i64) -> String {
     )
 }
 
+/// The ISO weekday of `date`: 1 = Monday … 7 = Sunday.
+///
+/// The same numbering [`bucket_key`] buckets ISO weeks by, exposed because a
+/// periodic rule can be anchored on a weekday (`every 3rd tuesday of month`) and
+/// the budget report must not grow a second weekday convention to answer that.
+pub(crate) fn weekday_of(date: &str) -> i64 {
+    let (year, month, day) = parts(date);
+    iso_weekday(days_from_civil(year, month, day))
+}
+
+/// The ISO date `year`-`month`-`day`, with `month` normalized into its year
+/// (month 13 is January of the next year, month 0 is the previous December) and
+/// `day` clamped into that month's length.
+///
+/// Month normalization is [`add_months`]' own, so "N months after a month index"
+/// means one thing in this module. The CLAMP is what distinguishes the two:
+/// `add_months` walks from a date and therefore cannot recover a day its
+/// intermediate month was too short for, while a rule anchored on the 31st has
+/// to give January 31 and then February 28 and then March **31**. Verified
+/// against hledger 1.52: `~ monthly from 2026-01-31` fires 01-31, 02-28, 03-31.
+pub(crate) fn clamped_date(year: i64, month: i64, day: i64) -> String {
+    let index = year * 12 + (month - 1);
+    let (year, month) = (index.div_euclid(12), index.rem_euclid(12) + 1);
+    to_iso(year, month, day.clamp(1, days_in_month(year, month)))
+}
+
 /// Number of days from `a` to `b` (`b − a`); negative when `b` precedes `a`.
 #[must_use]
 pub fn days_between(a: &str, b: &str) -> i64 {

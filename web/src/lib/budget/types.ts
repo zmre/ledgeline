@@ -62,13 +62,28 @@ export interface BudgetGoal {
     locked: string | null;
 }
 
+/**
+ * A rule's recurrence, in the two readings the tab needs.
+ *
+ * Two fields rather than one string, mirroring `budget_api.rs`'s `WirePeriod`.
+ * A `~ monthly from 2027` rule is monthly AND not something the editor can
+ * rewrite, and one field would have to lie about one of those: group by
+ * {@link simple}, show {@link raw}.
+ */
+export interface RulePeriod {
+    /** The period expression exactly as the journal writes it — `every 2 weeks`. */
+    raw: string;
+    /** The recurrence the editor offers, or null for everything else (then the rule is `locked`). */
+    simple: BudgetPeriod | null;
+}
+
 /** One `~ PERIOD  description` rule. */
 export interface BudgetRule {
     /** Handle for `add`, scoped to this file. */
     block: number;
     line: number;
-    /** One of {@link BudgetPeriod}, or the raw text when the engine could not model it (then `locked` is set). */
-    period: string;
+    /** How often the rule recurs — see {@link RulePeriod}. */
+    period: RulePeriod;
     /** `--budget=DESCPAT` matches a substring of this. */
     description: string;
     /** Why this whole rule is read-only, or null. */

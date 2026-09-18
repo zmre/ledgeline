@@ -216,7 +216,11 @@ async fn the_listing_reports_rules_goals_and_both_signs() {
     let rules = file["rules"].as_array().expect("rules is an array");
     assert_eq!(rules.len(), 2);
 
-    assert_eq!(rules[0]["period"], json!("monthly"));
+    // A bare interval reports both readings, and they agree.
+    assert_eq!(
+        rules[0]["period"],
+        json!({"raw": "monthly", "simple": "monthly"})
+    );
     assert_eq!(rules[0]["description"], json!("household budget"));
     assert_eq!(rules[0]["line"], json!(5));
     let food = &rules[0]["lines"][0];
@@ -234,6 +238,60 @@ async fn the_listing_reports_rules_goals_and_both_signs() {
     assert_eq!(interest["inverted"], json!(true));
     assert_eq!(interest["entry"]["value"]["mantissa"], json!("1200"));
     assert_eq!(interest["amount"]["$"]["mantissa"], json!("-1200"));
+}
+
+/// A rule whose period is more than a bare interval is LISTED, with its header's
+/// own words and a `simple` of null.
+///
+/// Before the period grammar, a journal holding any of these would not open at
+/// all — the parse failed on the header and took the whole ledger with it. That
+/// it now appears here, read-only and with a sentence, is the change. The two
+/// fields are asserted separately because they are the two different questions a
+/// client asks: what does the header say, and can I offer it.
+#[tokio::test]
+async fn a_rule_the_editor_cannot_offer_is_listed_with_its_raw_period() {
+    let tree = Tree::with(
+        "~ every 2 weeks  paycheck\n    (income:salary)  $-2000\n\
+         \n~ monthly from 2027  future rent\n    (expenses:rent)  $1500\n\
+         \n~ every weekday  commute\n    (expenses:bus)  $5\n\
+         \n~ monthly  household budget\n    (expenses:food)  $400\n",
+    );
+    let (status, body) = get(&tree, "/api/budget/lines").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let rules = main_file(&body)["rules"]
+        .as_array()
+        .expect("rules is an array")
+        .clone();
+    assert_eq!(rules.len(), 4, "every rule is listed, none is dropped");
+
+    // Understood, but says more than a bare interval: no `simple`, and locked.
+    for (at, raw) in [(0, "every 2 weeks"), (1, "monthly from 2027")] {
+        assert_eq!(rules[at]["period"]["raw"], json!(raw));
+        assert!(
+            rules[at]["period"]["simple"].is_null(),
+            "{raw} is not a period the editor offers"
+        );
+        assert!(!rules[at]["locked"].is_null(), "{raw} is read-only");
+    }
+    // Not understood at all: the lock says so in different words, because the
+    // consequence differs — this rule contributes no goals to the bars either.
+    assert_eq!(rules[2]["period"]["raw"], json!("every weekday"));
+    assert!(rules[2]["period"]["simple"].is_null());
+    assert!(
+        rules[2]["locked"]
+            .as_str()
+            .is_some_and(|why| why.contains("contributes no goals")),
+        "an unenumerable period says so: {}",
+        rules[2]["locked"]
+    );
+    // And the ordinary rule alongside them is untouched and still editable.
+    assert_eq!(
+        rules[3]["period"],
+        json!({"raw": "monthly", "simple": "monthly"})
+    );
+    assert!(rules[3]["locked"].is_null());
+    assert!(rules[3]["lines"][0]["locked"].is_null());
 }
 
 /// The history strip: subaccount-inclusive, oldest first, with the running
