@@ -1,9 +1,38 @@
 <!-- The what-if table: three sections over one scenario.
 
      Income and Expenses hold the RECURRING lines; One-off events holds the
-     dated ones. Which section a line lands in is decided by
-     `scenarioModel.sectionOfLine` — by the account's resolved TYPE, never by
-     its name.
+     dated ones. A line's section comes from the account's resolved TYPE, never
+     from its name — but not while it is being edited. See the rule below.
+
+     # THE SECTION-STABILITY RULE
+
+     **A row never moves, and never loses focus, while it is being edited.**
+
+     Section membership used to be re-derived from the account text on every
+     render, so it changed on every keystroke: `` is not revenue and neither is
+     `i`, so a row added under Income was born in Expenses, and finishing
+     `revenues:…` threw it back. Income and Expenses are two different `{#each}`
+     blocks, so each flip DESTROYED the row's DOM node and rebuilt it elsewhere,
+     taking the caret with it. One letter was enough.
+
+     So the section is a stored property (`ScenarioLine.section`, UI-only) and
+     the rule is:
+
+       - A row added by a section's "Add a line" button is HELD in that section.
+       - Any row is held in whatever section it is already in the moment focus
+         enters it (`holdSection`), so editing an existing account cannot move
+         it mid-word either.
+       - The hold is released, and the account's type gets to decide again, only
+         once focus has left the whole row (`scheduleRelease`). Never on input.
+       - A row whose account is BLANK is never reconciled at all. That row
+         cannot be classified, and dropping it into Expenses because of it is
+         the original bug wearing a hat.
+       - If releasing a hold MOVES a row, the live region below the heading says
+         so by name. A row that relocates in silence is indistinguishable from
+         one that was lost.
+
+     `signedQuantity` keys off the account's resolved TYPE and not off the
+     section, so none of this touches the sign convention.
 
      # Two amount conventions, and why they differ
 
@@ -22,11 +51,19 @@
 
      # The row menu
 
-     A native <details class="dropdown">, not a positioned popup: it needs no
-     measurement, it closes on Escape for free, and its items are real buttons
-     that a test can find without asserting on geometry (jsdom has no layout
-     engine — web/README.md). -->
+     `RowMenu.svelte`, which is PORTALLED to <body> and positioned. It has to be:
+     both tables live in `overflow-x-auto`, which clips on both axes, so an
+     in-flow menu was invisible for the rows that most needed it. That component
+     also owns Escape, click-outside and the trigger's toggle — a native
+     `<details>` gives none of those, whatever this comment used to claim. Its
+     items stay real `<button>`s, so a test finds them by role and name and
+     never by geometry (jsdom has no layout engine — web/README.md).
+
+     Every row's menu carries a UNIQUE accessible name, falling back to its
+     position when the account is blank (`rowName`), because "Delete row" you
+     cannot address is not a delete. -->
 <script lang="ts">
+    import {onDestroy} from "svelte";
     import AccountInput from "$lib/journal/edit/AccountInput.svelte";
     import {decToInput, parseAmountInput} from "$lib/api/editMapping";
     import type {AccountType} from "$lib/domain/accountTypes";
@@ -46,15 +83,28 @@
         rateFromPercent,
         removeRow,
         removeSegment,
+        resolvedSection,
+        rowNames,
+        sectionOfLine,
         sectionPrefix,
         splitStep,
         takenIds,
         withAccount,
         withBounds,
         withInterval,
-        type LineSection,
+        type LogicalRow,
     } from "../scenarioModel";
-    import {GROWTH_UNITS, SCENARIO_INTERVALS, type GrowthUnit, type Scenario, type ScenarioAmount, type ScenarioEvent, type ScenarioLine} from "../types";
+    import {
+        GROWTH_UNITS,
+        SCENARIO_INTERVALS,
+        type GrowthUnit,
+        type HeldSection,
+        type Scenario,
+        type ScenarioAmount,
+        type ScenarioEvent,
+        type ScenarioLine,
+    } from "../types";
+    import RowMenu from "./RowMenu.svelte";
 
     let {
         scenario,
@@ -77,22 +127,95 @@
     } = $props();
 
     /** The two recurring sections, in the order the ask names them. */
-    const SECTIONS: {id: Exclude<LineSection, "oneoff">; title: string; blurb: string}[] = [
+    const SECTIONS: {id: HeldSection; title: string; blurb: string}[] = [
         {id: "income", title: "Income", blurb: "What comes in, as a positive figure."},
         // Not just "Expenses": a recurring transfer to savings is neither
         // revenue nor an expense, and it belongs somewhere visible.
         {id: "expense", title: "Expenses and other outflows", blurb: "What goes out, as a positive figure."},
     ];
 
-    const rowsFor = (section: Exclude<LineSection, "oneoff">) => logicalRows(scenario.lines, declared, section);
+    const titleOf = (section: HeldSection): string => (section === "income" ? "Income" : "Expenses");
+
+    const rowsFor = (section: HeldSection) => logicalRows(scenario.lines, declared, section);
     /** Single-date `~` rules. The engine keeps them LINES; a reader reads them as one-offs, so they show here. */
     const datedLines = $derived(logicalRows(scenario.lines, declared, "oneoff").flatMap((row) => row.segments));
+
+    /** One accessible name per row of a section, each unique within it — see `rowNames`. */
+    const namesFor = (rows: LogicalRow[], section: HeldSection) => rowNames(rows, titleOf(section));
+
+    // --- The section hold (see THE SECTION-STABILITY RULE in the header) ------
+
+    /** How long the "this row moved" notice stays up, in ms. */
+    const MOVE_NOTICE_MS = 6000;
+
+    let moveNotice = $state("");
+    let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function announceMove(account: string, to: HeldSection): void {
+        moveNotice = `Moved ${account} to ${titleOf(to)} — that is what its account type makes it.`;
+        if (noticeTimer !== null) clearTimeout(noticeTimer);
+        noticeTimer = setTimeout(() => (moveNotice = ""), MOVE_NOTICE_MS);
+    }
+
+    onDestroy(() => {
+        if (noticeTimer !== null) clearTimeout(noticeTimer);
+    });
+
+    /**
+     * Hold every segment of `line`'s logical row where it is now.
+     *
+     * Both segments of a step change, not just the focused one: they are two
+     * lines sharing an id, and `logicalRows` gathers them per section, so a
+     * half-held row would tear in two.
+     */
+    function holdSection(line: ScenarioLine): void {
+        const at = sectionOfLine(line, declared);
+        if (at === "oneoff") return;
+        for (const segment of scenario.lines) {
+            if (segment.id === line.id) segment.section = at;
+        }
+    }
+
+    /**
+     * Focus has left the row: hand the section back to the account's type, and
+     * say so if that moves anything.
+     *
+     * Deferred by one task, and the check is deliberate rather than defensive.
+     * Choosing from the account combobox blurs the field — its popup is
+     * portalled to <body>, so the option clicked is not inside this row — and
+     * the combobox then puts focus straight back. Releasing on the raw
+     * `focusout` would move the row out from under the very click that was
+     * choosing its account.
+     */
+    function scheduleRelease(line: ScenarioLine, row: HTMLElement): void {
+        setTimeout(() => {
+            if (row.contains(document.activeElement)) return;
+            releaseSection(line);
+        });
+    }
+
+    function releaseSection(line: ScenarioLine): void {
+        const held = line.section;
+        if (held === undefined) return;
+        // A row with no account cannot be classified. Reconciling it would send
+        // every blank Income row to Expenses, which is the bug the hold exists
+        // to fix, arriving one event later.
+        if (line.account.trim() === "") return;
+
+        const to = resolvedSection(line, declared);
+        for (const segment of scenario.lines) {
+            if (segment.id === line.id) segment.section = undefined;
+        }
+        if (to !== held && to !== "oneoff") announceMove(line.account, to);
+    }
 
     // --- Editing one line ----------------------------------------------------
 
     function commitAccount(line: ScenarioLine): void {
         // `bind:value` has already written the text; this is the re-sign, which
-        // is the half a direct binding cannot do.
+        // is the half a direct binding cannot do. It deliberately does NOT
+        // reconcile the section: a commit is also what Enter does, and Enter
+        // leaves the caret in the field.
         line.amount = withAccount(line, line.account, declared).amount;
         onChange();
     }
@@ -147,12 +270,16 @@
 
     // --- Rows ----------------------------------------------------------------
 
-    function addLine(section: Exclude<LineSection, "oneoff">): void {
+    function addLine(section: HeldSection): void {
         const id = freshId("line", takenIds(scenario));
-        // Seeded with a prefix of the right TYPE, so the row appears in the
-        // section the button was in rather than wherever an accountless row
-        // classifies to — see `sectionPrefix`.
-        const line = {...blankLine(id, commodity, 2), account: sectionPrefix(section, accountNames, declared)};
+        // HELD in the section whose button was pressed — that is what keeps it
+        // there no matter what the user types next, including nothing. The
+        // seeded prefix is only a head start on the typing (`sectionPrefix`).
+        const line: ScenarioLine = {
+            ...blankLine(id, commodity, 2),
+            account: sectionPrefix(section, accountNames, declared),
+            section,
+        };
         scenario.lines = [...scenario.lines, line];
         onChange();
     }
@@ -235,28 +362,32 @@
     {/if}
 {/snippet}
 
-{#snippet rowMenu(row: {id: string; segments: ScenarioLine[]})}
-    <details class="dropdown dropdown-end">
-        <summary class="btn btn-ghost btn-xs" aria-label="Row menu for {row.segments[0].account || 'a new row'}">⋯</summary>
-        <ul class="menu dropdown-content z-10 w-52 rounded-box bg-base-100 p-2 shadow">
-            {#if row.segments.length === 1}
-                <li>
-                    <button type="button" onclick={() => addStep(row.id)}>Add a step on {stepDate}</button>
-                </li>
-            {:else}
-                <li>
-                    <button type="button" onclick={() => dropStep(row.id)}>Remove the step</button>
-                </li>
-            {/if}
-            <li><button type="button" onclick={() => duplicate(row.id)}>Duplicate</button></li>
-            <li><button type="button" class="text-error" onclick={() => dropRow(row.id)}>Delete row</button></li>
-        </ul>
-    </details>
+{#snippet rowMenu(row: LogicalRow, name: string)}
+    <!-- Delete is here for EVERY row, whatever is in its account field — and
+         `name` is what makes a blank row's copy of it addressable. -->
+    <RowMenu
+        label="Row menu for {name}"
+        items={[
+            row.segments.length === 1
+                ? {label: `Add a step on ${stepDate}`, onSelect: () => addStep(row.id)}
+                : {label: "Remove the step", onSelect: () => dropStep(row.id)},
+            {label: "Duplicate", onSelect: () => duplicate(row.id)},
+            {label: "Delete row", onSelect: () => dropRow(row.id), danger: true},
+        ]}
+    />
 {/snippet}
 
 <div class="flex flex-col gap-4">
+    <!-- Mounted always, not conditionally: a live region has to exist BEFORE
+         the text lands in it to be announced reliably. `sr-only` while empty,
+         so an empty region costs no layout. -->
+    <p role="status" aria-live="polite" data-testid="section-move-notice" class={moveNotice === "" ? "sr-only" : "text-xs text-base-content/70"}>
+        {moveNotice}
+    </p>
+
     {#each SECTIONS as section (section.id)}
         {@const rows = rowsFor(section.id)}
+        {@const names = namesFor(rows, section.id)}
         <section class="flex flex-col gap-1" data-testid="projection-section-{section.id}">
             <div class="flex flex-wrap items-baseline justify-between gap-2">
                 <h2 class="text-sm font-semibold">
@@ -282,9 +413,20 @@
                             </tr>
                         </thead>
                         <tbody>
-                            {#each rows as row (row.id)}
+                            {#each rows as row, rowAt (row.id)}
+                                {@const name = names[rowAt]}
                                 {#each row.segments as line, at (line.group)}
-                                    <tr data-testid="projection-line" data-line-id={line.id} data-line-group={line.group}>
+                                    <!-- The hold is taken and released on the WHOLE ROW, not on
+                                         the account cell: leaving the account box for the amount
+                                         box beside it is still editing this row, and a row that
+                                         jumped sections then would take that box with it. -->
+                                    <tr
+                                        data-testid="projection-line"
+                                        data-line-id={line.id}
+                                        data-line-group={line.group}
+                                        onfocusin={() => holdSection(line)}
+                                        onfocusout={(e) => scheduleRelease(line, e.currentTarget)}
+                                    >
                                         <td>
                                             <div class="flex items-center gap-1">
                                                 {#if at > 0}
@@ -308,7 +450,7 @@
                                                     inputmode="decimal"
                                                     class="w-full grow"
                                                     value={decToInput(magnitudeOf(line.amount))}
-                                                    aria-label="Amount for {line.account || 'a new row'}"
+                                                    aria-label="Amount for {name}"
                                                     onchange={(e) => setMagnitude(line, e.currentTarget.value)}
                                                 />
                                             </label>
@@ -324,7 +466,7 @@
                                                 <select
                                                     class="select w-full select-xs"
                                                     value={line.period.simple}
-                                                    aria-label="Period for {line.account || 'a new row'}"
+                                                    aria-label="Period for {name}"
                                                     onchange={(e) => setInterval(line, e.currentTarget.value)}
                                                 >
                                                     {#each SCENARIO_INTERVALS as interval (interval)}
@@ -341,7 +483,7 @@
                                                     class="input w-14 input-xs"
                                                     placeholder="—"
                                                     value={growthPercent(line)}
-                                                    aria-label="Growth rate for {line.account || 'a new row'}, in percent"
+                                                    aria-label="Growth rate for {name}, in percent"
                                                     onchange={(e) => setGrowthRate(line, e.currentTarget.value)}
                                                 />
                                                 <span class="text-base-content/50">%</span>
@@ -349,7 +491,7 @@
                                                     class="select w-16 select-xs"
                                                     value={growthUnitOf(line)}
                                                     disabled={line.growth === null}
-                                                    aria-label="Growth period for {line.account || 'a new row'}"
+                                                    aria-label="Growth period for {name}"
                                                     onchange={(e) => setGrowthUnit(line, e.currentTarget.value)}
                                                 >
                                                     {#each GROWTH_UNITS as unit (unit)}
@@ -364,7 +506,7 @@
                                                 class="input w-full input-xs"
                                                 value={line.period.from ?? ""}
                                                 disabled={line.period.simple === null}
-                                                aria-label="From date for {line.account || 'a new row'}"
+                                                aria-label="From date for {name}"
                                                 onchange={(e) => setBound(line, "from", e.currentTarget.value)}
                                             />
                                         </td>
@@ -374,18 +516,18 @@
                                                 class="input w-full input-xs"
                                                 value={line.period.to ?? ""}
                                                 disabled={line.period.simple === null}
-                                                aria-label="To date for {line.account || 'a new row'} (exclusive)"
+                                                aria-label="To date for {name} (exclusive)"
                                                 onchange={(e) => setBound(line, "to", e.currentTarget.value)}
                                             />
                                         </td>
                                         <td class="text-right">
                                             {#if at === 0}
-                                                {@render rowMenu(row)}
+                                                {@render rowMenu(row, name)}
                                             {:else}
                                                 <button
                                                     type="button"
                                                     class="btn btn-ghost text-error btn-xs"
-                                                    aria-label="Delete this segment of {line.account || 'a new row'}"
+                                                    aria-label="Delete this segment of {name}"
                                                     onclick={() => dropSegment(line.group)}
                                                 >
                                                     ✕
@@ -425,7 +567,8 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {#each scenario.events as event (event.id)}
+                        {#each scenario.events as event, eventAt (event.id)}
+                            {@const eventName = event.description.trim() === "" ? `the new event ${eventAt + 1}` : event.description}
                             {#each event.postings as posting, at (at)}
                                 <tr data-testid="projection-event" data-event-id={event.id}>
                                     <td>
@@ -434,7 +577,7 @@
                                                 type="date"
                                                 class="input w-full input-xs"
                                                 value={event.date}
-                                                aria-label="Date of {event.description || 'a new event'}"
+                                                aria-label="Date of {eventName}"
                                                 onchange={(e) => setEventDate(event, e.currentTarget.value)}
                                             />
                                         {/if}
@@ -469,18 +612,18 @@
                                     </td>
                                     <td class="text-right">
                                         {#if at === 0}
-                                            <details class="dropdown dropdown-end">
-                                                <summary class="btn btn-ghost btn-xs" aria-label="Row menu for {event.description || 'a new event'}">⋯</summary>
-                                                <ul class="menu dropdown-content z-10 w-52 rounded-box bg-base-100 p-2 shadow">
-                                                    <li><button type="button" onclick={() => addPosting(event)}>Add a posting</button></li>
-                                                    <li><button type="button" class="text-error" onclick={() => dropEvent(event.id)}>Delete event</button></li>
-                                                </ul>
-                                            </details>
+                                            <RowMenu
+                                                label="Row menu for {eventName}"
+                                                items={[
+                                                    {label: "Add a posting", onSelect: () => addPosting(event)},
+                                                    {label: "Delete event", onSelect: () => dropEvent(event.id), danger: true},
+                                                ]}
+                                            />
                                         {:else}
                                             <button
                                                 type="button"
                                                 class="btn btn-ghost text-error btn-xs"
-                                                aria-label="Delete posting {at + 1} of {event.description || 'a new event'}"
+                                                aria-label="Delete posting {at + 1} of {eventName}"
                                                 onclick={() => dropPosting(event, at)}
                                             >
                                                 ✕

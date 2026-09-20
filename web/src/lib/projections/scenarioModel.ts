@@ -26,7 +26,12 @@ import {absDec} from "$lib/format/amounts";
 import {neg, type Dec} from "$lib/domain/money";
 import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
 import type {ISODate} from "$lib/domain/types";
-import type {Growth, Scenario, ScenarioAmount, ScenarioEvent, ScenarioInterval, ScenarioLine, ScenarioPeriod} from "./types";
+import type {Growth, HeldSection, LineSection, Scenario, ScenarioAmount, ScenarioEvent, ScenarioInterval, ScenarioLine, ScenarioPeriod} from "./types";
+
+// Re-exported because every reader of a section is a reader of this module, and
+// the two names were declared here before the hold moved them next to the field
+// that carries one (`ScenarioLine.section`).
+export type {HeldSection, LineSection};
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -89,11 +94,9 @@ export function withMagnitude(line: ScenarioLine, magnitude: Dec, declared: Read
 // Sections
 // ---------------------------------------------------------------------------
 
-/** Which of the table's three sections a line belongs in. */
-export type LineSection = "income" | "expense" | "oneoff";
-
 /**
- * A line's section.
+ * The section a line's ACCOUNT TYPE puts it in — the reading that ignores any
+ * hold.
  *
  * A single-date rule (`~ 2027-03-01`) is a LINE in the model — `seed_scenario`
  * deliberately leaves it one so the file round trip says so — but it is a
@@ -105,9 +108,30 @@ export type LineSection = "income" | "expense" | "oneoff";
  * editor's, rather than a fourth section for the handful of lines that post
  * outside the P&L — and it is why the heading says "and other outflows".
  */
-export function sectionOfLine(line: ScenarioLine, declared: ReadonlyMap<string, AccountType>): LineSection {
+export function resolvedSection(line: ScenarioLine, declared: ReadonlyMap<string, AccountType>): LineSection {
     if (line.period.simple === null && isIsoDate(line.period.raw)) return "oneoff";
     return isRevenueAccount(line.account, declared) ? "income" : "expense";
+}
+
+/**
+ * The section the table SHOWS a line in: its hold while it has one, else its
+ * account's type.
+ *
+ * THE SECTION-STABILITY RULE, and the reason `ScenarioLine.section` exists. A
+ * section read live from the account text moves a row on a keystroke — `i` is
+ * not a revenue account, and neither is `` — and moving a row between two
+ * `{#each}` blocks destroys its DOM node and the focus in it. So while a row is
+ * being edited it is HELD, and the account type gets to decide again only once
+ * editing is over. `ProjectionsTable.svelte` owns when a hold is taken and
+ * released; this function owns what a hold means.
+ *
+ * A hold never beats `oneoff`. That section is the line's PERIOD talking, and
+ * the account box cannot argue with it.
+ */
+export function sectionOfLine(line: ScenarioLine, declared: ReadonlyMap<string, AccountType>): LineSection {
+    const resolved = resolvedSection(line, declared);
+    if (resolved === "oneoff") return "oneoff";
+    return line.section ?? resolved;
 }
 
 /** One logical row of the table: a line and, when it is a step change, its later segments. */
@@ -139,6 +163,35 @@ export function logicalRows(lines: readonly ScenarioLine[], declared: ReadonlyMa
     }
     for (const row of rows) row.segments.sort(compareSegments);
     return rows;
+}
+
+/**
+ * One accessible name per row of a section, each unique WITHIN it.
+ *
+ * The account, which is what a user calls a row — falling back to the row's
+ * POSITION when it has no account yet, and adding the position when two rows
+ * share one. Every blank row used to be "a new row", so neither a screen reader
+ * nor a test could say which `⋯` it meant, which left the half-typed row a user
+ * most wants to delete with no name to reach it by. Two rows freshly added to
+ * one section both carry the seeded `income:` prefix, so the duplicate case is
+ * not hypothetical either.
+ *
+ * `sectionTitle` is passed in rather than derived: the words on the headings
+ * belong to the component, and this module has no business knowing that the
+ * `expense` section is called "Expenses and other outflows".
+ */
+export function rowNames(rows: readonly LogicalRow[], sectionTitle: string): string[] {
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+        const account = row.segments[0].account.trim();
+        counts.set(account, (counts.get(account) ?? 0) + 1);
+    }
+    return rows.map((row, at) => {
+        const account = row.segments[0].account.trim();
+        const where = `row ${at + 1} of ${sectionTitle}`;
+        if (account === "") return where;
+        return (counts.get(account) ?? 0) > 1 ? `${account} (${where})` : account;
+    });
 }
 
 /** Earliest span first; an unbounded start sorts before every dated one. */
@@ -219,16 +272,17 @@ export function takenIds(scenario: Scenario): Set<string> {
  * The account prefix a new row in `section` opens on — `income:` / `expenses:`,
  * or whatever this journal calls them.
  *
- * A row with no account cannot be classified, so a brand-new Income row would
- * open under Expenses and appear to have been added to the wrong section. Seeding
- * the account with a prefix of the right TYPE fixes that without guessing at the
- * rest of the name, and taking the prefix from the journal's own accounts means
- * a user whose revenue tree is `revenues:` is not handed `income:`.
+ * A TYPING convenience, and only that: it puts the caret in the right tree so
+ * the combobox has something to complete. Where the row is SHOWN is the hold's
+ * job now (`sectionOfLine`) — this used to be what kept a new Income row out of
+ * Expenses, and it could not, because the user's next keystroke could delete it.
  *
- * Falls back to the hledger defaults when nothing in the journal has the type
- * yet — which is the first-run case, where there is nothing to learn from.
+ * Taking the prefix from the journal's own accounts means a user whose revenue
+ * tree is `revenues:` is not handed `income:`. Falls back to the hledger
+ * defaults when nothing in the journal has the type yet — which is the
+ * first-run case, where there is nothing to learn from.
  */
-export function sectionPrefix(section: "income" | "expense", accountNames: readonly string[], declared: ReadonlyMap<string, AccountType>): string {
+export function sectionPrefix(section: HeldSection, accountNames: readonly string[], declared: ReadonlyMap<string, AccountType>): string {
     const want: AccountType = section === "income" ? "revenue" : "expense";
     const counts = new Map<string, number>();
     for (const name of accountNames) {
@@ -367,6 +421,11 @@ export function removeRow(lines: readonly ScenarioLine[], id: string): ScenarioL
  * The copy is AUTHORED even when the original was seeded from history: a user
  * who duplicated an estimate and is about to edit it is no longer being shown an
  * average, and leaving the flag on would say they were.
+ *
+ * It carries no section HOLD either, for the same kind of reason: a hold belongs
+ * to a row being edited, and nobody is editing a row that does not exist yet. A
+ * copy that inherited one would keep it until somebody happened to focus and
+ * leave the copy, since nothing else ever releases one.
  */
 export function duplicateRow(lines: readonly ScenarioLine[], id: string, taken: ReadonlySet<string>): ScenarioLine[] {
     const segments = lines.filter((line) => line.id === id);
@@ -377,7 +436,7 @@ export function duplicateRow(lines: readonly ScenarioLine[], id: string, taken: 
     const copies = segments.map((segment) => {
         const group = freshId("group", claimed);
         claimed.add(group);
-        return {...segment, id: newId, group, source: "journal" as const};
+        return {...segment, id: newId, group, source: "journal" as const, section: undefined};
     });
     const last = lines.map((line) => line.id).lastIndexOf(id);
     return [...lines.slice(0, last + 1), ...copies, ...lines.slice(last + 1)];
