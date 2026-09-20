@@ -107,6 +107,9 @@ See **[docs/balance-sheet.md](docs/balance-sheet.md)** for the balance sheet —
 `bsterm:` tags, how untagged accounts are grouped, valuation, and the balance check's tolerance.
 See **[docs/holdings.md](docs/holdings.md)** for the Holdings tabs — the `holdings:` and
 `valuation:` tags, how several accounts become one holding, and what "change" measures against.
+See **[docs/projections.md](docs/projections.md)** for the Projections tab — the scenario file
+format, the `projection:`/`growth:`/`line:` tags, how cash is implied from a rule's postings,
+and the honest caveat about what `hledger --forecast` does and does not apply.
 
 ## Architecture
 

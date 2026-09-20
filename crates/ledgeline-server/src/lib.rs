@@ -661,6 +661,24 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             )),
         )
         .route("/api/projections/seed", get(projections_api::seed))
+        // Projection scenario FILES (plan 22, Phase 3): list, read, save.
+        //
+        // THE SAME PLACEMENT TRAP as the rules routes below, and the same
+        // consequence: `PUT /api/projections/{*id}` is a write primitive over
+        // a file in the user's journal directory, and below the `route_layer`
+        // it would be reachable with no bearer token at all.
+        // `projection_endpoints.rs` pins the 401 for all three.
+        //
+        // The two fixed segments above (`run`, `seed`) MUST stay registered
+        // before `{*id}`: axum matches a literal ahead of a wildcard, so the
+        // order is not what disambiguates them — but keeping them adjacent and
+        // in this order is what makes that readable. An id always ends in
+        // `.journal`, so neither literal is a reachable id anyway.
+        .route("/api/projections", get(projections_api::index))
+        .route(
+            "/api/projections/{*id}",
+            get(projections_api::document).put(projections_api::save),
+        )
         .route("/api/holdings", get(reports_api::holdings))
         .route(
             "/api/holdings/series",

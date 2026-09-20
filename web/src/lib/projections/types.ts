@@ -140,3 +140,64 @@ export interface Projection {
     /** Everything the projection could not do. A dropped line always says so here. */
     warnings: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Scenario FILES (plan 22, Phase 3)
+//
+// A scenario lives in an ordinary journal file that nothing includes, so it can
+// be edited, diffed, committed and read by hledger itself. These types are the
+// picker's and the Save As dialog's; the scenario inside is the same `Scenario`
+// the seed and the run already use.
+// ---------------------------------------------------------------------------
+
+/** One `*.journal` file the engine found beside the open journal. */
+export interface ProjectionFile {
+    /** The file's path relative to the journal directory. The only handle there is — never an absolute path. */
+    id: string;
+    /** The display fallback, from the filename, when the file has no `; projection:` name. */
+    label: string;
+    /** `; projection: <name>`, for a `projection-*.journal` that has one. Null otherwise. */
+    name: string | null;
+    created: ISODate | null;
+    updated: ISODate | null;
+    /** Whether this is a `projection-*.journal` — the group the picker shows first. */
+    isProjection: boolean;
+    sizeBytes: number;
+    /**
+     * Whether saving over it could succeed.
+     *
+     * False for a file the main journal includes: decision 5 forbids the
+     * Projections tab from writing to a plan of record, so the picker offers it
+     * for LOADING and refuses to Save over it rather than letting the engine
+     * refuse after the fact.
+     */
+    writable: boolean;
+}
+
+/** `GET /api/projections` — the picker's list. */
+export interface ProjectionIndex {
+    /** The journal directory's own final component, for a heading. Never a path. */
+    rootLabel: string;
+    /** Whether this server has an editor bound at all. False means every save is a 501. */
+    editable: boolean;
+    /** A scan cap was hit and the list is a subset. Shown, so a missing file is never a silent one. */
+    truncated: boolean;
+    files: ProjectionFile[];
+    /** The directories that hold a journal, relative, `""` for the root — what Save As offers instead of a free-text path. */
+    directories: string[];
+    warnings: string[];
+}
+
+/** `GET`/`PUT /api/projections/{*id}` — one file, read as a scenario. */
+export interface ScenarioFile {
+    id: string;
+    label: string;
+    /**
+     * The optimistic-concurrency token, over the file's raw bytes. Sent back
+     * with a save; a mismatch is a 409 and nothing is written.
+     */
+    revision: string;
+    /** See `ProjectionFile.writable`. */
+    writable: boolean;
+    scenario: Scenario;
+}

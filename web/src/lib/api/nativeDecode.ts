@@ -110,10 +110,13 @@ import type {
     GrowthUnit,
     LineSource,
     Projection,
+    ProjectionFile,
+    ProjectionIndex,
     Runway,
     Scenario,
     ScenarioAmount,
     ScenarioEvent,
+    ScenarioFile,
     ScenarioInterval,
     ScenarioLine,
     ScenarioPeriod,
@@ -409,6 +412,34 @@ interface RawScenario {
     updated?: string | null;
     lines?: RawScenarioLine[];
     events?: RawScenarioEvent[];
+}
+
+interface RawProjectionFile {
+    id?: string;
+    label?: string;
+    name?: string | null;
+    created?: string | null;
+    updated?: string | null;
+    isProjection?: boolean;
+    sizeBytes?: number;
+    writable?: boolean;
+}
+
+interface RawProjectionIndex {
+    rootLabel?: string;
+    editable?: boolean;
+    truncated?: boolean;
+    files?: RawProjectionFile[];
+    directories?: unknown[];
+    warnings?: unknown[];
+}
+
+interface RawScenarioFile {
+    id?: string;
+    label?: string;
+    revision?: string;
+    writable?: boolean;
+    scenario?: RawScenario;
 }
 
 interface RawBalanceSeries {
@@ -1867,6 +1898,69 @@ export function decodeProjection(raw: unknown): Projection {
         // Never empty silently: a dropped line always says so here.
         warnings: frozen(decodeStrings(projection.warnings, "projection warnings")),
     });
+}
+
+/**
+ * `GET /api/projections` — the scenario picker's file list (plan 22, Phase 3).
+ *
+ * `writable` is demanded rather than defaulted, and that is deliberate: it
+ * carries decision 5 ("a projection is never saved over a plan of record"), and
+ * a decoder that read an absent key as `true` would offer Save over the user's
+ * main journal and let the engine be the one to say no.
+ */
+export function decodeProjectionIndex(raw: unknown): ProjectionIndex {
+    const index = raw as RawProjectionIndex;
+    if (typeof index !== "object" || index === null || !Array.isArray(index.files)) {
+        throw new ApiShapeError("projection index: expected a files array");
+    }
+    return Object.freeze({
+        rootLabel: str(index.rootLabel, "projection index rootLabel"),
+        editable: flag(index.editable, "projection index editable"),
+        truncated: flag(index.truncated, "projection index truncated"),
+        files: frozen(index.files.map((file, i) => decodeProjectionFile(file, `projection file #${i}`))),
+        directories: frozen(decodeStrings(index.directories, "projection index directories")),
+        warnings: frozen(decodeStrings(index.warnings, "projection index warnings")),
+    });
+}
+
+function decodeProjectionFile(raw: RawProjectionFile | undefined, context: string): ProjectionFile {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing file`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        label: str(raw.label, `${context} label`),
+        name: decodeNullableStr(raw.name, `${context} name`),
+        created: decodeNullableStr(raw.created, `${context} created`),
+        updated: decodeNullableStr(raw.updated, `${context} updated`),
+        isProjection: flag(raw.isProjection, `${context} isProjection`),
+        sizeBytes: decodeCount(raw.sizeBytes, `${context} sizeBytes`),
+        writable: flag(raw.writable, `${context} writable`),
+    });
+}
+
+/**
+ * `GET`/`PUT /api/projections/{*id}` — one file, read as a scenario.
+ *
+ * The `revision` is the optimistic-concurrency token and is REQUIRED: a decoder
+ * that let it default to `""` would turn every subsequent save into a create,
+ * and a create is `O_EXCL`, so the user's next Save would fail with "a file
+ * already exists there" about the file they were already editing.
+ */
+export function decodeScenarioFile(raw: unknown): ScenarioFile {
+    const file = raw as RawScenarioFile;
+    if (typeof file !== "object" || file === null) throw new ApiShapeError("scenario file: expected an object");
+    return Object.freeze({
+        id: str(file.id, "scenario file id"),
+        label: str(file.label, "scenario file label"),
+        revision: str(file.revision, "scenario file revision"),
+        writable: flag(file.writable, "scenario file writable"),
+        scenario: decodeScenario(file.scenario),
+    });
+}
+
+/** A required boolean. Absent is a broken contract here, never `false`. */
+function flag(value: unknown, context: string): boolean {
+    if (typeof value !== "boolean") throw new ApiShapeError(`${context}: expected a boolean`);
+    return value;
 }
 
 // ---------------------------------------------------------------------------

@@ -11,10 +11,14 @@
 // into, and a spec that wrote one would leave the working tree dirty and stop
 // being idempotent the second time it ran.
 //
-// Phase 2 of `plans/22-projections.md` has no write path at all — the scenario
-// lives in the tab — so this costs nothing here. When Phase 3 adds Save As, the
-// write path belongs in `crates/ledgeline-server/tests/projection_files.rs`,
-// against the bytes, which is a stronger check than clicking a button.
+// Phase 3 adds Save As, and the rule does not change: the write path is proved
+// in `crates/ledgeline-core/tests/projection_files.rs` and
+// `crates/ledgeline-server/tests/projection_endpoints.rs`, AGAINST THE BYTES,
+// which is a far stronger check than clicking a button. What is asserted here
+// is the half those cannot reach: that the file controls are on the page, that
+// the picker lists what the engine found, and that the Save As dialog shows the
+// path it would write BEFORE it writes it. The dialog is opened and cancelled;
+// its Save button is never pressed.
 //
 // # Fixture facts
 //
@@ -124,11 +128,11 @@ test("projections: editing the table marks it edited and recomputes", async ({pa
     await page.getByLabel("Amount for expenses:housing").fill("2500");
     await page.getByLabel("Amount for expenses:housing").blur();
 
-    await expect(page.getByText("edited")).toBeVisible();
+    await expect(page.getByTestId("projection-dirty")).toBeVisible();
     await expect.poll(() => runs.length).toBeGreaterThan(before);
-    // Nothing was written: this tab has no save path in Phase 2, and the badge
-    // says exactly that.
-    await expect(page.getByText("edited")).toHaveAttribute("title", /not available yet/);
+    // Nothing was written — an edit is an edit, and the "edited" badge stays up
+    // until a save clears it. This spec never saves.
+    await expect(page.getByTestId("projection-file-select")).toHaveValue("");
 });
 
 test("projections: changing the window re-asks the engine and mirrors to the URL", async ({page}) => {
@@ -138,4 +142,67 @@ test("projections: changing the window re-asks the engine and mirrors to the URL
     await page.getByLabel("Interval").selectOption("quarterly");
     await expect(page).toHaveURL(/interval=quarterly/);
     await expect(page.getByTestId("projection-flow-chart")).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Scenario files (plan 22, Phase 3) — READ-ONLY
+//
+// Nothing below writes. The picker is read, the dialog is opened and cancelled,
+// and the one assertion that matters — the path shown before the write — is
+// made against the dialog's own preview rather than against a file on disk.
+// ---------------------------------------------------------------------------
+
+test("projections: the file bar lists the journals beside the fixture", async ({page}) => {
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-file-bar")).toBeVisible();
+
+    const picker = page.getByTestId("projection-file-select");
+    // A seeded scenario has no file of its own, and the picker says so rather
+    // than showing a blank box.
+    await expect(picker).toHaveValue("");
+    await expect(picker.locator("option", {hasText: "Seeded from your journal"})).toHaveCount(1);
+    // The fixture journal itself is a `*.journal` beside itself, so it is
+    // listed — "really any journal file with budget-like entries could be used".
+    await expect(picker.locator("optgroup")).toHaveCount(1);
+    await expect(picker.locator('optgroup[label="Other journals"]')).toHaveCount(1);
+
+    // Save is offered but not possible: there is no file to save OVER yet.
+    await expect(page.getByTestId("projection-save")).toBeDisabled();
+    await expect(page.getByTestId("projection-save-as")).toBeEnabled();
+});
+
+test("projections: the fixture journal is loadable and marked read-only", async ({page}) => {
+    // DECISION 5: a file the main journal is parsed from can be READ (the ask
+    // wants the active budget file as a default) and can never be saved over.
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-file-bar")).toBeVisible();
+
+    await page.getByTestId("projection-file-select").selectOption({label: "sample"});
+    await expect(page.getByTestId("projection-read-only")).toContainText("part of your main journal");
+    await expect(page.getByTestId("projection-save")).toBeDisabled();
+    // The table is still there, still projecting, just from a different source.
+    await expect(page.getByTestId("projection-net")).toBeVisible();
+});
+
+test("projections: Save as shows the path it would write, and cancels without writing", async ({page}) => {
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-file-bar")).toBeVisible();
+
+    await page.getByTestId("projection-save-as").click();
+    await expect(page.getByTestId("projection-save-dialog")).toBeVisible();
+
+    // A name with no letters or digits has no file name, and the button says so
+    // rather than the server doing it.
+    await page.getByTestId("projection-save-name").fill("!!!");
+    await expect(page.getByTestId("projection-save-blocker")).toContainText("no letters or digits");
+    await expect(page.getByTestId("projection-save-submit")).toBeDisabled();
+
+    // …and a real one previews the exact path, before anything is written.
+    await page.getByTestId("projection-save-name").fill("Series A with a hiring ramp");
+    await expect(page.getByTestId("projection-save-path")).toContainText("projection-series-a-with-a-hiring-ramp.journal");
+    await expect(page.getByTestId("projection-save-submit")).toBeEnabled();
+
+    // Cancelled. NOTHING is written by this suite.
+    await page.getByTestId("projection-save-cancel").click();
+    await expect(page.getByTestId("projection-save-dialog")).toHaveCount(0);
 });

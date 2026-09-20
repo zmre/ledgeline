@@ -1112,3 +1112,221 @@ seed bytes are written into the test rather than read from
 `fixtures/native/v1/projections-seed.json` — but they are still put through the
 real `decodeScenario`, and the golden itself is swept by `nativeDecode.test.ts`,
 which runs under node.
+
+---
+
+**Phase 3 from here.** Everything below was established while building the
+scenario files: the scan, the serializer, and the three routes.
+
+### 28. `PeriodicDoc` is used to LOCATE blocks, not to edit them
+
+Phase 3 says "Everything else is reused verbatim: … `PeriodicDoc::parse/plan/apply/verify`".
+Half of that holds and half cannot.
+
+`PeriodicDoc::parse` **is** reused, and it is the right tool: it is the one
+model in the crate that knows where a `~` rule's bytes begin and end
+(`PeriodicBlock::full`), and `serialize.rs` splices those spans. What is not
+reusable is its **edit vocabulary**. `PeriodicEdit` is `SetAmount` / `Delete` /
+`AppendLine` / `AppendBlock` — one written amount at a time, built for a budget
+editor that changes a number inside a rule somebody else authored. A scenario
+save rewrites a rule's period, its description, its accounts and its
+`growth:`/`line:` tags, and `AppendBlock` can only write a **bare**
+[`PeriodExpr`] header — so `~ monthly from 2027-04-01`, which is half this
+plan's own format, is not expressible in it at all.
+
+So `projections::serialize::ProjectionDoc` is a second, much smaller span
+document over the same text, and it splices two kinds of span: the header
+comment block, and one `~` block's `full` extent per scenario group. The half of
+`verify` that matters is kept and **strengthened** — `write_scenario` re-parses
+the whole written text as a journal and requires every block to read back as the
+scenario that was asked for, which is Phase 3's own requirement #1 (the
+standalone parse) and `confirm_written_goal`'s discipline in one step.
+
+**The byte-level claim is stronger than the plan asked for.** `ProjectionDoc`
+records what each block currently *says* and splices only the blocks whose
+content actually changed, so editing one rule leaves another rule's tabs,
+column alignment and inline spacing exactly as the user typed them. Without
+that comparison every save would re-render every rule, which preserves no byte
+it was not forced to. `an_update_leaves_every_byte_outside_the_edited_block_alone`
+and `a_save_that_changes_one_amount_changes_only_that_line_s_bytes` pin it as a
+whole-file equality against the source with one substring replaced.
+
+### 29. A single-date `~` rule LOADS as a `ScenarioEvent`
+
+Amendment 12 established that `seed_scenario` does not turn `~ DATE` rules into
+events — they stay `Once` lines — and amendment 24 said a single-date line is
+routed to the One-off events section for display. Both stand. What neither
+decided is what a **projection file** loads as, and the answer had to be an
+event:
+
+- The plan's own §"The file format" labels those blocks "A ONE-OFF", and the
+  model's type for a one-off is `ScenarioEvent`.
+- An event is the only shape that preserves the **grouping**. `~ 2027-03-01
+  Series A` with `(assets:cash) $2M` and `(equity:preferred) $-2M` is one dated
+  thing with two legs; loading it as two independent lines would split a row the
+  user created as one, on every reload.
+- Phase 2's editor creates real `ScenarioEvent`s (`blankEvent`), so a file that
+  loaded them back as lines would make Save-then-reload a visible regression.
+
+The narrowing is deliberate: only a `raw` that **is** an ISO date becomes an
+event. `~ from 2027-01-01 to 2027-02-01` also fires once, and rewriting it as
+`~ 2027-01-01` would change a rule the user wrote into a different one that
+happens to behave the same — so it stays a line and its `raw` is preserved.
+
+The engine treats a `Once` line and an event identically and the tab shows both
+in the same section, so **no projected figure moves**. `seed_scenario` is
+unchanged. `docs/projections.md` states the normalization.
+
+### 30. Decision 5 is enforced at the HTTP layer, against `source_files`
+
+The plan puts decision 5 ("saving is always Save As … never to anything
+reachable by `include` from the main journal") in the Decisions list and then
+never says who enforces it. It cannot be the scan: `projections::discovery`
+walks a directory tree and has no idea which of the files in it the journal
+includes.
+
+So `PUT /api/projections/{*id}` compares the resolved path against
+`Journal::source_files` and answers a `400` naming the reason. Both are
+canonical paths — the scan runs every candidate through `parse::confine` — so it
+is an equality test and not path arithmetic.
+
+`GET` deliberately does **not** refuse: the ask says to "default to using the
+active budget file", so reading one is the feature working. The distinction
+reaches the wire as a per-file `writable` flag on both `GET /api/projections`
+and `GET /api/projections/{*id}`, so the picker disables Save and says why
+rather than letting the user discover it at the moment of a refused write.
+
+### 31. `resolve_new` refuses a symlink ANYWHERE in the id, which `rules` does not
+
+`rules::Discovery::resolve_new`'s docs say guard 4 "refuses a symlinked
+directory rather than following it", and it does not: `parse::confine` runs
+first and **canonicalizes**, so by the time `symlink_metadata` sees the parent,
+the link has already been resolved. A create through `linked/p.journal` lands in
+`real/p.journal` — inside the root, so containment holds, but under an id the
+scan will never produce. The file would be created and then not be openable.
+
+The projections copy adds one line: `resolved != candidate` is a refusal. The
+root is already canonical and every component of a well-formed id is a plain
+name, so the two are equal exactly when no link (and no case-folding filesystem)
+rewrote one of them. It fails closed, which is the right direction for a create.
+`resolve_new_refuses_a_symlinked_parent_directory` pins it.
+
+`rules::discovery` is deliberately **left alone** — changing it is a change to a
+different feature's write surface — and the comment there records that it wants
+the same line.
+
+### 32. The listing carries no `revision`, and only reads a `projection-*` header
+
+`rules::discovery` reads and fingerprints every file it finds, because it parses
+each one anyway to build a summary. Doing that here would mean reading every
+journal in the tree **in full** to draw a picker — a main journal is routinely
+tens of megabytes. So:
+
+- **No `revision` in the listing.** It is taken by the route that reads the
+  file, which is the only place it is used.
+- **The header read is bounded and shallow**: 4 KiB of a `projection-*.journal`
+  only, scanned for `; projection:` / `; created:` / `; updated:` in the
+  LEADING comment block. A `; projection:` written halfway down a file is a note
+  about what precedes it, not this file's name.
+- `MAX_SCENARIO_BYTES` at the HTTP layer is **8 MiB**, not the rules editor's
+  1 MiB: a projection file is a journal, and a user may point the tab at one
+  with a year of transactions in it.
+
+`Discovery::directories()` is new and is what the Save As dialog offers instead
+of a free-text path — the directories the scan found a journal in, `""` for the
+root. Derived from the ids rather than recorded during the walk: a directory
+with no journal in it is not somewhere a projection wants to go, and offering it
+would offer a place `resolve_new` would then refuse.
+
+### 33. Amounts are aligned per block, and growth round-trips exactly
+
+Two file-format facts the plan's example shows but does not state.
+
+- **A rendered block aligns its amounts to one column**, computed from the
+  widest `(account)` in that block. Deterministic, so a scenario written twice
+  produces identical bytes — and applied only to blocks that are being
+  rewritten, so a block the user aligned differently and did not edit keeps its
+  own layout (amendment 28).
+- **`growth:` is written in the `%` form when the rate has two or more decimal
+  places**, which is every rate the UI produces: a fraction is `m×10⁻ᵖ`, so the
+  percent spelling is `Dec::new(m, p - 2)` and `parse_growth` shifts it back by
+  exactly two. No division anywhere, so `3%/yr` → `Dec::new(3, 2)` → `3%/yr`.
+  A rate with fewer places (`0.1`, ten percent) has no exact percent spelling,
+  so the bare fraction is written — which `parse_growth` also reads.
+
+An amount is written at `max(quantity.places, style.precision)` places. The
+precision matters beyond looks: the engine rounds a growing amount back to it at
+every step, so a `$1,875.00` line written as `$1875` would grow on whole dollars
+from then on.
+
+### 34. What the writer refuses, and why each one is money
+
+`SerializeError::Invalid` is a `400` carrying the engine's own sentence. Every
+refusal is a value that would make the written line read back as something other
+than what was asked for:
+
+| refused | because |
+|---|---|
+| an account with two consecutive spaces or a tab | hledger splits a posting line at the first one, so the rest of the name is read as an amount |
+| an account with `;`, `#`, `(`, `)`, `[`, `]`, control chars, or outer whitespace | a comment, a posting-type marker, or a value hledger trims |
+| a `; projection:` name containing a comma | hledger ends a tag's value at one, so the name reads back TRUNCATED — and the name is also the filename |
+| a `line:` id containing a comma, or with outer whitespace | the same tag grammar |
+| a group whose lines disagree about the recurrence | a `~` block has ONE header; taking the first would silently change the second line's recurrence |
+
+`NotRoundTripped` and `Unreadable` are `500`s, not `400`s: they mean the
+renderer produced something that did not read back, which is a bug in the server
+and not something a caller can fix by sending different bytes. **Nothing is
+written on either.**
+
+### 35. The SPA's seams, and where the last-loaded id lives
+
+- `fileStore.svelte.ts` is a SIBLING of `scenarioStore`, not part of it. It owns
+  `currentId` / `revision` / `writable`, which move together and only in
+  `adopted()` — a revision can never belong to a different id than the one it
+  was taken from. The two stores meet in exactly three places: `open` → `adopt`,
+  `save` → `markSaved`, and `ensureSeeded` (which amendment 26's `dirty` guard
+  already stops from running over a loaded file).
+- **A save calls `markSaved`, never `adopt`.** The scenario on screen IS the one
+  that was written, and re-adopting the engine's echo of it would discard a
+  keystroke made while the request was in flight.
+- **`settings.lastProjectionId`**, as decision 10 requires — validated on load
+  as a non-empty string, which is the `serverToken` form rather than
+  `insightsTab`'s enum form, because a file id has no closed set to validate
+  against. A remembered id that no longer resolves is **forgotten**, not
+  retried: otherwise deleting a file outside Ledgeline would put a failure on
+  the screen every time the tab was opened.
+- **`slugFilename`/`projectionId` in `scenarioModel.ts` MIRROR the engine's
+  `slug_filename` exactly**, including its ASCII-only rule. The dialog shows the
+  path before it writes, and a preview that disagreed with what the engine
+  produced would be a lie. `a_slugged_filename_is_always_one_resolve_new_would_accept`
+  pins the pair from the Rust side.
+
+### 36. The goldens, the sweep, and what was NOT run
+
+- **`just snapshot-native` was not re-run, and did not need to be.** None of the
+  three new routes can join `fixtures/native/v1`: that manifest replays URIs
+  against `fixtures/sample.journal`, and a listing of a DIRECTORY TREE would pin
+  whatever files happen to sit beside that fixture.
+  `native_wire_golden.rs`'s manifest count is unchanged at 16 and every
+  pre-existing golden is byte-identical.
+- `nativeDecode.test.ts`'s `DECODERS` gained `projections-index` and
+  `projections-file` as inline literals, the way `projections-run` is
+  (amendment 21). **Nothing was added to `TOLERATED`** — every key of both
+  bodies is load-bearing, and both decoders use required-not-absent guards.
+  `writable` and `revision` each have a test that an ABSENT value throws, because
+  a permissive default for either is a real bug: one would offer Save over the
+  main journal, the other would turn the next save of an open file into a create.
+- **The hledger cross-check is `LEDGELINE_HLEDGER_PROJECTION_CHECK=1`**, in
+  `crates/ledgeline-core/tests/projection_files.rs`, and it does three things a
+  round trip cannot: `print` parses a written file, `balance --budget -M` reports
+  the goals we asked for (including that a `monthly to 2027-04-01` segment does
+  NOT fire after its bound), and `register --forecast` finds the dated one-off.
+  A fourth test pins the honest caveat itself — hledger reports the BASE amount
+  in every year under a `growth:` tag — so the day hledger gains arithmetic in
+  amounts, that test fails and `docs/projections.md` gets corrected.
+- **`just e2e` could not be run in this environment** (Playwright cannot
+  launch). `web/e2e/projections.e2e.ts` was extended read-only — the picker, the
+  read-only flag on an included file, and the Save As dialog opened and
+  **cancelled** — and those three tests are unverified. The write path is proved
+  against bytes in `projection_files.rs` and `projection_endpoints.rs` instead,
+  which is what that spec's own header says it should be.

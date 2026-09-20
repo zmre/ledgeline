@@ -14,21 +14,34 @@
     // reconnect usually leaves the URL identical, so keying on it alone means a
     // page never retries after one).
     //
-    // # This phase keeps the scenario in memory
+    // # Where a scenario lives
     //
-    // Loading and saving scenario files is Phase 3 of `plans/22-projections.md`.
-    // Until then the table is seeded from the journal on first load and lives in
-    // the tab; `scenarioStore.dirty` is already tracked, which is the seam the
-    // Save As dialog will hang off.
+    // A scenario is an ordinary journal file that nothing includes, so it can be
+    // edited, diffed and read by hledger itself. `fileStore` owns which file the
+    // one on screen came from; `scenarioStore` owns the scenario. The two meet
+    // in exactly three places, and nowhere else:
+    //
+    //   load  → `fileStore.open`   → `scenarioStore.adopt`
+    //   save  → `fileStore.save`   → `scenarioStore.markSaved`
+    //   seed  → `scenarioStore.ensureSeeded`, which declines over `dirty` work
+    //
+    // On first mount the tab reopens whatever was last loaded
+    // (`settings.lastProjectionId` — decision 10, per-browser view state rather
+    // than `prefs.json`). A remembered id that no longer names a file is not an
+    // error: it is forgotten and the tab seeds instead, which is where a user
+    // who deleted a file outside Ledgeline should end up.
     import {onMount} from "svelte";
     import {dominantCommodity} from "$lib/api/editMapping";
     import AsyncSection from "$lib/components/AsyncSection.svelte";
     import {declaredTypes} from "$lib/domain/accountTypes";
     import DepthSlider from "$lib/insights/DepthSlider.svelte";
+    import {fileStore} from "$lib/projections/fileStore.svelte";
     import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "$lib/projections/params";
     import {sameProjectionQuery, scenarioStore, type ProjectionWindow} from "$lib/projections/scenarioStore.svelte";
     import ProjectionReports from "$lib/projections/ui/ProjectionReports.svelte";
     import ProjectionsTable from "$lib/projections/ui/ProjectionsTable.svelte";
+    import SaveScenarioDialog from "$lib/projections/ui/SaveScenarioDialog.svelte";
+    import ScenarioFileBar from "$lib/projections/ui/ScenarioFileBar.svelte";
     import {bucketStart, today} from "$lib/reports/periods";
     import {reportStyles} from "$lib/reports/ui/styles";
     import {MAX_COUNT} from "$lib/reports/ui/params";
@@ -71,9 +84,87 @@
 
     // --- The scenario --------------------------------------------------------
 
-    onServerReady((url) => void scenarioStore.ensureSeeded(url, settings.serverNonce));
+    onServerReady((url) => void start(url));
     const seed = $derived(scenarioStore.seed);
     const seedView = $derived(dataView(seed.status, seed.value !== null));
+
+    /**
+     * Reopen the last-loaded file, or seed.
+     *
+     * The order is load-bearing. The listing comes first because the file
+     * controls need it either way; the remembered file is tried next; and only
+     * if that produces nothing does the journal get read for a seed. Doing it
+     * the other way round would show the user an average of their history for a
+     * moment before replacing it with the scenario they actually left open.
+     */
+    async function start(url: string): Promise<void> {
+        await fileStore.ensureIndex(url, settings.serverNonce);
+        const remembered = settings.lastProjectionId;
+        if (fileStore.available && remembered !== null && (await openFile(url, remembered))) return;
+        await scenarioStore.ensureSeeded(url, settings.serverNonce);
+    }
+
+    /** Load one file into the table. `false` means it could not be opened. */
+    async function openFile(url: string, id: string): Promise<boolean> {
+        const outcome = await fileStore.open(url, id);
+        if (!outcome.ok) {
+            // A remembered id that no longer resolves must not be retried on
+            // every mount, which would put a failure on the screen each time the
+            // tab is opened.
+            if (outcome.failure.kind === "notFound" || outcome.failure.kind === "validation") fileStore.forget();
+            fileError = outcome.failure.message;
+            return false;
+        }
+        fileError = null;
+        scenarioStore.adopt(outcome.file.scenario);
+        return true;
+    }
+
+    // --- Saving --------------------------------------------------------------
+
+    let saveAsOpen = $state(false);
+    /** The engine's own sentence from the last failed load or save, or null. */
+    let fileError = $state<string | null>(null);
+    const fileIndex = $derived(fileStore.index.value);
+    const busy = $derived(fileStore.saving || fileStore.loading);
+
+    function chooseFile(id: string): void {
+        const url = settings.serverUrl;
+        if (url !== null) void openFile(url, id);
+    }
+
+    async function saveOver(): Promise<void> {
+        const url = settings.serverUrl;
+        if (url === null) return;
+        const outcome = await fileStore.save(url, scenarioStore.scenario);
+        if (outcome.ok) {
+            // `markSaved` rather than `adopt`: the scenario on screen is the one
+            // that was written, and re-adopting the engine's echo of it would
+            // discard a keystroke the user made while the request was in flight.
+            scenarioStore.markSaved();
+            fileError = null;
+        } else {
+            fileError = outcome.failure.message;
+        }
+    }
+
+    async function saveAs(id: string, name: string): Promise<void> {
+        const url = settings.serverUrl;
+        if (url === null) return;
+        // The NAME is part of the scenario, and the file is named after it — so
+        // it is set before the write rather than afterwards, or the file would
+        // carry a `; projection:` line the picker does not show.
+        scenarioStore.scenario.name = name;
+        scenarioStore.touch();
+        const outcome = await fileStore.saveAs(url, id, scenarioStore.scenario);
+        if (outcome.ok) {
+            scenarioStore.markSaved();
+            saveAsOpen = false;
+            fileError = null;
+        } else {
+            fileError = outcome.failure.message;
+        }
+    }
 
     // --- The projection ------------------------------------------------------
 
@@ -152,20 +243,37 @@
 
 <div class="flex flex-col gap-6">
     <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <h1 class="text-lg font-semibold">
-            Projections
-            {#if scenarioStore.dirty}
-                <span class="badge badge-ghost align-middle badge-sm" title="This scenario lives in this tab only — saving it to a file is not available yet.">
-                    edited
-                </span>
-            {/if}
-        </h1>
+        <h1 class="text-lg font-semibold">Projections</h1>
         {#if current !== null}
             <p class="text-sm text-base-content/60">
                 Opening balances as of today; the first projected period starts {current.start}.
             </p>
         {/if}
     </div>
+
+    <!-- Which file this scenario came from, and where it goes. Absent on an
+         engine that predates Phase 3, which still seeds and projects. -->
+    {#if fileStore.available && fileIndex !== null}
+        <ScenarioFileBar
+            files={fileIndex.files}
+            currentId={fileStore.currentId}
+            canSave={fileStore.canSave}
+            dirty={scenarioStore.dirty}
+            editable={fileIndex.editable}
+            {busy}
+            truncated={fileIndex.truncated}
+            onOpen={chooseFile}
+            onSave={() => void saveOver()}
+            onSaveAs={() => {
+                fileError = null;
+                saveAsOpen = true;
+            }}
+        />
+    {/if}
+
+    {#if fileError !== null && !saveAsOpen}
+        <div class="alert items-start rounded-box px-3 py-2 text-sm alert-error" role="alert" data-testid="projection-file-error">{fileError}</div>
+    {/if}
 
     <!-- The what-if. Seeded once from the journal: the budget's own `~` rules,
          plus one monthly line per category the budget does not mention. -->
@@ -256,3 +364,15 @@
         </div>
     </div>
 </div>
+
+{#if saveAsOpen && fileIndex !== null}
+    <SaveScenarioDialog
+        name={scenarioStore.scenario.name}
+        directories={fileIndex.directories}
+        files={fileIndex.files}
+        saving={fileStore.saving}
+        error={fileError}
+        onSave={(id, name) => void saveAs(id, name)}
+        onCancel={() => (saveAsOpen = false)}
+    />
+{/if}

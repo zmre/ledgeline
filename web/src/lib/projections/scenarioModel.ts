@@ -525,3 +525,53 @@ export function runBody(scenario: Scenario, window: {interval: string; count: nu
         depth: window.depth,
     };
 }
+
+// ---------------------------------------------------------------------------
+// The name, and the file it becomes (plan 22, Phase 3, §"Save As, and the name")
+// ---------------------------------------------------------------------------
+
+/** The filename prefix the engine groups a projection file's listing under. */
+const PROJECTION_PREFIX = "projection-";
+
+/**
+ * `projection-<slug>.journal`, or null when `name` has nothing to slug.
+ *
+ * A MIRROR of `projections::slug_filename` in the engine, and it has to agree
+ * with it exactly: the dialog shows the resulting path before it writes, and a
+ * path that turned out to be a different one would make that preview a lie.
+ * The rules are the engine's:
+ *
+ * - lowercased, runs of non-alphanumerics collapsed to one `-`, ends trimmed;
+ * - **ASCII alphanumerics only.** Not `\p{Alnum}`: a slug is a filename on
+ *   somebody else's filesystem too, and a Unicode class would let the same name
+ *   normalize differently on two machines. The DISPLAY name keeps every
+ *   character — only the filename is narrowed.
+ * - null when nothing survives, rather than `projection-.journal`, which is a
+ *   name nobody chose.
+ */
+export function slugFilename(name: string): string | null {
+    let slug = "";
+    for (const c of name) {
+        if (/[0-9A-Za-z]/.test(c)) slug += c.toLowerCase();
+        else if (!slug.endsWith("-")) slug += "-";
+    }
+    slug = slug
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 200)
+        .replace(/-+$/, "");
+    return slug === "" ? null : `${PROJECTION_PREFIX}${slug}.journal`;
+}
+
+/**
+ * The id a Save As would write to: `<directory>/<filename>`, or the filename
+ * alone at the root.
+ *
+ * Shown to the user BEFORE the write, which is the whole point — "the dialog
+ * shows the resulting path before saving". Null when the name does not slug.
+ */
+export function projectionId(directory: string, name: string): string | null {
+    const filename = slugFilename(name);
+    if (filename === null) return null;
+    const dir = directory.replace(/^\/+|\/+$/g, "");
+    return dir === "" ? filename : `${dir}/${filename}`;
+}
