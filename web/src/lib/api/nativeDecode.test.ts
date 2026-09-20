@@ -17,11 +17,13 @@ import {
     decodeJournalInfo,
     decodeOtherHoldingsReport,
     decodePeriodReport,
+    decodeProjection,
     decodeQbCommitResult,
     decodeQbPreview,
     decodeRulesDoc,
     decodeRulesIndex,
     decodeRulesPreview,
+    decodeScenario,
     decodeSectionedReport,
     decodeSubscriptionsReport,
 } from "./nativeDecode";
@@ -1686,27 +1688,175 @@ describe("UNIT nativeDecode — QuickBooks Journal commit result", () => {
     });
 });
 
+// The `POST /api/projections/run` response, mirroring `WireProjection` in
+// `crates/ledgeline-server/src/projections_api.rs`. Hand-written for the reason
+// the DECODERS entry below gives — the route carries its scenario in a request
+// body and so cannot be replayed from the URI manifest.
+//
+// The figures are the shape `projection_endpoints.rs` asserts against
+// `fixtures/sample.journal`: one $4200 monthly rent line, in CASH-FLOW
+// ORIENTATION so the expense reads NEGATIVE. A runway and a warning are present
+// deliberately — both are nullable/empty in the common case, and a sweep over a
+// body where they were absent would prove nothing about them.
+const PROJECTION_RUN = {
+    buckets: ["2026-08", "2026-09", "2026-10"],
+    start: "2026-08-01",
+    netIncome: {
+        buckets: ["2026-08", "2026-09", "2026-10"],
+        rows: [
+            {account: "expenses", depth: 1, values: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}]},
+            {account: "expenses:rent", depth: 2, values: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}]},
+        ],
+        totals: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}],
+    },
+    cash: {opening: {$: dec(500000, 2)}, values: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}, {$: dec(-760000, 2)}]},
+    netWorth: {opening: {$: dec(900000, 2)}, values: [{$: dec(480000, 2)}, {$: dec(60000, 2)}, {$: dec(-360000, 2)}]},
+    runway: {bucket: 1, bucketKey: "2026-09", label: "Sep 2026", date: "2026-09-30", periods: 2},
+    warnings: ["'every weekday' is not a recurrence this projection can enumerate"],
+};
+
+describe("UNIT nativeDecode — the projection seed over its golden", () => {
+    const raw = golden("projections-seed");
+
+    it("decodes the seeded scenario, keeping the JOURNAL's sign on every amount", () => {
+        const scenario = decodeScenario(raw);
+        // No name: naming it is the Save As dialog's job, and a placeholder here
+        // would become a filename nobody chose.
+        expect(scenario.name).toBe("");
+        expect(scenario.created).toBeNull();
+        expect(scenario.updated).toBeNull();
+        expect(scenario.events).toEqual([]);
+
+        const salary = scenario.lines.find((l) => l.account === "income:salary");
+        expect(salary).toBeDefined();
+        // Revenue is NEGATIVE on the wire, exactly as the posting is written.
+        expect(salary?.amount.quantity).toEqual({m: -518833n, p: 2});
+        expect(salary?.amount.precision).toBe(2);
+        expect(salary?.source).toBe("unbudgeted");
+        expect(salary?.growth).toBeNull();
+        expect(salary?.period).toEqual({raw: "monthly", simple: "monthly", from: null, to: null});
+
+        const housing = scenario.lines.find((l) => l.account === "expenses:housing");
+        expect(housing?.amount.quantity).toEqual({m: 187500n, p: 2});
+        // The flag that lets the table say a figure is estimated from history
+        // rather than something the user wrote.
+        expect(housing?.source).toBe("unbudgeted");
+        expect(housing?.note).toContain("average over");
+    });
+
+    it("an ABSENT amount throws rather than defaulting to zero (DRY-3)", () => {
+        const scenario = golden("projections-seed") as {lines: Record<string, unknown>[]};
+        const dropAmountField = (field: string) => ({
+            ...scenario,
+            lines: scenario.lines.map((line, i) => (i === 0 ? {...line, amount: without(line.amount as Record<string, unknown>, field)} : line)),
+        });
+        expect(() => decodeScenario({...scenario, lines: [without(scenario.lines[0], "amount"), ...scenario.lines.slice(1)]})).toThrow(ApiShapeError);
+        expect(() => decodeScenario(dropAmountField("quantity"))).toThrow(ApiShapeError);
+        // `precision` is not `quantity.places`, and guessing it gets the growth
+        // curve wrong — so it is demanded too.
+        expect(() => decodeScenario(dropAmountField("precision"))).toThrow(ApiShapeError);
+    });
+
+    it("an absent NULLABLE field throws too: on this wire every option is sent as an explicit null", () => {
+        const scenario = golden("projections-seed") as Record<string, unknown> & {lines: Record<string, unknown>[]};
+        expect(() => decodeScenario(without(scenario, "created"))).toThrow(ApiShapeError);
+        expect(() => decodeScenario(without(scenario, "updated"))).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...scenario, lines: [without(scenario.lines[0], "growth")]})).toThrow(ApiShapeError);
+        expect(() =>
+            decodeScenario({...scenario, lines: [{...scenario.lines[0], period: without(scenario.lines[0].period as Record<string, unknown>, "from")}]})
+        ).toThrow(ApiShapeError);
+    });
+
+    it("an unknown source or growth unit throws rather than falling back", () => {
+        const scenario = golden("projections-seed") as {lines: Record<string, unknown>[]};
+        expect(() => decodeScenario({...scenario, lines: [{...scenario.lines[0], source: "guessed"}]})).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...scenario, lines: [{...scenario.lines[0], growth: {rate: dec(3, 2), unit: "fortnight"}}]})).toThrow(ApiShapeError);
+    });
+
+    it("decodes a growth rate as the FRACTION it is, never a percentage", () => {
+        const scenario = golden("projections-seed") as {lines: Record<string, unknown>[]};
+        const withGrowth = decodeScenario({...scenario, lines: [{...scenario.lines[0], growth: {rate: dec(3, 2), unit: "year"}}]});
+        expect(withGrowth.lines[0].growth).toEqual({rate: {m: 3n, p: 2}, unit: "year"});
+    });
+
+    it("throws on a body that is not a scenario", () => {
+        expect(() => decodeScenario(null)).toThrow(ApiShapeError);
+        expect(() => decodeScenario({lines: []})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — a projection run", () => {
+    it("decodes the three series, the start, the runway and the warnings", () => {
+        const projection = decodeProjection(PROJECTION_RUN);
+        expect(projection.buckets).toEqual(["2026-08", "2026-09", "2026-10"]);
+        expect(projection.start).toBe("2026-08-01");
+        // Cash-flow orientation: an expense reads negative, and nothing here flips it again.
+        expect(projection.netIncome.totals[0].get("$")).toEqual({m: -420000n, p: 2});
+        // The opening balance is a real figure from the journal, not values[-1] of an earlier window.
+        expect(projection.cash.opening.get("$")).toEqual({m: 500000n, p: 2});
+        expect(projection.cash.values).toHaveLength(3);
+        expect(projection.netWorth.opening.get("$")).toEqual({m: 900000n, p: 2});
+        expect(projection.runway).toEqual({bucket: 1, bucketKey: "2026-09", label: "Sep 2026", date: "2026-09-30", periods: 2});
+        expect(projection.warnings).toHaveLength(1);
+    });
+
+    it("a null runway is a real answer — the cash never crosses zero", () => {
+        expect(decodeProjection({...PROJECTION_RUN, runway: null}).runway).toBeNull();
+    });
+
+    it("an ABSENT runway is a broken contract, not a null", () => {
+        expect(() => decodeProjection(without(PROJECTION_RUN, "runway"))).toThrow(ApiShapeError);
+    });
+
+    it("an absent series or opening balance throws rather than charting zeros", () => {
+        expect(() => decodeProjection(without(PROJECTION_RUN, "cash"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection({...PROJECTION_RUN, cash: without(PROJECTION_RUN.cash, "opening")})).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "netIncome"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "start"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "warnings"))).toThrow(ApiShapeError);
+    });
+
+    it("throws on a body that is not a projection", () => {
+        expect(() => decodeProjection(null)).toThrow(ApiShapeError);
+        expect(() => decodeProjection("nope")).toThrow(ApiShapeError);
+    });
+});
+
 describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed", () => {
-    const DECODERS: [string, (raw: unknown) => unknown][] = [
-        ["balancesheet", decodeSectionedReport],
-        ["balancesheet-grouped", decodeBalanceSheetReport],
-        ["incomestatement", decodeSectionedReport],
-        ["incomestatement-grouped", decodeIncomeStatementReport],
-        ["incomestatement-flows", decodeFlowReport],
-        ["cashflow", decodePeriodReport],
-        ["networth", decodePeriodReport],
-        ["budget", decodeBudgetReport],
-        ["budget-gaps", decodeBudgetGaps],
-        ["insights", decodeInsightsReport],
-        ["subscriptions", decodeSubscriptionsReport],
-        ["holdings", decodeHoldingsReport],
-        ["holdings-series", decodeHoldingsSeries],
-        ["holdings-other", decodeOtherHoldingsReport],
+    // `[name, decoder, body]`. The body is `golden(name)` for everything the
+    // `fixtures/native/v1` manifest can replay, which is almost all of it.
+    // `projections-run` is the exception and says why at its own entry.
+    const DECODERS: [string, (raw: unknown) => unknown, unknown][] = [
+        ["balancesheet", decodeSectionedReport, golden("balancesheet")],
+        ["balancesheet-grouped", decodeBalanceSheetReport, golden("balancesheet-grouped")],
+        ["incomestatement", decodeSectionedReport, golden("incomestatement")],
+        ["incomestatement-grouped", decodeIncomeStatementReport, golden("incomestatement-grouped")],
+        ["incomestatement-flows", decodeFlowReport, golden("incomestatement-flows")],
+        ["cashflow", decodePeriodReport, golden("cashflow")],
+        ["networth", decodePeriodReport, golden("networth")],
+        ["budget", decodeBudgetReport, golden("budget")],
+        ["budget-gaps", decodeBudgetGaps, golden("budget-gaps")],
+        ["projections-seed", decodeScenario, golden("projections-seed")],
+        // `POST /api/projections/run` cannot join `fixtures/native/v1`: that
+        // manifest replays URIs and a run carries its scenario in a request
+        // BODY, so `native_wire_golden.rs` asserts the directory and the
+        // manifest agree exactly (plan 22, amendment 16). The route is pinned
+        // against the engine by `tests/projection_endpoints.rs`; this literal is
+        // what makes its KEYS load-bearing on the TypeScript side, which is the
+        // half that test cannot reach. It mirrors `WireProjection` field for
+        // field, with a runway and a warning present so the sweep reaches every
+        // one of them.
+        ["projections-run", decodeProjection, PROJECTION_RUN],
+        ["insights", decodeInsightsReport, golden("insights")],
+        ["subscriptions", decodeSubscriptionsReport, golden("subscriptions")],
+        ["holdings", decodeHoldingsReport, golden("holdings")],
+        ["holdings-series", decodeHoldingsSeries, golden("holdings-series")],
+        ["holdings-other", decodeOtherHoldingsReport, golden("holdings-other")],
         // Same decoder as the stock series, because the engine reuses
         // `WireHoldingsSeries` for it byte for byte. Swept separately anyway: the
         // two goldens have different VALUES, and a rename this one absorbs is not
         // necessarily one the other absorbs.
-        ["holdings-other-series", decodeHoldingsSeries],
+        ["holdings-other-series", decodeHoldingsSeries, golden("holdings-other-series")],
     ];
 
     // Renames these decoders CANNOT currently notice. Every one is a gap in the
@@ -1749,8 +1899,7 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
     function sweep(): {tolerated: string[]; checked: number} {
         const tolerated: string[] = [];
         let checked = 0;
-        for (const [name, decode] of DECODERS) {
-            const raw = golden(name);
+        for (const [name, decode, raw] of DECODERS) {
             const baseline = shape(decode(raw));
             const paths = new Set<string>();
             keyPaths(raw, "$", paths);

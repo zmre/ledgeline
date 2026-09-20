@@ -962,3 +962,153 @@ must be — the seed route does not run a projection.
 
 `docs/projections.md` (Phase 3) should document the residual rule, and must NOT
 carry amendment 2's "cash is pessimistic for accruals" caveat. It no longer is.
+
+---
+
+**Phase 2 from here.** Everything below was established while building the tab.
+Phase 3 should trust these over the prose above. No Rust changed.
+
+### 19. An EVENT posting's amount is SIGNED; only a recurring line's is a magnitude
+
+The table spec says "Amount | magnitude, never signed". That is right for a
+RECURRING line and wrong for an event posting, and the two had to part company.
+
+A recurring line's sign is derivable: it is decided by the account's type, the
+way a budget goal's is. `scenarioModel.signedQuantity` is the one place it
+happens, and `withAccount` re-signs an existing amount when a row moves between
+an income and an expense account — a component that wrote `line.account`
+directly would leave a positive figure under a revenue account and the engine
+would project negative revenue.
+
+An event's sign is NOT derivable. §"What moves cash" is explicit that a
+`(assets:cash) $2000000` / `(equity:preferred) $-2000000` raise and a purchase
+that takes cash back out are both expressible, and no rule over account types
+makes both come out right — `assets:cash` is the same type in each. So the
+events section takes a signed figure and says so in its heading. Amounts there
+go through `decToInput`/`parseAmountInput` unchanged.
+
+### 20. The SPA sends no `asOf`, and `Projection.start` is what the tab shows
+
+`RunRequest.as_of` defaults to the engine's today, and the tab relies on that
+rather than sending the browser's date. The engine is the machine the journal is
+on and is the clock every other report on the page is read against; sending the
+browser's would let a projection differ from a balance sheet by a timezone. The
+start date on screen is `Projection.start` (amendment 6), never re-derived.
+
+One consequence worth stating for Phase 3 and for `e2e/projections.e2e.ts`:
+`page.clock.setFixedTime` moves the BROWSER's clock only, so no e2e assertion
+may pin a projected figure. The spec asserts reachability, seeding and rendering
+and nothing numeric.
+
+### 21. `DECODERS` became `[name, decoder, body]` triples
+
+Amendment 16 requires both new decoders in `nativeDecode.test.ts`'s rename
+sweep, and the sweep read `golden(name)` from `fixtures/native/v1`. The seed fits
+that directly. The RUN cannot: `native_wire_golden.rs` asserts that the manifest
+and the directory agree exactly, and a route whose scenario travels in a request
+BODY cannot be replayed from a URI manifest.
+
+So the list carries its body beside its name, `projections-seed` uses
+`golden("projections-seed")`, and `projections-run` uses a literal mirroring
+`WireProjection` field for field — with a non-null `runway` and a non-empty
+`warnings`, or the sweep would not reach either. Nothing was added to
+`TOLERATED`: every key of the seed golden is load-bearing, because every optional
+field on this wire is an explicit `null` and the decoders use
+nullable-but-not-absent guards rather than `?? null`.
+
+### 22. `PeriodLineChart` gained `includeZero` and `markAt`
+
+"The cash series as a line with a zero rule, the crossing point marked" needs
+two things the Phase 1 component did not have. Both are opt-in and both default
+off, so `HoldingsTrend` — which plots a portfolio value, where neither has
+anything to say — is untouched.
+
+- `includeZero` seeds the y-domain at `[0, 0]` (the rule `PeriodFlowChart`
+  already states for its bars) and draws a hairline on zero. A cash line
+  floating above an invisible zero is the one thing a runway reader must not be
+  shown.
+- `markAt` is a bucket index, drawn as a vertical hairline. Out-of-range or
+  non-integer is ignored rather than drawn off the plot.
+
+Both are SOLID: the dataviz rule against dashing is about exactly these marks.
+Neither is a channel — the sentence above the chart carries the meaning.
+
+**They are tagged `data-rule="zero"` / `data-rule="mark"`, and that attribute is
+load-bearing for tests.** layerchart gives its OWN axis baseline the same
+`lc-rule-y-line` class these rules carry, so a class query reports a zero rule on
+every chart, including ones that asked for none.
+
+### 23. A stale projection is kept on screen and LABELLED, not replaced by a spinner
+
+The reports tabs pass `matchesRequest: false` to `dataView` and fall back to
+loading, because there a held payload answers a DIFFERENT report and rendering
+it under the new one's label was FE-1. This tab does the opposite, deliberately:
+every payload answers the same three questions about the same scenario, one edit
+older, and an edit happens on every keystroke — so blanking the charts each time
+would make the tab unreadable exactly while it is being used. The last good
+answer stays, dimmed, under a `data-testid="projection-stale"` chip.
+
+The page still gates on `current` (the FE-1 comparison) anywhere it makes a claim
+about the CURRENT scenario: the start date in the header and the warnings list.
+
+### 24. Decisions the plan left open
+
+- **Depth defaults to 2**, not the reports' 3. The seed writes its unbudgeted
+  categories at depth 2, so a deeper default renders each of them twice — once as
+  its own row, once indented under a parent that restates it.
+- **The URL carries `{tab, interval, count, depth}` and never the scenario.** A
+  scenario is a table of money with account names in it; a query string is the
+  part of a page that gets pasted into chat windows and server logs. Phase 3's
+  file save is the durable home the ask asked for.
+- **"Add a step" splits at the MIDDLE of the projected window** (`bucketStart` of
+  the middle bucket), falling back to today before a projection has landed. A
+  step wants to be somewhere its effect is visible on the chart; the user then
+  edits the date on the two segments' From/To boxes.
+- **A new row opens on an account prefix of the right TYPE**, learned from the
+  journal's own accounts (`scenarioModel.sectionPrefix`) — a journal whose
+  revenue tree is `revenues:` is not handed `income:`. Without it a blank row
+  cannot be classified and appears under Expenses however it was added.
+- **Display precision is raised to fit a typed amount and never lowered.**
+  Retyping a seeded `$1,875.00` as `1875` must not quietly move that line's
+  growth onto whole dollars.
+- **Half-typed rows are dropped from the request rather than sent** (an account
+  that is still empty, an event with no date). Sending them is a `400` for the
+  whole body, which would blank all three charts while the user is reaching for
+  the combobox.
+- **A single-date line IS routed to the One-off events section**, which
+  amendment 12 permitted. It stays a `ScenarioLine` in the model, so a Phase 3
+  file round trip still writes it as the `~ DATE` rule it was.
+
+### 25. `LedgelineApi.mutate` forwards `extraStatuses`
+
+`POST /api/projections/run` is the only body-carrying READ in the client, so it
+goes through `mutate` — but `mutate`'s 404 means "that thing is gone", and here a
+404 means the engine predates the route. `mutate` now forwards an
+`extraStatuses` map to `send` (which already had one for the upload's 413), and
+`runProjection` maps 404 to `NativeApiUnavailableError`, matching what every
+`getJson` route does. No existing call site changed.
+
+### 26. Phase 3 seams, already in place
+
+`scenarioStore` exposes what a file dialog needs and nothing it does not:
+
+| member | for |
+|---|---|
+| `adopt(scenario)` | a LOAD — replaces the scenario, clones it mutable, bumps `revision`, clears `dirty` |
+| `markSaved()` | a SAVE that wrote the scenario unchanged — clears `dirty` and touches nothing else |
+| `dirty` | the only writer of unsaved-work state; the header already shows an "edited" badge from it |
+| `scenario.name` / `created` / `updated` | carried through the decoder and the encoder untouched, so Save As has them |
+
+Note `ensureSeeded` will not seed over `dirty` work: once Phase 3 can load a
+file, that guard is what stops a reconnect replacing a loaded scenario with an
+average of the user's history.
+
+### 27. Component-test fixtures are inlined wire bytes
+
+`ProjectionsTable.svelte.test.ts` and `ProjectionReports.svelte.test.ts` run in
+the `components` (jsdom) project, where `import.meta.url` is not a `file:` URL
+and `readFileSync(new URL(…))` throws `The URL must be of scheme file`. So the
+seed bytes are written into the test rather than read from
+`fixtures/native/v1/projections-seed.json` — but they are still put through the
+real `decodeScenario`, and the golden itself is swept by `nativeDecode.test.ts`,
+which runs under node.
