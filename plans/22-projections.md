@@ -1196,24 +1196,37 @@ reaches the wire as a per-file `writable` flag on both `GET /api/projections`
 and `GET /api/projections/{*id}`, so the picker disables Save and says why
 rather than letting the user discover it at the moment of a refused write.
 
-### 31. `resolve_new` refuses a symlink ANYWHERE in the id, which `rules` does not
+### 31. `resolve_new` refuses a symlink ANYWHERE in the id — in BOTH copies
 
-`rules::Discovery::resolve_new`'s docs say guard 4 "refuses a symlinked
-directory rather than following it", and it does not: `parse::confine` runs
-first and **canonicalizes**, so by the time `symlink_metadata` sees the parent,
-the link has already been resolved. A create through `linked/p.journal` lands in
-`real/p.journal` — inside the root, so containment holds, but under an id the
+`rules::Discovery::resolve_new`'s docs said guard 4 "refuses a symlinked
+directory rather than following it", and it did not: `parse::confine` runs first
+and **canonicalizes**, so by the time `symlink_metadata` saw the parent, the
+link had already been resolved. A create through `linked/p.journal` landed in
+`real/p.journal` — inside the root, so containment held, but under an id the
 scan will never produce. The file would be created and then not be openable.
 
-The projections copy adds one line: `resolved != candidate` is a refusal. The
+Both copies now carry the same line: `resolved != candidate` is a refusal. The
 root is already canonical and every component of a well-formed id is a plain
 name, so the two are equal exactly when no link (and no case-folding filesystem)
 rewrote one of them. It fails closed, which is the right direction for a create.
-`resolve_new_refuses_a_symlinked_parent_directory` pins it.
+`projection_files.rs`'s `resolve_new_refuses_a_symlinked_parent_directory` pins
+the projections copy; `rules_security.rs` now has a test of the same name
+pinning the rules one, which fails without the line (it returned
+`Ok(.../real/new.rules)` for `linked/new.rules` — the wrong id, not merely an
+unrefused one).
 
-`rules::discovery` is deliberately **left alone** — changing it is a change to a
-different feature's write surface — and the comment there records that it wants
-the same line.
+**The gap in `rules::discovery` is closed**; this amendment no longer describes
+outstanding work. What remains is the duplication itself: the two `resolve_new`
+bodies are identical apart from a depth constant, a `SKIP_DIRS` list, a filename
+predicate and a newtype, and a security check kept in two places is how the two
+drift. Extracting one helper beside `parse::confine` — which exists for exactly
+this reason, and says so — is the right end state, and it has to land as one
+change touching both modules rather than one side at a time. Until then each
+copy names the other in a comment.
+
+One stale line to fix when that happens: `projections/discovery.rs`'s comment
+still reads "`rules::Discovery::resolve_new` has the same latent gap and is left
+alone here", which is no longer true.
 
 ### 32. The listing carries no `revision`, and only reads a `projection-*` header
 

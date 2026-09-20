@@ -474,9 +474,17 @@ async fn a_create_whose_name_is_taken_between_draft_and_save_still_refuses() {
 #[tokio::test]
 async fn a_create_never_follows_a_symlink() {
     // A symlink named `*.rules` pointing at the journal itself. Following it
-    // would let a create truncate the user's books -- which is why the file
-    // type is asked about with `symlink_metadata` and the answer to "something
-    // is there" is yes for a link.
+    // would let a create truncate the user's books.
+    //
+    // The answer is a 404 and NOT a 409, and the difference is the point.
+    // `resolve_new` refuses this at guard 4's `resolved != candidate`, because
+    // `parse::confine` canonicalizes the link away and the result no longer
+    // names the id that was asked for -- two guards before the existence check
+    // that used to produce the 409 ever runs. A 404 is also the answer that
+    // discloses less: the scan skips every symlink, so this name is not in the
+    // set `GET /api/rules` publishes, and "already exists" would confirm a name
+    // the listing never showed. It collapses into the same sentence every other
+    // resolution failure returns.
     let tree = Tree::standard();
     let link = tree.path("import/2026/link.csv.rules");
     #[cfg(unix)]
@@ -498,11 +506,18 @@ async fn a_create_never_follows_a_symlink() {
         Some(create_body(&body["doc"])),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{message}");
+    assert_eq!(status, StatusCode::NOT_FOUND, "{message}");
     assert_eq!(
         tree.read("main.journal"),
         journal_before,
         "the journal a symlink pointed at must be untouched"
+    );
+    // The link is still a link, so nothing was created at that name either.
+    assert!(
+        link.symlink_metadata()
+            .expect("the link is still there")
+            .file_type()
+            .is_symlink()
     );
 }
 
