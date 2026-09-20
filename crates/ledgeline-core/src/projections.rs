@@ -19,22 +19,38 @@
 //! cash and net worth and leaves net income alone, because that is what those
 //! accounts ARE — not because the file said so.
 //!
-//! # The two derived legs
+//! # The implied cash leg is the group's RESIDUAL
 //!
 //! A projection line has no funding leg, so the balance-sheet effect is implied.
-//! Stated once, and tested:
+//! One rule, stated once and tested:
 //!
-//! > For each GROUP (one `~` rule, or one dated event), the implied leg is the
-//! > negation of the sum of that group's revenue and expense postings — i.e. its
-//! > net income. It is contributed to the CASH series unless the group already
-//! > posts to a cash-like account, and to the NET WORTH series unless the group
-//! > already posts to an asset or liability account.
+//! > For each GROUP (one `~` rule, or one dated event), sum EVERY posting. The
+//! > negation of that sum — the group's residual — is the implied cash leg, and
+//! > it applies IN ADDITION TO whatever cash postings the group already states.
+//! > Cash is an asset, so net worth takes that same implied leg beside the
+//! > group's own asset and liability postings.
 //!
-//! The two guards are what stop a user who *does* write `(assets:checking)
-//! $-4200` beside their rent line from having the rent counted twice. Cash-
-//! likeness is the predicate the cash-flow report uses
+//! A residual rather than a guard, because a guard has to answer "did this group
+//! already fund itself?" as a boolean, and can only answer for the fundings it
+//! recognises:
+//!
+//! | group | residual → implied leg | net cash |
+//! |---|---|---|
+//! | `(expenses:rent) $4200` | −4200 | −4200 |
+//! | …beside `(assets:checking) $-4200` | 0 | −4200, the stated leg |
+//! | `(expenses:legal) $45000` beside `(liabilities:payable) $-45000` | 0 | **0** |
+//! | `(assets:cash) $2M` beside `(equity:preferred) $-2M` | 0 | +2,000,000 |
+//! | `(expenses:rent) $4200` beside `(assets:cash) $-2000` | −2200 | −4200 |
+//!
+//! Row three is an ACCRUAL, and it is what a cash-posting guard gets wrong: a
+//! liability is not cash, so the guard would not fire and the bill would charge
+//! cash it has not yet cost. Row five is a PARTIAL payment, which no boolean
+//! guard can express at all.
+//!
+//! Cash-likeness is still the predicate the cash-flow report uses
 //! ([`AccountTypes::is_cash`]), so the two reports cannot disagree about what
-//! counts as cash.
+//! counts as cash — but it now decides only which STATED postings are cash,
+//! never whether an implied leg exists.
 //!
 //! # Growth is stepwise
 //!
@@ -154,9 +170,9 @@ impl LineSource {
 ///   up — is two bounded segments of one row, sharing an `id`, which is what
 ///   lets the editor show them as a single line with a "from" on it.
 /// - `group` is the SOURCE RULE: every posting of one `~` block shares it. It is
-///   what the two derived-leg guards are stated over (see the module docs), and
-///   a model with only `id` has nothing to group on — a rule that states its own
-///   cash leg would have its spending counted twice.
+///   what the residual is summed over (see the module docs), and a model with
+///   only `id` has nothing to group on — a rule that states its own cash leg
+///   would have its spending counted twice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScenarioLine {
     /// The logical row this segment belongs to.
@@ -181,10 +197,9 @@ pub struct ScenarioLine {
 /// A dated one-off: its postings say whether it touches the P&L, the balance
 /// sheet, or both.
 ///
-/// An event is its own group, so its postings are read together by the two
-/// derived-leg guards: `(assets:cash) $2M` beside `(equity:preferred) $-2M`
-/// states its own asset leg and implies nothing, while a lone
-/// `(expenses:legal) $45k` implies both.
+/// An event is its own group, so its postings sum into one residual:
+/// `(assets:cash) $2M` beside `(equity:preferred) $-2M` nets to zero and implies
+/// nothing, while a lone `(expenses:legal) $45k` implies the whole `$-45k` leg.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScenarioEvent {
     /// A stable handle for the row. Not in `plans/22-projections.md`'s sketch;
@@ -423,8 +438,8 @@ impl<'a> Layout<'a> {
         Ok(())
     }
 
-    /// Place one dated event. An event is its own group, so its postings are
-    /// read together by the two derived-leg guards.
+    /// Place one dated event. An event is its own group, so its postings sum
+    /// into one residual.
     fn place_event(&mut self, event: &ScenarioEvent) -> Result<(), ReportError> {
         let Some(index) = self.bucket_of(&event.date) else {
             return Ok(());
@@ -533,26 +548,25 @@ pub fn project(
         let mut net_worth_delta = MixedAmount::new();
 
         for legs in groups.values() {
-            let mut profit_and_loss = MixedAmount::new();
-            let mut cash = MixedAmount::new();
-            let mut balance_sheet = MixedAmount::new();
-            let (mut has_cash, mut has_balance_sheet) = (false, false);
+            let mut residual = MixedAmount::new();
+            let mut stated_cash = MixedAmount::new();
+            let mut stated_balance_sheet = MixedAmount::new();
 
             for (account, ma) in legs {
+                // EVERY posting, whatever its type — that is what makes this a
+                // residual rather than a guess about which legs were "funding".
+                residual.ma_add_assign(ma)?;
                 if types.is_cash(account) {
-                    has_cash = true;
-                    cash.ma_add_assign(ma)?;
+                    stated_cash.ma_add_assign(ma)?;
                 }
                 if types.is_type(account, AccountType::Asset)
                     || types.is_type(account, AccountType::Liability)
                 {
-                    has_balance_sheet = true;
-                    balance_sheet.ma_add_assign(ma)?;
+                    stated_balance_sheet.ma_add_assign(ma)?;
                 }
                 if types.is_type(account, AccountType::Revenue)
                     || types.is_type(account, AccountType::Expense)
                 {
-                    profit_and_loss.ma_add_assign(ma)?;
                     // Cash-flow orientation: revenue up, expenses down.
                     income_own
                         .entry(account.clone())
@@ -561,18 +575,14 @@ pub fn project(
                 }
             }
 
-            // The implied leg IS this group's net income; see the module docs
-            // for why each series takes it only when the group did not state
-            // one of its own.
-            let implied = profit_and_loss.ma_neg()?;
-            cash_delta.ma_add_assign(&cash)?;
-            if !has_cash {
-                cash_delta.ma_add_assign(&implied)?;
-            }
-            net_worth_delta.ma_add_assign(&balance_sheet)?;
-            if !has_balance_sheet {
-                net_worth_delta.ma_add_assign(&implied)?;
-            }
+            // The implied cash leg, added BESIDE the stated postings rather than
+            // instead of them (module docs). It is cash, and cash is an asset,
+            // so both series take it.
+            let implied = residual.ma_neg()?;
+            cash_delta.ma_add_assign(&stated_cash)?;
+            cash_delta.ma_add_assign(&implied)?;
+            net_worth_delta.ma_add_assign(&stated_balance_sheet)?;
+            net_worth_delta.ma_add_assign(&implied)?;
         }
 
         // The total is the sum of the OWN amounts, exactly as `cash_flow`'s is,
@@ -1516,8 +1526,7 @@ mod tests {
     }
 
     /// Equity is not an asset or a liability, so an equity-only event moves
-    /// nothing — and the asset leg beside it in the raise above is what stopped
-    /// an implied leg being added there.
+    /// nothing — and it nets to zero, so there is no implied leg either.
     #[test]
     fn an_equity_only_event_moves_nothing() {
         let reclass = event(
@@ -1540,13 +1549,168 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // The double-count guard
+    // The residual rule
     // -----------------------------------------------------------------------
 
-    /// A rule that states its OWN cash leg contributes no implied one. Without
-    /// the guard the rent would be counted twice — once as the posting the user
-    /// wrote, once as the leg the engine derives — and the cash line would fall
-    /// at twice the rate the scenario says.
+    /// The whole cash contract in one table. Each row is ONE group, projected
+    /// over a single bucket; the implied leg is the negation of the group's
+    /// residual, applied BESIDE whatever cash the group already states.
+    ///
+    /// Row three is the accrual this rule exists for: a liability counter-leg is
+    /// not cash, so a guard that looks for a cash posting would not fire and the
+    /// bill would charge $45,000 of cash it has not yet cost. Row five is a
+    /// partial payment, which a boolean guard cannot express at all.
+    #[test]
+    fn the_implied_cash_leg_is_the_groups_residual() {
+        /// One group, and the closing figures it must produce.
+        struct Case {
+            what: &'static str,
+            postings: Vec<(&'static str, Amount)>,
+            cash: i128,
+            worth: i128,
+        }
+
+        let cases = vec![
+            Case {
+                what: "no leg of its own: the whole expense is implied",
+                postings: vec![("expenses:rent", usd(420_000))],
+                cash: -4200,
+                worth: -4200,
+            },
+            Case {
+                what: "its own cash leg: residual zero, the stated leg stands alone",
+                postings: vec![
+                    ("expenses:rent", usd(420_000)),
+                    ("assets:checking", usd(-420_000)),
+                ],
+                cash: -4200,
+                worth: -4200,
+            },
+            Case {
+                what: "an ACCRUAL: residual zero, so no cash moves at all",
+                postings: vec![
+                    ("expenses:legal", usd(4_500_000)),
+                    ("liabilities:payable", usd(-4_500_000)),
+                ],
+                cash: 0,
+                // Net worth still falls: the liability rose by the full amount.
+                worth: -45_000,
+            },
+            Case {
+                what: "a raise: residual zero, the stated cash leg stands alone",
+                postings: vec![
+                    ("assets:cash", usd(200_000_000)),
+                    ("equity:preferred", usd(-200_000_000)),
+                ],
+                cash: 2_000_000,
+                worth: 2_000_000,
+            },
+            Case {
+                what: "a PARTIAL payment: the unpaid remainder is implied",
+                postings: vec![
+                    ("expenses:rent", usd(420_000)),
+                    ("assets:cash", usd(-200_000)),
+                ],
+                cash: -4200,
+                worth: -4200,
+            },
+        ];
+
+        for case in cases {
+            let group = event("group", "2026-10-15", &case.postings);
+            let projection = run(
+                &scenario(Vec::new(), vec![group]),
+                "2026-09-20",
+                Interval::Monthly,
+                1,
+            );
+            let what = case.what;
+            assert_eq!(series_units(&projection.cash), [case.cash], "cash — {what}");
+            assert_eq!(
+                series_units(&projection.net_worth),
+                [case.worth],
+                "net worth — {what}"
+            );
+        }
+    }
+
+    /// The same five groups as recurring LINES rather than events, because the
+    /// residual is summed per group and a `~` rule is a group exactly as an
+    /// event is. Three buckets, so a per-bucket effect compounds visibly.
+    #[test]
+    fn the_residual_rule_reads_a_rules_postings_the_same_way() {
+        let monthly = |account: &str, money: Amount| line("rule:0", account, money, "monthly");
+        let accrued = scenario(
+            vec![
+                monthly("expenses:legal", usd(4_500_000)),
+                monthly("liabilities:payable", usd(-4_500_000)),
+            ],
+            Vec::new(),
+        );
+        let projection = run(&accrued, "2026-09-20", Interval::Monthly, 3);
+        assert_eq!(series_units(&projection.cash), [0, 0, 0]);
+        assert_eq!(
+            series_units(&projection.net_worth),
+            [-45_000, -90_000, -135_000]
+        );
+        // Net income is untouched by the rule change: it reads revenue and
+        // expense postings only, and the liability is neither.
+        assert_eq!(totals_units(&projection), [-45_000; 3]);
+
+        let partial = scenario(
+            vec![
+                monthly("expenses:rent", usd(420_000)),
+                monthly("assets:cash", usd(-200_000)),
+            ],
+            Vec::new(),
+        );
+        let projection = run(&partial, "2026-09-20", Interval::Monthly, 3);
+        assert_eq!(series_units(&projection.cash), [-4200, -8400, -12_600]);
+        assert_eq!(series_units(&projection.net_worth), [-4200, -8400, -12_600]);
+    }
+
+    /// An accrual and its later settlement, in sequence: the bill lands in
+    /// October and moves net worth alone, the payment lands in November and
+    /// moves cash alone. Neither one double-counts the other.
+    #[test]
+    fn an_accrual_defers_the_cash_to_the_period_that_settles_it() {
+        let booked = event(
+            "bill",
+            "2026-10-15",
+            &[
+                ("expenses:legal", usd(4_500_000)),
+                ("liabilities:payable", usd(-4_500_000)),
+            ],
+        );
+        let settled = event(
+            "pay",
+            "2026-11-15",
+            &[
+                ("liabilities:payable", usd(4_500_000)),
+                ("assets:checking", usd(-4_500_000)),
+            ],
+        );
+        let projection = run(
+            &scenario(Vec::new(), vec![booked, settled]),
+            "2026-09-20",
+            Interval::Monthly,
+            3,
+        );
+        assert_eq!(series_units(&projection.cash), [0, -45_000, -45_000]);
+        // Net worth falls once, when the expense is incurred — the settlement
+        // swaps a liability for cash and nets to nothing.
+        assert_eq!(
+            series_units(&projection.net_worth),
+            [-45_000, -45_000, -45_000]
+        );
+        // …and the P&L records it once, in the month it was incurred.
+        assert_eq!(totals_units(&projection), [-45_000, 0, 0]);
+    }
+
+    /// A rule that states its OWN cash leg contributes no implied one: its
+    /// residual is zero. Without that the rent would be counted twice — once as
+    /// the posting the user wrote, once as the leg the engine derives — and the
+    /// cash line would fall at twice the rate the scenario says.
     #[test]
     fn a_rule_that_states_its_own_cash_leg_implies_nothing() {
         // One GROUP, two postings: exactly what one `~` block parses to.
@@ -1579,10 +1743,10 @@ mod tests {
         );
     }
 
-    /// The guard is per GROUP, not per scenario: a second rule with no cash leg
-    /// of its own still gets one, even when another rule stated theirs.
+    /// The residual is per GROUP, not per scenario: a second rule with no cash
+    /// leg of its own still gets one, even when another rule stated theirs.
     #[test]
-    fn the_guard_is_scoped_to_the_rule_that_states_the_leg() {
+    fn the_residual_is_summed_per_rule_not_per_scenario() {
         let projection = run(
             &scenario(
                 vec![
@@ -1777,10 +1941,11 @@ mod tests {
         assert_eq!(totals_units(&projection), [4500]);
     }
 
-    /// A declared `type: C` cash account states its own cash leg, so the guard
-    /// fires on a name no English heuristic would have recognised.
+    /// A declared `type: C` cash account is a STATED cash leg on a name no
+    /// English heuristic would have recognised — so the drawdown is the leg the
+    /// rule wrote, counted once, not twice.
     #[test]
-    fn the_cash_guard_honours_a_declared_cash_type() {
+    fn a_declared_cash_type_is_a_stated_leg_not_an_implied_one() {
         let declared: BTreeMap<String, AccountType> = [
             ("cogs:infraestructura".to_string(), AccountType::Expense),
             ("activo:banco".to_string(), AccountType::Cash),

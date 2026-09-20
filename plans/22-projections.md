@@ -171,22 +171,43 @@ Notes that are load-bearing:
 
 ### What moves cash
 
-A projection line has no funding leg, so the cash effect is implied. The rule,
+A projection line has no funding leg, so the cash effect is implied. One rule,
 stated once and tested:
 
-> A period's cash delta is the sum of that period's postings to **cash-like
-> asset accounts**, plus the negation of the sum of its **revenue and expense**
-> postings — except that a rule which contains any cash posting of its own
-> contributes no implied leg.
+> For each **group** — one `~` rule, or one dated event — sum **every** posting.
+> The negation of that sum, the group's **residual**, is the implied cash leg,
+> and it applies **in addition to** any cash postings the group already states.
 
-The exception is what stops a user who *does* write `(assets:checking) $-4200`
-beside their rent line from having the rent counted twice. Cash-likeness is the
-predicate the cash-flow report already uses (`cash_flow.rs:19` /
-`cash_predicate`), so the two reports cannot disagree about what counts as cash.
+Cash is an asset, so **net worth takes that same implied leg**, beside the
+group's own asset and liability postings. Equity postings move neither series on
+their own, which is what `net_worth.rs:179-192` already means by net worth.
 
-Net worth moves by net income plus any posting to an asset or liability
-account. Equity postings do not move it, which is what `net_worth.rs:179-192`
-already means by net worth.
+A residual rather than a guard, because a guard has to answer "did this group
+fund itself?" as a boolean, and can only answer for the fundings it recognises:
+
+| group | residual → implied leg | net cash | net worth |
+|---|---|---|---|
+| `(expenses:rent) $4200` | −4200 | −4200 | −4200 |
+| …beside `(assets:checking) $-4200` | 0 | −4200, the stated leg | −4200 |
+| `(expenses:legal) $45000` beside `(liabilities:payable) $-45000` | 0 | **0** | −45,000 |
+| `(assets:cash) $2M` beside `(equity:preferred) $-2M` | 0 | +2,000,000 | +2,000,000 |
+| `(expenses:rent) $4200` beside `(assets:cash) $-2000` | −2200 | −4200 | −4200 |
+
+Row two is the double-count a guard existed to stop, and the residual stops it
+for a better reason: the group nets to zero. Row three is an **accrual**, and it
+is what a cash-posting guard gets wrong — a liability is not cash, so the guard
+would not fire and the bill would charge cash it has not yet cost. Row five is a
+**partial** payment, which no boolean guard can express at all. Checked against
+`hledger 1.52` over the accrual and its later settlement (`cf -M`, `bse -M`,
+`is -M` all agree).
+
+Cash-likeness is still the predicate the cash-flow report already uses
+(`cash_flow.rs:19` / `cash_predicate`), so the two reports cannot disagree about
+what counts as cash — but it now decides only which **stated** postings are cash,
+never whether an implied leg exists.
+
+**Net income is untouched by any of this.** It reads revenue and expense
+postings only; amendment 3 states its orientation.
 
 ## Scope
 
@@ -884,3 +905,60 @@ which is stated in its doc comment rather than left to be discovered.
 
 `reports::test_support` became `pub(crate)` so `projections`' tests build a
 transaction with the same helpers every report test uses.
+
+### 18. The two derived-leg guards were WRONG for accruals — the rule is the RESIDUAL
+
+**This supersedes amendment 2 and the original §"What moves cash", which has
+been rewritten above. Read the rewritten section, not either of the two
+formulations this replaces.**
+
+Amendment 2 fixed a genuine double-count in the net-worth half, but it kept the
+plan's cash formulation intact: negate the revenue/expense sum, *except* that a
+group containing its own **cash** posting contributes no implied leg. It then
+named the consequence as a "known limitation, deliberately kept". That judgement
+was wrong. This is not a rounding of the model; it is a class of scenario the tab
+answers incorrectly:
+
+```journal
+~ 2027-06-15  legal fees, net 60
+    (expenses:legal)          $45000
+    (liabilities:payable)    $-45000
+```
+
+The guard looks for a CASH posting. `liabilities:payable` is not one, so it does
+not fire, and the projection charges $45,000 of cash in June — cash the scenario
+says plainly is not paid in June. For a tab whose entire purpose is "when does
+the cash run out", a pessimistic runway that **no scenario can express its way
+out of** is a wrong answer, not a caveat.
+
+Both guards are replaced by the single residual rule now stated in §"What moves
+cash": sum every posting in the group; the negation of that sum is the implied
+cash leg, applied BESIDE whatever the group already states. The net-worth guard
+from amendment 2 disappears entirely — the implied leg is cash, cash is an asset,
+so the net-worth series simply takes it too.
+
+Why this is strictly better rather than merely different:
+
+- Every case the guards got right, the residual also gets right, and for a
+  *reason* rather than a coincidence: a group that states its own funding leg has
+  a residual of zero.
+- It is **additive**, not exclusive, so a PARTIAL funding leg works — `$4200` of
+  rent against `(assets:cash) $-2000` implies the remaining `$-2200`. A boolean
+  guard could only choose all or nothing.
+- It needs no notion of "which postings were the funding". That is the question
+  the guard could not answer for a liability, and would equally have failed on a
+  receivable, a prepaid, or an inter-account transfer — whatever a user writes
+  next.
+
+**What went dead:** the `has_cash` and `has_balance_sheet` flags, and the
+`profit_and_loss` accumulator that existed only to form the implied leg. The
+per-group `residual` is summed instead. `AccountTypes::is_cash` survives, now
+classifying only stated postings and the opening balance.
+
+**Nothing on the wire moved.** `WireProjection` and every field are exactly as
+amendment 14 describes; only the numbers a scenario with a non-cash counter-leg
+produces. `fixtures/native/v1/projections-seed.json` is byte-identical, as it
+must be — the seed route does not run a projection.
+
+`docs/projections.md` (Phase 3) should document the residual rule, and must NOT
+carry amendment 2's "cash is pessimistic for accruals" caveat. It no longer is.
