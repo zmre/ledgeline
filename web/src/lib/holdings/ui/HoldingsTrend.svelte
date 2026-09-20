@@ -1,65 +1,38 @@
 <!-- Holdings value-over-time (post-MVP): portfolio market value at each of the
      last 12 month-ends for the current scope, from the native /api/holdings/series
-     endpoint (decoded into HoldingsSeries). One series → no legend box; the heading names it
-     (dataviz single-series rule). Color is categorical slot 1 from the shared
-     palette ($lib/format/palette), which documents its validator run.
-     x is the bucket index for even spacing (string month labels via the
-     axis formatter); numeric y/tooltip go through the base commodity's display
-     style. Basis is intentionally not overlaid yet — it's null whenever any held
-     lot is tainted/unpriced (honest-totals rule), so it would be blank for most
-     real portfolios; a dashed, labeled basis line is the obvious follow-up. -->
+     endpoint (decoded into HoldingsSeries).
+
+     This is now a thin adapter over `$lib/components/PeriodLineChart`, which is
+     where the chart conventions this file used to state now live and are
+     documented — x is the bucket index, explicit integer ticks, points only at
+     ≤31 buckets, one series so no legend box, colours from the shared palette.
+     Everything below the props is that component's.
+
+     Basis is intentionally not overlaid yet — it's null whenever any held lot
+     is tainted/unpriced (honest-totals rule), so it would be blank for most
+     real portfolios. `PeriodLineChart` now takes it as a second series with
+     `dashed: true` whenever that changes. -->
 <script lang="ts">
-    import {LineChart} from "layerchart";
+    import PeriodLineChart from "$lib/components/PeriodLineChart.svelte";
     import {toNumber} from "$lib/domain/money";
-    import {colorAt} from "$lib/format/palette";
     import type {HoldingsSeries} from "$lib/holdings/types";
 
     // formatValue = full-precision (tooltip/hover); formatAxis = compact ticks
     // (e.g. "$1.2K"/"$5.3M") so the left y-axis labels stay short and don't clip.
     // formatAxis defaults to formatValue when the caller doesn't supply a compact one.
     let {trend, formatValue, formatAxis}: {trend: HoldingsSeries; formatValue: (n: number) => string; formatAxis?: (n: number) => string} = $props();
-    const axisFormat = $derived(formatAxis ?? formatValue);
 
-    const VALUE_COLOR = colorAt(0); // categorical slot 1 — one series, so it takes the first slot
-
-    interface Row {
-        i: number;
-        label: string;
-        value: number;
-    }
-    const rows = $derived<Row[]>(trend.points.map((p, i) => ({i, label: p.label, value: toNumber(p.marketValue)})));
-    const allZero = $derived(rows.every((r) => r.value === 0));
-
-    // Explicit integer ticks so index-based x labels never land between buckets.
-    const xTicks = $derived.by(() => {
-        const step = Math.max(1, Math.ceil(rows.length / 6));
-        return rows.filter((r) => r.i % step === 0 || r.i === rows.length - 1).map((r) => r.i);
-    });
-    const labelOf = (i: unknown): string => rows[Math.round(Number(i))]?.label ?? "";
+    const labels = $derived(trend.points.map((p) => p.label));
+    const values = $derived(trend.points.map((p) => toNumber(p.marketValue)));
 </script>
 
-<div class="w-full">
-    <h3 class="mb-1 text-xs font-semibold tracking-tight text-base-content/70">
-        Value over time <span class="font-normal text-base-content/40">· last 12 months</span>
-    </h3>
-    {#if allZero}
-        <p class="py-8 text-center text-sm text-base-content/60">No priced holdings in the last 12 months.</p>
-    {:else}
-        <div class="h-56 w-full sm:h-64" data-testid="holdings-trend">
-            <LineChart
-                data={rows}
-                x={(d) => d.i}
-                series={[{key: "value", label: "Market value", color: VALUE_COLOR, value: (d: Row) => d.value}]}
-                points={rows.length <= 31}
-                brush={false}
-                padding={{top: 8, right: 8, bottom: 24, left: 56}}
-                props={{
-                    xAxis: {format: labelOf, ticks: xTicks},
-                    yAxis: {format: axisFormat},
-                    spline: {class: "stroke-2"},
-                    tooltip: {header: {format: labelOf}, item: {format: formatValue}},
-                }}
-            />
-        </div>
-    {/if}
-</div>
+<PeriodLineChart
+    heading="Value over time"
+    note="last 12 months"
+    {labels}
+    series={[{name: "Market value", values}]}
+    {formatValue}
+    {formatAxis}
+    empty="No priced holdings in the last 12 months."
+    testid="holdings-trend"
+/>
