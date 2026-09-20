@@ -1,0 +1,41 @@
+; Ledgeline projection
+; projection: Asset growth
+; created: 2026-01-01
+; updated: 2026-09-20
+
+; The pinned ASSET-ROW fixture (plans/23-asset-growth.md, Phase 2).
+;
+; It is read by `GET /api/projections/asset-growth-scenario.journal`, whose
+; response is committed as `fixtures/native/v1/projections-asset.json` — so the
+; asset half of the scenario wire is pinned byte for byte beside every other
+; native endpoint.
+;
+; DELIBERATELY NOT NAMED `projection-*.journal`. The picker groups those first
+; under their own heading, and `fixtures/sample.journal` is what the Projections
+; e2e spec reads the picker against — a new heading there would be a change to
+; that spec for the sake of a filename. "Really any journal file with
+; budget-like entries could be used", and this is one. A direct read still picks
+; up the `; projection:` name above, because that route re-reads the header
+; rather than trusting the listing.
+;
+; An ASSET ROW is a posting whose amount is the per-period CONTRIBUTION — `$0`
+; when the balance only compounds — carrying a `growth:` tag, on an account the
+; journal types as an asset. Verified against hledger 1.52: `print --forecast`
+; round-trips the `$0` posting with its tags, `balance --budget` reports a goal
+; for the contribution and NONE for a `$0` row (a growth rate is not a goal),
+; and `tag:growth` matches all three.
+
+~ monthly  brokerage and savings plan
+    (assets:broker:taxable:vti)     $0.00  ; growth: 7%/yr
+    (assets:bank:savings)         $250.00  ; growth: 4%/yr, line: savings
+    (assets:property:home)          $0.00  ; growth: 3%/yr, opening: 640000.00
+    (expenses:housing:rent)      $1875.00  ; growth: 2%/yr
+
+; THE COMPATIBILITY RULE, in the fixture rather than only in a test: a posting
+; with NO `growth:` tag is a flow line whatever its account. Both of these are
+; flows, and a reader that guessed "an `assets:` account means an asset row"
+; would model this sweep as two compounding balances.
+
+~ monthly  cash sweep
+    (assets:bank:savings)     $500.00
+    (assets:bank:checking)   $-500.00

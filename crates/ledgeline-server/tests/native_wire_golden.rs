@@ -230,6 +230,19 @@ async fn projections_seed_matches_the_native_golden() {
     assert_matches_golden("projections-seed").await;
 }
 
+/// The ASSET-ROW half of the scenario wire, read off a committed scenario FILE
+/// rather than the seed.
+///
+/// The seed builds its lines from the main journal's `~` rules, and
+/// `fixtures/sample.journal` deliberately declares none — `budget.e2e.ts`'s
+/// "No budget goals yet" and `projections.e2e.ts`'s "every seeded row is an
+/// average" both rest on that. So an asset row reaches this suite the one other
+/// way a `WireScenario` is served: by reading one file.
+#[tokio::test]
+async fn projections_asset_matches_the_native_golden() {
+    assert_matches_golden("projections-asset").await;
+}
+
 #[tokio::test]
 async fn insights_matches_the_native_golden() {
     assert_matches_golden("insights").await;
@@ -273,7 +286,7 @@ fn every_manifest_entry_is_covered_by_a_committed_body() {
     let entries = requests();
     assert_eq!(
         entries.len(),
-        16,
+        17,
         "the manifest gained or lost an endpoint; add/remove the matching \
          #[tokio::test] above and update this count"
     );
@@ -297,12 +310,33 @@ fn every_manifest_entry_is_covered_by_a_committed_body() {
 }
 
 /// Nothing in the pinned request set may depend on the system clock. Every
-/// handler defaults its date param to `today_utc()`, so a request that omitted
-/// one would produce a body that changed at midnight and a suite that failed
-/// for no reason. Each URI must carry its own as-of.
+/// REPORT handler defaults its date param to `today_utc()`, so a request that
+/// omitted one would produce a body that changed at midnight and a suite that
+/// failed for no reason. Each URI must carry its own as-of.
+///
+/// The exemption below is a list rather than a rule because there is no rule: a
+/// URI cannot say whether the handler behind it reads a clock. Anything added
+/// to it has to be a route that reads NO date at all — not one whose date
+/// happens to be optional.
 #[test]
 fn every_pinned_request_fixes_its_own_dates() {
+    /// Routes with no date parameter to pin, and why each one has none.
+    ///
+    /// - `projections-asset` reads ONE scenario file by id. Its whole response
+    ///   — the scenario, the `revision` fingerprint of the committed bytes, the
+    ///   `writable` flag — is a function of that file and of
+    ///   `Journal::source_files`. There is no window, no as-of and no
+    ///   `today_utc()` anywhere in `projections_api::document`.
+    const NO_DATE_TO_PIN: [&str; 1] = ["projections-asset"];
+
     for (name, uri) in requests() {
+        if NO_DATE_TO_PIN.contains(&name.as_str()) {
+            assert!(
+                !uri.contains('?'),
+                "{name} is exempt from pinning a date, so it must take no query params at all"
+            );
+            continue;
+        }
         assert!(
             uri.contains("asOf=") || uri.contains("end=") || uri.contains("to="),
             "{name}: {uri} has no pinned end date, so its golden would drift with the clock"

@@ -90,6 +90,23 @@ fn rent_line() -> Value {
     })
 }
 
+/// One ASSET row. The amount is the per-period CONTRIBUTION — `$0` here, so the
+/// balance only compounds — and `role` is the discriminator, never the account.
+fn asset_row(account: &str, rate: &str) -> Value {
+    json!({
+        "id": "brok",
+        "group": "rule:1",
+        "role": "asset",
+        "account": account,
+        "amount": {"commodity": "$", "quantity": {"mantissa": "0", "places": 2}, "precision": 2},
+        "period": {"raw": "monthly"},
+        "growth": {"rate": {"mantissa": rate, "places": 2}, "unit": "year"},
+        "opening": null,
+        "note": "",
+        "source": "journal"
+    })
+}
+
 fn scenario_with(lines: Vec<Value>, events: Vec<Value>) -> Value {
     json!({"name": "test", "created": null, "updated": null, "lines": lines, "events": events})
 }
@@ -172,6 +189,165 @@ async fn run_projects_the_scenario_in_the_body() {
     assert_eq!(projection["warnings"], json!([]));
     // sample.journal has plenty of cash, so three months of rent is no runway.
     assert_eq!(projection["runway"], Value::Null);
+}
+
+/// **The asset wire, end to end.** A `role: "asset"` row with a rate and no
+/// contribution moves NET WORTH and leaves cash and net income exactly where an
+/// identical scenario without the row leaves them.
+///
+/// The balance it compounds is the real journal's — `assets:broker:taxable` in
+/// `fixtures/sample.journal` — so this also proves the seed of the running
+/// balance reaches the wire, which no engine unit test can (they run over
+/// hand-built transactions).
+#[tokio::test]
+async fn an_asset_row_grows_net_worth_and_leaves_cash_alone() {
+    let window = |lines: Vec<Value>| {
+        json!({
+            "scenario": scenario_with(lines, vec![]),
+            "asOf": "2026-07-08",
+            "interval": "yearly",
+            "count": 3,
+            "depth": 2
+        })
+    };
+    let without = run(window(vec![rent_line()])).await;
+    let with = run(window(vec![
+        rent_line(),
+        asset_row("assets:broker:taxable", "7"),
+    ]))
+    .await;
+
+    // Cash, net income and the runway are IDENTICAL: appreciation is not money
+    // in the bank and is not a P&L event.
+    assert_eq!(with["cash"], without["cash"]);
+    assert_eq!(with["netIncome"], without["netIncome"]);
+    assert_eq!(with["runway"], without["runway"]);
+    // The openings are the journal's, and the asset row does not restate them.
+    assert_eq!(with["netWorth"]["opening"], without["netWorth"]["opening"]);
+
+    // Net worth, though, pulls away — by the growth alone, and only from the
+    // first anniversary of the projection's start (2027-01-01).
+    let (grew, flat) = (series(&with["netWorth"]), series(&without["netWorth"]));
+    assert_eq!(grew[0], flat[0], "the first year holds no anniversary");
+    assert!(
+        grew[1] > flat[1] && grew[2] > flat[2],
+        "{grew:?} vs {flat:?}"
+    );
+    // Compounding, not linear: the second step is bigger than the first.
+    assert!(
+        (grew[2] - flat[2]) - (grew[1] - flat[1]) > grew[1] - flat[1],
+        "growth must compound on the new base: {grew:?} vs {flat:?}"
+    );
+    assert_eq!(with["warnings"], json!([]));
+}
+
+/// A CONTRIBUTION on an asset row implies its cash outflow through the same
+/// residual every other row gets, and is net-worth neutral. No second path.
+#[tokio::test]
+async fn an_asset_contribution_moves_cash_and_not_net_worth() {
+    let mut row = asset_row("assets:broker:taxable", "0");
+    row["amount"]["quantity"] = json!({"mantissa": "100000", "places": 2});
+    row["growth"] = Value::Null;
+    let body = |lines: Vec<Value>| json!({"scenario": scenario_with(lines, vec![]), "asOf": "2026-07-08", "count": 3});
+    let without = run(body(vec![])).await;
+    let with = run(body(vec![row])).await;
+
+    let opening = dollars(&with["cash"]["opening"]);
+    assert_eq!(
+        series(&with["cash"]),
+        [opening - 1000, opening - 2000, opening - 3000],
+        "a $1000 monthly contribution leaves cash at $1000 a month"
+    );
+    // …and net worth does not move at all: the money changed accounts.
+    assert_eq!(with["netWorth"], without["netWorth"]);
+    assert_eq!(with["netIncome"]["rows"], json!([]));
+}
+
+/// **A non-asset account is a WARNING, not a silent model.** Liabilities are
+/// out of scope (a mortgage needs principal-versus-interest, which the journal
+/// cannot supply), and so is everything else that is not an asset.
+#[tokio::test]
+async fn an_asset_row_on_a_non_asset_account_is_warned_about() {
+    for account in ["liabilities:mortgage", "expenses:housing:rent"] {
+        let projection = run(json!({
+            "scenario": scenario_with(vec![asset_row(account, "7")], vec![]),
+            "asOf": "2026-07-08",
+            "interval": "yearly",
+            "count": 3
+        }))
+        .await;
+        let warnings = projection["warnings"]
+            .as_array()
+            .expect("warnings is an array");
+        assert!(
+            warnings.iter().any(|w| w
+                .as_str()
+                .is_some_and(|w| w.contains(account) && w.contains("asset"))),
+            "{account}: {warnings:?}"
+        );
+        // …and it contributes nothing: every bucket is the opening balance.
+        let opening = dollars(&projection["netWorth"]["opening"]);
+        assert_eq!(series(&projection["netWorth"]), [opening; 3]);
+    }
+}
+
+/// `opening` is an OVERRIDE, and only its difference from the journal's own
+/// figure reaches the series — plus a warning, because a chart that silently
+/// started somewhere the balance sheet does not would be lying.
+#[tokio::test]
+async fn an_opening_override_adjusts_once_and_says_so() {
+    let mut row = asset_row("assets:broker:taxable", "0");
+    row["growth"] = Value::Null;
+    row["opening"] = json!({"commodity": "$", "quantity": {"mantissa": "100000000", "places": 2}, "precision": 2});
+    let body = |lines: Vec<Value>| json!({"scenario": scenario_with(lines, vec![]), "asOf": "2026-07-08", "count": 2});
+    let without = run(body(vec![])).await;
+    let with = run(body(vec![row])).await;
+
+    // The OPENING figure itself is the journal's — an override restates the
+    // row's balance, not the report's starting point.
+    assert_eq!(with["netWorth"]["opening"], without["netWorth"]["opening"]);
+    // Every bucket is shifted by the same one-off difference…
+    let (adjusted, plain) = (series(&with["netWorth"]), series(&without["netWorth"]));
+    let shift = adjusted[0] - plain[0];
+    assert_eq!(
+        adjusted[1] - plain[1],
+        shift,
+        "applied once, not per bucket"
+    );
+    assert_ne!(shift, 0);
+    // …cash is untouched, or a brokerage estimate would move the runway…
+    assert_eq!(with["cash"], without["cash"]);
+    // …and it is named.
+    assert!(
+        with["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|w| w.as_str().is_some_and(|w| w.contains("opening balance"))),
+        "{:?}",
+        with["warnings"]
+    );
+}
+
+/// An absent `role` reads as `flow`, which is what every body written before
+/// asset rows existed means — and is the only default on this wire, because a
+/// scenario that lost the key would otherwise model a compounding balance as an
+/// outflow the size of its contribution.
+#[tokio::test]
+async fn an_absent_role_reads_as_a_flow_line() {
+    let mut legacy = rent_line();
+    assert!(legacy.as_object_mut().unwrap().remove("role").is_none());
+    let projection = run(json!({
+        "scenario": scenario_with(vec![legacy], vec![]),
+        "asOf": "2026-07-08",
+        "count": 3
+    }))
+    .await;
+    let opening = dollars(&projection["cash"]["opening"]);
+    assert_eq!(
+        series(&projection["cash"]),
+        [opening - 4200, opening - 8400, opening - 12_600]
+    );
 }
 
 /// An empty scenario still projects: the openings are real, and every bucket
@@ -451,6 +627,31 @@ async fn malformed_scenario_fields_are_named_in_the_400() {
                 scenario_with(vec![line], vec![])
             },
             "guessed",
+        ),
+        // An unknown ROLE. The two roles project entirely different numbers, so
+        // a value this server does not recognize is a refusal rather than a
+        // fallback to either of them.
+        (
+            {
+                let mut line = rent_line();
+                line["role"] = json!("stock");
+                scenario_with(vec![line], vec![])
+            },
+            "stock",
+        ),
+        // An opening balance on a FLOW line: a field the engine reads from
+        // nowhere and the file cannot write, so it is named rather than dropped.
+        (
+            {
+                let mut line = rent_line();
+                line["opening"] = json!({
+                    "commodity": "$",
+                    "quantity": {"mantissa": "100", "places": 0},
+                    "precision": 0
+                });
+                scenario_with(vec![line], vec![])
+            },
+            "opening balance",
         ),
         // An empty account.
         (

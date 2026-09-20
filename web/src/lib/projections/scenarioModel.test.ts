@@ -52,10 +52,12 @@ function line(overrides: Partial<ScenarioLine> = {}): ScenarioLine {
     return {
         id: "rent",
         group: "rule:0",
+        role: "flow",
         account: "expenses:rent",
         amount: {commodity: "$", quantity: dec(420000, 2), precision: 2},
         period: {raw: "monthly", simple: "monthly", from: null, to: null},
         growth: null,
+        opening: null,
         note: "",
         source: "journal",
         ...overrides,

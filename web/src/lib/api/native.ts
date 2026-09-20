@@ -657,11 +657,28 @@ export interface WireGrowthIn {
 export interface WireScenarioLineIn {
     id: string;
     group: string;
+    /**
+     * `flow` | `asset`. The asset/flow discriminator is EXPLICIT on the wire and
+     * must never be inferred from `account`: `assets:cash` is a legitimate flow
+     * (the destination of a raise) and a legitimate asset row, and a reader that
+     * guessed would reclassify one of them on every round trip.
+     */
+    role: string;
     account: string;
-    /** Signed as the journal writes it: revenue negative, expenses positive. */
+    /**
+     * For a flow, signed as the journal writes it: revenue negative, expenses
+     * positive. For an ASSET row, the per-period CONTRIBUTION — zero when the
+     * balance only compounds, which is the `$0` posting the file carries.
+     */
     amount: WireAmountIn;
     period: WirePeriodIn;
     growth: WireGrowthIn | null;
+    /**
+     * Asset rows only: an override of the journal's balance at the projection
+     * start. `null` means "use the journal's". Sending one on a flow row is a
+     * 400 — a flow has no balance to open.
+     */
+    opening: WireAmountIn | null;
     note: string;
     /** `journal` | `unbudgeted`. An unrecognized value is a 400, not a silent fallback. */
     source: string;

@@ -23,9 +23,11 @@ use ledgeline_core::projections::serialize::{
     ProjectionDoc, new_file, scenario_from_text, write_scenario,
 };
 use ledgeline_core::projections::{
-    CreateRefusal, Growth, GrowthUnit, LineSource, Scenario, ScenarioEvent, ScenarioLine, discover,
-    slug_filename, virtual_posting,
+    CreateRefusal, Growth, GrowthUnit, LineRole, LineSource, Scenario, ScenarioEvent, ScenarioLine,
+    discover, slug_filename, virtual_posting,
 };
+use ledgeline_core::reports::account_types::AccountType;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -110,13 +112,22 @@ fn line(group: &str, id: &str, account: &str, amount: Amount, period: &str) -> S
     ScenarioLine {
         id: id.to_string(),
         group: group.to_string(),
+        role: LineRole::Flow,
         account: AccountName(account.to_string()),
         amount,
         period: parse_period_spec(period),
         growth: None,
+        opening: None,
         note: String::new(),
         source: LineSource::Journal,
     }
+}
+
+/// What the main journal declares about account types. Empty is the ordinary
+/// case for a projection file and is still a real classification: `AccountTypes`
+/// infers from a root name when nothing is declared.
+fn declared() -> BTreeMap<String, AccountType> {
+    BTreeMap::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -451,8 +462,8 @@ fn a_save_that_changes_one_amount_changes_only_that_line_s_bytes() {
     let path = scratch.write("projection-plan.journal", before);
     let name = path.to_string_lossy().to_string();
 
-    let doc = ProjectionDoc::parse(before, &name).expect("it parses");
-    let mut scenario = scenario_from_text(before, &name, "plan").expect("it reads");
+    let doc = ProjectionDoc::parse(before, &name, &declared()).expect("it parses");
+    let mut scenario = scenario_from_text(before, &name, "plan", &declared()).expect("it reads");
     scenario.lines[1].amount = usd(65_000, 2, 2);
     let after = write_scenario(&doc, &scenario, &name).expect("it writes");
 
@@ -469,8 +480,13 @@ fn a_save_that_changes_one_amount_changes_only_that_line_s_bytes() {
 
     // And it is still the same scenario, read back off a real file.
     std::fs::write(&path, &after).expect("write");
-    let reread = scenario_from_text(&std::fs::read_to_string(&path).unwrap(), &name, "plan")
-        .expect("it re-reads");
+    let reread = scenario_from_text(
+        &std::fs::read_to_string(&path).unwrap(),
+        &name,
+        "plan",
+        &declared(),
+    )
+    .expect("it re-reads");
     assert_eq!(reread.lines[1].amount.quantity, Dec::new(65_000, 2));
 }
 
@@ -484,8 +500,8 @@ fn a_save_that_changes_nothing_produces_the_same_bytes() {
     let path = scratch.write("projection-plan.journal", &before);
     let name = path.to_string_lossy().to_string();
 
-    let doc = ProjectionDoc::parse(&before, &name).expect("it parses");
-    let scenario = scenario_from_text(&before, &name, "plan").expect("it reads");
+    let doc = ProjectionDoc::parse(&before, &name, &declared()).expect("it parses");
+    let scenario = scenario_from_text(&before, &name, "plan", &declared()).expect("it reads");
     assert_eq!(
         write_scenario(&doc, &scenario, &name).expect("it writes"),
         before
@@ -570,6 +586,73 @@ fn cross_check_scenario() -> Scenario {
     }
 }
 
+/// The scenario the ASSET cross-check writes: the format
+/// `plans/23-asset-growth.md` verified, built from the model so that what
+/// hledger reads is what this crate's own writer produces.
+fn asset_scenario() -> Scenario {
+    let growing = |rate: i128| Growth {
+        rate: Dec::new(rate, 2),
+        unit: GrowthUnit::Year,
+    };
+    Scenario {
+        name: "Asset cross check".to_string(),
+        lines: vec![
+            // A balance that only compounds: the contribution is `$0`.
+            ScenarioLine {
+                role: LineRole::Asset,
+                growth: Some(growing(7)),
+                note: "projection".to_string(),
+                ..line(
+                    "rule:0",
+                    "rule:0:0",
+                    "assets:brokerage",
+                    usd(0, 2, 2),
+                    "monthly",
+                )
+            },
+            // A balance that is paid into: the contribution IS the goal.
+            ScenarioLine {
+                role: LineRole::Asset,
+                growth: Some(growing(4)),
+                note: "projection".to_string(),
+                ..line(
+                    "rule:0",
+                    "rule:0:1",
+                    "assets:savings",
+                    usd(200_000, 2, 2),
+                    "monthly",
+                )
+            },
+            // An override, which rides along as a posting tag.
+            ScenarioLine {
+                role: LineRole::Asset,
+                growth: Some(growing(3)),
+                opening: Some(usd(50_000_000, 2, 2)),
+                note: "projection".to_string(),
+                ..line(
+                    "rule:0",
+                    "rule:0:2",
+                    "assets:house",
+                    usd(0, 2, 2),
+                    "monthly",
+                )
+            },
+            // An ordinary flow beside them, so the two shapes share one block.
+            ScenarioLine {
+                note: "projection".to_string(),
+                ..line(
+                    "rule:0",
+                    "rule:0:3",
+                    "expenses:rent",
+                    usd(420_000, 2, 2),
+                    "monthly",
+                )
+            },
+        ],
+        ..Scenario::default()
+    }
+}
+
 /// hledger, if the opt-in is set and the binary is there.
 fn hledger(args: &[&str]) -> Option<std::process::Output> {
     if std::env::var(OPT_IN).is_err() {
@@ -587,7 +670,7 @@ fn hledger_reads_a_scenario_we_wrote() {
     let scratch = Scratch::new("hledger");
     let scenario = cross_check_scenario();
     let path = scratch.path().join("projection-cross-check.journal");
-    let text = new_file(&scenario, &path.to_string_lossy()).expect("it writes");
+    let text = new_file(&scenario, &path.to_string_lossy(), &declared()).expect("it writes");
     std::fs::write(&path, &text).expect("write");
     let file = path.to_string_lossy().to_string();
 
@@ -694,7 +777,7 @@ fn hledger_reads_the_growth_tag_as_a_tag_and_not_as_arithmetic() {
         ..Scenario::default()
     };
     let path = scratch.path().join("projection-growth.journal");
-    let text = new_file(&scenario, &path.to_string_lossy()).expect("it writes");
+    let text = new_file(&scenario, &path.to_string_lossy(), &declared()).expect("it writes");
     std::fs::write(&path, &text).expect("write");
     let file = path.to_string_lossy().to_string();
 
@@ -721,5 +804,166 @@ fn hledger_reads_the_growth_tag_as_a_tag_and_not_as_arithmetic() {
     assert!(
         out.contains("12000.00") && !out.contains("18000.00"),
         "hledger applied the growth tag after all:\n{out}"
+    );
+}
+
+/// **The asset-row cross-check** (plan 23, Phase 2). Four claims, none of which
+/// a round trip through our own parser can make, because all four are about
+/// what somebody ELSE's reader does with the bytes we wrote.
+///
+/// 1. A `$0` posting carrying a `growth:` tag is a journal hledger parses.
+/// 2. `balance --budget` reports the CONTRIBUTION as a goal — and reports NO
+///    goal at all for a row whose contribution is `$0`. That is the honest
+///    answer rather than a gap: a growth rate is not a goal, and hledger has no
+///    way to express one.
+/// 3. `print --forecast` round-trips the `$0` posting WITH its tags, including
+///    an `opening:` that rides beside a `growth:` on the same comment.
+/// 4. `tag:growth` matches the generated postings, so the marker this crate
+///    keys the asset/flow distinction off is a marker hledger agrees exists.
+#[test]
+fn hledger_reads_an_asset_row_as_a_contribution_and_never_as_a_goal() {
+    let Some(_) = hledger(&["--version"]) else {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    };
+    let scratch = Scratch::new("assets");
+    let path = scratch.path().join("projection-assets.journal");
+    let text =
+        new_file(&asset_scenario(), &path.to_string_lossy(), &declared()).expect("it writes");
+    std::fs::write(&path, &text).expect("write");
+    let file = path.to_string_lossy().to_string();
+
+    // 1. It parses.
+    let printed = hledger(&["-f", &file, "print"]).expect("hledger runs");
+    assert!(
+        printed.status.success(),
+        "hledger print refused the file:\n{}\n--- the file ---\n{text}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+
+    // 2. The contribution is the goal, and a `$0` row has none.
+    let budget = hledger(&[
+        "-f",
+        &file,
+        "balance",
+        "--budget",
+        "-M",
+        "-b",
+        "2027-01-01",
+        "-e",
+        "2027-02-01",
+        "--layout=bare",
+    ])
+    .expect("hledger runs");
+    assert!(
+        budget.status.success(),
+        "hledger balance --budget refused:\n{}",
+        String::from_utf8_lossy(&budget.stderr)
+    );
+    let report = String::from_utf8_lossy(&budget.stdout);
+    assert!(
+        report.contains("assets:savings") && report.contains("2000.00"),
+        "the contribution is not reported as a goal:\n{report}\n--- the file ---\n{text}"
+    );
+    assert!(
+        report.contains("expenses:rent") && report.contains("4200.00"),
+        "the flow beside it lost its goal:\n{report}"
+    );
+    for silent in ["assets:brokerage", "assets:house"] {
+        assert!(
+            !report.contains(silent),
+            "a `$0` contribution must state NO goal — a growth rate is not one, \
+             and hledger cannot express one. {silent} appeared:\n{report}"
+        );
+    }
+
+    // 3. The `$0` posting and every tag survive a forecast round trip.
+    let forecast = hledger(&["-f", &file, "print", "--forecast=2027-01-01..2027-02-01"])
+        .expect("hledger runs");
+    assert!(
+        forecast.status.success(),
+        "hledger --forecast refused:\n{}",
+        String::from_utf8_lossy(&forecast.stderr)
+    );
+    let generated = String::from_utf8_lossy(&forecast.stdout);
+    for expected in [
+        "(assets:brokerage)",
+        "growth: 7%/yr",
+        "growth: 3%/yr, opening: 500000.00",
+        "$0.00",
+    ] {
+        assert!(
+            generated.contains(expected),
+            "`{expected}` did not survive `print --forecast`:\n{generated}\n--- the file ---\n{text}"
+        );
+    }
+
+    // 4. `tag:growth` is a query hledger can answer over them.
+    let tagged = hledger(&[
+        "-f",
+        &file,
+        "register",
+        "--forecast=2027-01-01..2027-02-01",
+        "tag:growth",
+    ])
+    .expect("hledger runs");
+    let matched = String::from_utf8_lossy(&tagged.stdout);
+    assert!(
+        tagged.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tagged.stderr)
+    );
+    for account in ["assets:brokerage", "assets:savings", "assets:house"] {
+        assert!(
+            matched.contains(account),
+            "`tag:growth` did not match {account}:\n{matched}"
+        );
+    }
+}
+
+/// The committed asset fixture reads as the asset rows it states, and rewriting
+/// it changes not one byte.
+///
+/// `fixtures/asset-growth-scenario.journal` is what
+/// `fixtures/native/v1/projections-asset.json` is a response to, so it is the
+/// one scenario file in the repo whose exact bytes a golden depends on. A
+/// re-render that silently reformatted it would move the golden with it and
+/// nothing would say so.
+#[test]
+fn the_committed_asset_fixture_reads_and_rewrites_unchanged() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/asset-growth-scenario.journal")
+        .canonicalize()
+        .expect("the fixture resolves");
+    let name = path.to_string_lossy().to_string();
+    let text = std::fs::read_to_string(&path).expect("the fixture reads");
+
+    let scenario = scenario_from_text(&text, &name, "fallback", &declared()).expect("it parses");
+    assert_eq!(scenario.name, "Asset growth");
+    let roles: Vec<(&str, LineRole)> = scenario
+        .lines
+        .iter()
+        .map(|line| (line.account.0.as_str(), line.role))
+        .collect();
+    assert_eq!(
+        roles,
+        [
+            ("assets:broker:taxable:vti", LineRole::Asset),
+            ("assets:bank:savings", LineRole::Asset),
+            ("assets:property:home", LineRole::Asset),
+            // `growth:` on a non-asset account is a growing FLOW.
+            ("expenses:housing:rent", LineRole::Flow),
+            // …and no `growth:` at all is a flow whatever the account, which is
+            // what keeps every pre-existing scenario file meaning what it did.
+            ("assets:bank:savings", LineRole::Flow),
+            ("assets:bank:checking", LineRole::Flow),
+        ]
+    );
+
+    let doc = ProjectionDoc::parse(&text, &name, &declared()).expect("it parses");
+    let rewritten = write_scenario(&doc, &scenario, &name).expect("it writes");
+    assert_eq!(
+        rewritten, text,
+        "a save that changes nothing must change no byte of the fixture"
     );
 }
