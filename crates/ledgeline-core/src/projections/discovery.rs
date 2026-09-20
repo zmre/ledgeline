@@ -365,9 +365,10 @@ impl Discovery {
         // (and no case-folding filesystem) rewrote one of them. Comparing them
         // fails closed, which is the right direction for a create.
         //
-        // `rules::Discovery::resolve_new` has the same latent gap and is left
-        // alone here: changing it is a change to a different feature's write
-        // surface, and this comment is the record that it wants the same line.
+        // `rules::Discovery::resolve_new` carries the identical line, added
+        // after this one uncovered the gap there. The two are deliberate
+        // copies rather than a shared helper — see `plans/22-projections.md`
+        // amendment 31 — so a change to either belongs in both.
         if resolved != candidate {
             return Err(CreateRefusal::DirectoryMissing);
         }
