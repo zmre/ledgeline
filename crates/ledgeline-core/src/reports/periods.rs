@@ -346,6 +346,41 @@ pub fn next_bucket(key: &str, interval: Interval) -> Result<String, ReportError>
     Ok(bucket_key(&to_iso(ny, nm, nd), interval))
 }
 
+/// The `n` consecutive bucket keys STARTING with the bucket containing `start`,
+/// oldest → newest — the forward mirror of [`last_n_buckets`]. Empty when
+/// `n == 0`; at most [`MAX_BUCKETS`] keys.
+///
+/// This module was trailing-only: every report here looks backwards from a
+/// report end, so `last_n_buckets` was the whole vocabulary. A PROJECTION looks
+/// the other way — it is handed an as-of date and asked for the buckets after it
+/// — and the alternative to this function is a caller re-deriving the walk from
+/// [`next_bucket`], which is how the two directions start to disagree about a
+/// year boundary or a leap day.
+///
+/// The [`MAX_BUCKETS`] clamp is [`last_n_buckets`]' clamp, for [`last_n_buckets`]'
+/// reason (SEC-2): `n` arrives from a request, so the loop AND the capacity hint
+/// are both bounded and this function is total for every `n`, `usize::MAX`
+/// included. Callers taking a count from untrusted input still reject anything
+/// above [`MAX_BUCKETS`] with a 400 first.
+///
+/// # Errors
+/// Returns [`ReportError::InvalidBucketKey`] if bucket math ever yields an
+/// unrecognized key (unreachable for the intervals here).
+pub fn next_n_buckets(
+    start: &str,
+    interval: Interval,
+    n: usize,
+) -> Result<Vec<String>, ReportError> {
+    let wanted = n.min(MAX_BUCKETS);
+    let mut out = Vec::with_capacity(wanted);
+    let mut key = bucket_key(start, interval);
+    for _ in 0..wanted {
+        out.push(key.clone());
+        key = next_bucket(&key, interval)?;
+    }
+    Ok(out)
+}
+
 /// The ISO date `delta` days after `date` (a negative `delta` moves earlier).
 /// Pure civil-day arithmetic — the companion to [`days_between`], used by the
 /// insights report to split a comparison span at its midpoint.
@@ -652,6 +687,83 @@ mod tests {
             }
             // The run ends exactly at the report end, never past it.
             assert_eq!(spans.last().unwrap().1, end, "{interval:?}");
+        }
+    }
+
+    /// The forward mirror walks the same calendar as [`last_n_buckets`], across
+    /// the two places bucket math usually breaks: a year boundary and a leap
+    /// February.
+    #[test]
+    fn next_n_buckets_walks_forward_across_year_and_leap_boundaries() {
+        assert_eq!(
+            next_n_buckets("2026-11-15", Interval::Monthly, 4).unwrap(),
+            ["2026-11", "2026-12", "2027-01", "2027-02"]
+        );
+        assert_eq!(
+            next_n_buckets("2024-01-31", Interval::Daily, 3).unwrap(),
+            ["2024-01-31", "2024-02-01", "2024-02-02"]
+        );
+        // Leap day is a real bucket, and the month after it starts on the 1st.
+        assert_eq!(
+            next_n_buckets("2024-02-28", Interval::Daily, 3).unwrap(),
+            ["2024-02-28", "2024-02-29", "2024-03-01"]
+        );
+        assert_eq!(
+            next_n_buckets("2024-02-15", Interval::Monthly, 2).unwrap(),
+            ["2024-02", "2024-03"]
+        );
+        assert_eq!(
+            next_n_buckets("2026-11-15", Interval::Quarterly, 3).unwrap(),
+            ["2026-Q4", "2027-Q1", "2027-Q2"]
+        );
+        assert_eq!(
+            next_n_buckets("2026-11-15", Interval::Yearly, 3).unwrap(),
+            ["2026", "2027", "2028"]
+        );
+        // ISO weeks: 2020-W53 exists and 2021-W01 follows it.
+        assert_eq!(
+            next_n_buckets("2020-12-28", Interval::Weekly, 3).unwrap(),
+            ["2020-W53", "2021-W01", "2021-W02"]
+        );
+    }
+
+    /// `n == 0` is the empty walk, and the two directions agree on the single
+    /// bucket they share.
+    #[test]
+    fn next_n_buckets_is_empty_at_zero_and_meets_last_n_buckets_at_one() {
+        assert!(
+            next_n_buckets("2026-07-08", Interval::Monthly, 0)
+                .unwrap()
+                .is_empty()
+        );
+        for interval in [
+            Interval::Daily,
+            Interval::Weekly,
+            Interval::Monthly,
+            Interval::Quarterly,
+            Interval::Yearly,
+        ] {
+            assert_eq!(
+                next_n_buckets("2026-07-08", interval, 1).unwrap(),
+                last_n_buckets("2026-07-08", interval, 1).unwrap(),
+                "{interval:?}"
+            );
+        }
+        // A forward run reversed is the backward run ending at its last bucket.
+        let forward = next_n_buckets("2026-01-15", Interval::Monthly, 6).unwrap();
+        let backward = last_n_buckets("2026-06-15", Interval::Monthly, 6).unwrap();
+        assert_eq!(forward, backward);
+    }
+
+    /// SEC-2 again, in the other direction: an absurd `n` must return, capped,
+    /// rather than aborting on `Vec::with_capacity` or hanging in the loop.
+    #[test]
+    fn next_n_buckets_bounds_absurd_counts() {
+        for n in [usize::MAX, usize::MAX / 2, MAX_BUCKETS + 1] {
+            let buckets = next_n_buckets("2026-07-08", Interval::Monthly, n)
+                .unwrap_or_else(|e| panic!("n={n} must not fail: {e}"));
+            assert_eq!(buckets.len(), MAX_BUCKETS, "n={n} must cap at MAX_BUCKETS");
+            assert_eq!(buckets[0], "2026-07");
         }
     }
 

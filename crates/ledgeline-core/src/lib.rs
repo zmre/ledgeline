@@ -19,6 +19,9 @@
 //!   the one-line-wide span editor over them (Enhanced imports)
 //! - `periodic` — `~` periodic transaction rules: the span editor that lets a
 //!   budget goal be rewritten in place (Budget editor)
+//! - `projections` — a what-if scenario read forward in time: the net income,
+//!   cash and net worth it implies, and the runway (see
+//!   `plans/22-projections.md`)
 //! - `reimport` — matching a re-downloaded statement against the journal it was
 //!   already imported into, by the bank's own row id (Import & rules II)
 //! - `convert` — normalize OFX/QFX/spreadsheet/delimited statements to one
@@ -45,6 +48,7 @@ pub mod journals;
 pub mod model;
 pub mod parse;
 pub mod periodic;
+pub mod projections;
 pub mod qb_import;
 pub mod qb_journal;
 pub mod reimport;

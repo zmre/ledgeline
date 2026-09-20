@@ -200,7 +200,25 @@ fn anchored_in_month(year: i64, month: i64, anchor: Anchor) -> Option<String> {
 /// [`PeriodKind::Unsupported`] fires never. It is the one place this engine
 /// knowingly under-reports rather than guessing at a recurrence it cannot state,
 /// and the rule is locked in the editor so the user is told.
-fn occurrences(start: &str, end: &str, spec: &PeriodSpec) -> Result<Vec<String>, ReportError> {
+///
+/// # Why this is `pub(crate)` and not private
+///
+/// [`crate::projections`] walks a scenario line's occurrences forward over a
+/// projected span, and that is the SAME question this answers — "when does this
+/// `~` rule fire between these two dates". The answer is inferred from
+/// hledger's CLI and pinned by `tests/budget_golden.rs`; a second walk in the
+/// projections module would be a second inference of the same grammar, free to
+/// drift on exactly the bounds (`from` as a phase anchor, `to` as exclusive)
+/// that took a CLI session to establish. Sharing it is what keeps a projected
+/// step change landing on the day the budget bars say it lands on.
+///
+/// The dates come back in ASCENDING order — every branch below builds them that
+/// way — which is what lets a caller stepping growth walk them once.
+pub(crate) fn occurrences(
+    start: &str,
+    end: &str,
+    spec: &PeriodSpec,
+) -> Result<Vec<String>, ReportError> {
     let dates = match spec.kind {
         PeriodKind::Every { unit, multiplier } => every_dates(start, end, spec, unit, multiplier)?,
         PeriodKind::Anchored { anchor, .. } => anchored_dates(start, end, spec, anchor),

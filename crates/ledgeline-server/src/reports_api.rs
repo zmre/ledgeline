@@ -1589,7 +1589,12 @@ fn is_leap_year(year: i32) -> bool {
 }
 
 /// Validate `raw` as an ISO date, naming `field` in the `400` message.
-fn checked_date(field: &str, raw: &str) -> Result<String, AppError> {
+///
+/// `pub(crate)` because a projection scenario carries event DATES in its request
+/// BODY rather than in a query string, and those dates reach the same bucket
+/// math with the same RPT-4 exposure: an unvalidated `2027-6-1` sorts above
+/// `2027-12-31` and buckets as `2027-00`.
+pub(crate) fn checked_date(field: &str, raw: &str) -> Result<String, AppError> {
     normalize_iso_date(raw)
         .map_err(|reason| AppError::BadRequest(format!("invalid {field} date '{raw}': {reason}")))
 }
@@ -1871,24 +1876,45 @@ fn default_insights_start(end: &str) -> String {
 /// into `400`s. (Verified against `serde_urlencoded 0.7.1`; the golden fixtures
 /// pin `depth=`/`count=`, so the suite catches it — but the deduplication has to
 /// happen on THIS side of the extractor, not in the derive.)
+///
+/// `pub(crate)` for [`projections_api`](crate::projections_api), which resolves
+/// the same four params: an interval the cash-flow report rejects has to be
+/// rejected there identically, and a second copy of this would be a second
+/// answer to "is `count=0` a request or a bug".
 #[derive(Debug)]
-struct Window {
-    end: String,
-    interval: Interval,
-    count: usize,
-    depth: usize,
+pub(crate) struct Window {
+    pub(crate) end: String,
+    pub(crate) interval: Interval,
+    pub(crate) count: usize,
+    pub(crate) depth: usize,
 }
 
 impl Window {
     /// Validate the four params together, in the order the handlers used to.
-    fn resolve(
+    pub(crate) fn resolve(
         end: Option<String>,
         interval: Option<&str>,
         count: Option<usize>,
         depth: Option<usize>,
     ) -> Result<Self, AppError> {
+        Self::resolve_named("end", end, interval, count, depth)
+    }
+
+    /// [`Window::resolve`], naming the date param something other than `end`.
+    ///
+    /// The projections run endpoint calls its date `asOf` — it is the day
+    /// opening balances are taken, not the day a report ends — and a `400`
+    /// reading "invalid end" for a field the caller spelled `asOf` sends them
+    /// looking for a param they did not send.
+    pub(crate) fn resolve_named(
+        field: &str,
+        date: Option<String>,
+        interval: Option<&str>,
+        count: Option<usize>,
+        depth: Option<usize>,
+    ) -> Result<Self, AppError> {
         Ok(Self {
-            end: parse_date("end", end, today_utc)?,
+            end: parse_date(field, date, today_utc)?,
             interval: parse_interval(interval)?,
             count: parse_count(count)?,
             depth: depth.unwrap_or(DEFAULT_DEPTH),

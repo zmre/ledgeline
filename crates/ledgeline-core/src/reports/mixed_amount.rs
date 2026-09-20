@@ -115,6 +115,41 @@ impl MixedAmount {
         Ok(out)
     }
 
+    /// Multiply every commodity by `factor`, dropping the commodities that
+    /// become zero.
+    ///
+    /// The `MixedAmount`-level companion to [`Dec::mul`], added for the
+    /// projection engine's stepwise growth: a scenario line's amount is scaled by
+    /// `1 + rate` once per completed growth unit, and doing that a commodity at a
+    /// time in the caller is how a second, subtly different scaling loop gets
+    /// written the next time something needs one.
+    ///
+    /// **This is not [`MixedAmount::ma_neg`] with a factor.** `ma_neg` does not
+    /// prune and does not renormalize, because its callers feed it balances whose
+    /// wire representation must not move. [`Dec::mul`] normalizes (it strips
+    /// trailing zeros, matching `Data.Decimal`), so a scaled amount's `places`
+    /// is the product's own natural scale and NOT the input's — `$4200.00 × 1.02`
+    /// is `4284`, scale 0, not `4284.00`. A caller that needs the input's
+    /// precision back asks for it explicitly with [`Dec::rounded`]; the
+    /// projection engine does exactly that at every growth step, which is what
+    /// makes a stepped figure a number a user could have typed.
+    ///
+    /// Scaling the empty amount yields the empty amount, and so does scaling by
+    /// zero — the additive identity is preserved in both directions.
+    ///
+    /// # Errors
+    /// Returns [`DecError`] on decimal overflow.
+    pub fn ma_scale(&self, factor: Dec) -> Result<MixedAmount, DecError> {
+        let mut out = BTreeMap::new();
+        for (commodity, qty) in &self.0 {
+            let scaled = qty.mul(factor)?;
+            if !scaled.is_zero() {
+                out.insert(commodity.clone(), scaled);
+            }
+        }
+        Ok(MixedAmount(out))
+    }
+
     /// Negate every commodity (`maNeg`). Does not prune (inputs are already
     /// zero-free in practice).
     ///
@@ -185,6 +220,71 @@ mod tests {
                 "{left:?} + {right:?} representation"
             );
         }
+    }
+
+    /// `ma_scale` is exact and per-commodity, and it normalizes exactly as
+    /// [`Dec::mul`] does — which is the surprise worth pinning, since a money
+    /// amount scaled by a rate does NOT keep the money's scale.
+    #[test]
+    fn ma_scale_is_exact_per_commodity_and_normalizes_like_dec_mul() {
+        // $4200.00 × 1.02 = $4284, and `mul` strips the trailing zeros.
+        let scaled = ma(&[("$", Dec::new(420_000, 2))])
+            .ma_scale(Dec::new(102, 2))
+            .unwrap();
+        let (_, qty) = scaled.iter().next().unwrap();
+        assert_eq!((qty.mantissa, qty.places), (4284, 0));
+        // …and `rounded` is how the projection engine gets the cents back.
+        assert_eq!(
+            (
+                qty.rounded(2).unwrap().mantissa,
+                qty.rounded(2).unwrap().places
+            ),
+            (428_400, 2)
+        );
+
+        // Every commodity is scaled, independently and exactly.
+        let mixed = ma(&[("$", Dec::new(1000, 2)), ("EUR", Dec::new(333, 2))]);
+        let doubled = mixed.ma_scale(Dec::new(2, 0)).unwrap();
+        assert_eq!(
+            doubled,
+            ma(&[("$", Dec::new(2000, 2)), ("EUR", Dec::new(666, 2))])
+        );
+
+        // A fractional factor keeps every digit the product has: 3.33 × 1.035
+        // is 3.44655 exactly, NOT a rounded 3.45.
+        let grown = ma(&[("EUR", Dec::new(333, 2))])
+            .ma_scale(Dec::new(1035, 3))
+            .unwrap();
+        let (_, qty) = grown.iter().next().unwrap();
+        assert_eq!((qty.mantissa, qty.places), (344_655, 5));
+    }
+
+    /// Scaling cannot invent a commodity, in either direction: the empty amount
+    /// stays empty, and a factor of zero empties a non-empty one rather than
+    /// leaving zeros behind (the additive-identity contract).
+    #[test]
+    fn ma_scale_preserves_emptiness_and_drops_zeros() {
+        assert!(
+            MixedAmount::new()
+                .ma_scale(Dec::new(103, 2))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            MixedAmount::new()
+                .ma_scale(Dec::new(0, 0))
+                .unwrap()
+                .is_empty()
+        );
+        let zeroed = ma(&[("$", Dec::new(1000, 2)), ("EUR", Dec::new(5, 0))])
+            .ma_scale(Dec::new(0, 0))
+            .unwrap();
+        assert!(zeroed.is_empty(), "a zero factor drops every commodity");
+        // Scaling by one is the identity on value (though `mul` normalizes).
+        let once = ma(&[("$", Dec::new(1050, 2))])
+            .ma_scale(Dec::new(1, 0))
+            .unwrap();
+        assert_eq!(once, ma(&[("$", Dec::new(1050, 2))]));
     }
 
     /// Pruning has to happen per addition: a commodity that nets to zero and is

@@ -46,6 +46,7 @@ mod hledger;
 mod import_api;
 mod prefs;
 mod prices_api;
+mod projections_api;
 mod qb_journal_api;
 mod reports_api;
 mod rules_api;
@@ -639,6 +640,27 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // `route_layer`, which is what matters; `budget_endpoints.rs` pins the
         // 401 for it alongside the editor's four.
         .route("/api/budget/gaps", get(reports_api::budget_gaps_report))
+        // Projections: run a what-if, and seed one from the journal.
+        //
+        // `run` is a POST that WRITES NOTHING — the scenario travels in the body
+        // so that unsaved edits project (decision 3 of
+        // `plans/22-projections.md`), not because anything is being stored. It
+        // is registered HERE, above the `route_layer`, for the same reason its
+        // read-only neighbours are: below it the route would serve a projection
+        // of the user's finances with no bearer token at all.
+        // `projection_endpoints.rs` pins the 401 for both.
+        //
+        // The body limit is raised on THIS route alone, exactly as
+        // `/api/import/stage` raises its own: every other endpoint here takes a
+        // small JSON body, and a global limit would lift the ceiling on all of
+        // them for the sake of one.
+        .route(
+            "/api/projections/run",
+            post(projections_api::run).route_layer(axum::extract::DefaultBodyLimit::max(
+                projections_api::MAX_BODY_BYTES,
+            )),
+        )
+        .route("/api/projections/seed", get(projections_api::seed))
         .route("/api/holdings", get(reports_api::holdings))
         .route(
             "/api/holdings/series",

@@ -595,3 +595,292 @@ the arithmetic; nothing pins the modelling, because the modelling is the user's.
   when Phase 3 lands.
 - Any contract in this doc that changed during implementation is amended here in
   the same commit, per `plans/00-overview.md` convention #9.
+
+---
+
+## Contract amendments made during implementation
+
+**Phase 1 only.** Everything below was established while building the engine and
+the wire; Phases 2 and 3 should trust these over the prose above.
+
+### 1. `ScenarioLine` needed a `group` beside its `id`
+
+The sketch gave `ScenarioLine` one identifier and said a step change is two
+segments "sharing `id`". But §"What moves cash" states the double-count guard
+per **rule** — "a rule which contains any cash posting of its own" — and a model
+with one posting per line has nothing to group on. A user's
+
+```journal
+~ monthly  projection
+    (expenses:rent)     $4200
+    (assets:checking)  $-4200
+```
+
+would have become two independent lines, and the rent would have been counted
+twice: once as the cash posting the user wrote, once as the leg the engine
+derives.
+
+So there are two identifiers, answering two different questions:
+
+| field | means | used by |
+|---|---|---|
+| `id` | the LOGICAL ROW — two bounded segments of one step change share it | the editor, so a step is one row |
+| `group` | the SOURCE RULE — every posting of one `~` block shares it | the two derived-leg guards |
+
+`ScenarioEvent` also gained an **`id`**, for the same reason plus one more: an
+event is its own group, and a group key that could collide with a line's would
+merge two unrelated things. (The engine namespaces them internally as
+`line:<group>` / `event:<id>`, so an id shared between the two is still safe.)
+
+### 2. The net-worth rule as written DOUBLE COUNTS
+
+§"What moves cash" ends: "Net worth moves by net income plus any posting to an
+asset or liability account." That is wrong for any rule that states its own
+funding leg. Rent $4200 with `(assets:checking) $-4200` gives net income −4200
+AND an asset posting of −4200, for −8400 — twice the truth.
+
+The corrected rule is the **symmetric** one, and it is now what the module doc
+says and what the tests pin:
+
+> For each group, the implied leg is the negation of the sum of that group's
+> revenue and expense postings — i.e. its net income. It is contributed to the
+> CASH series unless the group already posts to a **cash-like** account, and to
+> the NET WORTH series unless the group already posts to an **asset or
+> liability** account.
+
+The cash half is exactly the plan's own sentence; only the net-worth half moved.
+Checked against all four shapes the plan names (a P&L-only rule, a rule with its
+own cash leg, the `assets:cash` + `equity:preferred` raise, the
+`expenses:legal` one-off) and against an equity-only event, which correctly moves
+nothing.
+
+**Known limitation, deliberately kept:** an ACCRUAL — `(expenses:legal) $45000`
+beside `(liabilities:payable) $-45000` — still implies a cash leg, because the
+guard looks for a CASH posting and a liability is not one. Net worth is right;
+cash is pessimistic by the accrued amount. Fixing it means replacing the guard
+with "book the group's residual to cash", which is a better model but a
+different contract from the one this plan locked. `docs/projections.md` (Phase 3)
+should say so out loud.
+
+### 3. `net_income` rows are in CASH-FLOW ORIENTATION — revenue POSITIVE
+
+The plan says "Rows = projected revenue/expense accounts; totals = net income per
+bucket" without saying which way up. Taken literally with natural posting signs,
+`totals` would be the NEGATION of the row sum, breaking the one invariant every
+`PeriodReport` in this codebase keeps and that `ReportTable` renders on.
+
+So the rows are sign-flipped: **revenue positive (an inflow), expenses negative
+(an outflow), and `totals[i] == Σ rows[i] == net income`.** This is the opposite
+of `/api/reports/incomestatement`, and it is the orientation Phase 2's chart
+already wants ("inflows above the axis, outflows below, net as a line").
+
+**Phase 2 must not flip again.** A `$4200` rent line arrives as `-4200`.
+
+### 4. `Dec::rounded` is half AWAY FROM ZERO, not half-even
+
+Phase 1 §3 says "`rounded:199`, the latter rounding half-even via
+`rounded_half_even:339`". It does not: `Dec::rounded` rounds half away from zero
+(`decimal.rs:208`), matching `Data.Decimal`'s `roundTo`. `rounded_half_even` is a
+**private** helper used only by `Dec::parse` to cap at `MAX_PARSE_PLACES`.
+
+Half-away-from-zero is the right convention here anyway — it is what a reader
+expects of a displayed figure — but the difference is observable. `$1000` at
+`5%/yr`, whole dollars, steps `1050, 1103, 1158, 1216, 1277`; the second step is
+`1102.50` and rounds UP. Pinned by
+`growth_rounds_at_each_step_not_once_at_the_end`, which also shows the fifth year
+is where stepwise (1277) and compound-then-round-once (1276) part company.
+
+### 5. `project`'s signature
+
+```rust
+pub fn project(
+    scenario: &Scenario,
+    txns: &[Transaction],
+    prices: &[PriceDirective],      // NOT `&Prices` — there is no such type
+    opts: &ProjectionOpts,
+) -> Result<Projection, ReportError>
+```
+
+`prices` is the journal's explicit `P` directives, exactly as `net_worth` takes
+them; the inferred cost prices are derived inside, so opening balances value
+identically to `/api/reports/networth`.
+
+Opening net worth comes from the **public** `net_worth` with `count: 1`, not from
+`net_worth_priced`. The plan said the latter is "already `pub(super)` for exactly
+this kind of reuse" — but `pub(super)` means visible inside `reports`, and
+`projections` is a crate-root module. The numbers are identical; the cost is one
+extra `infer_market_prices` pass per request, which happens once.
+
+### 6. `Projection` gained `start`, `ScenarioLine` gained `source`
+
+- `Projection.start` — the first day of the first bucket. Decision 9 makes the
+  start a derived fact ("the tab states the start date"), and a UI that
+  re-derived it would be re-implementing "the next whole bucket".
+- `ScenarioLine.source` — `LineSource::Journal | Unbudgeted`. Phase 2 requires
+  seeded gap rows to "arrive flagged"; this is that flag, and it reaches the wire
+  as `"journal"` / `"unbudgeted"`.
+
+### 7. `occurrences` is shared, not lifted
+
+`reports::budget::occurrences` became `pub(crate)` and `projections` calls it
+directly. Lifting it to a new shared module would have moved the function the
+`budget_golden.rs` hledger oracle validates away from the report it validates.
+Its dates are ASCENDING (every branch builds them that way), which is now
+documented, because the growth walk relies on it to step once rather than
+recompute from the anchor per occurrence.
+
+### 8. `parse::parse_period_spec` is now `pub`
+
+It was `pub(crate)` (plan 21 amendment #4). The run endpoint takes a period as
+the words a user typed, in a request BODY, and re-parsing them with the journal's
+own grammar is what guarantees a projected line fires on the days the same line
+fires on once saved and read back. The alternative was a second grammar at the
+HTTP boundary, invisible to `budget_golden.rs`.
+
+### 9. `ma_scale` exists and is used, but growth does not round at the `MixedAmount` level
+
+`ma_scale` is on `MixedAmount` as specified. The growth step is
+`ma_scale(1 + rate)` followed by a per-commodity `Dec::rounded(precision)`,
+because "round to the amount's own `AmountStyle.precision`" is a per-AMOUNT fact
+that a `MixedAmount` does not carry.
+
+Worth knowing: **`Dec::mul` normalizes.** `$4200.00 × 1.02` is `4284` at scale 0,
+not `4284.00`. The explicit `rounded` is what puts the cents back, so a scaled
+amount without it would ship a different `places` on the wire.
+
+### 10. Growth details the plan did not state
+
+- **The growth anchor** is the line's `from` when it has one, else the
+  projection's start. That is what makes the second segment of a step change grow
+  from its NEW base (`~ monthly from 2027-04-01 … growth: 5%/yr` bumps on
+  2028-04-01, not on the projection's own anniversary).
+- **Months count ANNIVERSARIES, clamped**, not calendar-month differences. From
+  2026-01-15: 2026-02-14 is zero months, 2026-02-15 is one. From 2026-01-31:
+  2026-02-28 is one — the same clamp `periods::clamped_date` applies to a
+  `~ monthly from 2026-01-31` rule's occurrences. Years are whole months / 12.
+- **`rate` is a FRACTION everywhere in the model and on the wire** — `3%/yr` is
+  `Dec::new(3, 2)`. The `%` belongs to the file format and the UI. `parse_growth`
+  reads `3%/yr`, `0.03/year`, `2.5%/mo` and `-1%/wk`; anything it cannot read is
+  a FLAT line, not a failed file.
+- **A growth overflow is a warning, not a `500`.** A compounding amount can
+  outgrow `i128` long before the span does (10%/week over 1200 weeks is ~10^49).
+  The line holds its last representable amount and says so in `warnings`.
+- **Growth on a `Once` line warns** that it never applies.
+
+### 11. The seed route is `?end=&count=&depth=`, NOT `?from=&to=`
+
+The wire table says `GET /api/projections/seed?from=&to=`. It cannot be: the seed
+reuses `budget_gaps`, whose window is `BudgetOpts { end, interval, count, depth }`,
+and the plan also requires the params to go through the shared `Window::resolve`.
+A `from`/`to` pair would have had to be converted into an interval and a count,
+which is a third way of saying the same window.
+
+There is deliberately **no `interval` param**: the seeded lines are monthly and
+their figures are monthly averages, so an interval could only offer a window
+whose buckets do not match the lines it produces. `Window::resolve` is given
+`None` and resolves to monthly.
+
+Seed defaults: `end` = today, `count` = 12, `depth` = 2. The divisor for the
+average is the BUCKET COUNT, and the last bucket is truncated at `end` — so a
+part-month at the right-hand edge makes the average slightly conservative, on
+purpose.
+
+### 12. A two-commodity gap seeds TWO lines
+
+One `ScenarioLine` holds one `Amount`. `fixtures/sample.journal`'s
+`expenses:food` and `expenses:travel` each have `$` and `EUR` activity, so each
+seeds two lines with distinct ids (`gap:<account>:<commodity>`). Collapsing them
+would mean picking a commodity, which is a valuation the seed has no business
+performing — and the projection warns when a scenario's commodities are not the
+one the opening balances are valued in.
+
+A seeded scenario has **no name**: naming it is the Save As dialog's job, and a
+placeholder would become a filename nobody chose.
+
+`seed_scenario` does **not** convert `~ DATE` rules into `ScenarioEvent`s — they
+stay `Once` lines, because a `~` rule is a rule and the file round trip should say
+so. Phase 2 may route `period.simple == null` plus a single-date `raw` into the
+"One-off events" section for display; the engine treats both identically.
+
+### 13. `Window::resolve_named`, so the date error names the field that was sent
+
+`Window::resolve` hard-coded `"end"` in its date `400`. The run endpoint's date
+is `asOf`. `resolve_named(field, …)` was added and `resolve` now delegates to it;
+no existing call site changed.
+
+`reports_api::checked_date` also became `pub(crate)`: a scenario carries event
+DATES in a request body, and those reach the same bucket math with the same RPT-4
+exposure. Note it **normalizes** as well as validates — `2026-9-1` is accepted
+(as hledger's own `-b`/`-e` accept it) and becomes `2026-09-01`; `2026-02-30` and
+`garbage` are `400`s.
+
+### 14. Wire details Phase 2 needs
+
+- `WireProjection` = `{buckets, start, netIncome, cash, netWorth, runway,
+  warnings}`. `netIncome` is a `WirePeriodReport`, unchanged, so `ReportTable`
+  renders it with no edits.
+- `cash` / `netWorth` are `{opening, values}` — `opening` is a real figure from
+  the journal, NOT `values[-1]` of some earlier window.
+- `runway` is `null` or `{bucket, bucketKey, label, date, periods}`. `bucketKey`
+  and `label` are beyond the engine's `Runway` struct: the sentence above the
+  chart should not have to index back into `buckets` and hope the two agree.
+  `date` is the bucket's LAST day; `periods` is `bucket + 1`. "Negative" means
+  any commodity's closing balance is negative.
+- **Every optional field serializes as `null`, never omitted.** A scenario is a
+  round-trip shape, and absent-versus-null is the distinction a hand-written
+  decoder gets wrong.
+- `WireAmount` carries `precision` beside `quantity`. It is the DISPLAY
+  precision, it is not `quantity.places`, and the growth curve is wrong without
+  it — a client must send it back.
+- `period` goes OUT as `{raw, simple, from, to}` and comes IN as an object with
+  `raw` required. `PeriodIn` is the one inbound type WITHOUT
+  `deny_unknown_fields`, precisely so a client can hand back the object it was
+  given; the derived fields are ignored and `raw` is re-parsed.
+- `growth` is `{rate, unit}` with `unit` ∈ `week|month|year`; `source` is
+  `journal|unbudgeted`. An unrecognized value in either is a `400`, not a silent
+  fallback.
+- An event's postings are FLATTENED on the way out: one wire posting per
+  (posting, amount) pair, so a row is always one account and one amount.
+
+### 15. Limits, and what status each produces
+
+| guard | limit | result |
+|---|---|---|
+| request body | `MAX_BODY_BYTES` = 256 KiB, route-local `DefaultBodyLimit` | `400` (via `json_body`, not a `413`) |
+| `scenario.lines` | 1000 | `400` naming the limit and the count sent |
+| `scenario.events` | 1000 | `400` |
+| one event's `postings` | 100 | `400` naming the event |
+| `count` | `1..=MAX_BUCKETS`, via `parse_count` | `400` |
+
+The counts are checked BEFORE any line is decoded and before a `compute` slot is
+claimed: refusing an oversized scenario has to be cheap.
+
+### 16. Goldens, and the TypeScript side
+
+- `just snapshot-native` was **not** run (it binds a port). The
+  `projections-seed` golden was produced by replaying the manifest URI through
+  the same `tower` oneshot `native_wire_golden.rs` uses, and is verified by it.
+  Every pre-existing golden is byte-identical.
+- `native_wire_golden.rs`'s manifest count assertion moved **15 → 16**.
+- `POST /api/projections/run` is pinned by
+  `crates/ledgeline-server/tests/projection_endpoints.rs`, as the plan says —
+  though under that name alone, with no committed pair under
+  `fixtures/projections/`: a committed request/response adds a second place for
+  the wire to be stated, and the test asserts the same bytes from one.
+- **`nativeDecode.test.ts` has NO entry for the seed golden yet, and that is
+  Phase 2's job.** There is no `decodeScenario`/`decodeProjection` in
+  `nativeDecode.ts` — Phase 1 stopped at the Rust wire. Nothing broke (that
+  file's sweep iterates an explicit `DECODERS` list, not the fixtures
+  directory), but until Phase 2 adds the decoders and their sweep entries, a
+  renamed field in `projections_api.rs` fails only on the Rust side. **Phase 2
+  must add both decoders to `DECODERS`, and must not add anything to
+  `TOLERATED`.**
+
+### 17. `next_n_buckets` / `nextNBuckets`
+
+Both landed as specified. The Rust one clamps `n` at `MAX_BUCKETS` (its `n`
+arrives from a query); the TS one does not, matching its own `lastNBuckets` —
+which is stated in its doc comment rather than left to be discovered.
+
+`reports::test_support` became `pub(crate)` so `projections`' tests build a
+transaction with the same helpers every report test uses.
