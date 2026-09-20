@@ -34,10 +34,12 @@ interface MountOptions {
     note?: string;
     labels?: readonly string[];
     series?: {name: string; values: readonly number[]; dashed?: boolean}[];
+    includeZero?: boolean;
+    markAt?: number | null;
     empty?: string;
 }
 
-function mount({heading = "Value over time", note, labels = MONTHS, series, empty}: MountOptions = {}) {
+function mount({heading = "Value over time", note, labels = MONTHS, series, includeZero, markAt, empty}: MountOptions = {}) {
     return render(PeriodLineChart, {
         heading,
         note,
@@ -45,6 +47,8 @@ function mount({heading = "Value over time", note, labels = MONTHS, series, empt
         series: series ?? [{name: "Market value", values: ramp(labels)}],
         formatValue: money,
         formatAxis: compact,
+        includeZero,
+        markAt,
         empty,
         testid: "trend",
     });
@@ -143,6 +147,39 @@ describe("COMPONENT PeriodLineChart", () => {
             const {container} = mount({labels, series: [{name: "Market value", values: ramp(labels)}]});
 
             expect(xLabels(container)).toEqual(labels);
+        });
+    });
+
+    // Both opt-in, and both off by default — `HoldingsTrend` plots a portfolio
+    // value, where neither a zero rule nor a marker has anything to say.
+    describe("the zero rule and the marker", () => {
+        // Selected on `data-rule`, not on layerchart's `lc-rule-*-line` class:
+        // it gives its OWN axis baseline the same class, so a class query cannot
+        // tell the two apart and would report a zero rule on every chart.
+        const zeroRules = (root: HTMLElement): Element[] => [...root.querySelectorAll('[data-rule="zero"]')];
+        const markers = (root: HTMLElement): Element[] => [...root.querySelectorAll('[data-rule="mark"]')];
+
+        it("draws neither unless it is asked to", () => {
+            const {container} = mount();
+            expect(zeroRules(container)).toHaveLength(0);
+            expect(markers(container)).toHaveLength(0);
+        });
+
+        it("`includeZero` draws a zero rule, so a balance is never shown floating above an invisible baseline", () => {
+            const {container} = mount({includeZero: true});
+            expect(zeroRules(container)).toHaveLength(1);
+        });
+
+        it("`markAt` puts one vertical rule on that bucket", () => {
+            const {container} = mount({includeZero: true, markAt: 3});
+            expect(markers(container)).toHaveLength(1);
+        });
+
+        it("ignores a marker that lands on no bucket, rather than drawing one off the plot", () => {
+            for (const markAt of [-1, MONTHS.length, 2.5]) {
+                const {container} = mount({includeZero: true, markAt});
+                expect(markers(container)).toHaveLength(0);
+            }
         });
     });
 

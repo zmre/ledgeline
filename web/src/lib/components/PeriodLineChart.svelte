@@ -19,6 +19,15 @@
        which documents its validator run. Slots are taken in series order and
        never cycled.
 
+     - THE ZERO RULE AND THE MARKER ARE OPT-IN, AND SOLID. `includeZero` seeds
+       the y-domain at zero so the baseline is always in frame (the rule
+       `PeriodFlowChart` states for its bars, which a line chart of a BALANCE
+       needs for the same reason — a cash line floating above an invisible zero
+       is the one thing a runway reader must not be shown). `markAt` puts a
+       vertical rule on one bucket. Both are hairlines, never dashed: the
+       dataviz rule against dashing is about exactly these marks. Neither is a
+       channel — the sentence above the chart says what they mean.
+
      The legend is this component's own markup rather than layerchart's built-in
      one, for the reason `reports/ui/SankeyPanel.svelte` gives: it is then
      always visible, at every width, and it survives a container that has not
@@ -39,8 +48,8 @@
 </script>
 
 <script lang="ts">
-    import {LineChart} from "layerchart";
-    import {colorAt} from "$lib/format/palette";
+    import {LineChart, Rule} from "layerchart";
+    import {colorAt, FLOW_OUT} from "$lib/format/palette";
     import {labelFormatter, tickIndices} from "./periodAxis";
 
     let {
@@ -50,6 +59,8 @@
         series,
         formatValue,
         formatAxis,
+        includeZero = false,
+        markAt = null,
         empty = "Nothing to chart in this range.",
         height = "h-56 sm:h-64",
         testid,
@@ -65,6 +76,10 @@
         formatValue: (n: number) => string;
         /** Compact, for the y-axis ticks ("$1.2K") so they stay short and do not clip. Defaults to `formatValue`. */
         formatAxis?: (n: number) => string;
+        /** Keep zero in frame and draw a rule on it. For a BALANCE, where "above or below zero" is the reading. */
+        includeZero?: boolean;
+        /** Bucket index to mark with a vertical rule, or null. What it means is the caller's to say in words. */
+        markAt?: number | null;
         /** Shown instead of the plot when there is nothing to draw. */
         empty?: string;
         /** Height utilities for the plot box. */
@@ -87,6 +102,27 @@
 
     const xTicks = $derived(tickIndices(rows.length));
     const labelOf = $derived(labelFormatter(labels));
+
+    /**
+     * The y-domain, seeded at [0, 0] when `includeZero` — the rule
+     * `PeriodFlowChart` states for its bars. `undefined` otherwise, which leaves
+     * layerchart's own domain exactly as it was.
+     */
+    const yDomain = $derived.by<[number, number] | undefined>(() => {
+        if (!includeZero) return undefined;
+        let lo = 0;
+        let hi = 0;
+        for (const r of rows) {
+            for (const n of r.v) {
+                lo = Math.min(lo, n);
+                hi = Math.max(hi, n);
+            }
+        }
+        return [lo, hi];
+    });
+
+    /** Only a marker that lands on a real bucket is drawn. */
+    const marker = $derived(markAt !== null && Number.isInteger(markAt) && markAt >= 0 && markAt < rows.length ? markAt : null);
 
     const LINE_CLASS = "stroke-2";
     /** Overrides `props.spline` for the one series, since a series' own props are spread last. */
@@ -121,6 +157,8 @@
                 series={chartSeries}
                 points={rows.length <= 31}
                 brush={false}
+                {yDomain}
+                yNice={includeZero}
                 padding={{top: 8, right: 8, bottom: 24, left: 56}}
                 props={{
                     xAxis: {format: labelOf, ticks: xTicks},
@@ -128,7 +166,22 @@
                     spline: {class: LINE_CLASS},
                     tooltip: {header: {format: labelOf}, item: {format: formatValue}},
                 }}
-            />
+            >
+                {#snippet belowMarks()}
+                    <!-- Under the marks, so the data is never read through a rule.
+                         The `data-rule` attributes are passed straight through to
+                         the SVG `<line>`: layerchart gives its own baseline the
+                         same `lc-rule-y-line` class these would carry, so there
+                         is otherwise no way — in a test or in the inspector — to
+                         tell our zero rule from its axis. -->
+                    {#if includeZero}
+                        <Rule y={0} class="stroke-base-content/40" data-rule="zero" />
+                    {/if}
+                    {#if marker !== null}
+                        <Rule x={marker} stroke={FLOW_OUT} data-rule="mark" />
+                    {/if}
+                {/snippet}
+            </LineChart>
         </div>
         <!-- Two or more series: always visible, so identity is never colour-alone.
              A short line-key rather than a dot, because it can also carry the dash. -->
