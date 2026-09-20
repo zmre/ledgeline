@@ -39,8 +39,11 @@ mod sections;
 pub mod subscriptions;
 pub mod types;
 
+// `pub(crate)`, not private: `crate::projections` builds the same fixtures
+// (a transaction, a USD amount) and a third copy of them is a third set of
+// defaults to keep in step.
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 use crate::decimal::DecError;
 use thiserror::Error;

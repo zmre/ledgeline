@@ -1370,14 +1370,23 @@ const MAX_PERIOD_MULTIPLIER: u32 = 1000;
 /// optional `from DATE`, then an optional `to DATE`. A bare date is a single
 /// occurrence.
 ///
-/// `pub(crate)` for [`crate::periodic`], whose scan must reach the *same* verdict
-/// about a header as this parse does — a block's ordinal is joined against
-/// `Journal::periodic_transactions` by position, so two readings that disagreed
-/// about whether a line is a rule would land an edit on the wrong one. It used to
-/// be a hand-kept copy of the five-word match, with a doc comment asking the next
-/// maintainer to keep them in step. Sharing the function is the version of that
-/// request which cannot be forgotten.
-pub(crate) fn parse_period_spec(raw: &str) -> PeriodSpec {
+/// Shared, rather than copied, for [`crate::periodic`], whose scan must reach the
+/// *same* verdict about a header as this parse does — a block's ordinal is joined
+/// against `Journal::periodic_transactions` by position, so two readings that
+/// disagreed about whether a line is a rule would land an edit on the wrong one.
+/// It used to be a hand-kept copy of the five-word match, with a doc comment
+/// asking the next maintainer to keep them in step. Sharing the function is the
+/// version of that request which cannot be forgotten.
+///
+/// It is `pub` for the same reason one step further out: the projections run
+/// endpoint takes a scenario in a request BODY, where a period arrives as the
+/// words a user typed rather than as bytes already read from a file. Parsing
+/// those words here is what guarantees a projected line fires on the days the
+/// same line would fire on once it is saved to disk and read back — the
+/// alternative is a second grammar at the HTTP boundary, which is the one place
+/// a divergence would be invisible to `tests/budget_golden.rs`.
+#[must_use]
+pub fn parse_period_spec(raw: &str) -> PeriodSpec {
     let raw = raw.trim();
     let build = |kind, start, end| PeriodSpec {
         raw: raw.to_string(),

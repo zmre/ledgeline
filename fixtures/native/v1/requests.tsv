@@ -20,6 +20,12 @@ cashflow	/api/reports/cashflow?end=2026-07-08&interval=monthly&count=3&depth=2
 networth	/api/reports/networth?end=2026-07-08&interval=monthly&count=3&depth=2
 budget	/api/budget?end=2026-07-08&interval=monthly&count=3&depth=2
 budget-gaps	/api/budget/gaps?end=2026-07-08&interval=monthly&count=3&depth=2
+# The projection SEED only. `POST /api/projections/run` cannot join this
+# manifest — it replays URIs, and a run carries its scenario in a request body —
+# so that route is pinned by crates/ledgeline-server/tests/projection_endpoints.rs
+# instead. `count=12` is the trailing twelve months the unbudgeted averages are
+# taken over; there is no `interval`, because a monthly average has only one.
+projections-seed	/api/projections/seed?end=2026-07-08&count=12&depth=2
 insights	/api/insights?start=2025-07-01&end=2026-07-08
 subscriptions	/api/subscriptions?asOf=2026-07-08
 holdings	/api/holdings?asOf=2026-07-08
