@@ -15,12 +15,14 @@ import {
     percentFromRate,
     periodRaw,
     projectable,
+    projectionId,
     rateFromPercent,
     removeSegment,
     runBody,
     scenarioToWire,
     sectionOfLine,
     sectionPrefix,
+    slugFilename,
     signedQuantity,
     splitStep,
     takenIds,
@@ -375,5 +377,60 @@ describe("UNIT scenarioModel — cloning", () => {
         }
         clone.lines[0].account = "expenses:other";
         expect(decoded.lines[0].account).toBe("expenses:rent");
+    });
+});
+
+describe("UNIT scenarioModel — the name and the file it becomes", () => {
+    // A MIRROR of the engine's `projections::slug_filename`, and these cases are
+    // the same ones `crates/ledgeline-core/src/projections/discovery.rs` pins.
+    // The dialog shows the resulting path before it writes, so the two agreeing
+    // is what keeps that preview from being a lie.
+    describe("slugFilename", () => {
+        it("lowercases, collapses runs of non-alphanumerics, and trims the ends", () => {
+            expect(slugFilename("Series A with a hiring ramp")).toBe("projection-series-a-with-a-hiring-ramp.journal");
+            expect(slugFilename("  ***Plan B!!! 2027  ")).toBe("projection-plan-b-2027.journal");
+            expect(slugFilename("UPPER CASE")).toBe("projection-upper-case.journal");
+        });
+
+        it("slugs a traversal away rather than refusing it", () => {
+            // Every separator and every dot is a non-alphanumeric, so there is
+            // nothing left that could name a parent directory. The engine's
+            // `resolve_new` refuses one anyway; this is the first of the two.
+            expect(slugFilename("a/../../etc/passwd")).toBe("projection-a-etc-passwd.journal");
+            expect(slugFilename("..")).toBeNull();
+        });
+
+        it("is null when nothing survives, rather than `projection-.journal`", () => {
+            // A name nobody chose, and one the scan would then list.
+            expect(slugFilename("")).toBeNull();
+            expect(slugFilename("   ")).toBeNull();
+            expect(slugFilename("—")).toBeNull();
+            // ASCII only, deliberately: a slug is a filename on somebody else's
+            // filesystem too, and a Unicode class would normalize differently
+            // on two machines.
+            expect(slugFilename("日本語")).toBeNull();
+        });
+
+        it("never ends in a separator, however long the name is", () => {
+            const long = `${"a".repeat(199)} b`;
+            const slug = slugFilename(long);
+            expect(slug).not.toBeNull();
+            expect(slug?.endsWith("-.journal")).toBe(false);
+        });
+    });
+
+    describe("projectionId", () => {
+        it("joins the chosen folder to the slugged file name", () => {
+            expect(projectionId("plans", "Series A")).toBe("plans/projection-series-a.journal");
+            expect(projectionId("", "Series A")).toBe("projection-series-a.journal");
+        });
+
+        it("never leaves a leading or doubled separator", () => {
+            expect(projectionId("/plans/", "Series A")).toBe("plans/projection-series-a.journal");
+        });
+
+        it("is null when the name has no file name in it", () => {
+            expect(projectionId("plans", "!!!")).toBeNull();
+        });
     });
 });

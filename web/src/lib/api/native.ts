@@ -698,6 +698,23 @@ export interface RunProjectionBody {
     valueIn?: string;
 }
 
+/**
+ * The whole `PUT /api/projections/{*id}` body.
+ *
+ * `revision: ""` means CREATE — the same `NEW_FILE_REVISION` spelling
+ * `SaveRulesBody` uses, so the SPA has one convention for "there is no file
+ * yet" rather than three. Anything else is an edit against bytes that exist,
+ * and a mismatch is the 409 the picker surfaces as "it changed on disk".
+ *
+ * `created`/`updated` inside the scenario are IGNORED by the server, which
+ * sets them from its own clock. Sending them back is harmless and keeps this
+ * body the shape the GET handed out.
+ */
+export interface SaveScenarioBody {
+    revision: string;
+    scenario: WireScenarioIn;
+}
+
 /** `?account=&interval=&count=&asOf=` — the budget editor's history strip. */
 export interface BudgetReferenceQuery {
     /** Required: matched inclusively against itself and its subaccounts. */
@@ -926,6 +943,35 @@ export class LedgelineApi {
      */
     runProjection(body: RunProjectionBody): Promise<unknown> {
         return this.mutate<unknown>("POST", "/api/projections/run", 200, body, {404: () => new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE)});
+    }
+
+    /**
+     * Every `*.journal` file beside the open journal, `projection-*` first
+     * (decode with `decodeProjectionIndex`).
+     *
+     * The scenario PICKER's list. Deliberately every journal rather than only
+     * the ones Ledgeline wrote: "really any journal file with budget-like
+     * entries could be used".
+     */
+    listProjections(): Promise<unknown> {
+        return this.getJson("/api/projections");
+    }
+
+    /** One journal file, read as a scenario (decode with `decodeScenarioFile`). */
+    getProjection(id: string): Promise<unknown> {
+        return this.getJson(`/api/projections/${encodeRulesId(id)}`);
+    }
+
+    /**
+     * Save a scenario to a file (decode with `decodeScenarioFile`).
+     *
+     * `body.revision === ""` creates, and the create is `O_EXCL` on the server —
+     * so a 409 from THAT call means "a file already exists there", while a 409
+     * from an update means "it changed on disk since you opened it". The two are
+     * told apart by which revision was sent, not by the status.
+     */
+    saveProjection(id: string, body: SaveScenarioBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", `/api/projections/${encodeRulesId(id)}`, 200, body);
     }
 
     /** Insights dashboard (period-over-period core metrics). */

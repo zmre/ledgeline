@@ -18,12 +18,14 @@ import {
     decodeOtherHoldingsReport,
     decodePeriodReport,
     decodeProjection,
+    decodeProjectionIndex,
     decodeQbCommitResult,
     decodeQbPreview,
     decodeRulesDoc,
     decodeRulesIndex,
     decodeRulesPreview,
     decodeScenario,
+    decodeScenarioFile,
     decodeSectionedReport,
     decodeSubscriptionsReport,
 } from "./nativeDecode";
@@ -1715,6 +1717,73 @@ const PROJECTION_RUN = {
     warnings: ["'every weekday' is not a recurrence this projection can enumerate"],
 };
 
+/**
+ * `GET /api/projections` — the scenario picker's list (plan 22, Phase 3).
+ *
+ * Inline rather than a golden for the reason `PROJECTION_RUN` is: the listing
+ * describes a DIRECTORY TREE, and `fixtures/native/v1` is replayed against
+ * `fixtures/sample.journal` by `native_wire_golden.rs`, whose manifest and
+ * directory must agree exactly. A committed golden of this route would pin
+ * whatever files happened to be beside that fixture.
+ *
+ * Both groups are present, and both an included file and a writable one, because
+ * `writable` is the field that carries decision 5 and a body where every file
+ * agreed would prove nothing about it.
+ */
+const PROJECTION_INDEX = {
+    rootLabel: "ledger",
+    editable: true,
+    truncated: false,
+    files: [
+        {
+            id: "plans/projection-series-a.journal",
+            label: "series-a",
+            name: "Series A with a hiring ramp",
+            created: "2026-09-18",
+            updated: "2026-09-20",
+            isProjection: true,
+            sizeBytes: 812,
+            writable: true,
+        },
+        {id: "budget.journal", label: "budget", name: null, created: null, updated: null, isProjection: false, sizeBytes: 240, writable: false},
+    ],
+    directories: ["", "plans"],
+    warnings: ["notes.journal is a symbolic link and was skipped"],
+};
+
+/** `GET`/`PUT /api/projections/{*id}` — one file, read as a scenario. */
+const SCENARIO_FILE = {
+    id: "plans/projection-series-a.journal",
+    label: "series-a",
+    revision: "812-9f2c1a",
+    writable: true,
+    scenario: {
+        name: "Series A with a hiring ramp",
+        created: "2026-09-18",
+        updated: "2026-09-20",
+        lines: [
+            {
+                id: "rule:0:0",
+                group: "rule:0",
+                account: "expenses:rent",
+                amount: {commodity: "$", quantity: {mantissa: "420000", places: 2}, precision: 2},
+                period: {raw: "monthly", simple: "monthly", from: null, to: null},
+                growth: {rate: {mantissa: "2", places: 2}, unit: "year"},
+                note: "projection",
+                source: "journal",
+            },
+        ],
+        events: [
+            {
+                id: "rule:1",
+                date: "2027-03-01",
+                description: "Series A",
+                postings: [{account: "assets:cash", amount: {commodity: "$", quantity: {mantissa: "200000000", places: 2}, precision: 2}}],
+            },
+        ],
+    },
+};
+
 describe("UNIT nativeDecode — the projection seed over its golden", () => {
     const raw = golden("projections-seed");
 
@@ -1785,6 +1854,59 @@ describe("UNIT nativeDecode — the projection seed over its golden", () => {
     });
 });
 
+describe("UNIT nativeDecode — the scenario file listing", () => {
+    it("decodes both groups and keeps `writable` per file", () => {
+        const index = decodeProjectionIndex(PROJECTION_INDEX);
+        expect(index.rootLabel).toBe("ledger");
+        expect(index.editable).toBe(true);
+        expect(index.truncated).toBe(false);
+        expect(index.directories).toEqual(["", "plans"]);
+        expect(index.warnings).toHaveLength(1);
+
+        const [projection, budget] = index.files;
+        expect(projection.isProjection).toBe(true);
+        expect(projection.name).toBe("Series A with a hiring ramp");
+        expect(projection.writable).toBe(true);
+        // A file the main journal includes is LISTED (so it can be loaded) and
+        // flagged un-writable — decision 5.
+        expect(budget.isProjection).toBe(false);
+        expect(budget.name).toBeNull();
+        expect(budget.writable).toBe(false);
+    });
+
+    it("an ABSENT `writable` is a broken contract, never a permissive default", () => {
+        // A decoder that read a missing key as `true` would offer Save over the
+        // user's main journal and let the engine be the one to say no.
+        const files = [{...PROJECTION_INDEX.files[0], writable: undefined}];
+        expect(() => decodeProjectionIndex({...PROJECTION_INDEX, files})).toThrow(ApiShapeError);
+    });
+
+    it("a missing files array is a shape error rather than an empty list", () => {
+        expect(() => decodeProjectionIndex({...PROJECTION_INDEX, files: undefined})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — one scenario file", () => {
+    it("decodes the revision, the writable flag and the scenario inside", () => {
+        const file = decodeScenarioFile(SCENARIO_FILE);
+        expect(file.id).toBe("plans/projection-series-a.journal");
+        expect(file.label).toBe("series-a");
+        expect(file.revision).toBe("812-9f2c1a");
+        expect(file.writable).toBe(true);
+        expect(file.scenario.name).toBe("Series A with a hiring ramp");
+        expect(file.scenario.lines[0].growth).toEqual({rate: {m: 2n, p: 2}, unit: "year"});
+        // A `~ DATE` block comes back as an EVENT, not a one-off line.
+        expect(file.scenario.events[0].date).toBe("2027-03-01");
+    });
+
+    it("an ABSENT revision is a broken contract, never an empty string", () => {
+        // `revision: ""` means CREATE on the way back, and a create is O_EXCL —
+        // so defaulting it would turn the next Save of an open file into "a file
+        // already exists there" about the file being edited.
+        expect(() => decodeScenarioFile({...SCENARIO_FILE, revision: undefined})).toThrow(ApiShapeError);
+    });
+});
+
 describe("UNIT nativeDecode — a projection run", () => {
     it("decodes the three series, the start, the runway and the warnings", () => {
         const projection = decodeProjection(PROJECTION_RUN);
@@ -1847,6 +1969,13 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         // field, with a runway and a warning present so the sweep reaches every
         // one of them.
         ["projections-run", decodeProjection, PROJECTION_RUN],
+        // Neither of these can be a golden, for the reason PROJECTION_INDEX's own
+        // comment gives: they describe a directory tree, and `native_wire_golden.rs`
+        // replays `fixtures/native/v1` from a URI manifest against one fixture
+        // journal. Nothing here is in `TOLERATED` — every key of both bodies is
+        // load-bearing, and both decoders use required-not-absent guards.
+        ["projections-index", decodeProjectionIndex, PROJECTION_INDEX],
+        ["projections-file", decodeScenarioFile, SCENARIO_FILE],
         ["insights", decodeInsightsReport, golden("insights")],
         ["subscriptions", decodeSubscriptionsReport, golden("subscriptions")],
         ["holdings", decodeHoldingsReport, golden("holdings")],

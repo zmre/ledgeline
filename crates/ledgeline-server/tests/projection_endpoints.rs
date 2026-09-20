@@ -25,8 +25,10 @@ use axum::body::Body;
 use axum::http::{HeaderName, Request, StatusCode, header};
 use common::{fixture_journal, fixture_journal_path};
 use http_body_util::BodyExt;
-use ledgeline::{AccessToken, AppState, Security, app, router_with_security};
+use ledgeline::{AccessToken, AppState, Security, app, router_with_security, router_with_state};
 use serde_json::{Value, json};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
@@ -622,6 +624,692 @@ async fn no_response_body_contains_an_absolute_path() {
         assert!(
             !body.contains(&root),
             "a response leaked the journal's directory"
+        );
+    }
+}
+
+// ===========================================================================
+// Scenario FILES — `GET /api/projections`, `GET`/`PUT /api/projections/{*id}`
+// ===========================================================================
+//
+// A real directory tree and a real editing-enabled state, because everything
+// worth asserting here is about bytes on a disk: what the scan offers, what a
+// save leaves alone, and which of the five refusals a given request gets.
+//
+// The pure guards (the caps, the symlink refusal, containment, the serializer's
+// round trip) are pinned in `ledgeline-core`'s own `tests/projection_files.rs`
+// against a filesystem. What is pinned HERE is the wire: the status codes, the
+// optimistic-concurrency contract, and decision 5.
+
+/// A projection file the tree starts with.
+const PLAN: &str = "\
+; Ledgeline projection
+; projection: Plan of record
+; created: 2026-01-01
+; updated: 2026-01-01
+
+; the user's own note, which a save must not eat
+~ monthly  plan
+    (expenses:rent)      $4200.00
+    (revenues:salary)  $-12000.00
+";
+
+/// A journal the MAIN journal includes, so decision 5 has something to refuse.
+const INCLUDED: &str = "~ monthly  included plan\n    (expenses:included)  $1.00\n";
+
+/// The main journal every file test is rooted at. It `include`s `budget.journal`,
+/// which is what makes that file un-writable through this surface.
+const MAIN: &str = "\
+account assets:cash    ; type: A
+account expenses:rent  ; type: X
+account revenues:salary  ; type: R
+
+include budget.journal
+
+2026-01-05 opening
+    assets:cash      $10000.00
+    equity:opening  $-10000.00
+";
+
+static FILE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A temp journal directory plus an editing-enabled state bound to its journal.
+struct Tree {
+    dir: PathBuf,
+    state: AppState,
+}
+
+impl Tree {
+    fn new(files: &[(&str, &str)]) -> Self {
+        let seq = FILE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir()
+            .join(format!(
+                "ledgeline-projection-endpoints/{}-{seq}",
+                std::process::id()
+            ))
+            .to_path_buf();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let journal = dir.join("main.journal");
+        std::fs::write(&journal, MAIN).expect("write journal");
+        std::fs::write(dir.join("budget.journal"), INCLUDED).expect("write include");
+        for (relative, contents) in files {
+            let path = dir.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("temp subdir");
+            }
+            std::fs::write(&path, contents).expect("write file");
+        }
+        let state = AppState::from_journal_path(&journal).expect("editor opens");
+        Self { dir, state }
+    }
+
+    /// The default shape: one projection file, one plain journal beside it.
+    fn standard() -> Self {
+        Self::new(&[
+            ("plans/projection-plan.journal", PLAN),
+            ("notes.journal", "; nothing recurring here\n"),
+        ])
+    }
+
+    fn read(&self, relative: &str) -> String {
+        std::fs::read_to_string(self.dir.join(relative)).expect("read file")
+    }
+
+    fn exists(&self, relative: &str) -> bool {
+        self.dir.join(relative).is_file()
+    }
+
+    /// Every spelling of this tree's own directory that could leak into a
+    /// response: the path as constructed and its canonical form (which on macOS
+    /// gains a `/private` prefix).
+    fn secret_paths(&self) -> Vec<String> {
+        let mut paths = vec![self.dir.to_string_lossy().into_owned()];
+        if let Ok(canonical) = self.dir.canonicalize() {
+            paths.push(canonical.to_string_lossy().into_owned());
+        }
+        paths
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// One request against a fresh router over `state`. Clones share the editor,
+/// the snapshot and the write mutex, so effects persist between calls.
+async fn file_request(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Vec<u8>) {
+    let builder = Request::builder().method(method).uri(uri);
+    let request = match body {
+        Some(value) => builder
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&value).expect("serialize")))
+            .expect("request builds"),
+        None => builder.body(Body::empty()).expect("request builds"),
+    };
+    let response = router_with_state(state.clone())
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    let status = response.status();
+    let bytes = BodyExt::collect(response.into_body())
+        .await
+        .expect("body collects")
+        .to_bytes()
+        .to_vec();
+    (status, bytes)
+}
+
+async fn file_json(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let (status, bytes) = file_request(state, method, uri, body).await;
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+async fn file_text(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, String) {
+    let (status, bytes) = file_request(state, method, uri, body).await;
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+const PLAN_URI: &str = "/api/projections/plans/projection-plan.journal";
+
+/// `GET` the plan file and hand back its revision plus its scenario.
+async fn open_plan(state: &AppState) -> (String, Value) {
+    let (status, doc) = file_json(state, "GET", PLAN_URI, None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    (
+        doc["revision"].as_str().expect("revision").to_string(),
+        doc["scenario"].clone(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// The listing
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_index_lists_every_journal_projections_first_and_says_which_are_writable() {
+    let tree = Tree::standard();
+    let (status, index) = file_json(&tree.state, "GET", "/api/projections", None).await;
+    assert_eq!(status, StatusCode::OK, "{index}");
+
+    let files = index["files"].as_array().expect("files");
+    let ids: Vec<&str> = files.iter().map(|f| f["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "plans/projection-plan.journal",
+            "budget.journal",
+            "main.journal",
+            "notes.journal",
+        ]
+    );
+
+    let plan = &files[0];
+    assert_eq!(plan["isProjection"], json!(true));
+    assert_eq!(plan["name"], json!("Plan of record"));
+    assert_eq!(plan["created"], json!("2026-01-01"));
+    assert_eq!(plan["label"], json!("plan"));
+    assert_eq!(plan["writable"], json!(true));
+
+    // DECISION 5, on the listing: a file the main journal is parsed from is
+    // shown (so it can be loaded) and flagged un-writable.
+    for id in ["budget.journal", "main.journal"] {
+        let file = files.iter().find(|f| f["id"] == json!(id)).expect(id);
+        assert_eq!(file["writable"], json!(false), "{id} must not be writable");
+    }
+    // A journal the main one does not include IS writable, even without the
+    // `projection-` prefix: "really any journal file … could be used".
+    let notes = files
+        .iter()
+        .find(|f| f["id"] == json!("notes.journal"))
+        .expect("notes");
+    assert_eq!(notes["writable"], json!(true));
+    assert_eq!(notes["isProjection"], json!(false));
+    assert_eq!(notes["name"], Value::Null, "its header is not read");
+
+    assert_eq!(index["truncated"], json!(false));
+    assert_eq!(index["editable"], json!(true));
+    // The Save As dialog's directory list — relative, root first.
+    assert_eq!(index["directories"], json!(["", "plans"]));
+    assert!(
+        !index["rootLabel"]
+            .as_str()
+            .expect("rootLabel")
+            .contains('/'),
+        "the heading is a component, never a path"
+    );
+}
+
+#[tokio::test]
+async fn no_file_response_contains_an_absolute_path() {
+    // Layer 5: a dialog is a fine oracle for "does this directory exist".
+    let tree = Tree::standard();
+    let (_, index) = file_text(&tree.state, "GET", "/api/projections", None).await;
+    let (_, doc) = file_text(&tree.state, "GET", PLAN_URI, None).await;
+    let (_, missing) = file_text(
+        &tree.state,
+        "GET",
+        "/api/projections/nope/missing.journal",
+        None,
+    )
+    .await;
+    let (_, malformed) = file_text(
+        &tree.state,
+        "GET",
+        "/api/projections/../../etc/passwd.journal",
+        None,
+    )
+    .await;
+    for body in [index, doc, missing, malformed] {
+        for secret in tree.secret_paths() {
+            assert!(!body.contains(&secret), "a response leaked {secret}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reading one file
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_projection_file_reads_back_as_the_scenario_it_states() {
+    let tree = Tree::standard();
+    let (revision, scenario) = open_plan(&tree.state).await;
+    assert!(!revision.is_empty(), "a real file has a real revision");
+
+    assert_eq!(scenario["name"], json!("Plan of record"));
+    assert_eq!(scenario["created"], json!("2026-01-01"));
+    let lines = scenario["lines"].as_array().expect("lines");
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["account"], json!("expenses:rent"));
+    assert_eq!(lines[0]["group"], json!("rule:0"));
+    assert_eq!(lines[0]["period"]["raw"], json!("monthly"));
+    // Revenue keeps the journal's own sign on this wire.
+    assert_eq!(
+        lines[1]["amount"]["quantity"]["mantissa"],
+        json!("-1200000")
+    );
+    assert_eq!(scenario["events"], json!([]));
+}
+
+#[tokio::test]
+async fn a_journal_the_main_one_includes_can_be_read_but_never_written() {
+    // The ask: "We should default to showing the last loaded and if there isn't
+    // one, default to using the active budget file." So a `GET` works.
+    let tree = Tree::standard();
+    let (status, doc) =
+        file_json(&tree.state, "GET", "/api/projections/budget.journal", None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["writable"], json!(false));
+    assert_eq!(
+        doc["scenario"]["lines"][0]["account"],
+        json!("expenses:included")
+    );
+
+    // …and the `PUT` is refused, with a sentence that says why rather than a
+    // `404` that pretends the file is not there.
+    let (status, message) = file_text(
+        &tree.state,
+        "PUT",
+        "/api/projections/budget.journal",
+        Some(json!({"revision": doc["revision"], "scenario": doc["scenario"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+    assert!(message.contains("plan of record"), "{message}");
+    assert_eq!(tree.read("budget.journal"), INCLUDED, "nothing was written");
+}
+
+#[tokio::test]
+async fn a_malformed_id_is_a_400_and_a_missing_one_a_404_whatever_is_on_disk() {
+    let tree = Tree::standard();
+    // Shape first, before any filesystem call — so the answer cannot depend on
+    // what is there, which is what stops the route being an existence oracle.
+    for id in [
+        "../../etc/passwd.journal",
+        "plans/../../escape.journal",
+        "plans/projection-plan.rules",
+        "a:b.journal",
+    ] {
+        let (status, body) =
+            file_text(&tree.state, "GET", &format!("/api/projections/{id}"), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "for `{id}`: {body}");
+    }
+    // Well-formed but not in the scanned set: the same `404` for every cause.
+    for id in [
+        "plans/projection-nope.journal",
+        "nowhere/at/all.journal",
+        "node_modules/skipped.journal",
+    ] {
+        let (status, body) =
+            file_text(&tree.state, "GET", &format!("/api/projections/{id}"), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "for `{id}`: {body}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Saving: update
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_save_rewrites_only_the_rule_it_changed() {
+    let tree = Tree::standard();
+    let (revision, mut scenario) = open_plan(&tree.state).await;
+    scenario["lines"][0]["amount"]["quantity"]["mantissa"] = json!("450000");
+
+    let (status, doc) = file_json(
+        &tree.state,
+        "PUT",
+        PLAN_URI,
+        Some(json!({"revision": revision, "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_ne!(doc["revision"], json!(revision), "the revision moves");
+
+    let after = tree.read("plans/projection-plan.journal");
+    // The user's own comment survives, and so does the `created:` date.
+    assert!(
+        after.contains("; the user's own note, which a save must not eat\n"),
+        "{after}"
+    );
+    assert!(after.contains("; created: 2026-01-01\n"), "{after}");
+    // Within one block the amounts land in one column, so the two lines of
+    // this rule are laid out against the longer of the two accounts.
+    assert!(
+        after.contains("    (expenses:rent)    $4500.00\n"),
+        "{after}"
+    );
+    // `updated:` is the SERVER's today, never the client's — a timestamp a
+    // caller supplies is a timestamp that can say anything.
+    assert!(
+        !after.contains("; updated: 2026-01-01\n"),
+        "updated: was not touched:\n{after}"
+    );
+    // The other line of the same rule is untouched in content.
+    assert!(
+        after.contains("    (revenues:salary)  $-12000.00\n"),
+        "{after}"
+    );
+}
+
+#[tokio::test]
+async fn a_save_that_changes_nothing_writes_nothing() {
+    let tree = Tree::standard();
+    let (revision, scenario) = open_plan(&tree.state).await;
+    // `updated:` moves to today on every save, so a genuinely byte-identical
+    // result needs the file to already carry today's date. Save once to get
+    // there, then save again and require the bytes not to move.
+    let (status, doc) = file_json(
+        &tree.state,
+        "PUT",
+        PLAN_URI,
+        Some(json!({"revision": revision, "scenario": scenario.clone()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let settled = tree.read("plans/projection-plan.journal");
+
+    let (revision, scenario) = open_plan(&tree.state).await;
+    let (status, doc) = file_json(
+        &tree.state,
+        "PUT",
+        PLAN_URI,
+        Some(json!({"revision": revision.clone(), "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(
+        tree.read("plans/projection-plan.journal"),
+        settled,
+        "a no-op must not rewrite the file"
+    );
+    assert_eq!(
+        doc["revision"],
+        json!(revision),
+        "and the revision must not move either"
+    );
+}
+
+#[tokio::test]
+async fn a_stale_revision_is_a_409_and_writes_nothing() {
+    let tree = Tree::standard();
+    let (_, scenario) = open_plan(&tree.state).await;
+    let before = tree.read("plans/projection-plan.journal");
+
+    for revision in ["0-deadbeef", "not-a-token"] {
+        let (status, message) = file_text(
+            &tree.state,
+            "PUT",
+            PLAN_URI,
+            Some(json!({"revision": revision, "scenario": scenario})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{message}");
+        assert!(message.contains("changed on disk"), "{message}");
+    }
+    assert_eq!(tree.read("plans/projection-plan.journal"), before);
+}
+
+#[tokio::test]
+async fn the_revision_a_save_returns_is_the_one_the_next_save_needs() {
+    // The optimistic-concurrency loop, end to end: save, take the revision the
+    // response gave, save again with it. A server that returned a revision from
+    // a re-read rather than from what it wrote would break here the moment
+    // anything else touched the file.
+    let tree = Tree::standard();
+    let (revision, mut scenario) = open_plan(&tree.state).await;
+    scenario["lines"][0]["amount"]["quantity"]["mantissa"] = json!("450000");
+    let (status, first) = file_json(
+        &tree.state,
+        "PUT",
+        PLAN_URI,
+        Some(json!({"revision": revision, "scenario": scenario.clone()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+
+    scenario["lines"][0]["amount"]["quantity"]["mantissa"] = json!("460000");
+    let (status, second) = file_json(
+        &tree.state,
+        "PUT",
+        PLAN_URI,
+        Some(json!({"revision": first["revision"], "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert!(
+        tree.read("plans/projection-plan.journal")
+            .contains("$4600.00"),
+        "{}",
+        tree.read("plans/projection-plan.journal")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Saving: create
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_empty_revision_creates_a_new_file() {
+    let tree = Tree::standard();
+    let (_, scenario) = open_plan(&tree.state).await;
+    let mut fresh = scenario;
+    fresh["name"] = json!("Series A");
+    // `created` is the SERVER's, so a client that sends one is ignored on a
+    // new file — this one deliberately sends the loaded file's.
+    let uri = "/api/projections/plans/projection-series-a.journal";
+
+    let (status, doc) = file_json(
+        &tree.state,
+        "PUT",
+        uri,
+        Some(json!({"revision": "", "scenario": fresh})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["id"], json!("plans/projection-series-a.journal"));
+    assert_eq!(doc["scenario"]["name"], json!("Series A"));
+    assert!(doc["writable"].as_bool().expect("writable"));
+
+    let written = tree.read("plans/projection-series-a.journal");
+    assert!(
+        written.starts_with("; Ledgeline projection\n; projection: Series A\n"),
+        "{written}"
+    );
+    assert!(
+        written.contains("    (expenses:rent)    $4200.00\n"),
+        "{written}"
+    );
+
+    // And it now appears in the listing, first, because it is a `projection-*`.
+    let (_, index) = file_json(&tree.state, "GET", "/api/projections", None).await;
+    assert_eq!(
+        index["files"][0]["id"],
+        json!("plans/projection-plan.journal")
+    );
+    assert_eq!(
+        index["files"][1]["id"],
+        json!("plans/projection-series-a.journal")
+    );
+}
+
+#[tokio::test]
+async fn creating_over_an_existing_file_is_refused_and_leaves_it_alone() {
+    // The refusal is the KERNEL's (`O_EXCL`), not a check-then-write. The
+    // Save As dialog shows it as "a file already exists there".
+    let tree = Tree::standard();
+    let (_, scenario) = open_plan(&tree.state).await;
+    let before = tree.read("plans/projection-plan.journal");
+
+    let (status, message) = file_text(
+        &tree.state,
+        "PUT",
+        PLAN_URI,
+        Some(json!({"revision": "", "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{message}");
+    assert!(message.contains("already exists"), "{message}");
+    assert_eq!(tree.read("plans/projection-plan.journal"), before);
+}
+
+#[tokio::test]
+async fn a_create_never_makes_a_directory() {
+    // "The Save As dialog offers the directories the scan found; making new
+    // ones is the user's job." A missing directory answers the ordinary `404`,
+    // because "that directory is not there" is a fact about the filesystem.
+    let tree = Tree::standard();
+    let (_, scenario) = open_plan(&tree.state).await;
+    let (status, message) = file_text(
+        &tree.state,
+        "PUT",
+        "/api/projections/brand/new/projection-x.journal",
+        Some(json!({"revision": "", "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{message}");
+    assert!(!tree.exists("brand/new/projection-x.journal"));
+    assert!(!tree.dir.join("brand").exists(), "no directory was created");
+}
+
+#[tokio::test]
+async fn a_scenario_the_writer_refuses_is_a_400_and_writes_nothing() {
+    let tree = Tree::standard();
+    let (_, scenario) = open_plan(&tree.state).await;
+    let uri = "/api/projections/projection-refused.journal";
+
+    for (field, value) in [
+        // hledger ends a tag's value at a comma, so this name would read back
+        // truncated — and the name is also the filename.
+        ("name", json!("Plan B, revised")),
+    ] {
+        let mut bad = scenario.clone();
+        bad[field] = value;
+        let (status, message) = file_text(
+            &tree.state,
+            "PUT",
+            uri,
+            Some(json!({"revision": "", "scenario": bad})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+        assert!(message.contains("comma"), "{message}");
+    }
+
+    // An account name that would split at a double space, which hledger would
+    // read as the start of an amount.
+    let mut bad = scenario;
+    bad["lines"][0]["account"] = json!("expenses:a  b");
+    let (status, message) = file_text(
+        &tree.state,
+        "PUT",
+        uri,
+        Some(json!({"revision": "", "scenario": bad})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+    assert!(
+        !tree.exists("projection-refused.journal"),
+        "nothing was written"
+    );
+}
+
+#[tokio::test]
+async fn a_read_only_server_refuses_to_save_at_all() {
+    // No editor bound means no write surface, and the SPA turns the `501` into
+    // the same "start the Ledgeline engine" it shows everywhere else.
+    let tree = Tree::standard();
+    let text = std::fs::read_to_string(tree.dir.join("main.journal")).expect("read journal");
+    let journal =
+        ledgeline_core::parse_journal(&text, &tree.dir.join("main.journal").to_string_lossy())
+            .expect("journal parses");
+    let read_only = AppState::from_journal(&journal);
+
+    let (_, scenario) = open_plan(&tree.state).await;
+    let (status, message) = file_text(
+        &read_only,
+        "PUT",
+        PLAN_URI,
+        Some(json!({"revision": "", "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{message}");
+}
+
+// ---------------------------------------------------------------------------
+// The token guard, for the three file routes
+// ---------------------------------------------------------------------------
+
+/// `PUT /api/projections/{*id}` is a write primitive over a file in the user's
+/// journal directory. Below the `route_layer` in `lib.rs` it would be reachable
+/// with no bearer token at all; this is the test that fails if it is ever moved.
+#[tokio::test]
+async fn every_projection_file_route_requires_the_token() {
+    const PORT: u16 = 5098;
+    const HOST: &str = "127.0.0.1:5098";
+    let state = AppState::from_journal_path(fixture_journal_path()).expect("the fixture opens");
+    let token = AccessToken::parse("integration-test-token").expect("well-formed token");
+
+    let probe = |method: &'static str, uri: &'static str, auth: Option<&'static str>| {
+        let state = state.clone();
+        let security = Security::local(token.clone(), PORT);
+        async move {
+            let mut builder = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(HeaderName::from_static("host"), HOST);
+            if let Some(value) = auth {
+                builder = builder.header(header::AUTHORIZATION, value);
+            }
+            let request = builder
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"revision": "", "scenario": scenario_with(vec![], vec![])}).to_string(),
+                ))
+                .expect("request builds");
+            router_with_security(state, security)
+                .oneshot(request)
+                .await
+                .expect("router responds")
+                .status()
+        }
+    };
+
+    for (method, uri) in [
+        ("GET", "/api/projections"),
+        ("GET", "/api/projections/sample.journal"),
+        ("PUT", "/api/projections/sample.journal"),
+    ] {
+        assert_eq!(
+            probe(method, uri, None).await,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} without a token must be 401"
+        );
+        assert_ne!(
+            probe(method, uri, Some("Bearer integration-test-token")).await,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} with the token must not be 401"
         );
     }
 }

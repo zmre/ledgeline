@@ -60,6 +60,18 @@
 //! rounded back to the amount's own display precision AT EVERY STEP, not once at
 //! the end.
 
+/// Which `*.journal` files the Projections tab may load or save, and the one
+/// id → path resolution that decides it. Private for the same reason
+/// `rules::discovery` is: the guarded surface is what `pub use` below
+/// re-exports, and nothing else.
+mod discovery;
+pub mod serialize;
+
+pub use discovery::{
+    CreateRefusal, DiscoveredProjection, Discovery, ProjectionPath, discover, is_journal_name,
+    label_for, slug_filename,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::decimal::{Dec, DecError};
@@ -828,30 +840,12 @@ pub fn seed_scenario(
     rules: &[PeriodicTransaction],
     opts: &SeedOpts,
 ) -> Result<Scenario, ReportError> {
-    let mut lines: Vec<ScenarioLine> = Vec::new();
-
     // --- What the journal already says. ---
-    for (rule_index, rule) in rules.iter().enumerate() {
-        let group = format!("rule:{rule_index}");
-        for (posting_index, posting) in rule.postings.iter().enumerate() {
-            for amount in &posting.amounts {
-                lines.push(ScenarioLine {
-                    id: tag(&posting.tags, "line")
-                        .map_or_else(|| format!("{group}:{posting_index}"), str::to_string),
-                    group: group.clone(),
-                    account: posting.account.clone(),
-                    amount: amount.clone(),
-                    period: rule.period.clone(),
-                    // A posting's own `growth:` wins over the rule header's, the
-                    // way a posting tag wins over a transaction tag everywhere
-                    // else.
-                    growth: parse_growth(&posting.tags).or_else(|| parse_growth(&rule.tags)),
-                    note: rule.description.clone(),
-                    source: LineSource::Journal,
-                });
-            }
-        }
-    }
+    let mut lines: Vec<ScenarioLine> = rules
+        .iter()
+        .enumerate()
+        .flat_map(|(rule_index, rule)| lines_from_rule(&format!("rule:{rule_index}"), rule))
+        .collect();
 
     // --- What it does not. ---
     let gaps = budget_gaps(txns, rules, opts.declared, opts.window)?;
@@ -896,6 +890,38 @@ pub fn seed_scenario(
         lines,
         events: Vec::new(),
     })
+}
+
+/// Every [`ScenarioLine`] one `~` rule states, under the group id `group`.
+///
+/// One line per (posting, amount) pair, so a row is always one account and one
+/// amount — the same flattening the wire performs, and the same one
+/// [`serialize`] performs when it reads a file. `pub(crate)` and shared rather
+/// than written twice: [`seed_scenario`] reads the MAIN journal's rules and
+/// [`serialize::scenario_from_text`] reads a projection file's, and a second
+/// copy of "what a `~` posting means" is exactly where the `line:` tag would
+/// stop being honoured on one of the two paths.
+pub(crate) fn lines_from_rule(group: &str, rule: &PeriodicTransaction) -> Vec<ScenarioLine> {
+    rule.postings
+        .iter()
+        .enumerate()
+        .flat_map(|(posting_index, posting)| {
+            posting.amounts.iter().map(move |amount| ScenarioLine {
+                id: tag(&posting.tags, "line")
+                    .map_or_else(|| format!("{group}:{posting_index}"), str::to_string),
+                group: group.to_string(),
+                account: posting.account.clone(),
+                amount: amount.clone(),
+                period: rule.period.clone(),
+                // A posting's own `growth:` wins over the rule header's, the
+                // way a posting tag wins over a transaction tag everywhere
+                // else.
+                growth: parse_growth(&posting.tags).or_else(|| parse_growth(&rule.tags)),
+                note: rule.description.clone(),
+                source: LineSource::Journal,
+            })
+        })
+        .collect()
 }
 
 /// A bare `~ monthly` spec, spelled the way the parser spells one.
