@@ -70,6 +70,17 @@ export interface Growth {
     unit: GrowthUnit;
 }
 
+/** Which of the what-if table's three sections a row is shown in. */
+export type LineSection = "income" | "expense" | "oneoff";
+
+/**
+ * The two sections a row can be HELD in.
+ *
+ * Never `oneoff`: that one is decided by the line's PERIOD, which nothing typed
+ * into an account box can change.
+ */
+export type HeldSection = "income" | "expense";
+
 /** One recurring row of the what-if table. */
 export interface ScenarioLine {
     /** The LOGICAL row: two bounded segments of one step change share it. */
@@ -83,6 +94,22 @@ export interface ScenarioLine {
     growth: Growth | null;
     note: string;
     source: LineSource;
+    /**
+     * The section the table is HOLDING this row in, or absent for "wherever its
+     * account type says".
+     *
+     * UI-ONLY, like `ScenarioPeriod`'s `simple`/`from`/`to`: `scenarioToWire`
+     * names its fields one by one and this is not among them, so it never
+     * reaches the engine and a file round trip never carries it.
+     *
+     * It exists because a row's section USED to be re-derived from the account
+     * text on every keystroke, and a half-typed account is not revenue — so a
+     * row added under Income jumped to Expenses on the first letter and back on
+     * the last, losing focus each time because the two sections are two
+     * different `{#each}` blocks. See `ProjectionsTable.svelte`'s header for the
+     * rule this field enforces, and plan 22, amendment 37.
+     */
+    section?: HeldSection;
 }
 
 /** One account/amount pair of a dated event. Always one account and one amount. */

@@ -18,6 +18,8 @@ import {
     projectionId,
     rateFromPercent,
     removeSegment,
+    resolvedSection,
+    rowNames,
     runBody,
     scenarioToWire,
     sectionOfLine,
@@ -157,6 +159,98 @@ describe("UNIT scenarioModel — sections", () => {
     it("falls back to the hledger defaults when the journal has nothing of that type yet", () => {
         expect(sectionPrefix("income", [], new Map())).toBe("income:");
         expect(sectionPrefix("expense", [], new Map())).toBe("expenses:");
+    });
+});
+
+describe("UNIT scenarioModel — a HELD section", () => {
+    // The model half of the section-stability rule. The component owns when a
+    // hold is taken and dropped; what a hold MEANS is here.
+
+    it("REGRESSION: a held row does not move on a half-typed account", () => {
+        // `r` is not a revenue account and neither is ``, so both of these read
+        // as "expense" by type. That re-derivation on every keystroke is what
+        // threw a row out of Income on its first letter.
+        expect(sectionOfLine(line({account: "r", section: "income"}), DECLARED)).toBe("income");
+        expect(sectionOfLine(line({account: "", section: "income"}), DECLARED)).toBe("income");
+    });
+
+    it("holds a row on the WRONG side too, for as long as the hold lasts", () => {
+        // Deliberate: the point is that nothing moves mid-edit, not that the
+        // hold is ever right. Reconciling is the release's job.
+        expect(sectionOfLine(line({account: "income:salary", section: "expense"}), DECLARED)).toBe("expense");
+    });
+
+    it("hands the row back to its account's TYPE once the hold is gone", () => {
+        expect(sectionOfLine(line({account: "wages:contract"}), DECLARED)).toBe("income");
+    });
+
+    it("never lets a hold beat `oneoff`, which is the PERIOD talking", () => {
+        const dated = line({account: "expenses:rent", section: "income", period: {raw: "2027-03-01", simple: null, from: null, to: null}});
+        expect(sectionOfLine(dated, DECLARED)).toBe("oneoff");
+    });
+
+    it("`resolvedSection` ignores the hold — it is what a release reconciles against", () => {
+        expect(resolvedSection(line({account: "income:salary", section: "expense"}), DECLARED)).toBe("income");
+        expect(resolvedSection(line({account: "r", section: "income"}), DECLARED)).toBe("expense");
+    });
+
+    it("keeps a held row out of the section its account would file it under", () => {
+        // The tear this prevents: `logicalRows` gathers per section, so a row
+        // listed in neither or both is a row that vanished or was duplicated.
+        const held = line({id: "new", group: "g-new", account: "r", section: "income"});
+        expect(logicalRows([held], DECLARED, "income").map((r) => r.id)).toEqual(["new"]);
+        expect(logicalRows([held], DECLARED, "expense")).toEqual([]);
+    });
+
+    it("keeps both segments of a step change together when both are held", () => {
+        const first = line({
+            id: "pay",
+            group: "g-1",
+            account: "inc",
+            section: "income",
+            period: withBounds({raw: "", simple: "monthly", from: null, to: null}, null, "2027-04-01"),
+        });
+        const second = line({
+            id: "pay",
+            group: "g-2",
+            account: "inc",
+            section: "income",
+            period: withBounds({raw: "", simple: "monthly", from: null, to: null}, "2027-04-01", null),
+        });
+        const rows = logicalRows([first, second], DECLARED, "income");
+        expect(rows).toHaveLength(1);
+        expect(rows[0].segments.map((s) => s.group)).toEqual(["g-1", "g-2"]);
+    });
+
+    it("a duplicated row does NOT inherit the hold", () => {
+        // Nobody is editing a row that did not exist a moment ago, and nothing
+        // releases a hold on a row that is never focused.
+        const held = line({id: "pay", group: "g-1", account: "income:salary", section: "expense"});
+        const copies = duplicateRow([held], "pay", takenIds(scenario([held])));
+        expect(copies[1].section).toBeUndefined();
+        expect(sectionOfLine(copies[1], DECLARED)).toBe("income");
+    });
+
+    it("names every row of a section distinctly, blank or duplicated", () => {
+        // Defect 2's other half: a delete you cannot address is not a delete.
+        const rows = logicalRows(
+            [
+                line({id: "a", group: "g-a", account: "income:salary"}),
+                line({id: "b", group: "g-b", account: "income:"}),
+                line({id: "c", group: "g-c", account: "income:"}),
+                line({id: "d", group: "g-d", account: "", section: "income"}),
+            ],
+            DECLARED,
+            "income"
+        );
+        expect(rowNames(rows, "Income")).toEqual(["income:salary", "income: (row 2 of Income)", "income: (row 3 of Income)", "row 4 of Income"]);
+    });
+
+    it("never puts a hold on the wire", () => {
+        // UI-only, like a period's derived fields. `scenarioToWire` names its
+        // fields one by one, and a file round trip must not carry this one.
+        const wired = scenarioToWire(scenario([line({account: "income:salary", section: "expense"})]));
+        expect(wired.lines[0]).not.toHaveProperty("section");
     });
 });
 

@@ -20,10 +20,15 @@
 // `nativeDecode.test.ts`, which does run under node.)
 //
 // Nothing asserts on geometry, visibility-by-overlap or computed CSS: jsdom has
-// no layout engine. The row menu is a native <details>, so its items are in the
-// document whether or not it is open, which is what makes them clickable here.
+// no layout engine. The row menu is PORTALLED to <body> and mounted only while
+// it is open (`RowMenu.svelte`), so every test that wants an item opens the menu
+// through its trigger — the route a user takes. The previous version of this
+// file read menu items straight out of the row, which a native <details>
+// allowed, and that is exactly why nothing here noticed the menus were clipped
+// off screen.
 
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
+import {tick} from "svelte";
 import {beforeEach, describe, expect, it} from "vitest";
 import {decodeScenario} from "$lib/api/nativeDecode";
 import type {AccountType} from "$lib/domain/accountTypes";
@@ -79,6 +84,48 @@ function mount(scenario: Scenario = scenarioStore.scenario) {
 // The store is a module singleton shared by every test in this FILE, so each
 // test re-adopts the seed to get back to a known, not-dirty state.
 beforeEach(() => scenarioStore.adopt(SEED));
+
+// --- Reaching a row -------------------------------------------------------
+//
+// Rows are addressed by their line's `group`, which is unique per segment and
+// is on the `<tr>`. The account is the VALUE of a text input, not text in the
+// row, so it cannot be searched for.
+
+const rowOf = (group: string): HTMLElement | null => document.querySelector(`[data-line-group="${group}"]`);
+
+const fieldOf = (group: string): HTMLInputElement => {
+    const field = rowOf(group)?.querySelector<HTMLInputElement>('input[role="combobox"]');
+    if (field === null || field === undefined) throw new Error(`no account field in the row ${group}`);
+    return field;
+};
+
+const sectionOf = (group: string): string | null => rowOf(group)?.closest("[data-testid^=projection-section-]")?.getAttribute("data-testid") ?? null;
+
+/** Press a section's "+ Add a line", and hand back the line it appended. */
+async function addLineIn(section: "income" | "expense") {
+    const buttons = [...screen.getByTestId(`projection-section-${section}`).querySelectorAll("button")];
+    const add = buttons.find((b) => b.textContent?.includes("Add a line"));
+    await fireEvent.click(add as HTMLElement);
+    await tick();
+    return scenarioStore.scenario.lines[scenarioStore.scenario.lines.length - 1];
+}
+
+/** `scheduleRelease` defers by one task, deliberately — see the component header. */
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Focus a field the way a browser does, firing the `focusin` the hold listens for. */
+async function focus(field: HTMLInputElement): Promise<void> {
+    field.focus();
+    await fireEvent.focusIn(field);
+}
+
+/** Blur a field, then let the deferred release run. */
+async function blur(field: HTMLInputElement): Promise<void> {
+    field.blur();
+    await fireEvent.focusOut(field);
+    await settle();
+    await tick();
+}
 
 describe("COMPONENT ProjectionsTable — a seeded scenario", () => {
     it("splits the seed into Income and Expenses by the account's TYPE", () => {
@@ -176,25 +223,24 @@ describe("COMPONENT ProjectionsTable — editing marks the scenario dirty", () =
     });
 });
 
-describe("COMPONENT ProjectionsTable — the row menu", () => {
-    /**
-     * A named button inside the row whose Amount box belongs to `account`.
-     *
-     * The account is the VALUE of a text input, not text in the row, so the row
-     * is found through its labelled amount box and walked up from there. The
-     * FIRST match: once a row is a step, its segments share an account, and the
-     * row menu lives on the first of them.
-     */
-    const menuItem = (account: string, label: string): HTMLElement => {
-        const row = screen.getAllByLabelText(`Amount for ${account}`)[0].closest("tr");
-        const found = [...(row?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.trim() === label);
-        if (found === undefined) throw new Error(`no "${label}" in the row menu for ${account}`);
-        return found;
-    };
+/**
+ * Open the menu named for `row` and click the item named `label`.
+ *
+ * Through the trigger, because the menu is mounted only while open and lives in
+ * <body> when it is. `getByLabelText` also enforces the other half of defect 2:
+ * a row whose name is ambiguous cannot be found here at all.
+ */
+async function chooseInMenu(row: string, label: string): Promise<void> {
+    await fireEvent.click(screen.getByLabelText(`Row menu for ${row}`));
+    await tick();
+    await fireEvent.click(within(screen.getByTestId("row-menu")).getByRole("menuitem", {name: label}));
+    await tick();
+}
 
+describe("COMPONENT ProjectionsTable — the row menu", () => {
     it("adds a step: one logical row becomes two bounded segments meeting on the date", async () => {
         mount();
-        await fireEvent.click(menuItem("expenses:housing", "Add a step on 2027-04-01"));
+        await chooseInMenu("expenses:housing", "Add a step on 2027-04-01");
 
         const segments = scenarioStore.scenario.lines.filter((l) => l.account === "expenses:housing");
         expect(segments.map((s) => s.period.raw)).toEqual(["monthly to 2027-04-01", "monthly from 2027-04-01"]);
@@ -206,30 +252,173 @@ describe("COMPONENT ProjectionsTable — the row menu", () => {
     it("removes the step again, giving back the row that was split", async () => {
         mount();
         const before = scenarioStore.scenario.lines.filter((l) => l.account === "expenses:housing").map((l) => l.period.raw);
-        await fireEvent.click(menuItem("expenses:housing", "Add a step on 2027-04-01"));
-        await fireEvent.click(menuItem("expenses:housing", "Remove the step"));
+        await chooseInMenu("expenses:housing", "Add a step on 2027-04-01");
+        await chooseInMenu("expenses:housing", "Remove the step");
         expect(scenarioStore.scenario.lines.filter((l) => l.account === "expenses:housing").map((l) => l.period.raw)).toEqual(before);
     });
 
     it("deletes a row and everything under its id", async () => {
         mount();
-        await fireEvent.click(menuItem("expenses:housing", "Add a step on 2027-04-01"));
-        await fireEvent.click(menuItem("expenses:housing", "Delete row"));
+        await chooseInMenu("expenses:housing", "Add a step on 2027-04-01");
+        await chooseInMenu("expenses:housing", "Delete row");
         expect(scenarioStore.scenario.lines.some((l) => l.account === "expenses:housing")).toBe(false);
     });
 
     it("adds a line to the section the button is in, on a prefix of the right type", async () => {
         mount();
         const before = scenarioStore.scenario.lines.length;
-        const incomeSection = screen.getByTestId("projection-section-income");
-        const add = [...incomeSection.querySelectorAll("button")].find((b) => b.textContent?.includes("Add a line"));
-        await fireEvent.click(add as HTMLElement);
+        const added = await addLineIn("income");
         expect(scenarioStore.scenario.lines).toHaveLength(before + 1);
-        const added = scenarioStore.scenario.lines[before];
         expect(added.account).toBe("income:");
         // Authored, not estimated — the user is writing it.
         expect(added.source).toBe("journal");
         expect(added.period.raw).toBe("monthly");
+    });
+
+    it("REGRESSION: every row's menu has a name of its OWN, blank account or not", async () => {
+        // Defect 2. Two rows added to Income share the seeded `income:` prefix
+        // and every blank row used to be "a new row", so neither a screen
+        // reader nor a click could say which `⋯` it meant — leaving the
+        // half-typed row a user most wants gone with no reachable delete.
+        mount();
+        const first = await addLineIn("income");
+        const second = await addLineIn("income");
+
+        expect(screen.getByLabelText("Row menu for income: (row 3 of Income)")).toBeDefined();
+        expect(screen.getByLabelText("Row menu for income: (row 4 of Income)")).toBeDefined();
+
+        await chooseInMenu("income: (row 4 of Income)", "Delete row");
+        expect(scenarioStore.scenario.lines.some((l) => l.id === second.id)).toBe(false);
+        expect(scenarioStore.scenario.lines.some((l) => l.id === first.id)).toBe(true);
+    });
+
+    it("REGRESSION: a row with an EMPTY account is still deletable", async () => {
+        // The row a user most wants to get rid of, and the one that used to
+        // have no addressable delete at all.
+        mount();
+        const added = await addLineIn("income");
+        const field = fieldOf(added.group);
+        await focus(field);
+        await fireEvent.input(field, {target: {value: ""}});
+        await tick();
+
+        await chooseInMenu("row 3 of Income", "Delete row");
+
+        expect(scenarioStore.scenario.lines.some((l) => l.id === added.id)).toBe(false);
+    });
+});
+
+describe("COMPONENT ProjectionsTable — THE SECTION-STABILITY RULE", () => {
+    it("REGRESSION: a new row stays put, and keeps focus, through EVERY keystroke", async () => {
+        // THE defect, and the worst of the six. A line's section was re-derived
+        // from the account text on every render: `` is not a revenue account
+        // and neither is `r`, so a row added under Income was born in Expenses
+        // and only flipped back on the final letter of `revenues:…`. Income and
+        // Expenses are two different `{#each}` blocks, so each flip DESTROYED
+        // the row's DOM node and rebuilt it elsewhere — taking the caret with
+        // it. The user hit this on a single letter.
+        mount();
+        const added = await addLineIn("income");
+        const field = fieldOf(added.group);
+        await focus(field);
+        expect(sectionOf(added.group)).toBe("projection-section-income");
+
+        const typed = "revenues:consulting";
+        for (let n = 1; n <= typed.length; n += 1) {
+            await fireEvent.input(field, {target: {value: typed.slice(0, n)}});
+            await tick();
+
+            const after = typed.slice(0, n);
+            expect(`${after}: ${sectionOf(added.group)}`).toBe(`${after}: projection-section-income`);
+            // Same NODE, still focused: a recreated input would be neither.
+            expect(fieldOf(added.group)).toBe(field);
+            expect(document.activeElement).toBe(field);
+        }
+    });
+
+    it("REGRESSION: retyping an EXISTING row's account does not move it mid-word either", async () => {
+        // The same bug from the other end. `expenses:housing` retyped towards
+        // `income:…` passes through `i`, `in`, `inc` — none of them revenue,
+        // all of them a different section from where it is heading.
+        mount();
+        const housing = scenarioStore.scenario.lines.find((l) => l.account === "expenses:housing");
+        const field = fieldOf(housing?.group ?? "");
+        await focus(field);
+
+        for (const text of ["", "i", "in", "inco", "income:consulting"]) {
+            await fireEvent.input(field, {target: {value: text}});
+            await tick();
+            expect(`${text}: ${sectionOf(housing?.group ?? "")}`).toBe(`${text}: projection-section-expense`);
+            expect(document.activeElement).toBe(field);
+        }
+    });
+
+    it("moves the row once focus LEAVES it, and says so out loud", async () => {
+        mount();
+        const housing = scenarioStore.scenario.lines.find((l) => l.account === "expenses:housing");
+        const group = housing?.group ?? "";
+        const field = fieldOf(group);
+        await focus(field);
+        await fireEvent.input(field, {target: {value: "income:consulting"}});
+        await tick();
+        expect(sectionOf(group)).toBe("projection-section-expense");
+
+        await blur(field);
+
+        expect(sectionOf(group)).toBe("projection-section-income");
+        // Perceivable, not silent: a row that relocates without a word is
+        // indistinguishable from one that was lost.
+        expect(screen.getByTestId("section-move-notice").textContent?.trim()).toContain("Moved income:consulting to Income");
+    });
+
+    it("does NOT announce a move that did not happen", async () => {
+        mount();
+        const salary = scenarioStore.scenario.lines.find((l) => l.account === "income:salary");
+        const field = fieldOf(salary?.group ?? "");
+        await focus(field);
+        await fireEvent.input(field, {target: {value: "income:consulting"}});
+        await tick();
+
+        await blur(field);
+
+        expect(sectionOf(salary?.group ?? "")).toBe("projection-section-income");
+        expect(screen.getByTestId("section-move-notice").textContent?.trim()).toBe("");
+    });
+
+    it("REGRESSION: a row left BLANK is not reclassified into Expenses on the way out", async () => {
+        // A row with no account cannot be classified, and filing it under
+        // Expenses because of that is the original defect arriving one event
+        // later — on exactly the row that is still being written.
+        mount();
+        const added = await addLineIn("income");
+        const field = fieldOf(added.group);
+        await focus(field);
+        await fireEvent.input(field, {target: {value: ""}});
+        await tick();
+
+        await blur(field);
+
+        expect(sectionOf(added.group)).toBe("projection-section-income");
+    });
+
+    it("holds a new row in the section whose button made it", async () => {
+        // The hold is written at birth, not at first focus: a row added under
+        // Income has to be under Income before anybody types anything, and the
+        // seeded prefix cannot promise that — the next keystroke can delete it.
+        mount();
+        const added = await addLineIn("income");
+
+        expect(added.section).toBe("income");
+        expect(sectionOf(added.group)).toBe("projection-section-income");
+    });
+
+    it("a row the user never touched is still placed by its account's TYPE", async () => {
+        // The hold is for editing, not a replacement for the type rule. A
+        // loaded scenario carries no holds at all.
+        mount();
+        const income = within(screen.getByTestId("projection-section-income"));
+        expect(income.getAllByTestId("projection-line")).toHaveLength(2);
+        expect(scenarioStore.scenario.lines.every((l) => l.section === undefined)).toBe(true);
     });
 });
 

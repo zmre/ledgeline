@@ -1330,3 +1330,90 @@ written on either.**
   **cancelled** — and those three tests are unverified. The write path is proved
   against bytes in `projection_files.rs` and `projection_endpoints.rs` instead,
   which is what that spec's own header says it should be.
+
+### 37. THE SECTION-STABILITY RULE, and the row menu must be PORTALLED
+
+The first human use of the what-if table produced six defects, all of them in
+`ProjectionsTable.svelte`, and two of them are rules rather than fixes. They are
+written here so that the next person does not reintroduce either.
+
+**A row's section is STORED, not re-derived. A row never moves, and never loses
+focus, while it is being edited.**
+
+`sectionOfLine` used to read the section straight off the account text on every
+render. That is the right rule for a row at rest and a catastrophe for one being
+typed into: `` is not a revenue account and neither is `i`, so a row added under
+Income was born in Expenses, flipped back on the last letter of `revenues:…`,
+and flipped again the moment the field was cleared. Income and Expenses are two
+different `{#each}` blocks, so every flip DESTROYED the row's DOM node and
+rebuilt it in the other table — losing the caret with it. One letter was enough,
+and the user hit it on the first one they typed.
+
+So `ScenarioLine` gained `section?: HeldSection` — UI-only, in the same way
+`ScenarioPeriod`'s `simple`/`from`/`to` are, and absent from `scenarioToWire`'s
+field list so it can never reach the engine or a saved file. The rule around it:
+
+- A row added by a section's **Add a line** button is HELD in that section.
+  `sectionPrefix` still seeds `income:`/`expenses:`, but only as a head start on
+  the typing — it was never able to keep a row in place, because the user's next
+  keystroke can delete it.
+- Any row is held in whatever section it is already in the moment focus enters
+  it, so retyping an EXISTING account cannot move the row mid-word either.
+- The hold is released — and the account's TYPE decides again — only once focus
+  has left **the whole row**, never on input and never on commit. Not on commit
+  because `AccountInput` commits on Enter too, and Enter leaves the caret in the
+  field. The release is deferred by one task and re-checks where focus actually
+  went: choosing from the account combobox blurs the field (its popup is
+  portalled, so the option clicked is not inside the row) and the combobox then
+  puts focus straight back, and releasing on the raw `focusout` would move the
+  row out from under the click that was choosing its account.
+- **A row whose account is BLANK is never reconciled.** It cannot be classified,
+  and filing it under Expenses because of that is the original defect arriving
+  one event later, on exactly the row still being written.
+- A release that MOVES a row says so, by name, in a `role="status"` live region
+  above the sections. A row that relocates in silence is indistinguishable from
+  one that was lost.
+
+`signedQuantity` still keys off the account's resolved TYPE and not off the
+section, so none of this touches the sign convention (amendment 19 stands).
+
+**The row menu is portalled to `<body>` and positioned, like every other popup
+in this app.**
+
+It was a `<details class="dropdown">`, positioned absolutely inside the
+`overflow-x-auto` that wraps both tables. Per CSS spec a non-`visible` overflow
+on one axis computes the other to `auto`, so that wrapper clips on BOTH — and
+the menus of the rows nearest the bottom of a section opened downwards into
+clipped space and appeared not to exist at all. That is the same failure, and
+the same fix, as the account popup in plan 15 §"A regression this uncovered":
+`position: fixed`, `use:portal`, and `anchoredPopup.menuPosition` (new, and
+right-aligning to the trigger at its own width — `popupPosition` matches the
+ANCHOR's width, which on a 24px `⋯` button would give a 24px menu).
+
+Three claims in that component's header were false and are gone. A native
+`<details>` does **not** close on Escape — that is `<dialog>` — which is why an
+opened menu could not be dismissed; it needed no measurement only because it was
+in the wrong place; and its items being permanently in the document is what let
+`ProjectionsTable.svelte.test.ts` read them straight out of the row, which is
+precisely why no test noticed they were invisible. `RowMenu.svelte` takes Escape,
+focus restore and the topmost-only rule from `keys/dismissible.ts`, and owns
+outside-click and scroll itself — outside-click has to count the TRIGGER as
+inside, or clicking `⋯` to close would dismiss on pointerdown and re-open on the
+click behind it, leaving the menu stuck open for good.
+
+Two smaller things fixed with them, both consequences of the above:
+
+- **Every row has a reachable delete, whatever is in its account field.** The
+  only whole-row delete lives in that menu, so a clipped menu was a missing
+  delete — on the half-typed row a user most wants gone. Row labels are now
+  unique within their section (`rowNames`): a blank row is named by its position
+  and a duplicated account gains one, where before every blank row was "a new
+  row" and neither a screen reader nor a test could say which `⋯` it meant.
+- **`bg-base-100` is not a surface.** It is what `+layout.svelte` paints the
+  page, so the menu was the exact colour of what it covered with a shadow and no
+  border as the only hint it was there. It now uses `bg-base-200` plus
+  `border-base-300`, which is what `AccountInput`'s popup and `ColumnMenu`
+  already use.
+
+Nothing here changed the engine, and `web/e2e/projections.e2e.ts` was not
+touched.
