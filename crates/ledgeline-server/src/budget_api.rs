@@ -182,7 +182,7 @@ pub(crate) struct WireBudgetRule {
     /// 1-based line of the `~` header.
     line: u32,
     /// The rule's recurrence, in both readings a client needs.
-    period: WirePeriod,
+    period: WireRulePeriod,
     /// The rule description; `--budget=DESCPAT` matches a substring of it.
     description: String,
     /// The sentence to show when this whole rule is read-only, else absent.
@@ -206,9 +206,14 @@ pub(crate) struct WireBudgetRule {
 /// Before the period grammar existed these could not disagree, so one string
 /// served both. Now a `~ monthly from 2027` rule is monthly *and* not offerable,
 /// and a single field would have to lie about one of them.
+///
+/// Named for the RULE, not bare `WirePeriod`: this module already has a
+/// `WirePeriod`, the reference strip's one bucket of recent activity. The two
+/// are unrelated — one is a recurrence, the other is a span with a total — and
+/// the name matches the SPA's `RulePeriod`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WirePeriod {
+pub(crate) struct WireRulePeriod {
     /// The period expression exactly as the file writes it.
     raw: String,
     /// `daily`|`weekly`|`monthly`|`quarterly`|`yearly` when the rule is a bare
@@ -672,7 +677,7 @@ fn wire_rules(
         .map(|(block, rule)| WireBudgetRule {
             block: block.index,
             line: block.line,
-            period: WirePeriod {
+            period: WireRulePeriod {
                 raw: block.period_text.clone(),
                 simple: block.period.map(period_word),
             },

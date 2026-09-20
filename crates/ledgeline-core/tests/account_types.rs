@@ -205,5 +205,8 @@ fn budget_gaps_classify_by_declared_type() {
     // Ordered by magnitude: the $600 of servers before the $150 of stationery.
     assert_eq!(usd(&gaps.expense[0].total), Dec::new(60_000, 2));
     assert_eq!(usd(&gaps.expense[1].total), Dec::new(15_000, 2));
-    assert_eq!((gaps.from.as_str(), gaps.to.as_str()), ("2026-01-01", "2026-12-31"));
+    assert_eq!(
+        (gaps.from.as_str(), gaps.to.as_str()),
+        ("2026-01-01", "2026-12-31")
+    );
 }

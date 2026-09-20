@@ -808,7 +808,10 @@ mod tests {
         spec_rule(
             PeriodSpec {
                 raw: crate::periodic::period_word(period).to_string(),
-                kind: PeriodKind::Every { unit: period, multiplier: 1 },
+                kind: PeriodKind::Every {
+                    unit: period,
+                    multiplier: 1,
+                },
                 start: None,
                 end: None,
             },
@@ -1132,9 +1135,9 @@ mod tests {
                 .map(|cell| {
                     // Whole dollars, whatever scale the accumulation settled on.
                     cell.goal.as_ref().map_or(0, |goal| {
-                        goal.iter().next().map_or(0, |(_, dec)| {
-                            dec.mantissa / 10_i128.pow(dec.places)
-                        })
+                        goal.iter()
+                            .next()
+                            .map_or(0, |(_, dec)| dec.mantissa / 10_i128.pow(dec.places))
                     })
                 })
                 .collect(),
@@ -1147,7 +1150,10 @@ mod tests {
     /// every occurrence to that day of the month. `to` is EXCLUSIVE.
     #[test]
     fn from_anchors_the_phase_and_to_is_exclusive() {
-        let monthly = PeriodKind::Every { unit: PeriodExpr::Monthly, multiplier: 1 };
+        let monthly = PeriodKind::Every {
+            unit: PeriodExpr::Monthly,
+            multiplier: 1,
+        };
         // Unbounded: every month.
         assert_eq!(monthly_goals(spec(monthly, None, None)), [10; 6]);
         // `from` in the middle of the span: March onward.
@@ -1178,7 +1184,10 @@ mod tests {
     /// one and from the report span otherwise.
     #[test]
     fn multiplier_steps_and_takes_its_phase_from_the_bound() {
-        let every_2_months = PeriodKind::Every { unit: PeriodExpr::Monthly, multiplier: 2 };
+        let every_2_months = PeriodKind::Every {
+            unit: PeriodExpr::Monthly,
+            multiplier: 2,
+        };
         // No bound: phase comes from the span start (January).
         assert_eq!(
             monthly_goals(spec(every_2_months, None, None)),
@@ -1228,7 +1237,10 @@ mod tests {
             Anchor::DayOfMonth(15),
             Anchor::NthWeekday { nth: 3, weekday: 2 },
         ] {
-            let kind = PeriodKind::Anchored { unit: PeriodExpr::Monthly, anchor };
+            let kind = PeriodKind::Anchored {
+                unit: PeriodExpr::Monthly,
+                anchor,
+            };
             assert_eq!(monthly_goals(spec(kind, None, None)), [10; 6], "{anchor:?}");
         }
         // A `from` past the anchored day skips that month: hledger's
@@ -1273,7 +1285,16 @@ mod tests {
     /// moves. Asserted directly on `occurrences` for all five units.
     #[test]
     fn bare_intervals_still_walk_bucket_starts() {
-        let bare = |unit| spec(PeriodKind::Every { unit, multiplier: 1 }, None, None);
+        let bare = |unit| {
+            spec(
+                PeriodKind::Every {
+                    unit,
+                    multiplier: 1,
+                },
+                None,
+                None,
+            )
+        };
         // Monthly/quarterly/yearly from a bucket-aligned start.
         assert_eq!(
             occurrences("2026-01-01", "2026-06-30", &bare(PeriodExpr::Monthly)).unwrap(),
@@ -1374,8 +1395,13 @@ mod tests {
     /// row and net it to nonsense, are not.
     #[test]
     fn gaps_list_income_and_expense_and_never_the_funding_legs() {
-        let gaps = budget_gaps(&gap_txns(), &[], &BTreeMap::new(), &gap_opts("2026-01-31", 1, 2))
-            .unwrap();
+        let gaps = budget_gaps(
+            &gap_txns(),
+            &[],
+            &BTreeMap::new(),
+            &gap_opts("2026-01-31", 1, 2),
+        )
+        .unwrap();
 
         assert_eq!(accounts(&gaps.revenue), ["income:consulting"]);
         assert_eq!(gaps.revenue[0].total, usd_ma(-90_000));
@@ -1387,7 +1413,10 @@ mod tests {
         assert_eq!(gaps.expense[0].total, usd_ma(35_200));
         assert_eq!(gaps.expense[0].depth, 2);
         // The span the figures cover, echoed for the UI to label them with.
-        assert_eq!((gaps.from.as_str(), gaps.to.as_str()), ("2026-01-01", "2026-01-31"));
+        assert_eq!(
+            (gaps.from.as_str(), gaps.to.as_str()),
+            ("2026-01-01", "2026-01-31")
+        );
     }
 
     /// A budgeted subtree is covered and drops out; its unbudgeted SIBLING does
@@ -1406,9 +1435,13 @@ mod tests {
             "household budget",
             vec![goal_posting("expenses:food", 400)],
         )];
-        let gaps =
-            budget_gaps(&gap_txns(), &rules, &BTreeMap::new(), &gap_opts("2026-01-31", 1, 2))
-                .unwrap();
+        let gaps = budget_gaps(
+            &gap_txns(),
+            &rules,
+            &BTreeMap::new(),
+            &gap_opts("2026-01-31", 1, 2),
+        )
+        .unwrap();
 
         assert_eq!(accounts(&gaps.expense), ["expenses:insurance"]);
         assert_eq!(accounts(&gaps.revenue), ["income:consulting"]);
@@ -1418,16 +1451,26 @@ mod tests {
     /// categories the same way.
     #[test]
     fn gaps_clip_to_the_report_depth() {
-        let deep =
-            budget_gaps(&gap_txns(), &[], &BTreeMap::new(), &gap_opts("2026-01-31", 1, 99)).unwrap();
+        let deep = budget_gaps(
+            &gap_txns(),
+            &[],
+            &BTreeMap::new(),
+            &gap_opts("2026-01-31", 1, 99),
+        )
+        .unwrap();
         assert_eq!(
             accounts(&deep.expense),
             ["expenses:food:groceries", "expenses:insurance:auto"],
             "an unclipped gap keeps the account's own full name"
         );
 
-        let rolled =
-            budget_gaps(&gap_txns(), &[], &BTreeMap::new(), &gap_opts("2026-01-31", 1, 1)).unwrap();
+        let rolled = budget_gaps(
+            &gap_txns(),
+            &[],
+            &BTreeMap::new(),
+            &gap_opts("2026-01-31", 1, 1),
+        )
+        .unwrap();
         assert_eq!(accounts(&rolled.expense), ["expenses"]);
         // $352 groceries + $140 insurance, merged onto one row rather than
         // double-counted into a row and its parent.
@@ -1514,10 +1557,18 @@ mod tests {
     /// panicking on `buckets[0]` — the SEC-2 guard `budget_report` carries.
     #[test]
     fn zero_count_yields_empty_gaps_not_a_panic() {
-        let gaps = budget_gaps(&gap_txns(), &[], &BTreeMap::new(), &gap_opts("2026-01-31", 0, 2))
-            .unwrap();
+        let gaps = budget_gaps(
+            &gap_txns(),
+            &[],
+            &BTreeMap::new(),
+            &gap_opts("2026-01-31", 0, 2),
+        )
+        .unwrap();
         assert!(gaps.revenue.is_empty());
         assert!(gaps.expense.is_empty());
-        assert_eq!((gaps.from.as_str(), gaps.to.as_str()), ("2026-01-31", "2026-01-31"));
+        assert_eq!(
+            (gaps.from.as_str(), gaps.to.as_str()),
+            ("2026-01-31", "2026-01-31")
+        );
     }
 }

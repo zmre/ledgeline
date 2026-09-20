@@ -42,10 +42,10 @@ use ledgeline_core::reports::{
     IsSectionKind, IsSubtotal, IsSubtotalKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts,
     PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, Section,
     SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
-    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped, bs_terms,
-    budget_gaps, budget_report, cash_flow, cash_predicate, declared_groups, declared_types,
-    detect_subscriptions, income_statement, income_statement_flows, income_statement_grouped,
-    insights, net_worth, prices_any_on_sheet, prices_any_on_statement,
+    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped,
+    bs_terms, budget_gaps, budget_report, cash_flow, cash_predicate, declared_groups,
+    declared_types, detect_subscriptions, income_statement, income_statement_flows,
+    income_statement_grouped, insights, net_worth, prices_any_on_sheet, prices_any_on_statement,
 };
 use serde::{Deserialize, Serialize};
 

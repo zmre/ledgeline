@@ -67,10 +67,10 @@
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{
-    AccountDeclaration, AccountName, AliasDirective, Amount, AmountStyle, Anchor,
-    BalanceAssertion, Commodity, CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr,
-    PeriodKind, PeriodSpec, PeriodicTransaction, Posting, PostingType, PriceDirective, SourcePos,
-    Status, Tindex, Transaction,
+    AccountDeclaration, AccountName, AliasDirective, Amount, AmountStyle, Anchor, BalanceAssertion,
+    Commodity, CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr, PeriodKind,
+    PeriodSpec, PeriodicTransaction, Posting, PostingType, PriceDirective, SourcePos, Status,
+    Tindex, Transaction,
 };
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
@@ -1514,7 +1514,10 @@ fn parse_every(tokens: &[&str]) -> Option<PeriodKind> {
     match tokens {
         [word] => {
             if let Some(unit) = period_unit(word) {
-                return Some(PeriodKind::Every { unit, multiplier: 1 });
+                return Some(PeriodKind::Every {
+                    unit,
+                    multiplier: 1,
+                });
             }
             if let Some(weekday) = weekday_number(word) {
                 return Some(PeriodKind::Anchored {
@@ -3559,7 +3562,11 @@ mod tests {
             "every weekendday",
         ] {
             let spec = period_spec(expr);
-            assert_eq!(spec.kind, PeriodKind::Unsupported, "`{expr}` is unsupported");
+            assert_eq!(
+                spec.kind,
+                PeriodKind::Unsupported,
+                "`{expr}` is unsupported"
+            );
             assert_eq!(spec.raw, expr, "`{expr}` keeps its raw text");
             assert_eq!(spec.interval(), None);
         }
@@ -3612,7 +3619,6 @@ mod tests {
             rule.postings[0].tags,
             vec![("posting".to_string(), "z".to_string())]
         );
-    }
     }
 
     #[test]

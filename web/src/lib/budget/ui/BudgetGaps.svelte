@@ -114,8 +114,8 @@
     </div>
     <div class="collapse-content flex flex-col gap-4">
         <p class="text-xs text-base-content/50">
-            Income and expenses over the same period as the bars, at the same depth, that no <code class="rounded bg-base-300 px-1">~</code> rule mentions. Not
-            a problem in itself — budgeting some categories and not others is a choice — but it is what your bars above are silent about.
+            Income and expenses over the same period as the bars, at the same depth, that no <code class="rounded bg-base-300 px-1">~</code> rule mentions. Not a
+            problem in itself — budgeting some categories and not others is a choice — but it is what your bars above are silent about.
         </p>
 
         <AsyncSection
