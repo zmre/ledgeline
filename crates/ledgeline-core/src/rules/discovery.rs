@@ -544,10 +544,15 @@ impl Discovery {
     ///    canonicalizes the deepest existing ancestor and re-appends the rest,
     ///    so a symlinked journal directory (`/tmp` → `/private/tmp` on macOS)
     ///    still compares equal.
-    /// 4. **A real parent directory** ([`CreateRefusal::DirectoryMissing`]) —
-    ///    `symlink_metadata`, so a symlinked directory is refused rather than
-    ///    followed, exactly as the scan refuses one. No directory is ever
-    ///    created: a rules file goes beside a journal that already exists.
+    /// 4. **A real parent directory, reached without a symlink**
+    ///    ([`CreateRefusal::DirectoryMissing`]) — two tests, and it takes both.
+    ///    Guard 3 canonicalizes, so a `symlink_metadata` on its output asks
+    ///    about the link's *target*: a canonical path has no links left in it
+    ///    to refuse. Comparing `confine`'s output against the path as joined is
+    ///    what actually refuses one, exactly as the scan refuses one;
+    ///    `symlink_metadata` then requires the parent to be a real directory.
+    ///    No directory is ever created: a rules file goes beside a journal that
+    ///    already exists.
     /// 5. **Nothing there already** ([`CreateRefusal::Exists`]) — of any file
     ///    type, symlinks included.
     ///
@@ -597,12 +602,33 @@ impl Discovery {
         let Some(resolved) = parse::confine(&candidate, &self.root) else {
             return Err(CreateRefusal::OutsideRoot);
         };
+        // **A symlink anywhere in the id is refused**, and this is the test
+        // that does it. `confine` CANONICALIZES, so a `linked/checking.rules`
+        // whose `linked` is a symlink into the root comes back resolved to the
+        // target and passes containment — which would put the file somewhere
+        // the id does not name, and therefore somewhere the scan lists under a
+        // DIFFERENT id, so the user could not open what they had just created.
+        // The `symlink_metadata` below cannot catch it: by the time it runs the
+        // link has already been resolved away.
+        //
+        // The root is already canonical and every component of a well-formed
+        // id is a plain name, so the two paths are equal exactly when no link
+        // (and no case-folding filesystem) rewrote one of them. Comparing them
+        // fails closed, which is the right direction for a create.
+        //
+        // `projections::Discovery::resolve_new` carries the same line for the
+        // same reason. The two are deliberate near-duplicates of one guard;
+        // neither may be changed without the other.
+        if resolved != candidate {
+            return Err(CreateRefusal::DirectoryMissing);
+        }
         let Some(parent) = resolved.parent() else {
             return Err(CreateRefusal::DirectoryMissing);
         };
         // On the CANONICAL path's parent, and with `symlink_metadata`: the
-        // parent of a canonical path exists if anything does, and asking about
-        // the link rather than its target is what refuses a directory symlink.
+        // parent of a canonical path exists if anything does. Belt and braces
+        // after the comparison above, which is what a directory symlink is
+        // actually refused by.
         match std::fs::symlink_metadata(parent) {
             Ok(meta) if meta.file_type().is_dir() => {}
             _ => return Err(CreateRefusal::DirectoryMissing),
