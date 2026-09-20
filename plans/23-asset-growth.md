@@ -1,0 +1,259 @@
+# 23 — Assets that grow: a balance, a rate, and what you put into it
+
+A third recurring section in the what-if table, for the things a projection
+holds rather than the things it earns and spends. An asset row is an opening
+balance, a growth rate, and an optional contribution — enough to model a
+brokerage account, a 401k or a house in one line. Driven by the gap Patrick hit
+on first use of the Projections tab, and by
+[`22-projections.md`](22-projections.md)'s deliberate exclusion of it.
+
+## The ask
+
+> "I want to model growth of assets over time, but as that isn't an inflow or
+> outflow, that isn't possible."
+
+Clarified in the same session:
+
+> asset rows should be **"Opening balance + growth + contributions"**; growth is
+> **"net worth only, but also make sure negative cash flow negatively impacts
+> net worth"**; a recurring contribution belongs **"on the asset row itself"**.
+
+Plan 22 §Scope excluded this on purpose — "asset-class growth (stocks, home
+value) — an asset's balance is held flat". This plan removes that exclusion and
+nothing else from it.
+
+## Decisions (locked with Patrick 2026-09-20)
+
+1. **An asset row is a balance, not a flow, and that is the whole difference.**
+   Every row in the table today is a per-period amount. An asset row states a
+   *stock*: what you hold, what rate it compounds at, and what you add to it.
+   The engine has to carry a running balance for it rather than summing
+   occurrences.
+2. **Appreciation moves net worth and never touches net income or cash.** Paper
+   gains do not pay salaries, and a runway number that counted them would be
+   worse than one that ignored them. This also matches how `net_worth.rs`
+   already values holdings.
+3. **Negative cash flow must still drag net worth down**, and it already does —
+   `projections.rs:1695` pins `[-4200, -8400, -12600]` for a recurring $4200
+   expense, because the residual rule sends the implied cash leg to both series
+   (amendment 18). This plan must not break that, and adds an explicit
+   regression test combining a burning scenario with a growing asset: the asset
+   must not mask the burn.
+4. **The contribution lives on the asset row, and the cash outflow is derived
+   from it.** One row per asset reads as one idea. Deriving the cash movement
+   rather than asking for a second row is what stops the two drifting apart.
+5. **A contribution is net-worth neutral.** $2,000 leaving cash and arriving in
+   savings changes where your money is, not how much you have. Only the growth
+   moves net worth.
+6. **Growth is stepwise**, exactly as plan 22 Decision 4 has it for flows: a
+   `7%/yr` row holds flat for twelve months and then bumps. One growth model in
+   the product, not two.
+7. **Growth applies to the balance at the START of each growth period, before
+   that period's contributions.** Some convention is needed and this is the
+   conservative one — a contribution made in month eleven does not earn a full
+   year's return. Stated in `docs/projections.md`, because it is exactly the
+   kind of thing that makes a user's spreadsheet disagree with ours.
+8. **Liabilities are still out.** The row shape would extend to them, but a
+   mortgage needs principal-vs-interest, which plan 22 Decision 8 already
+   established cannot be recovered from the journal. Assets only; revisit with
+   an amortisation model or not at all.
+
+## The file format, verified against hledger 1.52
+
+An asset row is a posting in the same `~` rule as everything else. Its **amount
+is the contribution**, and its tags carry what a posting cannot say:
+
+```journal
+~ monthly  projection
+    (assets:brokerage)      $0  ; growth: 7%/yr
+    (assets:savings)     $2000  ; growth: 4%/yr
+    (expenses:rent)      $4200
+```
+
+A row with no contribution is written `$0`. That is not a trick — hledger
+accepts it, `print` round-trips it with the tag intact, and `balance --budget`
+simply shows no goal for it, which is the honest answer because a growth rate is
+not a goal:
+
+```
+                || Commodity       Jan       Feb
+================++===============================
+ assets:savings || $          0 [2000]  0 [2000]
+ expenses:rent  || $          0 [4200]  0 [4200]
+```
+
+Note `assets:brokerage` is absent, and `assets:savings` shows only its
+contribution. Verified directly; `tag:growth` also matches the generated
+transactions under `--forecast`.
+
+An opening balance is **not** written unless the user overrides the journal's —
+see §"Not double-counting the opening balance". When overridden it rides along
+as `; opening: 200000`.
+
+## Scope
+
+In: the asset row (model, file format, engine, UI section), its effect on the
+net-worth series, and the docs.
+
+Out of scope, on purpose: liabilities and amortisation (Decision 8); per-holding
+or per-lot modelling — a row is one account, not a portfolio; tax on gains;
+rebalancing; and any attempt to infer a growth rate from price history, which
+would make a projection quietly depend on whether `P` directives happen to
+exist.
+
+---
+
+## Phase 1 — The engine
+
+### Model
+
+`ScenarioLine` gains a role, or a sibling type is introduced — implementer's
+call, but the discriminator must be explicit in the wire, not inferred from the
+account's type. A reader that guesses "assets: account ⇒ asset row" would
+reclassify a legitimate one-off posting to `assets:cash`.
+
+```rust
+pub struct ScenarioAsset {
+    pub id: String,
+    pub account: AccountName,
+    /// Overrides the journal's balance at the projection start. `None` = use it.
+    pub opening: Option<Amount>,
+    pub growth: Option<Growth>,       // the same stepwise Growth flows use
+    /// Per-period addition. `None` (or zero) = the balance just compounds.
+    pub contribution: Option<Amount>,
+    pub period: PeriodSpec,
+    pub note: String,
+}
+```
+
+### Per-bucket arithmetic
+
+For each asset, carry a running balance seeded from the journal's actual balance
+for that account at the projection start (the same as-of machinery
+`net_worth_priced` uses):
+
+1. At each growth-step boundary, `balance *= (1 + rate)`, rounded to the
+   amount's own precision at the step, exactly as flow growth is (plan 22
+   Phase 1 step 3).
+2. Then add the bucket's contribution occurrences.
+3. `net_worth_delta += growth_amount` only. The contribution is already handled
+   as a flow, below.
+
+The contribution needs **no new cash logic**: it is a posting to an asset
+account inside a rule, so the residual rule (amendment 18) already implies the
+cash leg — cash −2000, asset +2000, net worth unchanged. Do not add a second
+path for it; if you find yourself writing one, the residual rule is being
+bypassed and the numbers will drift.
+
+### Not double-counting the opening balance
+
+**This is the trap.** `Projection.net_worth.opening` already includes every
+asset account's real balance, because it comes from `net_worth` over the actual
+journal. An asset row must therefore contribute only its **growth** and its
+**contributions** to the series — never its opening balance, which is already
+in there.
+
+When the user overrides `opening`, the difference between the override and the
+journal's real balance is applied once, at bucket 0, and labelled as an
+adjustment in the warnings. A silent override would make the chart start at a
+number the balance sheet disagrees with.
+
+A test must assert that an asset row with a growth rate of zero and no
+contribution leaves every net-worth bucket **byte-identical** to the same
+scenario without the row at all. That is the double-count detector.
+
+### Tests
+
+- Stepwise compounding on a balance across a year boundary; the bump lands on
+  the anniversary and not before.
+- Contribution implies a cash outflow of the same size, and net worth is
+  unchanged by it.
+- Growth moves net worth and leaves net income and cash untouched.
+- Growth applies before the period's contribution (Decision 7).
+- The zero-growth no-contribution row changes nothing (the double-count guard).
+- **A burning scenario with a growing asset still shows net worth falling when
+  the burn exceeds the growth** — Decision 3, stated as a case rather than a
+  hope.
+- An asset row whose account resolves to a non-asset type produces a warning
+  rather than silently modelling it.
+
+---
+
+## Phase 2 — The wire and the file
+
+- `WireScenarioAsset` beside the existing line/event wire types, every optional
+  field `null` rather than omitted (plan 22 amendment 17's rule).
+- Serializer: write the contribution as the posting amount (`$0` when none),
+  `growth:` and optional `opening:` as posting tags, bounds in the rule header.
+- Reader: a posting carrying `growth:` on an asset-typed account is an asset
+  row. A posting with no `growth:` stays a flow line, whatever its account — so
+  existing scenario files keep their current meaning exactly.
+- `fixtures/native/v1/` golden for a scenario containing an asset row.
+- Extend the opt-in hledger cross-check (`LEDGELINE_HLEDGER_PROJECTION_CHECK`)
+  to prove a written asset row round-trips through `hledger print` and reports
+  the contribution — and only the contribution — under `balance --budget`.
+
+---
+
+## Phase 3 — The table
+
+A third recurring section, **"Assets and balances"**, after Income and Expenses
+and before One-off events. Columns: Account · Balance · Growth · Contribution ·
+Per · From · To · row menu.
+
+- **Balance** shows the journal's real figure, greyed, until the user types over
+  it; an overridden value is visually distinct and clearable back to the
+  journal's. The user must always be able to see what the ledger actually says.
+- The section obeys whatever section-stability rule the UX fix establishes — a
+  row must not move or lose focus while it is being edited. Read that plan
+  amendment before touching the table.
+- The **Net worth** report tab gains a breakdown of which assets contributed
+  the growth, since with this feature the single line stops being
+  self-explanatory.
+
+`docs/projections.md` gains a section on asset rows: the `growth:`/`opening:`
+tags, the start-of-period convention (Decision 7), that appreciation is
+unrealised and never reaches cash or net income, and that the `$0` contribution
+row is deliberate and readable by hledger.
+
+## Sequencing
+
+```
+Phase 1 (engine) ──> Phase 2 (wire + file) ──> Phase 3 (table)
+```
+
+Sequential — Phase 2 serializes what Phase 1 models, and Phase 3 edits what
+Phase 2 carries. **Do not start before the Projections-table UX fix has landed**;
+Phase 3 edits the same component and would conflict with it throughout.
+
+## Where the code is
+
+| Path | Purpose |
+|---|---|
+| `crates/ledgeline-core/src/projections.rs` | `ScenarioAsset`, the running-balance walk, the growth-then-contribution order |
+| `crates/ledgeline-core/src/projections/serialize.rs` | the `$0` posting, `growth:` / `opening:` tags |
+| `crates/ledgeline-server/src/projections_api.rs` | `WireScenarioAsset` |
+| `web/src/lib/projections/{types,scenarioModel}.ts` | the asset row and its section |
+| `web/src/lib/projections/ui/ProjectionsTable.svelte` | the third section |
+| `web/src/lib/projections/ui/ProjectionReports.svelte` | the net-worth contribution breakdown |
+| `docs/projections.md` | asset rows, the tags, the conventions |
+
+## Testing
+
+| Level | Covers |
+|---|---|
+| `projections.rs` unit tests | compounding, the contribution's cash leg, the ordering convention, the double-count guard, burn-beats-growth |
+| `projections/serialize.rs` tests | the `$0` posting round-trips; a tagless posting is still a flow line |
+| hledger opt-in check | an asset row parses and reports only its contribution as a goal |
+| `tests/projection_endpoints.rs` | the asset wire shape, and a non-asset account warning |
+| `scenarioModel.test.ts` | section assignment and the balance override |
+| `ProjectionsTable.svelte.test.ts` | the third section renders; an overridden balance is distinguishable and clearable |
+
+## Definition of done
+
+- `just engine-check`, `just engine-test`, `just check`, `just test`,
+  `just lint`, `just e2e` green.
+- `docs/projections.md` amended.
+- A human has looked at the third section at 375px and desktop.
+- Any contract in this doc that changed during implementation is amended here in
+  the same commit, per `plans/00-overview.md` convention #9.
