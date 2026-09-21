@@ -9,6 +9,7 @@
 
 import type {ISODate} from "$lib/domain/types";
 import {bucketEnd, bucketStart, lastNBuckets, today} from "$lib/reports/periods";
+import {clampedInt, isIsoDate} from "$lib/url/params";
 
 export type ReportTab = "insights" | "bs" | "is" | "cf" | "nw" | "subs";
 export type ReportInterval = "monthly" | "quarterly" | "yearly";
@@ -173,18 +174,11 @@ export function paramsToSearch(p: ReportParams): string {
     return q.toString();
 }
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const isTab = (v: string): v is ReportTab => (TAB_ORDER as string[]).includes(v);
 const isInterval = (v: string): v is ReportInterval => v === "monthly" || v === "quarterly" || v === "yearly";
 
 function parseDate(v: string | null, fallback: ISODate): ISODate {
-    return v !== null && ISO_DATE.test(v) ? v : fallback;
-}
-
-function parseInt1(v: string | null, fallback: number, max: number): number {
-    if (v === null || !/^\d+$/.test(v)) return fallback;
-    const n = Number(v);
-    return n < 1 ? 1 : n > max ? max : n;
+    return v !== null && isIsoDate(v) ? v : fallback;
 }
 
 /** Parse a query string (with or without leading "?"); absent/malformed params fall back to `dflt`. */
@@ -199,8 +193,8 @@ export function searchToParams(search: string, dflt: ReportParams): ReportParams
         to: parseDate(q.get("to"), dflt.to),
         end: parseDate(q.get("end"), dflt.end),
         interval: interval !== null && isInterval(interval) ? interval : dflt.interval,
-        count: parseInt1(q.get("count"), dflt.count, MAX_COUNT),
-        depth: parseInt1(q.get("depth"), dflt.depth, 99),
+        count: clampedInt(q.get("count"), 1, MAX_COUNT, dflt.count),
+        depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
         insStart: parseDate(q.get("istart"), dflt.insStart),
         insEnd: parseDate(q.get("iend"), dflt.insEnd),
     };

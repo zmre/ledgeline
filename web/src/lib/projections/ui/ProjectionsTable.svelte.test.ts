@@ -163,6 +163,33 @@ async function blur(field: HTMLInputElement): Promise<void> {
     await tick();
 }
 
+/**
+ * Type `typed` into `field` ONE CHARACTER AT A TIME, asserting after every
+ * keystroke that the row stays in `section`, keeps its DOM node, and keeps the
+ * caret.
+ *
+ * Per keystroke is the whole point: a section re-derived from the account text
+ * flips on a single letter (`` is not revenue and neither is `r`), and a flip
+ * between two `{#each}` blocks destroys the row's node and takes the caret with
+ * it. An assertion only at the end would pass on a row that moved twice.
+ *
+ * `from` is where the prefix loop starts — the asset row asserts the empty
+ * string too, since its section cannot depend on the account at all; the flow
+ * row starts at one character, which is where its hold takes over.
+ */
+async function staysPutWhileTyping(field: HTMLInputElement, group: string, typed: string, section: string, from: number): Promise<void> {
+    for (let n = from; n <= typed.length; n += 1) {
+        await fireEvent.input(field, {target: {value: typed.slice(0, n)}});
+        await tick();
+
+        const after = typed.slice(0, n);
+        expect(`${after}: ${sectionOf(group)}`).toBe(`${after}: projection-section-${section}`);
+        // Same NODE, still focused: a recreated input would be neither.
+        expect(fieldOf(group)).toBe(field);
+        expect(document.activeElement).toBe(field);
+    }
+}
+
 describe("COMPONENT ProjectionsTable — a seeded scenario", () => {
     it("splits the seed into Income and Expenses by the account's TYPE", () => {
         mount();
@@ -359,17 +386,7 @@ describe("COMPONENT ProjectionsTable — THE SECTION-STABILITY RULE", () => {
         await focus(field);
         expect(sectionOf(added.group)).toBe("projection-section-income");
 
-        const typed = "revenues:consulting";
-        for (let n = 1; n <= typed.length; n += 1) {
-            await fireEvent.input(field, {target: {value: typed.slice(0, n)}});
-            await tick();
-
-            const after = typed.slice(0, n);
-            expect(`${after}: ${sectionOf(added.group)}`).toBe(`${after}: projection-section-income`);
-            // Same NODE, still focused: a recreated input would be neither.
-            expect(fieldOf(added.group)).toBe(field);
-            expect(document.activeElement).toBe(field);
-        }
+        await staysPutWhileTyping(field, added.group, "revenues:consulting", "income", 1);
     });
 
     it("REGRESSION: retyping an EXISTING row's account does not move it mid-word either", async () => {
@@ -645,8 +662,7 @@ describe("COMPONENT ProjectionsTable — an asset row and THE SECTION-STABILITY 
         // for the section added after it. It passes for a stronger reason: an
         // asset row's section is its `role`, which no box on the row edits, so
         // there is no hold involved and nothing for a half-typed account to
-        // flip. Typed here is a route that would move a FLOW row twice —
-        // through `income:…`, which is revenue, and out the other side.
+        // flip.
         scenarioStore.adopt(withAssets(assetLine("assets:brokerage", "brok")));
         mount(scenarioStore.scenario, new Map([["brok", attributed("brok", "assets:brokerage", 51_230_000n)]]));
 
@@ -654,17 +670,9 @@ describe("COMPONENT ProjectionsTable — an asset row and THE SECTION-STABILITY 
         await focus(field);
         expect(sectionOf("brok")).toBe("projection-section-asset");
 
-        const typed = "income:consulting";
-        for (let n = 0; n <= typed.length; n += 1) {
-            await fireEvent.input(field, {target: {value: typed.slice(0, n)}});
-            await tick();
-
-            const after = typed.slice(0, n);
-            expect(`${after}: ${sectionOf("brok")}`).toBe(`${after}: projection-section-asset`);
-            // Same NODE, still focused: a recreated input would be neither.
-            expect(fieldOf("brok")).toBe(field);
-            expect(document.activeElement).toBe(field);
-        }
+        // Typed here is a route that would move a FLOW row twice — through
+        // `income:…`, which is revenue, and out the other side.
+        await staysPutWhileTyping(field, "brok", "income:consulting", "asset", 0);
 
         // …and it does not move on the way OUT either, which is where the flow
         // sections do their reconciling.

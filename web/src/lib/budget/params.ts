@@ -11,6 +11,7 @@
 
 import type {ISODate} from "$lib/domain/types";
 import {bucketEnd, bucketStart, lastNBuckets, monthsBetween, today} from "$lib/reports/periods";
+import {clampedInt, isIsoDate, oneOf} from "$lib/url/params";
 import {BUDGET_SORT_KEYS, SORT_DIRS, type BudgetSortKey, type SortDir} from "./sort";
 
 // --- Period presets ---------------------------------------------------------
@@ -123,23 +124,15 @@ export function budgetParamsToSearch(params: BudgetParams): string {
     return q.toString();
 }
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-/** A value validated against a closed vocabulary, falling back when it is not a member. */
-function oneOf<T extends string>(allowed: readonly T[], value: string | null, dflt: T): T {
-    return allowed.find((member) => member === value) ?? dflt;
-}
-
 /** Parse a query string (with or without a leading "?"); absent/malformed params fall back to `dflt`. */
 export function searchToBudgetParams(search: string, dflt: BudgetParams): BudgetParams {
     const q = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
     const from = q.get("from");
     const to = q.get("to");
-    const depth = q.get("depth");
     return {
-        from: from !== null && ISO_DATE.test(from) ? from : dflt.from,
-        to: to !== null && ISO_DATE.test(to) ? to : dflt.to,
-        depth: depth !== null && /^\d+$/.test(depth) ? Math.min(Math.max(Number(depth), 1), 99) : dflt.depth,
+        from: from !== null && isIsoDate(from) ? from : dflt.from,
+        to: to !== null && isIsoDate(to) ? to : dflt.to,
+        depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
         // Validated against the unions, the way `depth` is validated against its
         // range: a stale link naming a key that no longer exists must not reach
         // the comparator, which would then order by nothing.

@@ -1,6 +1,7 @@
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
 import {
+    ACCEPTED_TYPE_TAGS,
     cashPredicate,
     declaredTypes,
     inferAccountType,
@@ -148,6 +149,21 @@ describe("UNIT domain/accountTypes — the engine agrees with this file", () => 
         for (const row of shared.tags) {
             expect(parseAccountTypeTag(row.value), `\`; type: ${row.value}\` must parse as the shared table says. ${row._why ?? ""}`).toBe(row.type);
         }
+    });
+
+    it("accepts EXACTLY the spellings the shared table lists, and no others", () => {
+        // The test above pins every row of the fixture. This one pins the other
+        // direction — that the fixture names every spelling the module takes —
+        // and together they make the two sets EQUAL.
+        //
+        // Which is the check that would have caught the 2026-09 drift by
+        // construction. Before it, `TYPE_BY_WORD` could gain a word with no
+        // fixture row and nothing failed, so the engine was never told; the
+        // table pinned examples where what it needed to pin was a VOCABULARY.
+        // Adding a spelling now fails here until the shared file names it, and
+        // the shared file is what the engine's own suite reads.
+        const listed = shared.tags.filter((row) => row.type !== null).map((row) => row.value.trim().toLowerCase());
+        expect([...ACCEPTED_TYPE_TAGS].sort()).toEqual([...new Set(listed)].sort());
     });
 
     it("resolves every (declarations, account) the shared table lists", () => {

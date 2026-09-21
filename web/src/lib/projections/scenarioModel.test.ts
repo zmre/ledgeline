@@ -34,7 +34,6 @@ import {
     withAccount,
     withBounds,
     withInterval,
-    withMagnitude,
 } from "./scenarioModel";
 import type {Scenario, ScenarioLine} from "./types";
 
@@ -109,8 +108,11 @@ describe("UNIT scenarioModel — the sign flip", () => {
     });
 
     it("editing an amount signs it for the account the row already has", () => {
-        const income = withMagnitude(line({account: "income:salary"}), dec(900000, 2), DECLARED);
-        expect(income.amount.quantity).toEqual(dec(-900000, 2));
+        // Through `amountFor`, which is the call the amount box makes
+        // (`ProjectionsTable.setMagnitude`). The `withMagnitude` wrapper this
+        // used to go through had no caller outside this file.
+        const income = amountFor(line({account: "income:salary"}).amount, dec(900000, 2), "income:salary", DECLARED);
+        expect(income.quantity).toEqual(dec(-900000, 2));
     });
 
     it("display precision is RAISED to fit a typed amount and never lowered", () => {
@@ -309,7 +311,7 @@ describe("UNIT scenarioModel — the ASSET section (plan 23, Phase 3)", () => {
     });
 
     it("`blankAssetLine` is an asset with a ZERO contribution and the journal's balance", () => {
-        const asset = blankAssetLine("line-9", "$", 2);
+        const asset = blankAssetLine("line-9", "$");
         expect(asset.role).toBe("asset");
         // Zero is the `$0` posting the file writes for a balance that only
         // compounds, and a null `opening` is "use the journal's".
@@ -319,7 +321,7 @@ describe("UNIT scenarioModel — the ASSET section (plan 23, Phase 3)", () => {
     });
 
     it("`blankLine` still makes a FLOW, and must — an asset row is created deliberately", () => {
-        expect(blankLine("line-1", "$", 2).role).toBe("flow");
+        expect(blankLine("line-1", "$").role).toBe("flow");
     });
 });
 
@@ -576,7 +578,7 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
     it("drops half-typed rows rather than making the whole request a 400", () => {
         const half = {
             ...emptyScenario(),
-            lines: [line(), blankLine("line-1", "$", 2)],
+            lines: [line(), blankLine("line-1", "$")],
             events: [
                 {
                     id: "e1",

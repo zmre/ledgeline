@@ -26,6 +26,7 @@ import {absDec} from "$lib/format/amounts";
 import {neg, type Dec} from "$lib/domain/money";
 import {isAccountType, type AccountType} from "$lib/domain/accountTypes";
 import type {ISODate} from "$lib/domain/types";
+import {isIsoDate as isIsoDateExact} from "$lib/url/params";
 import type {
     AddSection,
     Growth,
@@ -44,11 +45,16 @@ import type {
 // that carries one (`ScenarioLine.section`).
 export type {AddSection, HeldSection, LineSection};
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-/** Whether a string is a full ISO date, which is all `type=date` and the engine accept. */
+/**
+ * Whether a string is a full ISO date, which is all `type=date` and the engine
+ * accept.
+ *
+ * TRIMS first, which the shared predicate deliberately does not: this is also
+ * asked of a journal's period `raw`, and `~ 2027-03-01 ` with a trailing space
+ * is the same single-date rule as one without.
+ */
 export function isIsoDate(value: string): boolean {
-    return ISO_DATE.test(value.trim());
+    return isIsoDateExact(value.trim());
 }
 
 // ---------------------------------------------------------------------------
@@ -101,11 +107,6 @@ export function amountFor(amount: ScenarioAmount, magnitude: Dec, account: strin
 /** A line with a new account, its amount RE-SIGNED for the account's type. */
 export function withAccount(line: ScenarioLine, account: string, declared: ReadonlyMap<string, AccountType>): ScenarioLine {
     return {...line, account, amount: amountFor(line.amount, magnitudeOf(line.amount), account, declared)};
-}
-
-/** A line with a new magnitude, signed for the account it already has. */
-export function withMagnitude(line: ScenarioLine, magnitude: Dec, declared: ReadonlyMap<string, AccountType>): ScenarioLine {
-    return {...line, amount: amountFor(line.amount, magnitude, line.account, declared)};
 }
 
 // ---------------------------------------------------------------------------
@@ -170,28 +171,55 @@ export interface LogicalRow {
     segments: ScenarioLine[];
 }
 
+/** Every section's logical rows at once — what [`groupLines`] answers. */
+export type SectionRows = Record<LineSection, LogicalRow[]>;
+
 /**
- * Group a section's lines into logical rows, segments in span order.
+ * Every line placed in its section and grouped into logical rows, segments in
+ * span order — the whole table in ONE pass.
  *
  * Rows keep the order their FIRST segment appears in, so a table does not
  * reshuffle itself when a step is added to a row halfway down it.
+ *
+ * All four sections at once because the table wants all four, and asking one at
+ * a time walked the scenario once per section — each walk resolving
+ * `sectionOfLine` → `resolveAccountType` → `isRevenueAccount` for every line in
+ * it, including the ones it was about to discard. That cost is per KEYSTROKE:
+ * the scenario is deep `$state` and every one of those reads touches
+ * `line.account`, so a single character invalidated all four derivations.
+ *
+ * The grouping itself is unchanged, which is what leaves THE SECTION-STABILITY
+ * RULE exactly where it was: a row's identity is still `line.id`, and its
+ * section is still whatever `sectionOfLine` says — hold and all.
  */
-export function logicalRows(lines: readonly ScenarioLine[], declared: ReadonlyMap<string, AccountType>, section: LineSection): LogicalRow[] {
-    const rows: LogicalRow[] = [];
-    const byId = new Map<string, LogicalRow>();
+export function groupLines(lines: readonly ScenarioLine[], declared: ReadonlyMap<string, AccountType>): SectionRows {
+    const sections: SectionRows = {income: [], expense: [], asset: [], oneoff: []};
+    // Keyed by section AND id, not by id alone. Grouping WITHIN a section is
+    // the behaviour a single pass has to keep: two segments of one row can
+    // resolve into different sections, and joining them on id alone would put a
+    // row in a table its own segment said it was not in.
+    const byKey = new Map<string, LogicalRow>();
     for (const line of lines) {
-        if (sectionOfLine(line, declared) !== section) continue;
-        const existing = byId.get(line.id);
+        const section = sectionOfLine(line, declared);
+        const key = `${section} ${line.id}`;
+        const existing = byKey.get(key);
         if (existing === undefined) {
             const row: LogicalRow = {id: line.id, segments: [line]};
-            byId.set(line.id, row);
-            rows.push(row);
+            byKey.set(key, row);
+            sections[section].push(row);
         } else {
             existing.segments.push(line);
         }
     }
-    for (const row of rows) row.segments.sort(compareSegments);
-    return rows;
+    for (const rows of Object.values(sections)) {
+        for (const row of rows) row.segments.sort(compareSegments);
+    }
+    return sections;
+}
+
+/** One section's logical rows. The table itself reads [`groupLines`], once for all four. */
+export function logicalRows(lines: readonly ScenarioLine[], declared: ReadonlyMap<string, AccountType>, section: LineSection): LogicalRow[] {
+    return groupLines(lines, declared)[section];
 }
 
 /**
@@ -342,8 +370,21 @@ export function sectionPrefix(section: AddSection, accountNames: readonly string
     return `${best}:`;
 }
 
+/**
+ * The display precision a row the USER adds opens at.
+ *
+ * Two, because a hand-typed row is money and money's unit of account is the
+ * cent; a SEEDED row takes the engine's precision instead, which is the
+ * journal's own. It is a module constant rather than a parameter of the three
+ * constructors below because every call site passed exactly this — three
+ * parameters threaded through seven calls to say "2" — and `amountFor` raises
+ * it the moment a user types a third decimal anyway.
+ */
+const NEW_ROW_PRECISION = 2;
+
 /** A blank monthly line for `section`, at zero in `commodity`. */
-export function blankLine(id: string, commodity: string, precision: number): ScenarioLine {
+export function blankLine(id: string, commodity: string): ScenarioLine {
+    const precision = NEW_ROW_PRECISION;
     return {
         id,
         group: id,
@@ -375,12 +416,13 @@ export function blankLine(id: string, commodity: string, precision: number): Sce
  * for a row that only compounds, and `opening` stays null so the Balance column
  * shows the journal's own figure.
  */
-export function blankAssetLine(id: string, commodity: string, precision: number): ScenarioLine {
-    return {...blankLine(id, commodity, precision), role: "asset"};
+export function blankAssetLine(id: string, commodity: string): ScenarioLine {
+    return {...blankLine(id, commodity), role: "asset"};
 }
 
 /** A blank dated event with one empty posting. */
-export function blankEvent(id: string, date: ISODate, commodity: string, precision: number): ScenarioEvent {
+export function blankEvent(id: string, date: ISODate, commodity: string): ScenarioEvent {
+    const precision = NEW_ROW_PRECISION;
     return {id, date, description: "", postings: [{account: "", amount: {commodity, quantity: {m: 0n, p: precision}, precision}}]};
 }
 

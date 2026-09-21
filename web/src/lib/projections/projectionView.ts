@@ -15,7 +15,7 @@
 // rather than quietly plotting a fraction of the answer.
 
 import type {Dec} from "$lib/domain/money";
-import {toNumber, type MixedAmount} from "$lib/domain/money";
+import {rankCommodities, toNumber, type MixedAmount} from "$lib/domain/money";
 import type {PeriodReport} from "$lib/reports/types";
 import type {ReportInterval} from "$lib/reports/ui/params";
 import type {AssetRow, BalanceSeries, Projection} from "./types";
@@ -37,46 +37,47 @@ export function balanceNumbers(series: BalanceSeries, commodity: string): {openi
 }
 
 /**
+ * Every figure a chart on this tab would draw, in one pass.
+ *
+ * The two questions below — what to plot, and what that leaves out — are asked
+ * of the same five series, and each used to name all five itself. A generator
+ * rather than an array so neither materialises a copy of the projection to
+ * count it; adding a sixth charted series means adding it here once.
+ */
+function* projectionAmounts(projection: Projection): Generator<MixedAmount> {
+    yield projection.cash.opening;
+    yield projection.netWorth.opening;
+    yield* projection.cash.values;
+    yield* projection.netWorth.values;
+    yield* projection.netIncome.totals;
+}
+
+/**
  * The commodity to chart: the one the projection carries the most figures in.
  *
  * Counted over every figure a chart would draw, so a scenario written in `$`
  * against an opening balance in `$` charts `$` even when one stray EUR line is
  * present. Ties break lexicographically so the choice is stable across reloads
- * rather than dependent on map order.
+ * rather than dependent on map order — which is `rankCommodities`' own
+ * guarantee, so the head of its ranking IS this answer.
  */
 export function chartCommodity(projection: Projection, fallback: string): string {
-    const counts = new Map<string, number>();
-    const tally = (value: MixedAmount): void => {
-        for (const commodity of value.keys()) counts.set(commodity, (counts.get(commodity) ?? 0) + 1);
-    };
-    tally(projection.cash.opening);
-    tally(projection.netWorth.opening);
-    for (const value of projection.cash.values) tally(value);
-    for (const value of projection.netWorth.values) tally(value);
-    for (const total of projection.netIncome.totals) tally(total);
-
-    let best: string | null = null;
-    let bestCount = 0;
-    for (const [commodity, count] of [...counts].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-        if (count > bestCount) {
-            best = commodity;
-            bestCount = count;
-        }
-    }
-    return best ?? fallback;
+    return rankCommodities(projectionAmounts(projection))[0] ?? fallback;
 }
 
-/** Every commodity in the projection except the one being charted, in a stable order. */
+/**
+ * Every commodity in the projection except the one being charted, in a stable
+ * order.
+ *
+ * ALPHABETICAL, not by use, and deliberately not `rankCommodities`' order: this
+ * is a list the surface names to say what it is NOT showing, and a reader
+ * scanning it for their own currency wants it where the alphabet puts it.
+ */
 export function otherCommodities(projection: Projection, charted: string): string[] {
     const all = new Set<string>();
-    const tally = (value: MixedAmount): void => {
+    for (const value of projectionAmounts(projection)) {
         for (const commodity of value.keys()) all.add(commodity);
-    };
-    tally(projection.cash.opening);
-    tally(projection.netWorth.opening);
-    for (const value of projection.cash.values) tally(value);
-    for (const value of projection.netWorth.values) tally(value);
-    for (const total of projection.netIncome.totals) tally(total);
+    }
     all.delete(charted);
     return [...all].sort();
 }

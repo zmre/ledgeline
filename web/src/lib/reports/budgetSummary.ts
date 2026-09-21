@@ -9,7 +9,7 @@
 // reads; toNumber() is used ONLY to size the bars, a display concern the money
 // module explicitly sanctions at chart boundaries.
 
-import {dec, maAdd, maNeg, mul, toNumber, type MixedAmount} from "../domain/money";
+import {dec, maAdd, maNeg, maScale, toNumber, type MixedAmount} from "../domain/money";
 import {daysBetween} from "./periods";
 import type {ISODate} from "../domain/types";
 import type {BudgetReport} from "./types";
@@ -157,10 +157,7 @@ const PACE_PLACES = 6;
  */
 export function paceAmount(goal: MixedAmount, fraction: number): MixedAmount {
     const bounded = Number.isFinite(fraction) ? Math.min(Math.max(fraction, 0), 1) : 1;
-    const scale = dec(BigInt(Math.round(bounded * 10 ** PACE_PLACES)), PACE_PLACES);
-    const out: MixedAmount = new Map();
-    for (const [commodity, qty] of goal) out.set(commodity, mul(qty, scale));
-    return out;
+    return maScale(goal, dec(BigInt(Math.round(bounded * 10 ** PACE_PLACES)), PACE_PLACES));
 }
 
 /** How a bar is doing. `behind` is the unhealthy side of pace in either column. */
