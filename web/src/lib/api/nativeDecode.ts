@@ -104,6 +104,7 @@ import type {
 } from "$lib/imports/types";
 import {GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "$lib/projections/types";
 import type {
+    AssetRow,
     BalanceSeries,
     EventPosting,
     Growth,
@@ -458,6 +459,14 @@ interface RawRunway {
     periods?: number;
 }
 
+interface RawAssetRow {
+    group?: string;
+    account?: string;
+    journalOpening?: RawMixed;
+    opening?: RawMixed;
+    growth?: RawMixed;
+}
+
 interface RawProjection {
     buckets?: unknown[];
     start?: string;
@@ -465,6 +474,7 @@ interface RawProjection {
     cash?: RawBalanceSeries;
     netWorth?: RawBalanceSeries;
     runway?: RawRunway | null;
+    assets?: RawAssetRow[];
     warnings?: unknown[];
 }
 
@@ -1886,6 +1896,28 @@ function decodeRunway(raw: RawRunway, context: string): Runway {
 }
 
 /**
+ * One asset row's attribution.
+ *
+ * `journalOpening` is DEMANDED rather than defaulted to `opening`: the two are
+ * equal on every row without an override, so a decoder that fell back would be
+ * indistinguishable from a correct one until the first user typed over a
+ * balance — at which point the table would show the override as the ledger's own
+ * figure, which is exactly the failure the Balance column exists to prevent.
+ */
+function decodeAssetRow(raw: RawAssetRow | undefined, context: string): AssetRow {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing asset row`);
+    return Object.freeze({
+        // The SOURCE RULE, which is what the table already has on the row it is
+        // rendering — not the logical `id`, which two segments would share.
+        group: str(raw.group, `${context} group`),
+        account: str(raw.account, `${context} account`),
+        journalOpening: decodeMixed(raw.journalOpening, `${context} journalOpening`),
+        opening: decodeMixed(raw.opening, `${context} opening`),
+        growth: decodeMixed(raw.growth, `${context} growth`),
+    });
+}
+
+/**
  * `POST /api/projections/run`.
  *
  * `netIncome` is a plain `WirePeriodReport`, so it goes through the same
@@ -1898,6 +1930,11 @@ export function decodeProjection(raw: unknown): Projection {
     if (typeof projection !== "object" || projection === null || !Array.isArray(projection.buckets) || !Array.isArray(projection.warnings)) {
         throw new ApiShapeError("projection: expected buckets and warnings arrays");
     }
+    // Always an array, `[]` when the scenario holds no asset rows — so an
+    // ABSENT key is a broken contract, not "no assets". A `?? []` here would
+    // blank the Balance column of every row against an engine whose key had
+    // been renamed, and the table would show nothing rather than say so.
+    if (!Array.isArray(projection.assets)) throw new ApiShapeError("projection assets: expected an array");
     return Object.freeze({
         buckets: frozen(decodeStrings(projection.buckets, "projection buckets")),
         start: str(projection.start, "projection start"),
@@ -1905,6 +1942,7 @@ export function decodeProjection(raw: unknown): Projection {
         cash: decodeBalanceSeries(projection.cash, "projection cash"),
         netWorth: decodeBalanceSeries(projection.netWorth, "projection netWorth"),
         runway: decodeNullable(projection.runway, "projection runway", decodeRunway),
+        assets: frozen(projection.assets.map((row, i) => decodeAssetRow(row, `projection assets[${i}]`))),
         // Never empty silently: a dropped line always says so here.
         warnings: frozen(decodeStrings(projection.warnings, "projection warnings")),
     });

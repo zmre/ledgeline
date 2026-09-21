@@ -239,6 +239,27 @@ async fn an_asset_row_grows_net_worth_and_leaves_cash_alone() {
         "growth must compound on the new base: {grew:?} vs {flat:?}"
     );
     assert_eq!(with["warnings"], json!([]));
+
+    // The PER-ROW ATTRIBUTION (plan 23, Phase 3). The Balance column and the
+    // net-worth breakdown read this, and both have to agree with the curve
+    // above — so it is the same walk's figures, keyed by the source rule.
+    assert_eq!(
+        without["assets"],
+        json!([]),
+        "a flow row is not an asset row"
+    );
+    let rows = with["assets"].as_array().expect("assets is an array");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["group"], "rule:1");
+    assert_eq!(rows[0]["account"], "assets:broker:taxable");
+    // The journal's real balance for the subtree — the figure the table greys
+    // out, which is not on the scenario wire and could not be.
+    let held = dollars(&rows[0]["journalOpening"]);
+    assert!(held > 0, "sample.journal holds a taxable brokerage: {held}");
+    // No override, so the row compounded exactly the journal's figure…
+    assert_eq!(rows[0]["opening"], rows[0]["journalOpening"]);
+    // …and its attributed growth IS the gap the net-worth series opened up.
+    assert_eq!(dollars(&rows[0]["growth"]), grew[2] - flat[2]);
 }
 
 /// A CONTRIBUTION on an asset row implies its cash outflow through the same
@@ -327,6 +348,16 @@ async fn an_opening_override_adjusts_once_and_says_so() {
         "{:?}",
         with["warnings"]
     );
+    // …and BOTH balances are on the wire, so the table can show the override
+    // beside the ledger's own figure rather than instead of it.
+    let attributed = &with["assets"][0];
+    assert_eq!(dollars(&attributed["opening"]), 1_000_000);
+    assert_ne!(
+        attributed["journalOpening"], attributed["opening"],
+        "the journal's figure must survive an override"
+    );
+    // The adjustment is not appreciation: this row states no rate at all.
+    assert_eq!(dollars(&attributed["growth"]), 0);
 }
 
 /// An absent `role` reads as `flow`, which is what every body written before

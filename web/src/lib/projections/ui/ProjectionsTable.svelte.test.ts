@@ -33,7 +33,7 @@ import {beforeEach, describe, expect, it} from "vitest";
 import {decodeScenario} from "$lib/api/nativeDecode";
 import type {AccountType} from "$lib/domain/accountTypes";
 import {scenarioStore} from "../scenarioStore.svelte";
-import type {Scenario} from "../types";
+import type {AssetRow, Scenario} from "../types";
 import ProjectionsTable from "./ProjectionsTable.svelte";
 
 const NOTE = "unbudgeted — average over 2025-08-01 to 2026-07-08";
@@ -69,20 +69,50 @@ const SEED = decodeScenario({
     events: [],
 });
 
-const ACCOUNT_NAMES = ["income:salary", "income:dividends", "expenses:housing", "expenses:taxes", "assets:checking"];
+/**
+ * An ASSET row on the wire: `role: "asset"`, its `amount` the per-period
+ * CONTRIBUTION, and `opening` null so the table shows the journal's own figure.
+ */
+const assetLine = (account: string, group: string, contribution = "0") => ({
+    id: group,
+    group,
+    role: "asset",
+    account,
+    amount: {commodity: "$", quantity: {mantissa: contribution, places: 2}, precision: 2},
+    period: {raw: "monthly", simple: "monthly", from: null, to: null},
+    growth: {rate: {mantissa: "7", places: 2}, unit: "year"},
+    opening: null,
+    note: "",
+    source: "journal",
+});
+
+const ACCOUNT_NAMES = ["income:salary", "income:dividends", "expenses:housing", "expenses:taxes", "assets:checking", "assets:brokerage", "assets:house"];
 const DECLARED: ReadonlyMap<string, AccountType> = new Map<string, AccountType>([
     ["income", "revenue"],
     ["expenses", "expense"],
     ["assets", "asset"],
 ]);
 
-function mount(scenario: Scenario = scenarioStore.scenario) {
+const STYLES = new Map([["$", {side: "L" as const, spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]] as [string, number[]]}]]);
+
+/** One attributed asset row, as `Projection.assets` carries it. */
+const attributed = (group: string, account: string, held: bigint): AssetRow => ({
+    group,
+    account,
+    journalOpening: new Map([["$", {m: held, p: 2}]]),
+    opening: new Map([["$", {m: held, p: 2}]]),
+    growth: new Map([["$", {m: 0n, p: 2}]]),
+});
+
+function mount(scenario: Scenario = scenarioStore.scenario, assetBalances: ReadonlyMap<string, AssetRow> = new Map()) {
     return render(ProjectionsTable, {
         scenario,
         accountNames: ACCOUNT_NAMES,
         declared: DECLARED,
         commodity: "$",
         stepDate: "2027-04-01",
+        assetBalances,
+        styles: STYLES,
         onChange: () => scenarioStore.touch(),
     });
 }
@@ -425,6 +455,222 @@ describe("COMPONENT ProjectionsTable — THE SECTION-STABILITY RULE", () => {
         const income = within(screen.getByTestId("projection-section-income"));
         expect(income.getAllByTestId("projection-line")).toHaveLength(2);
         expect(scenarioStore.scenario.lines.every((l) => l.section === undefined)).toBe(true);
+    });
+});
+
+// --- Assets and balances (plan 23, Phase 3) --------------------------------
+
+/** The seed, plus asset rows, decoded through the real wire decoder. */
+function withAssets(...lines: ReturnType<typeof assetLine>[]): Scenario {
+    return decodeScenario({
+        name: "",
+        created: null,
+        updated: null,
+        lines: [seedLine("expenses:housing", "187500"), ...lines],
+        events: [],
+    });
+}
+
+const assetRowOf = (group: string): HTMLElement | null => document.querySelector(`[data-testid="projection-asset-line"][data-line-group="${group}"]`);
+
+describe("COMPONENT ProjectionsTable — the Assets and balances section", () => {
+    it("renders a THIRD section, keyed off the row's role and not its account", () => {
+        // `assets:` is not a revenue account, so before this section existed
+        // every one of these rows landed under "Expenses and other outflows".
+        scenarioStore.adopt(withAssets(assetLine("assets:brokerage", "brok"), assetLine("assets:house", "house")));
+        mount();
+
+        const assets = within(screen.getByTestId("projection-section-asset"));
+        expect(assets.getAllByTestId("projection-asset-line")).toHaveLength(2);
+        expect(assets.getByLabelText("Contribution for assets:brokerage")).toBeDefined();
+        expect(assets.getByLabelText("Growth rate for the assets:house balance, in percent")).toHaveProperty("value", "7");
+        // …and neither has leaked into the outflow half.
+        const expenses = within(screen.getByTestId("projection-section-expense"));
+        expect(expenses.getAllByTestId("projection-line")).toHaveLength(1);
+        expect(expenses.queryByLabelText("Contribution for assets:brokerage")).toBeNull();
+    });
+
+    it("a FLOW row posting to an asset account is still an outflow", () => {
+        // The discriminator is `role`, both ways round. `assets:checking` is a
+        // legitimate destination for a recurring transfer, and reading the
+        // account instead would reclassify it into a compounding balance.
+        scenarioStore.adopt(
+            decodeScenario({
+                name: "",
+                created: null,
+                updated: null,
+                lines: [seedLine("assets:checking", "50000")],
+                events: [],
+            })
+        );
+        mount();
+        expect(within(screen.getByTestId("projection-section-expense")).getAllByTestId("projection-line")).toHaveLength(1);
+        expect(within(screen.getByTestId("projection-section-asset")).queryAllByTestId("projection-asset-line")).toHaveLength(0);
+    });
+
+    it("adds an asset row with role: asset, while the flow sections keep making flows", async () => {
+        mount();
+        await fireEvent.click(screen.getByRole("button", {name: "+ Add an asset"}));
+        await tick();
+        const added = scenarioStore.scenario.lines[scenarioStore.scenario.lines.length - 1];
+
+        expect(added.role).toBe("asset");
+        // Seeded into the asset tree, and with no section HOLD: this row is
+        // held here by its role, which nothing on it can edit.
+        expect(added.account).toBe("assets:");
+        expect(added.section).toBeUndefined();
+        expect(added.opening).toBeNull();
+        expect(added.amount.quantity).toEqual({m: 0n, p: 2});
+        expect(assetRowOf(added.group)).not.toBeNull();
+
+        // …and the existing sections are untouched.
+        const flow = await addLineIn("income");
+        expect(flow.role).toBe("flow");
+    });
+
+    it("names an asset row's controls distinctly from a FLOW row on the same account", async () => {
+        // A monthly transfer into `assets:checking` beside an `assets:checking`
+        // row earning interest is an ordinary thing to write, and `rowNames`
+        // can only make a name unique within its own section. Two identically
+        // named "Growth rate for assets:checking" boxes would leave a screen
+        // reader — and `getByLabelText` — with no way to say which was which.
+        scenarioStore.adopt(
+            decodeScenario({
+                name: "",
+                created: null,
+                updated: null,
+                lines: [seedLine("assets:checking", "50000"), assetLine("assets:checking", "brok")],
+                events: [],
+            })
+        );
+        mount();
+
+        expect(screen.getByLabelText("Growth rate for assets:checking, in percent")).toBeDefined();
+        expect(screen.getByLabelText("Growth rate for the assets:checking balance, in percent")).toBeDefined();
+        expect(screen.getByLabelText("Row menu for assets:checking")).toBeDefined();
+        expect(screen.getByLabelText("Row menu for the assets:checking balance")).toBeDefined();
+        // `getByLabelText` throws on more than one match, so reaching each of
+        // those at all IS the assertion.
+    });
+
+    it("offers no Add a step on an asset row — two segments would compound the same balance twice", async () => {
+        scenarioStore.adopt(withAssets(assetLine("assets:brokerage", "brok")));
+        mount();
+        await fireEvent.click(screen.getByLabelText("Row menu for the assets:brokerage balance"));
+        await tick();
+        const items = within(screen.getByTestId("row-menu"))
+            .getAllByRole("menuitem")
+            .map((item) => item.textContent?.trim());
+        expect(items).toEqual(["Duplicate", "Delete row"]);
+    });
+});
+
+describe("COMPONENT ProjectionsTable — the Balance column", () => {
+    it("shows the JOURNAL's figure, greyed, with the box left empty", () => {
+        scenarioStore.adopt(withAssets(assetLine("assets:brokerage", "brok")));
+        mount(scenarioStore.scenario, new Map([["brok", attributed("brok", "assets:brokerage", 51_230_000n)]]));
+
+        const box = screen.getByLabelText("Balance for assets:brokerage") as HTMLInputElement;
+        // Empty value + the ledger's figure as the placeholder IS "greyed until
+        // you type over it". Nothing has been overridden, so the model is null.
+        expect(box.value).toBe("");
+        expect(box.placeholder).toBe("512300.00");
+        expect(box.title).toBe("Your journal says $512,300.00");
+        expect(scenarioStore.scenario.lines.find((l) => l.group === "brok")?.opening).toBeNull();
+    });
+
+    it("a typed balance is DISTINGUISHABLE, and the ledger's own figure stays on screen beside it", async () => {
+        scenarioStore.adopt(withAssets(assetLine("assets:brokerage", "brok")));
+        mount(scenarioStore.scenario, new Map([["brok", attributed("brok", "assets:brokerage", 51_230_000n)]]));
+
+        await fireEvent.change(screen.getByLabelText("Balance for assets:brokerage"), {target: {value: "640000"}});
+        await tick();
+
+        const line = scenarioStore.scenario.lines.find((l) => l.group === "brok");
+        expect(line?.opening).toEqual({commodity: "$", quantity: {m: 640000n, p: 0}, precision: 2});
+        expect(scenarioStore.dirty).toBe(true);
+        // Visually distinct: the box wears the warning style the untouched one
+        // does not…
+        const box = screen.getByLabelText("Balance for assets:brokerage");
+        expect(box.closest("label")?.className).toContain("input-warning");
+        // …and THE FAILURE MODE THIS COLUMN EXISTS TO PREVENT: the ledger's own
+        // number is still readable beside the number the user typed.
+        expect(screen.getByTestId("ledger-balance").textContent?.trim()).toBe("ledger $512,300.00");
+    });
+
+    it("clears back to the journal's, from the button and from an emptied box", async () => {
+        scenarioStore.adopt(withAssets(assetLine("assets:brokerage", "brok")));
+        mount(scenarioStore.scenario, new Map([["brok", attributed("brok", "assets:brokerage", 51_230_000n)]]));
+        const box = screen.getByLabelText("Balance for assets:brokerage");
+
+        await fireEvent.change(box, {target: {value: "640000"}});
+        await tick();
+        await fireEvent.click(screen.getByLabelText("Use the journal's balance for assets:brokerage"));
+        await tick();
+
+        expect(scenarioStore.scenario.lines.find((l) => l.group === "brok")?.opening).toBeNull();
+        expect(screen.queryByTestId("ledger-balance")).toBeNull();
+
+        // Select-all-and-delete means the same thing, and is the way most
+        // people will reach for it.
+        await fireEvent.change(box, {target: {value: "640000"}});
+        await tick();
+        await fireEvent.change(screen.getByLabelText("Balance for assets:brokerage"), {target: {value: ""}});
+        await tick();
+        expect(scenarioStore.scenario.lines.find((l) => l.group === "brok")?.opening).toBeNull();
+    });
+
+    it("says nothing rather than zero before anything has been projected", () => {
+        // A row the engine has not walked yet, and a row it declined to walk
+        // (a non-asset account — the warnings above the charts say why), reach
+        // this the same way: no entry at all.
+        scenarioStore.adopt(withAssets(assetLine("assets:brokerage", "brok")));
+        mount();
+        expect(screen.getByLabelText("Balance for assets:brokerage")).toHaveProperty("placeholder", "—");
+    });
+
+    it("refuses an attribution computed for the account this row USED to name", () => {
+        // The stale case. A figure shown under a freshly-typed account is a
+        // claim about the ledger that the ledger is not making — and the
+        // recompute that would correct it is a debounce away.
+        scenarioStore.adopt(withAssets(assetLine("assets:brokerage", "brok")));
+        mount(scenarioStore.scenario, new Map([["brok", attributed("brok", "assets:house", 51_230_000n)]]));
+        expect(screen.getByLabelText("Balance for assets:brokerage")).toHaveProperty("placeholder", "—");
+    });
+});
+
+describe("COMPONENT ProjectionsTable — an asset row and THE SECTION-STABILITY RULE", () => {
+    it("REGRESSION: an asset row stays put, and keeps focus, through EVERY keystroke", async () => {
+        // The same regression as the Income one above, written the same way,
+        // for the section added after it. It passes for a stronger reason: an
+        // asset row's section is its `role`, which no box on the row edits, so
+        // there is no hold involved and nothing for a half-typed account to
+        // flip. Typed here is a route that would move a FLOW row twice —
+        // through `income:…`, which is revenue, and out the other side.
+        scenarioStore.adopt(withAssets(assetLine("assets:brokerage", "brok")));
+        mount(scenarioStore.scenario, new Map([["brok", attributed("brok", "assets:brokerage", 51_230_000n)]]));
+
+        const field = fieldOf("brok");
+        await focus(field);
+        expect(sectionOf("brok")).toBe("projection-section-asset");
+
+        const typed = "income:consulting";
+        for (let n = 0; n <= typed.length; n += 1) {
+            await fireEvent.input(field, {target: {value: typed.slice(0, n)}});
+            await tick();
+
+            const after = typed.slice(0, n);
+            expect(`${after}: ${sectionOf("brok")}`).toBe(`${after}: projection-section-asset`);
+            // Same NODE, still focused: a recreated input would be neither.
+            expect(fieldOf("brok")).toBe(field);
+            expect(document.activeElement).toBe(field);
+        }
+
+        // …and it does not move on the way OUT either, which is where the flow
+        // sections do their reconciling.
+        await blur(field);
+        expect(sectionOf("brok")).toBe("projection-section-asset");
+        expect(screen.getByTestId("section-move-notice").textContent?.trim()).toBe("");
     });
 });
 

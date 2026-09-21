@@ -1,8 +1,20 @@
 import {describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "$lib/domain/money";
 import type {PeriodReport} from "$lib/reports/types";
-import {amountIn, balanceNumbers, chartCommodity, flowSeries, otherCommodities, periodsPhrase, runwayStatement, seriesOf} from "./projectionView";
-import type {Projection} from "./types";
+import {
+    amountIn,
+    assetContributions,
+    assetRowsByGroup,
+    balanceNumbers,
+    chartCommodity,
+    flowSeries,
+    journalBalanceFor,
+    otherCommodities,
+    periodsPhrase,
+    runwayStatement,
+    seriesOf,
+} from "./projectionView";
+import type {AssetRow, Projection} from "./types";
 
 const money = (entries: [string, number][]): MixedAmount => new Map(entries.map(([c, n]) => [c, dec(n, 0)]));
 const usd = (n: number): MixedAmount => money([["$", n]]);
@@ -31,10 +43,83 @@ function projection(overrides: Partial<Projection> = {}): Projection {
         cash: {opening: usd(10000), values: [usd(14800), usd(19600)]},
         netWorth: {opening: usd(50000), values: [usd(54800), usd(59600)]},
         runway: null,
+        assets: [],
         warnings: [],
         ...overrides,
     };
 }
+
+/** One attributed asset row, as `Projection.assets` carries it. */
+const assetRow = (group: string, account: string, held: number, grew: number, compounded = held): AssetRow => ({
+    group,
+    account,
+    journalOpening: usd(held),
+    opening: usd(compounded),
+    growth: usd(grew),
+});
+
+describe("UNIT projectionView — an asset row's journal balance", () => {
+    const rows = assetRowsByGroup(projection({assets: [assetRow("brok", "assets:brokerage", 512300, 35861)]}));
+
+    it("is keyed by the row's GROUP, which is what the table has on the row", () => {
+        expect([...rows.keys()]).toEqual(["brok"]);
+        expect(journalBalanceFor(rows, "brok", "assets:brokerage", "$")).toEqual(dec(512300, 0));
+    });
+
+    it("is a real ZERO for an account the journal holds nothing in — that is an answer", () => {
+        expect(journalBalanceFor(rows, "brok", "assets:brokerage", "EUR")).toEqual({m: 0n, p: 0});
+    });
+
+    it("is NULL for a row nothing has been projected for", () => {
+        // Before the first run, and for a row the engine declined to model:
+        // there is no entry either way, and null is "no answer", not zero.
+        expect(journalBalanceFor(new Map(), "brok", "assets:brokerage", "$")).toBeNull();
+        expect(journalBalanceFor(rows, "house", "assets:house", "$")).toBeNull();
+    });
+
+    it("REFUSES an entry computed for a different account", () => {
+        // The stale case, and the reason the account travels with the figure:
+        // a user who has just retyped this row's account would otherwise be
+        // shown the previous account's balance as if it were the ledger's
+        // answer about the new one.
+        expect(journalBalanceFor(rows, "brok", "assets:house", "$")).toBeNull();
+        // Whitespace is not a different account, though.
+        expect(journalBalanceFor(rows, "brok", "  assets:brokerage  ", "$")).toEqual(dec(512300, 0));
+    });
+
+    it("is empty for a projection that has not arrived at all", () => {
+        expect(assetRowsByGroup(null).size).toBe(0);
+    });
+});
+
+describe("UNIT projectionView — the net-worth growth breakdown", () => {
+    it("lists the biggest contributor first, and keeps a row that grew nothing", () => {
+        const p = projection({
+            assets: [assetRow("a", "assets:savings", 1000, 0), assetRow("b", "assets:brokerage", 500000, 35000), assetRow("c", "assets:house", 640000, 19200)],
+        });
+        expect(assetContributions(p, "$")).toEqual([
+            {account: "assets:brokerage", opening: 500000, growth: 35000},
+            {account: "assets:house", opening: 640000, growth: 19200},
+            // Kept, not filtered: a $0 line is the answer to "why did nothing
+            // happen", and dropping it sends the reader back to the table.
+            {account: "assets:savings", opening: 1000, growth: 0},
+        ]);
+    });
+
+    it("SUMS two rules that name one account, rather than listing it twice", () => {
+        const p = projection({assets: [assetRow("a", "assets:brokerage", 1000, 70), assetRow("b", "assets:brokerage", 1000, 30)]});
+        expect(assetContributions(p, "$")).toEqual([{account: "assets:brokerage", opening: 2000, growth: 100}]);
+    });
+
+    it("reports the balance the row COMPOUNDED, which an override replaces", () => {
+        const p = projection({assets: [assetRow("h", "assets:house", 512300, 19200, 640000)]});
+        expect(assetContributions(p, "$")[0].opening).toBe(640000);
+    });
+
+    it("is empty for a scenario with no asset rows", () => {
+        expect(assetContributions(projection(), "$")).toEqual([]);
+    });
+});
 
 describe("UNIT projectionView — reading one commodity out of a mixed amount", () => {
     it("an amount that holds none of the charted commodity is zero, not a gap", () => {

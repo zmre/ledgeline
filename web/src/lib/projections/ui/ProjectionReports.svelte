@@ -12,7 +12,13 @@
      - NET WORTH is one line, with the opening balance named beside the heading
        rather than plotted: it is a real figure as of today, not a projected
        bucket, and drawing it as a point on the same series would make the first
-       segment a claim the engine is not making.
+       segment a claim the engine is not making. Under it, when the scenario
+       holds asset rows, a BREAKDOWN of which of them the growth came from —
+       one line is self-explanatory until there are three assets behind it, and
+       then it stops being (plan 23, Phase 3). A table rather than a second
+       chart: these are a handful of labelled exact figures, which is a table's
+       job, and a second series on the same axes would say the parts and the
+       whole are the same kind of thing.
 
      One commodity is charted (`chartCommodity`) because there is no market
      price for a future date to value a mixed amount with. What that leaves out
@@ -27,7 +33,7 @@
     import ReportTable from "$lib/reports/ui/ReportTable.svelte";
     import type {ReportInterval} from "$lib/reports/ui/params";
     import {PROJECTION_TABS, PROJECTION_TAB_LABELS, type ProjectionTab} from "../params";
-    import {balanceNumbers, chartCommodity, flowSeries, otherCommodities, runwayStatement} from "../projectionView";
+    import {assetContributions, balanceNumbers, chartCommodity, flowSeries, otherCommodities, runwayStatement} from "../projectionView";
     import type {Projection} from "../types";
 
     let {
@@ -57,6 +63,8 @@
     const worth = $derived(balanceNumbers(projection.netWorth, commodity));
     const statement = $derived(runwayStatement(projection, interval, commodity, format));
     const unchartedCommodities = $derived(otherCommodities(projection, commodity));
+    const contributions = $derived(assetContributions(projection, commodity));
+    const grownTotal = $derived(contributions.reduce((sum, row) => sum + row.growth, 0));
 </script>
 
 {#snippet uncharted()}
@@ -133,8 +141,43 @@
                 empty="Add a line above to project net worth."
                 testid="projection-worth-chart"
             />
+            {#if contributions.length > 0}
+                <div class="overflow-x-auto">
+                    <table class="table table-xs" data-testid="projection-asset-breakdown">
+                        <caption class="px-1 pb-1 text-left text-xs text-base-content/60">
+                            Where the growth came from. Appreciation is unrealised: it never reaches cash or net income.
+                        </caption>
+                        <thead>
+                            <tr>
+                                <th>Asset</th>
+                                <th class="text-right">Balance it grew from</th>
+                                <th class="text-right">Growth</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {#each contributions as row (row.account)}
+                                <tr>
+                                    <td>{row.account}</td>
+                                    <td class="text-right tabular-nums">{format(row.opening)}</td>
+                                    <td class="text-right tabular-nums">{format(row.growth)}</td>
+                                </tr>
+                            {/each}
+                        </tbody>
+                        <tfoot>
+                            <tr>
+                                <!-- The total of the GROWTH column only. The balances are
+                                     already inside the opening figure above the chart, so
+                                     summing them here would offer a number that is part of
+                                     one total and all of a different one. -->
+                                <th colspan="2" class="text-right font-normal">Total growth</th>
+                                <th class="text-right tabular-nums">{format(grownTotal)}</th>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            {/if}
             <p class="text-xs text-base-content/60">
-                Summary level only: an asset's balance is held flat unless a line posts to it, and no liability is amortised.
+                Summary level only: an asset's balance is held flat unless an asset row gives it a rate or a line posts to it, and no liability is amortised.
             </p>
             {@render uncharted()}
         </div>

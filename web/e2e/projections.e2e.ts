@@ -74,6 +74,52 @@ test("projections: seeds the what-if table from the journal, flagging what it es
     await expect(page.getByLabel("Amount for income:salary")).toHaveValue(/^\d/);
 });
 
+// UNVERIFIED: written against the markup, never executed — Playwright cannot
+// run in the environment this was added in (plan 23, Phase 3).
+test("projections: the Assets and balances section is there, empty, on a seeded journal", async ({page}) => {
+    await page.goto("/projections");
+
+    // `sample.journal` has no `~` rules at all, so the seed produces flows only
+    // — `budget_gaps` measures revenue and expense accounts. The section is
+    // still present, with its own empty state and its own Add button, because
+    // an asset row is something the user creates deliberately.
+    const assets = page.getByTestId("projection-section-asset");
+    await expect(assets).toBeVisible();
+    await expect(assets).toContainText("A brokerage account, a 401k, a house.");
+    await expect(assets.getByRole("button", {name: "+ Add an asset"})).toBeEnabled();
+    await expect(page.getByTestId("projection-asset-line")).toHaveCount(0);
+});
+
+// UNVERIFIED, as above.
+test("projections: adding an asset row shows the ledger's own balance, greyed", async ({page}) => {
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-net")).toBeVisible();
+
+    await page.getByRole("button", {name: "+ Add an asset"}).click();
+    const row = page.getByTestId("projection-asset-line").first();
+    await expect(row).toBeVisible();
+
+    // Seeded into the journal's own asset tree, and a balance box that is EMPTY
+    // — the journal's figure is its placeholder, which is what "greyed until
+    // you type over it" means.
+    await expect(row.getByRole("combobox").first()).toHaveValue("assets:");
+    const balance = page.getByLabel(/^Balance for /);
+    await expect(balance).toHaveValue("");
+
+    // Naming a real account and letting the debounced recompute land puts the
+    // ledger's figure in the placeholder.
+    await row.getByRole("combobox").first().fill("assets:broker:taxable");
+    await row.getByRole("combobox").first().press("Enter");
+    await expect(page.getByLabel("Balance for assets:broker:taxable")).toHaveAttribute("placeholder", /^\d/);
+
+    // Typing over it is visibly an override, and the ledger's figure survives.
+    await page.getByLabel("Balance for assets:broker:taxable").fill("640000");
+    await page.getByLabel("Balance for assets:broker:taxable").blur();
+    await expect(page.getByTestId("ledger-balance")).toContainText("ledger");
+    await page.getByLabel("Use the journal's balance for assets:broker:taxable").click();
+    await expect(page.getByTestId("ledger-balance")).toHaveCount(0);
+});
+
 test("projections: opens on net income over two years, and says so in the URL", async ({page}) => {
     await page.goto("/projections");
 
