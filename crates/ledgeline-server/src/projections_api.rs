@@ -1383,7 +1383,22 @@ fn update_scenario(
         // see a spurious change — the lesson `rules_api` and `budget_api` both
         // record. The unchanged document is returned, so the client still gets
         // a fresh (identical) revision.
-        return open_file(found, id, true, declared);
+        //
+        // Built from the `text` and `fingerprint` already in scope rather than
+        // through `open_file`, which would re-open, re-read and re-parse this
+        // file inside the write lock to reach the same two values. It is also
+        // the more honest answer: the revision returned is the one that was
+        // just checked against `revision`, over the very bytes this scenario
+        // was rendered from.
+        let unchanged = scenario_from_text(&text, &name, &found.label, declared)
+            .map_err(|error| serialize_failed(id, &error))?;
+        return Ok(WireScenarioFile {
+            id: id.to_string(),
+            label: found.label.clone(),
+            revision: fingerprint.token(),
+            writable: true,
+            scenario: WireScenario::from(&unchanged),
+        });
     }
 
     // Narrow the TOCTOU window from "the whole request" to "hash → rename". It
@@ -1470,12 +1485,21 @@ pub(crate) async fn document(
         return Err(unresolved(&id));
     };
     let sources = state.source_files();
-    // The MAIN journal's account types, because a projection file declares none
-    // of its own and the asset/flow discriminator needs them (`serialize`'s
-    // header says why a name test will not do).
-    let declared = declared_types(&account_decls(&state.snapshot().journal));
+    let snapshot = state.snapshot();
     let Json(body) = compute(move || {
-        let discovery = discover(&main);
+        // The MAIN journal's account types, because a projection file declares
+        // none of its own and the asset/flow discriminator needs them
+        // (`serialize`'s header says why a name test will not do).
+        //
+        // Inside the closure, where `run` and `seed` already do it: walking
+        // every declared account and cloning its name twice is blocking work,
+        // and on a tokio worker it stalls the runtime the desktop GUI is
+        // hosted in — the same reason the scan below is in here.
+        let declared = declared_types(&account_decls(&snapshot.journal));
+        // `without_headers`: this route resolves exactly one id and never looks
+        // at a listing's display name, so opening the other 199 files to read
+        // four comment lines out of each is work thrown away.
+        let discovery = Discovery::without_headers(&main);
         let found = discovery.resolve(&id).ok_or_else(|| unresolved(&id))?;
         let writable = writable_path(&sources, found.path().as_path());
         open_file(found, &id, writable, &declared)
@@ -1504,7 +1528,7 @@ pub(crate) async fn save(
         return Err(unresolved(&id));
     };
     let sources = state.source_files();
-    let declared = declared_types(&account_decls(&state.snapshot().journal));
+    let snapshot = state.snapshot();
     // Decoded (and bounded) BEFORE the lock is taken and before a `compute`
     // slot is claimed: a scenario we are going to refuse must not first wait
     // for a core, and must not hold the write lock while it is refused.
@@ -1519,12 +1543,27 @@ pub(crate) async fn save(
     // `.await` below.
     let _guard = state.import_writes().lock().await;
     let Json(body) = compute(move || {
+        // The main journal's declared account types, inside the closure where
+        // `run` and `seed` already do it: walking every declared account and
+        // cloning its name twice is blocking work, and on a tokio worker it
+        // stalls the runtime the desktop GUI is hosted in.
+        //
+        // It does now happen under `import_writes`, which the version above
+        // this line did not. That is the right side to pay on: the lock
+        // serializes writers to one journal directory, the runtime serializes
+        // the whole application.
+        let declared = declared_types(&account_decls(&snapshot.journal));
         // Scanned in THIS request, never cached. That is the whole of security
         // layer 2: an id resolves against a set built from `read_dir` names
         // moments ago, so a cached set would be one that no longer describes
         // the disk, and a save would be authorized by a scan that happened
         // arbitrarily long ago.
-        let discovery = discover(&main);
+        //
+        // `without_headers` skips only the four comment lines at the top of
+        // each *other* file in the tree, which this route never reads. The walk
+        // and every guard on it are exactly as fresh — and this one ran up to
+        // 200 pointless opens while holding that lock.
+        let discovery = Discovery::without_headers(&main);
         if revision == NEW_FILE_REVISION {
             create_scenario(&discovery, &id, &scenario, &declared)
         } else {
