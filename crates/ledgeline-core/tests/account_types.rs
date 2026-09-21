@@ -15,11 +15,12 @@ use common::fixtures_dir;
 use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
     AccountType, BudgetOpts, GapRow, InsightsOpts, Interval, MixedAmount, NetWorthOpts,
-    account_decls, balance_sheet, budget_gaps, declared_types, income_statement, insights,
-    is_account_type, net_worth, parse_account_type_tag, resolve_account_type,
+    accepted_type_tags, account_decls, balance_sheet, budget_gaps, declared_types,
+    income_statement, insights, is_account_type, net_worth, parse_account_type_tag,
+    resolve_account_type,
 };
 use ledgeline_core::{Dec, Journal, parse_journal};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn fixture() -> Journal {
     let path = fixtures_dir()
@@ -281,6 +282,40 @@ fn every_declared_type_spelling_parses_as_the_shared_table_says() {
             why_of(tag)
         );
     }
+}
+
+/// The shared table names EVERY spelling this side accepts, and no others.
+///
+/// The mirror of the browser's assertion over `ACCEPTED_TYPE_TAGS`, and the one
+/// that turns the fixture from example-pinning into exhaustive pinning. The
+/// test above proves each spelling the fixture names parses correctly; it
+/// cannot notice a spelling added HERE and never written down — which is the
+/// direction the original drift ran, and the direction that silently sends an
+/// account to name inference in the other implementation.
+#[test]
+fn the_shared_table_names_every_accepted_type_spelling() {
+    let cases = classification_cases();
+    let named: BTreeSet<String> = cases["tags"]
+        .as_array()
+        .expect("tags is an array")
+        .iter()
+        .filter(|tag| !tag["type"].is_null())
+        .map(|tag| {
+            tag["value"]
+                .as_str()
+                .expect("a tag value")
+                .trim()
+                .to_lowercase()
+        })
+        .collect();
+    let accepted: BTreeSet<String> = accepted_type_tags().map(str::to_string).collect();
+    assert_eq!(
+        accepted, named,
+        "`parse_account_type_tag` and the shared fixture must accept exactly the \
+         same spellings — anything only on the left is unpinned and can drift \
+         away from the browser's table, anything only on the right is a spelling \
+         this side has stopped accepting"
+    );
 }
 
 /// Every (declarations, account) row resolves — and answers the three

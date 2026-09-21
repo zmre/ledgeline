@@ -55,8 +55,9 @@ pub use account_groups::{
     group_rank, parse_bs_term_tag, resolve_bs_term,
 };
 pub use account_types::{
-    ACCOUNT_TYPE_TAG, AccountDecl, AccountType, AccountTypes, account_decls, account_decls_from,
-    cash_predicate, declared_types, is_account_type, parse_account_type_tag, resolve_account_type,
+    ACCOUNT_TYPE_TAG, AccountDecl, AccountType, AccountTypes, accepted_type_tags, account_decls,
+    account_decls_from, cash_predicate, declared_types, is_account_type, parse_account_type_tag,
+    resolve_account_type,
 };
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};

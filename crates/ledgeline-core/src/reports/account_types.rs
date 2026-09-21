@@ -118,30 +118,62 @@ fn matches_cash_name(account: &str) -> bool {
 ///
 /// Note `Gains` is accepted by hledger 1.52 but the singular `Gain` is not,
 /// despite its own error message listing `Gain`. We take both.
+/// Every accepted `type:` spelling and what it means, lowercased.
+///
+/// A TABLE rather than a `match`, so the vocabulary can be **enumerated** — see
+/// [`accepted_type_tags`]. That is not a style preference: the browser carries
+/// the other half of this specification, the two drifted once
+/// (`fixtures/account-types/classification-cases.json` exists because of it),
+/// and a `match` cannot be asked what it accepts. Only a list both sides can
+/// compare against the shared fixture turns example-pinning into exhaustive
+/// pinning.
+const TYPE_TAGS: &[(&str, AccountType)] = &[
+    // Single letters — exactly hledger's set.
+    ("a", AccountType::Asset),
+    ("l", AccountType::Liability),
+    ("e", AccountType::Equity),
+    ("r", AccountType::Revenue),
+    ("x", AccountType::Expense),
+    ("c", AccountType::Cash),
+    ("v", AccountType::Conversion),
+    ("g", AccountType::Gain),
+    // Words. The singulars are hledger's; the plurals and `income` are ours
+    // (hledger errors on them) — see the doc comment.
+    ("asset", AccountType::Asset),
+    ("assets", AccountType::Asset),
+    ("liability", AccountType::Liability),
+    ("liabilities", AccountType::Liability),
+    ("equity", AccountType::Equity),
+    ("equities", AccountType::Equity),
+    ("revenue", AccountType::Revenue),
+    ("revenues", AccountType::Revenue),
+    ("income", AccountType::Revenue),
+    ("incomes", AccountType::Revenue),
+    ("expense", AccountType::Expense),
+    ("expenses", AccountType::Expense),
+    ("cash", AccountType::Cash),
+    ("conversion", AccountType::Conversion),
+    ("conversions", AccountType::Conversion),
+    ("gain", AccountType::Gain),
+    ("gains", AccountType::Gain),
+];
+
+/// The spellings [`parse_account_type_tag`] accepts, lowercased.
+///
+/// The mirror of the browser's `ACCEPTED_TYPE_TAGS`. Both sides assert set
+/// equality against the shared fixture, so neither can gain a spelling the
+/// other does not know about without a test failing.
+pub fn accepted_type_tags() -> impl Iterator<Item = &'static str> {
+    TYPE_TAGS.iter().map(|(word, _)| *word)
+}
+
 #[must_use]
 pub fn parse_account_type_tag(value: &str) -> Option<AccountType> {
-    match value.trim().to_lowercase().as_str() {
-        // Single letters — exactly hledger's set.
-        "a" => Some(AccountType::Asset),
-        "l" => Some(AccountType::Liability),
-        "e" => Some(AccountType::Equity),
-        "r" => Some(AccountType::Revenue),
-        "x" => Some(AccountType::Expense),
-        "c" => Some(AccountType::Cash),
-        "v" => Some(AccountType::Conversion),
-        "g" => Some(AccountType::Gain),
-        // Words. The singulars are hledger's; the plurals and `income` are ours
-        // (hledger errors on them) — see the doc comment.
-        "asset" | "assets" => Some(AccountType::Asset),
-        "liability" | "liabilities" => Some(AccountType::Liability),
-        "equity" | "equities" => Some(AccountType::Equity),
-        "revenue" | "revenues" | "income" | "incomes" => Some(AccountType::Revenue),
-        "expense" | "expenses" => Some(AccountType::Expense),
-        "cash" => Some(AccountType::Cash),
-        "conversion" | "conversions" => Some(AccountType::Conversion),
-        "gain" | "gains" => Some(AccountType::Gain),
-        _ => None,
-    }
+    let key = value.trim().to_lowercase();
+    TYPE_TAGS
+        .iter()
+        .find(|(word, _)| *word == key)
+        .map(|(_, ty)| *ty)
 }
 
 /// hledger's name-based type inference — the fallback when nothing in the
