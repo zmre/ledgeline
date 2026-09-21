@@ -54,6 +54,9 @@ const RUN_BODY = {
     cash: {opening: {$: {mantissa: "500000", places: 2}}, values: [{$: {mantissa: "500000", places: 2}}]},
     netWorth: {opening: {$: {mantissa: "900000", places: 2}}, values: [{$: {mantissa: "900000", places: 2}}]},
     runway: null,
+    // `[]` is a real answer and the key is never absent — this scenario holds
+    // no asset rows. `decodeProjection` refuses a missing one.
+    assets: [],
     warnings: [],
 };
 

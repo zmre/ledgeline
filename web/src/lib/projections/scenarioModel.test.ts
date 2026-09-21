@@ -3,6 +3,7 @@ import {dec} from "$lib/domain/money";
 import type {AccountType} from "$lib/domain/accountTypes";
 import {
     amountFor,
+    blankAssetLine,
     blankLine,
     cloneScenario,
     duplicateRow,
@@ -161,6 +162,64 @@ describe("UNIT scenarioModel — sections", () => {
     it("falls back to the hledger defaults when the journal has nothing of that type yet", () => {
         expect(sectionPrefix("income", [], new Map())).toBe("income:");
         expect(sectionPrefix("expense", [], new Map())).toBe("expenses:");
+        expect(sectionPrefix("asset", [], new Map())).toBe("assets:");
+    });
+
+    it("an ASSET section learns its prefix the same way the other two do", () => {
+        const names = ["patrimonio:corretaje", "gastos:alquiler"];
+        const declared = new Map<string, AccountType>([
+            ["patrimonio", "asset"],
+            ["gastos", "expense"],
+        ]);
+        expect(sectionPrefix("asset", names, declared)).toBe("patrimonio:");
+    });
+});
+
+describe("UNIT scenarioModel — the ASSET section (plan 23, Phase 3)", () => {
+    // A row's section is its ROLE, ahead of its period and ahead of its
+    // account. That is the whole reason this section needs no hold: nothing a
+    // user can type into the row changes `role`.
+
+    it("an asset row is an asset row whatever its account resolves to", () => {
+        for (const account of ["assets:brokerage", "expenses:rent", "income:salary", "", "a"]) {
+            expect(sectionOfLine(line({role: "asset", account}), DECLARED)).toBe("asset");
+        }
+    });
+
+    it("a FLOW row posting to an asset account is still an outflow — the role decides, not the account", () => {
+        expect(sectionOfLine(line({role: "flow", account: "assets:savings"}), DECLARED)).toBe("expense");
+    });
+
+    it("`asset` beats a single-date period, which `oneoff` would otherwise claim", () => {
+        // A balance with a dated contribution is still a balance, and the
+        // one-off table has no Growth column to show its rate in.
+        const dated = line({role: "asset", account: "assets:house", period: {raw: "2027-03-01", simple: null, from: null, to: null}});
+        expect(sectionOfLine(dated, DECLARED)).toBe("asset");
+        expect(resolvedSection(dated, DECLARED)).toBe("asset");
+    });
+
+    it("`asset` beats a stale HOLD, which only the two flow sections can use", () => {
+        expect(sectionOfLine(line({role: "asset", account: "assets:house", section: "income"}), DECLARED)).toBe("asset");
+    });
+
+    it("`logicalRows` gathers the asset section like any other", () => {
+        const lines = [line({id: "rent"}), line({id: "brok", role: "asset", account: "assets:brokerage"})];
+        expect(logicalRows(lines, DECLARED, "asset").map((r) => r.id)).toEqual(["brok"]);
+        expect(logicalRows(lines, DECLARED, "expense").map((r) => r.id)).toEqual(["rent"]);
+    });
+
+    it("`blankAssetLine` is an asset with a ZERO contribution and the journal's balance", () => {
+        const asset = blankAssetLine("line-9", "$", 2);
+        expect(asset.role).toBe("asset");
+        // Zero is the `$0` posting the file writes for a balance that only
+        // compounds, and a null `opening` is "use the journal's".
+        expect(asset.amount.quantity).toEqual({m: 0n, p: 2});
+        expect(asset.opening).toBeNull();
+        expect(asset.growth).toBeNull();
+    });
+
+    it("`blankLine` still makes a FLOW, and must — an asset row is created deliberately", () => {
+        expect(blankLine("line-1", "$", 2).role).toBe("flow");
     });
 });
 
@@ -473,6 +532,23 @@ describe("UNIT scenarioModel — cloning", () => {
         }
         clone.lines[0].account = "expenses:other";
         expect(decoded.lines[0].account).toBe("expenses:rent");
+    });
+
+    it("deep-clones an asset row's balance OVERRIDE, which the decoder also freezes", () => {
+        const frozen = Object.freeze({
+            ...emptyScenario(),
+            lines: Object.freeze([
+                Object.freeze({
+                    ...line({role: "asset", account: "assets:house"}),
+                    opening: Object.freeze({commodity: "$", quantity: Object.freeze(dec(64000000, 2)), precision: 2}),
+                }),
+            ]),
+        }) as Scenario;
+
+        const clone = cloneScenario(frozen);
+        expect(clone.lines[0].opening).toEqual(frozen.lines[0].opening);
+        expect(Object.isFrozen(clone.lines[0].opening)).toBe(false);
+        expect(Object.isFrozen(clone.lines[0].opening?.quantity)).toBe(false);
     });
 });
 

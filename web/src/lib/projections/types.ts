@@ -86,16 +86,28 @@ export interface Growth {
     unit: GrowthUnit;
 }
 
-/** Which of the what-if table's three sections a row is shown in. */
-export type LineSection = "income" | "expense" | "oneoff";
+/**
+ * Which of the what-if table's four sections a row is shown in.
+ *
+ * `asset` is decided by the row's `role` and nothing else, so unlike the
+ * income/expense split it cannot change while a row is being typed into — see
+ * `resolvedSection`.
+ */
+export type LineSection = "income" | "expense" | "asset" | "oneoff";
 
 /**
  * The two sections a row can be HELD in.
  *
  * Never `oneoff`: that one is decided by the line's PERIOD, which nothing typed
- * into an account box can change.
+ * into an account box can change. Never `asset` either, and for the stronger
+ * version of the same reason — that one is decided by the row's `role`, which no
+ * editable field on the row touches at all, so there is nothing for a hold to
+ * protect against.
  */
 export type HeldSection = "income" | "expense";
+
+/** The sections with an "Add a line" button — the ones a new row can be born into. */
+export type AddSection = HeldSection | "asset";
 
 /** One recurring row of the what-if table. */
 export interface ScenarioLine {
@@ -183,6 +195,31 @@ export interface Runway {
     periods: number;
 }
 
+/**
+ * What one asset row did, attributed back to the row.
+ *
+ * The Balance column's source and the net-worth tab's breakdown. Both need a
+ * figure the SCENARIO does not carry — an opening balance is not part of a
+ * what-if — and both have to agree with the curve beside them, so both come
+ * from the walk that drew the curve rather than from a balance-sheet report read
+ * alongside it. Keyed by `group`, which is the row's source rule.
+ *
+ * A row the engine refused to model (a non-asset account) is ABSENT here and
+ * present in `warnings`: it contributed nothing, and reporting a balance beside
+ * it would say it had been modelled.
+ */
+export interface AssetRow {
+    /** The `ScenarioLine.group` this was placed from. */
+    group: string;
+    account: string;
+    /** The journal's own SUBTREE balance for that account, as of today. The greyed figure. */
+    journalOpening: MixedAmount;
+    /** What the row actually compounded from: the `opening` override, or `journalOpening`. */
+    opening: MixedAmount;
+    /** Total appreciation over the span. Never a contribution, never the override's adjustment. */
+    growth: MixedAmount;
+}
+
 /** The answer. */
 export interface Projection {
     buckets: string[];
@@ -193,6 +230,8 @@ export interface Projection {
     cash: BalanceSeries;
     netWorth: BalanceSeries;
     runway: Runway | null;
+    /** One entry per asset row the engine modelled, in scenario order. `[]` when there are none. */
+    assets: AssetRow[];
     /** Everything the projection could not do. A dropped line always says so here. */
     warnings: string[];
 }

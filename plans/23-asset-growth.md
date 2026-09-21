@@ -492,3 +492,152 @@ Still Phase 3's:
   only wire question left.
 - The **net-worth contribution breakdown**, which likewise needs the engine to
   attribute growth per row — `Projection` carries only the total today.
+
+---
+
+**Phase 3 from here.**
+
+### 12. ONE engine field answers both of Phase 3's open questions
+
+Amendment 11 left two, and treated them as separate: a source for the Balance
+column, and a per-row growth attribution for the breakdown. They are the same
+question. The walk already computes both figures for every asset row it places —
+`seed_asset_balance` produces the journal's balance, and the step loop produces
+the appreciation — and neither survives past the per-bucket accumulator.
+
+So `Projection` gained `assets: Vec<AssetRow>`: one entry per PLACED row, in
+scenario order, carrying `group`, `account`, `journal_opening`, `opening` and
+`growth`. `WireProjection` gained the same list.
+
+**The Balance column therefore reads the RUN, not the scenario and not a second
+report.** The alternative amendment 11 offers — "the existing balance-sheet
+report read beside it" — was rejected for a reason that is not a preference: the
+engine seeds an asset row's running balance from a SUBTREE balance valued into
+the net-worth series' own commodity, at the engine's `as_of`. A client reading
+`/api/reports/balancesheet` would have to reproduce the subtree roll-up, the
+valuation and the as-of date, and any of the three drifting would put a figure
+under the user's cursor that the curve below it disagrees with. The column exists
+to tell the user what the projection used; the projection is the only thing that
+knows.
+
+Three consequences worth stating:
+
+- **Both balances travel, never one.** `journal_opening` is what the ledger says
+  and `opening` is what the row compounded. They are equal on every row without
+  an override, which is exactly why the decoder DEMANDS both: a `journalOpening`
+  that defaulted to `opening` would be indistinguishable from a correct one until
+  the first user typed over a balance, and would then show the override as the
+  ledger's own figure — the one failure this column exists to prevent.
+- **A row the engine refused to model gets NO entry.** It contributed nothing
+  (amendment 8), and a balance reported beside it would say it had been
+  modelled. The table shows a dash; the warning already says why.
+- **Keyed by `group`, not `id`.** `id` is the logical row and two segments share
+  one; `group` is the source rule and is what `place_asset` runs per.
+
+`fixtures/native/v1/` is untouched: `POST /api/projections/run` has no golden and
+cannot have one (it carries its scenario in a body), which `requests.tsv` already
+says. The route is pinned by `projection_endpoints.rs`, which gained the
+assertions, and by `nativeDecode.test.ts`'s inline `PROJECTION_RUN` literal,
+which gained a two-row `assets` array — the second row OVERRIDDEN, so the rename
+sweep reaches the field the column depends on. Nothing was added to `TOLERATED`.
+
+### 13. The Balance column reads the LAST GOOD projection, and checks the account
+
+`projection.value`, not `current`. Everywhere else `routes/projections/+page.svelte`
+trusts only a projection that answers the scenario on screen (FE-1), because a
+held payload makes a claim about a scenario that has since changed. This figure
+does not: it is a fact about the JOURNAL as of today, and the journal does not
+change between two keystrokes. Keying it to `current` would blank the column on
+every letter typed anywhere in the table.
+
+What can go stale is which ACCOUNT a row names, and that is handled where it
+actually is — `journalBalanceFor` refuses an entry whose `account` is not the
+row's current one. A stale figure under a freshly-typed account is a claim about
+the ledger that the ledger is not making, and the recompute that corrects it is a
+debounce away.
+
+Null from that lookup is "no answer", never zero, and the column renders it as a
+dash. Three cases reach it: nothing projected yet, a row the engine declined, and
+the stale-account case.
+
+### 14. `LineSection` gained `asset`, and `role` beats BOTH other tests
+
+`resolvedSection` now tests `role === "asset"` FIRST — ahead of the period and
+ahead of the account type. Two consequences, one of them a decision the plan did
+not pin:
+
+- **An asset row with a single-date period is an ASSET row, not a one-off.** The
+  plan is silent and `oneoff` would have claimed it. A balance with a dated
+  contribution is still a balance, and the one-off table has no Growth column to
+  show its rate in.
+- **`HeldSection` did NOT grow.** Plan 22 amendment 37's hold exists because a
+  flow row's section is re-derived from text that changes under the user's
+  fingers. An asset row's section is `role`, which no box on the row edits, so
+  the property the hold provides this section has for free. `sectionOfLine`
+  returns `asset` ahead of any hold, `holdSection` declines to take one, and the
+  Assets table carries no `onfocusin`/`onfocusout` at all.
+
+The keystroke-by-keystroke regression test was written anyway, in the same shape
+as the Income one and typing a route (`income:consulting`) that would move a flow
+row twice. It passes for a stronger reason than the original does, and that is
+worth having pinned.
+
+### 15. An asset row has no "Add a step", and the docs say why
+
+`splitStep` produces two bounded segments sharing an `id`. For a FLOW that is the
+feature. For an asset row it is a double count: `place_asset` seeds each
+`ScenarioLine` from the journal independently, and `growth_boundaries` walks the
+PROJECTION's span rather than the segment's, so both halves compound the whole
+balance over the whole window.
+
+Phase 3 does not expose it — the Assets row menu offers Duplicate and Delete
+only — and `docs/projections.md` states the general rule ("one row per account"),
+because a hand-written file can still contain two rows naming one account and the
+engine does not warn about it. **Making the engine warn is deliberately NOT done
+here**: it is an engine change with no UI path to it, and the plan's Phase 3 is
+the table. It is the obvious next thing if a real file ever hits it.
+
+### 16. A fourth section broke `rowNames`' uniqueness guarantee
+
+`rowNames` makes a row's accessible name unique WITHIN its section, and that was
+enough while the only two sections were Income and Expenses: an account cannot be
+both revenue and not-revenue, so the same name could not appear in both.
+
+An asset row can name an account a flow row also names, and legitimately — a
+monthly transfer into `assets:checking` beside an `assets:checking` row earning
+interest is an ordinary thing to write. That would have put two boxes labelled
+"Growth rate for assets:checking" on one page, which a screen reader cannot
+distinguish and `getByLabelText` refuses outright.
+
+So the Assets table qualifies the labels a flow row also has — "Growth rate for
+**the** `assets:checking` **balance**", the row menu, both date bounds, the
+segment delete — and leaves Balance and Contribution unqualified, because those
+two words appear in no other table and "Balance for the … balance" reads as
+nonsense. The "Per" column is "Contribution period", which is both unique and
+more accurate than "Period" was: it is the contribution's cadence, not the
+growth's.
+
+### 17. What Phase 3 shipped, file by file
+
+| file | change |
+|---|---|
+| `crates/ledgeline-core/src/projections.rs` | `AssetRow`; `Layout.assets`; `seed_asset_balance` returns both balances; three unit tests |
+| `crates/ledgeline-server/src/projections_api.rs` | `WireAssetRow`; `WireProjection.assets` |
+| `crates/ledgeline-server/tests/projection_endpoints.rs` | the attribution's wire shape, and both balances under an override |
+| `web/src/lib/api/nativeDecode.ts` | `decodeAssetRow`; `assets` required on `decodeProjection` |
+| `web/src/lib/projections/types.ts` | `AssetRow`, `AddSection`, `LineSection` gained `asset` |
+| `web/src/lib/projections/scenarioModel.ts` | `resolvedSection`/`sectionOfLine` role-first; `blankAssetLine`; `sectionPrefix` takes `asset`; `cloneScenario` deep-clones `opening` |
+| `web/src/lib/projections/projectionView.ts` | `assetRowsByGroup`, `journalBalanceFor`, `assetContributions` |
+| `web/src/lib/projections/ui/ProjectionsTable.svelte` | the third section, the Balance column, the override and its clear |
+| `web/src/lib/projections/ui/ProjectionReports.svelte` | the growth breakdown; the stale "held flat" caption corrected |
+| `web/src/routes/projections/+page.svelte` | `assetBalances` and `styles` into the table |
+| `docs/projections.md` | the Assets table, Decision 7 stated plainly, one row per account |
+| `web/e2e/projections.e2e.ts` | two specs, **UNVERIFIED** — Playwright could not run |
+
+`just e2e` was NOT run (the environment has no Playwright driver), and the two
+specs added are marked unverified in the file itself. Everything else in
+§"Definition of done" is green: `just engine-check`, `just engine-test`, and the
+web gates run directly (`svelte-check`, `tsc --noEmit`, `vitest run`, `eslint`,
+`prettier`) because `bun`, which the `just` recipes wrap, is sandbox-blocked.
+**A human has not yet looked at the section at 375px and desktop** — that is the
+one line of the definition of done this commit cannot close by itself.

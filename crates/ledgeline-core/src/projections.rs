@@ -383,6 +383,45 @@ pub struct Runway {
     pub periods: usize,
 }
 
+/// What one [`LineRole::Asset`] row did, attributed back to the row.
+///
+/// Two questions the series alone cannot answer, and both of them are a table's
+/// rather than a chart's (`plans/23-asset-growth.md`, Phase 3):
+///
+///  - **What does the ledger say this account holds?** The scenario does not
+///    carry it — an opening balance is not part of a what-if — but the walk
+///    seeds one for every asset row, so the figure the projection ACTUALLY used
+///    is free here. Any second source (a balance-sheet report read beside it)
+///    can disagree with it, and a Balance column that disagreed with the curve
+///    beside it would be worse than no column.
+///  - **Which assets contributed the growth?** [`Projection::net_worth`] carries
+///    one number per bucket; with more than one asset row that number stops
+///    being self-explanatory.
+///
+/// One entry per PLACED row, keyed by [`ScenarioLine::group`] — the source rule,
+/// which is unique per row segment and is what a client already has on the row.
+/// A row the engine refused to model (a non-asset account) produces NO entry: it
+/// contributed nothing, and a balance beside it would suggest otherwise. The
+/// warning says why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetRow {
+    /// The [`ScenarioLine::group`] this was placed from.
+    pub group: String,
+    /// The account, as the row states it.
+    pub account: String,
+    /// The journal's own SUBTREE balance for that account at
+    /// [`ProjectionOpts::as_of`], valued the way the opening net worth is. This
+    /// is the figure an `opening` override overrides.
+    pub journal_opening: MixedAmount,
+    /// The balance the row actually started compounding from: the override when
+    /// there is one, else `journal_opening`.
+    pub opening: MixedAmount,
+    /// Total appreciation over the span — the sum of every growth step's
+    /// difference. Zero for a row with no rate. Never includes a contribution,
+    /// and never includes the opening-override adjustment.
+    pub growth: MixedAmount,
+}
+
 /// The answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projection {
@@ -408,6 +447,9 @@ pub struct Projection {
     pub net_worth: BalanceSeries,
     /// The first bucket whose closing cash is negative, if any.
     pub runway: Option<Runway>,
+    /// One entry per asset row the walk actually modelled, in the order the
+    /// scenario states them. Empty for a scenario with no asset rows.
+    pub assets: Vec<AssetRow>,
     /// Everything the projection could not do. A projection that quietly drops a
     /// line is worse than one that says so.
     pub warnings: Vec<String>,
@@ -446,6 +488,8 @@ struct Layout<'a> {
     /// residual and imply a cash leg of the same size, which is the whole error:
     /// a paper gain does not put money in the bank.
     net_worth_only: Vec<MixedAmount>,
+    /// One [`AssetRow`] per asset row actually modelled, in scenario order.
+    assets: Vec<AssetRow>,
     /// Every commodity the scenario contributes, for the mismatch warning.
     commodities: BTreeSet<Commodity>,
     warnings: Vec<String>,
@@ -478,6 +522,7 @@ impl<'a> Layout<'a> {
                 .collect(),
             per_bucket: (0..buckets.len()).map(|_| BTreeMap::new()).collect(),
             net_worth_only: (0..buckets.len()).map(|_| MixedAmount::new()).collect(),
+            assets: Vec::new(),
             commodities: BTreeSet::new(),
             warnings: Vec::new(),
         }
@@ -581,7 +626,10 @@ impl<'a> Layout<'a> {
     /// - one [`Layout::net_worth_only`] entry per growth step, the DIFFERENCE
     ///   the step made, in the bucket the step's boundary falls in;
     /// - one group leg per contribution occurrence, identical in every way to a
-    ///   flow line's, so the residual rule implies the cash outflow exactly once.
+    ///   flow line's, so the residual rule implies the cash outflow exactly once;
+    /// - one [`AssetRow`] in [`Layout::assets`], attributing both balances and
+    ///   the total appreciation back to the row, which is what the table's
+    ///   Balance column and the net-worth breakdown read.
     fn place_asset(
         &mut self,
         line: &ScenarioLine,
@@ -602,7 +650,12 @@ impl<'a> Layout<'a> {
             return Ok(());
         }
 
-        let mut balance = self.seed_asset_balance(line, label, world)?;
+        let (journal_opening, mut balance) = self.seed_asset_balance(line, label, world)?;
+        let opening = balance.clone();
+        // The row's own share of `net_worth_only`, accumulated beside it rather
+        // than reconstructed afterwards: the per-bucket accumulator sums every
+        // row's steps together and nothing could take one row's back out of it.
+        let mut appreciation = MixedAmount::new();
         let anchor = self.anchor_of(line);
         // A zero rate is no growth at all, and short-circuiting it is not an
         // optimisation: `grow_once` ROUNDS, so walking the steps of a 0% row
@@ -657,8 +710,9 @@ impl<'a> Layout<'a> {
                         // The DIFFERENCE, not the new balance: the balance is
                         // already in the opening figure, and only what the step
                         // added is new money.
-                        self.net_worth_only[index]
-                            .ma_add_assign(&grown.ma_add(&balance.ma_neg()?)?)?;
+                        let step = grown.ma_add(&balance.ma_neg()?)?;
+                        self.net_worth_only[index].ma_add_assign(&step)?;
+                        appreciation.ma_add_assign(&step)?;
                         balance = grown;
                         applied += 1;
                     }
@@ -689,11 +743,22 @@ impl<'a> Layout<'a> {
                 .accumulate(&line.amount.commodity, line.amount.quantity)?;
             balance.accumulate(&line.amount.commodity, line.amount.quantity)?;
         }
+        self.assets.push(AssetRow {
+            group: line.group.clone(),
+            account: line.account.0.clone(),
+            journal_opening,
+            opening,
+            growth: appreciation,
+        });
         Ok(())
     }
 
-    /// The balance an asset row starts compounding from, and the one-off
-    /// adjustment an override implies.
+    /// The JOURNAL's balance for an asset row's account and the balance the row
+    /// starts compounding from, plus the one-off adjustment an override implies.
+    ///
+    /// Both are returned because the table shows both: the journal's figure is
+    /// what the Balance column greys out, and the second is what the curve used.
+    /// Without an override they are the same value.
     ///
     /// The journal's own figure is the SUBTREE balance of the account, valued
     /// the way the opening net worth beside it is — `assets:broker` means the
@@ -710,7 +775,7 @@ impl<'a> Layout<'a> {
         line: &ScenarioLine,
         label: &str,
         world: &AssetWorld<'_>,
-    ) -> Result<MixedAmount, ReportError> {
+    ) -> Result<(MixedAmount, MixedAmount), ReportError> {
         let journal = valued(
             &account_balance_at(world.txns, &line.account.0, world.as_of)?,
             world.target,
@@ -718,7 +783,7 @@ impl<'a> Layout<'a> {
             world.as_of,
         )?;
         let Some(opening) = &line.opening else {
-            return Ok(journal);
+            return Ok((journal.clone(), journal));
         };
         let stated = MixedAmount::single(opening.commodity.clone(), opening.quantity);
         let adjustment = stated.ma_add(&journal.ma_neg()?)?;
@@ -733,7 +798,7 @@ impl<'a> Layout<'a> {
             show(&journal),
             show(&adjustment),
         ));
-        Ok(stated)
+        Ok((journal, stated))
     }
 
     /// The date a row's growth is measured from: its own `from` when it has one,
@@ -966,6 +1031,7 @@ pub fn project(
             values: net_worth_values,
         },
         runway,
+        assets: layout.assets,
         warnings,
         buckets,
         start,
@@ -2740,6 +2806,88 @@ mod tests {
         );
     }
 
+    /// **The per-row attribution** the Balance column and the net-worth
+    /// breakdown read (`plans/23-asset-growth.md`, Phase 3).
+    ///
+    /// Both of those have to agree with the curve beside them, so both figures
+    /// come from the walk that drew it rather than from a second report read
+    /// alongside. One entry per PLACED row, in scenario order, keyed by the
+    /// source rule.
+    #[test]
+    fn every_asset_row_is_attributed_back_to_the_rule_it_came_from() {
+        let brokerage = growing(
+            asset("brok", "assets:brokerage", usd(0), "monthly"),
+            Dec::new(10, 2),
+            GrowthUnit::Year,
+        );
+        // An account the journal has never seen: its balance is a real zero,
+        // not a missing answer, and the row still reports one. Not a `savings`
+        // account, deliberately — that infers as CASH, and a contribution into
+        // cash cancels against its own implied leg.
+        let savings = asset("save", "assets:brokerage:roth", usd(100_000), "monthly");
+        let projection = run_over(
+            &scenario(vec![brokerage, savings], Vec::new()),
+            &invested_journal(),
+            "2026-09-20",
+            Interval::Yearly,
+            2,
+        );
+
+        assert_eq!(
+            projection
+                .assets
+                .iter()
+                .map(|row| row.group.as_str())
+                .collect::<Vec<_>>(),
+            ["brok", "save"]
+        );
+        assert_eq!(projection.assets[0].account, "assets:brokerage");
+        // The journal's own SUBTREE balance — the figure the table greys out,
+        // and the one an `opening:` would be overriding.
+        assert_eq!(ma_units(&projection.assets[0].journal_opening), 200_000);
+        // No override, so the row compounded exactly that.
+        assert_eq!(
+            projection.assets[0].opening,
+            projection.assets[0].journal_opening
+        );
+        // One anniversary inside two yearly buckets: 10% of $200,000, and the
+        // SAME figure the net-worth series moved by.
+        assert_eq!(ma_units(&projection.assets[0].growth), 20_000);
+        assert_eq!(series_units(&projection.net_worth), [210_000, 230_000]);
+
+        // A row with no rate contributes no growth and still states a balance.
+        assert_eq!(ma_units(&projection.assets[1].growth), 0);
+        assert_eq!(projection.assets[1].journal_opening, MixedAmount::new());
+        // …and its contribution is nowhere near its growth: that is a flow.
+        assert_eq!(series_units(&projection.cash), [-2_000, -14_000]);
+    }
+
+    /// An `opening:` override is reported BESIDE the journal's figure, never
+    /// instead of it. A Balance column that showed only the override would hide
+    /// exactly the number a user needs in order to judge it.
+    #[test]
+    fn an_override_reports_both_balances_and_is_not_counted_as_growth() {
+        let mut brokerage = growing(
+            asset("brok", "assets:brokerage", usd(0), "monthly"),
+            Dec::new(10, 2),
+            GrowthUnit::Year,
+        );
+        brokerage.opening = Some(usd(30_000_000));
+        let projection = run_over(
+            &scenario(vec![brokerage], Vec::new()),
+            &invested_journal(),
+            "2026-09-20",
+            Interval::Yearly,
+            2,
+        );
+        let row = &projection.assets[0];
+        assert_eq!(ma_units(&row.journal_opening), 200_000);
+        assert_eq!(ma_units(&row.opening), 300_000);
+        // The +$100,000 adjustment is an adjustment, not appreciation: only the
+        // 10% step is growth, and it is 10% of the OVERRIDDEN balance.
+        assert_eq!(ma_units(&row.growth), 30_000);
+    }
+
     /// Liabilities are out of scope, and so is everything else that is not an
     /// asset: the row WARNS rather than being silently modelled.
     #[test]
@@ -2764,6 +2912,9 @@ mod tests {
             );
             assert_eq!(series_units(&projection.cash), [10_000; 3]);
             assert_eq!(totals_units(&projection), [0, 0, 0]);
+            // …and NO attribution entry. The row contributed nothing, and a
+            // balance reported beside it would say it had been modelled.
+            assert_eq!(projection.assets, Vec::new(), "{account}");
             assert!(
                 projection
                     .warnings

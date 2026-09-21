@@ -50,6 +50,7 @@ function projection(overrides: Partial<Projection> = {}): Projection {
         cash: {opening: usd(10000), values: [usd(14800), usd(19600)]},
         netWorth: {opening: usd(50000), values: [usd(54800), usd(59600)]},
         runway: null,
+        assets: [],
         warnings: [],
         ...overrides,
     };
@@ -125,6 +126,37 @@ describe("COMPONENT ProjectionReports — net worth", () => {
     it("says out loud that it is summary level, so nobody reads an amortisation into it", () => {
         mount("worth");
         expect(screen.getByTestId("projection-worth").textContent).toContain("held flat");
+    });
+
+    it("breaks the growth down per asset, so one line does not have to explain three", () => {
+        mount(
+            "worth",
+            projection({
+                assets: [
+                    {group: "a", account: "assets:savings", journalOpening: usd(1000), opening: usd(1000), growth: usd(40)},
+                    {group: "b", account: "assets:brokerage", journalOpening: usd(500000), opening: usd(500000), growth: usd(35000)},
+                ],
+            })
+        );
+        const rows = [...screen.getByTestId("projection-asset-breakdown").querySelectorAll("tbody tr")].map((tr) =>
+            [...tr.querySelectorAll("td")].map((td) => td.textContent?.trim())
+        );
+        // Biggest contributor first, and the figures spelled the way every
+        // other figure on the page is.
+        expect(rows).toEqual([
+            ["assets:brokerage", "$500,000.00", "$35,000.00"],
+            ["assets:savings", "$1,000.00", "$40.00"],
+        ]);
+        // The total is the GROWTH column's. The balances are already inside the
+        // opening figure above the chart.
+        expect(screen.getByTestId("projection-asset-breakdown").querySelector("tfoot")?.textContent).toContain("$35,040.00");
+        // Unrealised, and it says so where the numbers are.
+        expect(screen.getByTestId("projection-asset-breakdown").textContent).toContain("never reaches cash or net income");
+    });
+
+    it("shows no breakdown at all for a scenario with no asset rows", () => {
+        mount("worth");
+        expect(screen.queryByTestId("projection-asset-breakdown")).toBeNull();
     });
 });
 

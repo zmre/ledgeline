@@ -1,8 +1,39 @@
-<!-- The what-if table: three sections over one scenario.
+<!-- The what-if table: four sections over one scenario.
 
-     Income and Expenses hold the RECURRING lines; One-off events holds the
-     dated ones. A line's section comes from the account's resolved TYPE, never
-     from its name — but not while it is being edited. See the rule below.
+     Income and Expenses hold the recurring FLOWS; Assets and balances holds the
+     recurring STOCKS; One-off events holds the dated ones. A flow's section
+     comes from the account's resolved TYPE, never from its name — but not while
+     it is being edited. See the rule below.
+
+     # Assets and balances
+
+     An asset row states a balance rather than a per-period amount: what you
+     hold, what rate it compounds at, and what you add to it. Three things about
+     it are not obvious from the markup.
+
+     **Its section is its `role`, and only its `role`.** `resolvedSection` tests
+     that first, ahead of the period and ahead of the account, so an asset row
+     cannot leave this section by being typed into — nothing in the row edits
+     `role`. That is why the section-stability rule below needs no hold here:
+     the property the hold exists to provide, this section has for free.
+
+     **The Balance column is the JOURNAL's figure, and it does not come from the
+     scenario.** An opening balance is not part of a what-if. It comes from the
+     projection, which seeds exactly that balance for every asset row it walks
+     (`Projection.assets`), so the number under the user's cursor is the number
+     the curve below was drawn from. Reading a balance-sheet report beside it
+     instead would give a second source that can disagree with the first.
+
+     **An override never hides it.** Typing a balance sets `opening`, which the
+     file writes as an `opening:` tag; the box then reads in the warning colour,
+     gains a clear button, and the ledger's own figure appears under it. The
+     failure mode this column exists to prevent is a user looking at a number
+     they typed a month ago and believing it is what they own.
+
+     The row menu deliberately offers NO "Add a step" here: two bounded segments
+     of one asset row would each seed the full journal balance and each compound
+     it over the whole span, which is the same money twice. A rate change is a
+     second row with a `from`, not a step.
 
      # THE SECTION-STABILITY RULE
 
@@ -67,9 +98,13 @@
     import AccountInput from "$lib/journal/edit/AccountInput.svelte";
     import {decToInput, parseAmountInput} from "$lib/api/editMapping";
     import type {AccountType} from "$lib/domain/accountTypes";
-    import type {ISODate} from "$lib/domain/types";
+    import type {Dec} from "$lib/domain/money";
+    import type {AmountStyle, ISODate} from "$lib/domain/types";
+    import {EM_DASH, fmt} from "$lib/format/amounts";
+    import {journalBalanceFor} from "../projectionView";
     import {
         amountFor,
+        blankAssetLine,
         blankEvent,
         blankLine,
         duplicateRow,
@@ -97,6 +132,7 @@
     import {
         GROWTH_UNITS,
         SCENARIO_INTERVALS,
+        type AssetRow,
         type GrowthUnit,
         type HeldSection,
         type Scenario,
@@ -112,6 +148,8 @@
         declared,
         commodity,
         stepDate,
+        assetBalances,
+        styles,
         onChange,
     }: {
         /** The live scenario. Mutated in place; `onChange` is what tells the store. */
@@ -122,6 +160,19 @@
         commodity: string;
         /** The date "Add a step" splits at, and a new event opens on. The page picks it from the projected window. */
         stepDate: ISODate;
+        /**
+         * What the last projection made of each asset row, keyed by the row's
+         * `group` — the only source of the journal's own balance for an account.
+         *
+         * Empty before the first projection lands, and the Balance column says
+         * so with a dash rather than a zero. It is read from the LAST GOOD
+         * projection, not a matching one: the journal does not change between
+         * two keystrokes, so blanking the column on every edit would be
+         * flicker with no information in it.
+         */
+        assetBalances: ReadonlyMap<string, AssetRow>;
+        /** Commodity display styles, for the ledger figure under an overridden balance. */
+        styles: ReadonlyMap<string, AmountStyle>;
         /** Called after every edit. The store bumps its revision and debounces a recompute. */
         onChange: () => void;
     } = $props();
@@ -134,9 +185,32 @@
         {id: "expense", title: "Expenses and other outflows", blurb: "What goes out, as a positive figure."},
     ];
 
+    /** The Assets section's heading, and the word its rows are named after. */
+    const ASSET_TITLE = "Assets and balances";
+
     const titleOf = (section: HeldSection): string => (section === "income" ? "Income" : "Expenses");
 
     const rowsFor = (section: HeldSection) => logicalRows(scenario.lines, declared, section);
+    /** Every `role: "asset"` row, whatever its account and whatever its period. */
+    const assetRows = $derived(logicalRows(scenario.lines, declared, "asset"));
+    const assetNames = $derived(rowNames(assetRows, ASSET_TITLE));
+
+    /**
+     * An asset row's name, for the controls a FLOW row also has.
+     *
+     * `rowNames` makes a name unique within its section and cannot do more than
+     * that — but one account can legitimately be both a recurring transfer (a
+     * flow row, under Expenses) and a compounding balance (a row here). A
+     * monthly move into `assets:checking` beside an `assets:checking` row
+     * earning interest is an ordinary thing to write, and it would otherwise
+     * put two "Growth rate for assets:checking" boxes on the page with no way —
+     * for a screen reader or for a test — to say which was which.
+     *
+     * Not applied to Balance or Contribution: those two words appear in no
+     * other table, so those labels are already unambiguous and qualifying them
+     * would only read as "Balance for the … balance".
+     */
+    const balanceOf = (name: string): string => `the ${name} balance`;
     /** Single-date `~` rules. The engine keeps them LINES; a reader reads them as one-offs, so they show here. */
     const datedLines = $derived(logicalRows(scenario.lines, declared, "oneoff").flatMap((row) => row.segments));
 
@@ -170,7 +244,10 @@
      */
     function holdSection(line: ScenarioLine): void {
         const at = sectionOfLine(line, declared);
-        if (at === "oneoff") return;
+        // Only the two FLOW sections can be held. `oneoff` is the period
+        // talking and `asset` is the role talking, and no box on a row argues
+        // with either — so neither can be held and neither needs to be.
+        if (at === "oneoff" || at === "asset") return;
         for (const segment of scenario.lines) {
             if (segment.id === line.id) segment.section = at;
         }
@@ -206,7 +283,10 @@
         for (const segment of scenario.lines) {
             if (segment.id === line.id) segment.section = undefined;
         }
-        if (to !== held && to !== "oneoff") announceMove(line.account, to);
+        // Only a move between the two FLOW sections is announceable: those are
+        // the only two a release can produce, and they are the only two whose
+        // name `titleOf` knows.
+        if (to !== held && to !== "oneoff" && to !== "asset") announceMove(line.account, to);
     }
 
     // --- Editing one line ----------------------------------------------------
@@ -268,6 +348,53 @@
     const growthPercent = (line: ScenarioLine): string => (line.growth === null ? "" : decToInput(percentFromRate(line.growth.rate)));
     const growthUnitOf = (line: ScenarioLine): GrowthUnit => line.growth?.unit ?? "year";
 
+    // --- An asset row's balance ----------------------------------------------
+
+    /**
+     * What the LEDGER says this row's account holds, in the row's own
+     * commodity — or null when that is not known.
+     *
+     * Null is not zero. Before the first projection lands there is no answer;
+     * for a row the engine declined to model there is none either (the warnings
+     * above say why); and for a row whose account was just retyped the held
+     * answer belongs to the previous account, which `journalBalanceFor` checks.
+     */
+    const journalBalance = (line: ScenarioLine): Dec | null => journalBalanceFor(assetBalances, line.group, line.account, line.amount.commodity);
+
+    /** The ledger's figure spelled the way every other figure on the page is. */
+    const ledgerText = (line: ScenarioLine): string => {
+        const journal = journalBalance(line);
+        return journal === null ? EM_DASH : fmt(line.amount.commodity, journal, styles);
+    };
+
+    /**
+     * Type a balance over the journal's, or clear back to it.
+     *
+     * An EMPTY box means "use the journal's" — the same thing the clear button
+     * does, and the thing a user who selects-all-and-deletes means. Anything
+     * else that is not a number is ignored rather than dropping the override,
+     * because a half-typed `1,2` is not an instruction to go back to the ledger.
+     *
+     * The override takes the ROW's commodity, which is the only one it could
+     * take: the file writes `opening:` as a bare number and reads its commodity
+     * off the row's own amount (plan 23, amendment 3).
+     */
+    function setOpening(line: ScenarioLine, raw: string): void {
+        const parsed = parseAmountInput(raw);
+        if (parsed === null) {
+            if (raw.trim() === "") clearOpening(line);
+            return;
+        }
+        line.opening = {commodity: line.amount.commodity, quantity: parsed, precision: Math.max(line.amount.precision, parsed.p)};
+        onChange();
+    }
+
+    function clearOpening(line: ScenarioLine): void {
+        if (line.opening === null) return;
+        line.opening = null;
+        onChange();
+    }
+
     // --- Rows ----------------------------------------------------------------
 
     function addLine(section: HeldSection): void {
@@ -279,6 +406,22 @@
             ...blankLine(id, commodity, 2),
             account: sectionPrefix(section, accountNames, declared),
             section,
+        };
+        scenario.lines = [...scenario.lines, line];
+        onChange();
+    }
+
+    /**
+     * A new ASSET row: a balance that compounds, born with `role: "asset"`.
+     *
+     * No section hold, unlike `addLine`. This row is held here by its role, and
+     * a hold is a thing only the two flow sections can need.
+     */
+    function addAssetLine(): void {
+        const id = freshId("line", takenIds(scenario));
+        const line: ScenarioLine = {
+            ...blankAssetLine(id, commodity, 2),
+            account: sectionPrefix("asset", accountNames, declared),
         };
         scenario.lines = [...scenario.lines, line];
         onChange();
@@ -543,6 +686,207 @@
             {/if}
         </section>
     {/each}
+
+    <!-- The recurring STOCKS. After the two flow sections and before the
+         one-offs, because it is still a recurring row — and its own table,
+         because Balance and Contribution are columns the flow rows have no
+         meaning for. -->
+    <section class="flex flex-col gap-1" data-testid="projection-section-asset">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 class="text-sm font-semibold">
+                {ASSET_TITLE}
+                <span class="ml-1 font-normal text-base-content/50">What you hold and what it grows at. Only the growth moves net worth.</span>
+            </h2>
+            <button type="button" class="btn btn-ghost btn-xs" onclick={addAssetLine}>+ Add an asset</button>
+        </div>
+        {#if assetRows.length === 0}
+            <p class="py-2 text-sm text-base-content/60">Nothing here yet. A brokerage account, a 401k, a house.</p>
+        {:else}
+            <div class="overflow-x-auto">
+                <table class="table table-xs">
+                    <thead>
+                        <tr>
+                            <th class="w-64">Account</th>
+                            <th class="w-40">Balance</th>
+                            <th class="w-36">Growth</th>
+                            <th class="w-36">Contribution</th>
+                            <th class="w-28">Per</th>
+                            <th class="w-36">From</th>
+                            <th class="w-36">To</th>
+                            <th class="w-10"><span class="sr-only">Row menu</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {#each assetRows as row, rowAt (row.id)}
+                            {@const name = assetNames[rowAt]}
+                            {#each row.segments as line, at (line.group)}
+                                {@const overridden = line.opening !== null}
+                                {@const journal = journalBalance(line)}
+                                <!-- No `onfocusin`/`onfocusout` hold: this row cannot change
+                                     section, because only `role` decides it and no box here
+                                     edits `role`. -->
+                                <tr data-testid="projection-asset-line" data-line-id={line.id} data-line-group={line.group}>
+                                    <td>
+                                        <div class="flex items-center gap-1">
+                                            {#if at > 0}
+                                                <span class="text-base-content/40" title="A later segment of the row above">↳</span>
+                                            {/if}
+                                            <AccountInput
+                                                bind:value={line.account}
+                                                {accountNames}
+                                                size="xs"
+                                                placeholder="account"
+                                                onCommit={() => commitAccount(line)}
+                                            />
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="flex flex-col gap-0.5">
+                                            <!-- GREYED until typed over: the box is empty and the
+                                                 journal's figure is its placeholder. An override
+                                                 fills the box, recolours it, and brings the ledger's
+                                                 own number back below — never instead of it. -->
+                                            <label class="input flex items-center gap-1 input-xs {overridden ? 'input-warning' : ''}">
+                                                <span class="text-base-content/50">{line.amount.commodity}</span>
+                                                <input
+                                                    type="text"
+                                                    inputmode="decimal"
+                                                    class="w-full grow {overridden ? 'font-semibold' : ''}"
+                                                    value={line.opening === null ? "" : decToInput(line.opening.quantity)}
+                                                    placeholder={journal === null ? EM_DASH : decToInput(journal)}
+                                                    aria-label="Balance for {name}"
+                                                    title={journal === null
+                                                        ? "The journal's balance for this account is not known yet"
+                                                        : `Your journal says ${ledgerText(line)}`}
+                                                    onchange={(e) => setOpening(line, e.currentTarget.value)}
+                                                />
+                                                {#if overridden}
+                                                    <button
+                                                        type="button"
+                                                        class="btn btn-ghost px-1 btn-xs"
+                                                        aria-label="Use the journal's balance for {name}"
+                                                        onclick={() => clearOpening(line)}
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                {/if}
+                                            </label>
+                                            {#if overridden}
+                                                <span class="text-xs text-warning" data-testid="ledger-balance">ledger {ledgerText(line)}</span>
+                                            {/if}
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="flex items-center gap-1">
+                                            <input
+                                                type="text"
+                                                inputmode="decimal"
+                                                class="input w-14 input-xs"
+                                                placeholder="—"
+                                                value={growthPercent(line)}
+                                                aria-label="Growth rate for {balanceOf(name)}, in percent"
+                                                onchange={(e) => setGrowthRate(line, e.currentTarget.value)}
+                                            />
+                                            <span class="text-base-content/50">%</span>
+                                            <select
+                                                class="select w-16 select-xs"
+                                                value={growthUnitOf(line)}
+                                                disabled={line.growth === null}
+                                                aria-label="Growth period for {balanceOf(name)}"
+                                                onchange={(e) => setGrowthUnit(line, e.currentTarget.value)}
+                                            >
+                                                {#each GROWTH_UNITS as unit (unit)}
+                                                    <option value={unit}>{GROWTH_UNIT_ABBREV[unit]}</option>
+                                                {/each}
+                                            </select>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <!-- The row's `amount`. Zero is the normal case and is
+                                             what the file writes as `$0` — a balance that only
+                                             compounds. -->
+                                        <label class="input flex items-center gap-1 input-xs">
+                                            <span class="text-base-content/50">{line.amount.commodity}</span>
+                                            <input
+                                                type="text"
+                                                inputmode="decimal"
+                                                class="w-full grow"
+                                                value={decToInput(magnitudeOf(line.amount))}
+                                                aria-label="Contribution for {name}"
+                                                onchange={(e) => setMagnitude(line, e.currentTarget.value)}
+                                            />
+                                        </label>
+                                    </td>
+                                    <td>
+                                        {#if line.period.simple === null}
+                                            <span class="font-mono text-xs text-base-content/60" title="This recurrence is shown as written"
+                                                >{line.period.raw}</span
+                                            >
+                                        {:else}
+                                            <select
+                                                class="select w-full select-xs"
+                                                value={line.period.simple}
+                                                aria-label="Contribution period for {name}"
+                                                onchange={(e) => setInterval(line, e.currentTarget.value)}
+                                            >
+                                                {#each SCENARIO_INTERVALS as interval (interval)}
+                                                    <option value={interval}>{interval}</option>
+                                                {/each}
+                                            </select>
+                                        {/if}
+                                    </td>
+                                    <td>
+                                        <input
+                                            type="date"
+                                            class="input w-full input-xs"
+                                            value={line.period.from ?? ""}
+                                            disabled={line.period.simple === null}
+                                            aria-label="From date for {balanceOf(name)}"
+                                            onchange={(e) => setBound(line, "from", e.currentTarget.value)}
+                                        />
+                                    </td>
+                                    <td>
+                                        <input
+                                            type="date"
+                                            class="input w-full input-xs"
+                                            value={line.period.to ?? ""}
+                                            disabled={line.period.simple === null}
+                                            aria-label="To date for {balanceOf(name)} (exclusive)"
+                                            onchange={(e) => setBound(line, "to", e.currentTarget.value)}
+                                        />
+                                    </td>
+                                    <td class="text-right">
+                                        {#if at === 0}
+                                            <!-- No "Add a step": see the header. A second bounded
+                                                 segment would compound the same journal balance
+                                                 twice over the same span. -->
+                                            <RowMenu
+                                                label="Row menu for {balanceOf(name)}"
+                                                items={[
+                                                    ...(overridden ? [{label: "Use the journal's balance", onSelect: () => clearOpening(line)}] : []),
+                                                    {label: "Duplicate", onSelect: () => duplicate(row.id)},
+                                                    {label: "Delete row", onSelect: () => dropRow(row.id), danger: true},
+                                                ]}
+                                            />
+                                        {:else}
+                                            <button
+                                                type="button"
+                                                class="btn btn-ghost text-error btn-xs"
+                                                aria-label="Delete this segment of {balanceOf(name)}"
+                                                onclick={() => dropSegment(line.group)}
+                                            >
+                                                ✕
+                                            </button>
+                                        {/if}
+                                    </td>
+                                </tr>
+                            {/each}
+                        {/each}
+                    </tbody>
+                </table>
+            </div>
+        {/if}
+    </section>
 
     <section class="flex flex-col gap-1" data-testid="projection-section-oneoff">
         <div class="flex flex-wrap items-baseline justify-between gap-2">

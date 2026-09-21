@@ -37,6 +37,7 @@
     import DepthSlider from "$lib/insights/DepthSlider.svelte";
     import {fileStore} from "$lib/projections/fileStore.svelte";
     import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "$lib/projections/params";
+    import {assetRowsByGroup} from "$lib/projections/projectionView";
     import {sameProjectionQuery, scenarioStore, type ProjectionWindow} from "$lib/projections/scenarioStore.svelte";
     import ProjectionReports from "$lib/projections/ui/ProjectionReports.svelte";
     import ProjectionsTable from "$lib/projections/ui/ProjectionsTable.svelte";
@@ -223,6 +224,20 @@
 
     const warnings = $derived(current?.warnings ?? []);
 
+    /**
+     * The journal's own balance per asset row, for the table's Balance column.
+     *
+     * Off `projection.value` — the LAST GOOD answer — and deliberately not off
+     * `current`. Everywhere else on this page that rule is the other way round,
+     * because a held payload makes a claim about a scenario that has since
+     * changed. This one does not: it is a fact about the journal as of today,
+     * and the journal does not change between two keystrokes. Keying it to
+     * `current` would blank the column on every letter typed anywhere in the
+     * table. What CAN go stale is which account a row names, and
+     * `journalBalanceFor` refuses an entry whose account no longer matches.
+     */
+    const assetBalances = $derived(assetRowsByGroup(projection.value));
+
     function setCount(value: string): void {
         const n = Number(value);
         if (Number.isInteger(n)) params.count = Math.min(MAX_COUNT, Math.max(1, n));
@@ -296,6 +311,8 @@
             {declared}
             {commodity}
             {stepDate}
+            {assetBalances}
+            {styles}
             onChange={() => scenarioStore.touch()}
         />
     </AsyncSection>

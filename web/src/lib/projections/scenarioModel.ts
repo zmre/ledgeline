@@ -26,12 +26,23 @@ import {absDec} from "$lib/format/amounts";
 import {neg, type Dec} from "$lib/domain/money";
 import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
 import type {ISODate} from "$lib/domain/types";
-import type {Growth, HeldSection, LineSection, Scenario, ScenarioAmount, ScenarioEvent, ScenarioInterval, ScenarioLine, ScenarioPeriod} from "./types";
+import type {
+    AddSection,
+    Growth,
+    HeldSection,
+    LineSection,
+    Scenario,
+    ScenarioAmount,
+    ScenarioEvent,
+    ScenarioInterval,
+    ScenarioLine,
+    ScenarioPeriod,
+} from "./types";
 
 // Re-exported because every reader of a section is a reader of this module, and
 // the two names were declared here before the hold moved them next to the field
 // that carries one (`ScenarioLine.section`).
-export type {HeldSection, LineSection};
+export type {AddSection, HeldSection, LineSection};
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -95,20 +106,29 @@ export function withMagnitude(line: ScenarioLine, magnitude: Dec, declared: Read
 // ---------------------------------------------------------------------------
 
 /**
- * The section a line's ACCOUNT TYPE puts it in — the reading that ignores any
- * hold.
+ * The section a line's ROLE and ACCOUNT TYPE put it in — the reading that
+ * ignores any hold.
  *
- * A single-date rule (`~ 2027-03-01`) is a LINE in the model — `seed_scenario`
- * deliberately leaves it one so the file round trip says so — but it is a
- * one-off to a reader, so it is shown among the events. The engine treats the
- * two identically (plan 22, amendment 12).
+ * The order of the three tests is the contract:
  *
- * Everything that is not revenue lands under Expenses, including a recurring
- * transfer to an asset account. That is a two-way split, like the budget
- * editor's, rather than a fourth section for the handful of lines that post
- * outside the P&L — and it is why the heading says "and other outflows".
+ * 1. **`role: "asset"` wins outright**, ahead of the period and ahead of the
+ *    account. An asset row states a BALANCE, and the only field that can make
+ *    one is `role` — which no box on the row edits. So an asset row's section
+ *    is constant for the row's whole life, and the section-stability rule below
+ *    has nothing to defend it from. (That also settles the dated asset row: a
+ *    balance with a single-date contribution is still a balance, and filing it
+ *    among the one-offs would hide its rate behind a table with no Growth
+ *    column.)
+ * 2. A single-date rule (`~ 2027-03-01`) is a LINE in the model —
+ *    `seed_scenario` deliberately leaves it one so the file round trip says so —
+ *    but it is a one-off to a reader, so it is shown among the events. The
+ *    engine treats the two identically (plan 22, amendment 12).
+ * 3. Everything else that is not revenue lands under Expenses, including a
+ *    recurring transfer to an asset account. That is a two-way split, like the
+ *    budget editor's, and it is why the heading says "and other outflows".
  */
 export function resolvedSection(line: ScenarioLine, declared: ReadonlyMap<string, AccountType>): LineSection {
+    if (line.role === "asset") return "asset";
     if (line.period.simple === null && isIsoDate(line.period.raw)) return "oneoff";
     return isRevenueAccount(line.account, declared) ? "income" : "expense";
 }
@@ -125,12 +145,14 @@ export function resolvedSection(line: ScenarioLine, declared: ReadonlyMap<string
  * editing is over. `ProjectionsTable.svelte` owns when a hold is taken and
  * released; this function owns what a hold means.
  *
- * A hold never beats `oneoff`. That section is the line's PERIOD talking, and
- * the account box cannot argue with it.
+ * A hold never beats `oneoff` or `asset`. Those two are the line's PERIOD and
+ * its ROLE talking, and the account box cannot argue with either — so a stale
+ * hold left on a row that became one must not drag it back into the flow
+ * tables.
  */
 export function sectionOfLine(line: ScenarioLine, declared: ReadonlyMap<string, AccountType>): LineSection {
     const resolved = resolvedSection(line, declared);
-    if (resolved === "oneoff") return "oneoff";
+    if (resolved === "oneoff" || resolved === "asset") return resolved;
     return line.section ?? resolved;
 }
 
@@ -268,29 +290,37 @@ export function takenIds(scenario: Scenario): Set<string> {
 // Rows
 // ---------------------------------------------------------------------------
 
+/** The account type a section's rows are expected to post to. */
+const SECTION_TYPE: Record<AddSection, AccountType> = {income: "revenue", expense: "expense", asset: "asset"};
+
+/** hledger's own top-level names, for a journal that has nothing of the type yet. */
+const HLEDGER_DEFAULT_TOP: Record<AddSection, string> = {income: "income", expense: "expenses", asset: "assets"};
+
 /**
- * The account prefix a new row in `section` opens on — `income:` / `expenses:`,
- * or whatever this journal calls them.
+ * The account prefix a new row in `section` opens on — `income:` / `expenses:` /
+ * `assets:`, or whatever this journal calls them.
  *
  * A TYPING convenience, and only that: it puts the caret in the right tree so
  * the combobox has something to complete. Where the row is SHOWN is the hold's
  * job now (`sectionOfLine`) — this used to be what kept a new Income row out of
  * Expenses, and it could not, because the user's next keystroke could delete it.
+ * (An ASSET row is the one section where the prefix carries no such weight at
+ * all: that row is held there by its `role`, whatever ends up in the box.)
  *
  * Taking the prefix from the journal's own accounts means a user whose revenue
  * tree is `revenues:` is not handed `income:`. Falls back to the hledger
  * defaults when nothing in the journal has the type yet — which is the
  * first-run case, where there is nothing to learn from.
  */
-export function sectionPrefix(section: HeldSection, accountNames: readonly string[], declared: ReadonlyMap<string, AccountType>): string {
-    const want: AccountType = section === "income" ? "revenue" : "expense";
+export function sectionPrefix(section: AddSection, accountNames: readonly string[], declared: ReadonlyMap<string, AccountType>): string {
+    const want: AccountType = SECTION_TYPE[section];
     const counts = new Map<string, number>();
     for (const name of accountNames) {
         if (resolveAccountType(name, declared) !== want) continue;
         const top = name.split(":")[0];
         counts.set(top, (counts.get(top) ?? 0) + 1);
     }
-    let best = section === "income" ? "income" : "expenses";
+    let best = HLEDGER_DEFAULT_TOP[section];
     let bestCount = 0;
     // Sorted first, so a tie resolves the same way on every render rather than
     // by whichever name the journal happened to list first.
@@ -322,6 +352,22 @@ export function blankLine(id: string, commodity: string, precision: number): Sce
         // the "from history" flag a seeded row wears.
         source: "journal",
     };
+}
+
+/**
+ * A blank monthly ASSET row: a balance that compounds, with no rate and no
+ * contribution yet.
+ *
+ * A separate constructor rather than a flag on `blankLine`, because the default
+ * matters. `blankLine` makes a FLOW and must keep making one — an asset row is
+ * something the table creates deliberately from the Assets section's own button,
+ * never something a blank row becomes by having `assets:` typed into it. The
+ * contribution opens at ZERO, which is the `$0` posting the file format writes
+ * for a row that only compounds, and `opening` stays null so the Balance column
+ * shows the journal's own figure.
+ */
+export function blankAssetLine(id: string, commodity: string, precision: number): ScenarioLine {
+    return {...blankLine(id, commodity, precision), role: "asset"};
 }
 
 /** A blank dated event with one empty posting. */
@@ -507,6 +553,10 @@ export function cloneScenario(scenario: Scenario): Scenario {
             amount: cloneAmount(line.amount),
             period: {...line.period},
             growth: line.growth === null ? null : {rate: {...line.growth.rate}, unit: line.growth.unit},
+            // The balance override is an amount like any other, and the decoder
+            // freezes it: a spread alone would hand the editor a frozen object
+            // to write a new quantity into.
+            opening: line.opening === null ? null : cloneAmount(line.opening),
         })),
         events: scenario.events.map((event) => ({
             ...event,

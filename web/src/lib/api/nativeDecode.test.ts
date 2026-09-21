@@ -1714,6 +1714,27 @@ const PROJECTION_RUN = {
     cash: {opening: {$: dec(500000, 2)}, values: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}, {$: dec(-760000, 2)}]},
     netWorth: {opening: {$: dec(900000, 2)}, values: [{$: dec(480000, 2)}, {$: dec(60000, 2)}, {$: dec(-360000, 2)}]},
     runway: {bucket: 1, bucketKey: "2026-09", label: "Sep 2026", date: "2026-09-30", periods: 2},
+    // The per-row asset attribution (plan 23, Phase 3), which the Balance
+    // column and the net-worth breakdown read. Two rows, and the second is
+    // OVERRIDDEN — `journalOpening` and `opening` are equal on every row
+    // without one, so a body where they all agreed would prove nothing about
+    // the field the whole column exists for.
+    assets: [
+        {
+            group: "rule:1",
+            account: "assets:brokerage",
+            journalOpening: {$: dec(51230000, 2)},
+            opening: {$: dec(51230000, 2)},
+            growth: {$: dec(3586100, 2)},
+        },
+        {
+            group: "rule:2",
+            account: "assets:house",
+            journalOpening: {$: dec(51230000, 2)},
+            opening: {$: dec(64000000, 2)},
+            growth: {$: dec(1920000, 2)},
+        },
+    ],
     warnings: ["'every weekday' is not a recurrence this projection can enumerate"],
 };
 
@@ -1930,6 +1951,28 @@ describe("UNIT nativeDecode — a projection run", () => {
 
     it("an ABSENT runway is a broken contract, not a null", () => {
         expect(() => decodeProjection(without(PROJECTION_RUN, "runway"))).toThrow(ApiShapeError);
+    });
+
+    it("decodes the per-row asset attribution, keeping BOTH balances", () => {
+        const [brokerage, house] = decodeProjection(PROJECTION_RUN).assets;
+        expect(brokerage.group).toBe("rule:1");
+        expect(brokerage.account).toBe("assets:brokerage");
+        expect(brokerage.journalOpening.get("$")).toEqual({m: 51230000n, p: 2});
+        expect(brokerage.growth.get("$")).toEqual({m: 3586100n, p: 2});
+        // The overridden row keeps the LEDGER's figure beside the user's. A
+        // decoder that defaulted `journalOpening` to `opening` would show the
+        // override as the ledger's own number, which is the exact failure the
+        // Balance column exists to prevent.
+        expect(house.journalOpening.get("$")).toEqual({m: 51230000n, p: 2});
+        expect(house.opening.get("$")).toEqual({m: 64000000n, p: 2});
+    });
+
+    it("an ABSENT assets array is a broken contract, not an empty one", () => {
+        // `[]` is a real answer — this scenario holds no asset rows. A missing
+        // key is an engine whose field was renamed, and a `?? []` would blank
+        // every Balance column rather than say so.
+        expect(() => decodeProjection(without(PROJECTION_RUN, "assets"))).toThrow(ApiShapeError);
+        expect(decodeProjection({...PROJECTION_RUN, assets: []}).assets).toEqual([]);
     });
 
     it("an absent series or opening balance throws rather than charting zeros", () => {

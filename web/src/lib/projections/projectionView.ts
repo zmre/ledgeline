@@ -14,10 +14,11 @@
 // in; [`otherCommodities`] names what that leaves out, so the surface can say so
 // rather than quietly plotting a fraction of the answer.
 
+import type {Dec} from "$lib/domain/money";
 import {toNumber, type MixedAmount} from "$lib/domain/money";
 import type {PeriodReport} from "$lib/reports/types";
 import type {ReportInterval} from "$lib/reports/ui/params";
-import type {BalanceSeries, Projection} from "./types";
+import type {AssetRow, BalanceSeries, Projection} from "./types";
 
 /** One number per bucket, for the commodity being charted. Absent is 0 — the amount is known and holds none of it. */
 export function seriesOf(values: readonly MixedAmount[], commodity: string): number[] {
@@ -110,6 +111,83 @@ export function flowSeries(report: PeriodReport, commodity: string): {inflows: n
         });
     }
     return {inflows, outflows, net: seriesOf(report.totals, commodity)};
+}
+
+// ---------------------------------------------------------------------------
+// Asset rows (plan 23, Phase 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The journal's own balance per asset row, ready for the table's Balance
+ * column: one `Dec` per row's `group`, in the commodity that row is written in.
+ *
+ * ONE COMMODITY, deliberately, and it is the ROW's. The file format states an
+ * `opening:` override as a bare number whose commodity comes from the row's own
+ * amount (plan 23, amendment 3), so the greyed figure a user is about to type
+ * over has to be the figure in that same commodity — showing them a mixed total
+ * they could not restate would be offering an edit that cannot be made.
+ *
+ * `commodityOf` is the caller's, because only the table knows which row is
+ * which. A row whose account holds nothing in its own commodity is a real zero.
+ *
+ * Read from the LAST GOOD projection rather than a matching one: this is a fact
+ * about the journal, not about the scenario, and it does not change while an
+ * edit is being recomputed. What DOES change is which account a row names, so
+ * every entry carries the account it was computed for and the caller is
+ * expected to check it — see `journalBalanceFor`.
+ */
+export function assetRowsByGroup(projection: Projection | null): Map<string, AssetRow> {
+    const byGroup = new Map<string, AssetRow>();
+    for (const row of projection?.assets ?? []) byGroup.set(row.group, row);
+    return byGroup;
+}
+
+/**
+ * The journal's balance for one row, or null when it is not known YET.
+ *
+ * Null in three cases, and all three are "no answer" rather than "zero":
+ * nothing has been projected yet, the engine declined to model the row (a
+ * non-asset account — the warnings say so), or the attribution was computed for
+ * a DIFFERENT account because the user has just retyped this row's. That last
+ * check is the point: a stale figure under a freshly-typed account is a claim
+ * about the ledger that the ledger is not making.
+ */
+export function journalBalanceFor(rows: ReadonlyMap<string, AssetRow>, group: string, account: string, commodity: string): Dec | null {
+    const row = rows.get(group);
+    if (row === undefined || row.account !== account.trim()) return null;
+    return row.journalOpening.get(commodity) ?? {m: 0n, p: 0};
+}
+
+/** One line of the net-worth tab's growth breakdown. */
+export interface AssetContribution {
+    account: string;
+    /** What the row compounded from — the override when there is one. */
+    opening: number;
+    /** Total appreciation over the window. */
+    growth: number;
+}
+
+/**
+ * Which assets contributed the net-worth growth, largest first.
+ *
+ * Rows sharing an account are SUMMED: two rules can name one account, and a
+ * breakdown that listed it twice would read as two assets. Ties break by account
+ * name so the order is stable across recomputes rather than dependent on the
+ * scenario's row order.
+ *
+ * A row with no growth is kept, not filtered: a $0 line in this list is the
+ * answer to "why did nothing happen", and dropping it would leave the user
+ * looking for a row that is in the table above.
+ */
+export function assetContributions(projection: Projection, commodity: string): AssetContribution[] {
+    const byAccount = new Map<string, AssetContribution>();
+    for (const row of projection.assets) {
+        const found = byAccount.get(row.account) ?? {account: row.account, opening: 0, growth: 0};
+        found.opening += amountIn(row.opening, commodity);
+        found.growth += amountIn(row.growth, commodity);
+        byAccount.set(row.account, found);
+    }
+    return [...byAccount.values()].sort((a, b) => b.growth - a.growth || (a.account < b.account ? -1 : a.account > b.account ? 1 : 0));
 }
 
 // ---------------------------------------------------------------------------

@@ -230,11 +230,69 @@ that step, it earns the next one. When the contribution and the growth share a
 period — a yearly contribution on a yearly rate — this is exactly the textbook
 `balance × (1 + rate) + contribution`.
 
+> **The rule that will make your spreadsheet disagree with ours, stated
+> plainly: a contribution earns nothing until the next growth boundary.**
+>
+> Growth is stepwise, so the *only* moments a balance changes are the
+> anniversaries of the row's anchor. A contribution made at any other moment
+> sits in the balance earning nothing until the next one arrives. With a
+> **yearly** rate and monthly contributions, January's deposit and November's
+> deposit both earn nothing that year, and both take the full bump on the same
+> January — so a deposit can wait **up to a full year** before it earns
+> anything.
+>
+> Nothing here is time-weighted, and that is deliberate rather than an
+> approximation of something finer. The error runs **conservative** — it
+> understates growth on contributions rather than inflating a retirement or
+> runway figure — it is one rule rather than two, and it keeps a single balance
+> per row, so the table's Balance column is exactly the figure the engine used.
+>
+> **If you want finer granularity, quote the rate per month rather than per
+> year** (`0.5%/mo` rather than `6%/yr`). Twelve boundaries a year means a
+> contribution waits at most a month. Note that the two are not the same rate:
+> stepwise `0.5%/mo` compounds to about 6.17% a year.
+
 Anniversaries are counted the same way a flow line's are: from the row's `from`
 date when it has one, from the start of the projection otherwise, and clamped
 into short months (a row anchored on the 31st steps on Feb 28). The balance is
 rounded back to the row's own display precision at every step, for the same
 reason a flow's amount is.
+
+**One row per account.** Each asset row seeds its own running balance from the
+journal, so two rows naming the same account — or one row split into two dated
+segments — each compound the *whole* balance, and the growth is counted twice.
+Ledgeline's Assets section offers no "add a step" for this reason; a rate that
+changes is a second row with a `from` date and an account of its own, or a
+single rate that covers the span.
+
+### The Assets and balances table
+
+The Projections tab shows asset rows in their own section, after Income and
+Expenses and before One-off events:
+
+| Column | What it is |
+|---|---|
+| **Account** | the account whose balance this row carries |
+| **Balance** | **the journal's own figure**, greyed, until you type over it |
+| **Growth** | the rate the balance compounds at, and the unit it steps on |
+| **Contribution** | what you add each period. `0` is normal — see below |
+| **Per** | how often the contribution happens |
+| **From** / **To** | optional bounds, `To` exclusive as hledger writes it |
+
+**A row is an asset row because it says so, not because of its account.** The
+section is decided by the row's kind and nothing else, so a row here cannot
+wander into Expenses because of what you type in its Account box, and a
+recurring transfer to `assets:savings` entered in Expenses stays an expense-side
+flow. The two are genuinely different things: one compounds, the other moves a
+fixed amount each period.
+
+**A contribution of `0` is the normal case**, not an unfinished row. It means
+"this balance only compounds" — a house, a brokerage account you are not paying
+into — and it is what the file writes as a `$0` posting.
+
+**Growth here is unrealised.** It moves net worth and nothing else: not cash,
+not net income, not your runway date. The Net worth tab breaks the growth down
+per asset underneath its chart, so you can see which row produced it.
 
 ### `opening:` restates the balance, and says so
 
@@ -252,6 +310,18 @@ applied once in the first period, and the projection **warns** about it by name.
 Nothing silently restates your balance sheet. Cash is never adjusted: an
 override says what an asset is worth, not what is in the bank, so a house
 valuation can never move your runway.
+
+In the table, an overridden Balance is not a quiet edit either. The box fills
+with your figure and turns the warning colour, a `✕` beside it puts the
+journal's figure back (as does clearing the box, or "Use the journal's balance"
+in the row menu), and **the ledger's own number stays on screen underneath**.
+That last part is the point of the column: a valuation you typed six months ago
+should never be mistakable for what your ledger says today.
+
+The figure shown is the one the projection actually used, so it appears once a
+projection has been computed — a dash means "not known yet", which is also what
+you get for a row the engine declined to model. It is never a zero standing in
+for an unknown.
 
 ### What hledger makes of an asset row
 

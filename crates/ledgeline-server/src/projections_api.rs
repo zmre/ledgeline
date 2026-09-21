@@ -49,10 +49,10 @@ use ledgeline_core::projections::serialize::{
     ProjectionDoc, SerializeError, new_file, scenario_from_text, write_scenario,
 };
 use ledgeline_core::projections::{
-    BalanceSeries, CreateRefusal, DiscoveredProjection, Discovery, Growth, GrowthUnit, LineRole,
-    LineSource, Projection, ProjectionOpts, ProjectionPath, Runway, Scenario, ScenarioEvent,
-    ScenarioLine, SeedOpts, discover, is_journal_name, label_for, project, seed_scenario,
-    virtual_posting,
+    AssetRow, BalanceSeries, CreateRefusal, DiscoveredProjection, Discovery, Growth, GrowthUnit,
+    LineRole, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway, Scenario,
+    ScenarioEvent, ScenarioLine, SeedOpts, discover, is_journal_name, label_for, project,
+    seed_scenario, virtual_posting,
 };
 use ledgeline_core::reports::account_types::AccountType;
 use ledgeline_core::reports::{
@@ -332,6 +332,46 @@ struct WireRunway {
     periods: usize,
 }
 
+/// What one asset row did, attributed back to the row.
+///
+/// The Balance column's source, and the net-worth tab's breakdown. Both need a
+/// figure the scenario does not carry — an opening balance is not part of a
+/// what-if — and both must agree with the curve beside them, so the figure comes
+/// from the walk that drew the curve rather than from a second report read
+/// alongside it (`plans/23-asset-growth.md`, Phase 3).
+///
+/// Keyed by `group`, the source rule, which is unique per row segment and is
+/// already on the row a client is rendering. A row the engine refused to model
+/// is ABSENT here and present in `warnings`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireAssetRow {
+    /// The `group` of the scenario line this was placed from.
+    group: String,
+    account: String,
+    /// The journal's own SUBTREE balance for that account as of the request's
+    /// `asOf`, valued the way the opening net worth is. What the table greys out.
+    journal_opening: WireMixed,
+    /// The balance the row actually compounded from — the `opening` override
+    /// when there is one, else `journalOpening`.
+    opening: WireMixed,
+    /// Total appreciation over the span. Never a contribution, and never the
+    /// override's one-off adjustment.
+    growth: WireMixed,
+}
+
+impl From<&AssetRow> for WireAssetRow {
+    fn from(row: &AssetRow) -> Self {
+        Self {
+            group: row.group.clone(),
+            account: row.account.clone(),
+            journal_opening: wire_mixed(&row.journal_opening),
+            opening: wire_mixed(&row.opening),
+            growth: wire_mixed(&row.growth),
+        }
+    }
+}
+
 /// The answer.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -349,6 +389,9 @@ pub(crate) struct WireProjection {
     cash: WireBalanceSeries,
     net_worth: WireBalanceSeries,
     runway: Option<WireRunway>,
+    /// One entry per asset row the walk modelled, in scenario order. `[]` for a
+    /// scenario with no asset rows, and always present.
+    assets: Vec<WireAssetRow>,
     /// Everything the projection could not do. Never empty silently: a dropped
     /// line always says so here.
     warnings: Vec<String>,
@@ -366,6 +409,7 @@ impl From<&Projection> for WireProjection {
                 .runway
                 .as_ref()
                 .map(|runway| wire_runway(runway, &projection.buckets)),
+            assets: projection.assets.iter().map(WireAssetRow::from).collect(),
             warnings: projection.warnings.clone(),
         }
     }
