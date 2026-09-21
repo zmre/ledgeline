@@ -390,15 +390,6 @@ impl ProjectionDoc {
         }
     }
 
-    /// How many `~` blocks the file has. The caller checks this against the
-    /// parsed rule count, the way `budget_api` does, so a document this module
-    /// located differently from the journal parser is a `409` rather than a
-    /// write into the wrong bytes.
-    #[must_use]
-    pub fn block_count(&self) -> usize {
-        self.blocks.len()
-    }
-
     /// Render `scenario` into this document, rewriting only the header span and
     /// the `~` blocks whose content actually changed.
     ///
