@@ -38,13 +38,19 @@ import ProjectionsTable from "./ProjectionsTable.svelte";
 
 const NOTE = "unbudgeted — average over 2025-08-01 to 2026-07-08";
 
+// `role` and `opening` are on the wire since plan 23 Phase 2 and the decoder
+// DEMANDS both — an absent `role` would silently model an asset row as an
+// outflow the size of its contribution, so there is no default. A seeded gap is
+// always a flow: `budget_gaps` measures revenue and expense accounts only.
 const seedLine = (account: string, mantissa: string) => ({
     id: `gap:${account}:$`,
     group: `gap:${account}:$`,
+    role: "flow",
     account,
     amount: {commodity: "$", quantity: {mantissa, places: 2}, precision: 2},
     period: {raw: "monthly", simple: "monthly", from: null, to: null},
     growth: null,
+    opening: null,
     note: NOTE,
     source: "unbudgeted",
 });

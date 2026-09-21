@@ -257,3 +257,221 @@ Phase 3 edits the same component and would conflict with it throughout.
 - A human has looked at the third section at 375px and desktop.
 - Any contract in this doc that changed during implementation is amended here in
   the same commit, per `plans/00-overview.md` convention #9.
+
+---
+
+## Contract amendments made during implementation
+
+**Phases 1 and 2 only.** Everything below was established while building the
+engine, the wire and the file format; Phase 3 should trust these over the prose
+above. Where something in `plans/22-projections.md` changed, it is amended there
+instead and named here.
+
+### 1. `ScenarioLine` gained a ROLE. There is no `ScenarioAsset`
+
+§Model offers "a role, or a sibling type … implementer's call". The role won,
+and the deciding argument is a file-format one the sketch could not have seen.
+
+A `Vec<ScenarioAsset>` beside `Vec<ScenarioLine>` loses the **order of the
+postings inside a `~` block**. The serializer renders one block per group and
+compares what it would write against what the block already says (plan 22
+amendment 28); with two collections it has to pick a canonical order — assets
+first, or flows first — and any file that interleaved them would be silently
+reordered on the next save of an unrelated rule. That is precisely the
+byte-preservation discipline amendment 28 exists to keep.
+
+So:
+
+```rust
+pub enum LineRole { Flow, Asset }
+
+pub struct ScenarioLine {
+    …
+    pub role: LineRole,
+    /// Asset rows only. `None` = use the journal's balance.
+    pub opening: Option<Amount>,
+}
+```
+
+The sketch's other fields map straight onto the ones already there: `account`,
+`period`, `note`, and **`amount` IS the contribution**. The discriminator is
+still explicit on the wire (`role: "flow" | "asset"`, always present outbound),
+which is the constraint §Model actually locks.
+
+**Consequently there is no `WireScenarioAsset`** (Phase 2's first bullet).
+`WireScenarioLine` gained `role` and `opening` instead, both of which a client
+must send back.
+
+### 2. The contribution is a REQUIRED `Amount`, not an `Option`
+
+The sketch has `contribution: Option<Amount>` and says "`None` (or zero) = the
+balance just compounds". Zero won, because `None` cannot be written: the file
+format states the contribution as the posting's amount, `$0` when there is none,
+and a `None` carries no commodity to write that `$0` in. Guessing one from
+elsewhere in the scenario is a valuation the serializer has no business making.
+
+Zero is also what the row means, exactly: the wire and the model both carry
+`amount` on every row, and `$0` round-trips through `hledger print` unchanged.
+
+### 3. `opening:` carries a BARE number, and a mismatch is refused
+
+§"The file format" writes `; opening: 200000`, and the bare spelling is
+load-bearing rather than shorthand: hledger ends a tag's value at the next
+comma, so `$200,000.00` would read back as `$200`. The commodity and the display
+style therefore come from the row's own amount — which every asset row has, `$0`
+or not.
+
+Two consequences:
+
+- **An `opening` in a different commodity from the row is a `400`**
+  (`SerializeError::Invalid`). It cannot be written truthfully, and silently
+  rewriting a balance's currency on a save is money.
+- **An `opening` on a `role: "flow"` row is a `400`** too: a flow has no balance
+  to open, and the engine would read it from nowhere.
+
+An unreadable value is `None` — the journal's own balance — rather than a failed
+file, the same way `parse_growth` degrades.
+
+### 4. An asset row with no rate writes `; growth:` — the tag, empty
+
+The reader rule this plan fixes is "a posting carrying `growth:` on an
+asset-typed account is an asset row", so the marker is the tag's **presence**.
+A row whose growth is `None` therefore still writes one, with an empty value.
+hledger 1.52 reads that as the tag `growth` with the value `""` and `tag:growth`
+matches it; this crate's `parse_tags` produces the same pair.
+
+The alternative — writing `growth: 0%/yr` for a blank rate — would put a rate in
+the file that the user never typed and come back filled in the Growth column
+after a save. `Option<Growth>` round-trips exactly as it is.
+
+### 5. Reading a file needs the ACCOUNT TYPES, so they are threaded in
+
+"An asset-typed account" is not a name test, and a projection file usually
+declares no `account` directives of its own — its accounts belong to the main
+journal. So `scenario_from_text`, `ProjectionDoc` and `new_file` all take the
+journal's `declared_types` map, and the file's own declarations are layered on
+top of it (a self-contained scenario classifies with no journal open).
+
+`ProjectionDoc` carries the map so that `confirm_round_trip` re-reads the written
+text under the same classification it was written under. Reading the result any
+other way would compare an asset row against the flow line it was not.
+
+The rule-header `growth:` is deliberately NOT considered for the role, only the
+posting's own: a rate meant for a whole block is a rate, but reclassifying every
+asset posting in that block is a reclassification, and one wants to be written on
+the row it applies to.
+
+### 6. The arithmetic, stated exactly
+
+Per asset row, over the projected span:
+
+1. Seed a running balance from the journal's **subtree** balance for the account
+   at `as_of`, valued into the same commodity the opening net worth is. An
+   `opening` override replaces it, and the DIFFERENCE from the journal's figure
+   is added to net worth once, in bucket 0, with a warning naming both figures.
+2. Enumerate the row's **growth boundaries** (anchor + n units, clamped, capped
+   at `MAX_GROWTH_STEPS`) and its **contribution occurrences**, and merge them in
+   DATE ORDER.
+3. At a boundary: `grown = round(balance × (1 + rate))`; add `grown − balance` to
+   that bucket's net-worth-only accumulator; `balance = grown`.
+4. At a contribution: place the amount as an ordinary group leg — so the residual
+   rule implies its cash outflow exactly once — and add it to `balance`.
+5. **A tie goes to GROWTH** (decision 7). This is the one thing the plan did not
+   pin and the tests do: a contribution dated on a step's anniversary does not
+   earn that step.
+
+Decision 7's illustration ("a contribution made in month eleven does not earn a
+full year's return") does not hold literally under this walk, and the mechanics
+in §"Per-bucket arithmetic" are what was implemented: `balance *= (1 + rate)`,
+**then** that period's contributions. A contribution made during a growth period
+IS in the balance the next boundary compounds. Deferring it instead would mean
+carrying two balances — the one that grows and the one the row actually holds —
+and Phase 3's Balance column would show the wrong one.
+
+**A zero rate is short-circuited to no steps at all.** Not an optimisation: the
+step rounds, so walking a 0% row would round a valued balance to the row's
+display precision and call the difference appreciation. A row that states no
+growth must move nothing, which is what the double-count detector asserts.
+
+### 7. Appreciation is not a posting, so it is not a group leg
+
+`Layout` grew a per-bucket `net_worth_only` accumulator beside `per_bucket`.
+Placing appreciation as a leg would sum it into the group's residual and imply a
+cash leg of the same size — a paper gain putting money in the bank, which is the
+error decision 2 exists to prevent. The same accumulator carries the `opening`
+override's one-off adjustment, for the same reason.
+
+### 8. The non-asset warning names the type it actually resolved to
+
+"A warning rather than being silently modelled" is implemented as: warn,
+contribute **nothing** — no growth and no contribution — and quote the resolved
+type (`liability`, `expense`, or "of no type this journal declares or infers").
+A row the engine will not model must not half-model itself.
+
+### 9. The `fixtures/native/v1/` golden is a FILE READ, not the seed
+
+Phase 2 asks for a golden "for a scenario containing an asset row". The seed
+route builds its lines from the main journal's `~` rules, and
+`fixtures/sample.journal` deliberately declares **none** — `budget.e2e.ts`'s "No
+budget goals yet" empty state and `projections.e2e.ts`'s "every seeded row is an
+average of the journal's own history" both rest on that, and adding a rule put
+three asset accounts into `fixtures/native/v1/budget.json` as a side effect.
+
+So the golden comes from the other route that serves a `WireScenario`:
+`GET /api/projections/{*id}` over a committed
+`fixtures/asset-growth-scenario.journal`. Reading ONE file by id is fully
+replayable from a URI manifest — only the directory LISTING is not, which is what
+plan 22 amendment 36 actually rules out. See plan 22 amendment 40 for what that
+cost in `native_wire_golden.rs`.
+
+The fixture is deliberately **not** named `projection-*.journal`, so it lands in
+the picker's existing "Other journals" group and `projections.e2e.ts`'s optgroup
+assertions are untouched.
+
+### 10. Phase 2 reached `web/src/lib/api/` and two model files, and stopped there
+
+`role` and `opening` are REQUIRED by `decodeScenarioLine` — no default — because
+`nativeDecode.test.ts` renames every key of every golden and requires the decoder
+to notice, and a `role` that defaulted to `"flow"` would be absorbed by that
+sweep over the seed golden (where every row is a flow). Nothing was added to
+`TOLERATED`.
+
+That required, and was limited to:
+
+| file | change |
+|---|---|
+| `web/src/lib/api/native.ts` | `WireScenarioLineIn` gained `role` and `opening` |
+| `web/src/lib/api/nativeDecode.ts` | `RawScenarioLine` + `decodeScenarioLine` read both |
+| `web/src/lib/api/nativeDecode.test.ts` | `projections-asset` added to the rename sweep |
+| `web/src/lib/projections/types.ts` | `LineRole`, and the two fields on `ScenarioLine` |
+| `web/src/lib/projections/scenarioModel.ts` | `scenarioToWire` sends both; `blankLine` is a flow |
+
+`ProjectionsTable.svelte.test.ts`'s inlined wire literal gained the two keys
+because the decoder now demands them. **No component changed**, and nothing in
+`web/src/lib/projections/ui/` other than that fixture was touched — Phase 3 owns
+the table, the third section and the net-worth breakdown, and none of it exists.
+
+### 11. What Phase 3 gets, and what it still has to decide
+
+Already in place:
+
+- `ScenarioLine.role` / `.opening` decode, encode, and round-trip through a file.
+- `blankLine` produces a flow; an asset row is something the table creates
+  deliberately, never something a blank row becomes by having `assets:` typed
+  into it.
+- Every projection warning an asset row can produce is already on the wire and
+  already rendered by the existing warnings list.
+
+Still Phase 3's:
+
+- The **"Assets and balances"** section, its columns, and the section-stability
+  rule (plan 22 amendment 37) — `sectionOfLine` currently knows two sections and
+  must learn a third that keys off `role`, not off the account.
+- **The Balance column.** The engine does not put the journal's real balance for
+  an account on the scenario wire — it is not part of the scenario. Phase 3
+  needs a source for the greyed figure: either a new field on
+  `WireScenarioLine` (computed per request), or the existing balance-sheet
+  report read beside it. Deciding that is Phase 3's first job, and it is the
+  only wire question left.
+- The **net-worth contribution breakdown**, which likewise needs the engine to
+  attribute growth per row — `Projection` carries only the total today.

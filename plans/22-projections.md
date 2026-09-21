@@ -1430,3 +1430,99 @@ Two smaller things fixed with them, both consequences of the above:
 
 Nothing here changed the engine, and `web/e2e/projections.e2e.ts` was not
 touched.
+
+---
+
+**`plans/23-asset-growth.md` Phases 1 and 2 from here.** Only what THIS plan
+established and that plan changed; everything about asset rows themselves is
+amended in plan 23's own section.
+
+### 38. Reading a scenario file now takes the journal's ACCOUNT TYPES
+
+Phase 3 §Routes gives the read path as `parse::parse_journal(text, name)` plus a
+header scan, and nothing else. It needs one more input.
+
+Plan 23's reader rule is "a posting carrying `growth:` on an **asset-typed**
+account is an asset row", and a type is a declared fact, never a name test
+([[account-type-not-name]]). A projection file usually declares no `account`
+directives of its own — its accounts belong to the main journal — so the types
+have to be handed in:
+
+```rust
+scenario_from_text(text, source_name, fallback_name, declared: &BTreeMap<String, AccountType>)
+ProjectionDoc::parse(text, source_name, declared)
+ProjectionDoc::empty(declared)
+new_file(scenario, source_name, declared)
+```
+
+The FILE's own `account` directives are layered on top of the caller's, so a
+self-contained scenario classifies correctly with no journal open at all.
+`ProjectionDoc` stores the map, so `write_scenario`'s `confirm_round_trip` (§"The
+second opinion") re-reads the written text under the same classification it was
+written under — reading it any other way would compare an asset row against the
+flow line it was not.
+
+`GET`/`PUT /api/projections/{*id}` take the map from the open journal, the same
+`declared_types(&account_decls(journal))` the run and seed routes already use.
+
+### 39. `WireScenarioLine` gained `role` and `opening`
+
+Amendment 14 lists this wire field by field. Two more, and both are required on
+the way back:
+
+| field | out | in |
+|---|---|---|
+| `role` | `"flow"` \| `"asset"`, ALWAYS present | absent reads as `"flow"`; an unrecognized value is a `400` |
+| `opening` | a `WireAmount` or `null` | asset rows only; on a flow row it is a `400` |
+
+`role` is the asset/flow discriminator and it is deliberately explicit rather
+than derived from `account`: `assets:cash` is a legitimate flow (this plan's own
+`$2M` raise lands there) and a legitimate asset row, so a reader that guessed
+would reclassify one of them on every round trip.
+
+The inbound default exists only for bodies written before asset rows did. The
+SPA always sends it — `scenarioToWire` names it — and relying on the default
+would model a compounding balance as an outflow the size of its contribution.
+
+`fixtures/native/v1/projections-seed.json` moved by exactly these two keys:
+`"role":"flow"` and `"opening":null` on every line, nothing else.
+
+### 40. `GET /api/projections/{*id}` CAN join the native manifest. The listing cannot
+
+Amendment 36 says none of the three file routes can join `fixtures/native/v1`,
+"that manifest replays URIs against `fixtures/sample.journal`, and a listing of a
+DIRECTORY TREE would pin whatever files happen to sit beside that fixture". The
+reason is sound and the conclusion was too broad: it is true of
+`GET /api/projections`, and false of reading ONE file by id, whose whole response
+— the scenario, the `revision` fingerprint of committed bytes, the `writable`
+flag — is a function of that one file and of `Journal::source_files`.
+
+So `projections-asset	/api/projections/asset-growth-scenario.journal` is in the
+manifest, with `fixtures/asset-growth-scenario.journal` committed beside
+`sample.journal`. Two consequences in `native_wire_golden.rs`:
+
+- the manifest count assertion moved **16 → 17**;
+- `every_pinned_request_fixes_its_own_dates` gained a one-entry exemption list.
+  It is a list and not a rule because a URI cannot say whether the handler behind
+  it reads a clock; anything added to it must be a route that reads **no date at
+  all**, not one whose date happens to be optional. An exempt entry must also
+  carry no query params, which the test asserts.
+
+Every pre-existing golden other than `projections-seed` (amendment 39) is
+byte-identical, and `just snapshot-native` was again not run — the manifest was
+replayed through the same `tower` oneshot, as in amendment 16.
+
+### 41. `projections-asset` is a REAL golden in `nativeDecode.test.ts`
+
+Amendment 21 made `DECODERS` `[name, decoder, body]` triples so a body could be
+an inline literal when no golden could exist. `projections-file` still is one.
+`projections-asset` is not: it goes through `decodeScenarioFile` over
+`golden("projections-asset")`, and it carries what `projections-seed`
+structurally cannot, because `sample.journal` has no `~` rules — `role:
+"asset"`, a non-null `opening`, a `line:`-derived id, and a growing FLOW beside
+the asset rows.
+
+**Nothing was added to `TOLERATED`**, and that list is why `role` has no default
+in the decoder: every row of the seed golden is a flow, so a decoder that fell
+back to `"flow"` would absorb a rename of `role` there and the sweep would demand
+a new entry. The list may only shrink.

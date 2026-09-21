@@ -26,6 +26,13 @@ budget-gaps	/api/budget/gaps?end=2026-07-08&interval=monthly&count=3&depth=2
 # instead. `count=12` is the trailing twelve months the unbudgeted averages are
 # taken over; there is no `interval`, because a monthly average has only one.
 projections-seed	/api/projections/seed?end=2026-07-08&count=12&depth=2
+# The ASSET-ROW wire (plans/23-asset-growth.md, Phase 2). The seed reads the
+# main journal's `~` rules and sample.journal deliberately has none — two e2e
+# specs and the Budget tab's empty state depend on that — so the asset half of
+# the scenario wire is pinned by READING ONE FILE instead. It is the only entry
+# here with no date in it, and the only one that needs none: nothing in the
+# response is derived from a clock. See `every_pinned_request_fixes_its_own_dates`.
+projections-asset	/api/projections/asset-growth-scenario.journal
 insights	/api/insights?start=2025-07-01&end=2026-07-08
 subscriptions	/api/subscriptions?asOf=2026-07-08
 holdings	/api/holdings?asOf=2026-07-08

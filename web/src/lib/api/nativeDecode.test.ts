@@ -1765,10 +1765,12 @@ const SCENARIO_FILE = {
             {
                 id: "rule:0:0",
                 group: "rule:0",
+                role: "flow",
                 account: "expenses:rent",
                 amount: {commodity: "$", quantity: {mantissa: "420000", places: 2}, precision: 2},
                 period: {raw: "monthly", simple: "monthly", from: null, to: null},
                 growth: {rate: {mantissa: "2", places: 2}, unit: "year"},
+                opening: null,
                 note: "projection",
                 source: "journal",
             },
@@ -1976,6 +1978,14 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         // load-bearing, and both decoders use required-not-absent guards.
         ["projections-index", decodeProjectionIndex, PROJECTION_INDEX],
         ["projections-file", decodeScenarioFile, SCENARIO_FILE],
+        // The ASSET-ROW wire (plan 23, Phase 2), and a real golden rather than a
+        // literal: `GET /api/projections/{id}` reads ONE file by id, which IS
+        // replayable from a URI manifest — only the directory LISTING is not.
+        // It carries what `projections-seed` structurally cannot, because
+        // `fixtures/sample.journal` deliberately has no `~` rules: `role:
+        // "asset"`, a non-null `opening`, a `line:`-derived id, and a growing
+        // FLOW beside the asset rows.
+        ["projections-asset", decodeScenarioFile, golden("projections-asset")],
         ["insights", decodeInsightsReport, golden("insights")],
         ["subscriptions", decodeSubscriptionsReport, golden("subscriptions")],
         ["holdings", decodeHoldingsReport, golden("holdings")],

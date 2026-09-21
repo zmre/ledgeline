@@ -45,6 +45,13 @@ This is the whole of it:
 ; A ONE-OFF on the P&L.
 ~ 2027-06-15  legal fees
     (expenses:legal)         $45000
+
+; ASSET ROWS: a balance, a rate, and what you put into it. The amount is the
+; CONTRIBUTION — `$0` when the balance just compounds — and `growth:` is what
+; marks the row as a stock rather than a flow.
+~ monthly  investing
+    (assets:brokerage)           $0  ; growth: 7%/yr
+    (assets:savings)          $2000  ; growth: 4%/yr
 ```
 
 Every line of it is hledger's own syntax. Nothing here is a Ledgeline format.
@@ -57,8 +64,9 @@ of the file.
 | tag | where | means |
 |---|---|---|
 | `projection: <name>` | a comment at the top of the file | the scenario's display name |
-| `growth: <rate>/<unit>` | a posting comment | the amount grows by `rate` per completed `unit` |
+| `growth: <rate>/<unit>` | a posting comment | the amount grows by `rate` per completed `unit`; on an asset-typed account it ALSO marks the row as a balance |
 | `line: <id>` | a posting comment | two bounded rules are two segments of ONE row |
+| `opening: <number>` | an asset row's posting comment | override the journal's balance for that account |
 
 **`; projection: <name>` is the display name and the only marker.** A file
 without it still loads — any journal with budget-like entries can be used as a
@@ -70,6 +78,11 @@ delete them and nothing breaks.
 sign is optional and the unit spelling is generous, because this is a tag a
 human types into a journal by hand. Anything it cannot read makes the line
 **flat** — never a failed file.
+
+**`opening:` is the only tag that is not optional decoration.** It belongs to an
+asset row and nothing else, it carries a bare number in the row's own commodity
+(hledger ends a tag's value at a comma, so `$200,000` would read back as `$200`),
+and §"Asset rows" below says exactly what the engine does with it.
 
 **`line:` is what makes a step change one row.** A step is a permanent change to
 a recurring line: payroll jumps from `$50k/mo` to `$120k/mo` in April and stays
@@ -165,15 +178,116 @@ itself?" guard could express at all.
 **Net income is untouched by any of this.** It reads revenue and expense
 postings only.
 
+## Asset rows: a balance, a rate, and what you put into it
+
+Every other row in the table is a per-period *flow*. An asset row states a
+*stock*: what you hold, what rate it compounds at, and what you add to it —
+enough to model a brokerage account, a 401k or a house in one line.
+
+```journal
+~ monthly  investing
+    (assets:brokerage)           $0  ; growth: 7%/yr
+    (assets:savings)          $2000  ; growth: 4%/yr
+    (assets:house)               $0  ; growth: 3%/yr, opening: 640000
+```
+
+**A posting is an asset row when it carries a `growth:` tag AND its account is
+typed as an asset.** Both halves matter. `growth:` alone is not enough —
+`(expenses:rent) $4200 ; growth: 2%/yr` is a growing flow, and it is in the
+example above. An asset account alone is not enough either: **a posting with no
+`growth:` is a flow line whatever its account**, so a transfer into
+`assets:savings`, or a one-off purchase booked to `assets:cash`, means exactly
+what it always did. The type is the one the journal *declares*
+(`account assets:brokerage  ; type: A`), falling back to hledger's own name
+inference — never a guess about the word "assets".
+
+### Four rules, and the first is the one that surprises people
+
+**1. The row never contributes its opening balance.** Your net worth already
+contains it: the projection's opening figure is a real net-worth report over
+your real journal, and your brokerage account is in there. An asset row adds its
+**appreciation** and its **contributions** and nothing else. A row with a zero
+rate and no contribution changes not one number on the page — which is the
+correct behaviour and is exactly what the engine's own regression test asserts.
+
+**2. Appreciation moves net worth and only net worth.** It never reaches cash
+and never reaches net income. Paper gains do not pay salaries, and a runway that
+counted them would be worse than one that ignored them. The consequence worth
+stating out loud: **a growing asset cannot hide a burn.** The cash chart and the
+runway date are exactly what they would be with the asset row deleted.
+
+**3. A contribution is net-worth neutral, and it pays for itself.** `$2,000` a
+month into a brokerage is a posting like any other, so the residual rule above
+already implies the cash leg: cash −2,000, asset +2,000, net worth unchanged.
+There is no separate "funding" setting and none is wanted. (If the destination
+is itself a cash account — a savings account you have declared `type: C` — then
+neither series moves, which is also right: the money did not leave your cash.)
+
+**4. Growth applies to the balance at the START of each growth period, before
+that period's contributions.** Some convention is needed and this is the
+conservative one: a contribution dated on a step's anniversary does not earn
+that step, it earns the next one. When the contribution and the growth share a
+period — a yearly contribution on a yearly rate — this is exactly the textbook
+`balance × (1 + rate) + contribution`.
+
+Anniversaries are counted the same way a flow line's are: from the row's `from`
+date when it has one, from the start of the projection otherwise, and clamped
+into short months (a row anchored on the 31st steps on Feb 28). The balance is
+rounded back to the row's own display precision at every step, for the same
+reason a flow's amount is.
+
+### `opening:` restates the balance, and says so
+
+By default the row compounds the balance your journal actually shows for that
+account **and everything under it** — `assets:broker` means the whole subtree,
+valued into the same commodity the net-worth report uses. When you type over it,
+the tag records what you said:
+
+```journal
+    (assets:house)   $0  ; growth: 3%/yr, opening: 640000
+```
+
+Only the **difference** between your figure and the journal's reaches the chart,
+applied once in the first period, and the projection **warns** about it by name.
+Nothing silently restates your balance sheet. Cash is never adjusted: an
+override says what an asset is worth, not what is in the bank, so a house
+valuation can never move your runway.
+
+### What hledger makes of an asset row
+
+Everything, except the growth. Verified against hledger 1.52:
+
+```console
+$ hledger -f projection-investing.journal balance --budget -M --layout=bare
+                || Commodity       Jan       Feb
+================++===============================
+ assets:savings || $          0 [2000]  0 [2000]
+ expenses:rent  || $          0 [4200]  0 [4200]
+```
+
+`assets:brokerage` is **absent**, and that is the honest answer rather than a
+gap: its contribution is `$0`, and a growth rate is not a goal — hledger has no
+way to express one. `assets:savings` shows its contribution and only its
+contribution. `print --forecast` round-trips the `$0` posting with its tags
+intact, and `tag:growth` matches all of them.
+
+The `$0` is deliberate and is not a trick. A posting needs an amount, the
+contribution *is* the amount, and zero is what "no contribution" is worth.
+
 ### What is NOT modelled, on purpose
 
-- **Asset growth.** A stock, a house, a pension: its balance is held flat. There
-  is no return assumption anywhere, because a return assumption that is not
-  yours is a number you would have to discover and undo.
+- **Liabilities.** An asset row's shape would extend to them, but a mortgage
+  needs principal-versus-interest, which the journal cannot supply. A row whose
+  account is not an asset is **warned about** rather than modelled.
+- **Per-holding or per-lot growth.** A row is one account, not a portfolio, and
+  one rate covers the subtree.
+- **Tax on gains, and rebalancing.**
+- **Inferring a rate from price history**, which would make a projection quietly
+  depend on whether `P` directives happen to exist.
 - **Liability amortisation.** A mortgage payment cannot be split into principal
   and interest from anything the journal says, and guessing the split would
   silently invent a net-worth curve.
-- **Tax and retirement modelling**, per-account balance projection, and any
+- **Retirement modelling**, per-account balance projection, and any
   distribution over outcomes (Monte Carlo and friends).
 
 The engine tells you when it could not do something: a period it cannot
@@ -260,4 +374,7 @@ $ hledger -f projection-series-a.journal register --forecast=2027-01-01..2028-01
 
 # Both files at once — what you plan, beside what you did.
 $ hledger -f main.journal -f projection-series-a.journal balance --budget -M
+
+# Every asset row in a file, by the tag that marks one.
+$ hledger -f projection-series-a.journal print --forecast=2027-01-01..2027-02-01 tag:growth
 ```

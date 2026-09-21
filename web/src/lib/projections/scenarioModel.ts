@@ -308,10 +308,15 @@ export function blankLine(id: string, commodity: string, precision: number): Sce
     return {
         id,
         group: id,
+        // A new row is a FLOW. An asset row is a different thing the table adds
+        // deliberately (plan 23, Phase 3), never something a blank row becomes
+        // by having an `assets:` account typed into it.
+        role: "flow",
         account: "",
         amount: {commodity, quantity: {m: 0n, p: precision}, precision},
         period: monthlyPeriod(),
         growth: null,
+        opening: null,
         note: "",
         // Authored, not estimated: the user is writing it, so it must not wear
         // the "from history" flag a seeded row wears.
@@ -529,10 +534,19 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
         lines: scenario.lines.map((line) => ({
             id: line.id,
             group: line.group,
+            // Sent explicitly, always. The engine defaults an absent `role` to
+            // `flow` for the sake of older bodies, and relying on that default
+            // would make an asset row project as an outflow the size of its
+            // contribution.
+            role: line.role,
             account: line.account,
             amount: {commodity: line.amount.commodity, quantity: encodeDec(line.amount.quantity), precision: line.amount.precision},
             period: {raw: line.period.raw},
             growth: line.growth === null ? null : {rate: encodeDec(line.growth.rate), unit: line.growth.unit},
+            opening:
+                line.opening === null
+                    ? null
+                    : {commodity: line.opening.commodity, quantity: encodeDec(line.opening.quantity), precision: line.opening.precision},
             note: line.note,
             source: line.source,
         })),

@@ -49,10 +49,12 @@ use ledgeline_core::projections::serialize::{
     ProjectionDoc, SerializeError, new_file, scenario_from_text, write_scenario,
 };
 use ledgeline_core::projections::{
-    BalanceSeries, CreateRefusal, DiscoveredProjection, Discovery, Growth, GrowthUnit, LineSource,
-    Projection, ProjectionOpts, ProjectionPath, Runway, Scenario, ScenarioEvent, ScenarioLine,
-    SeedOpts, discover, is_journal_name, label_for, project, seed_scenario, virtual_posting,
+    BalanceSeries, CreateRefusal, DiscoveredProjection, Discovery, Growth, GrowthUnit, LineRole,
+    LineSource, Projection, ProjectionOpts, ProjectionPath, Runway, Scenario, ScenarioEvent,
+    ScenarioLine, SeedOpts, discover, is_journal_name, label_for, project, seed_scenario,
+    virtual_posting,
 };
+use ledgeline_core::reports::account_types::AccountType;
 use ledgeline_core::reports::{
     BudgetOpts, Interval, account_decls, declared_types, periods::bucket_label,
 };
@@ -170,6 +172,15 @@ impl From<&Growth> for WireGrowth {
 }
 
 /// One recurring row of the what-if table.
+///
+/// # `role` is the asset/flow discriminator, and it is EXPLICIT
+///
+/// A client must never infer it from `account`. `assets:cash` appears on both
+/// sides of the plan's own worked example — as the destination of a `$2M` raise
+/// (a flow) and as a balance that compounds (an asset row) — so a reader that
+/// guessed from the account's type would reclassify one of them on every round
+/// trip. The field is always present outbound; absent inbound reads as `flow`,
+/// which is what every body written before asset rows existed means.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireScenarioLine {
@@ -178,10 +189,18 @@ struct WireScenarioLine {
     /// The SOURCE RULE. Every posting of one `~` block shares it, which is what
     /// the engine's cash and net-worth guards are scoped to.
     group: String,
+    /// `flow` | `asset`.
+    role: &'static str,
     account: String,
+    /// For a flow, the amount that moves each period. For an ASSET row, the
+    /// per-period CONTRIBUTION — zero when the balance only compounds.
     amount: WireAmount,
     period: WireScenarioPeriod,
     growth: Option<WireGrowth>,
+    /// Asset rows only: an override of the journal's balance at the projection
+    /// start. `null` — the normal case — means "use the journal's", and the
+    /// table shows the journal's real figure greyed.
+    opening: Option<WireAmount>,
     note: String,
     /// `journal` (authored) | `unbudgeted` (estimated from history).
     source: &'static str,
@@ -192,10 +211,12 @@ impl From<&ScenarioLine> for WireScenarioLine {
         Self {
             id: line.id.clone(),
             group: line.group.clone(),
+            role: line.role.as_str(),
             account: line.account.0.clone(),
             amount: WireAmount::from(&line.amount),
             period: WireScenarioPeriod::from(&line.period),
             growth: line.growth.as_ref().map(WireGrowth::from),
+            opening: line.opening.as_ref().map(WireAmount::from),
             note: line.note.clone(),
             source: line.source.as_str(),
         }
@@ -410,11 +431,22 @@ struct GrowthIn {
 struct ScenarioLineIn {
     id: String,
     group: String,
+    /// `flow` | `asset`. Absent reads as `flow`, so a body written before asset
+    /// rows existed means exactly what it used to; an unrecognized value is a
+    /// `400` rather than a silent fallback, because the two roles project
+    /// entirely different numbers.
+    #[serde(default)]
+    role: Option<String>,
     account: String,
     amount: AmountIn,
     period: PeriodIn,
     #[serde(default)]
     growth: Option<GrowthIn>,
+    /// Asset rows only; a flow line that carries one is a `400`, because it
+    /// would be a field the engine reads from nowhere and the file cannot
+    /// write.
+    #[serde(default)]
+    opening: Option<AmountIn>,
     #[serde(default)]
     note: String,
     /// `journal` | `unbudgeted`. Absent reads as `journal`; an unrecognized
@@ -542,6 +574,17 @@ fn growth_from_wire(growth: &GrowthIn) -> Result<Growth, AppError> {
     })
 }
 
+fn role_from_wire(role: Option<&str>) -> Result<LineRole, AppError> {
+    match role.map(str::trim) {
+        None | Some("") => Ok(LineRole::Flow),
+        Some(other) => LineRole::parse(other).ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "unknown line role '{other}' (expected flow or asset)"
+            ))
+        }),
+    }
+}
+
 fn source_from_wire(source: Option<&str>) -> Result<LineSource, AppError> {
     match source.map(str::trim) {
         None | Some("") | Some("journal") => Ok(LineSource::Journal),
@@ -576,14 +619,24 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<Scenario, AppError> {
         .lines
         .iter()
         .map(|line| {
+            let role = role_from_wire(line.role.as_deref())?;
+            if role == LineRole::Flow && line.opening.is_some() {
+                return Err(AppError::BadRequest(format!(
+                    "line '{}' states an opening balance, which only an asset row has: a flow \
+                     line has no balance to open",
+                    line.id
+                )));
+            }
             Ok(ScenarioLine {
                 id: line.id.clone(),
                 group: line.group.clone(),
+                role,
                 account: account_from_wire(&line.account)?,
                 amount: amount_from_wire(&line.amount)?,
                 // `simple`/`from`/`to` are echoes; `raw` is the fact.
                 period: parse_period_spec(&line.period.raw),
                 growth: line.growth.as_ref().map(growth_from_wire).transpose()?,
+                opening: line.opening.as_ref().map(amount_from_wire).transpose()?,
                 note: line.note.clone(),
                 source: source_from_wire(line.source.as_deref())?,
             })
@@ -1130,13 +1183,14 @@ fn open_file(
     found: &DiscoveredProjection,
     id: &str,
     writable: bool,
+    declared: &BTreeMap<String, AccountType>,
 ) -> Result<WireScenarioFile, AppError> {
     let (text, fingerprint) = read_file(found.path().as_path(), id)?;
     let name = found.path().as_path().to_string_lossy().to_string();
     // The FALLBACK display name is the filename's label, so a file with no
     // `; projection:` marker still opens with a name — "a file without it still
     // loads, and takes its name from its filename".
-    let scenario = scenario_from_text(&text, &name, &found.label)
+    let scenario = scenario_from_text(&text, &name, &found.label, declared)
         .map_err(|error| serialize_failed(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
@@ -1199,6 +1253,7 @@ fn create_scenario(
     discovery: &Discovery,
     id: &str,
     scenario: &Scenario,
+    declared: &BTreeMap<String, AccountType>,
 ) -> Result<WireScenarioFile, AppError> {
     // `resolve_new`, since no scan can have found a file that is not there. It
     // is the only place in either crate that joins a caller's string onto the
@@ -1207,7 +1262,7 @@ fn create_scenario(
         .resolve_new(id)
         .map_err(|refusal| create_refused(id, refusal))?;
     let name = path.as_path().to_string_lossy().to_string();
-    let text = new_file(scenario, &name).map_err(|error| serialize_failed(id, &error))?;
+    let text = new_file(scenario, &name, declared).map_err(|error| serialize_failed(id, &error))?;
 
     create_exclusive(path.as_path(), text.as_bytes()).map_err(|error| {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
@@ -1220,8 +1275,8 @@ fn create_scenario(
     })?;
 
     let label = label_for(id);
-    let written =
-        scenario_from_text(&text, &name, &label).map_err(|error| serialize_failed(id, &error))?;
+    let written = scenario_from_text(&text, &name, &label, declared)
+        .map_err(|error| serialize_failed(id, &error))?;
     // The revision comes from what we WROTE, never from a re-read: a re-read
     // could pick up somebody else's write and hand this client a token for
     // bytes it has never seen, which is the precise way to make the next save
@@ -1246,6 +1301,7 @@ fn update_scenario(
     id: &str,
     revision: &str,
     scenario: &Scenario,
+    declared: &BTreeMap<String, AccountType>,
 ) -> Result<WireScenarioFile, AppError> {
     // Security layer 2: a set scanned in THIS request, matched by exact string
     // equality. `root.join(id)` is unreachable from here.
@@ -1270,7 +1326,8 @@ fn update_scenario(
         return Err(stale(id));
     }
 
-    let doc = ProjectionDoc::parse(&text, &name).map_err(|error| serialize_failed(id, &error))?;
+    let doc = ProjectionDoc::parse(&text, &name, declared)
+        .map_err(|error| serialize_failed(id, &error))?;
     // The engine's own second opinion: splice, re-parse the whole result as a
     // journal, and require the scenario to read back as the numbers asked for.
     let new_text =
@@ -1282,7 +1339,7 @@ fn update_scenario(
         // see a spurious change — the lesson `rules_api` and `budget_api` both
         // record. The unchanged document is returned, so the client still gets
         // a fresh (identical) revision.
-        return open_file(found, id, true);
+        return open_file(found, id, true, declared);
     }
 
     // Narrow the TOCTOU window from "the whole request" to "hash → rename". It
@@ -1310,7 +1367,7 @@ fn update_scenario(
 
     // Deliberately NO `state.reopen_editor()`: it re-opens the main journal,
     // which a file the main journal does not include cannot have changed.
-    let written = scenario_from_text(&new_text, &name, &found.label)
+    let written = scenario_from_text(&new_text, &name, &found.label, declared)
         .map_err(|error| serialize_failed(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
@@ -1369,11 +1426,15 @@ pub(crate) async fn document(
         return Err(unresolved(&id));
     };
     let sources = state.source_files();
+    // The MAIN journal's account types, because a projection file declares none
+    // of its own and the asset/flow discriminator needs them (`serialize`'s
+    // header says why a name test will not do).
+    let declared = declared_types(&account_decls(&state.snapshot().journal));
     let Json(body) = compute(move || {
         let discovery = discover(&main);
         let found = discovery.resolve(&id).ok_or_else(|| unresolved(&id))?;
         let writable = writable_path(&sources, found.path().as_path());
-        open_file(found, &id, writable)
+        open_file(found, &id, writable, &declared)
     })
     .await?;
     Ok(no_store(body))
@@ -1399,6 +1460,7 @@ pub(crate) async fn save(
         return Err(unresolved(&id));
     };
     let sources = state.source_files();
+    let declared = declared_types(&account_decls(&state.snapshot().journal));
     // Decoded (and bounded) BEFORE the lock is taken and before a `compute`
     // slot is claimed: a scenario we are going to refuse must not first wait
     // for a core, and must not hold the write lock while it is refused.
@@ -1420,9 +1482,9 @@ pub(crate) async fn save(
         // arbitrarily long ago.
         let discovery = discover(&main);
         if revision == NEW_FILE_REVISION {
-            create_scenario(&discovery, &id, &scenario)
+            create_scenario(&discovery, &id, &scenario, &declared)
         } else {
-            update_scenario(&sources, &discovery, &id, &revision, &scenario)
+            update_scenario(&sources, &discovery, &id, &revision, &scenario, &declared)
         }
     })
     .await?;

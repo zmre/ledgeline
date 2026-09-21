@@ -31,6 +31,22 @@ export type LineSource = "journal" | "unbudgeted";
 export const LINE_SOURCES: readonly LineSource[] = ["journal", "unbudgeted"];
 
 /**
+ * What a recurring row IS: a per-period flow, or a balance that compounds.
+ *
+ * The discriminator is this field and never the account's type. `assets:cash`
+ * is a legitimate destination for a one-off flow and a legitimate asset row, so
+ * a reader that guessed from the account would reclassify one of them on every
+ * round trip — which is why the engine puts it on the wire explicitly.
+ *
+ * An `asset` row's `amount` is its per-period CONTRIBUTION (zero when the
+ * balance only compounds), its `growth` is the rate the BALANCE compounds at,
+ * and `opening` may override the journal's balance for that account. See
+ * `plans/23-asset-growth.md`.
+ */
+export type LineRole = "flow" | "asset";
+export const LINE_ROLES: readonly LineRole[] = ["flow", "asset"];
+
+/**
  * A BARE fixed interval, when the line's period is one.
  *
  * `null` on a bounded-but-irregular or single-date rule, in which case `raw` is
@@ -87,11 +103,24 @@ export interface ScenarioLine {
     id: string;
     /** The SOURCE RULE: every posting of one `~` block shares it, which is what the engine's cash and net-worth guards are scoped to. */
     group: string;
+    /** A per-period flow, or a balance that compounds. */
+    role: LineRole;
     account: string;
-    /** Signed as the journal writes it — see fact (1) at the top of this file. */
+    /**
+     * For a `flow`, signed as the journal writes it — see fact (1) at the top of
+     * this file. For an `asset` row, the per-period CONTRIBUTION, zero when the
+     * balance only compounds.
+     */
     amount: ScenarioAmount;
     period: ScenarioPeriod;
     growth: Growth | null;
+    /**
+     * `asset` rows only: an override of the journal's balance at the projection
+     * start. `null` — the normal case — means "use the journal's own", and only
+     * the DIFFERENCE between an override and the journal's figure ever reaches
+     * the net-worth series.
+     */
+    opening: ScenarioAmount | null;
     note: string;
     source: LineSource;
     /**

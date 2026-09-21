@@ -34,10 +34,12 @@ const SEED_BODY = {
         {
             id: "gap:expenses:housing:$",
             group: "gap:expenses:housing:$",
+            role: "flow",
             account: "expenses:housing",
             amount: amount("187500"),
             period: {raw: "monthly", simple: "monthly", from: null, to: null},
             growth: null,
+            opening: null,
             note: "unbudgeted — average over 2025-08-01 to 2026-07-08",
             source: "unbudgeted",
         },

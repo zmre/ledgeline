@@ -56,6 +56,19 @@
 //! | `~ 2027-03-01  Series A` | one [`ScenarioEvent`] with `id: "rule:K"` |
 //! | a posting's `; line: <id>` | that line's logical-row id (a step change's two segments share it) |
 //! | a posting's `; growth: 3%/yr` | that line's [`Growth`] |
+//! | a `; growth:` on an ASSET-typed account | [`LineRole::Asset`]: the amount is the CONTRIBUTION |
+//! | an asset row's `; opening: 200000` | that row's balance override |
+//!
+//! # Why reading needs the account types
+//!
+//! The asset/flow discriminator is "carries `growth:` AND resolves to an asset
+//! type" ([`super::lines_from_rule`]), and a projection file usually declares no
+//! `account` directives of its own — its accounts are the MAIN journal's. So the
+//! journal's declared types are handed in, with any the file declares itself
+//! layered on top, and every classification goes through
+//! [`crate::reports::account_types`] rather than through a name test. A Spanish
+//! chart of accounts round-trips; `activo:banco` is an asset because the journal
+//! says it is.
 //!
 //! A single-date rule becomes an EVENT rather than a one-off line, which is the
 //! one place this module normalizes rather than preserves — see amendment 29.
@@ -72,8 +85,10 @@ use crate::parse::{self, ParseError};
 use crate::periodic::{MAX_ACCOUNT_BYTES, MAX_DESCRIPTION_BYTES, PeriodicDoc};
 use crate::projections::discovery::{Header, parse_header};
 use crate::projections::{
-    Growth, GrowthUnit, LineSource, Scenario, ScenarioEvent, ScenarioLine, virtual_posting,
+    Growth, GrowthUnit, LineRole, LineSource, Scenario, ScenarioEvent, ScenarioLine,
+    virtual_posting,
 };
+use crate::reports::account_types::{AccountTypes, account_decls_from, declared_types};
 use crate::rules::Newline;
 
 /// The indent a posting line gets. Four spaces, which is what hledger's own
@@ -135,12 +150,18 @@ fn invalid(what: &str) -> SerializeError {
 /// The header is re-read here too, because a `GET` of one file must not depend
 /// on a listing having happened first.
 ///
+/// `declared` is the MAIN journal's account types, because a projection file
+/// usually declares none of its own and the asset/flow discriminator needs them.
+/// Anything the file DOES declare wins, so a self-contained scenario classifies
+/// correctly with no journal open at all.
+///
 /// # Errors
 /// [`SerializeError::Unreadable`] when the text is not a journal.
 pub fn scenario_from_text(
     text: &str,
     source_name: &str,
     fallback_name: &str,
+    declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
 ) -> Result<Scenario, SerializeError> {
     let journal = parse::parse_journal(text, source_name)
         .map_err(|error| SerializeError::Unreadable(parse_message(&error)))?;
@@ -167,8 +188,19 @@ pub fn scenario_from_text(
         own.into_iter().cloned().collect()
     };
 
+    // The file's own `account` directives win over the caller's, so a scenario
+    // that carries its declarations with it classifies the same way whether or
+    // not a main journal is open.
+    let mut types = declared.clone();
+    types.extend(declared_types(&account_decls_from(&journal.accounts)));
+
     let header = parse_header(text);
-    Ok(scenario_from_rules(&rules, &header, fallback_name))
+    Ok(scenario_from_rules(
+        &rules,
+        &header,
+        fallback_name,
+        &AccountTypes::from_declared(types),
+    ))
 }
 
 /// Build the model from a file's `~` rules and its header.
@@ -176,6 +208,7 @@ fn scenario_from_rules(
     rules: &[PeriodicTransaction],
     header: &Header,
     fallback_name: &str,
+    types: &AccountTypes,
 ) -> Scenario {
     let mut lines = Vec::new();
     let mut events = Vec::new();
@@ -201,7 +234,7 @@ fn scenario_from_rules(
                     })
                     .collect(),
             }),
-            None => lines.extend(super::lines_from_rule(&key, rule)),
+            None => lines.extend(super::lines_from_rule(&key, rule, types)),
         }
     }
     Scenario {
@@ -294,24 +327,33 @@ pub struct ProjectionDoc {
     /// a block this module could not line up with a parsed rule, which makes it
     /// rewritten — the safe direction.
     current: Vec<Option<Vec<String>>>,
+    /// The account types this document was read under, carried so that
+    /// [`confirm_round_trip`] re-reads the written text the same way. Reading
+    /// the result under a different classification would compare an asset row
+    /// against the flow line it was not.
+    declared: BTreeMap<String, crate::reports::account_types::AccountType>,
 }
 
 impl ProjectionDoc {
     /// Locate the spans of an existing file, and read what each block says.
     ///
-    /// `source_name` is the file's own path, for the same reason
-    /// [`scenario_from_text`] takes one.
+    /// `source_name` is the file's own path, and `declared` the account types,
+    /// for the same reasons [`scenario_from_text`] takes them.
     ///
     /// # Errors
     /// [`SerializeError::Unreadable`] when the text is not a journal.
-    pub fn parse(text: &str, source_name: &str) -> Result<Self, SerializeError> {
+    pub fn parse(
+        text: &str,
+        source_name: &str,
+        declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+    ) -> Result<Self, SerializeError> {
         let doc = PeriodicDoc::parse(text);
         let blocks: Vec<Range<usize>> = doc
             .blocks()
             .iter()
             .map(|block| block.full.clone())
             .collect();
-        let scenario = scenario_from_text(text, source_name, "")?;
+        let scenario = scenario_from_text(text, source_name, "", declared)?;
 
         // The blocks this module located, against the rules the journal parser
         // read. When they line up, each block's print is known and an unedited
@@ -331,18 +373,20 @@ impl ProjectionDoc {
             blocks,
             current,
             text: text.to_string(),
+            declared: declared.clone(),
         })
     }
 
     /// An empty document, for a create.
     #[must_use]
-    pub fn empty() -> Self {
+    pub fn empty(declared: &BTreeMap<String, crate::reports::account_types::AccountType>) -> Self {
         Self {
             text: String::new(),
             newline: Newline::Lf,
             header: 0..0,
             blocks: Vec::new(),
             current: Vec::new(),
+            declared: declared.clone(),
         }
     }
 
@@ -617,13 +661,19 @@ fn chunk_print(chunk: &Chunk<'_>) -> Result<Vec<String>, SerializeError> {
             rows.push(format!("~ {period} | {note}"));
             for (at, line) in lines.iter().enumerate() {
                 rows.push(format!(
-                    "{} {} | line {} | growth {} | every {}",
+                    "{} {} | {} | line {} | growth {} | opening {} | every {}",
                     line.account.0,
                     render_scenario_amount(&line.amount)?,
+                    line.role.as_str(),
                     row_id_tag(key, at, &line.id).unwrap_or("-"),
                     line.growth
                         .as_ref()
                         .map_or_else(|| "-".to_string(), render_growth),
+                    line.opening
+                        .as_ref()
+                        .map(|opening| render_opening(line, opening))
+                        .transpose()?
+                        .unwrap_or_else(|| "-".to_string()),
                     line.period.raw,
                 ));
             }
@@ -708,7 +758,20 @@ fn rule_header(period: &str, description: &str) -> Result<String, SerializeError
     Ok(format!("~ {period}  {description}"))
 }
 
-/// A posting's `; line: …, growth: …` tags, or an empty string.
+/// A posting's `; line: …, growth: …, opening: …` tags, or an empty string.
+///
+/// # The `growth:` tag is the asset marker, so an asset row always writes one
+///
+/// A [`LineRole::Asset`] row with no rate is written `; growth:` — the tag
+/// present with an empty value. hledger reads that as the tag `growth` with the
+/// value `""` (verified against 1.52: `tag:growth` matches it), and so does this
+/// crate's own parser, so the row reads back as the asset row it is. Writing
+/// `growth: 0%/yr` instead would be a rate the user never entered, and would
+/// make a blank Growth cell come back filled after a save.
+///
+/// A [`LineRole::Flow`] row writes `growth:` only when it HAS one, exactly as
+/// before — which is what makes every scenario file written before asset rows
+/// existed keep its meaning byte for byte.
 fn line_tags(key: &str, at: usize, line: &ScenarioLine) -> Result<String, SerializeError> {
     let mut parts = Vec::new();
     if let Some(id) = row_id_tag(key, at, &line.id) {
@@ -721,10 +784,41 @@ fn line_tags(key: &str, at: usize, line: &ScenarioLine) -> Result<String, Serial
         }
         parts.push(format!("line: {id}"));
     }
-    if let Some(growth) = &line.growth {
-        parts.push(format!("growth: {}", render_growth(growth)));
+    match (&line.growth, line.role) {
+        (Some(growth), _) => parts.push(format!("growth: {}", render_growth(growth))),
+        (None, LineRole::Asset) => parts.push("growth:".to_string()),
+        (None, LineRole::Flow) => {}
+    }
+    if let Some(opening) = &line.opening {
+        parts.push(format!("opening: {}", render_opening(line, opening)?));
     }
     Ok(parts.join(", "))
+}
+
+/// An `opening:` tag's value: a BARE number, at its own places.
+///
+/// Bare because hledger ends a tag's value at the next comma, so a grouped
+/// `$200,000.00` would read back as `$200` — and because the commodity is
+/// already on the row, in the contribution amount every asset row writes. That
+/// is also why a mismatch is refused rather than silently rewritten: one row
+/// cannot mean two commodities, and an override that quietly changed commodity
+/// on a save is money.
+fn render_opening(line: &ScenarioLine, opening: &Amount) -> Result<String, SerializeError> {
+    if line.role != LineRole::Asset {
+        return Err(invalid(
+            "only an asset row may state an opening balance: a flow line has no balance to open",
+        ));
+    }
+    if opening.commodity != line.amount.commodity {
+        return Err(invalid(&format!(
+            "an opening balance must be in the row's own commodity: the row is in \
+             '{}' and the opening in '{}'",
+            line.amount.commodity.0, opening.commodity.0
+        )));
+    }
+    let rendered = render_dec_plain(opening.quantity);
+    check_tag_value(&rendered, "an opening balance")?;
+    Ok(rendered)
 }
 
 /// `3%/yr`, or `0.035/year` when the rate has too few decimal places to be a
@@ -992,7 +1086,7 @@ fn confirm_round_trip(
     source_name: &str,
 ) -> Result<(), SerializeError> {
     let want = prints(&doc.assign(scenario))?;
-    let written = scenario_from_text(text, source_name, "")?;
+    let written = scenario_from_text(text, source_name, "", &doc.declared)?;
     // Against a document with NO blocks, so every chunk of the re-read scenario
     // is printed in file order — the order `want` is already in.
     let got = prints(&assign_to(&written, 0))?;
@@ -1032,8 +1126,12 @@ fn prints(assignment: &Assignment<'_>) -> Result<Vec<String>, SerializeError> {
 ///
 /// # Errors
 /// [`SerializeError`], as [`write_scenario`].
-pub fn new_file(scenario: &Scenario, source_name: &str) -> Result<String, SerializeError> {
-    write_scenario(&ProjectionDoc::empty(), scenario, source_name)
+pub fn new_file(
+    scenario: &Scenario,
+    source_name: &str,
+    declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+) -> Result<String, SerializeError> {
+    write_scenario(&ProjectionDoc::empty(declared), scenario, source_name)
 }
 
 /// A scenario as it is once loaded from a file: every line authored, every
@@ -1085,8 +1183,16 @@ mod tests {
     (expenses:legal)         $45000
 ";
 
+    /// What the main journal declares. Empty is the ordinary case and is still
+    /// a real classification: [`AccountTypes`] INFERS from a root name when
+    /// nothing is declared, so `assets:brokerage` is an asset here for the same
+    /// reason it is one everywhere else in the engine.
+    fn declared() -> BTreeMap<String, crate::reports::account_types::AccountType> {
+        BTreeMap::new()
+    }
+
     fn read(text: &str) -> Scenario {
-        scenario_from_text(text, "p.journal", "fallback").expect("the example parses")
+        scenario_from_text(text, "p.journal", "fallback", &declared()).expect("the example parses")
     }
 
     fn usd(quantity: Dec, precision: u32) -> Amount {
@@ -1108,12 +1214,28 @@ mod tests {
         ScenarioLine {
             id: id.to_string(),
             group: group.to_string(),
+            role: LineRole::Flow,
             account: AccountName(account.to_string()),
             amount,
             period: parse_period_spec(period),
             growth: None,
+            opening: None,
             note: String::new(),
             source: LineSource::Journal,
+        }
+    }
+
+    /// An asset row: the amount is the CONTRIBUTION, `$0` when there is none.
+    fn asset(
+        group: &str,
+        id: &str,
+        account: &str,
+        contribution: Amount,
+        period: &str,
+    ) -> ScenarioLine {
+        ScenarioLine {
+            role: LineRole::Asset,
+            ..line(group, id, account, contribution, period)
         }
     }
 
@@ -1195,7 +1317,12 @@ mod tests {
 
     #[test]
     fn text_that_is_not_a_journal_is_an_error_rather_than_an_empty_scenario() {
-        let error = scenario_from_text("include ./definitely-not-here.journal\n", "p.journal", "");
+        let error = scenario_from_text(
+            "include ./definitely-not-here.journal\n",
+            "p.journal",
+            "",
+            &declared(),
+        );
         assert!(
             matches!(error, Err(SerializeError::Unreadable(_))),
             "{error:?}"
@@ -1214,18 +1341,19 @@ mod tests {
         // hand-built amount can carry a precision no file could state.
         let first = read(EXAMPLE);
         let text = write_scenario(
-            &ProjectionDoc::parse(EXAMPLE, "p.journal").unwrap(),
+            &ProjectionDoc::parse(EXAMPLE, "p.journal", &declared()).unwrap(),
             &first,
             "p.journal",
         )
         .expect("it writes");
-        let second = scenario_from_text(&text, "p.journal", "fallback").expect("it re-reads");
+        let second =
+            scenario_from_text(&text, "p.journal", "fallback", &declared()).expect("it re-reads");
         assert_eq!(first, second);
 
         // And the text is a fixed point too, so a save that changes nothing
         // writes nothing.
         let again = write_scenario(
-            &ProjectionDoc::parse(&text, "p.journal").unwrap(),
+            &ProjectionDoc::parse(&text, "p.journal", &declared()).unwrap(),
             &second,
             "p.journal",
         )
@@ -1277,13 +1405,13 @@ mod tests {
                 ],
             }],
         };
-        let text = new_file(&scenario, "p.journal").expect("it writes");
+        let text = new_file(&scenario, "p.journal", &declared()).expect("it writes");
         assert!(text.starts_with(
             "; Ledgeline projection\n; projection: Plan B\n; created: 2026-01-01\n; updated: \
              2026-09-20\n\n"
         ));
         assert_eq!(
-            scenario_from_text(&text, "p.journal", "x").unwrap(),
+            scenario_from_text(&text, "p.journal", "x", &declared()).unwrap(),
             scenario
         );
     }
@@ -1306,6 +1434,240 @@ mod tests {
                 "{expected}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Asset rows
+    // -----------------------------------------------------------------------
+
+    /// The format `plans/23-asset-growth.md` verified against hledger 1.52,
+    /// read as the model it describes: a `$0` posting with a `growth:` tag on
+    /// an asset account is an ASSET ROW whose contribution is zero.
+    const ASSETS: &str = "\
+; Ledgeline projection
+; projection: Assets
+
+~ monthly  projection
+    (assets:brokerage)      $0.00  ; growth: 7%/yr
+    (assets:savings)     $2000.00  ; growth: 4%/yr
+    (assets:house)          $0.00  ; growth: 3%/yr, opening: 500000.00
+    (expenses:rent)      $4200.00
+";
+
+    #[test]
+    fn a_growth_tag_on_an_asset_account_reads_as_an_asset_row() {
+        let scenario = read(ASSETS);
+        let roles: Vec<(&str, LineRole)> = scenario
+            .lines
+            .iter()
+            .map(|line| (line.account.0.as_str(), line.role))
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                ("assets:brokerage", LineRole::Asset),
+                ("assets:savings", LineRole::Asset),
+                ("assets:house", LineRole::Asset),
+                // No `growth:` at all, so it is a flow whatever its account.
+                ("expenses:rent", LineRole::Flow),
+            ]
+        );
+        // The amount IS the contribution: `$0` for a balance that only
+        // compounds, and the real figure for one that is paid into.
+        assert_eq!(scenario.lines[0].amount.quantity, Dec::new(0, 2));
+        assert_eq!(scenario.lines[1].amount.quantity, Dec::new(200_000, 2));
+        assert_eq!(
+            scenario.lines[0].growth,
+            Some(Growth {
+                rate: Dec::new(7, 2),
+                unit: GrowthUnit::Year
+            })
+        );
+        // The opening override, in the row's own commodity and style.
+        assert_eq!(scenario.lines[0].opening, None);
+        let house = scenario.lines[2].opening.as_ref().expect("an override");
+        assert_eq!(house.quantity, Dec::new(50_000_000, 2));
+        assert_eq!(house.commodity.0, "$");
+
+        // It survives text and back, byte for byte and field for field.
+        let text = write_scenario(
+            &ProjectionDoc::parse(ASSETS, "p.journal", &declared()).unwrap(),
+            &scenario,
+            "p.journal",
+        )
+        .expect("it writes");
+        assert_eq!(text, ASSETS, "an unchanged scenario rewrites no byte");
+        assert_eq!(read(&text), scenario);
+    }
+
+    /// **The compatibility pin.** A posting with no `growth:` stays a flow line
+    /// WHATEVER its account, so every scenario file written before asset rows
+    /// existed keeps its exact current meaning — including the plan's own `$2M`
+    /// raise into `assets:cash`.
+    #[test]
+    fn a_posting_with_no_growth_tag_is_still_a_flow_line() {
+        let text = "\
+~ monthly  transfers
+    (assets:cash)         $2000.00
+    (assets:brokerage)   $-2000.00  ; line: sweep
+";
+        let scenario = read(text);
+        assert!(
+            scenario
+                .lines
+                .iter()
+                .all(|line| line.role == LineRole::Flow),
+            "{:?}",
+            scenario
+                .lines
+                .iter()
+                .map(|line| (line.account.0.as_str(), line.role))
+                .collect::<Vec<_>>()
+        );
+        assert!(scenario.lines.iter().all(|line| line.opening.is_none()));
+        // …and the plan's own example, which posts a one-off to `assets:cash`,
+        // still reads as the event it is.
+        let plan = read(EXAMPLE);
+        assert!(plan.lines.iter().all(|line| line.role == LineRole::Flow));
+        // Rewriting it changes nothing, so an existing file is not rewritten
+        // by the mere existence of this feature.
+        let rewritten = write_scenario(
+            &ProjectionDoc::parse(EXAMPLE, "p.journal", &declared()).unwrap(),
+            &plan,
+            "p.journal",
+        )
+        .expect("it writes");
+        assert_eq!(rewritten, EXAMPLE);
+    }
+
+    /// A growing FLOW keeps its role: `growth:` alone does not make an asset
+    /// row, or the plan's own `(expenses:rent) $4200 ; growth: 2%/yr` would
+    /// silently become a stock.
+    #[test]
+    fn a_growth_tag_on_a_non_asset_account_stays_a_flow() {
+        let scenario = read(EXAMPLE);
+        let rent = scenario
+            .lines
+            .iter()
+            .find(|line| line.account.0 == "expenses:rent")
+            .expect("the rent line");
+        assert_eq!(rent.role, LineRole::Flow);
+        assert_eq!(
+            rent.growth,
+            Some(Growth {
+                rate: Dec::new(2, 2),
+                unit: GrowthUnit::Year
+            })
+        );
+    }
+
+    /// An asset row with NO rate writes `; growth:` — the tag present, its
+    /// value empty. That is the marker, and it round-trips as `None` rather
+    /// than coming back as a `0%` the user never typed.
+    #[test]
+    fn an_asset_row_with_no_rate_still_writes_the_marker_tag() {
+        let scenario = Scenario {
+            name: "Flat".to_string(),
+            lines: vec![asset(
+                "rule:0",
+                "rule:0:0",
+                "assets:brokerage",
+                usd(Dec::new(0, 2), 2),
+                "monthly",
+            )],
+            ..Scenario::default()
+        };
+        let text = new_file(&scenario, "p.journal", &declared()).expect("it writes");
+        assert!(
+            text.contains("    (assets:brokerage)  $0.00  ; growth:\n"),
+            "{text}"
+        );
+        let reread = scenario_from_text(&text, "p.journal", "x", &declared()).unwrap();
+        assert_eq!(reread.lines[0].role, LineRole::Asset);
+        assert_eq!(reread.lines[0].growth, None);
+        assert_eq!(reread, scenario);
+    }
+
+    /// The account types come from the caller, and a file's own `account`
+    /// directives win over them — so a Spanish chart classifies, and a
+    /// declaration inside the scenario file is enough on its own.
+    #[test]
+    fn the_asset_marker_reads_the_declared_type_not_the_name() {
+        let text = "\
+account activo:inversiones  ; type: A
+
+~ monthly  plan
+    (activo:inversiones)  $0.00  ; growth: 7%/yr
+";
+        // With nothing declared, the file's own directive is what classifies
+        // it: `activo:` infers no type at all.
+        let from_file = scenario_from_text(text, "p.journal", "x", &declared()).unwrap();
+        assert_eq!(from_file.lines[0].role, LineRole::Asset);
+
+        // Without the directive, and with nothing declared, there is no type to
+        // read and the row stays a flow rather than being guessed at.
+        let bare = text.replace("account activo:inversiones  ; type: A\n", "");
+        let guessed = scenario_from_text(&bare, "p.journal", "x", &declared()).unwrap();
+        assert_eq!(guessed.lines[0].role, LineRole::Flow);
+
+        // …and the MAIN journal's declaration is enough by itself.
+        let declared_by_journal: BTreeMap<String, crate::reports::account_types::AccountType> = [(
+            "activo:inversiones".to_string(),
+            crate::reports::account_types::AccountType::Asset,
+        )]
+        .into_iter()
+        .collect();
+        let from_journal =
+            scenario_from_text(&bare, "p.journal", "x", &declared_by_journal).unwrap();
+        assert_eq!(from_journal.lines[0].role, LineRole::Asset);
+    }
+
+    /// An opening balance the writer cannot state truthfully is refused, not
+    /// silently rewritten. Both are money: a commodity that changed on a save
+    /// is a different balance, and a flow line has no balance at all.
+    #[test]
+    fn an_opening_balance_that_cannot_be_written_is_refused() {
+        let mut row = asset(
+            "rule:0",
+            "rule:0:0",
+            "assets:brokerage",
+            usd(Dec::new(0, 2), 2),
+            "monthly",
+        );
+        row.opening = Some(Amount {
+            commodity: Commodity("EUR".to_string()),
+            ..usd(Dec::new(100_000, 2), 2)
+        });
+        let cross_commodity = Scenario {
+            lines: vec![row.clone()],
+            ..Scenario::default()
+        };
+        assert!(
+            matches!(
+                new_file(&cross_commodity, "p.journal", &declared()),
+                Err(SerializeError::Invalid(ref why))
+                    if why.contains("commodity")
+            ),
+            "{:?}",
+            new_file(&cross_commodity, "p.journal", &declared())
+        );
+
+        let on_a_flow = Scenario {
+            lines: vec![ScenarioLine {
+                role: LineRole::Flow,
+                opening: Some(usd(Dec::new(100_000, 2), 2)),
+                ..row
+            }],
+            ..Scenario::default()
+        };
+        assert!(
+            matches!(
+                new_file(&on_a_flow, "p.journal", &declared()),
+                Err(SerializeError::Invalid(ref why)) if why.contains("asset row")
+            ),
+            "{:?}",
+            new_file(&on_a_flow, "p.journal", &declared())
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1334,7 +1696,7 @@ account expenses:rent    ; type: X
     expenses:rent   $4200
     assets:cash    $-4200
 ";
-        let doc = ProjectionDoc::parse(SOURCE, "p.journal").unwrap();
+        let doc = ProjectionDoc::parse(SOURCE, "p.journal", &declared()).unwrap();
         let mut scenario = read(SOURCE);
         assert_eq!(scenario.lines.len(), 2);
         // One number changes, and nothing else.
@@ -1372,7 +1734,7 @@ account expenses:rent    ; type: X
         // new header is INSERTED above it rather than written over it.
         scenario.name = "New".to_string();
         let text = write_scenario(
-            &ProjectionDoc::parse(SOURCE, "p.journal").unwrap(),
+            &ProjectionDoc::parse(SOURCE, "p.journal", &declared()).unwrap(),
             &scenario,
             "p.journal",
         )
@@ -1396,7 +1758,7 @@ account expenses:rent    ; type: X
         let mut scenario = read(SOURCE);
         scenario.lines.retain(|line| line.group == "rule:1");
         let text = write_scenario(
-            &ProjectionDoc::parse(SOURCE, "p.journal").unwrap(),
+            &ProjectionDoc::parse(SOURCE, "p.journal", &declared()).unwrap(),
             &scenario,
             "p.journal",
         )
@@ -1418,7 +1780,7 @@ account expenses:rent    ; type: X
             "weekly",
         ));
         let text = write_scenario(
-            &ProjectionDoc::parse(SOURCE, "p.journal").unwrap(),
+            &ProjectionDoc::parse(SOURCE, "p.journal", &declared()).unwrap(),
             &scenario,
             "p.journal",
         )
@@ -1458,7 +1820,7 @@ account expenses:rent    ; type: X
             };
             assert!(
                 matches!(
-                    new_file(&scenario, "p.journal"),
+                    new_file(&scenario, "p.journal", &declared()),
                     Err(SerializeError::Invalid(_))
                 ),
                 "accepted `{account}`"
@@ -1475,7 +1837,7 @@ account expenses:rent    ; type: X
             ..Scenario::default()
         };
         assert!(matches!(
-            new_file(&scenario, "p.journal"),
+            new_file(&scenario, "p.journal", &declared()),
             Err(SerializeError::Invalid(_))
         ));
     }
@@ -1502,7 +1864,7 @@ account expenses:rent    ; type: X
             ..Scenario::default()
         };
         assert!(matches!(
-            new_file(&scenario, "p.journal"),
+            new_file(&scenario, "p.journal", &declared()),
             Err(SerializeError::Invalid(_))
         ));
     }
@@ -1522,7 +1884,7 @@ account expenses:rent    ; type: X
             };
             assert!(
                 matches!(
-                    new_file(&scenario, "p.journal"),
+                    new_file(&scenario, "p.journal", &declared()),
                     Err(SerializeError::Invalid(_))
                 ),
                 "accepted `{id}`"
@@ -1551,7 +1913,7 @@ account expenses:rent    ; type: X
             ],
             ..Scenario::default()
         };
-        let text = new_file(&scenario, "p.journal").unwrap();
+        let text = new_file(&scenario, "p.journal", &declared()).unwrap();
         assert!(text.contains("(expenses:a)  $1\n"), "{text}");
         assert!(
             text.contains("(expenses:b)  $2  ; line: payroll\n"),
@@ -1574,7 +1936,7 @@ account expenses:rent    ; type: X
             )],
             ..Scenario::default()
         };
-        let text = new_file(&scenario, "p.journal").unwrap();
+        let text = new_file(&scenario, "p.journal", &declared()).unwrap();
         assert!(text.contains("$1875.00"), "{text}");
         assert_eq!(read(&text).lines[0].amount.style.precision, 2);
     }
@@ -1600,7 +1962,7 @@ account expenses:rent    ; type: X
             ],
             ..Scenario::default()
         };
-        let text = new_file(&scenario, "p.journal").unwrap();
+        let text = new_file(&scenario, "p.journal", &declared()).unwrap();
         let columns: Vec<usize> = text
             .lines()
             .filter(|line| line.contains('$'))
@@ -1615,7 +1977,7 @@ account expenses:rent    ; type: X
         const SOURCE: &str = "; projection: A\r\n\r\n~ monthly  p\r\n    (expenses:a)  $1\r\n";
         let scenario = read(SOURCE);
         let text = write_scenario(
-            &ProjectionDoc::parse(SOURCE, "p.journal").unwrap(),
+            &ProjectionDoc::parse(SOURCE, "p.journal", &declared()).unwrap(),
             &scenario,
             "p.journal",
         )

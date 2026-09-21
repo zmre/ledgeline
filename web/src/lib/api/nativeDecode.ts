@@ -102,12 +102,13 @@ import type {
     RulesSourcePref,
     RulesWarning,
 } from "$lib/imports/types";
-import {GROWTH_UNITS, LINE_SOURCES, SCENARIO_INTERVALS} from "$lib/projections/types";
+import {GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "$lib/projections/types";
 import type {
     BalanceSeries,
     EventPosting,
     Growth,
     GrowthUnit,
+    LineRole,
     LineSource,
     Projection,
     ProjectionFile,
@@ -386,10 +387,12 @@ interface RawGrowth {
 interface RawScenarioLine {
     id?: string;
     group?: string;
+    role?: string;
     account?: string;
     amount?: RawScenarioAmount;
     period?: RawScenarioPeriod;
     growth?: RawGrowth | null;
+    opening?: RawScenarioAmount | null;
     note?: string;
     source?: string;
 }
@@ -1782,6 +1785,7 @@ function decodeScenarioAmount(raw: RawScenarioAmount | undefined, context: strin
 const SCENARIO_INTERVAL_VALUES: readonly ScenarioInterval[] = SCENARIO_INTERVALS;
 const GROWTH_UNIT_VALUES: readonly GrowthUnit[] = GROWTH_UNITS;
 const LINE_SOURCE_VALUES: readonly LineSource[] = LINE_SOURCES;
+const LINE_ROLE_VALUES: readonly LineRole[] = LINE_ROLES;
 
 function decodeScenarioPeriod(raw: RawScenarioPeriod | undefined, context: string): ScenarioPeriod {
     if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing period`);
@@ -1810,10 +1814,16 @@ function decodeScenarioLine(raw: RawScenarioLine | undefined, context: string): 
     return Object.freeze({
         id: str(raw.id, `${context} id`),
         group: str(raw.group, `${context} group`),
+        // Required, never defaulted to "flow": the two roles project entirely
+        // different numbers, and a body that lost the key would silently model
+        // a compounding balance as a per-period outflow.
+        role: decodeEnum(LINE_ROLE_VALUES, raw.role, `${context} role`),
         account: str(raw.account, `${context} account`),
         amount: decodeScenarioAmount(raw.amount, `${context} amount`),
         period: decodeScenarioPeriod(raw.period, `${context} period`),
         growth: decodeNullable(raw.growth, `${context} growth`, decodeGrowth),
+        // Nullable but never ABSENT, like every other optional on this wire.
+        opening: decodeNullable(raw.opening, `${context} opening`, decodeScenarioAmount),
         note: str(raw.note, `${context} note`),
         source: decodeEnum(LINE_SOURCE_VALUES, raw.source, `${context} source`),
     });
