@@ -110,8 +110,8 @@
         duplicateRow,
         freshId,
         GROWTH_UNIT_ABBREV,
+        groupLines,
         isIsoDate,
-        logicalRows,
         magnitudeOf,
         mergeStep,
         percentFromRate,
@@ -132,6 +132,7 @@
     import {
         GROWTH_UNITS,
         SCENARIO_INTERVALS,
+        type AddSection,
         type AssetRow,
         type GrowthUnit,
         type HeldSection,
@@ -190,9 +191,18 @@
 
     const titleOf = (section: HeldSection): string => (section === "income" ? "Income" : "Expenses");
 
-    const rowsFor = (section: HeldSection) => logicalRows(scenario.lines, declared, section);
+    /**
+     * The whole table, partitioned ONCE per edit.
+     *
+     * Each section used to ask `logicalRows` for its own rows, which walked the
+     * scenario once per section and resolved every line's account type on each
+     * walk. All four reads touch `line.account` and the scenario is deep
+     * `$state`, so a single keystroke invalidated all four. `groupLines` does
+     * the same work in one pass; this indexes it.
+     */
+    const sections = $derived(groupLines(scenario.lines, declared));
     /** Every `role: "asset"` row, whatever its account and whatever its period. */
-    const assetRows = $derived(logicalRows(scenario.lines, declared, "asset"));
+    const assetRows = $derived(sections.asset);
     const assetNames = $derived(rowNames(assetRows, ASSET_TITLE));
 
     /**
@@ -212,7 +222,7 @@
      */
     const balanceOf = (name: string): string => `the ${name} balance`;
     /** Single-date `~` rules. The engine keeps them LINES; a reader reads them as one-offs, so they show here. */
-    const datedLines = $derived(logicalRows(scenario.lines, declared, "oneoff").flatMap((row) => row.segments));
+    const datedLines = $derived(sections.oneoff.flatMap((row) => row.segments));
 
     /** One accessible name per row of a section, each unique within it — see `rowNames`. */
     const namesFor = (rows: LogicalRow[], section: HeldSection) => rowNames(rows, titleOf(section));
@@ -397,38 +407,30 @@
 
     // --- Rows ----------------------------------------------------------------
 
-    function addLine(section: HeldSection): void {
-        const id = freshId("line", takenIds(scenario));
-        // HELD in the section whose button was pressed — that is what keeps it
-        // there no matter what the user types next, including nothing. The
-        // seeded prefix is only a head start on the typing (`sectionPrefix`).
-        const line: ScenarioLine = {
-            ...blankLine(id, commodity, 2),
-            account: sectionPrefix(section, accountNames, declared),
-            section,
-        };
-        scenario.lines = [...scenario.lines, line];
-        onChange();
-    }
-
     /**
-     * A new ASSET row: a balance that compounds, born with `role: "asset"`.
+     * A new row in `section`, opened on that section's account prefix.
      *
-     * No section hold, unlike `addLine`. This row is held here by its role, and
-     * a hold is a thing only the two flow sections can need.
+     * The two things an ASSET row does differently are the same fact twice: an
+     * asset row is its `role`, where a flow row is its account. So it takes the
+     * asset constructor, and it takes NO section hold — it is held here by that
+     * role, and a hold is a thing only the two flow sections can need.
+     *
+     * A flow row IS held, in the section whose button was pressed, and that is
+     * what keeps it there no matter what the user types next, including
+     * nothing. The seeded prefix is only a head start on the typing
+     * (`sectionPrefix`), never what decides where the row is shown.
      */
-    function addAssetLine(): void {
+    function addRow(section: AddSection): void {
         const id = freshId("line", takenIds(scenario));
-        const line: ScenarioLine = {
-            ...blankAssetLine(id, commodity, 2),
-            account: sectionPrefix("asset", accountNames, declared),
-        };
+        const blank = section === "asset" ? blankAssetLine(id, commodity) : blankLine(id, commodity);
+        const line: ScenarioLine = {...blank, account: sectionPrefix(section, accountNames, declared)};
+        if (section !== "asset") line.section = section;
         scenario.lines = [...scenario.lines, line];
         onChange();
     }
 
     function addEvent(): void {
-        scenario.events = [...scenario.events, blankEvent(freshId("event", takenIds(scenario)), stepDate, commodity, 2)];
+        scenario.events = [...scenario.events, blankEvent(freshId("event", takenIds(scenario)), stepDate, commodity)];
         onChange();
     }
 
@@ -520,6 +522,122 @@
     />
 {/snippet}
 
+<!-- The cells the tables share.
+
+     Income/Expenses and Assets are two tables over the same `ScenarioLine`, and
+     seven of their cells were byte-for-byte copies differing only in an
+     `aria-label` — which is precisely the difference a screen reader user needs
+     and the one a maintainer must not be asked to keep in step by hand.
+
+     So the LABEL is the parameter, and it arrives already composed. The asset
+     table calls a row "the assets:brokerage balance" (`balanceOf`) where the
+     flow table calls it "assets:brokerage", and that choice belongs to the
+     section, not to the box. -->
+{#snippet accountCell(line: ScenarioLine, at: number, showEstimate: boolean)}
+    <td>
+        <div class="flex items-center gap-1">
+            {#if at > 0}
+                <span class="text-base-content/40" title="A later segment of the row above">↳</span>
+            {/if}
+            <AccountInput bind:value={line.account} {accountNames} size="xs" placeholder="account" onCommit={() => commitAccount(line)} />
+            <!-- Not rendered in the Assets table: `estimated` is a seeded FLOW
+                 row's flag, and the seed says why — a gap is measured over
+                 revenue and expense accounts, so there is no such thing as a
+                 seeded asset row. -->
+            {#if showEstimate}
+                {@render estimated(line)}
+            {/if}
+        </div>
+    </td>
+{/snippet}
+
+<!-- `label` is the whole accessible name here, not a row name: this same box is
+     the flow table's "Amount", the asset table's "Contribution" and the one-off
+     table's "Amount for the one-off …", and those are three different words for
+     three different meanings of the row's `amount`. -->
+{#snippet amountCell(line: ScenarioLine, label: string)}
+    <td>
+        <label class="input flex items-center gap-1 input-xs">
+            <span class="text-base-content/50">{line.amount.commodity}</span>
+            <input
+                type="text"
+                inputmode="decimal"
+                class="w-full grow"
+                value={decToInput(magnitudeOf(line.amount))}
+                aria-label={label}
+                onchange={(e) => setMagnitude(line, e.currentTarget.value)}
+            />
+        </label>
+    </td>
+{/snippet}
+
+{#snippet periodCell(line: ScenarioLine, label: string)}
+    <td>
+        {#if line.period.simple === null}
+            <!-- A period this editor cannot rebuild — its `raw` is the only
+                 reading of it, and the engine re-parses exactly that. -->
+            <span class="font-mono text-xs text-base-content/60" title="This recurrence is shown as written">{line.period.raw}</span>
+        {:else}
+            <select class="select w-full select-xs" value={line.period.simple} aria-label={label} onchange={(e) => setInterval(line, e.currentTarget.value)}>
+                {#each SCENARIO_INTERVALS as interval (interval)}
+                    <option value={interval}>{interval}</option>
+                {/each}
+            </select>
+        {/if}
+    </td>
+{/snippet}
+
+{#snippet growthCell(line: ScenarioLine, label: string)}
+    <td>
+        <div class="flex items-center gap-1">
+            <input
+                type="text"
+                inputmode="decimal"
+                class="input w-14 input-xs"
+                placeholder="—"
+                value={growthPercent(line)}
+                aria-label="Growth rate for {label}, in percent"
+                onchange={(e) => setGrowthRate(line, e.currentTarget.value)}
+            />
+            <span class="text-base-content/50">%</span>
+            <select
+                class="select w-16 select-xs"
+                value={growthUnitOf(line)}
+                disabled={line.growth === null}
+                aria-label="Growth period for {label}"
+                onchange={(e) => setGrowthUnit(line, e.currentTarget.value)}
+            >
+                {#each GROWTH_UNITS as unit (unit)}
+                    <option value={unit}>{GROWTH_UNIT_ABBREV[unit]}</option>
+                {/each}
+            </select>
+        </div>
+    </td>
+{/snippet}
+
+<!-- Both ends of a span, because they differ only in which one they are.
+     `to` says "(exclusive)" out loud: it is hledger's own convention and the
+     one thing about a bound a user cannot see from the date in the box. -->
+{#snippet boundCell(line: ScenarioLine, key: "from" | "to", label: string)}
+    <td>
+        <input
+            type="date"
+            class="input w-full input-xs"
+            value={line.period[key] ?? ""}
+            disabled={line.period.simple === null}
+            aria-label={key === "from" ? `From date for ${label}` : `To date for ${label} (exclusive)`}
+            onchange={(e) => setBound(line, key, e.currentTarget.value)}
+        />
+    </td>
+{/snippet}
+
+<!-- Deletes ONE segment (one `~` rule), which is what the later rows of a step
+     change offer instead of a row menu. No `<td>` of its own: two of its three
+     callers share that cell with `rowMenu`. -->
+{#snippet dropSegmentButton(line: ScenarioLine, label: string)}
+    <button type="button" class="btn btn-ghost text-error btn-xs" aria-label={label} onclick={() => dropSegment(line.group)}>✕</button>
+{/snippet}
+
 <div class="flex flex-col gap-4">
     <!-- Mounted always, not conditionally: a live region has to exist BEFORE
          the text lands in it to be announced reliably. `sr-only` while empty,
@@ -529,7 +647,7 @@
     </p>
 
     {#each SECTIONS as section (section.id)}
-        {@const rows = rowsFor(section.id)}
+        {@const rows = sections[section.id]}
         {@const names = namesFor(rows, section.id)}
         <section class="flex flex-col gap-1" data-testid="projection-section-{section.id}">
             <div class="flex flex-wrap items-baseline justify-between gap-2">
@@ -537,7 +655,7 @@
                     {section.title}
                     <span class="ml-1 font-normal text-base-content/50">{section.blurb}</span>
                 </h2>
-                <button type="button" class="btn btn-ghost btn-xs" onclick={() => addLine(section.id)}>+ Add a line</button>
+                <button type="button" class="btn btn-ghost btn-xs" onclick={() => addRow(section.id)}>+ Add a line</button>
             </div>
             {#if rows.length === 0}
                 <p class="py-2 text-sm text-base-content/60">Nothing here yet.</p>
@@ -570,111 +688,17 @@
                                         onfocusin={() => holdSection(line)}
                                         onfocusout={(e) => scheduleRelease(line, e.currentTarget)}
                                     >
-                                        <td>
-                                            <div class="flex items-center gap-1">
-                                                {#if at > 0}
-                                                    <span class="text-base-content/40" title="A later segment of the row above">↳</span>
-                                                {/if}
-                                                <AccountInput
-                                                    bind:value={line.account}
-                                                    {accountNames}
-                                                    size="xs"
-                                                    placeholder="account"
-                                                    onCommit={() => commitAccount(line)}
-                                                />
-                                                {@render estimated(line)}
-                                            </div>
-                                        </td>
-                                        <td>
-                                            <label class="input flex items-center gap-1 input-xs">
-                                                <span class="text-base-content/50">{line.amount.commodity}</span>
-                                                <input
-                                                    type="text"
-                                                    inputmode="decimal"
-                                                    class="w-full grow"
-                                                    value={decToInput(magnitudeOf(line.amount))}
-                                                    aria-label="Amount for {name}"
-                                                    onchange={(e) => setMagnitude(line, e.currentTarget.value)}
-                                                />
-                                            </label>
-                                        </td>
-                                        <td>
-                                            {#if line.period.simple === null}
-                                                <!-- A period this editor cannot rebuild — its `raw` is the only
-                                                     reading of it, and the engine re-parses exactly that. -->
-                                                <span class="font-mono text-xs text-base-content/60" title="This recurrence is shown as written"
-                                                    >{line.period.raw}</span
-                                                >
-                                            {:else}
-                                                <select
-                                                    class="select w-full select-xs"
-                                                    value={line.period.simple}
-                                                    aria-label="Period for {name}"
-                                                    onchange={(e) => setInterval(line, e.currentTarget.value)}
-                                                >
-                                                    {#each SCENARIO_INTERVALS as interval (interval)}
-                                                        <option value={interval}>{interval}</option>
-                                                    {/each}
-                                                </select>
-                                            {/if}
-                                        </td>
-                                        <td>
-                                            <div class="flex items-center gap-1">
-                                                <input
-                                                    type="text"
-                                                    inputmode="decimal"
-                                                    class="input w-14 input-xs"
-                                                    placeholder="—"
-                                                    value={growthPercent(line)}
-                                                    aria-label="Growth rate for {name}, in percent"
-                                                    onchange={(e) => setGrowthRate(line, e.currentTarget.value)}
-                                                />
-                                                <span class="text-base-content/50">%</span>
-                                                <select
-                                                    class="select w-16 select-xs"
-                                                    value={growthUnitOf(line)}
-                                                    disabled={line.growth === null}
-                                                    aria-label="Growth period for {name}"
-                                                    onchange={(e) => setGrowthUnit(line, e.currentTarget.value)}
-                                                >
-                                                    {#each GROWTH_UNITS as unit (unit)}
-                                                        <option value={unit}>{GROWTH_UNIT_ABBREV[unit]}</option>
-                                                    {/each}
-                                                </select>
-                                            </div>
-                                        </td>
-                                        <td>
-                                            <input
-                                                type="date"
-                                                class="input w-full input-xs"
-                                                value={line.period.from ?? ""}
-                                                disabled={line.period.simple === null}
-                                                aria-label="From date for {name}"
-                                                onchange={(e) => setBound(line, "from", e.currentTarget.value)}
-                                            />
-                                        </td>
-                                        <td>
-                                            <input
-                                                type="date"
-                                                class="input w-full input-xs"
-                                                value={line.period.to ?? ""}
-                                                disabled={line.period.simple === null}
-                                                aria-label="To date for {name} (exclusive)"
-                                                onchange={(e) => setBound(line, "to", e.currentTarget.value)}
-                                            />
-                                        </td>
+                                        {@render accountCell(line, at, true)}
+                                        {@render amountCell(line, `Amount for ${name}`)}
+                                        {@render periodCell(line, `Period for ${name}`)}
+                                        {@render growthCell(line, name)}
+                                        {@render boundCell(line, "from", name)}
+                                        {@render boundCell(line, "to", name)}
                                         <td class="text-right">
                                             {#if at === 0}
                                                 {@render rowMenu(row, name)}
                                             {:else}
-                                                <button
-                                                    type="button"
-                                                    class="btn btn-ghost text-error btn-xs"
-                                                    aria-label="Delete this segment of {name}"
-                                                    onclick={() => dropSegment(line.group)}
-                                                >
-                                                    ✕
-                                                </button>
+                                                {@render dropSegmentButton(line, `Delete this segment of ${name}`)}
                                             {/if}
                                         </td>
                                     </tr>
@@ -697,7 +721,7 @@
                 {ASSET_TITLE}
                 <span class="ml-1 font-normal text-base-content/50">What you hold and what it grows at. Only the growth moves net worth.</span>
             </h2>
-            <button type="button" class="btn btn-ghost btn-xs" onclick={addAssetLine}>+ Add an asset</button>
+            <button type="button" class="btn btn-ghost btn-xs" onclick={() => addRow("asset")}>+ Add an asset</button>
         </div>
         {#if assetRows.length === 0}
             <p class="py-2 text-sm text-base-content/60">Nothing here yet. A brokerage account, a 401k, a house.</p>
@@ -726,20 +750,7 @@
                                      section, because only `role` decides it and no box here
                                      edits `role`. -->
                                 <tr data-testid="projection-asset-line" data-line-id={line.id} data-line-group={line.group}>
-                                    <td>
-                                        <div class="flex items-center gap-1">
-                                            {#if at > 0}
-                                                <span class="text-base-content/40" title="A later segment of the row above">↳</span>
-                                            {/if}
-                                            <AccountInput
-                                                bind:value={line.account}
-                                                {accountNames}
-                                                size="xs"
-                                                placeholder="account"
-                                                onCommit={() => commitAccount(line)}
-                                            />
-                                        </div>
-                                    </td>
+                                    {@render accountCell(line, at, false)}
                                     <td>
                                         <div class="flex flex-col gap-0.5">
                                             <!-- GREYED until typed over: the box is empty and the
@@ -776,85 +787,13 @@
                                             {/if}
                                         </div>
                                     </td>
-                                    <td>
-                                        <div class="flex items-center gap-1">
-                                            <input
-                                                type="text"
-                                                inputmode="decimal"
-                                                class="input w-14 input-xs"
-                                                placeholder="—"
-                                                value={growthPercent(line)}
-                                                aria-label="Growth rate for {balanceOf(name)}, in percent"
-                                                onchange={(e) => setGrowthRate(line, e.currentTarget.value)}
-                                            />
-                                            <span class="text-base-content/50">%</span>
-                                            <select
-                                                class="select w-16 select-xs"
-                                                value={growthUnitOf(line)}
-                                                disabled={line.growth === null}
-                                                aria-label="Growth period for {balanceOf(name)}"
-                                                onchange={(e) => setGrowthUnit(line, e.currentTarget.value)}
-                                            >
-                                                {#each GROWTH_UNITS as unit (unit)}
-                                                    <option value={unit}>{GROWTH_UNIT_ABBREV[unit]}</option>
-                                                {/each}
-                                            </select>
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <!-- The row's `amount`. Zero is the normal case and is
-                                             what the file writes as `$0` — a balance that only
-                                             compounds. -->
-                                        <label class="input flex items-center gap-1 input-xs">
-                                            <span class="text-base-content/50">{line.amount.commodity}</span>
-                                            <input
-                                                type="text"
-                                                inputmode="decimal"
-                                                class="w-full grow"
-                                                value={decToInput(magnitudeOf(line.amount))}
-                                                aria-label="Contribution for {name}"
-                                                onchange={(e) => setMagnitude(line, e.currentTarget.value)}
-                                            />
-                                        </label>
-                                    </td>
-                                    <td>
-                                        {#if line.period.simple === null}
-                                            <span class="font-mono text-xs text-base-content/60" title="This recurrence is shown as written"
-                                                >{line.period.raw}</span
-                                            >
-                                        {:else}
-                                            <select
-                                                class="select w-full select-xs"
-                                                value={line.period.simple}
-                                                aria-label="Contribution period for {name}"
-                                                onchange={(e) => setInterval(line, e.currentTarget.value)}
-                                            >
-                                                {#each SCENARIO_INTERVALS as interval (interval)}
-                                                    <option value={interval}>{interval}</option>
-                                                {/each}
-                                            </select>
-                                        {/if}
-                                    </td>
-                                    <td>
-                                        <input
-                                            type="date"
-                                            class="input w-full input-xs"
-                                            value={line.period.from ?? ""}
-                                            disabled={line.period.simple === null}
-                                            aria-label="From date for {balanceOf(name)}"
-                                            onchange={(e) => setBound(line, "from", e.currentTarget.value)}
-                                        />
-                                    </td>
-                                    <td>
-                                        <input
-                                            type="date"
-                                            class="input w-full input-xs"
-                                            value={line.period.to ?? ""}
-                                            disabled={line.period.simple === null}
-                                            aria-label="To date for {balanceOf(name)} (exclusive)"
-                                            onchange={(e) => setBound(line, "to", e.currentTarget.value)}
-                                        />
-                                    </td>
+                                    {@render growthCell(line, balanceOf(name))}
+                                    <!-- The row's `amount`. Zero is the normal case and is what
+                                         the file writes as `$0` — a balance that only compounds. -->
+                                    {@render amountCell(line, `Contribution for ${name}`)}
+                                    {@render periodCell(line, `Contribution period for ${name}`)}
+                                    {@render boundCell(line, "from", balanceOf(name))}
+                                    {@render boundCell(line, "to", balanceOf(name))}
                                     <td class="text-right">
                                         {#if at === 0}
                                             <!-- No "Add a step": see the header. A second bounded
@@ -869,14 +808,7 @@
                                                 ]}
                                             />
                                         {:else}
-                                            <button
-                                                type="button"
-                                                class="btn btn-ghost text-error btn-xs"
-                                                aria-label="Delete this segment of {balanceOf(name)}"
-                                                onclick={() => dropSegment(line.group)}
-                                            >
-                                                ✕
-                                            </button>
+                                            {@render dropSegmentButton(line, `Delete this segment of ${balanceOf(name)}`)}
                                         {/if}
                                     </td>
                                 </tr>
@@ -993,40 +925,12 @@
                                     />
                                 </td>
                                 <td class="text-base-content/60">{line.note === "" ? "from the journal" : line.note}</td>
-                                <td>
-                                    <div class="flex items-center gap-1">
-                                        <AccountInput
-                                            bind:value={line.account}
-                                            {accountNames}
-                                            size="xs"
-                                            placeholder="account"
-                                            onCommit={() => commitAccount(line)}
-                                        />
-                                        {@render estimated(line)}
-                                    </div>
-                                </td>
-                                <td>
-                                    <label class="input flex items-center gap-1 input-xs">
-                                        <span class="text-base-content/50">{line.amount.commodity}</span>
-                                        <input
-                                            type="text"
-                                            inputmode="decimal"
-                                            class="w-full grow"
-                                            value={decToInput(magnitudeOf(line.amount))}
-                                            aria-label="Amount for the one-off {line.account}"
-                                            onchange={(e) => setMagnitude(line, e.currentTarget.value)}
-                                        />
-                                    </label>
-                                </td>
+                                <!-- `at` is 0: a dated line is shown flat, never as a segment of
+                                     the row above, so it never wears the continuation arrow. -->
+                                {@render accountCell(line, 0, true)}
+                                {@render amountCell(line, `Amount for the one-off ${line.account}`)}
                                 <td class="text-right">
-                                    <button
-                                        type="button"
-                                        class="btn btn-ghost text-error btn-xs"
-                                        aria-label="Delete the one-off {line.account}"
-                                        onclick={() => dropSegment(line.group)}
-                                    >
-                                        ✕
-                                    </button>
+                                    {@render dropSegmentButton(line, `Delete the one-off ${line.account}`)}
                                 </td>
                             </tr>
                         {/each}

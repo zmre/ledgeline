@@ -20,6 +20,22 @@ import {categorize} from "./accounts";
  */
 export type AccountType = "asset" | "liability" | "equity" | "revenue" | "expense" | "cash" | "conversion" | "gain";
 
+/**
+ * The subtype hierarchy, stated ONCE.
+ *
+ * hledger's three subtypes and the roots they fold into — verified against
+ * hledger 1.52, whose `type:R` query matches a declared `type:G` account and
+ * whose `type:E` matches a `type:V` one. A type absent from this table is a
+ * root and folds into nothing.
+ *
+ * `unify` and `isAccountType` both read it. They used to list the same three
+ * relations separately, in two different shapes — six ordered pairs in one and
+ * three `if`s in the other — with nothing making them agree. Teaching this
+ * module hledger's next subtype is now a one-line edit rather than an edit in
+ * two places that a test could not tell apart.
+ */
+const PARENT: Partial<Record<AccountType, AccountType>> = {cash: "asset", gain: "revenue", conversion: "equity"};
+
 /** One account's declaration as normalized from /accounts (null = the tag is absent or unrecognized). */
 export interface AccountDecl {
     name: string;
@@ -79,6 +95,20 @@ const TYPE_BY_WORD: Readonly<Record<string, AccountType>> = {
 };
 
 /**
+ * Every `type:` spelling this module accepts — the keys of both tables above.
+ *
+ * Exported for one purpose: the shared truth table
+ * (`fixtures/account-types/classification-cases.json`) pinned EXAMPLES, so
+ * adding a word to `TYPE_BY_WORD` without adding a fixture row still broke
+ * nothing, and a vocabulary that can grow on one side of the wire unobserved is
+ * exactly how the 2026-09 sign bug happened. `accountTypes.test.ts` asserts
+ * this set EQUALS the fixture's, which makes the fixture exhaustive rather than
+ * illustrative — a new spelling is now a failing test until the engine is told
+ * about it too.
+ */
+export const ACCEPTED_TYPE_TAGS: readonly string[] = [...Object.keys(TYPE_BY_LETTER), ...Object.keys(TYPE_BY_WORD)];
+
+/**
  * Parse a `type:` tag value (single letter A/L/E/R/X/C/V/G or a full word),
  * case-insensitively; null when unrecognized.
  *
@@ -107,7 +137,11 @@ export function parseAccountTypeTag(value: string): AccountType | null {
     // AccountType at all. That is worse than null — `declaredTypes` keeps it
     // (it isn't null), every `isAccountType` answers false, and the account
     // belongs to no section instead of falling back to name inference.
-    return table[v] !== undefined && Object.hasOwn(table, v) ? table[v] : null;
+    //
+    // `hasOwn` ALONE gives that protection: it is false for every inherited
+    // key, so the `!== undefined` this used to be guarded by could only ever
+    // have been true where `hasOwn` already was.
+    return Object.hasOwn(table, v) ? table[v] : null;
 }
 
 /** hledger's name-based type inference — the fallback when nothing in the ancestry is declared. null = untyped (no convention match). */
@@ -156,14 +190,13 @@ const MEMO = new WeakMap<ReadonlyMap<string, AccountType>, Map<string, AccountTy
 
 /**
  * Fold two types into the one that describes both, or null when they genuinely
- * disagree. Subtypes collapse into their parent, mirroring `isAccountType`'s
- * hierarchy. Port of the engine's `unify`.
+ * disagree. A subtype collapses into its parent (see `PARENT`). Port of the
+ * engine's `unify`.
  */
 function unify(a: AccountType, b: AccountType): AccountType | null {
     if (a === b) return a;
-    if ((a === "cash" && b === "asset") || (a === "asset" && b === "cash")) return "asset";
-    if ((a === "gain" && b === "revenue") || (a === "revenue" && b === "gain")) return "revenue";
-    if ((a === "conversion" && b === "equity") || (a === "equity" && b === "conversion")) return "equity";
+    if (PARENT[a] === b) return b;
+    if (PARENT[b] === a) return a;
     return null;
 }
 
@@ -231,8 +264,7 @@ function resolveUncached(account: string, declared: ReadonlyMap<string, AccountT
  * Port of the engine's `is_account_type`/`is_category`, and the call every
  * classification should make instead of `resolveAccountType(...) === "x"`.
  * `cash` counts as an `asset`, `gain` as a `revenue` and `conversion` as an
- * `equity` — verified against hledger 1.52, whose `type:R` query matches a
- * declared `type:G` account and whose `type:E` matches a `type:V` one.
+ * `equity` — the `PARENT` table above, which is also what `unify` folds by.
  *
  * The exact-equality form is still right for the one question that is ABOUT a
  * subtype: `cashPredicate` asks "is this Cash", not "is this an asset".
@@ -240,10 +272,7 @@ function resolveUncached(account: string, declared: ReadonlyMap<string, AccountT
 export function isAccountType(account: string, declared: ReadonlyMap<string, AccountType>, category: AccountType): boolean {
     const resolved = resolveAccountType(account, declared);
     if (resolved === null) return false;
-    if (resolved === "cash") return category === "asset" || category === "cash";
-    if (resolved === "gain") return category === "revenue" || category === "gain";
-    if (resolved === "conversion") return category === "equity" || category === "conversion";
-    return resolved === category;
+    return resolved === category || PARENT[resolved] === category;
 }
 
 /**

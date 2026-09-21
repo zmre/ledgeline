@@ -10,7 +10,7 @@
 // imports no Svelte and reads no clock, so the whole module is unit-testable
 // under node.
 
-import {dec, mul, toNumber, type MixedAmount} from "$lib/domain/money";
+import {dec, maScale, toNumber, type MixedAmount} from "$lib/domain/money";
 import type {BudgetRule} from "$lib/budget/types";
 
 /** Which column the goals are ordered by. */
@@ -66,10 +66,7 @@ const ANNUAL_FACTOR: ReadonlyMap<string, number> = new Map([
 export function annualised(amount: MixedAmount, period: string): MixedAmount {
     const factor = ANNUAL_FACTOR.get(period);
     if (factor === undefined) return amount;
-    const scale = dec(factor, 0);
-    const out: MixedAmount = new Map();
-    for (const [commodity, qty] of amount) out.set(commodity, mul(qty, scale));
-    return out;
+    return maScale(amount, dec(factor, 0));
 }
 
 /**

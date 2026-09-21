@@ -86,6 +86,28 @@ export function maAdd(a: MixedAmount, b: MixedAmount): MixedAmount {
     return out;
 }
 
+/**
+ * Every commodity scaled by one exact factor.
+ *
+ * The caller builds the `Dec`, because the two things that scale money build it
+ * from different material: an annualisation factor is a whole number of periods
+ * (`budget/sort.ts`), a pace fraction is a day ratio snapped to six places
+ * (`reports/budgetSummary.ts`). Both had grown their own copy of this loop.
+ *
+ * Zeros are KEPT, unlike `maAdd` — which is what both copies already did, so
+ * this is their behaviour and not a choice made here. It is a KNOWN
+ * disagreement with the engine: `MixedAmount::ma_scale` prunes a scaled zero,
+ * and only a `× 0` factor (a `$0` goal, a pace fraction of exactly 0) reaches a
+ * state where the two answer differently — an empty map there, a `{$: 0}` here.
+ * `sortMagnitude` reads that empty map as zero and the one-entry map as zero
+ * too, so nothing on this side turns on it today.
+ */
+export function maScale(a: MixedAmount, factor: Dec): MixedAmount {
+    const out: MixedAmount = new Map();
+    for (const [commodity, qty] of a) out.set(commodity, mul(qty, factor));
+    return out;
+}
+
 export function maNeg(a: MixedAmount): MixedAmount {
     const out: MixedAmount = new Map();
     for (const [commodity, qty] of a) out.set(commodity, neg(qty));
@@ -97,6 +119,31 @@ export function maIsZero(a: MixedAmount): boolean {
         if (!isZero(qty)) return false;
     }
     return true;
+}
+
+/**
+ * Every commodity mentioned, MOST-USED FIRST, ties alphabetical.
+ *
+ * "Most used" counts the amounts that MENTION a commodity, not the magnitudes
+ * in it: a journal holding one $5,000,000 balance and forty €3 ones is mostly a
+ * euro journal, and this is what a currency selector should open on and what a
+ * single-commodity chart should plot.
+ *
+ * Three surfaces had each written this tally out — the currency selector on
+ * Balances, the one on Insights, and the projection charts' pick of what to
+ * draw. Taking an `Iterable` rather than an array is what lets the third pass a
+ * generator over five separate series without materialising them.
+ *
+ * The order is TOTAL: the alphabetical tiebreak means the answer does not
+ * depend on the order the amounts arrived in, so a reload cannot change which
+ * commodity a chart opens on.
+ */
+export function rankCommodities(amounts: Iterable<MixedAmount>): string[] {
+    const counts = new Map<string, number>();
+    for (const amount of amounts) {
+        for (const commodity of amount.keys()) counts.set(commodity, (counts.get(commodity) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort(([aName, aCount], [bName, bCount]) => bCount - aCount || (aName < bName ? -1 : 1)).map(([name]) => name);
 }
 
 /**

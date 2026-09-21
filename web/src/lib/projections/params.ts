@@ -14,6 +14,7 @@
 // the ask actually asked for.
 
 import {MAX_COUNT, type ReportInterval} from "$lib/reports/ui/params";
+import {clampedInt, oneOf} from "$lib/url/params";
 
 /** Which of the three report tabs the bottom half is showing. */
 export type ProjectionTab = "net" | "cash" | "worth";
@@ -77,17 +78,6 @@ export function projectionParamsToSearch(params: ProjectionParams): string {
 }
 
 const INTERVALS: readonly ReportInterval[] = ["monthly", "quarterly", "yearly"];
-
-/** A value validated against a closed vocabulary, falling back when it is not a member. */
-function oneOf<T extends string>(allowed: readonly T[], value: string | null, dflt: T): T {
-    return allowed.find((member) => member === value) ?? dflt;
-}
-
-/** An integer param clamped to `[lo, hi]`; absent or malformed falls back. */
-function clampedInt(value: string | null, lo: number, hi: number, dflt: number): number {
-    if (value === null || !/^\d+$/.test(value)) return dflt;
-    return Math.min(Math.max(Number(value), lo), hi);
-}
 
 /**
  * Parse a query string (with or without a leading "?"); absent or malformed

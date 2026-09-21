@@ -108,9 +108,6 @@ import type {
     BalanceSeries,
     EventPosting,
     Growth,
-    GrowthUnit,
-    LineRole,
-    LineSource,
     Projection,
     ProjectionFile,
     ProjectionIndex,
@@ -119,7 +116,6 @@ import type {
     ScenarioAmount,
     ScenarioEvent,
     ScenarioFile,
-    ScenarioInterval,
     ScenarioLine,
     ScenarioPeriod,
 } from "$lib/projections/types";
@@ -1792,11 +1788,6 @@ function decodeScenarioAmount(raw: RawScenarioAmount | undefined, context: strin
     });
 }
 
-const SCENARIO_INTERVAL_VALUES: readonly ScenarioInterval[] = SCENARIO_INTERVALS;
-const GROWTH_UNIT_VALUES: readonly GrowthUnit[] = GROWTH_UNITS;
-const LINE_SOURCE_VALUES: readonly LineSource[] = LINE_SOURCES;
-const LINE_ROLE_VALUES: readonly LineRole[] = LINE_ROLES;
-
 function decodeScenarioPeriod(raw: RawScenarioPeriod | undefined, context: string): ScenarioPeriod {
     if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing period`);
     return Object.freeze({
@@ -1804,7 +1795,7 @@ function decodeScenarioPeriod(raw: RawScenarioPeriod | undefined, context: strin
         raw: str(raw.raw, `${context} raw`),
         // `null` is a real answer — "this period is not a bare fixed interval" —
         // and the engine says it explicitly, so an absent key is not it.
-        simple: decodeNullableEnum(SCENARIO_INTERVAL_VALUES, raw.simple, `${context} simple`),
+        simple: decodeNullableEnum(SCENARIO_INTERVALS, raw.simple, `${context} simple`),
         from: decodeNullableStr(raw.from, `${context} from`),
         to: decodeNullableStr(raw.to, `${context} to`),
     });
@@ -1815,7 +1806,7 @@ function decodeGrowth(raw: RawGrowth, context: string): Growth {
         // A FRACTION (0.03), never a percentage. The `%` belongs to the file
         // format and the UI.
         rate: decodeDec(raw.rate, `${context} rate`),
-        unit: decodeEnum(GROWTH_UNIT_VALUES, raw.unit, `${context} unit`),
+        unit: decodeEnum(GROWTH_UNITS, raw.unit, `${context} unit`),
     });
 }
 
@@ -1827,7 +1818,7 @@ function decodeScenarioLine(raw: RawScenarioLine | undefined, context: string): 
         // Required, never defaulted to "flow": the two roles project entirely
         // different numbers, and a body that lost the key would silently model
         // a compounding balance as a per-period outflow.
-        role: decodeEnum(LINE_ROLE_VALUES, raw.role, `${context} role`),
+        role: decodeEnum(LINE_ROLES, raw.role, `${context} role`),
         account: str(raw.account, `${context} account`),
         amount: decodeScenarioAmount(raw.amount, `${context} amount`),
         period: decodeScenarioPeriod(raw.period, `${context} period`),
@@ -1835,7 +1826,7 @@ function decodeScenarioLine(raw: RawScenarioLine | undefined, context: string): 
         // Nullable but never ABSENT, like every other optional on this wire.
         opening: decodeNullable(raw.opening, `${context} opening`, decodeScenarioAmount),
         note: str(raw.note, `${context} note`),
-        source: decodeEnum(LINE_SOURCE_VALUES, raw.source, `${context} source`),
+        source: decodeEnum(LINE_SOURCES, raw.source, `${context} source`),
     });
 }
 

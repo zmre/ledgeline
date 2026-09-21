@@ -10,6 +10,7 @@
        only the active mode is computed; capped at 6 groups incl. "(other)". -->
 <script lang="ts">
     import {LineChart, PieChart, Tooltip} from "layerchart";
+    import {labelFormatter, tickIndices} from "$lib/components/periodAxis";
     import type {RootCategory} from "$lib/domain/accounts";
     import type {Transaction} from "$lib/domain/types";
     import {colorAt, OTHER_COLOR} from "$lib/format/palette";
@@ -148,12 +149,10 @@
             value: (d: Row) => d.values[s.account] ?? 0,
         }))
     );
-    // Explicit integer ticks so index-based x labels never land between buckets.
-    const xTicks = $derived.by(() => {
-        const step = Math.max(1, Math.ceil(rows.length / 6));
-        return rows.filter((r) => r.i % step === 0 || r.i === rows.length - 1).map((r) => r.i);
-    });
-    const bucketLabel = (i: unknown): string => rows[Math.round(Number(i))]?.bucket ?? "";
+    // Explicit integer ticks so index-based x labels never land between buckets
+    // — `periodAxis` owns both that rule and the spacing, for both period charts.
+    const xTicks = $derived(tickIndices(rows.length));
+    const bucketLabel = $derived(labelFormatter(rows.map((r) => r.bucket)));
 </script>
 
 <div class="w-full">
