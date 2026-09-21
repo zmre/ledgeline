@@ -42,7 +42,7 @@ use super::aggregate::roll_up;
 use super::mixed_amount::MixedAmount;
 use super::periods::{
     Interval, add_days, add_months, bucket_key, bucket_span, bucket_start, clamped_date,
-    compare_iso, days_between, last_n_buckets, parts, weekday_of,
+    compare_iso, days_between, last_n_buckets, months_between, parts, weekday_of,
 };
 use crate::model::{Anchor, PeriodExpr, PeriodKind, PeriodSpec, PeriodicTransaction, Transaction};
 use std::cmp::Ordering;
@@ -128,14 +128,6 @@ const fn period_interval(unit: PeriodExpr) -> Interval {
 /// [`MAX_BUCKETS`]: super::periods::MAX_BUCKETS
 const MAX_OCCURRENCES: usize = 100_000;
 
-/// Whole calendar months from `a`'s month to `b`'s month (`b − a`), ignoring the
-/// day. Negative when `b` precedes `a`.
-fn months_between(a: &str, b: &str) -> i64 {
-    let (ay, am, _) = parts(a);
-    let (by, bm, _) = parts(b);
-    (by * 12 + bm) - (ay * 12 + am)
-}
-
 /// The last day number of `year`-`month`.
 ///
 /// Read back out of [`clamped_date`] rather than from a second month-length
@@ -150,7 +142,13 @@ fn last_day_of(year: i64, month: i64) -> i64 {
 /// 01-31, 02-28, **03-31** (verified against hledger 1.52): each occurrence is
 /// `anchor + n months` with the day clamped for its own target month. Walking
 /// month by month would clamp once and stick at the 28th forever.
-fn step_from(anchor: &str, unit: PeriodExpr, steps: i64) -> String {
+///
+/// `pub(crate)` for [`occurrences`]' reason: [`crate::projections`] steps an
+/// asset row's GROWTH boundaries off an anchor, which is the same question over
+/// a narrower unit set, and its own copy of this table drifting from this one is
+/// how a `3%/yr` row anchored on the 31st stops bumping on the day the rule
+/// beside it fires.
+pub(crate) fn step_from(anchor: &str, unit: PeriodExpr, steps: i64) -> String {
     match unit {
         PeriodExpr::Daily => add_days(anchor, steps),
         PeriodExpr::Weekly => add_days(anchor, steps * 7),

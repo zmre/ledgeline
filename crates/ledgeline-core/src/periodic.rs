@@ -313,11 +313,13 @@ pub struct PeriodicBlock {
     /// no surrounding whitespace trimmed. `None` when the header carries no
     /// comment.
     ///
-    /// Nothing splices it yet. It is exposed now because the document model is
-    /// the one place that knows where a header's parts are, and a later feature
-    /// that rewrites `; growth: 3%/yr` without touching another byte of the rule
-    /// should find that knowledge here rather than re-deriving it from the line
-    /// (plan 22's `PeriodicEdit` variant is the caller).
+    /// CURRENTLY UNREAD, and deliberately so. Nothing splices a header comment —
+    /// the only code that touches this field is this module's own test. It is
+    /// carried anyway because the document model is the one place that knows
+    /// where a header's parts are, and a feature that rewrites `; growth: 3%/yr`
+    /// without disturbing another byte of the rule should find that knowledge
+    /// here rather than re-deriving it from the line. Keep the seam; do not read
+    /// this doc as promising a caller.
     pub comment: Option<Span>,
     /// Indices into [`PeriodicDoc::lines`], in file order.
     pub lines: Vec<usize>,

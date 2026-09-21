@@ -45,7 +45,12 @@ struct BucketData {
 /// recorded in `meta` when a sink is supplied — callers pass one only for the
 /// as-of (latest) bucket so the banner reflects what is genuinely unvalued
 /// there, not the union of every period's misses (see [`net_worth`]).
-fn valued(
+///
+/// `pub(crate)` because [`crate::projections`] opens its cash and net-worth
+/// series on figures that must be denominated exactly as this report's are, and
+/// it had grown a second copy of these six lines. It passes no `meta`: a
+/// projection has no unpriced banner to fill.
+pub(crate) fn valued(
     ma: &MixedAmount,
     target: Option<&Commodity>,
     prices: &PriceDb,
@@ -54,14 +59,12 @@ fn valued(
 ) -> Result<MixedAmount, ReportError> {
     match target {
         None => Ok(ma.clone()),
-        Some(t) => {
-            let v = value_at(ma, t, prices, as_of, meta)?;
-            Ok(if v.is_zero() {
-                MixedAmount::new()
-            } else {
-                MixedAmount::single(t.clone(), v)
-            })
-        }
+        // `MixedAmount::single` already drops a zero quantity, so this is the
+        // empty amount when the valuation comes out zero — no separate branch.
+        Some(t) => Ok(MixedAmount::single(
+            t.clone(),
+            value_at(ma, t, prices, as_of, meta)?,
+        )),
     }
 }
 
@@ -121,11 +124,16 @@ pub fn net_worth(
 /// followed by the explicit `P` directives — so the two entry points value a
 /// position identically. It exists because [`super::insights`] already holds
 /// that set and re-deriving it costs a full pass over every posting per call
-/// (PERF-5c).
+/// (PERF-5c). [`crate::projections`] holds it too, which is why this is
+/// `pub(crate)` rather than `pub(super)`: `project` builds the combined set to
+/// value its own opening balances and then opens its net-worth series here, and
+/// going in through [`net_worth`] made it pay for `infer_market_prices` — a sort
+/// of the whole journal plus an allocation per costed posting — a second time,
+/// on a route the SPA re-runs on a 250 ms keystroke debounce.
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow or bad bucket math.
-pub(super) fn net_worth_priced(
+pub(crate) fn net_worth_priced(
     txns: &[Transaction],
     all_prices: &[PriceDirective],
     opts: &NetWorthOpts,

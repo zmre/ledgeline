@@ -432,6 +432,27 @@ pub(crate) fn clamped_date(year: i64, month: i64, day: i64) -> String {
     to_iso(year, month, day.clamp(1, days_in_month(year, month)))
 }
 
+/// Whole calendar months from `a`'s month to `b`'s month (`b − a`), ignoring the
+/// DAY. Negative when `b` precedes `a`. The month-family companion to
+/// [`days_between`].
+///
+/// Ignoring the day is the whole contract: this counts month BOUNDARIES crossed,
+/// so 2026-01-31 → 2026-02-01 is one. A caller that wants ANNIVERSARIES instead
+/// (2026-01-31 → 2026-02-27 is zero) takes this and clamps — that is exactly
+/// what `projections::whole_months` does, with [`clamped_date`] for the clamp.
+/// Both the budget report's occurrence walk and that clamp had grown their own
+/// copy of these three lines.
+///
+/// NOT `insights`' same-named helper, which answers a different question — how
+/// many months a half-open reporting span COVERS, never negative — and is not
+/// this with a sign.
+#[must_use]
+pub(crate) fn months_between(a: &str, b: &str) -> i64 {
+    let (ay, am, _) = parts(a);
+    let (by, bm, _) = parts(b);
+    (by * 12 + bm) - (ay * 12 + am)
+}
+
 /// Number of days from `a` to `b` (`b − a`); negative when `b` precedes `a`.
 #[must_use]
 pub fn days_between(a: &str, b: &str) -> i64 {
