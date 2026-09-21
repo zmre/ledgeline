@@ -48,11 +48,28 @@ nothing else from it.
 6. **Growth is stepwise**, exactly as plan 22 Decision 4 has it for flows: a
    `7%/yr` row holds flat for twelve months and then bumps. One growth model in
    the product, not two.
-7. **Growth applies to the balance at the START of each growth period, before
-   that period's contributions.** Some convention is needed and this is the
-   conservative one — a contribution made in month eleven does not earn a full
-   year's return. Stated in `docs/projections.md`, because it is exactly the
-   kind of thing that makes a user's spreadsheet disagree with ours.
+7. **A contribution earns no growth until the next rate boundary.** Growth
+   boundaries and contribution occurrences are merged in date order; a
+   contribution dated on a boundary does not earn that step. So with a `7%/yr`
+   rate and monthly contributions, a January deposit and a November deposit both
+   earn nothing that year and both take the full bump on 1 January.
+
+   **This supersedes the first drafting of this decision**, which said growth
+   applies "before that period's contributions" and illustrated it as
+   time-weighting ("a contribution made in month eleven does not earn a full
+   year's return"). That was wrong about the mechanism: nothing is
+   time-weighted, and a January deposit is treated exactly like a November one.
+
+   Confirmed with Patrick on 2026-09-20, against the two alternatives —
+   time-weighting within a period, and an annual rate compounded monthly. The
+   argument for keeping it: the error runs **conservative**, understating growth
+   on contributions rather than inflating a retirement or runway figure; it is
+   one rule rather than two; and it keeps a single balance per row, so the
+   table's Balance column shows exactly the figure the engine used. A user who
+   wants finer granularity enters a monthly rate.
+
+   This belongs in `docs/projections.md` stated plainly, because it is exactly
+   the kind of convention that makes a user's spreadsheet disagree with ours.
 8. **Liabilities are still out.** The row shape would extend to them, but a
    mortgage needs principal-vs-interest, which plan 22 Decision 8 already
    established cannot be recovered from the journal. Assets only; revisit with
