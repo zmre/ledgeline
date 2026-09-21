@@ -41,6 +41,11 @@ pub mod aliases;
 pub mod assertions;
 pub mod convert;
 pub mod decimal;
+// Internal: the directory walk `rules::discovery` and `projections::discovery`
+// share. Deliberately not `pub` — the feature-specific path newtypes are the
+// public surface, and a caller that could run the raw scan could get a path out
+// of it without one.
+pub(crate) mod dirscan;
 pub mod edit;
 pub mod hledger_conf;
 pub mod holdings;

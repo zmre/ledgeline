@@ -18,6 +18,17 @@
 //! journal itself could not have included, and there is no second, hand-rolled
 //! traversal check to get fixed in one place and not the other.
 //!
+//! # The walk itself is [`crate::dirscan`]
+//!
+//! `projections::discovery` asks the same question of the same tree, and used
+//! to answer it with a second copy of this module's walk — same budgets, same
+//! order of checks, same warning strings, kept in step by hand. It is one copy
+//! now. Everything the next few sections argue about — the symlink refusal, the
+//! hidden-entry skip, the entry and warning budgets, the never-echo-a-path rule
+//! — is implemented there and parameterised by [`ScanSpec`]; what stays here is
+//! what makes a *rules* scan a rules scan: which names it lists, how many, how
+//! deep, and the summary [`describe`] builds for each file it admits.
+//!
 //! # Stricter than `include`: symlinks are refused outright
 //!
 //! `admit_include` *resolves* a symlink and admits it if it lands inside the
@@ -92,13 +103,14 @@
 //!   and no reason carries a directory. Same rule, and same reason, as the
 //!   warnings above.
 
+use crate::dirscan::{self, ScanSpec};
 use crate::edit::Fingerprint;
 use crate::parse;
 use crate::rules::{
     Item, ItemKind, OpaqueReason, RulesDoc, Separator, SourceSetting, Warning, sanitize_display,
 };
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Budgets
@@ -117,37 +129,22 @@ const MAX_RULES_DEPTH: usize = 8;
 /// 200 is past any real corpus and still a list a GUI can render at once.
 const MAX_RULES_FILES: usize = 200;
 
-/// How many directory entries are EXAMINED — **the load-bearing bound**.
-///
-/// The other three caps bound the *answer*; this one bounds the *work*. A user
-/// whose journal lives in `$HOME` (a completely ordinary choice) would otherwise
-/// turn one scan into a full-disk walk, and no skip list can prevent that in
-/// general: [`SKIP_DIRS`] names the directories that are commonly enormous, not
-/// the ones that happen to be enormous here. Only counting entries and stopping
-/// does. When it trips, [`Discovery::truncated`] is set, so the user is told the
-/// list is a subset rather than shown a subset that looks complete.
-const MAX_SCAN_ENTRIES: usize = 20_000;
-
 /// The largest rules file that is read. Real ones are 2-8 KB; a megabyte is
 /// three orders of magnitude past that, so anything larger is a mis-named file
 /// (or a deliberate one), and reading it into memory to hash and parse buys
 /// nothing. Over-size files are still listed — see [`DiscoveredRules::parsed`].
 const MAX_RULES_BYTES: u64 = 1 << 20;
 
-/// How many scan-level warnings are kept.
-///
-/// **Not in the step's spec**, and added for one reason: a hostile or merely
-/// unlucky tree can produce a warning per skipped entry, up to
-/// [`MAX_SCAN_ENTRIES`] of them, and a later HTTP layer puts these strings in a
-/// dialog. Bounding the answer is the same discipline as bounding the walk. When
-/// it trips, a final path-free warning says so.
-const MAX_SCAN_WARNINGS: usize = 100;
-
 /// Directory names never descended into. These are the ones that are routinely
 /// enormous and never hold a user's import rules; skipping them is a
-/// *performance* courtesy, not a security control — [`MAX_SCAN_ENTRIES`] is the
-/// control. Every directory whose name starts with `.` is skipped too, which is
-/// what keeps `.git` out.
+/// *performance* courtesy, not a security control — the shared scan's entry
+/// budget is the control. Every directory whose name starts with `.` is skipped
+/// too, which is what keeps `.git` out.
+///
+/// Stated here rather than shared with `projections::discovery`, which is why
+/// [`ScanSpec::skip_dirs`] is a field and not a constant: the two scans are
+/// free to disagree about what is worth skipping, and one list for both would
+/// make one of them wrong quietly.
 const SKIP_DIRS: &[&str] = &[
     "node_modules",
     "target",
@@ -186,10 +183,11 @@ const MAX_CELL_CHARS: usize = 120;
 
 /// How many directory entries a `source` **glob** examines.
 ///
-/// The same discipline as [`MAX_SCAN_ENTRIES`], at the scale this needs: a glob
-/// is matched inside exactly one directory with no descent, so the only way it
-/// can be expensive is a directory with a great many names. Far smaller than the
-/// scan's budget because the answer here is a single file, not a listing.
+/// The same discipline as the scan's own entry budget, at the scale this needs:
+/// a glob is matched inside exactly one directory with no descent, so the only
+/// way it can be expensive is a directory with a great many names. Far smaller
+/// than the scan's budget because the answer here is a single file, not a
+/// listing.
 const MAX_GLOB_CANDIDATES: usize = 2_000;
 
 /// [`DiscoveredRules::revision`] for a file whose bytes were never read, so no
@@ -201,8 +199,9 @@ const MAX_GLOB_CANDIDATES: usize = 2_000;
 /// declined to read is a file it will not claim to know the contents of.
 const UNREAD_REVISION: &str = "unread";
 
-// Why `parse.rs`'s MAX_INCLUDE_DEPTH / MAX_INCLUDE_FILES are NOT reused here,
-// said out loud so the next reader does not "unify" the two sets:
+// Why `parse.rs`'s MAX_INCLUDE_DEPTH / MAX_INCLUDE_FILES are NOT reused by the
+// two above (or by the shared scan's entry budget), said out loud so the next
+// reader does not "unify" the two sets:
 //
 // those bound recursion and fan-out through a graph the *journal author* wrote.
 // Every edge is a deliberate directive, the work per edge is a full parse, and
@@ -350,6 +349,22 @@ pub enum CreateRefusal {
     Exists,
 }
 
+impl From<parse::NewPathRefusal> for CreateRefusal {
+    /// The shared guard chain's refusal, under this module's own name.
+    ///
+    /// A re-badging and not a translation: the variants are one-for-one, and
+    /// the type is separate only so a caller matching on it is told which
+    /// feature refused.
+    fn from(refusal: parse::NewPathRefusal) -> Self {
+        match refusal {
+            parse::NewPathRefusal::Malformed => Self::Malformed,
+            parse::NewPathRefusal::OutsideRoot => Self::OutsideRoot,
+            parse::NewPathRefusal::DirectoryMissing => Self::DirectoryMissing,
+            parse::NewPathRefusal::Exists => Self::Exists,
+        }
+    }
+}
+
 /// The result of one scan: what was found, and whether it is all of it.
 #[derive(Debug, Clone)]
 pub struct Discovery {
@@ -360,14 +375,14 @@ pub struct Discovery {
     /// The files found, sorted by [`DiscoveredRules::id`], so two scans of an
     /// unchanged tree produce byte-identical output.
     pub files: Vec<DiscoveredRules>,
-    /// A cap was hit ([`MAX_SCAN_ENTRIES`], [`MAX_RULES_FILES`] or
-    /// [`MAX_RULES_DEPTH`]) and the list is incomplete. Surfaced so the user is
+    /// A cap was hit ([`MAX_RULES_FILES`], [`MAX_RULES_DEPTH`] or the shared
+    /// scan's entry budget) and the list is incomplete. Surfaced so the user is
     /// never silently shown a subset — a rules file that is simply *missing*
     /// from an imports screen is a bug report about the wrong thing.
     pub truncated: bool,
-    /// What the walk skipped and why, each naming a **relative** path only.
-    /// Bounded by [`MAX_SCAN_WARNINGS`]. Warnings about a file that was still
-    /// listed live on that file instead.
+    /// What the walk skipped and why, each naming a **relative** path only, and
+    /// bounded by the shared scan's warning budget. Warnings about a file that
+    /// was still listed live on that file instead.
     pub warnings: Vec<Warning>,
 }
 
@@ -481,10 +496,33 @@ pub enum PreviewUnavailable {
 /// neighbouring directory.
 #[must_use]
 pub fn discover(main_journal_file: &Path) -> Discovery {
-    Scan::new(parse::include_root_for(
-        &main_journal_file.to_string_lossy(),
-    ))
-    .run()
+    let root = parse::include_root_for(&main_journal_file.to_string_lossy());
+    let spec = ScanSpec {
+        name_ok: is_rules_name,
+        skip_dirs: SKIP_DIRS,
+        max_depth: MAX_RULES_DEPTH,
+        max_files: MAX_RULES_FILES,
+        symlink_note: "import rules are only read from real files inside the journal's own \
+                       directory",
+    };
+    // The entry's own name is not wanted here — a rules summary is derived from
+    // the id — so the shared walk's second argument is dropped.
+    let scanned = dirscan::scan(root, &spec, |id, _name, path, meta| {
+        describe(id, path, meta)
+    });
+    let mut files = scanned.files;
+    // Sorted by id, so two scans of an unchanged tree produce byte-identical
+    // output.
+    files.sort_by(|a, b| a.id.cmp(&b.id));
+    Discovery {
+        root: scanned.root,
+        files,
+        truncated: scanned.truncated,
+        // Scan-level strings become `Warning`s here: `line: 0` and no item,
+        // because there is no item and no line, and 0 is not a line number a
+        // parser can produce (they are 1-based).
+        warnings: scanned.warnings.into_iter().map(scan_warning).collect(),
+    }
 }
 
 impl Discovery {
@@ -515,52 +553,25 @@ impl Discovery {
         )
     }
 
-    /// Where a **new** rules file called `id` would go — the one path in this
-    /// crate built by joining a caller's string onto the root.
+    /// Where a **new** rules file called `id` would go.
     ///
     /// # Why this exists at all, given [`resolve`](Self::resolve)
     ///
     /// [`resolve`](Self::resolve) can only ever return a file the scan already
     /// found, which is the whole of its security value and is exactly why it
     /// cannot serve a *create*: the file is not there yet, so there is nothing
-    /// to match against. `root.join(id)` is unavoidable here, and this is the
-    /// only function in either crate that performs it. It is `join`ed once,
-    /// under every guard below, and the result is a [`RulesPath`] — so the write
-    /// path downstream is unchanged and still cannot be handed a path from
-    /// anywhere else.
+    /// to match against. `root.join(id)` is unavoidable, so it happens in
+    /// [`crate::parse::resolve_new_in`] — once, for both features, beside the
+    /// [`crate::parse::confine`] it leans on — under the five guards that
+    /// function's docs argue one at a time. This method supplies the three
+    /// things that are a rules scan's own (how deep, which directories it would
+    /// skip, which names it would list) and wraps the answer in a [`RulesPath`],
+    /// so the write path downstream is unchanged and still cannot be handed a
+    /// path from anywhere else.
     ///
-    /// # The guards, in order, and what each is for
-    ///
-    /// 1. **Shape** ([`CreateRefusal::Malformed`]) — before any filesystem call,
-    ///    and deliberately a *second* copy of the question `rules_api`'s own
-    ///    `validate_id` asks. This module does not get to assume its caller
-    ///    checked: a `..` reaching a `join` is the whole traversal bug class.
-    /// 2. **Discoverability** ([`CreateRefusal::Malformed`]) — no component may
-    ///    be hidden or in [`SKIP_DIRS`], because the scan skips those. Creating
-    ///    a file the scan will never list would write something the user cannot
-    ///    then open, which is a worse outcome than refusing.
-    /// 3. **Confinement** ([`CreateRefusal::OutsideRoot`]) — the same
-    ///    [`crate::parse::confine`] every other reach in this module uses, which
-    ///    canonicalizes the deepest existing ancestor and re-appends the rest,
-    ///    so a symlinked journal directory (`/tmp` → `/private/tmp` on macOS)
-    ///    still compares equal.
-    /// 4. **A real parent directory, reached without a symlink**
-    ///    ([`CreateRefusal::DirectoryMissing`]) — two tests, and it takes both.
-    ///    Guard 3 canonicalizes, so a `symlink_metadata` on its output asks
-    ///    about the link's *target*: a canonical path has no links left in it
-    ///    to refuse. Comparing `confine`'s output against the path as joined is
-    ///    what actually refuses one, exactly as the scan refuses one;
-    ///    `symlink_metadata` then requires the parent to be a real directory.
-    ///    No directory is ever created: a rules file goes beside a journal that
-    ///    already exists.
-    /// 5. **Nothing there already** ([`CreateRefusal::Exists`]) — of any file
-    ///    type, symlinks included.
-    ///
-    /// Guard 5 is **not** what makes the create safe, and must not be relied on
-    /// as if it were: it expires the moment it returns. The write itself has to
-    /// be exclusive (`O_EXCL`), and `rules_api` performs it that way — this is
-    /// the courtesy that produces a good error message, and the open is what
-    /// produces the guarantee.
+    /// Sharing it is not tidiness. When there were two copies, the symlinked-
+    /// parent test that guard 4 turns on was present in one of them and absent
+    /// from the other for as long as both existed.
     ///
     /// # What each refusal may be told to a caller
     ///
@@ -573,72 +584,11 @@ impl Discovery {
     /// exact set `GET /api/rules` already publishes.
     ///
     /// # Errors
-    /// [`CreateRefusal`], one variant per guard above.
+    /// [`CreateRefusal`], one variant per guard.
     pub fn resolve_new(&self, id: &str) -> Result<RulesPath, CreateRefusal> {
-        let parts: Vec<&str> = id.split('/').collect();
-        let well_formed = !id.is_empty()
-            && parts.len() <= MAX_RULES_DEPTH + 1
-            && parts.iter().all(|part| {
-                !part.is_empty()
-                    && *part != "."
-                    && *part != ".."
-                    && !part.starts_with('.')
-                    && !part.contains('\\')
-                    && !part.contains(':')
-                    && !part.chars().any(|c| c.is_ascii_control())
-            })
-            // Every directory component must be one the scan would descend
-            // into, and the file name one it would list. See guard 2.
-            && parts[..parts.len() - 1]
-                .iter()
-                .all(|part| !SKIP_DIRS.contains(part))
-            && parts.last().is_some_and(|name| is_rules_name(name));
-        if !well_formed {
-            return Err(CreateRefusal::Malformed);
-        }
-
-        // THE join. Everything above is what earns it.
-        let candidate = self.root.join(id);
-        let Some(resolved) = parse::confine(&candidate, &self.root) else {
-            return Err(CreateRefusal::OutsideRoot);
-        };
-        // **A symlink anywhere in the id is refused**, and this is the test
-        // that does it. `confine` CANONICALIZES, so a `linked/checking.rules`
-        // whose `linked` is a symlink into the root comes back resolved to the
-        // target and passes containment — which would put the file somewhere
-        // the id does not name, and therefore somewhere the scan lists under a
-        // DIFFERENT id, so the user could not open what they had just created.
-        // The `symlink_metadata` below cannot catch it: by the time it runs the
-        // link has already been resolved away.
-        //
-        // The root is already canonical and every component of a well-formed
-        // id is a plain name, so the two paths are equal exactly when no link
-        // (and no case-folding filesystem) rewrote one of them. Comparing them
-        // fails closed, which is the right direction for a create.
-        //
-        // `projections::Discovery::resolve_new` carries the same line for the
-        // same reason. The two are deliberate near-duplicates of one guard;
-        // neither may be changed without the other.
-        if resolved != candidate {
-            return Err(CreateRefusal::DirectoryMissing);
-        }
-        let Some(parent) = resolved.parent() else {
-            return Err(CreateRefusal::DirectoryMissing);
-        };
-        // On the CANONICAL path's parent, and with `symlink_metadata`: the
-        // parent of a canonical path exists if anything does. Belt and braces
-        // after the comparison above, which is what a directory symlink is
-        // actually refused by.
-        match std::fs::symlink_metadata(parent) {
-            Ok(meta) if meta.file_type().is_dir() => {}
-            _ => return Err(CreateRefusal::DirectoryMissing),
-        }
-        match std::fs::symlink_metadata(&resolved) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RulesPath(resolved)),
-            // Present, or unreadable in a way that is not "absent". Either way
-            // this is not a name a create may have.
-            _ => Err(CreateRefusal::Exists),
-        }
+        parse::resolve_new_in(&self.root, id, MAX_RULES_DEPTH, SKIP_DIRS, is_rules_name)
+            .map(RulesPath)
+            .map_err(CreateRefusal::from)
     }
 
     /// Peek at the data file `id`'s rules describe, for column labels in the
@@ -897,227 +847,7 @@ impl DiscoveredRules {
     /// name that became a different regular file.
     #[must_use]
     pub fn identity_unchanged(&self) -> bool {
-        let Ok(meta) = std::fs::symlink_metadata(&self.path.0) else {
-            return false;
-        };
-        meta.file_type().is_file() && self.identity == file_identity(&meta)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The walk
-// ---------------------------------------------------------------------------
-
-/// One scan in progress.
-///
-/// Iterative with an explicit stack, never recursive: the depth cap already
-/// bounds a well-behaved tree, but recursion turns a *mistake* in that bound
-/// into a stack overflow, which is a `SIGABRT` and not a catchable panic. That
-/// is the failure mode SEC-4 fixed on the include path, and it is not worth
-/// reintroducing for the sake of four fewer lines.
-struct Scan {
-    root: PathBuf,
-    files: Vec<DiscoveredRules>,
-    warnings: Vec<Warning>,
-    truncated: bool,
-    examined: usize,
-}
-
-impl Scan {
-    fn new(root: PathBuf) -> Self {
-        Self {
-            root,
-            files: Vec::new(),
-            warnings: Vec::new(),
-            truncated: false,
-            examined: 0,
-        }
-    }
-
-    /// Walk the tree, depth-first, visiting each directory's entries in name
-    /// order.
-    ///
-    /// The order matters for more than tidiness: when a cap trips, *which*
-    /// entries were examined decides which files survive, and `read_dir` order
-    /// is filesystem- and even run-dependent. Sorting each directory makes a
-    /// truncated result reproducible instead of arbitrary.
-    fn run(mut self) -> Discovery {
-        let mut stack = vec![(self.root.clone(), 0usize)];
-        while let Some((dir, depth)) = stack.pop() {
-            let Some(children) = self.read_dir(&dir) else {
-                continue;
-            };
-            let mut subdirs = Vec::new();
-            for path in children {
-                // Both budgets are checked in exactly one place, before any
-                // work is done for the entry.
-                if self.examined >= MAX_SCAN_ENTRIES || self.files.len() >= MAX_RULES_FILES {
-                    self.truncated = true;
-                    return self.finish();
-                }
-                self.examined += 1;
-                self.visit(&path, depth, &mut subdirs);
-            }
-            // Reversed, so the stack pops them back in name order.
-            stack.extend(subdirs.into_iter().rev().map(|dir| (dir, depth + 1)));
-        }
-        self.finish()
-    }
-
-    fn finish(mut self) -> Discovery {
-        self.files.sort_by(|a, b| a.id.cmp(&b.id));
-        Discovery {
-            root: self.root,
-            files: self.files,
-            truncated: self.truncated,
-            warnings: self.warnings,
-        }
-    }
-
-    /// This directory's entries, sorted, and never more than the remaining entry
-    /// budget.
-    ///
-    /// The `take` is not decoration: collecting a directory of a million names
-    /// before checking the budget would let a single directory defeat
-    /// [`MAX_SCAN_ENTRIES`] by allocating instead of by walking. One entry past
-    /// the budget is taken so the caller's check still trips and sets
-    /// `truncated`.
-    ///
-    /// A per-entry `read_dir` error (a name that vanished mid-walk) drops that
-    /// entry silently; there is nothing to say about it that is both true and
-    /// useful.
-    fn read_dir(&mut self, dir: &Path) -> Option<Vec<PathBuf>> {
-        match std::fs::read_dir(dir) {
-            Ok(entries) => {
-                let mut paths: Vec<PathBuf> = entries
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.path())
-                    .take(MAX_SCAN_ENTRIES.saturating_sub(self.examined) + 1)
-                    .collect();
-                paths.sort();
-                Some(paths)
-            }
-            Err(_) => {
-                // The `io::Error` is deliberately not quoted. It is very
-                // probably path-free, but "very probably" is not a property this
-                // module can assert about every platform's error text, and this
-                // string reaches a dialog.
-                let message = match relative_id(&self.root, dir) {
-                    Some(id) => {
-                        format!(
-                            "the directory {id} could not be read; anything inside it was skipped"
-                        )
-                    }
-                    None => "the journal's own directory could not be read".to_string(),
-                };
-                self.warn(message);
-                None
-            }
-        }
-    }
-
-    /// Classify one directory entry. The order of the checks is the order of the
-    /// guarantees; see the module docs.
-    fn visit(&mut self, path: &Path, depth: usize, subdirs: &mut Vec<PathBuf>) {
-        let (Some(id), Some(name)) = (
-            relative_id(&self.root, path),
-            path.file_name().and_then(std::ffi::OsStr::to_str),
-        ) else {
-            // A name that is not valid UTF-8, or a component that is not a plain
-            // name. Skipped rather than lossily converted: two different names
-            // can lossily convert to the SAME id, and an id that resolves to the
-            // wrong file is a write to the wrong file.
-            self.warn(format!(
-                "{} has a name that is not valid UTF-8 and was skipped",
-                lossy_relative(&self.root, path)
-            ));
-            return;
-        };
-
-        // `symlink_metadata`, never `metadata`: the whole point is to see the
-        // link rather than what it points at.
-        let Ok(meta) = std::fs::symlink_metadata(path) else {
-            self.warn(format!("{id} could not be read and was skipped"));
-            return;
-        };
-        let kind = meta.file_type();
-
-        if kind.is_symlink() {
-            self.warn(format!(
-                "{id} is a symbolic link and was skipped; import rules are only read from real files inside the journal's own directory"
-            ));
-            return;
-        }
-
-        // A leading dot, on a directory OR on a file. A hidden entry is one the
-        // user's own file browser does not show them, so offering `.hidden.rules`
-        // for editing is offering something they cannot see — and a dot-file in a
-        // journal directory is much more often a tool's leftover than a rules
-        // file someone wants listed. For directories this is what keeps `.git/`
-        // and `.direnv/` out. Silent, like [`SKIP_DIRS`]: a policy skip is not a
-        // problem to report.
-        //
-        // Nothing legitimate is lost at the file end. A bare `.rules` is already
-        // refused by [`is_rules_name`] — it would strip to an empty label — so
-        // this only removes names the user deliberately hid. [`Discovery::preview`]
-        // has held a dot entry to the same rule from the start; this makes the
-        // scan agree with it.
-        if name.starts_with('.') {
-            return;
-        }
-
-        if kind.is_dir() {
-            if SKIP_DIRS.contains(&name) {
-                return;
-            }
-            if depth + 1 > MAX_RULES_DEPTH {
-                self.truncated = true;
-                return;
-            }
-            subdirs.push(path.to_path_buf());
-            return;
-        }
-
-        let named_rules = is_rules_name(name);
-        if !kind.is_file() {
-            // FIFOs, devices, sockets. A FIFO is the one that actually bites: a
-            // `read` on one with no writer blocks forever, which would hang the
-            // request that asked for the list, not merely fail it.
-            if named_rules {
-                self.warn(format!("{id} is not a regular file and was skipped"));
-            }
-            return;
-        }
-        if !named_rules {
-            return;
-        }
-
-        // Belt and braces after the symlink refusal above. A `..` cannot appear
-        // in a `read_dir` name and a non-symlink cannot leave the tree, so this
-        // should be unreachable — and it costs one `starts_with` to keep the
-        // containment claim resting on the shared guard rather than on that
-        // argument being right.
-        let Some(resolved) = parse::confine(path, &self.root) else {
-            self.warn(format!(
-                "{id} resolves outside the journal's own directory and was skipped"
-            ));
-            return;
-        };
-
-        let file = describe(id, resolved, &meta);
-        self.files.push(file);
-    }
-
-    /// Record a scan-level warning, up to [`MAX_SCAN_WARNINGS`] of them plus one
-    /// path-free note saying there were more.
-    fn warn(&mut self, message: String) {
-        if self.warnings.len() < MAX_SCAN_WARNINGS {
-            self.warnings.push(scan_warning(message));
-        } else if self.warnings.len() == MAX_SCAN_WARNINGS {
-            self.warnings.push(scan_warning(format!(
-                "more than {MAX_SCAN_WARNINGS} entries were skipped; only the first {MAX_SCAN_WARNINGS} are listed"
-            )));
-        }
+        dirscan::still_the_same_file(&self.path.0, self.identity)
     }
 }
 
@@ -1145,7 +875,7 @@ fn describe(id: String, path: PathBuf, meta: &std::fs::Metadata) -> DiscoveredRu
         opaque_item_count: 0,
         warnings: Vec::new(),
         path: RulesPath(path),
-        identity: file_identity(meta),
+        identity: dirscan::file_identity(meta),
         hints: DataHints::default(),
         id,
     };
@@ -1574,35 +1304,6 @@ pub fn label_for(id: &str) -> String {
     name.to_string()
 }
 
-/// `path` relative to `root`, forward-slash separated, or `None` if it is not
-/// below `root` or has any component that is not a plain UTF-8 name.
-///
-/// Requiring every component to be [`Component::Normal`] is a guard, not
-/// tidiness: it is what makes it impossible for a `.`, a `..`, a root or a
-/// Windows prefix to ever appear inside an id, and therefore impossible for a
-/// well-formed id to mean anything other than "this file, below the root".
-fn relative_id(root: &Path, path: &Path) -> Option<String> {
-    let rest = path.strip_prefix(root).ok()?;
-    let parts = rest
-        .components()
-        .map(|component| match component {
-            Component::Normal(name) => name.to_str(),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>()?;
-    (!parts.is_empty()).then(|| parts.join("/"))
-}
-
-/// A best-effort relative label for an entry that has no id — used only in the
-/// warning that says so. Falls back to a fixed word rather than to the absolute
-/// path, which is the whole point.
-fn lossy_relative(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root).map_or_else(
-        |_| "an entry".to_string(),
-        |rest| rest.to_string_lossy().into_owned(),
-    )
-}
-
 /// A warning about the scan rather than about a line of a file.
 ///
 /// [`Warning::item`] is `None` and [`Warning::line`] is 0: there is no item and
@@ -1619,23 +1320,6 @@ fn scan_warning(message: String) -> Warning {
 /// [`scan_warning`]; named separately because the two land in different lists.
 fn file_warning(message: String) -> Warning {
     scan_warning(message)
-}
-
-/// `(st_dev, st_ino)` — the pair that says "the same file", not "a file with the
-/// same name". See [`DiscoveredRules::identity_unchanged`].
-#[cfg(unix)]
-fn file_identity(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    Some((meta.dev(), meta.ino()))
-}
-
-/// No portable inode identity outside Unix. Recorded as `None`, which
-/// [`DiscoveredRules::identity_unchanged`] treats as "check what can be checked"
-/// — the regular-file test alone — rather than as a failure that would make the
-/// feature unusable there.
-#[cfg(not(unix))]
-fn file_identity(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1682,17 +1366,6 @@ mod tests {
         assert_eq!(label_for("checking.rules"), "checking");
         assert_eq!(label_for("a.CSV.RULES"), "a");
         assert_eq!(label_for("odd.name.rules"), "odd.name");
-    }
-
-    #[test]
-    fn ids_are_relative_forward_slash_paths_of_plain_components() {
-        let root = Path::new("/j");
-        assert_eq!(
-            relative_id(root, Path::new("/j/import/2026/b.rules")).as_deref(),
-            Some("import/2026/b.rules")
-        );
-        assert_eq!(relative_id(root, Path::new("/j")), None, "the root itself");
-        assert_eq!(relative_id(root, Path::new("/other/b.rules")), None);
     }
 
     #[test]

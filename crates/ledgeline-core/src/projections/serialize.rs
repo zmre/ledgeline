@@ -85,8 +85,7 @@ use crate::parse::{self, ParseError};
 use crate::periodic::{MAX_ACCOUNT_BYTES, MAX_DESCRIPTION_BYTES, PeriodicDoc};
 use crate::projections::discovery::{Header, parse_header};
 use crate::projections::{
-    Growth, GrowthUnit, LineRole, LineSource, Scenario, ScenarioEvent, ScenarioLine,
-    virtual_posting,
+    Growth, GrowthUnit, LineRole, Scenario, ScenarioEvent, ScenarioLine, virtual_posting,
 };
 use crate::reports::account_types::{AccountTypes, account_decls_from, declared_types};
 use crate::rules::Newline;
@@ -1125,24 +1124,14 @@ pub fn new_file(
     write_scenario(&ProjectionDoc::empty(declared), scenario, source_name)
 }
 
-/// A scenario as it is once loaded from a file: every line authored, every
-/// group and id canonical.
-///
-/// Exposed for tests and for the one caller that wants to compare what it is
-/// about to write with what is already there.
-#[must_use]
-pub fn authored(mut scenario: Scenario) -> Scenario {
-    for line in &mut scenario.lines {
-        line.source = LineSource::Journal;
-    }
-    scenario
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{AccountName, AmountStyle, Commodity, CommoditySide};
     use crate::parse::parse_period_spec;
+    // Only the tests build a `ScenarioLine` by hand; the writer reads `source`
+    // nowhere, which is the whole point of the test at the bottom of this file.
+    use crate::projections::LineSource;
 
     /// The plan's own worked example, verbatim from §"The file format".
     const EXAMPLE: &str = "\
@@ -1993,9 +1982,13 @@ account expenses:rent    ; type: X
     }
 
     #[test]
-    fn authored_clears_the_seeded_flag() {
+    fn a_saved_scenario_has_no_seeded_lines_left() {
         // A seeded row saved to disk is, from then on, a row the user wrote.
-        let scenario = authored(Scenario {
+        // `write_scenario` renders every line as an ordinary `~` posting and
+        // `chunk_print` never reads `source`, so there is nothing in the file
+        // that could come back as `Unbudgeted` — which is why the flip is two
+        // lines here and not a function.
+        let mut scenario = Scenario {
             lines: vec![ScenarioLine {
                 source: LineSource::Unbudgeted,
                 ..line(
@@ -2007,7 +2000,10 @@ account expenses:rent    ; type: X
                 )
             }],
             ..Scenario::default()
-        });
+        };
+        for line in &mut scenario.lines {
+            line.source = LineSource::Journal;
+        }
         assert_eq!(scenario.lines[0].source, LineSource::Journal);
     }
 }

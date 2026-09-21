@@ -976,6 +976,154 @@ pub fn confine(path: &Path, root: &Path) -> Option<PathBuf> {
     path.starts_with(root).then_some(path)
 }
 
+/// Why [`resolve_new_in`] refused, one variant per guard it applies.
+///
+/// Callers map this onto their own refusal type, because what may be *told* to
+/// a client differs by feature and the split matters: [`OutsideRoot`] and
+/// [`DirectoryMissing`] are the two that could answer a question about the
+/// filesystem, so a caller must collapse them into the same sentence every
+/// other resolution failure returns. [`Exists`] is safe to report as itself —
+/// it is only reachable for a confined, non-hidden, listable name below the
+/// root, which is the exact set the feature's own index already publishes.
+///
+/// [`OutsideRoot`]: NewPathRefusal::OutsideRoot
+/// [`DirectoryMissing`]: NewPathRefusal::DirectoryMissing
+/// [`Exists`]: NewPathRefusal::Exists
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NewPathRefusal {
+    /// Not a shape a scan could ever have produced, or one it would skip: a
+    /// traversal, a hidden component, a skipped directory, a name the feature
+    /// does not list.
+    Malformed,
+    /// Resolves outside `root`.
+    OutsideRoot,
+    /// The directory it would go in is not there, is not a directory, or is
+    /// reached through a symlink. **No directory is ever created.**
+    DirectoryMissing,
+    /// Something is already at that name, of any file type, symlinks included.
+    Exists,
+}
+
+/// Where a **new** file called `id` would go below `root` — the one place in
+/// this crate a caller's string is joined onto a root.
+///
+/// # Why this exists at all, given a discovery scan
+///
+/// A scan can only ever return a file it already found, which is the whole of
+/// its security value and is exactly why it cannot serve a *create*: the file
+/// is not there yet, so there is nothing to match against. `root.join(id)` is
+/// unavoidable, so it happens here, once, beside [`confine`] — for the same
+/// reason `confine` itself was extracted. Two features need this chain, and a
+/// second hand-rolled copy of it is exactly the near-duplicate that gets one of
+/// its copies fixed and not the other. (It already did: the symlinked-parent
+/// test below was missing from one of the two copies this replaced.)
+///
+/// # The guards, in order, and what each is for
+///
+/// 1. **Shape** ([`NewPathRefusal::Malformed`]) — before any filesystem call,
+///    and deliberately a *second* copy of the question the HTTP layer's own
+///    `validate_id` asks. This function does not get to assume its caller
+///    checked: a `..` reaching a `join` is the whole traversal bug class.
+/// 2. **Discoverability** ([`NewPathRefusal::Malformed`]) — no component may be
+///    hidden or in `skip_dirs`, and the final name must satisfy `name_ok`,
+///    because a scan skips exactly those. Creating a file the scan will never
+///    list would write something the user cannot then open, which is a worse
+///    outcome than refusing.
+/// 3. **Confinement** ([`NewPathRefusal::OutsideRoot`]) — [`confine`], the same
+///    function `include` is held to, which canonicalizes the deepest existing
+///    ancestor and re-appends the rest, so a symlinked journal directory
+///    (`/tmp` -> `/private/tmp` on macOS) still compares equal.
+/// 4. **A real parent directory, reached without a symlink**
+///    ([`NewPathRefusal::DirectoryMissing`]) — two tests, and it takes both.
+///    Guard 3 canonicalizes, so a `symlink_metadata` on its output asks about
+///    the link's *target*: a canonical path has no links left in it to refuse.
+///    Comparing `confine`'s output against the path as joined is what actually
+///    refuses one, exactly as a scan refuses one; `symlink_metadata` then
+///    requires the parent to be a real directory. No directory is ever created.
+/// 5. **Nothing there already** ([`NewPathRefusal::Exists`]).
+///
+/// Guard 5 is **not** what makes the create safe, and must not be relied on as
+/// if it were: it expires the moment it returns. The write itself has to be
+/// exclusive (`O_EXCL`), and both callers perform it that way — this is the
+/// courtesy that produces a good error message, and the open is what produces
+/// the guarantee.
+///
+/// The `PathBuf` that comes back is deliberately naked. Each caller wraps it in
+/// its own unforgeable newtype (`RulesPath`, `ProjectionPath`), which is what
+/// carries "you may only write to a path that was resolved" into the write
+/// path; this function cannot mint one and should not be able to.
+///
+/// # Errors
+/// [`NewPathRefusal`], one variant per guard above.
+pub fn resolve_new_in(
+    root: &Path,
+    id: &str,
+    max_depth: usize,
+    skip_dirs: &[&str],
+    name_ok: fn(&str) -> bool,
+) -> Result<PathBuf, NewPathRefusal> {
+    let parts: Vec<&str> = id.split('/').collect();
+    let well_formed = !id.is_empty()
+        && parts.len() <= max_depth + 1
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && *part != "."
+                && *part != ".."
+                && !part.starts_with('.')
+                && !part.contains('\\')
+                && !part.contains(':')
+                && !part.chars().any(|c| c.is_ascii_control())
+        })
+        // Every directory component must be one the scan would descend into,
+        // and the file name one it would list. See guard 2.
+        && parts[..parts.len() - 1]
+            .iter()
+            .all(|part| !skip_dirs.contains(part))
+        && parts.last().is_some_and(|name| name_ok(name));
+    if !well_formed {
+        return Err(NewPathRefusal::Malformed);
+    }
+
+    // THE join. Everything above is what earns it.
+    let candidate = root.join(id);
+    let Some(resolved) = confine(&candidate, root) else {
+        return Err(NewPathRefusal::OutsideRoot);
+    };
+    // **A symlink anywhere in the id is refused**, and this is the test that
+    // does it. `confine` CANONICALIZES, so a `linked/x` whose `linked` is a
+    // symlink into the root comes back resolved to the target and passes
+    // containment — which would put the file somewhere the id does not name,
+    // and therefore somewhere the scan lists under a DIFFERENT id, so the user
+    // could not open what they had just created. The `symlink_metadata` below
+    // cannot catch it: by the time it runs the link has already been resolved
+    // away.
+    //
+    // The root is already canonical and every component of a well-formed id is
+    // a plain name, so the two paths are equal exactly when no link (and no
+    // case-folding filesystem) rewrote one of them. Comparing them fails
+    // closed, which is the right direction for a create.
+    if resolved != candidate {
+        return Err(NewPathRefusal::DirectoryMissing);
+    }
+    let Some(parent) = resolved.parent() else {
+        return Err(NewPathRefusal::DirectoryMissing);
+    };
+    // On the CANONICAL path's parent, and with `symlink_metadata`: the parent
+    // of a canonical path exists if anything does. Belt and braces after the
+    // comparison above, which is what a directory symlink is actually refused
+    // by.
+    match std::fs::symlink_metadata(parent) {
+        Ok(meta) if meta.file_type().is_dir() => {}
+        _ => return Err(NewPathRefusal::DirectoryMissing),
+    }
+    match std::fs::symlink_metadata(&resolved) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(resolved),
+        // Present, or unreadable in a way that is not "absent". Either way this
+        // is not a name a create may have.
+        _ => Err(NewPathRefusal::Exists),
+    }
+}
+
 /// The first HIDDEN component of `path` below `root` — the one thing an
 /// `include` may not reach into, on top of confinement.
 ///
