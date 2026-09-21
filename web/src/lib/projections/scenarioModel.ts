@@ -24,7 +24,7 @@ import {encodeDec} from "$lib/api/editMapping";
 import type {RunProjectionBody, WireScenarioIn} from "$lib/api/native";
 import {absDec} from "$lib/format/amounts";
 import {neg, type Dec} from "$lib/domain/money";
-import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
+import {isAccountType, type AccountType} from "$lib/domain/accountTypes";
 import type {ISODate} from "$lib/domain/types";
 import type {
     AddSection,
@@ -55,9 +55,16 @@ export function isIsoDate(value: string): boolean {
 // The sign
 // ---------------------------------------------------------------------------
 
-/** Whether postings to this account are written negative — i.e. it is revenue. */
+/**
+ * Whether postings to this account are written negative — i.e. it is revenue.
+ *
+ * `isAccountType`, not `resolveAccountType(...) === "revenue"`: a declared
+ * `type: G` gain is revenue to the engine (hledger's `type:R` query matches
+ * one), and a row the engine books as revenue while this says otherwise is a row
+ * whose amount reaches the engine with the wrong sign.
+ */
 export function isRevenueAccount(account: string, declared: ReadonlyMap<string, AccountType>): boolean {
-    return resolveAccountType(account, declared) === "revenue";
+    return isAccountType(account, declared, "revenue");
 }
 
 /**
@@ -316,7 +323,9 @@ export function sectionPrefix(section: AddSection, accountNames: readonly string
     const want: AccountType = SECTION_TYPE[section];
     const counts = new Map<string, number>();
     for (const name of accountNames) {
-        if (resolveAccountType(name, declared) !== want) continue;
+        // `isAccountType`, so a journal whose bank accounts are declared
+        // `type: C` still teaches this the name of its asset root.
+        if (!isAccountType(name, declared, want)) continue;
         const top = name.split(":")[0];
         counts.set(top, (counts.get(top) ?? 0) + 1);
     }

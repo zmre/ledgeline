@@ -1526,3 +1526,117 @@ the asset rows.
 in the decoder: every row of the seed golden is a flow, so a decoder that fell
 back to `"flow"` would absorb a rename of `role` there and the sweep would demand
 a new entry. The list may only shrink.
+
+### 42. An expense that pays money in: the browser's `type:` vocabulary drifted
+
+**The report.** "Adding that growth to payroll should have shortened the runway,
+but instead it acted like money was coming in and shows a huge build up of cash
+into infinity."
+
+**The engine was not at fault.** Reproduced against it directly, a
+`(expenses:payroll) $100000 ; growth: 3%/yr` line closes month 36 at −709,080
+with the runway correctly EARLIER than the flat line's. The same line at
+`$-100000` closes at +6,709,080 with no runway at all — an exact match for what
+the user saw. So the defect was upstream: the amount reached the engine already
+negative, on an expense-typed account.
+
+**The root cause.** `web/src/lib/domain/accountTypes.ts` and
+`crates/ledgeline-core/src/reports/account_types.rs` are two implementations of
+one specification, and their `type:` vocabularies had drifted. The engine accepts
+the plurals (`expenses`, `revenues`, `incomes`, `assets`, …) and the `G`/`gain`
+subtype; the browser accepted only hledger's singulars and the seven letters
+`A L E R X C V`. That asymmetry is deliberate on the engine side and documented
+there — hledger REJECTS `type: expenses` with a parse error while we degrade
+silently, so accepting it is what stops a `cogs:` account declaring nothing at
+all (RPT-1). The browser never followed.
+
+A value the browser cannot parse becomes `null`, and `declaredTypes` DROPS a null
+— so the account does not merely resolve to something else, it loses its
+declaration entirely and falls all the way down the ladder to **English name
+inference**. Hence:
+
+```
+account income:contractors  ; type: expenses
+```
+
+resolves as **expense** in the engine and as **revenue** in the browser.
+`signedQuantity` — the one place a scenario amount is ever negated, and correctly
+keyed off the resolved TYPE — then negates the magnitude the user typed. The wire
+carries `(income:contractors) $-100000` to an engine that books it as an expense,
+and a negative expense is an inflow. It compounds, so growth makes it worse:
+money coming in, forever.
+
+The same drift had two further arms, both the "revenue behaves like a cost"
+direction and both fixed here:
+
+- **No declared-descendant step.** The engine resolves a name declared nowhere
+  by consulting its AGREEING declared descendants, which is how the synthetic
+  parent rows a depth-clamped report invents get a type at all. The browser
+  stopped at name inference. The projection seed clamps to depth 2, so
+  `ingresos:consultoria` under a declared `ingresos:consultoria:acme` is a row a
+  user really does edit — and retyping its amount flipped it positive.
+- **No subtype fold.** Every browser site asked
+  `resolveAccountType(...) === "revenue"` where the engine asks
+  `is_account_type(..., Revenue)`, which folds `Gain`. A `type: G` account is
+  revenue to hledger's own `type:R` query and was not revenue to the table.
+
+**The fix.** The browser's resolver is now a faithful port, step for step:
+`parseAccountTypeTag` takes exactly what the engine takes, `resolveAccountType`
+gains the descendant step and its `unify`, and a new `isAccountType` carries the
+fold. `isRevenueAccount` and `sectionPrefix` call it. `AccountType` gained
+`"gain"`, which the compiler forced through `series.ts`'s `TYPE_TO_CATEGORY`.
+
+One engine-side arm of the same class is fixed too: `budget_api::inverted_with`
+decided a goal's written sign with `resolve_account_type == Some(Revenue)` while
+`budget_gaps` SECTIONS the same account with `is_account_type`. A `type: G` goal
+was therefore filed as revenue and written without the inversion — and
+`seed_scenario` reads those goals straight into projection lines.
+
+**Four more divergences, found by reviewing the fix against the original.** Each
+is the same "two implementations of one spec" failure, and each is now a row in
+the shared table:
+
+- **`che(ck|que)ing`** in the browser's cash regex expands to `chequeing`, not
+  `chequing`. The engine's `CASH_SEGMENTS` has `chequing`, so the ordinary
+  British/Canadian `assets:chequing` was Cash to the engine and a plain Asset to
+  the browser — and the Balances tab, which requires Cash exactly, dropped it.
+  Now `che(ck|qu)ing`.
+- **The regex needed the `u` flag.** `matches_cash_name` lowercases non-ASCII and
+  has a test pinning U+212A KELVIN → `k`; a JS `/i` regex does not case-fold
+  U+212A without `u`.
+- **`parseAccountTypeTag` read through `Object.prototype`.** `type: constructor`
+  returned a function — worse than null, because `declaredTypes` KEEPS a non-null
+  and the account then belongs to no section at all instead of falling back to
+  name inference. Now guarded with `Object.hasOwn`.
+- **Adding `"gain"` to the union silently dropped gain-typed rows from three
+  places** that ask `resolveAccountType(...) === "revenue" | "expense"`:
+  `BudgetSummary.svelte`, `xlsx.ts`'s budget sheet (both are a two-section
+  partition with no "other" bucket, so the row appeared nowhere) and the
+  `uncategorized` check rule. All three now call `isAccountType`. This one was a
+  regression introduced BY the fix, which is the argument for the shared table
+  rather than a second pile of one-sided unit tests.
+
+**Why no test caught it.** Every existing test of the sign flip built its
+declaration table by hand, already correct, and so only ever proved that
+`signedQuantity` negates what it is told to negate. Nothing asserted that the
+table is built from what journals actually SAY, and nothing compared the two
+implementations at all.
+
+`fixtures/account-types/classification-cases.json` is now the shared truth table
+for both, checked by `crates/ledgeline-core/tests/account_types.rs` and
+`web/src/lib/domain/accountTypes.test.ts`: 37 tag spellings and 23
+(declarations, account) rows, each answering the resolved type and all four
+subtype-folding membership tests. **Add a row there rather than a one-sided unit
+test** — a test in one language cannot catch the two drifting, which is the
+entire failure mode.
+
+Beside it, `crates/ledgeline-core/tests/projection_directions.rs` pins the
+DIRECTIONS a projection moves in — a cost lowers cash in every bucket, growth on
+a cost shortens the runway and a negative rate lengthens it, a `cogs:`-rooted
+chart projects identically to an `expenses:`-rooted one, a paper gain never
+reaches cash. Every exact-figure test in the existing suite is equally satisfied
+by an engine with the sign of every line backwards, which is why none of them
+said anything. `a_negative_expense_is_an_inflow_which_is_why_the_sign_matters` is
+the join between the two halves: it feeds the engine exactly what the browser
+used to send and pins that the runway disappears, so the browser-side fix is
+demonstrably load-bearing rather than merely asserted to be.

@@ -2,7 +2,7 @@
 // imports only (same convention as lib/reports/). `today()` comes from
 // lib/reports/periods.ts, the codebase's single sanctioned local-Date read.
 
-import {declaredTypes, resolveAccountType, type AccountType} from "../domain/accountTypes";
+import {declaredTypes, isAccountType, type AccountType} from "../domain/accountTypes";
 import {add, isZero, mul, neg, type Dec} from "../domain/money";
 import type {Amount, Transaction} from "../domain/types";
 import {accountBalances} from "../reports/cashBalances";
@@ -106,8 +106,9 @@ function isUncategorized(account: string, declared: ReadonlyMap<string, AccountT
     const segments = account.toLowerCase().split(":");
     if (UNCATEGORIZED_SEGMENTS.has(segments[segments.length - 1])) return true;
     if (segments.length !== 1) return false;
-    const type = resolveAccountType(account, declared);
-    return type === "expense" || type === "revenue";
+    // `isAccountType`: a bare root declared `type: G` is a revenue root with no
+    // category under it, which is exactly the mistake this rule catches.
+    return isAccountType(account, declared, "expense") || isAccountType(account, declared, "revenue");
 }
 
 const uncategorized: CheckRule = {

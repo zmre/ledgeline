@@ -1,5 +1,15 @@
+import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
-import {cashPredicate, declaredTypes, inferAccountType, parseAccountTypeTag, resolveAccountType, type AccountDecl} from "./accountTypes";
+import {
+    cashPredicate,
+    declaredTypes,
+    inferAccountType,
+    isAccountType,
+    parseAccountTypeTag,
+    resolveAccountType,
+    type AccountDecl,
+    type AccountType,
+} from "./accountTypes";
 
 describe("UNIT domain/accountTypes", () => {
     describe("parseAccountTypeTag", () => {
@@ -88,5 +98,69 @@ describe("UNIT domain/accountTypes", () => {
             expect(isCash("assets:bank:savings")).toBe(false); // untyped ⇒ inherits assets = Asset
             expect(isCash("assets:bankofamerica")).toBe(false); // undeclared, inherits assets = Asset (NOT name-cash)
         });
+    });
+});
+
+// ===========================================================================
+// The shared truth table (fixtures/account-types/classification-cases.json)
+// ===========================================================================
+//
+// This module and `crates/ledgeline-core/src/reports/account_types.rs` are two
+// implementations of ONE specification, and both are checked against the same
+// file — see its `_comment`, and `crates/ledgeline-core/tests/account_types.rs`
+// for the other half.
+//
+// The 2026-09 Projections sign bug is why this exists. This module's `type:`
+// vocabulary was a SUBSET of the engine's, so a declaration it could not parse
+// was dropped and the account fell through to English name inference:
+// `income:contractors ; type: expenses` resolved as revenue here and as expense
+// there. `signedQuantity` — the one place a scenario amount is negated — then
+// negated a cost on its way to an engine that booked it as one, and a $100,000
+// payroll paid money IN, forever (plan 22, amendment 42).
+//
+// A unit test for THIS module alone could not have caught that. Only a claim
+// checked on both sides of the wire can.
+
+interface TagRow {
+    _why?: string;
+    value: string;
+    type: AccountType | null;
+}
+interface CaseRow {
+    _why?: string;
+    declared: [string, string][];
+    account: string;
+    type: AccountType | null;
+    isRevenue: boolean;
+    isExpense: boolean;
+    isAsset: boolean;
+    isEquity: boolean;
+}
+
+const shared = JSON.parse(readFileSync(new URL("../../../../fixtures/account-types/classification-cases.json", import.meta.url), "utf8")) as {
+    tags: TagRow[];
+    cases: CaseRow[];
+};
+
+describe("UNIT domain/accountTypes — the engine agrees with this file", () => {
+    it("parses every `type:` spelling the shared table lists", () => {
+        expect(shared.tags.length, "the shared table lost its tag rows").toBeGreaterThanOrEqual(37);
+        for (const row of shared.tags) {
+            expect(parseAccountTypeTag(row.value), `\`; type: ${row.value}\` must parse as the shared table says. ${row._why ?? ""}`).toBe(row.type);
+        }
+    });
+
+    it("resolves every (declarations, account) the shared table lists", () => {
+        expect(shared.cases.length, "the shared table lost its resolution rows").toBeGreaterThanOrEqual(23);
+        for (const row of shared.cases) {
+            const decls: AccountDecl[] = row.declared.map(([name, tag]) => ({name, type: parseAccountTypeTag(tag)}));
+            const declared = declaredTypes(decls);
+            const context = `${row.account} against ${JSON.stringify(row.declared)}. ${row._why ?? ""}`;
+            expect(resolveAccountType(row.account, declared), `resolving ${context}`).toBe(row.type);
+            expect(isAccountType(row.account, declared, "revenue"), `isRevenue for ${context}`).toBe(row.isRevenue);
+            expect(isAccountType(row.account, declared, "expense"), `isExpense for ${context}`).toBe(row.isExpense);
+            expect(isAccountType(row.account, declared, "asset"), `isAsset for ${context}`).toBe(row.isAsset);
+            expect(isAccountType(row.account, declared, "equity"), `isEquity for ${context}`).toBe(row.isEquity);
+        }
     });
 });

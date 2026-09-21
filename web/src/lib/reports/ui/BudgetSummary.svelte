@@ -22,7 +22,7 @@
      render as a red overspend on an income line. The goal marker stays as the
      high-contrast line; the pace mark is a second, quieter tick. -->
 <script lang="ts">
-    import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
+    import {isAccountType, type AccountType} from "$lib/domain/accountTypes";
     import {openJournal} from "$lib/journal/openJournal";
     import {maAdd, maNeg, type MixedAmount} from "$lib/domain/money";
     import type {AmountStyle, ISODate} from "$lib/domain/types";
@@ -174,9 +174,14 @@
     }
 
     const leaves = $derived(budgetLeaves(summarizeBudget(report)));
-    const typeOf = (account: string): AccountType | null => resolveAccountType(account, declared);
-    const income = $derived(leaves.filter((l) => typeOf(l.account) === "revenue"));
-    const expenses = $derived(leaves.filter((l) => typeOf(l.account) === "expense"));
+    // `isAccountType`, so the subtypes fold as the engine folds them. These two
+    // filters are the WHOLE partition — there is no "other" section — so a goal
+    // on a declared `type: G` account that matched neither would appear nowhere
+    // at all, while `budget_gaps` files it under Revenue and the editor writes
+    // it negated as revenue (plan 22, amendment 42).
+    const isType = (account: string, type: AccountType): boolean => isAccountType(account, declared, type);
+    const income = $derived(leaves.filter((l) => isType(l.account, "revenue")));
+    const expenses = $derived(leaves.filter((l) => isType(l.account, "expense")));
     const sections = $derived(
         [buildSection("Income", "Earned", "target", income), buildSection("Expenses", "Spent", "budgeted", expenses)].filter((s): s is Section => s !== null)
     );
