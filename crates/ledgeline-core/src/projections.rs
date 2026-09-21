@@ -121,14 +121,14 @@ use crate::model::{
 use crate::reports::ReportError;
 use crate::reports::account_types::{AccountType, AccountTypes};
 use crate::reports::aggregate::{at_depth, roll_up};
-use crate::reports::budget::{BudgetOpts, budget_gaps, occurrences};
+use crate::reports::budget::{BudgetOpts, budget_gaps, occurrences, step_from};
 use crate::reports::mixed_amount::MixedAmount;
-use crate::reports::net_worth::{NetWorthOpts, net_worth};
+use crate::reports::net_worth::{NetWorthOpts, net_worth_priced, valued};
 use crate::reports::periods::{
-    Interval, add_days, add_months, bucket_end, bucket_key, bucket_start, clamped_date,
-    compare_iso, days_between, next_bucket, next_n_buckets, parts,
+    Interval, bucket_end, bucket_key, bucket_span, bucket_start, clamped_date, compare_iso,
+    days_between, months_between, next_bucket, next_n_buckets, parts,
 };
-use crate::reports::prices::{PriceDb, infer_market_prices, value_at};
+use crate::reports::prices::{PriceDb, infer_market_prices};
 use crate::reports::types::{PeriodReport, PeriodRow};
 
 // ===========================================================================
@@ -167,6 +167,23 @@ impl GrowthUnit {
             "month" | "monthly" | "mo" | "m" => Some(Self::Month),
             "year" | "yearly" | "yr" | "y" | "annual" | "annually" => Some(Self::Year),
             _ => None,
+        }
+    }
+
+    /// The `~`-rule interval this unit steps by.
+    ///
+    /// A growth unit is a strict subset of the rule intervals — there is no
+    /// `3%/quarter` — so [`growth_boundaries`] steps off an anchor through
+    /// [`step_from`], the same table the budget report's occurrences walk,
+    /// rather than a second copy of it. Both need the SAME month clamp
+    /// (`from 2026-01-31` gives 02-28 and then 03-**31**), and one table is how
+    /// a projected growth step keeps landing on the day the rule beside it
+    /// fires.
+    const fn as_period_expr(self) -> PeriodExpr {
+        match self {
+            Self::Week => PeriodExpr::Weekly,
+            Self::Month => PeriodExpr::Monthly,
+            Self::Year => PeriodExpr::Yearly,
         }
     }
 }
@@ -477,22 +494,53 @@ pub struct Projection {
 /// the budget report's `MAX_OCCURRENCES`.
 const MAX_GROWTH_STEPS: i64 = 100_000;
 
-/// A group's postings for one bucket: account name → amount.
-type GroupLegs = BTreeMap<String, MixedAmount>;
+/// Which kind of thing a group of legs came from.
+///
+/// `Event` is declared FIRST so the derived order reproduces the lexical order
+/// of the `"event:{id}"` / `"line:{group}"` strings this replaced (`e` < `l`).
+/// Group order is not cosmetic: it decides the order each bucket's legs are
+/// summed into the running cash and net-worth deltas, and
+/// [`MixedAmount::ma_add_assign`] prunes per addition, so a commodity that nets
+/// to zero and returns could come back at a different scale under a different
+/// order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GroupKind {
+    Event,
+    Line,
+}
+
+/// What [`Layout::per_bucket`] groups legs by: the kind, and the id or group
+/// name that identifies one.
+///
+/// A borrowed pair rather than a `format!`ed key. The key is rebuilt once per
+/// OCCURRENCE — a monthly line over a hundred buckets built a hundred identical
+/// `String`s — and both halves already live in the scenario the layout is
+/// reading, so `&'a str` costs nothing to produce. Ordering is unchanged; see
+/// [`GroupKind`].
+type GroupKey<'a> = (GroupKind, &'a str);
+
+/// A group's postings for one bucket: account name → amount. Borrowed from the
+/// scenario for [`GroupKey`]'s reason — `&str` and `String` order alike, so the
+/// legs still iterate in account order.
+type GroupLegs<'a> = BTreeMap<&'a str, MixedAmount>;
 
 /// The scenario, laid out over the projected buckets.
 ///
 /// A struct rather than a pile of `&mut` parameters: placing a line needs the
-/// span, the bucket index, the per-bucket accumulator, the commodity set AND the
+/// span, the bucket spans, the per-bucket accumulator, the commodity set AND the
 /// warning list, and threading six of those through two free functions is how
 /// one of them silently stops being updated.
+///
+/// `'a` is the scenario's: the group and account keys borrow it.
 struct Layout<'a> {
     start: String,
     end: String,
-    interval: Interval,
-    bucket_index: BTreeMap<&'a str, usize>,
+    /// Each bucket's inclusive `[start, end]` dates, ascending and contiguous —
+    /// what [`Layout::bucket_of`] binary-searches. They carry the bucketing, so
+    /// the layout no longer needs to hold the [`Interval`] that produced them.
+    spans: Vec<(String, String)>,
     /// `[bucket][group][account] → amount`.
-    per_bucket: Vec<BTreeMap<String, GroupLegs>>,
+    per_bucket: Vec<BTreeMap<GroupKey<'a>, GroupLegs<'a>>>,
     /// Per bucket, the amounts that move NET WORTH and nothing else: an asset
     /// row's appreciation, and an opening-balance override's one-off adjustment.
     ///
@@ -515,42 +563,74 @@ struct Layout<'a> {
 /// an asset row's growth land in a commodity the series is not denominated in.
 struct AssetWorld<'a> {
     types: &'a AccountTypes,
-    txns: &'a [Transaction],
+    /// The journal's per-account balances at `as_of`, walked ONCE for the whole
+    /// projection — see [`account_balances_at`]. Not the transactions: every
+    /// asset row seeding itself from them cost a full pass each.
+    balances: &'a AccountBalances<'a>,
     prices: &'a PriceDb,
     target: Option<&'a Commodity>,
     as_of: &'a str,
 }
 
 impl<'a> Layout<'a> {
-    fn new(buckets: &'a [String], start: String, end: String, interval: Interval) -> Self {
-        Self {
+    /// # Errors
+    /// Returns [`ReportError::InvalidBucketKey`] if `buckets` holds a key
+    /// [`bucket_span`] cannot read.
+    fn new(buckets: &[String], start: String, end: String) -> Result<Self, ReportError> {
+        // `bucket_span` clamps a bucket's end to the report's; `end` is the last
+        // bucket's own end, so nothing is actually clamped and these are the
+        // plain `[bucket_start, bucket_end]` pairs.
+        let spans: Vec<(String, String)> = buckets
+            .iter()
+            .map(|key| bucket_span(key, &end))
+            .collect::<Result<_, ReportError>>()?;
+        Ok(Self {
             start,
             end,
-            interval,
-            bucket_index: buckets
-                .iter()
-                .enumerate()
-                .map(|(index, key)| (key.as_str(), index))
-                .collect(),
+            spans,
             per_bucket: (0..buckets.len()).map(|_| BTreeMap::new()).collect(),
             net_worth_only: (0..buckets.len()).map(|_| MixedAmount::new()).collect(),
             assets: Vec::new(),
             commodities: BTreeSet::new(),
             warnings: Vec::new(),
-        }
+        })
     }
 
     /// Which bucket `date` falls in, or `None` when it is outside the span.
+    ///
+    /// A binary search over the bucket spans, which is the idiom the budget and
+    /// net-worth reports already place a posting with. It replaces a
+    /// `bucket_key` + map lookup that allocated a fresh key `String` on every
+    /// call — and this is called once per occurrence, per growth boundary and
+    /// per contribution.
+    ///
+    /// `next_n_buckets` yields CONTIGUOUS buckets oldest → newest, so the `end`
+    /// bounds ascend strictly and every date falls in at most one of them. A
+    /// date past the last bucket lands off the end of the vector; one before the
+    /// first fails the `start` test on bucket 0.
     fn bucket_of(&self, date: &str) -> Option<usize> {
-        self.bucket_index
-            .get(bucket_key(date, self.interval).as_str())
-            .copied()
+        let index = self.spans.partition_point(|(_, end)| end.as_str() < date);
+        let (start, _) = self.spans.get(index)?;
+        (start.as_str() <= date).then_some(index)
+    }
+
+    /// The accumulator for one account's leg of one group in one bucket.
+    ///
+    /// The entry chain written once. [`Layout`]'s own doc argues for the struct
+    /// so this threading happens in one place, and three copies of it had grown
+    /// anyway — a flow line's, an asset row's contribution and an event's.
+    fn leg(&mut self, index: usize, group: GroupKey<'a>, account: &'a str) -> &mut MixedAmount {
+        self.per_bucket[index]
+            .entry(group)
+            .or_default()
+            .entry(account)
+            .or_default()
     }
 
     /// Place one recurring row, whichever kind it is.
     fn place_line(
         &mut self,
-        line: &ScenarioLine,
+        line: &'a ScenarioLine,
         world: &AssetWorld<'_>,
     ) -> Result<(), ReportError> {
         let label = line_label(line);
@@ -570,7 +650,7 @@ impl<'a> Layout<'a> {
 
     /// Place one flow line's occurrences, stepping its growth as the dates
     /// advance.
-    fn place_flow(&mut self, line: &ScenarioLine, label: &str) -> Result<(), ReportError> {
+    fn place_flow(&mut self, line: &'a ScenarioLine, label: &str) -> Result<(), ReportError> {
         if line.growth.is_some() && line.period.kind == PeriodKind::Once {
             self.warnings.push(format!(
                 "{label}: growth is set on a line that fires once, so it never applies"
@@ -581,9 +661,26 @@ impl<'a> Layout<'a> {
         // segment starts — which is what makes the second half of a step change
         // grow from its NEW base rather than from the projection's start.
         let anchor = self.anchor_of(line);
+        // Everything below that is a property of the LINE rather than of one
+        // occurrence, lifted clear of the walk: the group key, the account, and
+        // the growth factor. `1 + rate` in particular was recomputed per
+        // occurrence from inside the `if let`, so it ran even on the occurrences
+        // whose `while` body did not — and `place_asset` had already hoisted its
+        // copy, which is the shape both should have.
+        let group = (GroupKind::Line, line.group.as_str());
+        let account = line.account.0.as_str();
+        let factor = match &line.growth {
+            Some(growth) => Dec::new(1, 0).add(growth.rate)?,
+            None => Dec::new(1, 0),
+        };
         let mut current = MixedAmount::single(line.amount.commodity.clone(), line.amount.quantity);
         let mut applied: i64 = 0;
         let mut overflowed = false;
+        // Whether any occurrence landed inside the span. The commodity is
+        // registered for the mismatch warning only if one did — that was the
+        // effect of registering it below the `bucket_of` guard, and a line that
+        // contributes no money has no money to be mismatched.
+        let mut placed = false;
 
         // `occurrences` returns ASCENDING dates, so the step count is
         // non-decreasing and the growth walk is done once rather than
@@ -596,7 +693,6 @@ impl<'a> Layout<'a> {
                 && !overflowed
             {
                 let wanted = growth_steps(&anchor, &date, growth.unit).min(MAX_GROWTH_STEPS);
-                let factor = Dec::new(1, 0).add(growth.rate)?;
                 while applied < wanted {
                     match grow_once(&current, factor, line.amount.style.precision) {
                         Ok(next) => current = next,
@@ -618,13 +714,11 @@ impl<'a> Layout<'a> {
                     applied += 1;
                 }
             }
+            placed = true;
+            self.leg(index, group, account).ma_add_assign(&current)?;
+        }
+        if placed {
             self.commodities.insert(line.amount.commodity.clone());
-            self.per_bucket[index]
-                .entry(format!("line:{}", line.group))
-                .or_default()
-                .entry(line.account.0.clone())
-                .or_default()
-                .ma_add_assign(&current)?;
         }
         Ok(())
     }
@@ -644,7 +738,7 @@ impl<'a> Layout<'a> {
     ///   Balance column and the net-worth breakdown read.
     fn place_asset(
         &mut self,
-        line: &ScenarioLine,
+        line: &'a ScenarioLine,
         label: &str,
         world: &AssetWorld<'_>,
     ) -> Result<(), ReportError> {
@@ -729,6 +823,12 @@ impl<'a> Layout<'a> {
             occurrences(&self.start, &self.end, &line.period)?
         };
 
+        // Line-constant, lifted clear of the merge walk below for the reason
+        // `place_flow`'s are: the contribution branch rebuilt both per
+        // occurrence.
+        let group = (GroupKind::Line, line.group.as_str());
+        let account = line.account.0.as_str();
+
         // The two date series, merged. GROWTH WINS A TIE: decision 7 applies a
         // step to the balance at the START of its period, before that period's
         // contributions, so a contribution dated on a boundary does not earn
@@ -736,6 +836,9 @@ impl<'a> Layout<'a> {
         let (mut next_step, mut next_contribution) = (0usize, 0usize);
         let mut applied = 0usize;
         let mut overflowed = false;
+        // As in `place_flow`: the commodity is registered only if a contribution
+        // actually landed in a bucket.
+        let mut contributed = false;
         while next_step < steps.len() || next_contribution < contributions.len() {
             let grow_now = match (steps.get(next_step), contributions.get(next_contribution)) {
                 (Some(step), Some(date)) => compare_iso(step, date) != std::cmp::Ordering::Greater,
@@ -782,14 +885,13 @@ impl<'a> Layout<'a> {
             let Some(index) = self.bucket_of(date) else {
                 continue;
             };
-            self.commodities.insert(line.amount.commodity.clone());
-            self.per_bucket[index]
-                .entry(format!("line:{}", line.group))
-                .or_default()
-                .entry(line.account.0.clone())
-                .or_default()
+            contributed = true;
+            self.leg(index, group, account)
                 .accumulate(&line.amount.commodity, line.amount.quantity)?;
             balance.accumulate(&line.amount.commodity, line.amount.quantity)?;
+        }
+        if contributed {
+            self.commodities.insert(line.amount.commodity.clone());
         }
         self.assets.push(AssetRow {
             group: line.group.clone(),
@@ -828,10 +930,12 @@ impl<'a> Layout<'a> {
     /// what the Balance column greys out, and the second is what the curve used.
     /// Without an override they are the same value.
     ///
-    /// The journal's own figure is the SUBTREE balance of the account, valued
-    /// the way the opening net worth beside it is — `assets:broker` means the
-    /// account and everything under it, which is what a user means by it and
-    /// what every other report here rolls up.
+    /// The journal's own figure is the SUBTREE balance of the account
+    /// ([`subtree_balance`], a scan over the one set of per-account balances
+    /// `project` walked the journal for), valued the way the opening net worth
+    /// beside it is — `assets:broker` means the account and everything under it,
+    /// which is what a user means by it and what every other report here rolls
+    /// up.
     ///
     /// An override does not replace the opening balance, because the opening
     /// balance is not this row's to state: it is already inside
@@ -844,11 +948,13 @@ impl<'a> Layout<'a> {
         label: &str,
         world: &AssetWorld<'_>,
     ) -> Result<(MixedAmount, MixedAmount), ReportError> {
+        // No `meta` sink: a projection has no unpriced banner to fill.
         let journal = valued(
-            &account_balance_at(world.txns, &line.account.0, world.as_of)?,
+            &subtree_balance(world.balances, &line.account.0)?,
             world.target,
             world.prices,
             world.as_of,
+            None,
         )?;
         let Some(opening) = &line.opening else {
             return Ok((journal.clone(), journal));
@@ -881,18 +987,21 @@ impl<'a> Layout<'a> {
 
     /// Place one dated event. An event is its own group, so its postings sum
     /// into one residual.
-    fn place_event(&mut self, event: &ScenarioEvent) -> Result<(), ReportError> {
+    fn place_event(&mut self, event: &'a ScenarioEvent) -> Result<(), ReportError> {
         let Some(index) = self.bucket_of(&event.date) else {
             return Ok(());
         };
+        // ONE key for the whole event — it is one group by definition — rather
+        // than one rebuilt per posting.
+        let group = (GroupKind::Event, event.id.as_str());
         for posting in &event.postings {
-            let legs = self.per_bucket[index]
-                .entry(format!("event:{}", event.id))
-                .or_default()
-                .entry(posting.account.0.clone())
-                .or_default();
+            // The commodities are registered in their own pass so that the `&mut
+            // self` the leg borrows does not have to be handed back mid-posting.
             for amount in &posting.amounts {
                 self.commodities.insert(amount.commodity.clone());
+            }
+            let legs = self.leg(index, group, posting.account.0.as_str());
+            for amount in &posting.amounts {
                 legs.accumulate(&amount.commodity, amount.quantity)?;
             }
         }
@@ -943,15 +1052,29 @@ pub fn project(
         .or_else(|| db.base_commodity().cloned());
     let types = AccountTypes::from_declared(opts.declared.clone());
 
+    // ONE walk of the journal for every balance the projection opens on — the
+    // cash total, and one subtree total per asset row. Each of those used to
+    // walk it for itself, so a scenario with A asset rows paid `1 + A` passes
+    // over every posting for what is one pass and a pair of scans over the few
+    // hundred accounts it produces.
+    let balances = account_balances_at(txns, opts.as_of)?;
+
     let opening_cash = valued(
-        &cash_balance_at(txns, opts.as_of, &types)?,
+        &cash_balance(&balances, &types)?,
         target.as_ref(),
         &db,
         opts.as_of,
+        None,
     )?;
-    let opening_net_worth = net_worth(
+    // `net_worth_priced`, not `net_worth`: the combined price set is already in
+    // hand, and the public entry point's first act is to re-derive it — a sort
+    // of the whole journal plus an allocation per costed posting, on a route the
+    // SPA re-runs on a 250 ms keystroke debounce. The set passed is exactly what
+    // `net_worth` would have built (inferred, then explicit), which is that
+    // function's stated contract.
+    let opening_net_worth = net_worth_priced(
         txns,
-        prices,
+        &all_prices,
         &NetWorthOpts {
             end: opts.as_of,
             interval: opts.interval,
@@ -971,12 +1094,12 @@ pub fn project(
     // --- Every projected posting, per bucket, per group. ---
     let world = AssetWorld {
         types: &types,
-        txns,
+        balances: &balances,
         prices: &db,
         target: target.as_ref(),
         as_of: opts.as_of,
     };
-    let mut layout = Layout::new(&buckets, start.clone(), end, opts.interval);
+    let mut layout = Layout::new(&buckets, start.clone(), end)?;
     for line in &scenario.lines {
         layout.place_line(line, &world)?;
     }
@@ -1024,7 +1147,7 @@ pub fn project(
                 {
                     // Cash-flow orientation: revenue up, expenses down.
                     income_own
-                        .entry(account.clone())
+                        .entry((*account).to_string())
                         .or_default()
                         .ma_add_assign(&ma.ma_neg()?)?;
                 }
@@ -1157,19 +1280,18 @@ fn growth_steps(anchor: &str, date: &str, unit: GrowthUnit) -> i64 {
 /// "on which dates does a step complete" for a balance. Both count from the
 /// anchor rather than from the previous boundary, so a row anchored on the 31st
 /// gives Feb 28 and then March **31** — the same clamp a
-/// `~ monthly from 2026-01-31` rule's occurrences get.
+/// `~ monthly from 2026-01-31` rule's occurrences get, and literally the same
+/// code: [`step_from`], reached through [`GrowthUnit::as_period_expr`]. This
+/// module used to hold its own copy of that three-arm table.
 ///
 /// Bounded by [`MAX_GROWTH_STEPS`] for the same reason the flow walk is: a
 /// weekly rate over the longest span `periods::MAX_BUCKETS` allows completes
 /// some 62,000 units, and a cap is cheaper than trusting that.
 fn growth_boundaries(anchor: &str, unit: GrowthUnit, start: &str, end: &str) -> Vec<String> {
+    let unit = unit.as_period_expr();
     let mut out = Vec::new();
     for step in 1..=MAX_GROWTH_STEPS {
-        let date = match unit {
-            GrowthUnit::Week => add_days(anchor, 7 * step),
-            GrowthUnit::Month => add_months(anchor, step),
-            GrowthUnit::Year => add_months(anchor, 12 * step),
-        };
+        let date = step_from(anchor, unit, step);
         if compare_iso(&date, end) == std::cmp::Ordering::Greater {
             break;
         }
@@ -1180,15 +1302,21 @@ fn growth_boundaries(anchor: &str, unit: GrowthUnit, start: &str, end: &str) -> 
     out
 }
 
-/// Whole calendar months from `anchor` to `date`, counted by anniversary.
+/// Whole calendar months from `anchor` to `date`, counted by ANNIVERSARY: the
+/// month difference ([`months_between`]) minus the last one when `date` has not
+/// reached the anchor's day yet.
+///
+/// The difference is `periods`' to own — the budget report's occurrence walk
+/// asks for it too — and this is the clamp on top of it, which is the only part
+/// that belongs to growth.
 fn whole_months(anchor: &str, date: &str) -> i64 {
-    let (anchor_year, anchor_month, anchor_day) = parts(anchor);
-    let (year, month, _) = parts(date);
-    let months = (year * 12 + month) - (anchor_year * 12 + anchor_month);
+    let months = months_between(anchor, date);
     if months <= 0 {
         return 0;
     }
     // The anniversary inside `date`'s own month, clamped to that month's length.
+    let (_, _, anchor_day) = parts(anchor);
+    let (year, month, _) = parts(date);
     let anniversary = clamped_date(year, month, anchor_day);
     if compare_iso(date, &anniversary) == std::cmp::Ordering::Less {
         months - 1
@@ -1197,65 +1325,128 @@ fn whole_months(anchor: &str, date: &str) -> i64 {
     }
 }
 
-/// Cumulative balance of every cash-like account at `as_of`.
+/// Every account's cumulative balance at the as-of date, keyed by its FULL name.
 ///
-/// One filtered pass rather than a bucketed walk: the projection needs a single
-/// snapshot, and `cash_flow`'s per-bucket deltas would have to be re-summed to
-/// produce it. The membership question is `AccountTypes::is_cash`, which is the
-/// same predicate `cash_flow` is handed, so the opening balance and the report
-/// above it cannot disagree about what counts as cash.
-fn cash_balance_at(
-    txns: &[Transaction],
+/// Keys borrow the journal: the map is built and read inside one [`project`]
+/// call, over transactions that outlive it.
+type AccountBalances<'a> = BTreeMap<&'a str, MixedAmount>;
+
+/// Sum every posting dated on or before `as_of` into its own account's total.
+///
+/// ONE pass, where the cash total and each asset row's subtree total used to
+/// take a pass each — `1 + A` walks of every posting of every transaction, for
+/// a snapshot all of them read from the same postings. The scans below answer
+/// both questions off this map: a filter for cash, a range scan for a subtree.
+/// (It is the same trade `budget_report` and `net_worth_priced` already make,
+/// and the same shape of map.)
+///
+/// # The per-account totals are deliberately left UNPRUNED
+///
+/// Both scans below prune ONCE, after merging, exactly where the single
+/// accumulators they replaced did. Pruning here instead would not be the same
+/// function: `budget.rs` explains why at its own remap — a commodity that nets
+/// to zero inside one account still carries the scale that another account's
+/// addition aligns to, and dropping it early silently renormalizes the result.
+///
+/// Regrouping the addends by account is otherwise invisible. [`crate::decimal::Dec::add`]
+/// is exact and its result scale is `max(places)`, so both the value and the
+/// wire `mantissa`/`places` are independent of the order the addends arrive in —
+/// the same argument `net_worth_priced` makes for regrouping them by bucket.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+fn account_balances_at<'a>(
+    txns: &'a [Transaction],
     as_of: &str,
-    types: &AccountTypes,
-) -> Result<MixedAmount, ReportError> {
-    let mut total = MixedAmount::new();
+) -> Result<AccountBalances<'a>, ReportError> {
+    let mut balances = AccountBalances::new();
     for txn in txns {
         for posting in &txn.postings {
             let date = posting.date.as_deref().unwrap_or(&txn.date);
             if compare_iso(date, as_of) == std::cmp::Ordering::Greater {
                 continue;
             }
-            if !types.is_cash(&posting.account.0) {
-                continue;
-            }
+            let entry = balances.entry(posting.account.0.as_str()).or_default();
             for amount in &posting.amounts {
-                total.accumulate(&amount.commodity, amount.quantity)?;
+                entry.accumulate(&amount.commodity, amount.quantity)?;
             }
+        }
+    }
+    Ok(balances)
+}
+
+/// Cumulative balance of every cash-like account.
+///
+/// The projection needs a single snapshot, and `cash_flow`'s per-bucket deltas
+/// would have to be re-summed to produce it. The membership question is
+/// `AccountTypes::is_cash`, which is the same predicate `cash_flow` is handed,
+/// so the opening balance and the report above it cannot disagree about what
+/// counts as cash — and it is now asked once per DISTINCT account rather than
+/// once per posting.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+fn cash_balance(
+    balances: &AccountBalances<'_>,
+    types: &AccountTypes,
+) -> Result<MixedAmount, ReportError> {
+    let mut total = MixedAmount::new();
+    for (account, ma) in balances {
+        if !types.is_cash(account) {
+            continue;
+        }
+        for (commodity, qty) in ma.iter() {
+            total.accumulate(commodity, *qty)?;
         }
     }
     total.drop_zeros();
     Ok(total)
 }
 
-/// Cumulative balance of one account AND ITS DESCENDANTS at `as_of`.
+/// Cumulative balance of one account AND ITS DESCENDANTS.
 ///
 /// The subtree, not the account alone: `assets:broker` means the account and
 /// everything under it — which is what a user typing it into an asset row means
 /// by it, what `net_worth` already totals, and what a journal that books into
 /// `assets:broker:taxable:vti` requires in order to have a balance at all.
+///
+/// A RANGE scan, not a filter over the whole map: every name sharing the `root`
+/// prefix is contiguous in a `BTreeMap`'s lexical order, so the scan opens at
+/// `root` itself and closes at the first name that does not start with it. The
+/// prefix is not the membership test, though — `-` (0x2D) sorts before `:`
+/// (0x3A), so `assets:brokerage-old` sits BETWEEN `assets:brokerage` and
+/// `assets:brokerage:taxable` and has to be stepped over rather than stopped at.
+/// [`in_subtree`] is that test, and the reason this cannot be a `take_while`.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+fn subtree_balance(balances: &AccountBalances<'_>, root: &str) -> Result<MixedAmount, ReportError> {
+    let mut total = MixedAmount::new();
+    for (account, ma) in balances.range(root..) {
+        if !account.starts_with(root) {
+            break;
+        }
+        if !in_subtree(account, root) {
+            continue;
+        }
+        for (commodity, qty) in ma.iter() {
+            total.accumulate(commodity, *qty)?;
+        }
+    }
+    total.drop_zeros();
+    Ok(total)
+}
+
+/// [`subtree_balance`] straight off a journal, for the tests that pin the
+/// subtree rule on its own. Production builds one [`account_balances_at`] map
+/// for the whole projection instead — see [`AssetWorld::balances`].
+#[cfg(test)]
 fn account_balance_at(
     txns: &[Transaction],
     account: &str,
     as_of: &str,
 ) -> Result<MixedAmount, ReportError> {
-    let mut total = MixedAmount::new();
-    for txn in txns {
-        for posting in &txn.postings {
-            let date = posting.date.as_deref().unwrap_or(&txn.date);
-            if compare_iso(date, as_of) == std::cmp::Ordering::Greater {
-                continue;
-            }
-            if !in_subtree(&posting.account.0, account) {
-                continue;
-            }
-            for amount in &posting.amounts {
-                total.accumulate(&amount.commodity, amount.quantity)?;
-            }
-        }
-    }
-    total.drop_zeros();
-    Ok(total)
+    subtree_balance(&account_balances_at(txns, as_of)?, account)
 }
 
 /// Whether `account` is `root` or lies under it.
@@ -1305,24 +1496,6 @@ fn show(ma: &MixedAmount) -> String {
         "nothing".to_string()
     } else {
         parts.join(", ")
-    }
-}
-
-/// Value `ma` into `target`, collapsing to a single-commodity amount — the same
-/// shape `net_worth` gives its own figures, so the two opening balances are
-/// denominated alike.
-fn valued(
-    ma: &MixedAmount,
-    target: Option<&Commodity>,
-    db: &PriceDb,
-    as_of: &str,
-) -> Result<MixedAmount, ReportError> {
-    match target {
-        None => Ok(ma.clone()),
-        Some(commodity) => {
-            let value = value_at(ma, commodity, db, as_of, None)?;
-            Ok(MixedAmount::single(commodity.clone(), value))
-        }
     }
 }
 
