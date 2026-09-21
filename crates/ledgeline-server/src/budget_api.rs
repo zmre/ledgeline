@@ -80,7 +80,7 @@ use ledgeline_core::periodic::{
 };
 use ledgeline_core::reports::{
     AccountType, Interval, MixedAmount, ReferenceOpts, account_decls, account_reference,
-    declared_types, resolve_account_type,
+    declared_types, is_account_type,
 };
 use ledgeline_core::{Dec, journals, parse, periodic};
 use serde::{Deserialize, Serialize};
@@ -772,8 +772,14 @@ fn oriented(amounts: &MixedAmount, flip: bool) -> Result<MixedAmount, AppError> 
 
 /// [`inverted`], with the declaration table already built. Called once per goal
 /// line, so it must not rebuild the table each time.
+///
+/// [`is_account_type`], not `resolve_account_type == Some(Revenue)`: the subtype
+/// fold is what `budget_gaps` files a declared `type: G` account under, and a
+/// goal SECTIONED as revenue but WRITTEN without the inversion is a goal whose
+/// sign the journal and the editor disagree about. `seed_scenario` then reads
+/// that goal straight into a projection line.
 fn inverted_with(declared: &DeclaredTypes, account: &str) -> bool {
-    resolve_account_type(account, declared) == Some(AccountType::Revenue)
+    is_account_type(account, declared, AccountType::Revenue)
 }
 
 // ===========================================================================

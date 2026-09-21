@@ -1,0 +1,564 @@
+{
+  "_comment": [
+    "The shared truth table for account classification. The engine",
+    "(crates/ledgeline-core/src/reports/account_types.rs) and the browser",
+    "(web/src/lib/domain/accountTypes.ts) are two implementations of one",
+    "specification, and BOTH are checked against this file:",
+    "  - crates/ledgeline-core/tests/account_types.rs",
+    "  - web/src/lib/domain/accountTypes.test.ts",
+    "",
+    "They must agree, and 'read the same journal differently' is not a cosmetic",
+    "defect. An account the browser cannot type falls all the way through to",
+    "ENGLISH NAME INFERENCE, so `income:contractors ; type: expenses` resolved as",
+    "revenue in the browser and as expense in the engine makes the Projections",
+    "tab negate a cost — and an expense that pays money IN builds cash forever",
+    "(plan 22, amendment 42).",
+    "",
+    "`type` is the resolved type (null = untyped). `isRevenue`/`isExpense`/",
+    "`isAsset`/`isEquity` are the SUBTYPE-FOLDING membership tests, which are",
+    "what every classification should call: cash is an asset, gain is a revenue,",
+    "conversion is an equity.",
+    "",
+    "Add a row here rather than a one-sided unit test. A test in only one language",
+    "cannot catch the two drifting, which is the entire failure mode."
+  ],
+  "tags": [
+    {
+      "_why": "hledger's own single letters",
+      "value": "A",
+      "type": "asset"
+    },
+    {
+      "value": "L",
+      "type": "liability"
+    },
+    {
+      "value": "E",
+      "type": "equity"
+    },
+    {
+      "value": "R",
+      "type": "revenue"
+    },
+    {
+      "value": "X",
+      "type": "expense"
+    },
+    {
+      "value": "C",
+      "type": "cash"
+    },
+    {
+      "value": "V",
+      "type": "conversion"
+    },
+    {
+      "value": "G",
+      "type": "gain"
+    },
+    {
+      "_why": "case-insensitive, and surrounding space is trimmed",
+      "value": "x",
+      "type": "expense"
+    },
+    {
+      "value": "  r  ",
+      "type": "revenue"
+    },
+    {
+      "value": "Revenue",
+      "type": "revenue"
+    },
+    {
+      "value": "EXPENSE",
+      "type": "expense"
+    },
+    {
+      "_why": "hledger's singular words",
+      "value": "asset",
+      "type": "asset"
+    },
+    {
+      "value": "liability",
+      "type": "liability"
+    },
+    {
+      "value": "equity",
+      "type": "equity"
+    },
+    {
+      "value": "revenue",
+      "type": "revenue"
+    },
+    {
+      "value": "expense",
+      "type": "expense"
+    },
+    {
+      "value": "cash",
+      "type": "cash"
+    },
+    {
+      "value": "conversion",
+      "type": "conversion"
+    },
+    {
+      "value": "gain",
+      "type": "gain"
+    },
+    {
+      "_why": "The plurals and `income`. hledger REJECTS these with a parse error while we degrade silently, so we accept them rather than silently misfiling the account. This row is the root cause of the 2026-09 Projections sign bug: the browser did not take them, dropped the declaration, and fell through to name inference.",
+      "value": "expenses",
+      "type": "expense"
+    },
+    {
+      "value": "assets",
+      "type": "asset"
+    },
+    {
+      "value": "liabilities",
+      "type": "liability"
+    },
+    {
+      "value": "equities",
+      "type": "equity"
+    },
+    {
+      "value": "revenues",
+      "type": "revenue"
+    },
+    {
+      "value": "income",
+      "type": "revenue"
+    },
+    {
+      "value": "incomes",
+      "type": "revenue"
+    },
+    {
+      "value": "conversions",
+      "type": "conversion"
+    },
+    {
+      "value": "gains",
+      "type": "gain"
+    },
+    {
+      "value": "EXPENSES",
+      "type": "expense"
+    },
+    {
+      "_why": "unrecognized falls back to name inference, and must do so on both sides",
+      "value": "bogus",
+      "type": null
+    },
+    {
+      "value": "",
+      "type": null
+    },
+    {
+      "value": "expensive",
+      "type": null
+    },
+    {
+      "_why": "A JS object literal indexed by a user-supplied string reads through Object.prototype, so these must be rejected explicitly. Returning a non-null non-type is worse than null: declaredTypes KEEPS it, every membership test answers false, and the account lands in no section instead of falling back to name inference.",
+      "value": "constructor",
+      "type": null
+    },
+    {
+      "value": "toString",
+      "type": null
+    },
+    {
+      "value": "__proto__",
+      "type": null
+    },
+    {
+      "value": "hasOwnProperty",
+      "type": null
+    }
+  ],
+  "cases": [
+    {
+      "_why": "THE REPORTED BUG. An expense declared with a spelling the browser did not take, under a revenue-NAMED root: the declaration is dropped, name inference says revenue, and the Projections table negates the amount.",
+      "declared": [
+        [
+          "income:contractors",
+          "expenses"
+        ]
+      ],
+      "account": "income:contractors",
+      "type": "expense",
+      "isRevenue": false,
+      "isExpense": true,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "The same shape, with the revenue verdict coming from a declared ANCESTOR rather than from the name.",
+      "declared": [
+        [
+          "ingresos",
+          "R"
+        ],
+        [
+          "ingresos:nomina",
+          "expenses"
+        ]
+      ],
+      "account": "ingresos:nomina",
+      "type": "expense",
+      "isRevenue": false,
+      "isExpense": true,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "and its sibling still reads as revenue from the ancestor",
+      "declared": [
+        [
+          "ingresos",
+          "R"
+        ],
+        [
+          "ingresos:nomina",
+          "expenses"
+        ]
+      ],
+      "account": "ingresos:consultoria",
+      "type": "revenue",
+      "isRevenue": true,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "Step 1 — an account's OWN declaration wins over everything, including its name.",
+      "declared": [
+        [
+          "expenses:refunds",
+          "R"
+        ]
+      ],
+      "account": "expenses:refunds",
+      "type": "revenue",
+      "isRevenue": true,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "Step 2 — the nearest declared ANCESTOR, for an undeclared child.",
+      "declared": [
+        [
+          "cogs",
+          "X"
+        ]
+      ],
+      "account": "cogs:nomina:sueldos",
+      "type": "expense",
+      "isRevenue": false,
+      "isExpense": true,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "Step 3 — name inference, when nothing in the ancestry is declared.",
+      "declared": [],
+      "account": "expenses:payroll",
+      "type": "expense",
+      "isRevenue": false,
+      "isExpense": true,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "…and a root no English heuristic knows is simply untyped, in no section at all.",
+      "declared": [],
+      "account": "cogs:nomina",
+      "type": null,
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "Step 4 — an agreeing declared DESCENDANT, for the synthetic parent rows a depth-clamped report invents. The projection seed clamps to depth 2, so `ingresos:consultoria` here is a row a user really does edit.",
+      "declared": [
+        [
+          "ingresos:consultoria:acme",
+          "R"
+        ],
+        [
+          "ingresos:consultoria:beta",
+          "R"
+        ]
+      ],
+      "account": "ingresos:consultoria",
+      "type": "revenue",
+      "isRevenue": true,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "The descendant step folds subtypes: a revenue and a gain agree on revenue.",
+      "declared": [
+        [
+          "ingresos:acme",
+          "R"
+        ],
+        [
+          "ingresos:beta",
+          "G"
+        ]
+      ],
+      "account": "ingresos",
+      "type": "revenue",
+      "isRevenue": true,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "A genuinely MIXED subtree has no single type, so it is untyped rather than classified by whichever child sorts first.",
+      "declared": [
+        [
+          "mixto:uno",
+          "R"
+        ],
+        [
+          "mixto:dos",
+          "X"
+        ]
+      ],
+      "account": "mixto",
+      "type": null,
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "The descendant step runs AFTER inference, so a conventional root keeps its conventional meaning rather than picking up a child's subtype.",
+      "declared": [
+        [
+          "assets:bank:checking",
+          "C"
+        ]
+      ],
+      "account": "assets",
+      "type": "asset",
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": true,
+      "isEquity": false
+    },
+    {
+      "_why": "A sibling that merely shares opening letters is not a descendant.",
+      "declared": [
+        [
+          "activos:banco",
+          "A"
+        ]
+      ],
+      "account": "activo",
+      "type": null,
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "Subtype fold: a declared Cash account IS an asset (hledger's type:A matches it).",
+      "declared": [
+        [
+          "activo:banco",
+          "C"
+        ]
+      ],
+      "account": "activo:banco",
+      "type": "cash",
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": true,
+      "isEquity": false
+    },
+    {
+      "_why": "Subtype fold: a declared Gain account IS a revenue (verified: hledger 1.52's type:R query matches a type:G account). This is what decides the SIGN of a gain row.",
+      "declared": [
+        [
+          "plusvalia:acciones",
+          "G"
+        ]
+      ],
+      "account": "plusvalia:acciones",
+      "type": "gain",
+      "isRevenue": true,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "Cash is inferred from the name too, under an asset root.",
+      "declared": [],
+      "account": "assets:bank:checking",
+      "type": "cash",
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": true,
+      "isEquity": false
+    },
+    {
+      "_why": "…including the British/Canadian spelling. The browser's regex read `che(ck|que)ing`, which expands to `chequeing`, so this account was Cash to the engine and a plain Asset to the browser — and the Balances tab, which requires Cash exactly, dropped it.",
+      "declared": [],
+      "account": "assets:chequing",
+      "type": "cash",
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": true,
+      "isEquity": false
+    },
+    {
+      "_why": "…and NOT the misspelling the old browser regex actually matched.",
+      "declared": [],
+      "account": "assets:chequeing",
+      "type": "asset",
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": true,
+      "isEquity": false
+    },
+    {
+      "_why": "The cash name heuristic folds non-ASCII case. U+212A KELVIN SIGN lowercases to `k`, which the engine does by lowercasing the name; a JS regex only does it with the `u` flag.",
+      "declared": [],
+      "account": "assets:BANK",
+      "type": "cash",
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": true,
+      "isEquity": false
+    },
+    {
+      "_why": "…but a declared type outranks that heuristic: `bank` in the name does not make this Cash.",
+      "declared": [
+        [
+          "assets:bankofamerica:brokerage",
+          "A"
+        ]
+      ],
+      "account": "assets:bankofamerica:brokerage",
+      "type": "asset",
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": true,
+      "isEquity": false
+    },
+    {
+      "_why": "A non-English chart, fully declared — the shape every report must handle.",
+      "declared": [
+        [
+          "cogs",
+          "X"
+        ],
+        [
+          "ingresos",
+          "R"
+        ],
+        [
+          "activo",
+          "A"
+        ],
+        [
+          "pasivo",
+          "L"
+        ],
+        [
+          "patrimonio",
+          "E"
+        ]
+      ],
+      "account": "cogs:nomina",
+      "type": "expense",
+      "isRevenue": false,
+      "isExpense": true,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "declared": [
+        [
+          "cogs",
+          "X"
+        ],
+        [
+          "ingresos",
+          "R"
+        ],
+        [
+          "activo",
+          "A"
+        ],
+        [
+          "pasivo",
+          "L"
+        ],
+        [
+          "patrimonio",
+          "E"
+        ]
+      ],
+      "account": "ingresos:consultoria",
+      "type": "revenue",
+      "isRevenue": true,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "declared": [
+        [
+          "cogs",
+          "X"
+        ],
+        [
+          "ingresos",
+          "R"
+        ],
+        [
+          "activo",
+          "A"
+        ],
+        [
+          "pasivo",
+          "L"
+        ],
+        [
+          "patrimonio",
+          "E"
+        ]
+      ],
+      "account": "pasivo:tarjeta",
+      "type": "liability",
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": false
+    },
+    {
+      "_why": "Subtype fold: a declared Conversion account IS an equity (verified: hledger 1.52's type:E query matches a type:V account, and `bse` prints equity:conversion inside the Equity section).",
+      "declared": [
+        [
+          "equity:conversion",
+          "V"
+        ]
+      ],
+      "account": "equity:conversion",
+      "type": "conversion",
+      "isRevenue": false,
+      "isExpense": false,
+      "isAsset": false,
+      "isEquity": true
+    }
+  ]
+}

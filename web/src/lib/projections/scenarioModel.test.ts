@@ -1,6 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {dec} from "$lib/domain/money";
-import type {AccountType} from "$lib/domain/accountTypes";
+import {normalizeAccounts} from "$lib/api/normalize";
+import {declaredTypes, resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
 import {
     amountFor,
     blankAssetLine,
@@ -118,6 +119,105 @@ describe("UNIT scenarioModel — the sign flip", () => {
         expect(amountFor(seeded, dec(1875, 0), "expenses:housing", DECLARED).precision).toBe(2);
         // A third decimal place has to be representable or the growth walk rounds it away.
         expect(amountFor(seeded, dec(1875125, 3), "expenses:housing", DECLARED).precision).toBe(3);
+    });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * The sign the WIRE carries, for every way a real journal declares a cost.
+ *
+ * The block above proves the flip is correct given a correct declaration table.
+ * These prove the table itself is built from what journals actually say — which
+ * is where the 2026-09 bug lived, and which no test of `signedQuantity` alone
+ * could reach.
+ *
+ * Declarations go through `normalizeAccounts`, the REAL `/accounts` decoder, so
+ * a `type:` spelling the browser cannot parse fails here exactly as it failed
+ * the user: silently, by falling through to English name inference.
+ */
+describe("UNIT scenarioModel — what reaches the engine is signed the way the journal books it", () => {
+    /** One `/accounts` entry, exactly as the engine sends one. */
+    const decl = (name: string, type: string): unknown => ({aname: name, adeclarationinfo: {aditags: [["type", type]]}});
+    const tableOf = (...entries: unknown[]): ReadonlyMap<string, AccountType> => declaredTypes(normalizeAccounts(entries));
+
+    /** What the wire would carry after a user types `100000` into this row. */
+    const typed = (account: string, declared: ReadonlyMap<string, AccountType>): bigint =>
+        amountFor({commodity: "$", quantity: dec(0, 2), precision: 2}, dec(10000000, 2), account, declared).quantity.m;
+
+    // Every spelling of "this is a cost" a journal may carry — the single
+    // letter, the singular word, the plural hledger rejects and we accept, and
+    // the same again in the wrong case.
+    for (const spelling of ["X", "x", "expense", "expenses", "EXPENSES", "Expense"]) {
+        it(`a cost declared \`type: ${spelling}\` reaches the engine POSITIVE, whatever its account is called`, () => {
+            // `income:contractors` is the discriminating one: it INFERS revenue
+            // from its root name, so a declaration this loop cannot parse flips
+            // the assertion. The other four infer nothing and would pass either way.
+            for (const account of ["expenses:payroll", "cogs:nomina", "gastos:oficina", "personalkosten:lohn", "income:contractors"]) {
+                const declared = tableOf(decl(account, spelling));
+                expect(isRevenueAccount(account, declared), `${account} declared \`type: ${spelling}\` must not read as revenue`).toBe(false);
+                expect(
+                    typed(account, declared) > 0n,
+                    `a $100,000 cost on ${account} (\`type: ${spelling}\`) must reach the engine POSITIVE — ` +
+                        `a negative expense is money coming IN, and it builds cash forever`
+                ).toBe(true);
+            }
+        });
+    }
+
+    for (const spelling of ["R", "r", "revenue", "revenues", "income", "incomes", "G", "gain", "gains"]) {
+        it(`revenue declared \`type: ${spelling}\` reaches the engine NEGATIVE, whatever its account is called`, () => {
+            for (const account of ["income:consulting", "ingresos:consultoria", "omzet:advies"]) {
+                const declared = tableOf(decl(account, spelling));
+                expect(isRevenueAccount(account, declared), `${account} declared \`type: ${spelling}\` must read as revenue`).toBe(true);
+                expect(
+                    typed(account, declared) < 0n,
+                    `$40,000 of revenue on ${account} (\`type: ${spelling}\`) must reach the engine NEGATIVE — ` +
+                        `hledger books revenue as a credit, and a positive one would drain the bank`
+                ).toBe(true);
+            }
+        });
+    }
+
+    it("REGRESSION: a cost under a revenue-NAMED root is still a cost", () => {
+        // The reported bug, in one line. `income:contractors` looks like revenue
+        // to the English name heuristic and IS an expense; the declaration is
+        // the only thing that says so, so dropping it flips the sign.
+        const declared = tableOf(decl("income:contractors", "expenses"));
+        expect(
+            isRevenueAccount("income:contractors", declared),
+            "`income:contractors ; type: expenses` is a COST, so it must not read as revenue — " + "its own declaration outranks what its root name looks like"
+        ).toBe(false);
+        expect(
+            typed("income:contractors", declared) > 0n,
+            "`income:contractors ; type: expenses` is a COST. A declaration the browser " +
+                "cannot parse falls through to name inference, the amount gets negated, and " +
+                "the engine projects a payroll that pays money in"
+        ).toBe(true);
+    });
+
+    it("REGRESSION: a cost under a revenue-DECLARED ancestor is still a cost", () => {
+        const declared = tableOf(decl("ingresos", "R"), decl("ingresos:nomina", "expenses"));
+        expect(typed("ingresos:nomina", declared) > 0n, "the account's OWN declaration outranks its ancestor's").toBe(true);
+        expect(typed("ingresos:consultoria", declared) < 0n, "…and its undeclared sibling still inherits revenue").toBe(true);
+    });
+
+    it("REGRESSION: a depth-clamped parent keeps its subtree's type", () => {
+        // The projection SEED clamps rows to depth 2, so `ingresos:consultoria`
+        // is a row the user really does edit even though only its children are
+        // declared. Resolving it as untyped would make retyping its amount flip
+        // the sign of a revenue line.
+        const declared = tableOf(decl("ingresos:consultoria:acme", "R"), decl("ingresos:consultoria:beta", "R"));
+        expect(typed("ingresos:consultoria", declared) < 0n, "a clamped parent whose declared children agree inherits their type").toBe(true);
+    });
+
+    it("an unrecognized `type:` is not a licence to guess the opposite", () => {
+        // `bogus` is untyped on both sides. The account then falls to name
+        // inference, which is the documented fallback — what matters is that the
+        // two implementations agree about it.
+        const declared = tableOf(decl("cogs:nomina", "bogus"));
+        expect(resolveAccountType("cogs:nomina", declared), "an unparseable `type:` leaves the account untyped, exactly as the engine leaves it").toBe(null);
+        expect(typed("cogs:nomina", declared) > 0n, "an untyped account is not revenue, so its amount is not negated").toBe(true);
     });
 });
 

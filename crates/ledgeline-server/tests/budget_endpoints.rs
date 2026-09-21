@@ -241,6 +241,40 @@ async fn the_listing_reports_rules_goals_and_both_signs() {
     assert_eq!(interest["amount"]["$"]["mantissa"], json!("-1200"));
 }
 
+/// A goal on a declared `type: G` account is inverted, because a gain IS a
+/// revenue — the same fold `budget_gaps` files it under.
+///
+/// The two used to disagree: the gaps section put a gain in Revenue while
+/// `inverted_with` asked `resolve_account_type == Some(Revenue)`, which no
+/// subtype satisfies, so the editor showed and wrote the goal with the opposite
+/// sign to the section it was listed in. `seed_scenario` then read that goal
+/// straight into a projection line (plan 22, amendment 42).
+///
+/// The account is named so NO English heuristic can classify it: only the
+/// declaration can make this revenue.
+#[tokio::test]
+async fn a_gain_typed_goal_is_inverted_like_any_other_revenue() {
+    let tree = Tree::with(
+        "\
+account plusvalia:acciones  ; type: G
+
+~ yearly  annual budget
+    (plusvalia:acciones)  $-5000
+",
+    );
+    let (status, body) = get(&tree, "/api/budget/lines").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let goal = &main_file(&body)["rules"][0]["lines"][0];
+    assert_eq!(goal["account"], json!("plusvalia:acciones"));
+    assert_eq!(
+        goal["inverted"],
+        json!(true),
+        "a `type: G` goal is revenue, so the editor must offer it as a magnitude"
+    );
+    assert_eq!(goal["entry"]["value"]["mantissa"], json!("5000"));
+    assert_eq!(goal["amount"]["$"]["mantissa"], json!("-5000"));
+}
+
 /// A rule whose period is more than a bare interval is LISTED, with its header's
 /// own words and a `simple` of null.
 ///
