@@ -188,7 +188,7 @@ describe("UNIT projectionView — the runway, in words", () => {
     const format = (n: number) => `$${n.toFixed(2)}`;
 
     it("names the crossing bucket and how far out it is", () => {
-        const crossing = projection({runway: {bucket: 1, bucketKey: "2028-03", label: "Mar 2028", date: "2028-03-31", periods: 18}});
+        const crossing = projection({runway: {bucket: 1, label: "Mar 2028", date: "2028-03-31", periods: 18}});
         const statement = runwayStatement(crossing, "monthly", "$", format);
         expect(statement.tone).toBe("warn");
         expect(statement.headline).toBe("Cash turns negative in Mar 2028 — 18 months.");
@@ -196,7 +196,7 @@ describe("UNIT projectionView — the runway, in words", () => {
     });
 
     it("counts in the interval's own noun", () => {
-        const crossing = projection({runway: {bucket: 1, bucketKey: "2029", label: "2029", date: "2029-12-31", periods: 3}});
+        const crossing = projection({runway: {bucket: 1, label: "2029", date: "2029-12-31", periods: 3}});
         expect(runwayStatement(crossing, "yearly", "$", format).headline).toBe("Cash turns negative in 2029 — 3 years.");
         expect(periodsPhrase(1, "quarterly")).toBe("1 quarter");
         expect(periodsPhrase(4, "quarterly")).toBe("4 quarters");

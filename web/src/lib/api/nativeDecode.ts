@@ -449,7 +449,6 @@ interface RawBalanceSeries {
 
 interface RawRunway {
     bucket?: number;
-    bucketKey?: string;
     label?: string;
     date?: string;
     periods?: number;
@@ -1879,7 +1878,6 @@ function decodeRunway(raw: RawRunway, context: string): Runway {
         bucket: decodeCount(raw.bucket, `${context} bucket`),
         // Carried beside the index so the sentence above the chart never has to
         // index back into `buckets` and hope the two agree.
-        bucketKey: str(raw.bucketKey, `${context} bucketKey`),
         label: str(raw.label, `${context} label`),
         date: str(raw.date, `${context} date`),
         periods: decodeCount(raw.periods, `${context} periods`),

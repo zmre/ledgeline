@@ -1988,7 +1988,7 @@ account expenses:rent    ; type: X
         // `chunk_print` never reads `source`, so there is nothing in the file
         // that could come back as `Unbudgeted` — which is why the flip is two
         // lines here and not a function.
-        let mut scenario = Scenario {
+        let scenario = Scenario {
             lines: vec![ScenarioLine {
                 source: LineSource::Unbudgeted,
                 ..line(
@@ -2001,9 +2001,12 @@ account expenses:rent    ; type: X
             }],
             ..Scenario::default()
         };
-        for line in &mut scenario.lines {
-            line.source = LineSource::Journal;
-        }
-        assert_eq!(scenario.lines[0].source, LineSource::Journal);
+        // Through the FILE, not through a helper that sets the field: the claim
+        // is about what the format can carry, so asserting it on a value we just
+        // assigned would pin nothing.
+        let text = new_file(&scenario, "p.journal", &declared()).expect("it writes");
+        let reread =
+            scenario_from_text(&text, "p.journal", "fallback", &declared()).expect("it re-reads");
+        assert_eq!(reread.lines[0].source, LineSource::Journal);
     }
 }

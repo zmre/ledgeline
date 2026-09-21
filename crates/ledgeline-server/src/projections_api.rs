@@ -321,9 +321,6 @@ impl From<&BalanceSeries> for WireBalanceSeries {
 struct WireRunway {
     /// 0-based index into `buckets`.
     bucket: usize,
-    /// That bucket's key, so a client can label the crossing without indexing
-    /// back into `buckets` and hoping the two arrays agree.
-    bucket_key: String,
     /// That bucket's human label (`Mar 2028`).
     label: String,
     /// The bucket's last day — the date the closing balance is negative as of.
@@ -420,7 +417,6 @@ fn wire_runway(runway: &Runway, buckets: &[String]) -> WireRunway {
     WireRunway {
         bucket: runway.bucket,
         label: bucket_label(&key),
-        bucket_key: key,
         date: runway.date.clone(),
         periods: runway.periods,
     }

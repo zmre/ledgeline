@@ -182,11 +182,10 @@ export interface BalanceSeries {
     values: MixedAmount[];
 }
 
-/** Where the cash crosses zero. `bucketKey` and `label` are the engine's, so a sentence never has to index back into `buckets`. */
+/** Where the cash crosses zero. `label` is the engine's, so a sentence never has to index back into `buckets`. */
 export interface Runway {
     /** 0-based index into `Projection.buckets`. */
     bucket: number;
-    bucketKey: string;
     /** The bucket's human label ("Mar 2028"). */
     label: string;
     /** The bucket's LAST day — the date the closing balance is negative as of. */

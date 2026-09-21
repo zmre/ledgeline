@@ -1713,7 +1713,7 @@ const PROJECTION_RUN = {
     },
     cash: {opening: {$: dec(500000, 2)}, values: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}, {$: dec(-760000, 2)}]},
     netWorth: {opening: {$: dec(900000, 2)}, values: [{$: dec(480000, 2)}, {$: dec(60000, 2)}, {$: dec(-360000, 2)}]},
-    runway: {bucket: 1, bucketKey: "2026-09", label: "Sep 2026", date: "2026-09-30", periods: 2},
+    runway: {bucket: 1, label: "Sep 2026", date: "2026-09-30", periods: 2},
     // The per-row asset attribution (plan 23, Phase 3), which the Balance
     // column and the net-worth breakdown read. Two rows, and the second is
     // OVERRIDDEN — `journalOpening` and `opening` are equal on every row
@@ -1941,7 +1941,7 @@ describe("UNIT nativeDecode — a projection run", () => {
         expect(projection.cash.opening.get("$")).toEqual({m: 500000n, p: 2});
         expect(projection.cash.values).toHaveLength(3);
         expect(projection.netWorth.opening.get("$")).toEqual({m: 900000n, p: 2});
-        expect(projection.runway).toEqual({bucket: 1, bucketKey: "2026-09", label: "Sep 2026", date: "2026-09-30", periods: 2});
+        expect(projection.runway).toEqual({bucket: 1, label: "Sep 2026", date: "2026-09-30", periods: 2});
         expect(projection.warnings).toHaveLength(1);
     });
 

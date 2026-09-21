@@ -89,14 +89,14 @@ describe("COMPONENT ProjectionReports — net income", () => {
 
 describe("COMPONENT ProjectionReports — cash and runway", () => {
     it("states the crossing point in WORDS above the chart", () => {
-        mount("cash", projection({runway: {bucket: 1, bucketKey: "2028-03", label: "Mar 2028", date: "2028-03-31", periods: 18}}));
+        mount("cash", projection({runway: {bucket: 1, label: "Mar 2028", date: "2028-03-31", periods: 18}}));
         expect(screen.getByTestId("projection-runway").textContent).toContain("Cash turns negative in Mar 2028 — 18 months.");
         // A crossing is a warning, and is announced as one.
         expect(screen.getByRole("alert")).toBeDefined();
     });
 
     it("marks the crossing bucket on the chart as well as in the sentence", () => {
-        const {container} = mount("cash", projection({runway: {bucket: 1, bucketKey: "2026-09", label: "Sep 2026", date: "2026-09-30", periods: 2}}));
+        const {container} = mount("cash", projection({runway: {bucket: 1, label: "Sep 2026", date: "2026-09-30", periods: 2}}));
         expect(container.querySelectorAll('[data-rule="mark"]')).toHaveLength(1);
     });
 

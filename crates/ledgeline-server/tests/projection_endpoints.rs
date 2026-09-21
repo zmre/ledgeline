@@ -418,7 +418,6 @@ async fn a_large_event_produces_a_runway_naming_its_bucket() {
     .await;
     let runway = &projection["runway"];
     assert_eq!(runway["bucket"], 1);
-    assert_eq!(runway["bucketKey"], "2026-09");
     assert_eq!(runway["label"], "Sep 2026");
     assert_eq!(runway["date"], "2026-09-30");
     assert_eq!(runway["periods"], 2);
