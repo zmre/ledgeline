@@ -258,12 +258,23 @@ into short months (a row anchored on the 31st steps on Feb 28). The balance is
 rounded back to the row's own display precision at every step, for the same
 reason a flow's amount is.
 
-**One row per account.** Each asset row seeds its own running balance from the
-journal, so two rows naming the same account — or one row split into two dated
-segments — each compound the *whole* balance, and the growth is counted twice.
-Ledgeline's Assets section offers no "add a step" for this reason; a rate that
-changes is a second row with a `from` date and an account of its own, or a
-single rate that covers the span.
+**One row per account, and the first one in the file owns it.** Each asset row
+seeds its own running balance from the journal, so two rows naming the same
+account would each start from the *whole* balance and each compound it — the
+growth counted twice. Ledgeline does not let that happen. The first such row in
+the file is projected; every later one is left out **entirely**, its growth and
+its contribution together, and a warning above the chart names the account and
+says so.
+
+The same applies when one row's account sits **under** another's —
+`assets:broker` and `assets:broker:roth` — because a row's balance is the account
+*and everything under it*. The two rows share the roth's money, so the second one
+is left out in the same way. Give each row an account that holds money no other
+row's does.
+
+This is why the Assets section offers no "add a step": a rate that changes over
+time is a single rate covering the span, not one row split into two dated
+segments naming one account.
 
 ### The Assets and balances table
 

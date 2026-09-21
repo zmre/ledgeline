@@ -641,3 +641,118 @@ web gates run directly (`svelte-check`, `tsc --noEmit`, `vitest run`, `eslint`,
 `prettier`) because `bun`, which the `just` recipes wrap, is sandbox-blocked.
 **A human has not yet looked at the section at 375px and desktop** — that is the
 one line of the definition of done this commit cannot close by itself.
+
+---
+
+**Amendment 15's hole, closed.**
+
+### 18. ONE asset row per account, and the FIRST one in the file owns it
+
+Amendment 15 left this deliberately: two asset rows naming one account each seed
+a running balance from the journal, so each starts from the whole balance and
+each compounds it over the whole horizon, roughly doubling the growth — and
+nothing said so. The reasoning for leaving it was that Phase 3 exposes no way to
+write one. That reasoning does not survive contact with the ask a projection file
+is built on: "really any journal file with budget-like entries could be used",
+and hledger reads two postings to one account inside a `~` rule without a murmur.
+A silent wrong number out of a valid file is the worst failure this feature has,
+so it is now refused.
+
+**What the engine computes.** The first asset row in scenario order owns the
+account. Every later row whose balance would overlap it contributes **nothing** —
+no growth, no contribution, no [`AssetRow`] entry — and is warned about. Three
+alternatives were on the table and each was rejected for a reason, not a taste:
+
+- **Place them all and warn.** The warning would be true and the number would
+  still be wrong. Worse, `Projection::assets` would then carry two entries with
+  the same `journal_opening`, so the Balance column would show one pot of money
+  on two rows and tell the user the ledger holds it twice.
+- **Merge them: sum the contributions, compound once.** At what rate? Two rows
+  can state two. Any pick — the first, the largest, a weighted blend — is a rate
+  the user never typed, which is the argument amendment 4 already used to refuse
+  writing `growth: 0%/yr` for a blank rate. Summing contributions under a rate
+  borrowed from another row also attributes growth to a row that never claimed
+  it, which the Net worth breakdown then reports as fact.
+- **Keep the later row's contribution and drop only its growth.** Tempting,
+  because a contribution has no double-count problem at all: it is an ordinary
+  group leg and the residual rule handles it exactly once. It was rejected
+  because of how a duplicate row actually gets written. The Assets row menu
+  offers **Duplicate**, so the likeliest second row on an account is an
+  accidental copy — and keeping its contribution silently doubles the deposit and
+  the cash outflow with it. The warning would then say the growth was dropped
+  while cash was quietly wrong, which is precisely the half-true warning this
+  amendment exists to avoid. Declining wholesale is also the rule amendment 8
+  already set for a row the engine will not model: *a row the engine will not
+  model must not half-model itself.*
+
+**The ancestor case is the same bug, and is handled by the same rule.** It was
+worth checking separately and the answer is yes: `seed_asset_balance` takes the
+account's **subtree** balance, so a row on `assets:broker` and a row on
+`assets:broker:roth` share the roth's money. It is the nastier shape of the two,
+because the overlap is only part of the total — the figure comes out wrong by
+however much sits under the deeper account, so it still looks plausible. The
+predicate is therefore subtree overlap in **either** direction, and `in_subtree`
+is reflexive, so the identical-account case falls out of it rather than being a
+second rule to keep in step.
+
+**The test is STRUCTURAL, not arithmetic.** Declining only when the shared
+balance is non-zero was considered and refused twice over. Once because the
+engine cannot compute the overlap when an `opening:` override is in play: an
+override restates a row's balance, and how much of a restated balance belongs to
+the other row is not a question the journal answers. And once because an
+arithmetic test would make the set of modelled rows a function of today's
+balances — the same scenario file would go from projected to declined the first
+time money landed in a child account, with no edit to the file. A structural rule
+is one a user can read off their own file.
+
+**Nesting does not change who wins: it is still first in the file.** Picking "the
+broader account" would make the outcome depend on a name comparison rather than
+on what the user wrote, and could not be corrected by reordering.
+
+**`growth_boundaries` was NOT changed, and amendment 15's second clause is
+withdrawn.** It reads the projection's span rather than the segment's, which 15
+named as half the defect. It is not a defect: amendment 16 already established
+that an asset row's period is the **contribution's** cadence, not the growth's
+("the 'Per' column is 'Contribution period'"). A balance you stop paying into
+keeps compounding, so a bounded asset row growing past its `to` is the right
+answer. What was wrong was only the second seed, and that is what is fixed.
+
+**The warnings, verbatim**, in the existing vocabulary (`{label}: <what is
+wrong>, so the row contributes nothing (<why>)`, as the non-asset warning reads):
+
+```
+assets:brokerage: an earlier asset row already models 'assets:brokerage', so the
+row contributes nothing (one asset row per account; both would compound the same
+balance)
+
+assets:brokerage:vanguard: 'assets:brokerage:vanguard' shares its balance with
+'assets:brokerage', which an earlier asset row already models, so the row
+contributes nothing (an asset row's balance is the account and everything under
+it; both would compound the shared money)
+```
+
+**Nothing on the wire or in the SPA changed, and nothing needed to.** A declined
+row already produces no `assets` entry (amendment 12) and the Balance column
+already renders that as a dash (amendment 13, which enumerates "a row the engine
+declined" as one of its three null cases); the warnings list already renders every
+projection warning (amendment 11). One consequence worth recording for whoever
+reads it next: `projectionView.ts`'s `assetContributions` sums rows that share an
+account, and its comment says "two rules can name one account". After this the
+engine guarantees they cannot — two PLACED rows never share an account, nor an
+account under another's, so the `assets` list may be totalled directly. The sum
+was left in place as harmless defence rather than edited, because the web gates
+could not be run here (`web/node_modules` is absent and `bun` is sandbox-blocked)
+and an unverifiable edit to a working file buys nothing.
+
+| file | change |
+|---|---|
+| `crates/ledgeline-core/src/projections.rs` | `Layout::asset_row_sharing_a_balance_with`; the guard at the top of `place_asset`; module-doc rule 4; three unit tests |
+| `docs/projections.md` | "One row per account" restated as what the engine enforces, not as advice |
+
+One existing test moved: `every_asset_row_is_attributed_back_to_the_rule_it_came_from`
+used `assets:brokerage` and `assets:brokerage:roth` as its two rows, which the new
+rule declines. Its second row is now `assets:pension` — still an account the
+journal has never seen, so it still pins that a zero balance is a real zero rather
+than a missing answer, and still not a cash-inferring name.
+
+`just engine-check` and `just engine-test` are green.

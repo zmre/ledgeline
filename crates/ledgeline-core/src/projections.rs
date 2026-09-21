@@ -83,6 +83,14 @@
 //!    account inside a group, so the residual rule above already implies the
 //!    cash leg: cash −2000, asset +2000, net worth unchanged. Writing a second
 //!    path for it is how the two series start to drift.
+//! 4. **ONE asset row per account, and the first one in the file owns it.** The
+//!    running balance is seeded from the journal once per ROW, so two rows
+//!    naming one account each start from the whole balance and each compound
+//!    it — the growth roughly doubles. The same is true when one row's account
+//!    lies under another's, because the seed is a SUBTREE balance. The engine
+//!    declines the later row wholesale, growth and contribution together, and
+//!    says so; the table offers no way to write one, but a hand-edited file
+//!    can. The detector is `two_asset_rows_on_one_account_warn_and_only_the_first_is_placed`.
 //!
 //! Growth applies to the balance at the START of each growth period, BEFORE that
 //! period's contributions — so a contribution dated on the step boundary does
@@ -400,9 +408,13 @@ pub struct Runway {
 ///
 /// One entry per PLACED row, keyed by [`ScenarioLine::group`] — the source rule,
 /// which is unique per row segment and is what a client already has on the row.
-/// A row the engine refused to model (a non-asset account) produces NO entry: it
-/// contributed nothing, and a balance beside it would suggest otherwise. The
-/// warning says why.
+/// A row the engine refused to model produces NO entry — a non-asset account, or
+/// an account an earlier asset row already compounds. It contributed nothing, and
+/// a balance beside it would suggest otherwise. The warning says why.
+///
+/// So no two entries here name the same account, or an account under another's:
+/// a reader may total the `growth` column and get the figure the net-worth series
+/// moved by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetRow {
     /// The [`ScenarioLine::group`] this was placed from.
@@ -650,6 +662,42 @@ impl<'a> Layout<'a> {
             return Ok(());
         }
 
+        // ONE asset row per account, and the FIRST one in scenario order owns
+        // it. `seed_asset_balance` reads the journal once PER ROW, so two rows
+        // naming the same account — or two whose subtrees overlap — each start
+        // from the same money and each compound it, roughly doubling the
+        // growth. Nothing downstream can take one of them back out.
+        //
+        // The engine will not net the overlap out instead, because it cannot:
+        // an `opening` override restates a row's balance, and how much of a
+        // restated balance belongs to the other row is not a question the
+        // journal answers. And a row is declined WHOLESALE — its contribution
+        // goes with its growth — for the reason the non-asset check above is:
+        // a row the engine will not model must not half-model itself.
+        let clash = self
+            .asset_row_sharing_a_balance_with(&line.account.0)
+            .map(|placed| placed.account.clone());
+        if let Some(placed) = clash {
+            let detail = if placed == line.account.0 {
+                format!(
+                    "an earlier asset row already models '{}', so the row contributes \
+                     nothing (one asset row per account; both would compound the same \
+                     balance)",
+                    line.account.0
+                )
+            } else {
+                format!(
+                    "'{}' shares its balance with '{placed}', which an earlier asset row \
+                     already models, so the row contributes nothing (an asset row's \
+                     balance is the account and everything under it; both would compound \
+                     the shared money)",
+                    line.account.0
+                )
+            };
+            self.warnings.push(format!("{label}: {detail}"));
+            return Ok(());
+        }
+
         let (journal_opening, mut balance) = self.seed_asset_balance(line, label, world)?;
         let opening = balance.clone();
         // The row's own share of `net_worth_only`, accumulated beside it rather
@@ -751,6 +799,26 @@ impl<'a> Layout<'a> {
             growth: appreciation,
         });
         Ok(())
+    }
+
+    /// The asset row ALREADY PLACED whose balance `account` would compound a
+    /// second time, if there is one.
+    ///
+    /// The test is subtree overlap in EITHER direction, because the seed is a
+    /// subtree balance ([`account_balance_at`]): a row on `assets:broker` and a
+    /// row on `assets:broker:roth` share the roth's money exactly as two
+    /// `assets:broker` rows share all of it, and which of the two was written
+    /// first does not change what is shared. [`in_subtree`] is reflexive, so the
+    /// identical-account case falls out of the same predicate rather than being
+    /// a second rule to keep in step with this one.
+    ///
+    /// Scanning [`Layout::assets`] rather than the scenario means only a row the
+    /// engine actually MODELLED claims an account: a row declined for naming a
+    /// liability compounds nothing, so it has no balance to share.
+    fn asset_row_sharing_a_balance_with(&self, account: &str) -> Option<&AssetRow> {
+        self.assets.iter().find(|placed| {
+            in_subtree(account, &placed.account) || in_subtree(&placed.account, account)
+        })
     }
 
     /// The JOURNAL's balance for an asset row's account and the balance the row
@@ -2823,8 +2891,11 @@ mod tests {
         // An account the journal has never seen: its balance is a real zero,
         // not a missing answer, and the row still reports one. Not a `savings`
         // account, deliberately — that infers as CASH, and a contribution into
-        // cash cancels against its own implied leg.
-        let savings = asset("save", "assets:brokerage:roth", usd(100_000), "monthly");
+        // cash cancels against its own implied leg. And not under
+        // `assets:brokerage` either: one asset row per account, and a row whose
+        // subtree overlapped the first one's would be declined rather than
+        // attributed (`two_asset_rows_on_nested_accounts_share_a_balance`).
+        let savings = asset("save", "assets:pension", usd(100_000), "monthly");
         let projection = run_over(
             &scenario(vec![brokerage, savings], Vec::new()),
             &invested_journal(),
@@ -2886,6 +2957,256 @@ mod tests {
         // The +$100,000 adjustment is an adjustment, not appreciation: only the
         // 10% step is growth, and it is 10% of the OVERRIDDEN balance.
         assert_eq!(ma_units(&row.growth), 30_000);
+    }
+
+    /// **TWO ASSET ROWS ON ONE ACCOUNT.** The balance is seeded from the
+    /// journal once per ROW, so both would start from the whole $200,000 and
+    /// both would compound it. The first row in scenario order owns the
+    /// account; the second contributes nothing and says so.
+    ///
+    /// The table offers no way to write this — the Assets row menu has no "Add
+    /// a step" — but a projection file is an hledger journal a user may edit by
+    /// hand, and hledger reads two postings to one account inside a `~` rule
+    /// without complaint.
+    ///
+    /// $200,000 at 10%/yr with $2,000 a month going in, over three yearly
+    /// buckets from 2027:
+    ///
+    /// | | balance | growth | net worth |
+    /// |---|---|---|---|
+    /// | 2027 | 200,000 → 224,000 | — (the anchor year) | 210,000 |
+    /// | 2028 | ×1.1 = 246,400 → 270,400 | +22,400 | 232,400 |
+    /// | 2029 | ×1.1 = 297,440 → 321,440 | +27,040 | 259,440 |
+    ///
+    /// Placing both rows gave `[210_000, 254_800, 308_880]` and a cash draw of
+    /// $4,000 a month for one $2,000 contribution — the growth doubled and the
+    /// deposit doubled with it.
+    #[test]
+    fn two_asset_rows_on_one_account_warn_and_only_the_first_is_placed() {
+        let row = |group: &str| {
+            growing(
+                asset(group, "assets:brokerage", usd(200_000), "monthly"),
+                Dec::new(10, 2),
+                GrowthUnit::Year,
+            )
+        };
+        let project = |lines: Vec<ScenarioLine>| {
+            run_over(
+                &scenario(lines, Vec::new()),
+                &invested_journal(),
+                "2026-09-20",
+                Interval::Yearly,
+                3,
+            )
+        };
+        let once = project(vec![row("brok")]);
+        let twice = project(vec![row("brok"), row("brok-again")]);
+
+        // The numbers, stated rather than merely compared: growth on ONE
+        // balance, and ONE $2,000 monthly contribution's worth of cash.
+        assert_eq!(
+            series_units(&twice.net_worth),
+            [210_000, 232_400, 259_440],
+            "{:?}",
+            twice.warnings
+        );
+        assert_eq!(series_units(&twice.cash), [-14_000, -38_000, -62_000]);
+        assert_eq!(twice.net_worth.opening, usd_ma(21_000_000));
+
+        // …which is, to the byte, the answer the single row gives. The second
+        // row moved nothing at all — not its growth and not its contribution.
+        assert_eq!(twice.net_worth, once.net_worth);
+        assert_eq!(twice.cash, once.cash);
+        assert_eq!(twice.net_income, once.net_income);
+        assert_eq!(twice.runway, once.runway);
+
+        // One attribution entry, the FIRST row's, so a client totalling the
+        // growth column gets the figure the series above moved by.
+        assert_eq!(twice.assets, once.assets);
+        assert_eq!(twice.assets.len(), 1, "{:?}", twice.assets);
+        assert_eq!(twice.assets[0].group, "brok");
+        assert_eq!(ma_units(&twice.assets[0].journal_opening), 200_000);
+        assert_eq!(ma_units(&twice.assets[0].growth), 49_440);
+
+        // The warning says exactly what was done, because one that said
+        // "ignored" while the number still double-counted would be worse than
+        // no warning at all.
+        assert_eq!(
+            twice.warnings,
+            ["assets:brokerage: an earlier asset row already models \
+              'assets:brokerage', so the row contributes nothing (one asset row per \
+              account; both would compound the same balance)"]
+        );
+        // …and the ordinary one-row case stays silent. This rule must not make
+        // the normal scenario noisy.
+        assert!(once.warnings.is_empty(), "{:?}", once.warnings);
+
+        // THE SHAPE A HAND-WRITTEN FILE ACTUALLY PRODUCES: two postings to one
+        // account inside ONE `~` rule, which `lines_from_rule` reads as two
+        // lines sharing a GROUP. Verified against hledger 1.52 — `check` passes
+        // and `print --forecast` round-trips both postings with their tags. The
+        // guard keys off the account rather than the group precisely so that
+        // this case and the two-rules case are one rule and not two.
+        let same_rule = project(vec![row("rule:0"), row("rule:0")]);
+        assert_eq!(same_rule.net_worth, once.net_worth);
+        assert_eq!(same_rule.cash, once.cash);
+        assert_eq!(same_rule.assets.len(), 1, "{:?}", same_rule.assets);
+        assert_eq!(same_rule.warnings, twice.warnings);
+    }
+
+    /// **The same bug wearing a hat.** `seed_asset_balance` takes the account's
+    /// SUBTREE balance, so a row on `assets:brokerage` and a row on
+    /// `assets:brokerage:vanguard` share the vanguard money — and share it
+    /// PARTLY, which is the harder case to spot: the total is wrong by however
+    /// much sits under the deeper account, so it still looks plausible.
+    ///
+    /// Here the journal holds $200,000 at `assets:brokerage:vanguard` and
+    /// $50,000 at `assets:brokerage:fidelity`, so the parent row seeds $250,000
+    /// and the child $200,000 of that same money.
+    ///
+    /// The tie-break is FIRST IN THE FILE, not "the broader account wins": a
+    /// rule that picked by account shape would make the outcome depend on a
+    /// name comparison rather than on what the user wrote, and could not be
+    /// fixed by reordering.
+    #[test]
+    fn two_asset_rows_on_nested_accounts_share_a_balance() {
+        let mut journal = invested_journal();
+        journal.push(txn(
+            2,
+            "2026-02-01",
+            vec![
+                ("assets:brokerage:fidelity", vec![usd(5_000_000)]),
+                ("equity:opening", vec![usd(-5_000_000)]),
+            ],
+        ));
+        let row = |group: &str, account: &str| {
+            growing(
+                asset(group, account, usd(0), "monthly"),
+                Dec::new(10, 2),
+                GrowthUnit::Year,
+            )
+        };
+        let parent = row("parent", "assets:brokerage");
+        let child = row("child", "assets:brokerage:vanguard");
+        let project = |lines: Vec<ScenarioLine>| {
+            run_over(
+                &scenario(lines, Vec::new()),
+                &journal,
+                "2026-09-20",
+                Interval::Yearly,
+                3,
+            )
+        };
+
+        // Parent first: $250,000 compounds, the child contributes nothing.
+        // Both placed gave [260_000, 305_000, 354_500] — the vanguard $200,000
+        // counted twice.
+        let outer_first = project(vec![parent.clone(), child.clone()]);
+        assert_eq!(
+            series_units(&outer_first.net_worth),
+            [260_000, 285_000, 312_500],
+            "{:?}",
+            outer_first.warnings
+        );
+        assert_eq!(outer_first.assets.len(), 1);
+        assert_eq!(outer_first.assets[0].account, "assets:brokerage");
+        assert_eq!(ma_units(&outer_first.assets[0].journal_opening), 250_000);
+        assert_eq!(ma_units(&outer_first.assets[0].growth), 52_500);
+        assert_eq!(
+            outer_first.warnings,
+            [
+                "assets:brokerage:vanguard: 'assets:brokerage:vanguard' shares its balance \
+              with 'assets:brokerage', which an earlier asset row already models, so the \
+              row contributes nothing (an asset row's balance is the account and \
+              everything under it; both would compound the shared money)"
+            ]
+        );
+
+        // Child first: the $200,000 leaf compounds instead, and it is the
+        // BROADER row that is now declined. Same rule, read off the file.
+        let inner_first = project(vec![child, parent]);
+        assert_eq!(
+            series_units(&inner_first.net_worth),
+            [260_000, 280_000, 302_000],
+            "{:?}",
+            inner_first.warnings
+        );
+        assert_eq!(inner_first.assets.len(), 1);
+        assert_eq!(inner_first.assets[0].account, "assets:brokerage:vanguard");
+        assert_eq!(ma_units(&inner_first.assets[0].journal_opening), 200_000);
+        assert_eq!(ma_units(&inner_first.assets[0].growth), 42_000);
+        assert_eq!(
+            inner_first.warnings,
+            [
+                "assets:brokerage: 'assets:brokerage' shares its balance with \
+              'assets:brokerage:vanguard', which an earlier asset row already models, so \
+              the row contributes nothing (an asset row's balance is the account and \
+              everything under it; both would compound the shared money)"
+            ]
+        );
+
+        // The openings are the journal's either way — declining a row does not
+        // restate what the balance sheet says is held.
+        assert_eq!(inner_first.net_worth.opening, outer_first.net_worth.opening);
+    }
+
+    /// **The regression guard.** Two asset rows are perfectly ordinary as long
+    /// as they name accounts that do not share money, and this rule must not
+    /// make that case noisy.
+    ///
+    /// `assets:brokerage-old` is here on purpose: a bare `starts_with` would
+    /// call it part of `assets:brokerage` and decline it, which is what the `:`
+    /// test in `in_subtree` exists to prevent.
+    #[test]
+    fn asset_rows_on_unrelated_accounts_are_both_placed_and_silent() {
+        let mut journal = invested_journal();
+        journal.push(txn(
+            2,
+            "2026-02-01",
+            vec![
+                ("assets:brokerage-old", vec![usd(10_000_000)]),
+                ("equity:opening", vec![usd(-10_000_000)]),
+            ],
+        ));
+        let row = |group: &str, account: &str| {
+            growing(
+                asset(group, account, usd(0), "monthly"),
+                Dec::new(10, 2),
+                GrowthUnit::Year,
+            )
+        };
+        let projection = run_over(
+            &scenario(
+                vec![
+                    row("new", "assets:brokerage"),
+                    row("old", "assets:brokerage-old"),
+                ],
+                Vec::new(),
+            ),
+            &journal,
+            "2026-09-20",
+            Interval::Yearly,
+            3,
+        );
+
+        assert!(projection.warnings.is_empty(), "{:?}", projection.warnings);
+        // Both balances compound, and neither is counted in the other:
+        // $200,000 and $100,000 at 10%, on $310,000 of opening net worth.
+        assert_eq!(
+            series_units(&projection.net_worth),
+            [310_000, 340_000, 373_000]
+        );
+        assert_eq!(
+            projection
+                .assets
+                .iter()
+                .map(|row| (row.account.as_str(), ma_units(&row.growth)))
+                .collect::<Vec<_>>(),
+            [
+                ("assets:brokerage", 42_000),
+                ("assets:brokerage-old", 21_000)
+            ]
+        );
     }
 
     /// Liabilities are out of scope, and so is everything else that is not an
