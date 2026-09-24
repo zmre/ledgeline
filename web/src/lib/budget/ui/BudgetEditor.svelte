@@ -14,6 +14,7 @@
      rule the user has, and hiding it would be a worse lie than showing it
      read-only. -->
 <script lang="ts">
+    import {periodOf, sortBudgetLines, type BudgetSortKey, type SortDir} from "$lib/budget/sort";
     import {joinableRule} from "$lib/budget/target";
     import {BUDGET_PERIODS, type BudgetFile, type BudgetGoal, type BudgetListing, type BudgetRule} from "$lib/budget/types";
     import type {MixedAmount} from "$lib/domain/money";
@@ -24,6 +25,8 @@
         listing,
         styles,
         busy,
+        sort,
+        dir,
         removing,
         onAdd,
         onEdit,
@@ -35,6 +38,9 @@
         listing: BudgetListing;
         styles: ReadonlyMap<string, AmountStyle>;
         busy: boolean;
+        /** The page's one order control — the bars above obey the same two values. */
+        sort: BudgetSortKey;
+        dir: SortDir;
         /** The goal a Remove click has armed, or null. Owned by the page, so a
          *  reload of the listing cannot leave a row armed for a goal that moved. */
         removing: {journalId: string; goal: BudgetGoal} | null;
@@ -72,7 +78,27 @@
     const rows = $derived<Row[]>(listing.files.flatMap((file) => file.rules.flatMap((rule) => rule.goals.map((goal) => ({file, rule, goal})))));
 
     /**
-     * The goals, grouped by period, in the order the editor offers periods.
+     * Sort within one period group, by the page's one order control.
+     *
+     * The grouping is NOT disturbed: it is the organising idea, and the sort
+     * operates inside it. A goal's amount is its own per-period figure, so
+     * `sortBudgetLines` annualises it — which inside a single period group is a
+     * constant factor and therefore the same order the written figures give, and
+     * across the "Other periods" list is the only order that means anything.
+     */
+    const ordered = (items: Row[]): Row[] =>
+        sortBudgetLines(items, sort, dir, (row) => ({
+            account: row.goal.account,
+            // The magnitude the user typed, not the signed amount — an income
+            // goal must not sort as a large negative. `entry` is null only for
+            // the leg hledger infers, which shows "—" and ranks as nothing.
+            amount: row.goal.entry === null ? new Map() : new Map([[row.goal.entry.commodity, row.goal.entry.value]]),
+            period: periodOf(row.rule),
+        }));
+
+    /**
+     * The goals, grouped by period, in the order the editor offers periods, and
+     * sorted inside each group by the page's control.
      *
      * A period with no goals is omitted rather than shown empty: the "Add a
      * budget goal" button offers every period, so an empty group would be a
@@ -82,7 +108,7 @@
         BUDGET_PERIODS.map(({id, label}) => ({
             period: id,
             label,
-            rows: rows.filter((row) => row.rule.period === id),
+            rows: ordered(rows.filter((row) => periodOf(row.rule) === id)),
             // The rule a new goal joins. Asked of `joinableRule` rather than
             // worked out here, because the page asks the same question again when
             // the modal comes back — and two Add paths answering it differently
@@ -91,8 +117,16 @@
         })).filter((group) => group.rows.length > 0)
     );
 
-    /** Goals in a period the editor does not offer (a `~ daily` rule, say) still have to appear. */
-    const otherRows = $derived(rows.filter((row) => !BUDGET_PERIODS.some((p) => p.id === row.rule.period)));
+    /**
+     * Goals in a period the editor does not offer still have to appear.
+     *
+     * Two kinds land here: a period hledger has and the tab does not offer (a
+     * `~ daily` rule), and a period the engine will not rewrite at all, whose
+     * `simple` is null (`~ every 2 weeks`, `~ monthly from 2027`). The null
+     * falls into this bucket on its own — no new UI was needed for the period
+     * grammar, only the raw text to label it with.
+     */
+    const otherRows = $derived(ordered(rows.filter((row) => !BUDGET_PERIODS.some((p) => p.id === periodOf(row.rule)))));
 
     /** The file a brand-new rule goes in: the engine's own default target. */
     const defaultFile = $derived(listing.files.find((file) => file.journalId === listing.defaultTarget) ?? null);
@@ -243,7 +277,7 @@
                     {#each otherRows as row (`${row.file.journalId}#${row.goal.index}`)}
                         <li class="flex flex-wrap items-center gap-x-3 border-b border-base-content/5 px-1 py-2 last:border-b-0">
                             <span class="min-w-0 grow truncate font-medium" title={whereabouts(row)}>{row.goal.account}</span>
-                            <span class="badge badge-ghost badge-sm">{row.rule.period}</span>
+                            <span class="badge badge-ghost badge-sm">{row.rule.period.raw}</span>
                             <span class="font-mono text-sm tabular-nums">{shown(row.goal)}</span>
                         </li>
                     {/each}

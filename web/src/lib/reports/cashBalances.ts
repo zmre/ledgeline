@@ -46,7 +46,7 @@
 
 import {declaredTerms, inferBsTerm, resolveBsTerm} from "../domain/accountTerms";
 import {declaredTypes, resolveAccountType, type AccountDecl} from "../domain/accountTypes";
-import {add, cmp, dec, isZero, neg, type Dec, type MixedAmount} from "../domain/money";
+import {add, cmp, dec, isZero, neg, rankCommodities, type Dec, type MixedAmount} from "../domain/money";
 import type {ISODate, Transaction} from "../domain/types";
 
 /** Which half of the view an account belongs to. */
@@ -252,13 +252,15 @@ function computeAccountBalances(txns: Transaction[], decls: readonly AccountDecl
     return {balances: [...entries.values()], guessedLongTerm: [...guessed].sort()};
 }
 
-/** Commodities held by any account in the view, most-used first (ties alphabetical) — drives the currency selector. */
+/**
+ * Commodities held by any account in the view, most-used first (ties
+ * alphabetical) — drives the currency selector.
+ *
+ * "Most used" is per ACCOUNT, which is what an `AccountBalance`'s amounts
+ * already are: one entry per commodity, however many postings built it.
+ */
 export function balanceCommodities(balances: readonly AccountBalance[]): string[] {
-    const counts = new Map<string, number>();
-    for (const balance of balances) {
-        for (const commodity of balance.amounts.keys()) counts.set(commodity, (counts.get(commodity) ?? 0) + 1);
-    }
-    return [...counts.entries()].sort(([aName, aCount], [bName, bCount]) => bCount - aCount || (aName < bName ? -1 : 1)).map(([name]) => name);
+    return rankCommodities(balances.map((balance) => balance.amounts));
 }
 
 function abs(d: Dec): Dec {

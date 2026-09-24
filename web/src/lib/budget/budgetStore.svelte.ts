@@ -18,8 +18,15 @@
 
 import {classify, type EditFailure} from "$lib/api/editFailure";
 import {LedgelineApi, NativeApiUnavailableError, type BudgetChange, type SaveBudgetLinesBody} from "$lib/api/native";
-import {decodeAccountReference, decodeBudgetFileResponse, decodeBudgetListing, decodeBudgetReport, decodeCreatedBudgetFile} from "$lib/api/nativeDecode";
-import type {BudgetReport} from "$lib/reports/types";
+import {
+    decodeAccountReference,
+    decodeBudgetFileResponse,
+    decodeBudgetGaps,
+    decodeBudgetListing,
+    decodeBudgetReport,
+    decodeCreatedBudgetFile,
+} from "$lib/api/nativeDecode";
+import type {BudgetGaps, BudgetReport} from "$lib/reports/types";
 import {createResource} from "$lib/stores/resource.svelte";
 import {settings} from "$lib/stores/settings.svelte";
 import type {AccountReference, BudgetFile, BudgetListing, BudgetPeriod, CreatedBudgetFile} from "./types";
@@ -57,6 +64,19 @@ const report = createResource<BudgetReportQuery, BudgetReport>(async (serverUrl,
     decodeBudgetReport(await new LedgelineApi(serverUrl).budget({end: query.end, interval: "monthly", count: query.count, depth: query.depth}))
 );
 
+/**
+ * The unbudgeted categories under the bars.
+ *
+ * Keyed on the SAME `BudgetReportQuery` as the report, because the two have to
+ * cover the same span or the section is answering a different question than the
+ * chart it sits under. It is a separate resource (and a separate request) only
+ * so that a collapsed section costs nothing: the page loads it when the
+ * disclosure opens, not when the page does.
+ */
+const gaps = createResource<BudgetReportQuery, BudgetGaps>(async (serverUrl, query) =>
+    decodeBudgetGaps(await new LedgelineApi(serverUrl).budgetGaps({end: query.end, interval: "monthly", count: query.count, depth: query.depth}))
+);
+
 const listing = createResource<string, BudgetListing>(async (serverUrl) => decodeBudgetListing(await new LedgelineApi(serverUrl).listBudgetLines()));
 
 const reference = createResource<ReferenceQuery, AccountReference>(async (serverUrl, query) =>
@@ -83,6 +103,10 @@ export const budgetStore = {
     /** The bars' report and the span it answers. */
     get report() {
         return report;
+    },
+    /** The unbudgeted categories under the bars — fetched only while the section is open. */
+    get gaps() {
+        return gaps;
     },
     /** The goal listing the editor rewrites. */
     get listing() {
@@ -181,11 +205,24 @@ export const budgetStore = {
     /**
      * Re-read everything a write invalidates.
      *
-     * Both, always, and awaited: the bars are drawn from the goals the listing
+     * All of it, and awaited: the bars are drawn from the goals the listing
      * describes, so returning while one of them still shows the old journal is
-     * how a screen comes to disagree with itself.
+     * how a screen comes to disagree with itself. Adding a goal also moves a
+     * category from the gaps list onto a bar, so the third read is the same
+     * invariant one step out.
+     *
+     * The gaps are refetched only when they have ALREADY been fetched — i.e.
+     * the user has opened that section at some point. Otherwise a save would
+     * pay for a payload nobody has asked to see, which is the cost the separate
+     * endpoint exists to avoid. Nothing else can pick the reload up later: the
+     * page's load effect keys on the query, and a save does not change it.
      */
     async afterWrite(serverUrl: string, reportQuery: BudgetReportQuery | null): Promise<void> {
-        await Promise.all([this.reloadListing(serverUrl), reportQuery === null ? Promise.resolve() : report.load(serverUrl, reportQuery)]);
+        const gapsQuery = reportQuery ?? gaps.query;
+        await Promise.all([
+            this.reloadListing(serverUrl),
+            reportQuery === null ? Promise.resolve() : report.load(serverUrl, reportQuery),
+            gaps.query === null || gapsQuery === null ? Promise.resolve() : gaps.load(serverUrl, gapsQuery),
+        ]);
     },
 };

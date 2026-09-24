@@ -10,7 +10,7 @@
 // 1005/1e3 is stored as 1.00499999999999989…, which Excel prints as 1.00 while
 // the screen prints 1.01.
 
-import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
+import {isAccountType, type AccountType} from "$lib/domain/accountTypes";
 import {
     dec,
     displayPlaces,
@@ -583,7 +583,10 @@ function addBudgetRow(ws: Worksheet, rowIx: number, label: string, actual: Mixed
  */
 function addBudget(ws: Worksheet, report: BudgetReport, declared: ReadonlyMap<string, AccountType>): void {
     const leaves = budgetLeaves(summarizeBudget(report));
-    const ofType = (type: AccountType): BudgetLine[] => leaves.filter((l) => resolveAccountType(l.account, declared) === type);
+    // `isAccountType`, so a declared subtype folds into its parent section.
+    // These two sections are the whole partition, so a `type: G` goal matching
+    // neither would be exported nowhere at all.
+    const ofType = (type: AccountType): BudgetLine[] => leaves.filter((l) => isAccountType(l.account, declared, type));
     const sections = [
         {title: "Income", lines: ofType("revenue")},
         {title: "Expenses", lines: ofType("expense")},

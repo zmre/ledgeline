@@ -11,6 +11,8 @@
 
 import type {ISODate} from "$lib/domain/types";
 import {bucketEnd, bucketStart, lastNBuckets, monthsBetween, today} from "$lib/reports/periods";
+import {clampedInt, isIsoDate, oneOf} from "$lib/url/params";
+import {BUDGET_SORT_KEYS, SORT_DIRS, type BudgetSortKey, type SortDir} from "./sort";
 
 // --- Period presets ---------------------------------------------------------
 // The budget summary is period-based; these presets set the from/to range that
@@ -78,7 +80,7 @@ export function budgetSpan(from: ISODate, to: ISODate): {from: ISODate; to: ISOD
 
 // --- The tab's own params ---------------------------------------------------
 
-/** The Budget tab's URL state: the range the bars cover, and the depth they clamp to. */
+/** The Budget tab's URL state: the range the bars cover, the depth they clamp to, and their order. */
 export interface BudgetParams {
     /** Inclusive range start. */
     from: ISODate;
@@ -86,15 +88,29 @@ export interface BudgetParams {
     to: ISODate;
     /** Account depth clamp. */
     depth: number;
+    /** What the bars AND the goals below them are ordered by — one control, both halves. */
+    sort: BudgetSortKey;
+    dir: SortDir;
 }
 
 /** The depth the tab opens at — the same default the period reports use. */
 export const DEFAULT_BUDGET_DEPTH = 3;
 
-/** Defaults: year-to-date at depth 3. */
+/**
+ * The order the tab opens in: by account name, ascending.
+ *
+ * Which is what the bars already did (the engine returns rows sorted by name)
+ * and what the editor did not — it showed goals in whatever order they were
+ * written. Opening on the bars' existing behaviour means the control changes
+ * what the EDITOR does by default and nothing else.
+ */
+export const DEFAULT_BUDGET_SORT: BudgetSortKey = "account";
+export const DEFAULT_BUDGET_DIR: SortDir = "asc";
+
+/** Defaults: year-to-date at depth 3, by account name ascending. */
 export function defaultBudgetParams(now: ISODate = today()): BudgetParams {
     const range = budgetPresetRange(DEFAULT_BUDGET_PRESET, now);
-    return {from: range.from, to: range.to, depth: DEFAULT_BUDGET_DEPTH};
+    return {from: range.from, to: range.to, depth: DEFAULT_BUDGET_DEPTH, sort: DEFAULT_BUDGET_SORT, dir: DEFAULT_BUDGET_DIR};
 }
 
 /** Serialize to a query string (no leading "?"). */
@@ -103,20 +119,24 @@ export function budgetParamsToSearch(params: BudgetParams): string {
     q.set("from", params.from);
     q.set("to", params.to);
     q.set("depth", String(params.depth));
+    q.set("sort", params.sort);
+    q.set("dir", params.dir);
     return q.toString();
 }
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Parse a query string (with or without a leading "?"); absent/malformed params fall back to `dflt`. */
 export function searchToBudgetParams(search: string, dflt: BudgetParams): BudgetParams {
     const q = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
     const from = q.get("from");
     const to = q.get("to");
-    const depth = q.get("depth");
     return {
-        from: from !== null && ISO_DATE.test(from) ? from : dflt.from,
-        to: to !== null && ISO_DATE.test(to) ? to : dflt.to,
-        depth: depth !== null && /^\d+$/.test(depth) ? Math.min(Math.max(Number(depth), 1), 99) : dflt.depth,
+        from: from !== null && isIsoDate(from) ? from : dflt.from,
+        to: to !== null && isIsoDate(to) ? to : dflt.to,
+        depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
+        // Validated against the unions, the way `depth` is validated against its
+        // range: a stale link naming a key that no longer exists must not reach
+        // the comparator, which would then order by nothing.
+        sort: oneOf(BUDGET_SORT_KEYS, q.get("sort"), dflt.sort),
+        dir: oneOf(SORT_DIRS, q.get("dir"), dflt.dir),
     };
 }

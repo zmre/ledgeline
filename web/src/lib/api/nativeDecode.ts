@@ -25,7 +25,8 @@
 // was a live bug class (CLEANUP.md DRY-3).
 
 import type {AccountEntry, AccountFile, AccountListing, AccountTag, CreatedAccountsFile} from "$lib/accounts/types";
-import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile} from "$lib/budget/types";
+import {isBudgetPeriod} from "$lib/budget/types";
+import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile, RulePeriod} from "$lib/budget/types";
 import type {Dec, MixedAmount} from "$lib/domain/money";
 import type {ISODate} from "$lib/domain/types";
 import type {
@@ -101,6 +102,23 @@ import type {
     RulesSourcePref,
     RulesWarning,
 } from "$lib/imports/types";
+import {GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "$lib/projections/types";
+import type {
+    AssetRow,
+    BalanceSeries,
+    EventPosting,
+    Growth,
+    Projection,
+    ProjectionFile,
+    ProjectionIndex,
+    Runway,
+    Scenario,
+    ScenarioAmount,
+    ScenarioEvent,
+    ScenarioFile,
+    ScenarioLine,
+    ScenarioPeriod,
+} from "$lib/projections/types";
 import type {
     Cadence,
     ChangeKind,
@@ -126,6 +144,7 @@ import type {
     BsTerm,
     BsValuation,
     BudgetCell,
+    BudgetGaps,
     BudgetReport,
     BudgetRow,
     DateRange,
@@ -134,6 +153,7 @@ import type {
     FlowNode,
     FlowReport,
     FlowSide,
+    GapRow,
     GroupSource,
     IncomeStatementReport,
     IsGroup,
@@ -333,6 +353,124 @@ interface RawBudgetReport {
     buckets?: unknown[];
     rows?: RawBudgetRow[];
     totals?: RawBudgetCell[];
+}
+
+// Projections (plans/22). EVERY optional field on these is `null` on the wire
+// and never absent — `projections_api.rs` says so at the top of the file and
+// means it, because a scenario is a round-trip shape and "the key is missing"
+// versus "the key is null" is the distinction a hand-written decoder gets
+// wrong. So every `| null` below is decoded through a nullable-but-not-absent
+// guard, never through a `?? default`.
+
+interface RawScenarioAmount {
+    commodity?: string;
+    quantity?: RawDec;
+    /** DISPLAY precision, which is NOT `quantity.places`; the growth curve is wrong without it. */
+    precision?: number;
+}
+
+interface RawScenarioPeriod {
+    raw?: string;
+    simple?: string | null;
+    from?: string | null;
+    to?: string | null;
+}
+
+interface RawGrowth {
+    rate?: RawDec;
+    unit?: string;
+}
+
+interface RawScenarioLine {
+    id?: string;
+    group?: string;
+    role?: string;
+    account?: string;
+    amount?: RawScenarioAmount;
+    period?: RawScenarioPeriod;
+    growth?: RawGrowth | null;
+    opening?: RawScenarioAmount | null;
+    note?: string;
+    source?: string;
+}
+
+interface RawEventPosting {
+    account?: string;
+    amount?: RawScenarioAmount;
+}
+
+interface RawScenarioEvent {
+    id?: string;
+    date?: string;
+    description?: string;
+    postings?: RawEventPosting[];
+}
+
+interface RawScenario {
+    name?: string;
+    created?: string | null;
+    updated?: string | null;
+    lines?: RawScenarioLine[];
+    events?: RawScenarioEvent[];
+}
+
+interface RawProjectionFile {
+    id?: string;
+    label?: string;
+    name?: string | null;
+    created?: string | null;
+    updated?: string | null;
+    isProjection?: boolean;
+    sizeBytes?: number;
+    writable?: boolean;
+}
+
+interface RawProjectionIndex {
+    rootLabel?: string;
+    editable?: boolean;
+    truncated?: boolean;
+    files?: RawProjectionFile[];
+    directories?: unknown[];
+    warnings?: unknown[];
+}
+
+interface RawScenarioFile {
+    id?: string;
+    label?: string;
+    revision?: string;
+    writable?: boolean;
+    scenario?: RawScenario;
+}
+
+interface RawBalanceSeries {
+    opening?: RawMixed;
+    values?: RawMixed[];
+}
+
+interface RawRunway {
+    bucket?: number;
+    label?: string;
+    date?: string;
+    periods?: number;
+}
+
+interface RawAssetRow {
+    group?: string;
+    account?: string;
+    journalOpening?: RawMixed;
+    opening?: RawMixed;
+    growth?: RawMixed;
+}
+
+interface RawProjection {
+    buckets?: unknown[];
+    start?: string;
+    netIncome?: RawPeriodReport;
+    cash?: RawBalanceSeries;
+    netWorth?: RawBalanceSeries;
+    runway?: RawRunway | null;
+    assets?: RawAssetRow[];
+    warnings?: unknown[];
 }
 
 interface RawHoldingPrice {
@@ -1604,6 +1742,262 @@ export function decodeBudgetReport(raw: unknown): BudgetReport {
         rows: frozen(report.rows.map((row, i) => decodeBudgetRow(row, `budget row #${i}`))),
         totals: frozen(report.totals.map((total, i) => decodeBudgetCell(total, `budget totals[${i}]`))),
     });
+}
+
+// ---------------------------------------------------------------------------
+// Projections: a scenario (the seed, and what a file will load into) and the
+// projection running one forward produces.
+//
+// Two rules apply to everything below and to nothing above it:
+//
+//  1. NO FIELD HERE IS OPTIONAL-BY-ABSENCE. `projections_api.rs` serializes
+//     every `Option` as `null`, so an absent key is always a broken contract —
+//     `decodeNullableStr` / `decodeNullableEnum` / `decodeNullable` throw on one
+//     where a `?? null` would have absorbed it. This is what lets the rename
+//     sweep in nativeDecode.test.ts reach fields whose golden value is null.
+//  2. AN AMOUNT'S SIGN IS THE JOURNAL'S, AND IS NOT TOUCHED HERE. A revenue
+//     line arrives negative and stays negative; `projections/scenarioModel.ts`
+//     owns the one flip that turns it into the magnitude the table shows.
+// ---------------------------------------------------------------------------
+
+/** A value that may be `null` but may not be ABSENT — the object-valued sibling of `decodeNullableStr`. */
+function decodeNullable<Raw, T>(raw: Raw | null | undefined, context: string, read: (value: Raw, context: string) => T): T | null {
+    if (raw === null) return null;
+    if (raw === undefined) throw new ApiShapeError(`${context}: expected an object or null, got nothing`);
+    return read(raw, context);
+}
+
+/** A required non-negative integer (a precision, a bucket index, a period count). */
+function decodeCount(value: unknown, context: string): number {
+    const n = num(value, context);
+    if (!Number.isSafeInteger(n) || n < 0) throw new ApiShapeError(`${context}: expected a non-negative whole number, got ${JSON.stringify(value)}`);
+    return n;
+}
+
+function decodeScenarioAmount(raw: RawScenarioAmount | undefined, context: string): ScenarioAmount {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing amount`);
+    return Object.freeze({
+        commodity: str(raw.commodity, `${context} commodity`),
+        quantity: decodeDec(raw.quantity, `${context} quantity`),
+        // Demanded, not defaulted to the quantity's own places: the engine
+        // rounds a growing amount back to THIS at every step, so a client that
+        // guessed it would send back a different growth curve than the one it
+        // was shown (plan 22, amendment 14).
+        precision: decodeCount(raw.precision, `${context} precision`),
+    });
+}
+
+function decodeScenarioPeriod(raw: RawScenarioPeriod | undefined, context: string): ScenarioPeriod {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing period`);
+    return Object.freeze({
+        // The round-trip field, and the only one the server reads back.
+        raw: str(raw.raw, `${context} raw`),
+        // `null` is a real answer — "this period is not a bare fixed interval" —
+        // and the engine says it explicitly, so an absent key is not it.
+        simple: decodeNullableEnum(SCENARIO_INTERVALS, raw.simple, `${context} simple`),
+        from: decodeNullableStr(raw.from, `${context} from`),
+        to: decodeNullableStr(raw.to, `${context} to`),
+    });
+}
+
+function decodeGrowth(raw: RawGrowth, context: string): Growth {
+    return Object.freeze({
+        // A FRACTION (0.03), never a percentage. The `%` belongs to the file
+        // format and the UI.
+        rate: decodeDec(raw.rate, `${context} rate`),
+        unit: decodeEnum(GROWTH_UNITS, raw.unit, `${context} unit`),
+    });
+}
+
+function decodeScenarioLine(raw: RawScenarioLine | undefined, context: string): ScenarioLine {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing line`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        group: str(raw.group, `${context} group`),
+        // Required, never defaulted to "flow": the two roles project entirely
+        // different numbers, and a body that lost the key would silently model
+        // a compounding balance as a per-period outflow.
+        role: decodeEnum(LINE_ROLES, raw.role, `${context} role`),
+        account: str(raw.account, `${context} account`),
+        amount: decodeScenarioAmount(raw.amount, `${context} amount`),
+        period: decodeScenarioPeriod(raw.period, `${context} period`),
+        growth: decodeNullable(raw.growth, `${context} growth`, decodeGrowth),
+        // Nullable but never ABSENT, like every other optional on this wire.
+        opening: decodeNullable(raw.opening, `${context} opening`, decodeScenarioAmount),
+        note: str(raw.note, `${context} note`),
+        source: decodeEnum(LINE_SOURCES, raw.source, `${context} source`),
+    });
+}
+
+function decodeEventPosting(raw: RawEventPosting | undefined, context: string): EventPosting {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing posting`);
+    return Object.freeze({account: str(raw.account, `${context} account`), amount: decodeScenarioAmount(raw.amount, `${context} amount`)});
+}
+
+function decodeScenarioEvent(raw: RawScenarioEvent | undefined, context: string): ScenarioEvent {
+    if (raw === undefined || raw === null || !Array.isArray(raw.postings)) throw new ApiShapeError(`${context}: missing id/date/postings`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        date: str(raw.date, `${context} date`),
+        description: str(raw.description, `${context} description`),
+        postings: frozen(raw.postings.map((posting, i) => decodeEventPosting(posting, `${context} postings[${i}]`))),
+    });
+}
+
+/**
+ * `GET /api/projections/seed`, and in Phase 3 a loaded scenario file.
+ *
+ * `name` is `""` on a seed — naming it is the Save As dialog's job — which is a
+ * real answer and not a missing one, so it is still a REQUIRED string.
+ */
+export function decodeScenario(raw: unknown): Scenario {
+    const scenario = raw as RawScenario;
+    if (typeof scenario !== "object" || scenario === null || !Array.isArray(scenario.lines) || !Array.isArray(scenario.events)) {
+        throw new ApiShapeError("scenario: expected lines and events arrays");
+    }
+    return Object.freeze({
+        name: str(scenario.name, "scenario name"),
+        created: decodeNullableStr(scenario.created, "scenario created"),
+        updated: decodeNullableStr(scenario.updated, "scenario updated"),
+        lines: frozen(scenario.lines.map((line, i) => decodeScenarioLine(line, `scenario line #${i}`))),
+        events: frozen(scenario.events.map((event, i) => decodeScenarioEvent(event, `scenario event #${i}`))),
+    });
+}
+
+function decodeBalanceSeries(raw: RawBalanceSeries | undefined, context: string): BalanceSeries {
+    if (raw === undefined || raw === null || !Array.isArray(raw.values)) throw new ApiShapeError(`${context}: missing opening/values`);
+    return Object.freeze({
+        // A real figure from the journal, not `values[-1]` of an earlier window.
+        opening: decodeMixed(raw.opening, `${context} opening`),
+        values: frozen(raw.values.map((value, i) => decodeMixed(value, `${context} values[${i}]`))),
+    });
+}
+
+function decodeRunway(raw: RawRunway, context: string): Runway {
+    return Object.freeze({
+        bucket: decodeCount(raw.bucket, `${context} bucket`),
+        // Carried beside the index so the sentence above the chart never has to
+        // index back into `buckets` and hope the two agree.
+        label: str(raw.label, `${context} label`),
+        date: str(raw.date, `${context} date`),
+        periods: decodeCount(raw.periods, `${context} periods`),
+    });
+}
+
+/**
+ * One asset row's attribution.
+ *
+ * `journalOpening` is DEMANDED rather than defaulted to `opening`: the two are
+ * equal on every row without an override, so a decoder that fell back would be
+ * indistinguishable from a correct one until the first user typed over a
+ * balance — at which point the table would show the override as the ledger's own
+ * figure, which is exactly the failure the Balance column exists to prevent.
+ */
+function decodeAssetRow(raw: RawAssetRow | undefined, context: string): AssetRow {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing asset row`);
+    return Object.freeze({
+        // The SOURCE RULE, which is what the table already has on the row it is
+        // rendering — not the logical `id`, which two segments would share.
+        group: str(raw.group, `${context} group`),
+        account: str(raw.account, `${context} account`),
+        journalOpening: decodeMixed(raw.journalOpening, `${context} journalOpening`),
+        opening: decodeMixed(raw.opening, `${context} opening`),
+        growth: decodeMixed(raw.growth, `${context} growth`),
+    });
+}
+
+/**
+ * `POST /api/projections/run`.
+ *
+ * `netIncome` is a plain `WirePeriodReport`, so it goes through the same
+ * `decodePeriodReport` the cash-flow report does and `ReportTable` renders it
+ * with no edits — in CASH-FLOW ORIENTATION, revenue positive and expenses
+ * negative. Nothing here re-signs it.
+ */
+export function decodeProjection(raw: unknown): Projection {
+    const projection = raw as RawProjection;
+    if (typeof projection !== "object" || projection === null || !Array.isArray(projection.buckets) || !Array.isArray(projection.warnings)) {
+        throw new ApiShapeError("projection: expected buckets and warnings arrays");
+    }
+    // Always an array, `[]` when the scenario holds no asset rows — so an
+    // ABSENT key is a broken contract, not "no assets". A `?? []` here would
+    // blank the Balance column of every row against an engine whose key had
+    // been renamed, and the table would show nothing rather than say so.
+    if (!Array.isArray(projection.assets)) throw new ApiShapeError("projection assets: expected an array");
+    return Object.freeze({
+        buckets: frozen(decodeStrings(projection.buckets, "projection buckets")),
+        start: str(projection.start, "projection start"),
+        netIncome: decodePeriodReport(projection.netIncome),
+        cash: decodeBalanceSeries(projection.cash, "projection cash"),
+        netWorth: decodeBalanceSeries(projection.netWorth, "projection netWorth"),
+        runway: decodeNullable(projection.runway, "projection runway", decodeRunway),
+        assets: frozen(projection.assets.map((row, i) => decodeAssetRow(row, `projection assets[${i}]`))),
+        // Never empty silently: a dropped line always says so here.
+        warnings: frozen(decodeStrings(projection.warnings, "projection warnings")),
+    });
+}
+
+/**
+ * `GET /api/projections` — the scenario picker's file list (plan 22, Phase 3).
+ *
+ * `writable` is demanded rather than defaulted, and that is deliberate: it
+ * carries decision 5 ("a projection is never saved over a plan of record"), and
+ * a decoder that read an absent key as `true` would offer Save over the user's
+ * main journal and let the engine be the one to say no.
+ */
+export function decodeProjectionIndex(raw: unknown): ProjectionIndex {
+    const index = raw as RawProjectionIndex;
+    if (typeof index !== "object" || index === null || !Array.isArray(index.files)) {
+        throw new ApiShapeError("projection index: expected a files array");
+    }
+    return Object.freeze({
+        rootLabel: str(index.rootLabel, "projection index rootLabel"),
+        editable: flag(index.editable, "projection index editable"),
+        truncated: flag(index.truncated, "projection index truncated"),
+        files: frozen(index.files.map((file, i) => decodeProjectionFile(file, `projection file #${i}`))),
+        directories: frozen(decodeStrings(index.directories, "projection index directories")),
+        warnings: frozen(decodeStrings(index.warnings, "projection index warnings")),
+    });
+}
+
+function decodeProjectionFile(raw: RawProjectionFile | undefined, context: string): ProjectionFile {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing file`);
+    return Object.freeze({
+        id: str(raw.id, `${context} id`),
+        label: str(raw.label, `${context} label`),
+        name: decodeNullableStr(raw.name, `${context} name`),
+        created: decodeNullableStr(raw.created, `${context} created`),
+        updated: decodeNullableStr(raw.updated, `${context} updated`),
+        isProjection: flag(raw.isProjection, `${context} isProjection`),
+        sizeBytes: decodeCount(raw.sizeBytes, `${context} sizeBytes`),
+        writable: flag(raw.writable, `${context} writable`),
+    });
+}
+
+/**
+ * `GET`/`PUT /api/projections/{*id}` — one file, read as a scenario.
+ *
+ * The `revision` is the optimistic-concurrency token and is REQUIRED: a decoder
+ * that let it default to `""` would turn every subsequent save into a create,
+ * and a create is `O_EXCL`, so the user's next Save would fail with "a file
+ * already exists there" about the file they were already editing.
+ */
+export function decodeScenarioFile(raw: unknown): ScenarioFile {
+    const file = raw as RawScenarioFile;
+    if (typeof file !== "object" || file === null) throw new ApiShapeError("scenario file: expected an object");
+    return Object.freeze({
+        id: str(file.id, "scenario file id"),
+        label: str(file.label, "scenario file label"),
+        revision: str(file.revision, "scenario file revision"),
+        writable: flag(file.writable, "scenario file writable"),
+        scenario: decodeScenario(file.scenario),
+    });
+}
+
+/** A required boolean. Absent is a broken contract here, never `false`. */
+function flag(value: unknown, context: string): boolean {
+    if (typeof value !== "boolean") throw new ApiShapeError(`${context}: expected a boolean`);
+    return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -3017,10 +3411,15 @@ interface RawBudgetGoal {
     locked?: string;
 }
 
+interface RawBudgetPeriod {
+    raw?: string;
+    simple?: string | null;
+}
+
 interface RawBudgetRule {
     block?: number;
     line?: number;
-    period?: string;
+    period?: RawBudgetPeriod;
     description?: string;
     locked?: string;
     lines?: RawBudgetGoal[];
@@ -3096,11 +3495,30 @@ function decodeBudgetGoal(raw: RawBudgetGoal, context: string): BudgetGoal {
     });
 }
 
+/**
+ * A rule's recurrence.
+ *
+ * `raw` is required and `simple` is not, deliberately. Every rule has words in
+ * its header, so an absent `raw` is a malformed body and throws; `simple` is
+ * absent for every rule the editor cannot offer, which is an ordinary state and
+ * decodes to null. An unrecognised `simple` is also null rather than a throw —
+ * the engine and this file share a vocabulary, but a client that is a version
+ * behind should degrade to "not offerable" rather than refuse the whole listing.
+ */
+function decodeRulePeriod(raw: RawBudgetPeriod | undefined, context: string): RulePeriod {
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected an object`);
+    const simple = raw.simple;
+    return Object.freeze({
+        raw: str(raw.raw, `${context} raw`),
+        simple: typeof simple === "string" && isBudgetPeriod(simple) ? simple : null,
+    });
+}
+
 function decodeBudgetRule(raw: RawBudgetRule, context: string): BudgetRule {
     return Object.freeze({
         block: num(raw.block, `${context} block`),
         line: num(raw.line, `${context} line`),
-        period: str(raw.period, `${context} period`),
+        period: decodeRulePeriod(raw.period, `${context} period`),
         description: str(raw.description, `${context} description`),
         locked: optStr(raw.locked, `${context} locked`),
         // The wire calls them `lines` (they are lines of a file); the domain
@@ -3309,5 +3727,59 @@ export function decodePricesUpdateResponse(raw: unknown): PricesUpdateResponse {
     return Object.freeze({
         file: decodePricesFile(response.file, "prices update file"),
         results: frozen(response.results.map((result, i) => decodePriceResult(result, `prices update results[${i}]`))),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Budget gaps (`/api/budget/gaps`)
+//
+// What the `~` rules do NOT measure, over the same window as the budget report
+// — see `$lib/reports/types.ts`. Its own payload rather than a field on that
+// report, because the section showing it opens collapsed and must not slow down
+// a refetch nobody asked it for.
+// ---------------------------------------------------------------------------
+
+interface RawGapRow {
+    account?: string;
+    depth?: number;
+    total?: RawMixed;
+}
+
+interface RawBudgetGaps {
+    revenue?: RawGapRow[];
+    expense?: RawGapRow[];
+    from?: string;
+    to?: string;
+}
+
+/**
+ * One unbudgeted category.
+ *
+ * `total` goes through `decodeMixed`, which THROWS on an absent value rather
+ * than decoding to an empty Map (DRY-3). Every row here is by construction
+ * non-zero, so an empty total is not a state the engine can produce — which is
+ * exactly why a missing one must not quietly render as `$0`.
+ */
+function decodeGapRow(raw: RawGapRow, context: string): GapRow {
+    return Object.freeze({
+        account: str(raw.account, `${context} account`),
+        depth: num(raw.depth, `${context} depth`),
+        total: decodeMixed(raw.total, `${context} total`),
+    });
+}
+
+/** `GET /api/budget/gaps` → the income and expense no goal covers, largest first. */
+export function decodeBudgetGaps(raw: unknown): BudgetGaps {
+    const gaps = raw as RawBudgetGaps;
+    if (typeof gaps !== "object" || gaps === null || !Array.isArray(gaps.revenue) || !Array.isArray(gaps.expense)) {
+        throw new ApiShapeError("budget gaps: expected revenue and expense arrays");
+    }
+    return Object.freeze({
+        revenue: frozen(gaps.revenue.map((row, i) => decodeGapRow(row, `budget gaps revenue[${i}]`))),
+        expense: frozen(gaps.expense.map((row, i) => decodeGapRow(row, `budget gaps expense[${i}]`))),
+        // Required, not defaulted: these label the figures, and a section headed
+        // with the wrong span is worse than one that refuses to render.
+        from: str(gaps.from, "budget gaps from"),
+        to: str(gaps.to, "budget gaps to"),
     });
 }

@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {bucketEnd, bucketKey, bucketLabel, bucketStart, compareISO, lastNBuckets, nextBucket, today} from "./periods";
+import {bucketEnd, bucketKey, bucketLabel, bucketStart, compareISO, daysBetween, lastNBuckets, nextBucket, nextNBuckets, today} from "./periods";
 
 /** The zone vite.config.ts pins the suite to; restored after the `today()` cases retune it. */
 const PINNED_TZ = process.env.TZ;
@@ -141,6 +141,66 @@ describe("UNIT reports/periods", () => {
         it("throws RangeError for an unrecognized key", () => {
             expect(() => nextBucket("garbage", "monthly")).toThrow(RangeError);
             expect(() => nextBucket("2026-Q5", "quarterly")).toThrow(RangeError);
+        });
+    });
+
+    describe("nextNBuckets", () => {
+        // The exact twin of `reports::periods::next_n_buckets`. Every case here
+        // is one the Rust side answers identically; drift between the two is the
+        // bug this guards.
+        it("walks forward across year and leap boundaries", () => {
+            expect(nextNBuckets("2026-11-15", "monthly", 4)).toEqual(["2026-11", "2026-12", "2027-01", "2027-02"]);
+            expect(nextNBuckets("2024-01-31", "daily", 3)).toEqual(["2024-01-31", "2024-02-01", "2024-02-02"]);
+            expect(nextNBuckets("2024-02-28", "daily", 3)).toEqual(["2024-02-28", "2024-02-29", "2024-03-01"]);
+            expect(nextNBuckets("2024-02-15", "monthly", 2)).toEqual(["2024-02", "2024-03"]);
+            expect(nextNBuckets("2026-11-15", "quarterly", 3)).toEqual(["2026-Q4", "2027-Q1", "2027-Q2"]);
+            expect(nextNBuckets("2026-11-15", "yearly", 3)).toEqual(["2026", "2027", "2028"]);
+            // 2020 is a 53-week ISO year.
+            expect(nextNBuckets("2020-12-28", "weekly", 3)).toEqual(["2020-W53", "2021-W01", "2021-W02"]);
+        });
+
+        it("is empty at zero and meets lastNBuckets at one", () => {
+            expect(nextNBuckets("2026-07-08", "monthly", 0)).toEqual([]);
+            for (const interval of ["daily", "weekly", "monthly", "quarterly", "yearly"] as const) {
+                expect(nextNBuckets("2026-07-08", interval, 1)).toEqual(lastNBuckets("2026-07-08", interval, 1));
+            }
+            // A forward run is the backward run ending at its last bucket.
+            expect(nextNBuckets("2026-01-15", "monthly", 6)).toEqual(lastNBuckets("2026-06-15", "monthly", 6));
+        });
+
+        it("throws RangeError for an unrecognized start", () => {
+            expect(() => nextNBuckets("garbage", "monthly", 2)).toThrow(RangeError);
+        });
+    });
+
+    describe("daysBetween", () => {
+        // The exact twin of `reports::periods::days_between`. Every case here is
+        // one the Rust side answers identically, because the two are the same
+        // Hinnant civil-day arithmetic and drift between them is the bug this
+        // guards.
+        it("counts forward, backward and to itself", () => {
+            expect(daysBetween("2026-07-08", "2026-07-08")).toBe(0);
+            expect(daysBetween("2026-07-08", "2026-07-09")).toBe(1);
+            expect(daysBetween("2026-07-09", "2026-07-08")).toBe(-1);
+        });
+
+        it("counts the leap day", () => {
+            // 2024 is a leap year, 2026 is not — the same two calendar dates are
+            // a day further apart in the first.
+            expect(daysBetween("2024-02-28", "2024-03-01")).toBe(2);
+            expect(daysBetween("2026-02-28", "2026-03-01")).toBe(1);
+            expect(daysBetween("2024-01-01", "2024-12-31")).toBe(365);
+            expect(daysBetween("2026-01-01", "2026-12-31")).toBe(364);
+        });
+
+        it("crosses a year boundary", () => {
+            expect(daysBetween("2025-12-31", "2026-01-01")).toBe(1);
+            expect(daysBetween("2025-01-01", "2026-01-01")).toBe(365);
+        });
+
+        it("spans a century rule (1900 is not a leap year, 2000 is)", () => {
+            expect(daysBetween("1900-02-28", "1900-03-01")).toBe(1);
+            expect(daysBetween("2000-02-28", "2000-03-01")).toBe(2);
         });
     });
 

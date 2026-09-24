@@ -63,14 +63,16 @@ const MARGIN = 8;
 const MIN_ROOM = 96;
 
 /**
- * Where to put a popup anchored to `rect`.
+ * Which side of `rect` to open on, and how much room that leaves.
  *
  * Prefers below — that is where a dropdown belongs and where the eye already is
  * — and flips above only when below is genuinely cramped AND above is roomier.
  * The `MIN_ROOM` floor stops it flip-flopping over a pixel of difference as the
  * user types and the list resizes.
+ *
+ * Shared by both placements below, which differ only in how they pick a WIDTH.
  */
-export function popupPosition(rect: Rect, viewport: Viewport, desiredHeight: number): Placement {
+function verticalPlacement(rect: Rect, viewport: Viewport, desiredHeight: number): Omit<Placement, "left" | "width"> {
     const roomBelow = viewport.height - rect.bottom - GAP - MARGIN;
     const roomAbove = rect.top - GAP - MARGIN;
     const below = roomBelow >= Math.min(desiredHeight, MIN_ROOM) || roomBelow >= roomAbove;
@@ -79,13 +81,41 @@ export function popupPosition(rect: Rect, viewport: Viewport, desiredHeight: num
     const height = Math.min(desiredHeight, maxHeight);
     const top = below ? rect.bottom + GAP : rect.top - GAP - height;
 
+    return {top, maxHeight, below};
+}
+
+/**
+ * Where to put a popup anchored to `rect`, as wide as `rect` itself.
+ *
+ * The width is the anchor's because this is a COMBOBOX popup: a list of
+ * completions for the field below it, which reads as one control with it.
+ */
+export function popupPosition(rect: Rect, viewport: Viewport, desiredHeight: number): Placement {
     // Clamp horizontally so a right-hand-edge input does not push the popup off
     // screen. The popup matches the input's width, which keeps the two visually
     // bound together.
     const width = Math.min(rect.width, viewport.width - MARGIN * 2);
     const left = Math.max(MARGIN, Math.min(rect.left, viewport.width - width - MARGIN));
 
-    return {top, left, width, maxHeight, below};
+    return {...verticalPlacement(rect, viewport, desiredHeight), left, width};
+}
+
+/**
+ * Where to put a MENU anchored to `rect`: its own width, RIGHT edge aligned.
+ *
+ * Both differences from [`popupPosition`] are the reason this exists. A menu's
+ * trigger is a 24px `⋯` button, so matching the anchor's width would give a
+ * 24px menu; and a trigger in the last column of a table is close enough to the
+ * right edge that a left-aligned menu would be clamped away from it. This is
+ * daisyUI's `dropdown-end` written as arithmetic, because the CSS version is
+ * positioned inside the scroll container it needs to escape (see the header).
+ */
+export function menuPosition(rect: Rect, viewport: Viewport, desired: {width: number; height: number}): Placement {
+    const width = Math.min(desired.width, viewport.width - MARGIN * 2);
+    const right = rect.left + rect.width;
+    const left = Math.max(MARGIN, Math.min(right - width, viewport.width - width - MARGIN));
+
+    return {...verticalPlacement(rect, viewport, desired.height), left, width};
 }
 
 /**

@@ -95,6 +95,9 @@
                             <a href={resolve("/budget")} class={page.url.pathname.startsWith("/budget") ? "menu-active" : ""}>Budget</a>
                         </li>
                         <li>
+                            <a href={resolve("/projections")} class={page.url.pathname.startsWith("/projections") ? "menu-active" : ""}>Projections</a>
+                        </li>
+                        <li>
                             <a href={resolve("/reports")} class={page.url.pathname.startsWith("/reports") ? "menu-active" : ""}>Reports</a>
                         </li>
                         {#if rulesStore.available}

@@ -113,6 +113,42 @@ writing the first.
 hledger's other two intervals, `daily` and `quarterly`, are read and edited
 normally; the tab just does not offer *daily* when creating a new rule.
 
+### Periods that are more than an interval
+
+hledger's period expressions go a long way past those five words. All of these
+are read, and all of them count toward the bars exactly as hledger counts them:
+
+```journal
+~ every 2 weeks  paycheck
+~ biweekly  paycheck                    ; the same thing, spelled differently
+~ every 15th day of month  rent
+~ every 3rd tuesday of month  therapy
+~ every tuesday  coffee
+~ every 12/25  presents
+~ quarterly from 2027  new lease
+~ monthly from 2026 to 2028  car loan
+~ 2027-03-01  one-off
+```
+
+Two rules of hledger's own that are worth knowing, because they are easy to get
+wrong and Ledgeline follows them exactly:
+
+- **`from` sets the rhythm, it does not just clip it.** `~ monthly from
+  2026-01-15` falls on the 15th of every month, not the 1st.
+- **`to` is exclusive.** `~ monthly from 2026 to 2028` is 24 goals — January
+  2026 through December 2027. The month you write as `to` is not included.
+
+These rules are shown under **Other periods**, labelled with their own words, and
+they are read-only: the tab writes headers using one of the five plain interval
+words, so it has no way to write `every 2 weeks` back. Edit those in your
+journal; Ledgeline will keep reporting them.
+
+A period expression Ledgeline cannot make sense of at all is a weaker case: the
+rule is still listed, still shown exactly as written, but it contributes no goals
+to the bars, and it says so. **It does not stop your journal opening** — that is
+worth stating plainly, because it used to. A single unreadable `~` header
+anywhere in a 40,000-line ledger once meant the whole file refused to load.
+
 ## Recent activity, and why it is subaccount-inclusive
 
 When you set a goal, the last four periods of that account's actual activity
@@ -176,7 +212,8 @@ yourself, in your own editor, rather than have it guessed at.
 
 | You will see                                    | Because                                                                                     |
 |--------------------------------------------------|---------------------------------------------------------------------------------------------|
-| the whole rule locked                            | its period is not one of hledger's five fixed intervals (`~ every 2 weeks`, `~ monthly from …`) |
+| the whole rule locked                            | its period says more than a plain interval (`~ every 2 weeks`, `~ every 15th day of month`, `~ monthly from 2027`) |
+| the whole rule locked                            | Ledgeline cannot work out how often its period recurs at all (`~ every weekday`)              |
 | the whole rule locked                            | it uses balanced-virtual `[account]` postings, which balance as a second group                |
 | the whole rule locked                            | its postings are not all in one commodity                                                    |
 | one goal locked                                  | it has no written amount — hledger works it out from the other lines, so it changes when they do |
@@ -246,6 +283,81 @@ the range end, so a range starting mid-month still starts its first bar on the
 1st; the tab shows the real span under the heading, and a category's journal link
 uses that same span, so the transactions you drill into always add up to the bar
 you clicked.
+
+### Pace: where you should be by now
+
+Each bar carries **two** marks. The bright one is your goal for the whole span.
+The quieter, half-height one is **pace** — the goal prorated to the days that
+have actually elapsed. Look at January-to-June of an annual budget and the pace
+mark sits at the halfway point; look at a period that has already finished and it
+sits exactly on the goal, because a finished period is fully paced.
+
+A bar is **green when it is on the right side of pace, red when it is not**, and
+the fill is one colour throughout:
+
+| Type    | Situation                    | Label              | Colour |
+|---------|------------------------------|--------------------|--------|
+| Expense | at or under pace             | `$X left`          | green  |
+| Expense | past pace, still under goal  | `$X ahead of pace` | red    |
+| Expense | past goal                    | `$X over`          | red    |
+| Revenue | at or past goal              | `$X above target`  | green  |
+| Revenue | at or past pace, under goal  | `$X to go`         | green  |
+| Revenue | short of pace                | `$X behind pace`   | red    |
+
+Income and expenses are read by the same sentence, in opposite directions, which
+is the only way a two-section screen stays legible. It also fixes two things that
+were plainly wrong: earning **more** than you targeted used to paint the bar red
+and call it "over", and a half-year view of an annual expense goal used to report
+a large, reassuring underspend that was only the calendar.
+
+Pace is prorated by **days elapsed in the span**, not by completed months. That
+is what makes a `~ yearly` goal and twelve `~ monthly` ones behave identically —
+the engine has already folded both into one span total — and it keeps a bar from
+flipping colour on the 1st for reasons that have nothing to do with money.
+
+"Today" is your computer's local date. Nothing in the report engine reads a
+clock; the page passes the date in.
+
+### Ordering
+
+One **Sort by** control, next to the depth slider, governs the bars *and* the
+goals below them — they are the same subject read two ways and must not disagree
+about order. Sort by name or by amount, ascending or descending, and the choice
+travels in the URL like every other control on the tab.
+
+Sorting by amount compares **annualised** figures, so a weekly goal and a yearly
+one rank against each other honestly ($100 a week outranks $300 a month). Goals
+in a period Ledgeline does not model, and goals written in several commodities,
+have no single comparable figure and sort to the end rather than being guessed
+at. Within the goals editor, the grouping by period is not disturbed — the sort
+operates inside each group, because "my monthly budget" is the organising idea.
+
+## What your budget does not cover
+
+Under the bars, collapsed, is **Not budgeted**: the income and expense categories
+with activity in the same period, at the same depth, that no `~` rule mentions.
+
+This is not a list of chores. Budgeting some things and not others is a
+perfectly good way to work — clothing yes, insurance no — and the section exists
+to tell you how much of your financial life the bars above are *silent* about.
+Its header says the count and the total, so a shut section still answers "is
+this worth opening".
+
+Three things decide what appears:
+
+- **Coverage is by goal, not by ancestry.** A category is covered when it, or an
+  ancestor of it, has a goal of its own. Budgeting `expenses:food` covers
+  `expenses:food:dining`; it does not quietly cover `expenses:insurance` just
+  because both live under `expenses`.
+- **Only income and expenses**, decided by declared account type (see
+  [`docs/income-statement.md`](income-statement.md)). The cash and card legs of
+  an unbudgeted purchase are not spending, and including them would net the
+  section against itself and answer nothing.
+- **The same span and depth as the bars.** The numbers on one screen have to tie
+  to each other; each row links into the journal for that same span, exactly as
+  a bar does.
+
+The section is fetched only when you open it, so leaving it shut costs nothing.
 
 See [`docs/income-statement.md`](income-statement.md) for how account types are
 resolved — the same `type:` rules decide which side of the budget an account

@@ -346,6 +346,41 @@ pub fn next_bucket(key: &str, interval: Interval) -> Result<String, ReportError>
     Ok(bucket_key(&to_iso(ny, nm, nd), interval))
 }
 
+/// The `n` consecutive bucket keys STARTING with the bucket containing `start`,
+/// oldest → newest — the forward mirror of [`last_n_buckets`]. Empty when
+/// `n == 0`; at most [`MAX_BUCKETS`] keys.
+///
+/// This module was trailing-only: every report here looks backwards from a
+/// report end, so `last_n_buckets` was the whole vocabulary. A PROJECTION looks
+/// the other way — it is handed an as-of date and asked for the buckets after it
+/// — and the alternative to this function is a caller re-deriving the walk from
+/// [`next_bucket`], which is how the two directions start to disagree about a
+/// year boundary or a leap day.
+///
+/// The [`MAX_BUCKETS`] clamp is [`last_n_buckets`]' clamp, for [`last_n_buckets`]'
+/// reason (SEC-2): `n` arrives from a request, so the loop AND the capacity hint
+/// are both bounded and this function is total for every `n`, `usize::MAX`
+/// included. Callers taking a count from untrusted input still reject anything
+/// above [`MAX_BUCKETS`] with a 400 first.
+///
+/// # Errors
+/// Returns [`ReportError::InvalidBucketKey`] if bucket math ever yields an
+/// unrecognized key (unreachable for the intervals here).
+pub fn next_n_buckets(
+    start: &str,
+    interval: Interval,
+    n: usize,
+) -> Result<Vec<String>, ReportError> {
+    let wanted = n.min(MAX_BUCKETS);
+    let mut out = Vec::with_capacity(wanted);
+    let mut key = bucket_key(start, interval);
+    for _ in 0..wanted {
+        out.push(key.clone());
+        key = next_bucket(&key, interval)?;
+    }
+    Ok(out)
+}
+
 /// The ISO date `delta` days after `date` (a negative `delta` moves earlier).
 /// Pure civil-day arithmetic — the companion to [`days_between`], used by the
 /// insights report to split a comparison span at its midpoint.
@@ -369,6 +404,53 @@ pub fn add_months(date: &str, months: i64) -> String {
         new_month,
         day.min(days_in_month(new_year, new_month)),
     )
+}
+
+/// The ISO weekday of `date`: 1 = Monday … 7 = Sunday.
+///
+/// The same numbering [`bucket_key`] buckets ISO weeks by, exposed because a
+/// periodic rule can be anchored on a weekday (`every 3rd tuesday of month`) and
+/// the budget report must not grow a second weekday convention to answer that.
+pub(crate) fn weekday_of(date: &str) -> i64 {
+    let (year, month, day) = parts(date);
+    iso_weekday(days_from_civil(year, month, day))
+}
+
+/// The ISO date `year`-`month`-`day`, with `month` normalized into its year
+/// (month 13 is January of the next year, month 0 is the previous December) and
+/// `day` clamped into that month's length.
+///
+/// Month normalization is [`add_months`]' own, so "N months after a month index"
+/// means one thing in this module. The CLAMP is what distinguishes the two:
+/// `add_months` walks from a date and therefore cannot recover a day its
+/// intermediate month was too short for, while a rule anchored on the 31st has
+/// to give January 31 and then February 28 and then March **31**. Verified
+/// against hledger 1.52: `~ monthly from 2026-01-31` fires 01-31, 02-28, 03-31.
+pub(crate) fn clamped_date(year: i64, month: i64, day: i64) -> String {
+    let index = year * 12 + (month - 1);
+    let (year, month) = (index.div_euclid(12), index.rem_euclid(12) + 1);
+    to_iso(year, month, day.clamp(1, days_in_month(year, month)))
+}
+
+/// Whole calendar months from `a`'s month to `b`'s month (`b − a`), ignoring the
+/// DAY. Negative when `b` precedes `a`. The month-family companion to
+/// [`days_between`].
+///
+/// Ignoring the day is the whole contract: this counts month BOUNDARIES crossed,
+/// so 2026-01-31 → 2026-02-01 is one. A caller that wants ANNIVERSARIES instead
+/// (2026-01-31 → 2026-02-27 is zero) takes this and clamps — that is exactly
+/// what `projections::whole_months` does, with [`clamped_date`] for the clamp.
+/// Both the budget report's occurrence walk and that clamp had grown their own
+/// copy of these three lines.
+///
+/// NOT `insights`' same-named helper, which answers a different question — how
+/// many months a half-open reporting span COVERS, never negative — and is not
+/// this with a sign.
+#[must_use]
+pub(crate) fn months_between(a: &str, b: &str) -> i64 {
+    let (ay, am, _) = parts(a);
+    let (by, bm, _) = parts(b);
+    (by * 12 + bm) - (ay * 12 + am)
 }
 
 /// Number of days from `a` to `b` (`b − a`); negative when `b` precedes `a`.
@@ -626,6 +708,83 @@ mod tests {
             }
             // The run ends exactly at the report end, never past it.
             assert_eq!(spans.last().unwrap().1, end, "{interval:?}");
+        }
+    }
+
+    /// The forward mirror walks the same calendar as [`last_n_buckets`], across
+    /// the two places bucket math usually breaks: a year boundary and a leap
+    /// February.
+    #[test]
+    fn next_n_buckets_walks_forward_across_year_and_leap_boundaries() {
+        assert_eq!(
+            next_n_buckets("2026-11-15", Interval::Monthly, 4).unwrap(),
+            ["2026-11", "2026-12", "2027-01", "2027-02"]
+        );
+        assert_eq!(
+            next_n_buckets("2024-01-31", Interval::Daily, 3).unwrap(),
+            ["2024-01-31", "2024-02-01", "2024-02-02"]
+        );
+        // Leap day is a real bucket, and the month after it starts on the 1st.
+        assert_eq!(
+            next_n_buckets("2024-02-28", Interval::Daily, 3).unwrap(),
+            ["2024-02-28", "2024-02-29", "2024-03-01"]
+        );
+        assert_eq!(
+            next_n_buckets("2024-02-15", Interval::Monthly, 2).unwrap(),
+            ["2024-02", "2024-03"]
+        );
+        assert_eq!(
+            next_n_buckets("2026-11-15", Interval::Quarterly, 3).unwrap(),
+            ["2026-Q4", "2027-Q1", "2027-Q2"]
+        );
+        assert_eq!(
+            next_n_buckets("2026-11-15", Interval::Yearly, 3).unwrap(),
+            ["2026", "2027", "2028"]
+        );
+        // ISO weeks: 2020-W53 exists and 2021-W01 follows it.
+        assert_eq!(
+            next_n_buckets("2020-12-28", Interval::Weekly, 3).unwrap(),
+            ["2020-W53", "2021-W01", "2021-W02"]
+        );
+    }
+
+    /// `n == 0` is the empty walk, and the two directions agree on the single
+    /// bucket they share.
+    #[test]
+    fn next_n_buckets_is_empty_at_zero_and_meets_last_n_buckets_at_one() {
+        assert!(
+            next_n_buckets("2026-07-08", Interval::Monthly, 0)
+                .unwrap()
+                .is_empty()
+        );
+        for interval in [
+            Interval::Daily,
+            Interval::Weekly,
+            Interval::Monthly,
+            Interval::Quarterly,
+            Interval::Yearly,
+        ] {
+            assert_eq!(
+                next_n_buckets("2026-07-08", interval, 1).unwrap(),
+                last_n_buckets("2026-07-08", interval, 1).unwrap(),
+                "{interval:?}"
+            );
+        }
+        // A forward run reversed is the backward run ending at its last bucket.
+        let forward = next_n_buckets("2026-01-15", Interval::Monthly, 6).unwrap();
+        let backward = last_n_buckets("2026-06-15", Interval::Monthly, 6).unwrap();
+        assert_eq!(forward, backward);
+    }
+
+    /// SEC-2 again, in the other direction: an absurd `n` must return, capped,
+    /// rather than aborting on `Vec::with_capacity` or hanging in the loop.
+    #[test]
+    fn next_n_buckets_bounds_absurd_counts() {
+        for n in [usize::MAX, usize::MAX / 2, MAX_BUCKETS + 1] {
+            let buckets = next_n_buckets("2026-07-08", Interval::Monthly, n)
+                .unwrap_or_else(|e| panic!("n={n} must not fail: {e}"));
+            assert_eq!(buckets.len(), MAX_BUCKETS, "n={n} must cap at MAX_BUCKETS");
+            assert_eq!(buckets[0], "2026-07");
         }
     }
 

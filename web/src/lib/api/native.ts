@@ -598,6 +598,140 @@ export interface BudgetQuery {
     budgetDesc?: string;
 }
 
+/**
+ * `?end=&interval=&count=&depth=` — the unbudgeted categories under the bars.
+ *
+ * Deliberately the same four params as {@link BudgetQuery} minus `budgetDesc`:
+ * the gaps have to answer for the same window the bars do, and a description
+ * filter over the rules cannot narrow "what does my budget not mention".
+ */
+export interface BudgetGapsQuery {
+    end?: string;
+    interval?: string;
+    count?: number;
+    depth?: number;
+}
+
+// --- Projections (plans/22) ------------------------------------------------
+//
+// The scenario travels in a request BODY rather than a query string, which is
+// the whole point of `POST /api/projections/run`: live editing has to project
+// what is on screen, saved or not. These mirror the `*In` structs in
+// `crates/ledgeline-server/src/projections_api.rs`; `scenarioToWire` builds
+// them. Every optional field is sent as an explicit `null`, matching the way
+// they arrive.
+
+/** `?end=&count=&depth=` — the seed window. Deliberately NO `interval`: the seeded lines are monthly averages. */
+export interface ProjectionSeedQuery {
+    end?: string;
+    /** How many monthly buckets the unbudgeted averages are taken over. */
+    count?: number;
+    depth?: number;
+}
+
+/** A single-commodity amount on the way out. `precision` is the DISPLAY precision, and the growth curve is wrong without it. */
+export interface WireAmountIn {
+    commodity: string;
+    quantity: WireDec;
+    precision: number;
+}
+
+/**
+ * A recurrence on the way out: only `raw` is read back.
+ *
+ * The server re-parses it through the journal's own grammar, which is what
+ * guarantees a projected line fires on the days the same line fires on once it
+ * is saved to disk and read back.
+ */
+export interface WirePeriodIn {
+    raw: string;
+}
+
+export interface WireGrowthIn {
+    /** A FRACTION (0.03), never a percentage. */
+    rate: WireDec;
+    /** `week` | `month` | `year`. */
+    unit: string;
+}
+
+export interface WireScenarioLineIn {
+    id: string;
+    group: string;
+    /**
+     * `flow` | `asset`. The asset/flow discriminator is EXPLICIT on the wire and
+     * must never be inferred from `account`: `assets:cash` is a legitimate flow
+     * (the destination of a raise) and a legitimate asset row, and a reader that
+     * guessed would reclassify one of them on every round trip.
+     */
+    role: string;
+    account: string;
+    /**
+     * For a flow, signed as the journal writes it: revenue negative, expenses
+     * positive. For an ASSET row, the per-period CONTRIBUTION — zero when the
+     * balance only compounds, which is the `$0` posting the file carries.
+     */
+    amount: WireAmountIn;
+    period: WirePeriodIn;
+    growth: WireGrowthIn | null;
+    /**
+     * Asset rows only: an override of the journal's balance at the projection
+     * start. `null` means "use the journal's". Sending one on a flow row is a
+     * 400 — a flow has no balance to open.
+     */
+    opening: WireAmountIn | null;
+    note: string;
+    /** `journal` | `unbudgeted`. An unrecognized value is a 400, not a silent fallback. */
+    source: string;
+}
+
+export interface WireEventPostingIn {
+    account: string;
+    amount: WireAmountIn;
+}
+
+export interface WireScenarioEventIn {
+    id: string;
+    date: string;
+    description: string;
+    postings: WireEventPostingIn[];
+}
+
+export interface WireScenarioIn {
+    name: string;
+    created: string | null;
+    updated: string | null;
+    lines: WireScenarioLineIn[];
+    events: WireScenarioEventIn[];
+}
+
+/** The whole `POST /api/projections/run` body. */
+export interface RunProjectionBody {
+    scenario: WireScenarioIn;
+    /** Opening balances are taken here; the first projected bucket is the next WHOLE one after it. */
+    asOf?: string;
+    interval?: string;
+    count?: number;
+    depth?: number;
+    valueIn?: string;
+}
+
+/**
+ * The whole `PUT /api/projections/{*id}` body.
+ *
+ * `revision: ""` means CREATE — the same `NEW_FILE_REVISION` spelling
+ * `SaveRulesBody` uses, so the SPA has one convention for "there is no file
+ * yet" rather than three. Anything else is an edit against bytes that exist,
+ * and a mismatch is the 409 the picker surfaces as "it changed on disk".
+ *
+ * `created`/`updated` inside the scenario are IGNORED by the server, which
+ * sets them from its own clock. Sending them back is harmless and keeps this
+ * body the shape the GET handed out.
+ */
+export interface SaveScenarioBody {
+    revision: string;
+    scenario: WireScenarioIn;
+}
+
 /** `?account=&interval=&count=&asOf=` — the budget editor's history strip. */
 export interface BudgetReferenceQuery {
     /** Required: matched inclusively against itself and its subaccounts. */
@@ -796,6 +930,65 @@ export class LedgelineApi {
         return this.getJson(
             `/api/budget${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, budgetDesc: query.budgetDesc})}`
         );
+    }
+
+    /** The revenue and expense no `~` rule budgets, over the same window (decode with `decodeBudgetGaps`). */
+    budgetGaps(query: BudgetGapsQuery = {}): Promise<unknown> {
+        return this.getJson(`/api/budget/gaps${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth})}`);
+    }
+
+    /**
+     * A starting scenario built from the journal: its `~` rules plus one monthly
+     * line per unbudgeted category (decode with `decodeScenario`).
+     *
+     * No `interval` param, deliberately — the seeded lines are monthly and their
+     * figures are monthly averages, so an interval could only offer a window
+     * whose buckets do not match the lines it produces.
+     */
+    projectionSeed(query: ProjectionSeedQuery = {}): Promise<unknown> {
+        return this.getJson(`/api/projections/seed${queryString({end: query.end, count: query.count, depth: query.depth})}`);
+    }
+
+    /**
+     * Project a scenario forward (decode with `decodeProjection`).
+     *
+     * A POST that writes nothing: the scenario travels in the body precisely so
+     * that UNSAVED edits project. It is mapped like a write because that is the
+     * only path with a body — except for its 404, which here means "this engine
+     * predates projections" rather than "that thing is gone", the same reading
+     * every GET on a native route gives it.
+     */
+    runProjection(body: RunProjectionBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/projections/run", 200, body, {404: () => new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE)});
+    }
+
+    /**
+     * Every `*.journal` file beside the open journal, `projection-*` first
+     * (decode with `decodeProjectionIndex`).
+     *
+     * The scenario PICKER's list. Deliberately every journal rather than only
+     * the ones Ledgeline wrote: "really any journal file with budget-like
+     * entries could be used".
+     */
+    listProjections(): Promise<unknown> {
+        return this.getJson("/api/projections");
+    }
+
+    /** One journal file, read as a scenario (decode with `decodeScenarioFile`). */
+    getProjection(id: string): Promise<unknown> {
+        return this.getJson(`/api/projections/${encodeRulesId(id)}`);
+    }
+
+    /**
+     * Save a scenario to a file (decode with `decodeScenarioFile`).
+     *
+     * `body.revision === ""` creates, and the create is `O_EXCL` on the server —
+     * so a 409 from THAT call means "a file already exists there", while a 409
+     * from an update means "it changed on disk since you opened it". The two are
+     * told apart by which revision was sent, not by the status.
+     */
+    saveProjection(id: string, body: SaveScenarioBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", `/api/projections/${encodeRulesId(id)}`, 200, body);
     }
 
     /** Insights dashboard (period-over-period core metrics). */
@@ -1137,10 +1330,20 @@ export class LedgelineApi {
      * Issue a write request and map the response: JSON-decode the body on
      * `okStatus`, else translate the HTTP status into the edit error taxonomy
      * carrying the server's plain-text message.
+     *
+     * `extraStatuses` is forwarded to `send` for the one route whose body is not
+     * a write at all (`runProjection`), where a 404 means the engine predates
+     * the route rather than "that thing is gone".
      */
-    private async mutate<T>(method: string, route: string, okStatus: number, body?: unknown): Promise<T> {
+    private async mutate<T>(
+        method: string,
+        route: string,
+        okStatus: number,
+        body?: unknown,
+        extraStatuses: Record<number, (message: string) => Error> = {}
+    ): Promise<T> {
         const headers = authHeaders(body === undefined ? {Accept: "application/json"} : {Accept: "application/json", "Content-Type": "application/json"});
-        return this.send<T>(method, route, okStatus, headers, body === undefined ? undefined : JSON.stringify(body));
+        return this.send<T>(method, route, okStatus, headers, body === undefined ? undefined : JSON.stringify(body), extraStatuses);
     }
 
     /**

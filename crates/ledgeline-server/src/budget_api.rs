@@ -80,7 +80,7 @@ use ledgeline_core::periodic::{
 };
 use ledgeline_core::reports::{
     AccountType, Interval, MixedAmount, ReferenceOpts, account_decls, account_reference,
-    declared_types, resolve_account_type,
+    declared_types, is_account_type,
 };
 use ledgeline_core::{Dec, journals, parse, periodic};
 use serde::{Deserialize, Serialize};
@@ -181,9 +181,8 @@ pub(crate) struct WireBudgetRule {
     block: usize,
     /// 1-based line of the `~` header.
     line: u32,
-    /// `daily`|`weekly`|`monthly`|`quarterly`|`yearly`, or the raw text when it
-    /// is a period Ledgeline does not model (then `locked` is set).
-    period: String,
+    /// The rule's recurrence, in both readings a client needs.
+    period: WireRulePeriod,
     /// The rule description; `--budget=DESCPAT` matches a substring of it.
     description: String,
     /// The sentence to show when this whole rule is read-only, else absent.
@@ -191,6 +190,35 @@ pub(crate) struct WireBudgetRule {
     locked: Option<&'static str>,
     /// The rule's goal lines, in file order.
     lines: Vec<WireBudgetLine>,
+}
+
+/// A rule's recurrence, as written and as offered.
+///
+/// Two fields rather than one string, because a client needs two different
+/// things from a period and used to get a value that was sometimes one and
+/// sometimes the other:
+///
+/// - `raw` is always the header's own words — `monthly`, `every 2 weeks`,
+///   `monthly from 2027 to 2028`. What a tooltip or a lock sentence shows.
+/// - `simple` is the recurrence the editor can offer, and is `null` for
+///   everything else. What a period grouping keys on.
+///
+/// Before the period grammar existed these could not disagree, so one string
+/// served both. Now a `~ monthly from 2027` rule is monthly *and* not offerable,
+/// and a single field would have to lie about one of them.
+///
+/// Named for the RULE, not bare `WirePeriod`: this module already has a
+/// `WirePeriod`, the reference strip's one bucket of recent activity. The two
+/// are unrelated — one is a recurrence, the other is a span with a total — and
+/// the name matches the SPA's `RulePeriod`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireRulePeriod {
+    /// The period expression exactly as the file writes it.
+    raw: String,
+    /// `daily`|`weekly`|`monthly`|`quarterly`|`yearly` when the rule is a bare
+    /// fixed interval, else `null` (and `locked` is then set on the rule).
+    simple: Option<&'static str>,
 }
 
 /// One goal: an account and an amount.
@@ -649,9 +677,10 @@ fn wire_rules(
         .map(|(block, rule)| WireBudgetRule {
             block: block.index,
             line: block.line,
-            period: block
-                .period
-                .map_or_else(|| block.period_text.clone(), |p| period_word(p).to_string()),
+            period: WireRulePeriod {
+                raw: block.period_text.clone(),
+                simple: block.period.map(period_word),
+            },
             description: block.description.clone(),
             locked: block.lock.map(BlockLock::message),
             lines: block
@@ -743,8 +772,14 @@ fn oriented(amounts: &MixedAmount, flip: bool) -> Result<MixedAmount, AppError> 
 
 /// [`inverted`], with the declaration table already built. Called once per goal
 /// line, so it must not rebuild the table each time.
+///
+/// [`is_account_type`], not `resolve_account_type == Some(Revenue)`: the subtype
+/// fold is what `budget_gaps` files a declared `type: G` account under, and a
+/// goal SECTIONED as revenue but WRITTEN without the inversion is a goal whose
+/// sign the journal and the editor disagree about. `seed_scenario` then reads
+/// that goal straight into a projection line.
 fn inverted_with(declared: &DeclaredTypes, account: &str) -> bool {
-    resolve_account_type(account, declared) == Some(AccountType::Revenue)
+    is_account_type(account, declared, AccountType::Revenue)
 }
 
 // ===========================================================================

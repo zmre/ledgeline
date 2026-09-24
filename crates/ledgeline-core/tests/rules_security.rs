@@ -15,6 +15,7 @@
 //! | `MAX_RULES_BYTES` | a mis-named gigabyte is read into memory and parsed |
 //! | relative-only warnings | a user-facing dialog becomes a filesystem existence oracle |
 //! | `resolve` = string equality | a client-supplied id becomes a path, which is what every traversal bug is made of |
+//! | `resolve_new`'s `resolved != candidate` | a create through a symlinked directory lands under an id the scan never lists |
 //! | `RulesPath` has no public constructor | "only write what discovery returned" is a convention instead of a type |
 //!
 //! Everything is built at test time in a scratch directory, in the style of
@@ -23,7 +24,7 @@
 
 mod common;
 
-use ledgeline_core::rules::{Discovery, discover};
+use ledgeline_core::rules::{CreateRefusal, Discovery, discover};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -636,6 +637,51 @@ fn a_stale_id_from_an_earlier_scan_simply_misses() {
 
     std::fs::remove_file(dir.join("gone.rules")).expect("remove");
     assert!(discover(&main).resolve("gone.rules").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// `resolve_new` — the one place a client's string DOES become a path
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn resolve_new_refuses_a_symlinked_parent_directory() {
+    // Guard 4, and the gap it had. `parse::confine` CANONICALIZES, so a
+    // `symlink_metadata` on its output inspects the link's target and never the
+    // link itself — there is nothing left in a canonical path to refuse. A
+    // create through `linked/` therefore landed in `real/`: inside the root, so
+    // containment held, but under an id the scan never produces. The user would
+    // have created a file and then been unable to open it, because
+    // `resolve("linked/new.rules")` misses and only `real/new.rules` is listed.
+    //
+    // The scan skips the link itself (see the symlink test above); this is the
+    // *write* side of the same policy.
+    let dir = scratch("resolvenewlink");
+    let main = main_journal(&dir);
+    write(&dir, "real/checking.rules", RULES);
+    std::os::unix::fs::symlink(dir.join("real"), dir.join("linked")).expect("create symlink");
+
+    let found = discover(&main);
+    assert_eq!(
+        found.resolve_new("linked/new.rules"),
+        Err(CreateRefusal::DirectoryMissing),
+        "a symlinked directory must be refused rather than followed"
+    );
+
+    // The same name one directory over, reached without a link, still works —
+    // so what was refused above is the symlink and not the tree.
+    let real = found
+        .resolve_new("real/new.rules")
+        .expect("a new file in a real directory");
+    assert_eq!(
+        real.as_path(),
+        dir.canonicalize().unwrap().join("real/new.rules")
+    );
+
+    // Nothing was created by either call. `resolve_new` names a path; the
+    // exclusive open downstream is what brings a file into existence.
+    assert!(!dir.join("real/new.rules").exists());
+    assert!(!dir.join("linked/new.rules").exists());
 }
 
 // ---------------------------------------------------------------------------

@@ -92,7 +92,7 @@
 //! feeds the budget report. It simply cannot be edited here.
 
 use crate::decimal::{Dec, DecError};
-use crate::model::{Amount, PeriodExpr, PeriodicTransaction, PostingType};
+use crate::model::{Amount, PeriodExpr, PeriodKind, PeriodicTransaction, PostingType};
 use crate::rules::Newline;
 use std::ops::Range;
 use thiserror::Error;
@@ -170,10 +170,24 @@ impl GoalLock {
 /// Why a whole `~` block is presented read-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockLock {
-    /// The period expression is not one of hledger's five fixed intervals.
-    /// Ledgeline does not model richer ones (see [`PeriodExpr`]), so it will not
-    /// write into a block whose recurrence it cannot state.
+    /// The period expression says MORE than one of the five fixed intervals: a
+    /// multiplier (`every 2 weeks`), an anchor (`every 15th day of month`), a
+    /// `from`/`to` bound, or a single date. The rule is understood — it reports
+    /// its goals normally — but this module writes a header with
+    /// [`period_word`], which can restate only a bare interval, so rewriting one
+    /// would silently drop whatever else the header said.
     Period,
+    /// The period expression is one this engine cannot work out a recurrence
+    /// from at all ([`crate::model::PeriodKind::Unsupported`]).
+    ///
+    /// Distinct from [`Period`](Self::Period), and worth its own sentence,
+    /// because the consequence is different: a rule nobody can enumerate
+    /// contributes no goals to the bars either. The user needs to be told that,
+    /// not just told they cannot edit it. The expression itself is not quoted
+    /// here — `message` is a `&'static str`, and the raw text travels beside the
+    /// lock as `PeriodicBlock::period_text` (and on the wire as `period.raw`),
+    /// which is where a caller composing the sentence picks it up.
+    UnsupportedPeriod,
     /// The block holds a balanced-virtual `[account]` posting. Those balance
     /// among themselves, as a second group alongside the real one, and a rule
     /// with two balance groups has two counter-legs to keep straight. Rare
@@ -194,8 +208,13 @@ impl BlockLock {
     pub fn message(self) -> &'static str {
         match self {
             Self::Period => {
-                "its period is not one of daily, weekly, monthly, quarterly or yearly, and \
-                 Ledgeline will not rewrite a rule whose recurrence it cannot state"
+                "its period says more than a plain daily, weekly, monthly, quarterly or yearly — \
+                 a multiplier, an anchored day, or a from/to bound — and Ledgeline will not \
+                 rewrite a header it cannot write back in full"
+            }
+            Self::UnsupportedPeriod => {
+                "Ledgeline cannot work out how often its period expression recurs, so the rule is \
+                 shown exactly as written and contributes no goals to the bars"
             }
             Self::BalancedVirtual => {
                 "it uses balanced-virtual `[account]` postings, which balance as a second group \
@@ -281,13 +300,27 @@ pub struct PeriodicBlock {
     /// The whole block — header line, every body line, terminators and all.
     /// What deleting the block's last goal removes.
     pub full: Span,
-    /// The period expression as written, e.g. `monthly`.
+    /// The period expression as written, e.g. `monthly`, `every 2 weeks`.
     pub period_text: String,
-    /// The period, when it is one Ledgeline models. `None` is
-    /// [`BlockLock::Period`].
+    /// The period, when it is a BARE fixed interval — the only shape this module
+    /// can write a header for. `None` is a [`BlockLock`] of one of the two period
+    /// kinds. Answered by [`crate::model::PeriodSpec::interval`], off the same
+    /// parse the journal itself gets.
     pub period: Option<PeriodExpr>,
     /// The description as written, trimmed. Empty when the rule has none.
     pub description: String,
+    /// The extent of the header's comment TEXT — everything after the `;`, with
+    /// no surrounding whitespace trimmed. `None` when the header carries no
+    /// comment.
+    ///
+    /// CURRENTLY UNREAD, and deliberately so. Nothing splices a header comment —
+    /// the only code that touches this field is this module's own test. It is
+    /// carried anyway because the document model is the one place that knows
+    /// where a header's parts are, and a feature that rewrites `; growth: 3%/yr`
+    /// without disturbing another byte of the rule should find that knowledge
+    /// here rather than re-deriving it from the line. Keep the seam; do not read
+    /// this doc as promising a caller.
+    pub comment: Option<Span>,
     /// Indices into [`PeriodicDoc::lines`], in file order.
     pub lines: Vec<usize>,
     /// How this block's real postings stay balanced.
@@ -1328,8 +1361,13 @@ fn write_account(account: &str, ptype: PostingType) -> String {
 }
 
 /// The word hledger writes a [`PeriodExpr`] as — the inverse of
-/// `parse::parse_period_expr`, spelled out rather than derived from `Debug` so a
-/// rename cannot silently change what lands in a journal.
+/// `parse::parse_period_spec` for the bare-interval case, spelled out rather
+/// than derived from `Debug` so a rename cannot silently change what lands in a
+/// journal.
+///
+/// It can restate ONLY a bare interval, which is why
+/// [`crate::model::PeriodSpec::interval`] answers `None` for everything else and
+/// why such a rule is locked: there is no word here for `every 2 weeks`.
 #[must_use]
 pub const fn period_word(period: PeriodExpr) -> &'static str {
     match period {
@@ -1338,20 +1376,6 @@ pub const fn period_word(period: PeriodExpr) -> &'static str {
         PeriodExpr::Monthly => "monthly",
         PeriodExpr::Quarterly => "quarterly",
         PeriodExpr::Yearly => "yearly",
-    }
-}
-
-/// A period expression as written, when it is one Ledgeline models. Must agree
-/// with `parse::parse_period_expr`, which is what pins a block's ordinal to its
-/// parsed rule's.
-fn period_of(text: &str) -> Option<PeriodExpr> {
-    match text {
-        "daily" => Some(PeriodExpr::Daily),
-        "weekly" => Some(PeriodExpr::Weekly),
-        "monthly" => Some(PeriodExpr::Monthly),
-        "quarterly" => Some(PeriodExpr::Quarterly),
-        "yearly" => Some(PeriodExpr::Yearly),
-        _ => None,
     }
 }
 
@@ -1592,12 +1616,23 @@ fn header(
     let content = &text[base..base + content_len];
     let after = content.strip_prefix('~').unwrap_or("");
     let main = after.split(';').next().unwrap_or("");
+    // The comment's extent, measured from the `;` the split above found. Byte
+    // offsets into `text`, like every other span here: `content` is a slice of
+    // `text` starting at `base`, and `~` plus `main` are ASCII-delimited
+    // boundaries the scan itself produced, so this can never split a code point.
+    let comment = (main.len() < after.len()).then(|| {
+        let start = base + 1 + main.len() + 1;
+        start..base + content_len
+    });
     // hledger requires a two-space gap between the period expression and the
     // description; `split_account_amount` splits on exactly that, which is the
     // same call `parse_periodic_transaction` makes.
     let (period_text, description) = crate::parse::split_account_amount(main.trim());
     let period_text = period_text.trim().to_string();
-    let period = period_of(&period_text);
+    // The SAME reading the parser gives this header — literally the same
+    // function — so a block's ordinal and its parsed rule's cannot disagree.
+    let spec = crate::parse::parse_period_spec(&period_text);
+    let period = spec.interval();
     PeriodicBlock {
         index,
         line: number,
@@ -1605,10 +1640,16 @@ fn header(
         period,
         period_text,
         description: description.trim().to_string(),
+        comment,
         lines: Vec::new(),
         // Settled by `classify` once the body is known.
         balance: BlockBalance::Free,
-        lock: (period.is_none()).then_some(BlockLock::Period),
+        lock: match spec.kind {
+            _ if period.is_some() => None,
+            PeriodKind::Unsupported => Some(BlockLock::UnsupportedPeriod),
+            // Understood, but says more than a bare interval.
+            _ => Some(BlockLock::Period),
+        },
     }
 }
 
@@ -2390,5 +2431,123 @@ mod tests {
             }),
             Err(PeriodicError::UnknownBlock(9))
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Period expressions richer than a bare interval
+    // -----------------------------------------------------------------------
+
+    /// A rule the engine understands but will not rewrite: listed, scanned,
+    /// goal lines and all, with a block lock and no `period`.
+    ///
+    /// The block is still SCANNED — its lines are found, its balance is
+    /// classified — because it still has to be shown and still has to line up
+    /// with its parsed rule by ordinal. Only the edit is refused.
+    #[test]
+    fn a_richer_period_locks_the_block_without_hiding_it() {
+        let text = concat!(
+            "~ every 2 weeks  paycheck\n",
+            "    (income:salary)  $-2000\n",
+            "\n",
+            "~ monthly from 2027  future rent\n",
+            "    (expenses:rent)  $1500\n",
+            "\n",
+            "~ monthly  ordinary\n",
+            "    (expenses:food)  $400\n",
+        );
+        // The journal opens. Before the period grammar it did not, and the two
+        // rules below the first one vanished with it.
+        let journal = parse_journal(text, "t.journal").unwrap();
+        let doc = PeriodicDoc::parse(text);
+        assert_eq!(doc.blocks().len(), 3);
+        assert_eq!(doc.blocks().len(), journal.periodic_transactions.len());
+
+        for (at, raw) in [(0, "every 2 weeks"), (1, "monthly from 2027")] {
+            let block = &doc.blocks()[at];
+            assert_eq!(block.period, None, "{raw} is not a bare interval");
+            assert_eq!(block.period_text, raw, "{raw} keeps its own words");
+            assert_eq!(block.lock, Some(BlockLock::Period));
+            // Scanned, not skipped: the goal is there to show.
+            assert_eq!(block.lines.len(), 1);
+            assert_eq!(block.balance, BlockBalance::Free);
+            // And the edit is refused, naming the BLOCK rather than the line.
+            // `line_lock` is the question a caller asks before offering an edit
+            // at all; `apply` is where the refusal is enforced.
+            assert_eq!(
+                doc.line_lock(block.lines[0]),
+                Some(BlockLock::Period.message())
+            );
+            let requested = plan(
+                &doc,
+                &journal.periodic_transactions,
+                &GoalRequest::Set {
+                    index: block.lines[0],
+                    quantity: Dec::new(1, 0),
+                },
+            )
+            .expect("planning a set is not itself the refusal");
+            assert!(matches!(
+                doc.apply(&requested),
+                Err(PeriodicError::LockedBlock { .. })
+            ));
+        }
+
+        // The ordinary rule alongside them is untouched, and a new goal of that
+        // recurrence joins IT rather than one of the locked ones.
+        assert_eq!(doc.blocks()[2].period, Some(PeriodExpr::Monthly));
+        assert_eq!(doc.blocks()[2].lock, None);
+        assert_eq!(
+            doc.joinable_block(PeriodExpr::Monthly, "ordinary"),
+            Some(2),
+            "a locked rule is never joined"
+        );
+    }
+
+    /// A period expression the engine cannot enumerate gets its OWN lock
+    /// sentence, because the consequence differs: the rule contributes no goals
+    /// to the bars either, and the user is owed that fact.
+    #[test]
+    fn an_unenumerable_period_says_so_in_its_own_words() {
+        let text = "~ every weekday  commute\n    (expenses:bus)  $5\n";
+        let journal = parse_journal(text, "t.journal").unwrap();
+        assert_eq!(journal.periodic_transactions.len(), 1);
+
+        let doc = PeriodicDoc::parse(text);
+        let block = &doc.blocks()[0];
+        assert_eq!(block.period, None);
+        assert_eq!(block.period_text, "every weekday");
+        assert_eq!(block.lock, Some(BlockLock::UnsupportedPeriod));
+        assert!(
+            BlockLock::UnsupportedPeriod
+                .message()
+                .contains("contributes no goals"),
+            "the sentence has to say what is lost, not just that editing is off"
+        );
+    }
+
+    /// The header comment's span, which plan 22 splices and nothing does yet.
+    ///
+    /// Byte offsets into the document text, covering everything AFTER the `;` to
+    /// the end of the line — untrimmed, so a rewrite decides its own spacing.
+    #[test]
+    fn a_header_comment_span_covers_the_text_after_the_semicolon() {
+        let text = concat!(
+            "~ monthly  rent  ; growth: 3%/yr\n",
+            "    (expenses:rent)  $1500\n",
+            "\n",
+            "~ yearly  no comment here\n",
+            "    (expenses:tax)  $500\n",
+        );
+        let doc = PeriodicDoc::parse(text);
+
+        let span = doc.blocks()[0].comment.clone().expect("a header comment");
+        assert_eq!(&doc.text()[span], " growth: 3%/yr");
+        // The description is unaffected by the comment being carved off.
+        assert_eq!(doc.blocks()[0].description, "rent");
+        assert_eq!(doc.blocks()[0].period_text, "monthly");
+
+        // No `;` at all is `None`, not an empty span: "there is no comment" and
+        // "there is an empty one" are different facts about the file.
+        assert_eq!(doc.blocks()[1].comment, None);
     }
 }

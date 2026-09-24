@@ -6,6 +6,7 @@ import {ApiShapeError} from "./client";
 import {
     decodeAccountReference,
     decodeBalanceSheetReport,
+    decodeBudgetGaps,
     decodeBudgetListing,
     decodeBudgetReport,
     decodeFlowReport,
@@ -16,11 +17,15 @@ import {
     decodeJournalInfo,
     decodeOtherHoldingsReport,
     decodePeriodReport,
+    decodeProjection,
+    decodeProjectionIndex,
     decodeQbCommitResult,
     decodeQbPreview,
     decodeRulesDoc,
     decodeRulesIndex,
     decodeRulesPreview,
+    decodeScenario,
+    decodeScenarioFile,
     decodeSectionedReport,
     decodeSubscriptionsReport,
 } from "./nativeDecode";
@@ -630,6 +635,40 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
 
     it("throws ApiShapeError when totals is missing", () => {
         expect(() => decodePeriodReport({buckets: [], rows: []})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — BudgetGaps over the budget-gaps golden", () => {
+    it("decodes both sections, the span, and exact totals", () => {
+        const gaps = decodeBudgetGaps(golden("budget-gaps"));
+        // The engine echoes the span so the section cannot mislabel its figures.
+        expect(gaps.from).toBe("2026-05-01");
+        expect(gaps.to).toBe("2026-07-08");
+
+        // sample.journal declares no `~` rules at all, so every income and
+        // expense category with activity is a gap — and nothing else is: no
+        // asset, liability or equity account appears in either list.
+        expect(gaps.revenue.map((row) => row.account)).toEqual(["income:salary", "income:dividends"]);
+        expect(gaps.revenue[0]).toMatchObject({account: "income:salary", depth: 2});
+        // Credit-normal, exactly as the journal writes it.
+        expect(gaps.revenue[0].total.get("$")).toEqual({m: -1132000n, p: 2});
+        expect(gaps.expense.every((row) => row.account.startsWith("expenses:"))).toBe(true);
+        // Largest first, and multi-commodity rows survive as multi-commodity.
+        expect(gaps.expense[0].account).toBe("expenses:housing");
+        const food = gaps.expense.find((row) => row.account === "expenses:food");
+        expect(food?.total.get("EUR")).toEqual({m: 1875n, p: 2});
+    });
+
+    it("throws when a row's total is absent, rather than rendering it as zero", () => {
+        const raw = golden("budget-gaps") as {revenue: object[]; expense: object[]; from: string; to: string};
+        const broken = {...raw, expense: [without(raw.expense[0] as {total: unknown}, "total")]};
+        expect(() => decodeBudgetGaps(broken)).toThrow(ApiShapeError);
+    });
+
+    it("throws when a section or the span is missing", () => {
+        expect(() => decodeBudgetGaps({expense: [], from: "2026-01-01", to: "2026-01-31"})).toThrow(ApiShapeError);
+        expect(() => decodeBudgetGaps({revenue: [], expense: [], to: "2026-01-31"})).toThrow(ApiShapeError);
+        expect(() => decodeBudgetGaps(null)).toThrow(ApiShapeError);
     });
 });
 
@@ -1651,26 +1690,355 @@ describe("UNIT nativeDecode — QuickBooks Journal commit result", () => {
     });
 });
 
+// The `POST /api/projections/run` response, mirroring `WireProjection` in
+// `crates/ledgeline-server/src/projections_api.rs`. Hand-written for the reason
+// the DECODERS entry below gives — the route carries its scenario in a request
+// body and so cannot be replayed from the URI manifest.
+//
+// The figures are the shape `projection_endpoints.rs` asserts against
+// `fixtures/sample.journal`: one $4200 monthly rent line, in CASH-FLOW
+// ORIENTATION so the expense reads NEGATIVE. A runway and a warning are present
+// deliberately — both are nullable/empty in the common case, and a sweep over a
+// body where they were absent would prove nothing about them.
+const PROJECTION_RUN = {
+    buckets: ["2026-08", "2026-09", "2026-10"],
+    start: "2026-08-01",
+    netIncome: {
+        buckets: ["2026-08", "2026-09", "2026-10"],
+        rows: [
+            {account: "expenses", depth: 1, values: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}]},
+            {account: "expenses:rent", depth: 2, values: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}]},
+        ],
+        totals: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}],
+    },
+    cash: {opening: {$: dec(500000, 2)}, values: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}, {$: dec(-760000, 2)}]},
+    netWorth: {opening: {$: dec(900000, 2)}, values: [{$: dec(480000, 2)}, {$: dec(60000, 2)}, {$: dec(-360000, 2)}]},
+    runway: {bucket: 1, label: "Sep 2026", date: "2026-09-30", periods: 2},
+    // The per-row asset attribution (plan 23, Phase 3), which the Balance
+    // column and the net-worth breakdown read. Two rows, and the second is
+    // OVERRIDDEN — `journalOpening` and `opening` are equal on every row
+    // without one, so a body where they all agreed would prove nothing about
+    // the field the whole column exists for.
+    assets: [
+        {
+            group: "rule:1",
+            account: "assets:brokerage",
+            journalOpening: {$: dec(51230000, 2)},
+            opening: {$: dec(51230000, 2)},
+            growth: {$: dec(3586100, 2)},
+        },
+        {
+            group: "rule:2",
+            account: "assets:house",
+            journalOpening: {$: dec(51230000, 2)},
+            opening: {$: dec(64000000, 2)},
+            growth: {$: dec(1920000, 2)},
+        },
+    ],
+    warnings: ["'every weekday' is not a recurrence this projection can enumerate"],
+};
+
+/**
+ * `GET /api/projections` — the scenario picker's list (plan 22, Phase 3).
+ *
+ * Inline rather than a golden for the reason `PROJECTION_RUN` is: the listing
+ * describes a DIRECTORY TREE, and `fixtures/native/v1` is replayed against
+ * `fixtures/sample.journal` by `native_wire_golden.rs`, whose manifest and
+ * directory must agree exactly. A committed golden of this route would pin
+ * whatever files happened to be beside that fixture.
+ *
+ * Both groups are present, and both an included file and a writable one, because
+ * `writable` is the field that carries decision 5 and a body where every file
+ * agreed would prove nothing about it.
+ */
+const PROJECTION_INDEX = {
+    rootLabel: "ledger",
+    editable: true,
+    truncated: false,
+    files: [
+        {
+            id: "plans/projection-series-a.journal",
+            label: "series-a",
+            name: "Series A with a hiring ramp",
+            created: "2026-09-18",
+            updated: "2026-09-20",
+            isProjection: true,
+            sizeBytes: 812,
+            writable: true,
+        },
+        {id: "budget.journal", label: "budget", name: null, created: null, updated: null, isProjection: false, sizeBytes: 240, writable: false},
+    ],
+    directories: ["", "plans"],
+    warnings: ["notes.journal is a symbolic link and was skipped"],
+};
+
+/** `GET`/`PUT /api/projections/{*id}` — one file, read as a scenario. */
+const SCENARIO_FILE = {
+    id: "plans/projection-series-a.journal",
+    label: "series-a",
+    revision: "812-9f2c1a",
+    writable: true,
+    scenario: {
+        name: "Series A with a hiring ramp",
+        created: "2026-09-18",
+        updated: "2026-09-20",
+        lines: [
+            {
+                id: "rule:0:0",
+                group: "rule:0",
+                role: "flow",
+                account: "expenses:rent",
+                amount: {commodity: "$", quantity: {mantissa: "420000", places: 2}, precision: 2},
+                period: {raw: "monthly", simple: "monthly", from: null, to: null},
+                growth: {rate: {mantissa: "2", places: 2}, unit: "year"},
+                opening: null,
+                note: "projection",
+                source: "journal",
+            },
+        ],
+        events: [
+            {
+                id: "rule:1",
+                date: "2027-03-01",
+                description: "Series A",
+                postings: [{account: "assets:cash", amount: {commodity: "$", quantity: {mantissa: "200000000", places: 2}, precision: 2}}],
+            },
+        ],
+    },
+};
+
+describe("UNIT nativeDecode — the projection seed over its golden", () => {
+    const raw = golden("projections-seed");
+
+    it("decodes the seeded scenario, keeping the JOURNAL's sign on every amount", () => {
+        const scenario = decodeScenario(raw);
+        // No name: naming it is the Save As dialog's job, and a placeholder here
+        // would become a filename nobody chose.
+        expect(scenario.name).toBe("");
+        expect(scenario.created).toBeNull();
+        expect(scenario.updated).toBeNull();
+        expect(scenario.events).toEqual([]);
+
+        const salary = scenario.lines.find((l) => l.account === "income:salary");
+        expect(salary).toBeDefined();
+        // Revenue is NEGATIVE on the wire, exactly as the posting is written.
+        expect(salary?.amount.quantity).toEqual({m: -518833n, p: 2});
+        expect(salary?.amount.precision).toBe(2);
+        expect(salary?.source).toBe("unbudgeted");
+        expect(salary?.growth).toBeNull();
+        expect(salary?.period).toEqual({raw: "monthly", simple: "monthly", from: null, to: null});
+
+        const housing = scenario.lines.find((l) => l.account === "expenses:housing");
+        expect(housing?.amount.quantity).toEqual({m: 187500n, p: 2});
+        // The flag that lets the table say a figure is estimated from history
+        // rather than something the user wrote.
+        expect(housing?.source).toBe("unbudgeted");
+        expect(housing?.note).toContain("average over");
+    });
+
+    it("an ABSENT amount throws rather than defaulting to zero (DRY-3)", () => {
+        const scenario = golden("projections-seed") as {lines: Record<string, unknown>[]};
+        const dropAmountField = (field: string) => ({
+            ...scenario,
+            lines: scenario.lines.map((line, i) => (i === 0 ? {...line, amount: without(line.amount as Record<string, unknown>, field)} : line)),
+        });
+        expect(() => decodeScenario({...scenario, lines: [without(scenario.lines[0], "amount"), ...scenario.lines.slice(1)]})).toThrow(ApiShapeError);
+        expect(() => decodeScenario(dropAmountField("quantity"))).toThrow(ApiShapeError);
+        // `precision` is not `quantity.places`, and guessing it gets the growth
+        // curve wrong — so it is demanded too.
+        expect(() => decodeScenario(dropAmountField("precision"))).toThrow(ApiShapeError);
+    });
+
+    it("an absent NULLABLE field throws too: on this wire every option is sent as an explicit null", () => {
+        const scenario = golden("projections-seed") as Record<string, unknown> & {lines: Record<string, unknown>[]};
+        expect(() => decodeScenario(without(scenario, "created"))).toThrow(ApiShapeError);
+        expect(() => decodeScenario(without(scenario, "updated"))).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...scenario, lines: [without(scenario.lines[0], "growth")]})).toThrow(ApiShapeError);
+        expect(() =>
+            decodeScenario({...scenario, lines: [{...scenario.lines[0], period: without(scenario.lines[0].period as Record<string, unknown>, "from")}]})
+        ).toThrow(ApiShapeError);
+    });
+
+    it("an unknown source or growth unit throws rather than falling back", () => {
+        const scenario = golden("projections-seed") as {lines: Record<string, unknown>[]};
+        expect(() => decodeScenario({...scenario, lines: [{...scenario.lines[0], source: "guessed"}]})).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...scenario, lines: [{...scenario.lines[0], growth: {rate: dec(3, 2), unit: "fortnight"}}]})).toThrow(ApiShapeError);
+    });
+
+    it("decodes a growth rate as the FRACTION it is, never a percentage", () => {
+        const scenario = golden("projections-seed") as {lines: Record<string, unknown>[]};
+        const withGrowth = decodeScenario({...scenario, lines: [{...scenario.lines[0], growth: {rate: dec(3, 2), unit: "year"}}]});
+        expect(withGrowth.lines[0].growth).toEqual({rate: {m: 3n, p: 2}, unit: "year"});
+    });
+
+    it("throws on a body that is not a scenario", () => {
+        expect(() => decodeScenario(null)).toThrow(ApiShapeError);
+        expect(() => decodeScenario({lines: []})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — the scenario file listing", () => {
+    it("decodes both groups and keeps `writable` per file", () => {
+        const index = decodeProjectionIndex(PROJECTION_INDEX);
+        expect(index.rootLabel).toBe("ledger");
+        expect(index.editable).toBe(true);
+        expect(index.truncated).toBe(false);
+        expect(index.directories).toEqual(["", "plans"]);
+        expect(index.warnings).toHaveLength(1);
+
+        const [projection, budget] = index.files;
+        expect(projection.isProjection).toBe(true);
+        expect(projection.name).toBe("Series A with a hiring ramp");
+        expect(projection.writable).toBe(true);
+        // A file the main journal includes is LISTED (so it can be loaded) and
+        // flagged un-writable — decision 5.
+        expect(budget.isProjection).toBe(false);
+        expect(budget.name).toBeNull();
+        expect(budget.writable).toBe(false);
+    });
+
+    it("an ABSENT `writable` is a broken contract, never a permissive default", () => {
+        // A decoder that read a missing key as `true` would offer Save over the
+        // user's main journal and let the engine be the one to say no.
+        const files = [{...PROJECTION_INDEX.files[0], writable: undefined}];
+        expect(() => decodeProjectionIndex({...PROJECTION_INDEX, files})).toThrow(ApiShapeError);
+    });
+
+    it("a missing files array is a shape error rather than an empty list", () => {
+        expect(() => decodeProjectionIndex({...PROJECTION_INDEX, files: undefined})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — one scenario file", () => {
+    it("decodes the revision, the writable flag and the scenario inside", () => {
+        const file = decodeScenarioFile(SCENARIO_FILE);
+        expect(file.id).toBe("plans/projection-series-a.journal");
+        expect(file.label).toBe("series-a");
+        expect(file.revision).toBe("812-9f2c1a");
+        expect(file.writable).toBe(true);
+        expect(file.scenario.name).toBe("Series A with a hiring ramp");
+        expect(file.scenario.lines[0].growth).toEqual({rate: {m: 2n, p: 2}, unit: "year"});
+        // A `~ DATE` block comes back as an EVENT, not a one-off line.
+        expect(file.scenario.events[0].date).toBe("2027-03-01");
+    });
+
+    it("an ABSENT revision is a broken contract, never an empty string", () => {
+        // `revision: ""` means CREATE on the way back, and a create is O_EXCL —
+        // so defaulting it would turn the next Save of an open file into "a file
+        // already exists there" about the file being edited.
+        expect(() => decodeScenarioFile({...SCENARIO_FILE, revision: undefined})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — a projection run", () => {
+    it("decodes the three series, the start, the runway and the warnings", () => {
+        const projection = decodeProjection(PROJECTION_RUN);
+        expect(projection.buckets).toEqual(["2026-08", "2026-09", "2026-10"]);
+        expect(projection.start).toBe("2026-08-01");
+        // Cash-flow orientation: an expense reads negative, and nothing here flips it again.
+        expect(projection.netIncome.totals[0].get("$")).toEqual({m: -420000n, p: 2});
+        // The opening balance is a real figure from the journal, not values[-1] of an earlier window.
+        expect(projection.cash.opening.get("$")).toEqual({m: 500000n, p: 2});
+        expect(projection.cash.values).toHaveLength(3);
+        expect(projection.netWorth.opening.get("$")).toEqual({m: 900000n, p: 2});
+        expect(projection.runway).toEqual({bucket: 1, label: "Sep 2026", date: "2026-09-30", periods: 2});
+        expect(projection.warnings).toHaveLength(1);
+    });
+
+    it("a null runway is a real answer — the cash never crosses zero", () => {
+        expect(decodeProjection({...PROJECTION_RUN, runway: null}).runway).toBeNull();
+    });
+
+    it("an ABSENT runway is a broken contract, not a null", () => {
+        expect(() => decodeProjection(without(PROJECTION_RUN, "runway"))).toThrow(ApiShapeError);
+    });
+
+    it("decodes the per-row asset attribution, keeping BOTH balances", () => {
+        const [brokerage, house] = decodeProjection(PROJECTION_RUN).assets;
+        expect(brokerage.group).toBe("rule:1");
+        expect(brokerage.account).toBe("assets:brokerage");
+        expect(brokerage.journalOpening.get("$")).toEqual({m: 51230000n, p: 2});
+        expect(brokerage.growth.get("$")).toEqual({m: 3586100n, p: 2});
+        // The overridden row keeps the LEDGER's figure beside the user's. A
+        // decoder that defaulted `journalOpening` to `opening` would show the
+        // override as the ledger's own number, which is the exact failure the
+        // Balance column exists to prevent.
+        expect(house.journalOpening.get("$")).toEqual({m: 51230000n, p: 2});
+        expect(house.opening.get("$")).toEqual({m: 64000000n, p: 2});
+    });
+
+    it("an ABSENT assets array is a broken contract, not an empty one", () => {
+        // `[]` is a real answer — this scenario holds no asset rows. A missing
+        // key is an engine whose field was renamed, and a `?? []` would blank
+        // every Balance column rather than say so.
+        expect(() => decodeProjection(without(PROJECTION_RUN, "assets"))).toThrow(ApiShapeError);
+        expect(decodeProjection({...PROJECTION_RUN, assets: []}).assets).toEqual([]);
+    });
+
+    it("an absent series or opening balance throws rather than charting zeros", () => {
+        expect(() => decodeProjection(without(PROJECTION_RUN, "cash"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection({...PROJECTION_RUN, cash: without(PROJECTION_RUN.cash, "opening")})).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "netIncome"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "start"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "warnings"))).toThrow(ApiShapeError);
+    });
+
+    it("throws on a body that is not a projection", () => {
+        expect(() => decodeProjection(null)).toThrow(ApiShapeError);
+        expect(() => decodeProjection("nope")).toThrow(ApiShapeError);
+    });
+});
+
 describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed", () => {
-    const DECODERS: [string, (raw: unknown) => unknown][] = [
-        ["balancesheet", decodeSectionedReport],
-        ["balancesheet-grouped", decodeBalanceSheetReport],
-        ["incomestatement", decodeSectionedReport],
-        ["incomestatement-grouped", decodeIncomeStatementReport],
-        ["incomestatement-flows", decodeFlowReport],
-        ["cashflow", decodePeriodReport],
-        ["networth", decodePeriodReport],
-        ["budget", decodeBudgetReport],
-        ["insights", decodeInsightsReport],
-        ["subscriptions", decodeSubscriptionsReport],
-        ["holdings", decodeHoldingsReport],
-        ["holdings-series", decodeHoldingsSeries],
-        ["holdings-other", decodeOtherHoldingsReport],
+    // `[name, decoder, body]`. The body is `golden(name)` for everything the
+    // `fixtures/native/v1` manifest can replay, which is almost all of it.
+    // `projections-run` is the exception and says why at its own entry.
+    const DECODERS: [string, (raw: unknown) => unknown, unknown][] = [
+        ["balancesheet", decodeSectionedReport, golden("balancesheet")],
+        ["balancesheet-grouped", decodeBalanceSheetReport, golden("balancesheet-grouped")],
+        ["incomestatement", decodeSectionedReport, golden("incomestatement")],
+        ["incomestatement-grouped", decodeIncomeStatementReport, golden("incomestatement-grouped")],
+        ["incomestatement-flows", decodeFlowReport, golden("incomestatement-flows")],
+        ["cashflow", decodePeriodReport, golden("cashflow")],
+        ["networth", decodePeriodReport, golden("networth")],
+        ["budget", decodeBudgetReport, golden("budget")],
+        ["budget-gaps", decodeBudgetGaps, golden("budget-gaps")],
+        ["projections-seed", decodeScenario, golden("projections-seed")],
+        // `POST /api/projections/run` cannot join `fixtures/native/v1`: that
+        // manifest replays URIs and a run carries its scenario in a request
+        // BODY, so `native_wire_golden.rs` asserts the directory and the
+        // manifest agree exactly (plan 22, amendment 16). The route is pinned
+        // against the engine by `tests/projection_endpoints.rs`; this literal is
+        // what makes its KEYS load-bearing on the TypeScript side, which is the
+        // half that test cannot reach. It mirrors `WireProjection` field for
+        // field, with a runway and a warning present so the sweep reaches every
+        // one of them.
+        ["projections-run", decodeProjection, PROJECTION_RUN],
+        // Neither of these can be a golden, for the reason PROJECTION_INDEX's own
+        // comment gives: they describe a directory tree, and `native_wire_golden.rs`
+        // replays `fixtures/native/v1` from a URI manifest against one fixture
+        // journal. Nothing here is in `TOLERATED` — every key of both bodies is
+        // load-bearing, and both decoders use required-not-absent guards.
+        ["projections-index", decodeProjectionIndex, PROJECTION_INDEX],
+        ["projections-file", decodeScenarioFile, SCENARIO_FILE],
+        // The ASSET-ROW wire (plan 23, Phase 2), and a real golden rather than a
+        // literal: `GET /api/projections/{id}` reads ONE file by id, which IS
+        // replayable from a URI manifest — only the directory LISTING is not.
+        // It carries what `projections-seed` structurally cannot, because
+        // `fixtures/sample.journal` deliberately has no `~` rules: `role:
+        // "asset"`, a non-null `opening`, a `line:`-derived id, and a growing
+        // FLOW beside the asset rows.
+        ["projections-asset", decodeScenarioFile, golden("projections-asset")],
+        ["insights", decodeInsightsReport, golden("insights")],
+        ["subscriptions", decodeSubscriptionsReport, golden("subscriptions")],
+        ["holdings", decodeHoldingsReport, golden("holdings")],
+        ["holdings-series", decodeHoldingsSeries, golden("holdings-series")],
+        ["holdings-other", decodeOtherHoldingsReport, golden("holdings-other")],
         // Same decoder as the stock series, because the engine reuses
         // `WireHoldingsSeries` for it byte for byte. Swept separately anyway: the
         // two goldens have different VALUES, and a rename this one absorbs is not
         // necessarily one the other absorbs.
-        ["holdings-other-series", decodeHoldingsSeries],
+        ["holdings-other-series", decodeHoldingsSeries, golden("holdings-other-series")],
     ];
 
     // Renames these decoders CANNOT currently notice. Every one is a gap in the
@@ -1713,8 +2081,7 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
     function sweep(): {tolerated: string[]; checked: number} {
         const tolerated: string[] = [];
         let checked = 0;
-        for (const [name, decode] of DECODERS) {
-            const raw = golden(name);
+        for (const [name, decode, raw] of DECODERS) {
             const baseline = shape(decode(raw));
             const paths = new Set<string>();
             keyPaths(raw, "$", paths);
@@ -1759,7 +2126,7 @@ describe("UNIT nativeDecode — the budget editor's listing", () => {
                     {
                         block: 0,
                         line: 3,
-                        period: "monthly",
+                        period: {raw: "monthly", simple: "monthly"},
                         description: "household budget",
                         lines: [
                             {
@@ -1810,10 +2177,33 @@ describe("UNIT nativeDecode — the budget editor's listing", () => {
         expect(listing.defaultTarget).toBe("budget.journal");
         expect(listing.files[0].revision).toBe("abc123");
         const rule = listing.files[0].rules[0];
-        expect(rule.period).toBe("monthly");
+        expect(rule.period).toEqual({raw: "monthly", simple: "monthly"});
         expect(rule.description).toBe("household budget");
         expect(rule.locked).toBeNull();
         expect(rule.goals.map((goal) => goal.account)).toEqual(["expenses:food", "income:interest"]);
+    });
+
+    // The two halves of a period are decoded on different terms, and the
+    // asymmetry is the contract: every rule has words in its header, so an
+    // absent `raw` is a malformed body; `simple` is absent for every rule the
+    // editor cannot offer, which is an ordinary state.
+    it("decodes a period the editor cannot offer as a raw string with a null `simple`", () => {
+        const withRaw = (period: unknown) => ({
+            ...LISTING,
+            files: [{...LISTING.files[0], rules: [{...LISTING.files[0].rules[0], period}]}],
+        });
+
+        const locked = decodeBudgetListing(withRaw({raw: "every 2 weeks"}));
+        expect(locked.files[0].rules[0].period).toEqual({raw: "every 2 weeks", simple: null});
+
+        // An explicit null, and a `simple` this client does not know, both mean
+        // "not offerable" rather than "refuse the whole listing".
+        expect(decodeBudgetListing(withRaw({raw: "every 2 weeks", simple: null})).files[0].rules[0].period.simple).toBeNull();
+        expect(decodeBudgetListing(withRaw({raw: "hourly", simple: "hourly"})).files[0].rules[0].period.simple).toBeNull();
+
+        // An absent `raw`, or no period object at all, is a malformed body.
+        expect(() => decodeBudgetListing(withRaw({simple: "monthly"}))).toThrow(ApiShapeError);
+        expect(() => decodeBudgetListing(withRaw(undefined))).toThrow(ApiShapeError);
     });
 
     it("keeps a lock's sentence, which is the only thing that makes a read-only row actionable", () => {

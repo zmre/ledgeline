@@ -75,6 +75,7 @@ const TYPE_TO_CATEGORY: Record<AccountType, RootCategory> = {
     equity: "equity",
     conversion: "equity",
     revenue: "revenue",
+    gain: "revenue", // a subtype of revenue, as hledger's `type:R` query treats it
     expense: "expense",
 };
 

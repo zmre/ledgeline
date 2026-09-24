@@ -444,3 +444,27 @@ export interface BudgetReport {
     rows: BudgetRow[];
     totals: BudgetCell[];
 }
+
+// Budget gaps (`GET /api/budget/gaps`) — what the `~` rules do NOT measure, over
+// the same span as the report above. A separate payload, not a field on it: the
+// report is refetched on every control change and after every goal save, and
+// this answers a section the tab opens collapsed.
+
+/** One unbudgeted category: an account with activity that no goal covers. */
+export interface GapRow {
+    account: string;
+    /** Number of `:`-separated segments in `account`. */
+    depth: number;
+    /** The span total, in the journal's own signs — revenue is credit-normal (negative). */
+    total: MixedAmount;
+}
+
+/** The unbudgeted categories, split by resolved account type and ordered largest first. */
+export interface BudgetGaps {
+    revenue: GapRow[];
+    expense: GapRow[];
+    /** Inclusive span start, echoed by the engine so the section cannot mislabel its figures. */
+    from: ISODate;
+    /** Inclusive span end. */
+    to: ISODate;
+}

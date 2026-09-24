@@ -41,6 +41,30 @@ interface PersistedSettings {
      */
     flowsInOpen: boolean;
     flowsOutOpen: boolean;
+    /**
+     * The Budget tab's "not budgeted" section. Closed by default, and the flag
+     * is what GATES ITS FETCH — a section nobody has opened costs no request.
+     *
+     * One flag for both lists inside it (income and expenses): they answer one
+     * question, and collapsing half of "how much does my budget miss" is not a
+     * state worth remembering.
+     */
+    budgetGapsOpen: boolean;
+    /**
+     * The Projections tab's last-loaded scenario FILE, by its relative id
+     * (`plans/projection-series-a.journal`), reopened on the next mount.
+     *
+     * HERE rather than in `prefs.json` (plan 22, decision 10): `WirePrefs` is
+     * `deny_unknown_fields` and `PUT /api/prefs` replaces the whole object with
+     * no PATCH, so any older client that saved preferences would silently clear
+     * the field. This is per-browser view state, which is what this store is
+     * for.
+     *
+     * Null when nothing has been loaded, which is the seed-from-the-journal
+     * case. A stale id that no longer names a file is not an error state — the
+     * tab falls back to seeding and clears it.
+     */
+    lastProjectionId: string | null;
 }
 
 const defaults = (): PersistedSettings => ({
@@ -52,6 +76,8 @@ const defaults = (): PersistedSettings => ({
     hideZeroBalances: true,
     flowsInOpen: true,
     flowsOutOpen: true,
+    budgetGapsOpen: false,
+    lastProjectionId: null,
 });
 
 /**
@@ -98,6 +124,12 @@ function load(): PersistedSettings {
             hideZeroBalances: typeof parsed.hideZeroBalances === "boolean" ? parsed.hideZeroBalances : true,
             flowsInOpen: typeof parsed.flowsInOpen === "boolean" ? parsed.flowsInOpen : true,
             flowsOutOpen: typeof parsed.flowsOutOpen === "boolean" ? parsed.flowsOutOpen : true,
+            budgetGapsOpen: typeof parsed.budgetGapsOpen === "boolean" ? parsed.budgetGapsOpen : false,
+            // Typechecked as a string, like `serverToken` and unlike
+            // `insightsTab`: a file id has no closed set to validate against,
+            // and the server re-validates its shape on every request anyway.
+            // A non-empty string is the only thing worth keeping.
+            lastProjectionId: typeof parsed.lastProjectionId === "string" && parsed.lastProjectionId !== "" ? parsed.lastProjectionId : null,
         };
     } catch (cause) {
         storageError = `Saved settings couldn't be read (${cause instanceof Error ? cause.message : String(cause)}) — starting from defaults.`;
@@ -132,6 +164,8 @@ function persist(): void {
             hideZeroBalances: state.hideZeroBalances,
             flowsInOpen: state.flowsInOpen,
             flowsOutOpen: state.flowsOutOpen,
+            budgetGapsOpen: state.budgetGapsOpen,
+            lastProjectionId: state.lastProjectionId,
         })
     );
 }
@@ -193,6 +227,22 @@ export const settings = {
     },
     set flowsOutOpen(open: boolean) {
         state.flowsOutOpen = open;
+        persist();
+    },
+    /** Whether the Budget tab's "not budgeted" section is expanded — and thus whether it is fetched. */
+    get budgetGapsOpen(): boolean {
+        return state.budgetGapsOpen;
+    },
+    set budgetGapsOpen(open: boolean) {
+        state.budgetGapsOpen = open;
+        persist();
+    },
+    /** The Projections tab's last-loaded scenario file id — see the field. */
+    get lastProjectionId(): string | null {
+        return state.lastProjectionId;
+    },
+    set lastProjectionId(id: string | null) {
+        state.lastProjectionId = id === null || id === "" ? null : id;
         persist();
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */

@@ -15,6 +15,7 @@
 
 import type {Dec} from "$lib/domain/money";
 import type {Amount, Posting, Transaction, TxnStatus} from "$lib/domain/types";
+import {isIsoDate} from "$lib/url/params";
 import type {
     AddTransactionBody,
     InsertPosition,
@@ -231,8 +232,6 @@ export function formToBody(form: TxnForm, defaultCommodity: string, position?: I
     return body;
 }
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
 /**
  * Minimal client-side gate (the engine does the real balancing/validation and
  * returns a 400 message): a valid date and at least one posting with an
@@ -249,7 +248,7 @@ export function validateForm(form: TxnForm): string[] {
     const errors: string[] = [];
     const date = form.date.trim();
     if (date === "") errors.push("A date is required.");
-    else if (!ISO_DATE.test(date)) errors.push("The date must be in YYYY-MM-DD form.");
+    else if (!isIsoDate(date)) errors.push("The date must be in YYYY-MM-DD form.");
     const withAccount = form.postings.filter((p) => p.account.trim() !== "");
     if (withAccount.length === 0) errors.push("Add at least one posting with an account.");
     for (const row of withAccount) {

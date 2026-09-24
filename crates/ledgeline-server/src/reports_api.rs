@@ -35,17 +35,17 @@ use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
     Amounts, BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, BsTerm,
-    BudgetCell, BudgetOpts, BudgetReport, BudgetRow, Cadence, ChangeKind, ChangeRow, CostOfLiving,
-    DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide,
-    GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts, InsightsPeriod, InsightsReport,
-    Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection, IsSectionKind, IsSubtotal,
-    IsSubtotalKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts, PerfPoint, PeriodReport,
-    PeriodRow, ReportError, ReportMeta, ReportRow, Section, SectionedReport, Subscription,
-    SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation, account_decls, account_groups,
-    account_sections, balance_sheet, balance_sheet_grouped, bs_terms, budget_report, cash_flow,
-    cash_predicate, declared_groups, declared_types, detect_subscriptions, income_statement,
-    income_statement_flows, income_statement_grouped, insights, net_worth, prices_any_on_sheet,
-    prices_any_on_statement,
+    BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, Cadence, ChangeKind, ChangeRow,
+    CostOfLiving, DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode, FlowOpts,
+    FlowReport, FlowSide, GapRow, GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts,
+    InsightsPeriod, InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection,
+    IsSectionKind, IsSubtotal, IsSubtotalKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts,
+    PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, Section,
+    SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
+    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped,
+    bs_terms, budget_gaps, budget_report, cash_flow, cash_predicate, declared_groups,
+    declared_types, detect_subscriptions, income_statement, income_statement_flows,
+    income_statement_grouped, insights, net_worth, prices_any_on_sheet, prices_any_on_statement,
 };
 use serde::{Deserialize, Serialize};
 
@@ -749,6 +749,47 @@ impl From<&BudgetReport> for WireBudgetReport {
             buckets: report.buckets.clone(),
             rows: report.rows.iter().map(WireBudgetRow::from).collect(),
             totals: report.totals.iter().map(WireBudgetCell::from).collect(),
+        }
+    }
+}
+
+/// One unbudgeted category: an account with activity that no goal measures.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireGapRow {
+    account: String,
+    depth: usize,
+    total: WireMixed,
+}
+
+impl From<&GapRow> for WireGapRow {
+    fn from(row: &GapRow) -> Self {
+        Self {
+            account: row.account.clone(),
+            depth: row.depth,
+            total: wire_mixed(&row.total),
+        }
+    }
+}
+
+/// What the budget does not cover, split by resolved account type, with the
+/// span it covers echoed so the UI cannot mislabel the figures.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireBudgetGaps {
+    revenue: Vec<WireGapRow>,
+    expense: Vec<WireGapRow>,
+    from: String,
+    to: String,
+}
+
+impl From<&BudgetGaps> for WireBudgetGaps {
+    fn from(gaps: &BudgetGaps) -> Self {
+        Self {
+            revenue: gaps.revenue.iter().map(WireGapRow::from).collect(),
+            expense: gaps.expense.iter().map(WireGapRow::from).collect(),
+            from: gaps.from.clone(),
+            to: gaps.to.clone(),
         }
     }
 }
@@ -1548,7 +1589,12 @@ fn is_leap_year(year: i32) -> bool {
 }
 
 /// Validate `raw` as an ISO date, naming `field` in the `400` message.
-fn checked_date(field: &str, raw: &str) -> Result<String, AppError> {
+///
+/// `pub(crate)` because a projection scenario carries event DATES in its request
+/// BODY rather than in a query string, and those dates reach the same bucket
+/// math with the same RPT-4 exposure: an unvalidated `2027-6-1` sorts above
+/// `2027-12-31` and buckets as `2027-00`.
+pub(crate) fn checked_date(field: &str, raw: &str) -> Result<String, AppError> {
     normalize_iso_date(raw)
         .map_err(|reason| AppError::BadRequest(format!("invalid {field} date '{raw}': {reason}")))
 }
@@ -1830,24 +1876,45 @@ fn default_insights_start(end: &str) -> String {
 /// into `400`s. (Verified against `serde_urlencoded 0.7.1`; the golden fixtures
 /// pin `depth=`/`count=`, so the suite catches it — but the deduplication has to
 /// happen on THIS side of the extractor, not in the derive.)
+///
+/// `pub(crate)` for [`projections_api`](crate::projections_api), which resolves
+/// the same four params: an interval the cash-flow report rejects has to be
+/// rejected there identically, and a second copy of this would be a second
+/// answer to "is `count=0` a request or a bug".
 #[derive(Debug)]
-struct Window {
-    end: String,
-    interval: Interval,
-    count: usize,
-    depth: usize,
+pub(crate) struct Window {
+    pub(crate) end: String,
+    pub(crate) interval: Interval,
+    pub(crate) count: usize,
+    pub(crate) depth: usize,
 }
 
 impl Window {
     /// Validate the four params together, in the order the handlers used to.
-    fn resolve(
+    pub(crate) fn resolve(
         end: Option<String>,
         interval: Option<&str>,
         count: Option<usize>,
         depth: Option<usize>,
     ) -> Result<Self, AppError> {
+        Self::resolve_named("end", end, interval, count, depth)
+    }
+
+    /// [`Window::resolve`], naming the date param something other than `end`.
+    ///
+    /// The projections run endpoint calls its date `asOf` — it is the day
+    /// opening balances are taken, not the day a report ends — and a `400`
+    /// reading "invalid end" for a field the caller spelled `asOf` sends them
+    /// looking for a param they did not send.
+    pub(crate) fn resolve_named(
+        field: &str,
+        date: Option<String>,
+        interval: Option<&str>,
+        count: Option<usize>,
+        depth: Option<usize>,
+    ) -> Result<Self, AppError> {
         Ok(Self {
-            end: parse_date("end", end, today_utc)?,
+            end: parse_date(field, date, today_utc)?,
             interval: parse_interval(interval)?,
             count: parse_count(count)?,
             depth: depth.unwrap_or(DEFAULT_DEPTH),
@@ -1954,6 +2021,21 @@ pub(crate) struct BudgetQuery {
     count: Option<usize>,
     depth: Option<usize>,
     budget_desc: Option<String>,
+}
+
+/// `?end=&interval=&count=&depth=` — the budget's unbudgeted categories.
+///
+/// The same four params as [`BudgetQuery`], resolved through the same
+/// [`Window`], so the bars and the gaps under them cannot be given different
+/// spans. No `budgetDesc`: the question is "what does my budget not mention",
+/// which a description filter over the rules cannot narrow.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GapsQuery {
+    end: Option<String>,
+    interval: Option<String>,
+    count: Option<usize>,
+    depth: Option<usize>,
 }
 
 /// `?start=&end=&exclude=` — insights dashboard.
@@ -2450,6 +2532,45 @@ pub(crate) async fn budget(
             &opts,
         )?;
         Ok(WireBudgetReport::from(&report))
+    })
+    .await
+}
+
+/// `GET /api/budget/gaps` — the revenue and expense categories the budget's `~`
+/// rules do not mention, over the same window as `/api/budget`.
+///
+/// Its own route rather than a field on the budget report: that report is
+/// refetched on every control change AND after every goal save, while this is
+/// read by a section the UI opens collapsed. A collapsed section must not make
+/// any of those refetches slower.
+pub(crate) async fn budget_gaps_report(
+    State(state): State<AppState>,
+    Query(query): Query<GapsQuery>,
+) -> Result<Json<WireBudgetGaps>, AppError> {
+    let snapshot = state.snapshot();
+    let window = Window::resolve(
+        query.end,
+        query.interval.as_deref(),
+        query.count,
+        query.depth,
+    )?;
+
+    compute(move || {
+        let declared = declared_types(&account_decls(&snapshot.journal));
+        let opts = BudgetOpts {
+            end: &window.end,
+            interval: window.interval,
+            count: window.count,
+            depth: window.depth,
+            budget_desc: None,
+        };
+        let gaps = budget_gaps(
+            &snapshot.journal.transactions,
+            &snapshot.journal.periodic_transactions,
+            &declared,
+            &opts,
+        )?;
+        Ok(WireBudgetGaps::from(&gaps))
     })
     .await
 }

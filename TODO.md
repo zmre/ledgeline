@@ -54,6 +54,9 @@
   - for forms and displays of numbers and such, it would probably be a great improvement
   - for charts, i expect we'd be in trouble; egui has some libraries that might do
 - chore: publish docs to website using mbr
+- feature: better colors
+  - our colors, particularly in our charts, are sort of dull. in another project, i use daisy ui and their dark theme and that has a more vibrant feel.  we will in the future support different themes, probably, but right now lets try to define some colors that are used and could swap out in the future
+  - match the daisy ui "dark" theme colors. if we need more colors, work with similar vibrancy and saturation to make a consistent feel
 
 ## Performance
 - perf: **`/api/insights` misses its gate by 2.4×** — 968 ms at 200k against a 400 ms target, and it
@@ -112,6 +115,7 @@
   no HTTP-level benchmark, so behaviour under several simultaneous report requests is untested.
 
 ### Front end
+
 The default filter is last-90-days, which is what hides journal-size problems; the cliff is the
 user's first click on "All time".
 
@@ -133,6 +137,7 @@ user's first click on "All time".
   the list the way `TransactionTable` already virtualizes rows.
 
 ## Import improvements
+
 - chore: `AmountStyle.digit_groups` is cloned per amount. The payload is bounded
   (`MAX_DIGIT_GROUPS`) so there is no amplification, but the real fix is
   `digit_groups: Option<Arc<DigitGroups>>` in `model.rs` — deferred because it is a cross-cutting
@@ -143,6 +148,7 @@ user's first click on "All time".
   - Can we run it ourselves?
 
 ## AI
+
 - feat: private AI integration
   - Need to make use of a per-user preference specifying the url for the AI and any necessary api keys or whatever
   - Need to make a way for the user to edit this in the app
@@ -154,36 +160,54 @@ user's first click on "All time".
   - i don't want to reinvent too much here.  and i'd like to use our API endpoints rather than any direct writing. maybe that's what we offer as tools is our api endpoints, but with per-session user approval?  i mean, if the AI is private, it's probably fine to offer up the read-only endpoints. the main thing is to gate writes, not reads.
 
 ## Stocks
+
 - feat: gain timeline improvements
   - when i change the gain timeline, everything else should update, too, notably the "value over time" which is fixed to previous 12 months
   - the gain timeline also needs more options. lets do 5yr, 3mo, 1mo, and 1 week as additions
-- feat: in holdings tab, optional compare performance to S&P, Dow, Nasdaq, Bonds, US Stock Index
-  - Idea is to be able to see how one's portfolio is doing versus just standard options where each can be checked or unchecked.
+- feat: in holdings tab, optional compare performance to S&P, Dow, Nasdaq, Bonds, US Stock Index, and any other three or four standard measures we can think of as an option
+  - Idea is to be able to see how one's portfolio is doing versus the market or market segments where each comparison can be shown optionally with a checkbox
   - Our current line chart is value (dollars) over time and we need to overlay basically what it would have been like if every investment was made at the same time with the same money but into X as a separate line (dotted and different color) to show the comparison and difference in the chart.
   - We don't need this per stock and we don't need it as an overall percentage -- just the line chart.
+  - The chart should load with local data before we go fetching data needed for comparisons, which should be a progressive enhancement
+  - In order to avoid refetching historical data every time, we should probably have a file of prices just for these comparisons, probably not included since it won't be an owned commodity, but in the same format
 - feat: more pie chart views of stocks
   - if yahoo gives us more than just price information then it might be nice to have a drop down on our stock holdings pie chart to show it divided up in a few ways: risk categorization, asset class, security type, industry, etc. -- whatever we can get -- then we show the pie chart instead of by investment, by category
   - we would need a way to have a tag on commodities that could specify (or override even) this information
   - if yahoo doesn't provide this information for free, then we'd need to see if there's another place that does. there's no server, so any sort of signup or account requirement is a blocker. we'll skip this feature if we don't have a data source.
 
 ## Ledger 
+
 - feat: intelligent category suggestions
   - only real way to do this is with some sort of lookback comparing similar descriptions in the past and seeing associated expense or revenue accounts
   - need to remove random numbers from description and maybe do a predominance calculation or a vector comparison rather than full equality.  if we're doing equality and removing numbers, we need to normalize some by lowercasing.  but in a perfect world, "netflix.com" might see a previous "netflix" and guess category based on that.  the more exact the match and the more recent, the higher the sort ranking
   - feat: remember categorization functionality — write a chosen category back into the rules file as a new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
 - feat: File -> New
   - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and use an empty folder as a starting point and then create a skeleton so someone can start using us to track things. We should have a default chart of accounts for individuals and another for businesses and then we should allow them to start with an empty set of accounts to add their own.
+- feat: add xlsx download to the journals tab
+  - it should respect account filtering (including search) and date filtering.
+  - the idea here is this is what you would send as the journal/ledger info to an accountant who needed details while doing taxes or something
+  - the challenge here is when a single entry has more than two accounts, so we'd probably do this as multi-line. see if you can research how quickbooks exports journal/ledger reports, which i think we already know because we can import them. if not, i can get a sample.  but lets try to be compatible with that.
 - feat: saved report filters?
 
+## Reports
+
+* feat(charts): let's add a chart over the Net Worth report
+  * This should be a stacked bar chart with x-axis being interval for the shown periods (so by default, each of the last 5 years) and y-axis being dollars
+  * The size of the column stack in total will be total net worth
+  * Each item (per account depth) will show its amount in the column stack
+  * We probably want to lump together the long tail
+  * Hmmm, I was only thinking about assets and not liabilities. I think perhaps we show a separate bar underneath the assets one showing liabilities going down below zero (negative).  So this bar chart will have a positive component and a negative component for each time period. Similarly stacked for the components.
+  * We can imagine if we paid off our mortgage, we'd see both the assets shrink and the liabilities shrink in that time period
+  * We can put the net amount as a label
+* feat(charts): lets put a stacked area line graph over the Cash Flow report with a dotted line over the top showing the Net and negative components below the line and positive components above it
+  * Subject to the same interval and periods
+  * Should be able to see what's healthy or not at a glance and how things are trending overall and individually at whatever account depth
+
 ## Budgeting / planning / modeling
-* budget fix revenue display: There's something wrong when a budget shows you red for earning more money than expected. We need to treat revenues/income/sales/whatever differently from expenses in terms of how we present current state to the user. If revenue is under budget (and not on-track -- so if we're looking at annual budget but we're only on month six, then on-track would be half of annual budget) then the whole line should be red. If we're "over budget" meaning we've made more than we budgeted, then the whole bar should be green (with the target white line showing appropriately).
-* budget projections: Seeing if you're above/below budget though really doesn't tell you much. Ultimately we need to be able to project into the future to understand the what-ifs.  Given the current budget's income and expense information, what net income is bing projected going forward?  I see this as a new section. So we have actuals vs. budgeted graphics in the top, then the budget goals below that, then below that we should show a very simplified sort of P&L summing up inflows, outflows, and net income using red/green to indicate health.  Ultimately we'll get far more sophisticated on projections, but it's worthwhile to have something basic here to start.  I'm not sure if it's worthwhile to project balances forward, too, maybe summed by starting with cash and then either adding to it or subtracting from it over time?  This would be useful as a sort of napkin-level runway check (if losing money) or savings check (if cash flow positive) as a validation on budget.  This way someone can know they have to tighten one budget or another.
-* budget gaps: As a last point on budgeting, I wonder if it wouldn't be worthwhile to show unbudgeted income and unbudgeted expenses to give the user some idea of how encompassing their budget is versus historical income and expenses and maybe tell them what higher-level categories are being ignored. It may be fine to ignore these (we have set budgets for some things like clothing, but not for other things, like insurance) so this section should be expandable and default to being collapsed
-* While we're at it, the budget goals are currently sorted however they are in the budget file which is whatever order they happened to be added in. So I have revenues:salary at the top and revenues:dividends at the bottom, which makes it hard to scan.
+
 - feat: personal planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
   - TODO: investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
-
   - in business, I also build modeling spreadsheets that allow for what-ifs and let me model sales growth, investments, ramp up in hiring/expenses, etc., so i can understand runway (cash balance over time anyway)
     - It would be great if we had a mechanism for unifying this
   - we need to understand how forecasting works in hledger -- is it just the budgeting? can we use that for forecasts meaningfully?

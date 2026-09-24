@@ -39,8 +39,11 @@ mod sections;
 pub mod subscriptions;
 pub mod types;
 
+// `pub(crate)`, not private: `crate::projections` builds the same fixtures
+// (a transaction, a USD amount) and a third copy of them is a third set of
+// defaults to keep in step.
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 use crate::decimal::DecError;
 use thiserror::Error;
@@ -52,8 +55,9 @@ pub use account_groups::{
     group_rank, parse_bs_term_tag, resolve_bs_term,
 };
 pub use account_types::{
-    ACCOUNT_TYPE_TAG, AccountDecl, AccountType, AccountTypes, account_decls, account_decls_from,
-    cash_predicate, declared_types, is_account_type, parse_account_type_tag, resolve_account_type,
+    ACCOUNT_TYPE_TAG, AccountDecl, AccountType, AccountTypes, accepted_type_tags, account_decls,
+    account_decls_from, cash_predicate, declared_types, is_account_type, parse_account_type_tag,
+    resolve_account_type,
 };
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
@@ -61,7 +65,10 @@ pub use balance_sheet::{
     BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
     balance_sheet, balance_sheet_grouped, prices_any_on_sheet,
 };
-pub use budget::{BudgetCell, BudgetOpts, BudgetReport, BudgetRow, UNBUDGETED, budget_report};
+pub use budget::{
+    BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,
+    budget_report,
+};
 pub use cash_flow::{cash_flow, is_cash_like};
 pub use flows::{
     FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide, income_statement_flows,

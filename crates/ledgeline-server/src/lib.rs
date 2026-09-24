@@ -46,6 +46,7 @@ mod hledger;
 mod import_api;
 mod prefs;
 mod prices_api;
+mod projections_api;
 mod qb_journal_api;
 mod reports_api;
 mod rules_api;
@@ -628,6 +629,56 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/insights", get(reports_api::insights_report))
         .route("/api/subscriptions", get(reports_api::subscriptions))
         .route("/api/budget", get(reports_api::budget))
+        // The unbudgeted categories under those bars. A sibling route, not a
+        // field on the report above: the report is refetched on every control
+        // change and after every goal save, and this one answers a section the
+        // Budget tab opens collapsed.
+        //
+        // Registered HERE, with the reports, rather than beside
+        // `/api/budget/lines` below — it reads the journal and writes nothing,
+        // exactly like its neighbours. Either position is above the
+        // `route_layer`, which is what matters; `budget_endpoints.rs` pins the
+        // 401 for it alongside the editor's four.
+        .route("/api/budget/gaps", get(reports_api::budget_gaps_report))
+        // Projections: run a what-if, and seed one from the journal.
+        //
+        // `run` is a POST that WRITES NOTHING — the scenario travels in the body
+        // so that unsaved edits project (decision 3 of
+        // `plans/22-projections.md`), not because anything is being stored. It
+        // is registered HERE, above the `route_layer`, for the same reason its
+        // read-only neighbours are: below it the route would serve a projection
+        // of the user's finances with no bearer token at all.
+        // `projection_endpoints.rs` pins the 401 for both.
+        //
+        // The body limit is raised on THIS route alone, exactly as
+        // `/api/import/stage` raises its own: every other endpoint here takes a
+        // small JSON body, and a global limit would lift the ceiling on all of
+        // them for the sake of one.
+        .route(
+            "/api/projections/run",
+            post(projections_api::run).route_layer(axum::extract::DefaultBodyLimit::max(
+                projections_api::MAX_BODY_BYTES,
+            )),
+        )
+        .route("/api/projections/seed", get(projections_api::seed))
+        // Projection scenario FILES (plan 22, Phase 3): list, read, save.
+        //
+        // THE SAME PLACEMENT TRAP as the rules routes below, and the same
+        // consequence: `PUT /api/projections/{*id}` is a write primitive over
+        // a file in the user's journal directory, and below the `route_layer`
+        // it would be reachable with no bearer token at all.
+        // `projection_endpoints.rs` pins the 401 for all three.
+        //
+        // The two fixed segments above (`run`, `seed`) MUST stay registered
+        // before `{*id}`: axum matches a literal ahead of a wildcard, so the
+        // order is not what disambiguates them — but keeping them adjacent and
+        // in this order is what makes that readable. An id always ends in
+        // `.journal`, so neither literal is a reachable id anyway.
+        .route("/api/projections", get(projections_api::index))
+        .route(
+            "/api/projections/{*id}",
+            get(projections_api::document).put(projections_api::save),
+        )
         .route("/api/holdings", get(reports_api::holdings))
         .route(
             "/api/holdings/series",

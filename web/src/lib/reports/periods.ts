@@ -169,6 +169,46 @@ export function nextBucket(key: string, interval: Interval): string {
     return bucketKey(toISO(...civilFromDays(daysFromCivil(y, m, d) + 1)), interval);
 }
 
+/**
+ * The `n` consecutive bucket keys STARTING with the bucket containing `start`,
+ * oldest → newest — the forward mirror of `lastNBuckets`.
+ *
+ * This module was trailing-only: every report reads backwards from a report end,
+ * so `lastNBuckets` was the whole vocabulary. A PROJECTION reads the other way,
+ * and the alternative to this function is a caller re-deriving the walk from
+ * `nextBucket`, which is how the two directions start to disagree about a year
+ * boundary or a leap day.
+ *
+ * The exact twin of `reports::periods::next_n_buckets` in the Rust engine, with
+ * one stated difference: the Rust side clamps `n` at `MAX_BUCKETS` because its
+ * `n` arrives from an HTTP query, while this one — like its own `lastNBuckets`
+ * — does not, because nothing untrusted reaches it.
+ */
+export function nextNBuckets(start: ISODate, interval: Interval, n: number): string[] {
+    const out: string[] = [];
+    let key = bucketKey(start, interval);
+    for (let i = 0; i < n; i += 1) {
+        out.push(key);
+        key = nextBucket(key, interval);
+    }
+    return out;
+}
+
+/**
+ * Number of days from `a` to `b` (`b − a`); negative when `b` precedes `a`.
+ *
+ * The exact twin of `reports::periods::days_between` in the Rust engine — same
+ * Hinnant civil-day arithmetic over ISO strings, and clock-free for the same
+ * reason. It was missing here and present there; the budget's pace mark needs
+ * it, and a second, inline copy of `daysFromCivil` is how the two halves of a
+ * ported module start to disagree.
+ */
+export function daysBetween(a: ISODate, b: ISODate): number {
+    const [ay, am, ad] = parts(a);
+    const [by, bm, bd] = parts(b);
+    return daysFromCivil(by, bm, bd) - daysFromCivil(ay, am, ad);
+}
+
 /** Number of monthly buckets spanning `from`…`to` inclusive (min 1). "2026-01"→"2026-07" = 7. */
 export function monthsBetween(from: ISODate, to: ISODate): number {
     const [fy, fm] = [Number(from.slice(0, 4)), Number(from.slice(5, 7))];
