@@ -2,11 +2,11 @@
      overlay.
 
      Progressive by construction. The portfolio line is drawn from `trend`,
-     which the page already has; benchmark requests go out only once it is on
-     screen (this component does not exist until then) and only for the ticked
-     boxes. Each benchmark's line appears when its own response lands, and a
-     failure is a hint in the picker — the base chart is never waiting on, or
-     blanked by, Yahoo Finance.
+     which the page already has; the benchmark request goes out only once it is
+     on screen (this component does not exist until then), as ONE request for
+     every ticked box, and adds all their lines when it lands. Ticking another
+     box asks for just that one. A failure is a hint beside its own box in the
+     picker — the base chart is never waiting on, or blanked by, Yahoo Finance.
      A reloaded `trend` (Refresh, Update prices, a journal edit) re-requests
      every line, since each is seeded from the portfolio's value.
 

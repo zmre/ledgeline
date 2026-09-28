@@ -500,6 +500,12 @@ fn parse_symbols(raw: Option<&str>) -> Result<Vec<Benchmark>, AppError> {
         .collect())
 }
 
+/// The request's shared inputs: the series and the portfolio's flows are
+/// computed ONCE per request and every requested symbol's line is simulated
+/// from them, which is why the SPA batches its ticked benchmarks into one
+/// request rather than asking per symbol. The series is recomputed here even
+/// though the page already has it: the seed must be the engine's own values,
+/// not numbers a client sends back.
 fn prepare(state: &AppState, query: BenchmarksQuery) -> Result<Prepared, AppError> {
     let wanted = parse_symbols(query.symbols.as_deref())?;
     let snapshot = state.snapshot();

@@ -135,6 +135,19 @@ describe("COMPONENT StocksTrend benchmark overlay", () => {
         expect(benchmarkRequests).toHaveLength(1);
     });
 
+    it("boxes already ticked go out as ONE request, which adds all their lines", async () => {
+        settings.toggleBenchmark("SPY", true);
+        settings.toggleBenchmark("QQQ", true);
+        settings.toggleBenchmark("GLD", true);
+        mount();
+
+        await waitFor(() => expect(lines()).toHaveLength(3));
+        expect(benchmarkRequests).toHaveLength(1);
+        expect(benchmarkRequests[0].searchParams.get("symbols")).toBe("SPY,QQQ,GLD");
+        // GLD's own failure stays beside its own box.
+        await waitFor(() => expect(screen.getByTestId("benchmark-GLD-error").textContent).toContain("Could not fetch GLD"));
+    });
+
     it("a reloaded base series (same window) refetches the lines seeded from it", async () => {
         settings.toggleBenchmark("SPY", true);
         const view = mount();

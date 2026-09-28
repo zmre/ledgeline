@@ -1,11 +1,14 @@
-// Benchmark overlay store: one request per ticked benchmark, fetched only
-// AFTER the value-over-time chart it overlays has drawn (the caller syncs once
-// the base trend is on screen), and cached per base series so unticking and
-// re-ticking a box costs nothing.
+// Benchmark overlay store: ONE batched request for every ticked benchmark,
+// fetched only AFTER the value-over-time chart it overlays has drawn (the
+// caller syncs once the base trend is on screen), and cached per base series so
+// unticking and re-ticking a box costs nothing.
 //
-// Per benchmark rather than one batched request so each checkbox owns its own
-// state: a slow or failed Yahoo fetch for one index shows its hint beside that
-// box and never holds up or blanks the others.
+// Batched because the server's work is per REQUEST, not per symbol: each
+// request rebuilds the holdings series and replays the portfolio's flows before
+// it can seed a single line. Ticking another box asks for just the new symbol,
+// in a request of its own. Each checkbox still owns its own state: the response
+// carries a line (or an error) per symbol, so a failed Yahoo fetch for one
+// index shows its hint beside that box and never blanks the others.
 //
 // Everything is keyed by the BASE SERIES the lines overlay: its window (the
 // exact series query, `trendQuery`) and its identity. A scope, date or
@@ -81,13 +84,13 @@ export const benchmarkLines = {
      * Make sure every symbol in `symbols` is fetched (or being fetched) for
      * `base`, the series loaded for `scope`'s window. A new window or a reloaded
      * series forgets everything held for the old one; symbols already requested
-     * for this one are left alone, so this is safe to call from an effect on
-     * every change.
+     * for this one are left alone, and the rest go out in ONE request, so this
+     * is safe to call from an effect on every change.
      */
     sync(serverUrl: string, scope: HoldingsScope, base: object, symbols: readonly string[]): void {
         adopt(serverUrl, scope, base);
         const missing = symbols.filter((symbol) => !entries.has(symbol));
-        for (const symbol of missing) void fetchBatch(serverUrl, scope, [symbol]);
+        if (missing.length > 0) void fetchBatch(serverUrl, scope, missing);
     },
     /** Forget one symbol's failure and ask again (the hint's retry). */
     retry(serverUrl: string, scope: HoldingsScope, base: object, symbol: string): void {

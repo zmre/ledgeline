@@ -48,18 +48,35 @@ describe("UNIT benchmark overlay store", () => {
     beforeEach(() => benchmarkLines.reset());
     afterEach(() => vi.unstubAllGlobals());
 
-    it("requests each ticked symbol once per base series", async () => {
+    it("asks for every ticked symbol in ONE request, then only for newly ticked ones", async () => {
         const fetch = deferredFetch();
         const base = trend();
-        benchmarkLines.sync(URL_BASE, scope("12mo"), base, ["SPY"]);
         benchmarkLines.sync(URL_BASE, scope("12mo"), base, ["SPY", "QQQ"]);
         benchmarkLines.sync(URL_BASE, scope("12mo"), base, ["SPY", "QQQ"]);
 
-        expect(fetch.requests).toHaveLength(2);
+        expect(fetch.requests).toHaveLength(1);
+        expect(fetch.symbols(0)).toBe("SPY,QQQ");
         expect(benchmarkLines.entries.get("SPY")?.status).toBe("loading");
+        expect(benchmarkLines.entries.get("QQQ")?.status).toBe("loading");
         fetch.release(0);
         await settle();
         expect(benchmarkLines.entries.get("SPY")?.status).toBe("ready");
+        expect(benchmarkLines.entries.get("QQQ")?.status).toBe("ready");
+
+        benchmarkLines.sync(URL_BASE, scope("12mo"), base, ["SPY", "QQQ", "GLD"]);
+        expect(fetch.requests).toHaveLength(2);
+        expect(fetch.symbols(1)).toBe("GLD");
+    });
+
+    it("keeps a per-symbol error on that symbol alone", async () => {
+        const fetch = deferredFetch(["GLD"]);
+        benchmarkLines.sync(URL_BASE, scope("12mo"), trend(), ["SPY", "GLD"]);
+        fetch.release(0);
+        await settle();
+
+        expect(benchmarkLines.entries.get("SPY")?.status).toBe("ready");
+        const gld = benchmarkLines.entries.get("GLD");
+        expect(gld?.status === "error" && gld.message).toContain("No GLD price history");
     });
 
     it("forgets every line when the window changes, and drops a response from the old one", async () => {
@@ -81,22 +98,36 @@ describe("UNIT benchmark overlay store", () => {
     // the SAME window: a line seeded from the old values must not survive it.
     it("refetches every line when the base series reloads for the same window", async () => {
         const fetch = deferredFetch();
-        benchmarkLines.sync(URL_BASE, scope("12mo"), trend(), ["SPY"]);
+        benchmarkLines.sync(URL_BASE, scope("12mo"), trend(), ["SPY", "QQQ"]);
         fetch.release(0);
         await settle();
 
-        benchmarkLines.sync(URL_BASE, scope("12mo"), trend(), ["SPY"]);
+        benchmarkLines.sync(URL_BASE, scope("12mo"), trend(), ["SPY", "QQQ"]);
         expect(fetch.requests).toHaveLength(2);
+        expect(fetch.symbols(1)).toBe("SPY,QQQ");
         expect(benchmarkLines.entries.get("SPY")?.status).toBe("loading");
     });
 
-    it("records a failed request as that benchmark's error", async () => {
+    it("records a failed request as the error of every benchmark in it", async () => {
         vi.stubGlobal("fetch", () => Promise.resolve(new Response("boom", {status: 500})));
         benchmarkLines.sync(URL_BASE, scope("12mo"), trend(), ["SPY", "QQQ"]);
         await settle();
 
         expect(benchmarkLines.entries.get("SPY")?.status).toBe("error");
         expect(benchmarkLines.entries.get("QQQ")?.status).toBe("error");
+    });
+
+    it("retries one symbol on its own", async () => {
+        const fetch = deferredFetch(["GLD"]);
+        const base = trend();
+        benchmarkLines.sync(URL_BASE, scope("12mo"), base, ["SPY", "GLD"]);
+        fetch.release(0);
+        await settle();
+
+        benchmarkLines.retry(URL_BASE, scope("12mo"), base, "GLD");
+        expect(fetch.requests).toHaveLength(2);
+        expect(fetch.symbols(1)).toBe("GLD");
+        expect(benchmarkLines.entries.get("SPY")?.status).toBe("ready");
     });
 });
 

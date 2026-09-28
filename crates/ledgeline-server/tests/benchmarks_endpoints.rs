@@ -234,6 +234,32 @@ async fn several_benchmarks_come_back_in_catalog_order() {
     assert!(gld["error"].as_str().unwrap().contains("GLD"));
 }
 
+/// A batched request draws each line exactly as a request for that symbol
+/// alone would, and fetches each symbol once.
+#[tokio::test]
+async fn a_batched_request_matches_its_single_symbol_requests() {
+    let feed = || FakeHistory::new([("SPY", spy()), ("QQQ", spy())]);
+    let batched = Tree::with(JOURNAL, feed());
+    let (_, both) = batched
+        .get(&format!(
+            "/api/holdings/benchmarks?symbols=SPY,QQQ&{WINDOW}"
+        ))
+        .await;
+    assert_eq!(batched.calls(), 2, "one fetch per symbol, in one request");
+    for (index, symbol) in ["SPY", "QQQ"].into_iter().enumerate() {
+        let alone = Tree::with(JOURNAL, feed());
+        let (_, single) = alone
+            .get(&format!(
+                "/api/holdings/benchmarks?symbols={symbol}&{WINDOW}"
+            ))
+            .await;
+        assert_eq!(
+            both["benchmarks"][index], single["benchmarks"][0],
+            "{symbol}"
+        );
+    }
+}
+
 /// An answer with no sessions in it is not "covered": nothing is recorded for
 /// the symbol, so the next request asks again instead of waiting for tomorrow.
 #[tokio::test]

@@ -583,10 +583,13 @@ been reinvested.
 ### Where the prices come from, and the cache file
 
 Your journal is not touched. The chart draws your portfolio from local data
-first; each benchmark is then fetched in the background by the Ledgeline server
-(the page itself never contacts Yahoo), and its line appears when it arrives. If
-Yahoo cannot be reached the box says so, with a retry, and the rest of the chart
-is unaffected.
+first; the ticked benchmarks are then fetched together in the background by the
+Ledgeline server, in one request (the page itself never contacts Yahoo), and
+their lines appear when it arrives. Ticking another box fetches just that one.
+If Yahoo cannot be reached for a benchmark, its box says so, with a retry, and
+the rest of the chart is unaffected. Refreshing, updating prices or editing the
+journal redraws the portfolio line and re-requests the benchmark lines, because
+each one starts from the portfolio's value.
 
 Fetched history is kept in **`benchmarks.prices.journal`, beside your main
 journal**, as ordinary hledger price directives:
@@ -605,5 +608,6 @@ since the last fetch are downloaded; when a fund pays a dividend and Yahoo
 re-bases its adjusted history, the cached days are re-scaled to match.
 
 It is **safe to delete** at any time. The next comparison simply downloads the
-history again.
+history again. A read-only session (one that cannot edit the journal) writes no
+file at all: it keeps the fetched history in memory until the server stops.
 
