@@ -919,6 +919,15 @@ export class LedgelineApi {
         return this.getJson(`/api/reports/cashflow${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth})}`);
     }
 
+    /**
+     * The same window's cash movement, attributed to the counterparty accounts
+     * that caused it (decode with `decodePeriodReport`). Same query as `cashFlow`,
+     * and per bucket its totals equal the cash flow's.
+     */
+    cashFlowSources(query: CashFlowQuery = {}): Promise<unknown> {
+        return this.getJson(`/api/reports/cashflow/sources${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth})}`);
+    }
+
     netWorth(query: NetWorthQuery = {}): Promise<unknown> {
         return this.getJson(
             `/api/reports/networth${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, valueIn: query.valueIn})}`
