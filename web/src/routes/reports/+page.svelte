@@ -15,8 +15,10 @@
     import {exportBalanceSheetXlsx, exportIncomeStatementXlsx, exportXlsx} from "$lib/export/xlsx";
     import InsightsDashboard from "$lib/reports/ui/insights/InsightsDashboard.svelte";
     import BalanceSheetView from "$lib/reports/ui/BalanceSheetView.svelte";
+    import CashFlowChart from "$lib/reports/ui/CashFlowChart.svelte";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import IncomeStatementView from "$lib/reports/ui/IncomeStatementView.svelte";
+    import NetWorthChart from "$lib/reports/ui/NetWorthChart.svelte";
     import ReportControls from "$lib/reports/ui/ReportControls.svelte";
     import ReportTable from "$lib/reports/ui/ReportTable.svelte";
     import ReportTabs from "$lib/reports/ui/ReportTabs.svelte";
@@ -33,6 +35,7 @@
     } from "$lib/reports/ui/params";
     import type {FlowsPanel} from "$lib/reports/ui/sankeyModel";
     import {reportStyles} from "$lib/reports/ui/styles";
+    import {cashFlowSources, loadSourcesWhenWatched, sourcesMatch, type SourcesPanel} from "$lib/stores/cashFlowSources.svelte";
     import {flows, loadFlowsWhenWatched} from "$lib/stores/flows.svelte";
     import {dataView} from "$lib/stores/loadState";
     import {buildReportQuery, reports, sameReportQuery, type AnyReport} from "$lib/stores/reports.svelte";
@@ -150,6 +153,21 @@
             error: flows.error,
             retry: () => void flows.load(settings.serverUrl ?? "", flowsQuery),
         };
+    });
+
+    /**
+     * The Cash Flow chart's "By source" breakdown: its own request, made only
+     * while that view is showing (`loadSourcesWhenWatched`), and treated as
+     * loading until it answers EXACTLY the table's window — a breakdown of last
+     * quarter drawn over this quarter's table would be wrong, not stale.
+     */
+    const sourcesQuery = $derived({end: params.end, interval: params.interval, count: params.count, depth: params.depth});
+    loadSourcesWhenWatched(() => ({tab: params.tab, query: sourcesQuery}));
+    const sourcesPanel = $derived<SourcesPanel>({
+        view: dataView(cashFlowSources.status, cashFlowSources.value !== null, sourcesMatch(cashFlowSources.query, sourcesQuery)),
+        report: cashFlowSources.value,
+        error: cashFlowSources.error,
+        retry: () => void cashFlowSources.load(settings.serverUrl ?? "", sourcesQuery),
     });
 
     // Discriminate the report shape by its decoder-applied `kind` tag:
@@ -277,6 +295,15 @@
                         <IncomeStatementView report={current} {styles} flows={flowsPanel} />
                     {/if}
                 {:else}
+                    <!-- The charts sit ABOVE the table they draw; the table is their
+                         accessible twin. -->
+                    <!-- `"buckets" in current` narrows the untagged union to the
+                         PeriodReport both tabs hold (a SectionedReport has none). -->
+                    {#if params.tab === "nw" && "buckets" in current}
+                        <NetWorthChart report={current} {styles} />
+                    {:else if params.tab === "cf" && "buckets" in current}
+                        <CashFlowChart report={current} sources={sourcesPanel} {styles} />
+                    {/if}
                     <ReportTable report={current} {styles} />
                 {/if}
             {/snippet}

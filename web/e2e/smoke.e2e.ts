@@ -233,6 +233,36 @@ test("reports: P&L flow panels print their total only while shut", async ({page}
     await expect(moneyIn.locator(".collapse-title")).not.toContainText("$");
 });
 
+test("reports: net worth and cash flow draw their charts above the tables", async ({page}) => {
+    await page.goto("/");
+    await page.getByRole("link", {name: "Reports"}).click();
+
+    // Net worth: one stacked column per year, assets up and liabilities down,
+    // each account a legend entry — the mortgage by its declared type.
+    await page.getByRole("tab", {name: "Net Worth"}).click();
+    const worth = page.getByTestId("networth-chart-panel");
+    await expect(worth.getByTestId("networth-chart")).toBeVisible();
+    const worthLegend = worth.getByTestId("networth-chart-legend");
+    await expect(worthLegend).toContainText("liabilities:mortgage");
+    await expect(worthLegend).toContainText("Net worth");
+    // Five yearly buckets is few enough to label every net point — every one
+    // that holds anything: sample.journal starts in 2024, so 2022 and 2023 are
+    // empty columns and get no "$0" label.
+    await expect(worth.locator("g.lc-net-point")).toHaveCount(3);
+
+    // Cash flow: by source first — the salary that funds it, not the account it lands in.
+    await page.getByRole("tab", {name: "Cash Flow"}).click();
+    const cash = page.getByTestId("cashflow-chart-panel");
+    await expect(cash.getByTestId("cashflow-chart-mode-source")).toHaveAttribute("aria-checked", "true");
+    await expect(cash.getByTestId("cashflow-chart-legend")).toContainText("income:salary");
+    await expect(cash.getByTestId("cashflow-chart-legend")).not.toContainText("assets:bank:checking");
+
+    // By account is the table's own rows.
+    await cash.getByTestId("cashflow-chart-mode-account").click();
+    await expect(cash.getByTestId("cashflow-chart-legend")).toContainText("assets:bank:checking");
+    await expect(cash.getByTestId("cashflow-chart-legend")).not.toContainText("income:salary");
+});
+
 test("reports: P&L groups start collapsed and open to their accounts", async ({page}) => {
     // The range the plan's ground-truth table pins, rather than the default
     // calendar year, so the figures below are the ones hledger printed for it.
