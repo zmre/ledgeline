@@ -24,8 +24,11 @@
        4px rounded data-end, square at the baseline, no outline. `stackGap`
        inserts the surface gap between stacked segments.
      - AREAS: stacked here (`bandsAt`), not by layerchart, so a zero keeps its
-       place on the stack; filled at `AREA_OPACITY`, no top line, a hairline of
-       surface between layers.
+       place on the stack; filled solid, no top line, a 1px hairline of surface
+       between layers. The dataviz ~10% wash is for areas that OVERLAP; stacked
+       layers never overlap, they tile, and any translucency over the dark
+       surface only muddies them. The hairline is what tells neighbours apart,
+       and the haloed net line stays legible on top of solid fills.
      - THE NET IS DRAWN TWICE, a wide surface-coloured halo under the dashed
        ink, so it reads against the surface rather than against whichever mark
        it crosses. `labelNet` adds a dot and a value label, off by default and
@@ -109,13 +112,6 @@
     const BAND_PADDING = 0.4;
     /** dataviz mark spec: a bar never exceeds this, however much room its band has. */
     const MAX_BAR_WIDTH = 24;
-    /**
-     * Stacked-area fill. The dataviz ~10% wash is for areas that OVERLAP; stacked
-     * layers never overlap, they tile, and at 10% neighbouring layers on the dark
-     * surface are indistinguishable. Opaque enough to tell the layers apart,
-     * translucent enough that the dashed net over them stays the loudest mark.
-     */
-    const AREA_OPACITY = 0.55;
 
     interface Row {
         i: number;
@@ -283,7 +279,6 @@
             y0={(d: Row) => d.band[idx][0]}
             y1={(d: Row) => d.band[idx][1]}
             fill={s.color}
-            fillOpacity={AREA_OPACITY}
             class="stroke-base-200"
             strokeWidth={1}
         />

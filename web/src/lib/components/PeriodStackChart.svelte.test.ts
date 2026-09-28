@@ -81,6 +81,14 @@ describe("COMPONENT PeriodStackChart", () => {
             expect(container.querySelectorAll(".lc-area-line")).toHaveLength(0);
             expect(container.querySelectorAll(".lc-bars-bar")).toHaveLength(0);
         });
+
+        it("fills solid, separated by a hairline of surface", () => {
+            const {container} = mount({mark: "area"});
+
+            const paths = [...container.querySelectorAll("path.lc-area-path")];
+            expect(paths.map((path) => path.getAttribute("fill-opacity"))).toEqual(paths.map(() => null));
+            expect(paths.every((path) => path.classList.contains("stroke-base-200") && path.getAttribute("stroke-width") === "1")).toBe(true);
+        });
     });
 
     describe("the net", () => {
