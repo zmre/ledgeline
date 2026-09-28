@@ -37,7 +37,7 @@ An account can be positive one month and negative the next. It is drawn as two l
 For each transaction that touches cash, for each bucket (a cash posting's own `date:` decides the bucket, as in the table), and for each commodity:
 
 1. **D** is the sum of the transaction's cash postings. If D is zero, as in a transfer between two cash accounts, nothing is attributed: cash moving between cash accounts is internal.
-2. The **weights** are the amounts on the non-cash postings in the same commodity. When there are none (buying shares with cash, where the counterparty is in `AAPL`), the non-cash postings' amounts *at cost* are used instead.
+2. Every non-cash posting gets a **weight** in the cash's commodity: its own amount if it is written in that commodity, or else its cost (`@` or `@@`) if the cost is in that commodity. Buying shares with cash, the counterparty is in `AAPL`, so it weighs its cost. A buy or sell with a commission therefore splits between the shares (at cost) and the fee, rather than charging the whole payment to the fee.
 3. Each counterparty receives `D × weight / Σ weights`. In the ordinary balanced transaction that is exactly the negation of what it was posted, with no division involved: a `$100.00` grocery bill is `−$100.00` of groceries, and a paycheck split between checking and savings, with taxes withheld, credits salary with the gross and debits taxes with the withholding. Otherwise the shares are rounded to the cash amount's precision, and the largest weight absorbs the rounding remainder.
 4. When nothing can explain the movement, the whole of D goes to a row named `(unattributed)`. This happens with a currency exchange between two cash accounts, or with transfer legs dated into different buckets.
 

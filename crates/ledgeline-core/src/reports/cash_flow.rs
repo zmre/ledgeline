@@ -176,9 +176,10 @@ pub fn cash_flow(
 /// 1. `D` is the sum of the transaction's CASH postings in `k` in that bucket.
 ///    Zero — a transfer between two cash accounts, say — attributes nothing:
 ///    cash moving between cash accounts is internal and is not a source.
-/// 2. The weights are the transaction's NON-CASH postings' amounts in `k`. If
-///    none are (buying stock with cash: the counterparty is in `AAPL`, the
-///    cash in `$`), they are the non-cash postings' amounts AT COST in `k`.
+/// 2. Every NON-CASH posting amount gets a weight in `k`: its own quantity if
+///    it is written in `k`, else its cost (`@`/`@@`) if that is in `k` (buying
+///    stock with cash: the counterparty is in `AAPL`, the cash in `$`). So a
+///    buy with a commission weighs the shares at cost AND the fee, together.
 /// 3. Each weighted counterparty receives `D × w / Σw`. In the ordinary
 ///    balanced case (`Σw == −D`) that is exactly `−w`, with no division — a
 ///    `$100` grocery bill is `−$100` of groceries. Otherwise the share is
@@ -250,19 +251,28 @@ pub fn cash_flow_sources(
     })
 }
 
-/// The counterparties' weights in `commodity`, read through `value` (the
-/// amount as written, or at cost). Zero weights are dropped: they could only
-/// ever receive a zero share.
+/// One amount's weight in `commodity`: its own quantity when it is written in
+/// `commodity`, else its cost when that is in `commodity`, else none.
+fn weight_in(commodity: &Commodity, amount: &Amount) -> Result<Option<Dec>, DecError> {
+    if &amount.commodity == commodity {
+        return Ok(Some(amount.quantity));
+    }
+    let (held, quantity) = amount.at_cost()?;
+    Ok((held == commodity).then_some(quantity))
+}
+
+/// The counterparties' weights in `commodity` (see [`weight_in`]). Zero
+/// weights are dropped: they could only ever receive a zero share.
 fn weights<'a>(
     commodity: &Commodity,
     counterparties: &[&'a Posting],
-    value: impl Fn(&Amount) -> Result<(&Commodity, Dec), DecError>,
 ) -> Result<Vec<(&'a str, Dec)>, DecError> {
     let mut out = Vec::new();
     for posting in counterparties {
         for amount in &posting.amounts {
-            let (held, quantity) = value(amount)?;
-            if held == commodity && !quantity.is_zero() {
+            if let Some(quantity) = weight_in(commodity, amount)?
+                && !quantity.is_zero()
+            {
                 out.push((posting.account.0.as_str(), quantity));
             }
         }
@@ -283,17 +293,8 @@ fn attribute<'a>(
     commodity: &Commodity,
     counterparties: &[&'a Posting],
 ) -> Result<Vec<(&'a str, Dec)>, DecError> {
-    let natural = weights(commodity, counterparties, |amount| {
-        Ok((&amount.commodity, amount.quantity))
-    })?;
-    let natural_sum = sum(&natural)?;
-    let (chosen, total) = if natural_sum.is_zero() {
-        let costed = weights(commodity, counterparties, Amount::at_cost)?;
-        let costed_sum = sum(&costed)?;
-        (costed, costed_sum)
-    } else {
-        (natural, natural_sum)
-    };
+    let chosen = weights(commodity, counterparties)?;
+    let total = sum(&chosen)?;
     if total.is_zero() {
         return Ok(vec![(UNATTRIBUTED, delta)]);
     }
@@ -655,6 +656,74 @@ mod tests {
         )];
         let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 3, None).unwrap();
         assert_eq!(row(&report, "assets:broker:aapl"), [usd_ma(-220_000)]);
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    fn shares_at_unit_cost(quantity: i128, unit_cents: i128) -> Amount {
+        let mut shares = amount("AAPL", quantity, 0);
+        shares.cost = Some(Box::new(crate::model::Cost {
+            kind: crate::model::CostKind::Unit,
+            amount: usd(unit_cents),
+        }));
+        shares
+    }
+
+    #[test]
+    fn a_buy_with_a_commission_splits_between_the_stock_and_the_fee() {
+        // checking −$1005 → 10 AAPL @ $100 plus a $5 commission.
+        let txns = vec![txn(
+            1,
+            "2026-01-15",
+            vec![
+                ("assets:bank:checking", vec![usd(-100_500)]),
+                ("assets:broker:aapl", vec![shares_at_unit_cost(10, 10_000)]),
+                ("expenses:fees", vec![usd(500)]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 3, None).unwrap();
+        assert_eq!(row(&report, "assets:broker:aapl"), [usd_ma(-100_000)]);
+        assert_eq!(row(&report, "expenses:fees"), [usd_ma(-500)]);
+        assert!(!accounts(&report).contains(&UNATTRIBUTED));
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    #[test]
+    fn a_sell_with_a_commission_splits_between_the_stock_and_the_fee() {
+        // 10 AAPL sold @ $150 = $1500, less a $5 commission → checking +$1495.
+        let txns = vec![txn(
+            1,
+            "2026-01-15",
+            vec![
+                ("assets:broker:aapl", vec![shares_at_unit_cost(-10, 15_000)]),
+                ("expenses:fees", vec![usd(500)]),
+                ("assets:bank:checking", vec![usd(149_500)]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 3, None).unwrap();
+        assert_eq!(row(&report, "assets:broker:aapl"), [usd_ma(150_000)]);
+        assert_eq!(row(&report, "expenses:fees"), [usd_ma(-500)]);
+        assert!(!accounts(&report).contains(&UNATTRIBUTED));
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    #[test]
+    fn an_amount_in_the_cash_commodity_weighs_as_written_even_with_a_foreign_cost() {
+        // A `$` counterparty priced in EUR still weighs its own `$`, not its cost.
+        let mut dollars = usd(10_000);
+        dollars.cost = Some(Box::new(crate::model::Cost {
+            kind: crate::model::CostKind::Total,
+            amount: amount("EUR", 9000, 2),
+        }));
+        let txns = vec![txn(
+            1,
+            "2026-01-15",
+            vec![
+                ("assets:bank:checking", vec![usd(-10_000)]),
+                ("expenses:travel", vec![dollars]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 2, None).unwrap();
+        assert_eq!(row(&report, "expenses:travel"), [usd_ma(-10_000)]);
         assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
     }
 
