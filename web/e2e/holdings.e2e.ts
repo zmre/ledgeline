@@ -129,10 +129,10 @@ test("holdings: as-of time travel recomputes shares, prices, and warnings", asyn
 
 test("holdings: value-over-time trend renders and time-travel shrinks the window", async ({page}) => {
     await page.goto("/holdings");
-    // Priced holdings exist within the trailing 12 months at the pinned clock → the chart draws.
+    // Priced holdings exist at the pinned clock → the chart draws.
     await expect(page.getByTestId("holdings-trend")).toBeVisible();
 
-    // Time-travel before any position was opened: the 12-month window is all zero → empty-state copy, no chart.
+    // Time-travel before any position was opened: nothing is held yet → empty-state copy, no chart.
     await page.getByLabel("As of date").fill("2024-01-01");
     await expect(page.getByTestId("holdings-empty")).toBeVisible();
 });
@@ -140,12 +140,21 @@ test("holdings: value-over-time trend renders and time-travel shrinks the window
 test("holdings: the period drives the chart's window and survives the URL", async ({page}) => {
     await page.goto("/holdings");
     const heading = page.locator("h3", {hasText: "Value over time"});
+    // The default period is All time, and the chart follows it.
+    await expect(heading).toContainText("all time");
+
+    await page.getByLabel("Gain period").selectOption("12mo");
     await expect(heading).toContainText("last 12 months");
 
     await page.getByLabel("Gain period").selectOption("1wk");
     await expect(heading).toContainText("last 7 days");
     await expect(page.getByRole("columnheader", {name: /^Gain \(1wk\)/})).toBeVisible();
     await expect(page).toHaveURL(/gain=1wk/);
+
+    // A reload restores the period from the URL.
+    await page.reload();
+    await expect(heading).toContainText("last 7 days");
+    await expect(page.getByLabel("Gain period")).toHaveValue("1wk");
 
     await page.getByLabel("Gain period").selectOption("all");
     await expect(heading).toContainText("all time");
