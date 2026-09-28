@@ -48,6 +48,7 @@
     import type {Snippet} from "svelte";
     import {LineChart, Rule} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
+    import ChartHeading from "./ChartHeading.svelte";
     import ChartLegend from "./ChartLegend.svelte";
     import {fittedTicks, labelFormatter} from "./periodAxis";
 
@@ -160,10 +161,7 @@
 
 <div class="w-full">
     <div class="mb-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h3 class="text-xs font-semibold tracking-tight text-base-content/70">
-            {heading}
-            {#if note !== undefined}<span class="font-normal text-base-content/40">· {note}</span>{/if}
-        </h3>
+        <ChartHeading {heading} {note} />
         {#if actions !== undefined}{@render actions()}{/if}
     </div>
     {#if nothingToDraw}

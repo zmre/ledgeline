@@ -40,6 +40,7 @@
 <script lang="ts">
     import {Area, AreaChart, BarChart, Spline, Tooltip, type ChartState} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
+    import ChartHeading from "./ChartHeading.svelte";
     import ChartLegend, {type LegendEntry} from "./ChartLegend.svelte";
     import {fittedTicks, labelFormatter, tickIndices} from "./periodAxis";
     import {stackEmptyReason} from "./periodStackEmpty";
@@ -312,10 +313,7 @@
 
 <div class="w-full">
     {#if heading !== undefined}
-        <h3 class="mb-1 text-xs font-semibold tracking-tight text-base-content/70">
-            {heading}
-            {#if note !== undefined}<span class="font-normal text-base-content/40">· {note}</span>{/if}
-        </h3>
+        <ChartHeading {heading} {note} class="mb-1" />
     {/if}
     {#if emptyReason !== null}
         <p class="py-8 text-center text-sm text-base-content/60" data-testid={testid === undefined ? undefined : `${testid}-empty`}>
