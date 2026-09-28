@@ -3,7 +3,7 @@
 //!
 //! This is the Holdings page's second tab, and it is a DIFFERENT ENGINE, not a
 //! filter over [`super::engine`]. That one is keyed by commodity and its first
-//! act is to drop every currency amount (`engine.rs`, the `is_currency` skip in
+//! act is to drop every currency amount (`engine.rs`, the `Currencies::is_currency` skip in
 //! `replay_pools`), so a house booked as `$150,000.00` produces no pool, no
 //! symbol and no row — it is not hidden, it is structurally invisible. Here the
 //! thing you own IS the account, and its value is that account's balance.
@@ -37,7 +37,7 @@ use super::classify::{
     HoldingsClass, ValuationRole, declared_holdings_classes, declared_valuation_roles,
     resolve_holdings_class, resolve_valuation_role,
 };
-use super::commodities::is_currency;
+use super::commodities::Currencies;
 use super::engine::{FALLBACK_BASE, gain_pct, scope_accounts};
 use super::series::{HoldingsPoint, HoldingsSeries};
 use super::types::HoldingsScope;
@@ -151,6 +151,8 @@ pub struct OtherInputs<'a> {
     /// Precomputed from the whole journal, so the tree shape — and therefore the
     /// row set — does not change as `as_of` moves.
     row_roots: BTreeMap<String, String>,
+    /// Which commodities this journal uses as money ([`Currencies`]).
+    currencies: Currencies,
 }
 
 impl<'a> OtherInputs<'a> {
@@ -169,14 +171,16 @@ impl<'a> OtherInputs<'a> {
         all_prices.extend_from_slice(explicit_prices);
         let classes = declared_holdings_classes(accounts);
         let types = AccountTypes::from_declared(declared_types(&account_decls_from(accounts)));
+        let currencies = Currencies::from_journal(txns, |account| types.resolve(account));
         Ok(Self {
             txns,
             db: PriceDb::build(&all_prices),
             roles: declared_valuation_roles(accounts),
             account_tags: account_tag_map(accounts),
-            row_roots: row_roots(txns, &classes, &types),
+            row_roots: row_roots(txns, &classes, &types, &currencies),
             classes,
             types,
+            currencies,
         })
     }
 
@@ -247,6 +251,7 @@ fn row_roots(
     txns: &[Transaction],
     classes: &BTreeMap<String, HoldingsClass>,
     types: &AccountTypes,
+    currencies: &Currencies,
 ) -> BTreeMap<String, String> {
     let posted: BTreeSet<&str> = txns
         .iter()
@@ -264,7 +269,7 @@ fn row_roots(
             posting
                 .amounts
                 .iter()
-                .any(|amount| !is_currency(&amount.commodity.0))
+                .any(|amount| !currencies.is_currency(&amount.commodity.0))
         })
         .map(|posting| posting.account.0.as_str())
         .collect();
@@ -398,7 +403,7 @@ fn is_other_holding(inputs: &OtherInputs<'_>, account: &str, commodities: &Mixed
         Some(HoldingsClass::Stocks | HoldingsClass::None) => false,
         None => commodities
             .iter()
-            .all(|(commodity, _)| is_currency(&commodity.0)),
+            .all(|(commodity, _)| inputs.currencies.is_currency(&commodity.0)),
     }
 }
 
