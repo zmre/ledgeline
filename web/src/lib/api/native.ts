@@ -1189,6 +1189,16 @@ export class LedgelineApi {
         return this.mutate<unknown>("POST", "/api/prices/update", 200, {journalId});
     }
 
+    /**
+     * How each of `symbols` divides by asset class, sector, industry, security
+     * type, category and risk — commodity tags over Yahoo Finance (decode with
+     * `decodeHoldingsProfiles`). The engine omits symbols the journal does not
+     * know, and never fails because Yahoo did: it answers from tags and says so.
+     */
+    getHoldingsProfiles(symbols: readonly string[]): Promise<unknown> {
+        return this.getJson(`/api/holdings/profiles${queryString({symbols: symbols.join(",")})}`);
+    }
+
     /** ADD a whole transaction. → 201 `{index, transaction}`. */
     addTransaction(body: AddTransactionBody): Promise<MutationResult> {
         return this.mutate<MutationResult>("POST", "/api/transactions", 201, body);

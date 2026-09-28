@@ -110,6 +110,31 @@ export function colorAt(palette: ChartPalette, i: number): string {
     return palette.categorical[i] ?? palette.other;
 }
 
+/** How opaque the "unknown" wash is: see `unknownColor`. */
+export const UNKNOWN_ALPHA = 0.45;
+
+/**
+ * The muted colour at partial opacity — for a bucket of value nothing has
+ * classified, which a chart must show (it is real money) but must not dress as
+ * a category. It sits beside the solid `other` of a folded tail, so it is the
+ * same neutral, faded: "less known" rather than "different".
+ *
+ * `#rgb`/`#rrggbb` get a hex alpha (plain SVG `fill`); any other colour syntax
+ * goes through `color-mix`, which every engine the app targets understands.
+ */
+export function unknownColor(palette: ChartPalette, alpha = UNKNOWN_ALPHA): string {
+    const base = palette.other.trim();
+    const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(base);
+    const byte = Math.round(Math.min(1, Math.max(0, alpha)) * 255)
+        .toString(16)
+        .padStart(2, "0");
+    if (hex !== null) {
+        const digits = hex[1].length === 3 ? [...hex[1]].map((d) => d + d).join("") : hex[1];
+        return `#${digits}${byte}`;
+    }
+    return `color-mix(in srgb, ${base} ${Math.round(alpha * 100)}%, transparent)`;
+}
+
 /**
  * Build a palette by reading each token through `read` (a custom-property
  * lookup such as `getComputedStyle(el).getPropertyValue`). Any token that

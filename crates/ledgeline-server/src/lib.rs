@@ -39,6 +39,7 @@
 mod account_api;
 mod alias_api;
 mod budget_api;
+mod commodity_profile;
 mod edit_api;
 mod error;
 mod git;
@@ -46,6 +47,7 @@ mod hledger;
 mod import_api;
 mod prefs;
 mod prices_api;
+mod profiles_api;
 mod projections_api;
 mod qb_journal_api;
 mod reports_api;
@@ -54,6 +56,7 @@ mod security;
 mod spa;
 mod stage;
 mod yahoo;
+mod yahoo_profile;
 
 use arc_swap::ArcSwap;
 use axum::{
@@ -97,6 +100,10 @@ pub use import_api::{
 // it to `AppState::with_price_source` — the only way `/api/prices/update` is
 // tested without a live network call.
 pub use yahoo::{FetchedPrice, PriceFeed, YahooError};
+// Same arrangement for the Holdings pie's classification source: a fake
+// `ProfileFeed` handed to `AppState::with_profile_source` is how
+// `/api/holdings/profiles` is tested with no network.
+pub use yahoo_profile::{AssetMix, ProfileError, ProfileFeed, YahooProfile};
 
 /// An immutable, atomically-publishable view of one parsed journal: the parsed
 /// [`Journal`] for the per-request report handlers, plus every wire endpoint's
@@ -309,6 +316,11 @@ pub struct AppState {
     /// tests — the only route in this crate that makes an outbound network
     /// call, and the only state field that is not itself journal-derived.
     price_source: Arc<dyn yahoo::PriceFeed>,
+    /// Where `profiles_api` classifies holdings from (Yahoo's `quoteSummary`
+    /// behind a crumb handshake), plus the cache of what it said. Swappable
+    /// for a fake through [`AppState::with_profile_source`], like
+    /// `price_source`.
+    profiles: Arc<profiles_api::Profiles>,
 }
 
 /// The default [`yahoo::PriceFeed`]: the real Yahoo Finance chart endpoint,
@@ -316,6 +328,15 @@ pub struct AppState {
 /// request would re-negotiate TLS on every symbol).
 fn default_price_source() -> Arc<dyn yahoo::PriceFeed> {
     Arc::new(yahoo::YahooClient::new(reqwest::Client::new()))
+}
+
+/// The default classification source: Yahoo's `quoteSummary`, with an empty
+/// cache that loads from `commodity-profiles.json` on first use.
+fn default_profiles() -> Arc<profiles_api::Profiles> {
+    let transport = Arc::new(yahoo_profile::ReqwestTransport::new(reqwest::Client::new()));
+    Arc::new(profiles_api::Profiles::new(Arc::new(
+        yahoo_profile::YahooProfileClient::new(transport),
+    )))
 }
 
 impl AppState {
@@ -344,6 +365,7 @@ impl AppState {
             qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: default_price_source(),
+            profiles: default_profiles(),
         }
     }
 
@@ -366,6 +388,7 @@ impl AppState {
             qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: default_price_source(),
+            profiles: default_profiles(),
         })
     }
 
@@ -512,6 +535,21 @@ impl AppState {
     #[must_use]
     pub fn with_price_source(mut self, source: Arc<dyn yahoo::PriceFeed>) -> Self {
         self.price_source = source;
+        self
+    }
+
+    /// This state's classification source and cache. `pub(crate)` — only
+    /// `profiles_api` reads it.
+    pub(crate) fn profiles(&self) -> &Arc<profiles_api::Profiles> {
+        &self.profiles
+    }
+
+    /// Substitute a different classification source (with a fresh, empty
+    /// cache), replacing the real Yahoo client. `pub` for the integration
+    /// tests, for the reason [`Self::with_price_source`] gives.
+    #[must_use]
+    pub fn with_profile_source(mut self, source: Arc<dyn yahoo_profile::ProfileFeed>) -> Self {
+        self.profiles = Arc::new(profiles_api::Profiles::new(source));
         self
     }
 }
@@ -680,6 +718,7 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             get(projections_api::document).put(projections_api::save),
         )
         .route("/api/holdings", get(reports_api::holdings))
+        .route("/api/holdings/profiles", get(profiles_api::profiles))
         .route(
             "/api/holdings/series",
             get(reports_api::holdings_series_report),

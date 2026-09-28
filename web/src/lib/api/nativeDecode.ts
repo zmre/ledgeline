@@ -41,6 +41,8 @@ import type {
     OtherHoldingsWarning,
 } from "$lib/holdings/types";
 import type {CreatedPricesFile, PriceOutcome, PriceResult, PricesFile, PricesStatus, PricesUpdateResponse} from "$lib/holdings/pricesTypes";
+import {CATEGORY_DIMENSIONS} from "$lib/holdings/profileTypes";
+import type {Breakdown, CategoryWeight, HoldingsProfiles, ProfileSource, SymbolProfile, YahooStatus} from "$lib/holdings/profileTypes";
 import type {
     AliasEffect,
     AliasEntry,
@@ -3728,6 +3730,79 @@ export function decodePricesUpdateResponse(raw: unknown): PricesUpdateResponse {
         file: decodePricesFile(response.file, "prices update file"),
         results: frozen(response.results.map((result, i) => decodePriceResult(result, `prices update results[${i}]`))),
     });
+}
+
+// ---------------------------------------------------------------------------
+// Holding classifications (`/api/holdings/profiles`)
+//
+// The Holdings pie's "by category" views. Weights are fractions (plain JSON
+// numbers — display-only, never money), and every list sums to at most one.
+// ---------------------------------------------------------------------------
+
+interface RawCategoryWeight {
+    label?: string;
+    weight?: number;
+}
+
+interface RawSymbolProfile {
+    symbol?: string;
+    yahooTicker?: string;
+    source?: string;
+    fetchedAt?: string | null;
+    breakdown?: Partial<Record<string, RawCategoryWeight[]>>;
+}
+
+interface RawHoldingsProfiles {
+    yahoo?: string;
+    profiles?: RawSymbolProfile[];
+}
+
+const PROFILE_SOURCES: readonly ProfileSource[] = ["tags", "yahoo", "mixed", "none"];
+const YAHOO_STATUSES: readonly YahooStatus[] = ["ok", "partial", "unavailable"];
+
+function decodeCategoryWeights(raw: RawCategoryWeight[] | undefined, context: string): readonly CategoryWeight[] {
+    // An absent dimension is "nothing known", which is exactly what an empty
+    // list already means — so an older engine missing a newer dimension still
+    // decodes, it just offers fewer views.
+    if (raw === undefined) return frozen([]);
+    if (!Array.isArray(raw)) throw new ApiShapeError(`${context}: expected an array`);
+    return frozen(
+        raw.map((entry, i) => {
+            const weight = num(entry.weight, `${context}[${i}] weight`);
+            if (weight < 0 || weight > 1) throw new ApiShapeError(`${context}[${i}] weight: ${weight} is not a fraction`);
+            return Object.freeze({label: str(entry.label, `${context}[${i}] label`), weight});
+        })
+    );
+}
+
+function decodeSymbolProfile(raw: RawSymbolProfile, context: string): SymbolProfile {
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected an object`);
+    const source = str(raw.source, `${context} source`);
+    if (!PROFILE_SOURCES.includes(source as ProfileSource)) throw new ApiShapeError(`${context} source: unknown value ${JSON.stringify(source)}`);
+    const breakdown = raw.breakdown;
+    if (typeof breakdown !== "object" || breakdown === null) throw new ApiShapeError(`${context}: expected a breakdown object`);
+    const decoded = Object.fromEntries(
+        CATEGORY_DIMENSIONS.map((dimension) => [dimension, decodeCategoryWeights(breakdown[dimension], `${context} breakdown.${dimension}`)])
+    ) as Breakdown;
+    return Object.freeze({
+        symbol: str(raw.symbol, `${context} symbol`),
+        yahooTicker: str(raw.yahooTicker, `${context} yahooTicker`),
+        source: source as ProfileSource,
+        fetchedAt: optStr(raw.fetchedAt, `${context} fetchedAt`),
+        breakdown: Object.freeze(decoded),
+    });
+}
+
+/** `GET /api/holdings/profiles` → per-symbol classifications, keyed by symbol. */
+export function decodeHoldingsProfiles(raw: unknown): HoldingsProfiles {
+    const body = raw as RawHoldingsProfiles;
+    if (typeof body !== "object" || body === null || !Array.isArray(body.profiles)) {
+        throw new ApiShapeError("holdings profiles: expected a profiles array");
+    }
+    const yahoo = str(body.yahoo, "holdings profiles yahoo");
+    if (!YAHOO_STATUSES.includes(yahoo as YahooStatus)) throw new ApiShapeError(`holdings profiles yahoo: unknown value ${JSON.stringify(yahoo)}`);
+    const profiles = body.profiles.map((profile, i) => decodeSymbolProfile(profile, `holdings profiles[${i}]`));
+    return Object.freeze({yahoo: yahoo as YahooStatus, profiles: new Map(profiles.map((profile) => [profile.symbol, profile]))});
 }
 
 // ---------------------------------------------------------------------------
