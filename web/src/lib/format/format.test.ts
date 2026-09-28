@@ -4,7 +4,7 @@
 import {describe, expect, it} from "vitest";
 import {dec} from "$lib/domain/money";
 import {absDec, DEFAULT_AMOUNT_STYLE, EM_DASH, fmt, fmtSignedAmount, fmtSignedPct, ZERO} from "./amounts";
-import {CATEGORICAL, colorAt, OTHER_COLOR, OTHER_LABEL} from "./palette";
+import {colorAt, DEFAULT_PALETTE, OTHER_LABEL, SLOT_COUNT} from "./palette";
 import {NEUTRAL_CLASS, sentimentClass, signClass} from "./sign";
 
 describe("UNIT signClass", () => {
@@ -99,26 +99,34 @@ describe("UNIT absDec / ZERO", () => {
 });
 
 describe("UNIT the categorical palette folds, never cycles", () => {
+    const P = DEFAULT_PALETTE;
+
     it("has exactly 8 distinct slots", () => {
-        expect(CATEGORICAL).toHaveLength(8);
-        expect(new Set(CATEGORICAL).size).toBe(8);
+        expect(P.categorical).toHaveLength(SLOT_COUNT);
+        expect(new Set(P.categorical).size).toBe(SLOT_COUNT);
     });
 
     it("hands out each slot in fixed order", () => {
-        CATEGORICAL.forEach((hex, i) => expect(colorAt(i)).toBe(hex));
+        P.categorical.forEach((hex, i) => expect(colorAt(P, i)).toBe(hex));
     });
 
     it("folds past the last slot to the muted tail colour instead of reusing slot 1", () => {
         // `ChartWidget` did `PALETTE[slot++ % PALETTE.length]` over a 6-entry
         // copy, so a 7th account was painted slot 1's blue and became
         // indistinguishable from the 1st — the dataviz non-negotiable.
-        expect(colorAt(CATEGORICAL.length)).toBe(OTHER_COLOR);
-        expect(colorAt(CATEGORICAL.length)).not.toBe(CATEGORICAL[0]);
-        expect(colorAt(99)).toBe(OTHER_COLOR);
+        expect(colorAt(P, SLOT_COUNT)).toBe(P.other);
+        expect(colorAt(P, SLOT_COUNT)).not.toBe(P.categorical[0]);
+        expect(colorAt(P, 99)).toBe(P.other);
     });
 
     it("keeps the tail colour out of the categorical slots", () => {
-        expect(CATEGORICAL).not.toContain(OTHER_COLOR);
+        expect(P.categorical).not.toContain(P.other);
+    });
+
+    it("keeps the flow pair distinct from each other and from every categorical slot", () => {
+        expect(P.flowIn).not.toBe(P.flowOut);
+        expect(P.categorical).not.toContain(P.flowIn);
+        expect(P.categorical).not.toContain(P.flowOut);
     });
 
     it("names the folded tail once", () => {

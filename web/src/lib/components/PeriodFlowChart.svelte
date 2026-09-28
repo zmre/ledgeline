@@ -36,20 +36,21 @@
      - 4px ROUNDED DATA-END, SQUARE AT THE BASELINE, and a band padding that
        leaves the bars well clear of each other; layerchart's defaults, named
        here because they are load-bearing rather than incidental.
-     - RED/GREEN IS A DIVERGING PAIR, NOT TWO CATEGORICAL SLOTS, and it is not
-       `--color-success` / `--color-error` either — $lib/format/palette explains
-       why at length and carries the validator run. Colour is reinforcement
-       here, never the channel: which side of the zero rule a bar is on already
-       says the direction.
+     - RED/GREEN IS A DIVERGING PAIR, NOT TWO CATEGORICAL SLOTS: the theme's
+       `--chart-in` / `--chart-out` tokens via `chartColors`. `in` is daisy
+       success; `out` is a deeper rose than daisy error, which collapses into
+       success under deuteranopia — $lib/format/palette carries the numbers.
+       Colour is reinforcement here, never the channel: which side of the zero
+       rule a bar is on already says the direction.
      - THE NET LINE IS DRAWN TWICE, the lower copy wider and in the surface
-       colour. It crosses the bars constantly and its ink is only 2.62:1 against
+       colour. It crosses the bars constantly and its ink is only 1.8:1 against
        the green; the halo means it is always read against the surface. Dashed
        because it is derived from the other two marks rather than measured
        beside them — and because the ask asked for it. (The dataviz rule against
        dashing is about gridlines and axes, which stay solid hairlines here.) -->
 <script lang="ts">
     import {BarChart, Spline} from "layerchart";
-    import {FLOW_IN, FLOW_NET, FLOW_OUT} from "$lib/format/palette";
+    import {chartColors} from "$lib/format/chartColors.svelte";
     import {labelFormatter, tickIndices} from "./periodAxis";
 
     let {
@@ -156,8 +157,8 @@
     });
 
     const chartSeries = $derived([
-        {key: "in", label: inflowLabel, color: FLOW_IN, value: (d: Row) => d.inflow},
-        {key: "out", label: outflowLabel, color: FLOW_OUT, value: (d: Row) => d.outflow},
+        {key: "in", label: inflowLabel, color: chartColors.flowIn, value: (d: Row) => d.inflow},
+        {key: "out", label: outflowLabel, color: chartColors.flowOut, value: (d: Row) => d.outflow},
     ]);
 
     const netOf = (d: Row): number => d.net;
@@ -202,22 +203,22 @@
                     <!-- Halo first, then the line, so the net is read against the surface
                          rather than against whichever bar it happens to cross. -->
                     <Spline y={netOf} class="{NET_HALO_CLASS} stroke-base-200" />
-                    <Spline y={netOf} stroke={FLOW_NET} class={NET_CLASS} />
+                    <Spline y={netOf} stroke={chartColors.flowNet} class={NET_CLASS} />
                 {/snippet}
             </BarChart>
         </div>
         <!-- Always visible: three marks, so identity is never colour-alone. -->
         <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70" data-testid={testid === undefined ? undefined : `${testid}-legend`}>
             <li class="flex items-center gap-1">
-                <span class="inline-block h-2 w-2 shrink-0 rounded-xs" style="background:{FLOW_IN}"></span>
+                <span class="inline-block h-2 w-2 shrink-0 rounded-xs" style="background:{chartColors.flowIn}"></span>
                 {inflowLabel}
             </li>
             <li class="flex items-center gap-1">
-                <span class="inline-block h-2 w-2 shrink-0 rounded-xs" style="background:{FLOW_OUT}"></span>
+                <span class="inline-block h-2 w-2 shrink-0 rounded-xs" style="background:{chartColors.flowOut}"></span>
                 {outflowLabel}
             </li>
             <li class="flex items-center gap-1">
-                <span class="inline-block w-4 shrink-0 border-t-2 border-dashed" style="border-color:{FLOW_NET}"></span>
+                <span class="inline-block w-4 shrink-0 border-t-2 border-dashed" style="border-color:{chartColors.flowNet}"></span>
                 {netLabel}
             </li>
         </ul>

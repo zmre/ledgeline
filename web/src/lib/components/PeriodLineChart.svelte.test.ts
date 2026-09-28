@@ -20,7 +20,7 @@
 
 import {render} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import {colorAt} from "$lib/format/palette";
+import {chartColors} from "$lib/format/chartColors.svelte";
 import PeriodLineChart from "./PeriodLineChart.svelte";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -73,7 +73,7 @@ describe("COMPONENT PeriodLineChart", () => {
                 ],
             });
 
-            expect(lines(container).map((l) => l.stroke)).toEqual([colorAt(0), colorAt(1), colorAt(2)]);
+            expect(lines(container).map((l) => l.stroke)).toEqual([chartColors.colorAt(0), chartColors.colorAt(1), chartColors.colorAt(2)]);
         });
 
         it("dashes only the series that asked for it, and keeps the 2px stroke on both", () => {

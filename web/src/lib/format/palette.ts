@@ -1,101 +1,140 @@
-// The ONE categorical chart palette.
+// The ONE chart palette: its shape, its fallback values, and the pure rules
+// over it. The live, theme-reactive copy is `chartColors` in
+// `./chartColors.svelte.ts`; components read that, never a literal.
 //
-// This existed three times and had already drifted: the holdings pie carried
-// all 8 slots, the journal chart widget carried only the first 6 AND cycled
-// them with `% PALETTE.length`, and the holdings trend line carried slot 1
-// alone. Cycling is the specific thing the dataviz skill forbids — a 7th series
-// took slot 1's blue and became indistinguishable from the 1st.
+// ── WHERE THE COLOURS LIVE ───────────────────────────────────────────────────
 //
-// SLOT ORDER IS LOAD-BEARING, AND IT CHANGED. The order the app used to carry
-// (blue, aqua, yellow, green, violet, red, magenta, orange) put `#e66767` red
-// next to `#d55181` magenta, a pair separated by only ΔE 7.8 for NORMAL colour
-// vision — under the ≥15 floor, i.e. two adjacent pie slices most people cannot
-// tell apart. That is a hard fail the skill says secondary encoding does not
-// excuse, and the "worst adjacent CVD dE 10.3" claim in the old comments does
-// not reproduce. The order below is the skill's own documented dark-mode
-// sequence, re-validated against THIS app's daisyUI dark surface (#191e24):
+// The source of truth is CSS: `--chart-1` … `--chart-8`, `--chart-other`,
+// `--chart-in`, `--chart-out` and `--chart-net`, declared per daisyUI theme in
+// `src/app.css`. Charts cannot be handed `var(--chart-1)` — SVG presentation
+// attributes set from JS, canvas, and any colour maths (layerchart's scales,
+// opacity mixing) need a concrete colour string — so `chartColors` resolves the
+// tokens with `getComputedStyle` and re-resolves when `<html data-theme>`
+// changes. `DEFAULT_PALETTE` below is the fallback for when no stylesheet is
+// there to ask (unit tests, jsdom, SSR) or a token is missing; `palette.test.ts`
+// parses `app.css` and fails if the dark block and this object disagree.
 //
-//   node scripts/validate_palette.js \
-//     "#3987e5,#008300,#d55181,#c98500,#199e70,#d95926,#9085e9,#e66767" \
-//     --mode dark --surface "#191e24"
-//   → lightness PASS · chroma PASS · CVD ΔE 8.4 PASS · normal-vision ΔE 19.3 PASS
-//     · contrast PASS — ALL CHECKS PASS (the 6-slot prefix passes identically)
+// ── ADDING A THEME ───────────────────────────────────────────────────────────
 //
-// CVD separation sits in the 6–8 floor band, which the skill permits only with
-// secondary encoding — every consumer here supplies it (always-on legends
-// carrying the symbol/account name, pad-angle gaps between slices, and full
-// tooltips), so identity is never colour-alone.
+//   1. Add the daisyUI theme to the `@plugin "daisyui"` list in `app.css`.
+//   2. Add a `[data-theme="<name>"] { --chart-*: … }` block beside the dark one,
+//      all twelve tokens. A missing token silently falls back to the DARK value
+//      here, which will be wrong on a light surface.
+//   3. Validate the 8 slots, in order, against that theme's `--color-base-100`
+//      with the dataviz skill's validator before shipping them.
+//
+// ── THE DARK VALUES AND WHY ──────────────────────────────────────────────────
+//
+// Built from daisyUI dark's own semantic hues (primary, warning, info, accent,
+// secondary) plus four fills, so the charts carry the same vibrancy as the
+// buttons and badges around them. The old palette sat inside the dataviz
+// skill's dark lightness band and read as dull next to daisy's saturated UI;
+// these are deliberately lifted ABOVE that band. Validated against daisy dark
+// `--color-base-100` #1d232a:
+//
+//   worst ADJACENT CVD ΔE 15.2 · worst normal-vision ΔE 29.5 · every slot ≥ 3:1
+//   contrast on the surface
+//
+// SLOT ORDER IS LOAD-BEARING. Adjacent slots are what share a pie edge or sit
+// next to each other in a legend, so the order is what makes the palette
+// colour-blind safe; reorder it and re-run the validator. Consumers still
+// supply secondary encoding (always-on legends, slice gaps, tooltips) so
+// identity is never colour-alone.
+//
+// The FLOW pair is a diverging encoding for sign (money in above the zero rule,
+// out below), not two categorical slots. `in` is exactly daisy `success`
+// (#00d390). `out` is NOT daisy `error` (#ff627d): success and error sit at
+// nearly the same lightness and collapse under deuteranopia (CVD ΔE 5.1, below
+// even the 6 floor). A deeper rose (#e44062) holds the error hue family and
+// separates at CVD ΔE 13.3. `net` is `base-content`, the neutral midpoint, and
+// the chart draws it over a surface-coloured halo so it is always read against
+// the surface rather than a bar.
 
-/** Dark-mode categorical slots 1..8, fixed order. The app theme is dark-only. */
-export const CATEGORICAL: readonly string[] = ["#3987e5", "#008300", "#d55181", "#c98500", "#199e70", "#d95926", "#9085e9", "#e66767"];
+/** Resolved chart colours for one theme. Every value is a concrete CSS colour, never a `var(...)`. */
+export interface ChartPalette {
+    /** Categorical slots 1..8, fixed order. */
+    readonly categorical: readonly string[];
+    /** Muted tail colour for the folded `OTHER_LABEL` bucket — context, not a series identity. */
+    readonly other: string;
+    /** Money in: a bar above the zero rule. */
+    readonly flowIn: string;
+    /** Money out: a bar below the zero rule. */
+    readonly flowOut: string;
+    /** The net line drawn over the two. */
+    readonly flowNet: string;
+}
 
-/** Muted gray for the folded tail — context, not a series identity, so it is deliberately outside the palette. */
-export const OTHER_COLOR = "#898781";
+/** How many categorical slots every theme provides. Callers fold past this. */
+export const SLOT_COUNT = 8;
 
 /** The folded tail's label. One literal: `series.ts` and `holdings/ui/view.ts` both alias this. */
 export const OTHER_LABEL = "(other)";
+
+/** The CSS custom property behind each palette entry, as declared in `app.css`. */
+export const CHART_TOKENS = {
+    categorical: Array.from({length: SLOT_COUNT}, (_, i) => `--chart-${i + 1}`),
+    other: "--chart-other",
+    flowIn: "--chart-in",
+    flowOut: "--chart-out",
+    flowNet: "--chart-net",
+} as const;
+
+/** daisyUI dark's chart tokens — the fallback when CSS is absent. Must match `app.css` (tested). */
+export const DEFAULT_PALETTE: ChartPalette = Object.freeze({
+    categorical: Object.freeze([
+        "#6c72fb", // 1 indigo  oklch(0.62 0.20 277) ≈ daisy primary, lifted
+        "#e7ad01", // 2 amber   oklch(0.78 0.16 84)  ≈ daisy warning
+        "#00b3f2", // 3 sky     oklch(0.72 0.15 233) ≈ daisy info
+        "#f6722b", // 4 orange  oklch(0.70 0.18 45)
+        "#00c7b1", // 5 teal    oklch(0.74 0.13 181) ≈ daisy accent
+        "#af6af2", // 6 violet  oklch(0.66 0.20 305)
+        "#8ac738", // 7 lime    oklch(0.76 0.18 130)
+        "#f74ca1", // 8 pink    oklch(0.68 0.22 354) ≈ daisy secondary
+    ]),
+    other: "#81878d",
+    flowIn: "#00d390",
+    flowOut: "#e44062",
+    flowNet: "#ecf9ff",
+});
 
 /**
  * The colour for categorical slot `i` (0-based).
  *
  * Past the last slot this FOLDS to the muted tail colour rather than cycling
  * back to slot 1 — the dataviz non-negotiable. Callers that can produce more
- * groups than there are slots should be folding their data into an `OTHER_LABEL`
- * bucket before they get here; this is the backstop that keeps a slip from
- * silently painting two different series the same hue.
+ * groups than there are slots should be folding their data into an
+ * `OTHER_LABEL` bucket before they get here; this is the backstop that keeps a
+ * slip from silently painting two different series the same hue.
  */
-export function colorAt(i: number): string {
-    return CATEGORICAL[i] ?? OTHER_COLOR;
+export function colorAt(palette: ChartPalette, i: number): string {
+    return palette.categorical[i] ?? palette.other;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The diverging pair, for a chart whose subject is SIGN
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Money in above a baseline and money out below it is a POLARITY job, not an
-// identity job, so it takes a diverging encoding — two opposed hues with a
-// neutral between them — and not two slots out of CATEGORICAL. Spending slot 1
-// and slot 2 on it would say "these are two of the series" when what the chart
-// means is "these are the two directions".
-//
-// THESE ARE NOT `--color-success` / `--color-error`, AND THAT IS DELIBERATE.
-// daisyUI dark's own tokens are oklch(76% 0.177 163.2) and oklch(71% 0.194
-// 13.4) — text steps, tuned to be read as words on a dark surface, and at very
-// nearly the same lightness. As marks they are the textbook deuteranopia
-// collapse:
-//
-//   node scripts/validate_palette.js "#00d390,#ff627d" --mode dark --surface "#191e24"
-//   → CVD ΔE 5.1 FAIL — below even the 6 floor, which no amount of secondary
-//     encoding excuses, and lightness band FAIL on both
-//
-// So both hues are held and their lightness moved, which is the skill's own
-// snap-to-passing procedure (`color-formula.md`): green to L 0.67 / C 0.14,
-// red to L 0.54 / C 0.19, same two hue families the theme already uses.
-//
-//   node scripts/validate_palette.js "#17af7c,#c4284d" --mode dark --surface "#191e24"
-//   → lightness PASS · chroma PASS · CVD ΔE 11.8 PASS · normal-vision ΔE 34.4
-//     PASS · contrast PASS — ALL CHECKS PASS
-//
-// ΔE 11.8 clears the ≥8 target outright, so unlike CATEGORICAL this pair needs
-// no secondary encoding to be legal. It gets some anyway and for free: which
-// side of the zero rule a bar is on says the direction without reference to
-// colour at all.
-
-/** Money in: a bar above the zero rule. oklch(0.67 0.14 163.2). */
-export const FLOW_IN = "#17af7c";
-
-/** Money out: a bar below the zero rule. oklch(0.54 0.19 13.4). */
-export const FLOW_OUT = "#c4284d";
-
 /**
- * The net line drawn over the two.
- *
- * The diverging midpoint is neutral by rule, and neutral is also what the net
- * IS: a derived summary of the other two rather than a third direction. This is
- * daisyUI dark's `--color-base-content`, 15.62:1 on the #191e24 chart surface
- * (the skill's WCAG check for a lone non-categorical colour — the six
- * categorical checks do not apply to it). Against `FLOW_IN` it is only 2.62:1,
- * which is why the line is drawn twice, the lower copy wider and in the surface
- * colour, so it is always read against the surface and never against a bar.
+ * Build a palette by reading each token through `read` (a custom-property
+ * lookup such as `getComputedStyle(el).getPropertyValue`). Any token that
+ * reads back empty keeps its `fallback` value, so a theme that omits one
+ * degrades to a working colour rather than to an invisible mark.
  */
-export const FLOW_NET = "#ecf9ff";
+export function resolvePalette(read: (token: string) => string, fallback: ChartPalette = DEFAULT_PALETTE): ChartPalette {
+    const pick = (token: string, backup: string): string => read(token).trim() || backup;
+    return Object.freeze({
+        categorical: Object.freeze(CHART_TOKENS.categorical.map((token, i) => pick(token, fallback.categorical[i]))),
+        other: pick(CHART_TOKENS.other, fallback.other),
+        flowIn: pick(CHART_TOKENS.flowIn, fallback.flowIn),
+        flowOut: pick(CHART_TOKENS.flowOut, fallback.flowOut),
+        flowNet: pick(CHART_TOKENS.flowNet, fallback.flowNet),
+    });
+}
+
+/** Value equality, so a no-op re-resolve does not invalidate every chart. */
+export function samePalette(a: ChartPalette, b: ChartPalette): boolean {
+    return (
+        a.other === b.other &&
+        a.flowIn === b.flowIn &&
+        a.flowOut === b.flowOut &&
+        a.flowNet === b.flowNet &&
+        a.categorical.length === b.categorical.length &&
+        a.categorical.every((c, i) => c === b.categorical[i])
+    );
+}

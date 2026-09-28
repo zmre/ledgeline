@@ -15,8 +15,8 @@
      - ONE SERIES GETS NO LEGEND — `heading` names it, and a box with a single
        swatch only restates the heading (dataviz single-series rule). Two or
        more always get one: identity is never colour-alone.
-     - COLOURS ARE `colorAt(i)` FROM THE SHARED PALETTE ($lib/format/palette),
-       which documents its validator run. Slots are taken in series order and
+     - COLOURS ARE `chartColors.colorAt(i)`, THE THEME'S `--chart-N` TOKENS
+       ($lib/format/palette documents the validator run). Slots are taken in series order and
        never cycled.
 
      - THE ZERO RULE AND THE MARKER ARE OPT-IN, AND SOLID. `includeZero` seeds
@@ -49,7 +49,7 @@
 
 <script lang="ts">
     import {LineChart, Rule} from "layerchart";
-    import {colorAt, FLOW_OUT} from "$lib/format/palette";
+    import {chartColors} from "$lib/format/chartColors.svelte";
     import {labelFormatter, tickIndices} from "./periodAxis";
 
     let {
@@ -135,7 +135,7 @@
             // would silently collapse them into one line.
             key: String(k),
             label: s.name,
-            color: colorAt(k),
+            color: chartColors.colorAt(k),
             value: (d: Row) => d.v[k] ?? 0,
             ...(s.dashed === true ? {props: {class: DASHED_CLASS}} : {}),
         }))
@@ -178,7 +178,7 @@
                         <Rule y={0} class="stroke-base-content/40" data-rule="zero" />
                     {/if}
                     {#if marker !== null}
-                        <Rule x={marker} stroke={FLOW_OUT} data-rule="mark" />
+                        <Rule x={marker} stroke={chartColors.flowOut} data-rule="mark" />
                     {/if}
                 {/snippet}
             </LineChart>
@@ -189,7 +189,10 @@
             <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70" data-testid={testid === undefined ? undefined : `${testid}-legend`}>
                 {#each series as s, k (k)}
                     <li class="flex items-center gap-1">
-                        <span class="inline-block w-4 shrink-0 border-t-2 {s.dashed === true ? 'border-dashed' : ''}" style="border-color:{colorAt(k)}"></span>
+                        <span
+                            class="inline-block w-4 shrink-0 border-t-2 {s.dashed === true ? 'border-dashed' : ''}"
+                            style="border-color:{chartColors.colorAt(k)}"
+                        ></span>
                         {s.name}
                     </li>
                 {/each}

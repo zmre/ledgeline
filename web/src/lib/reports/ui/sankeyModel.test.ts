@@ -14,7 +14,7 @@
 import {describe, expect, it} from "vitest";
 import {decodeFlowReport} from "$lib/api/nativeDecode";
 import type {AmountStyle} from "$lib/domain/types";
-import {CATEGORICAL, OTHER_COLOR, OTHER_LABEL} from "$lib/format/palette";
+import {DEFAULT_PALETTE, OTHER_LABEL, SLOT_COUNT} from "$lib/format/palette";
 import {FLOW_REPORT} from "$lib/testing/flowsFixture";
 import {flowPalette, OTHER_KEY, sankeyView} from "./sankeyModel";
 
@@ -23,7 +23,7 @@ const STYLES: ReadonlyMap<string, AmountStyle> = new Map<string, AmountStyle>([
 ]);
 
 const REPORT = decodeFlowReport(FLOW_REPORT);
-const PALETTE = flowPalette(REPORT);
+const PALETTE = flowPalette(REPORT, DEFAULT_PALETTE);
 
 const IN = sankeyView(REPORT.inflows, PALETTE, REPORT.base, STYLES);
 const OUT = sankeyView(REPORT.outflows, PALETTE, REPORT.base, STYLES);
@@ -36,8 +36,8 @@ describe("UNIT flowPalette", () => {
         const inbound = IN.nodes.find((node) => node.account === "assets:bank:checking");
         const outbound = OUT.nodes.find((node) => node.account === "assets:bank:checking");
 
-        expect(inbound?.color).toBe(CATEGORICAL[0]);
-        expect(outbound?.color).toBe(CATEGORICAL[0]);
+        expect(inbound?.color).toBe(DEFAULT_PALETTE.categorical[0]);
+        expect(outbound?.color).toBe(DEFAULT_PALETTE.categorical[0]);
     });
 
     it("ranks accounts by their COMBINED total, not by either graph's", () => {
@@ -52,17 +52,17 @@ describe("UNIT flowPalette", () => {
         const folded = ["a:liabilities:loan:auto", "a:assets:bank:joint", "a:assets:prepaid:transit"];
         for (const key of folded) {
             expect(PALETTE.folded(key)).toBe(true);
-            expect(PALETTE.color(key)).toBe(OTHER_COLOR);
+            expect(PALETTE.color(key)).toBe(DEFAULT_PALETTE.other);
         }
         // Everything with a slot keeps a distinct hue: no two accounts share one.
         const slotted = [...new Set(OUT.legend.filter((entry) => entry.key !== OTHER_KEY).map((entry) => entry.color))];
         expect(slotted.length).toBe(OUT.legend.length - 1);
-        expect(slotted.length).toBeLessThanOrEqual(CATEGORICAL.length);
+        expect(slotted.length).toBeLessThanOrEqual(SLOT_COUNT);
     });
 
     it("never gives a statement line a slot", () => {
         expect(PALETTE.folded("g:Housing")).toBe(false);
-        expect(PALETTE.rank("g:Housing")).toBe(CATEGORICAL.length);
+        expect(PALETTE.rank("g:Housing")).toBe(SLOT_COUNT);
     });
 });
 
@@ -71,7 +71,7 @@ describe("UNIT sankeyView", () => {
         const other = OUT.nodes.filter((node) => node.key === OTHER_KEY);
         expect(other.length).toBe(1);
         expect(other[0].label).toBe(OTHER_LABEL);
-        expect(other[0].color).toBe(OTHER_COLOR);
+        expect(other[0].color).toBe(DEFAULT_PALETTE.other);
         // $150 + $100 + $50, the three accounts past the last slot.
         expect(other[0].amount).toBe("$300.00");
 
@@ -104,8 +104,8 @@ describe("UNIT sankeyView", () => {
         const inbound = IN.links.find((link) => link.target === "a:assets:bank:checking");
         const outbound = OUT.links.find((link) => link.source === "a:assets:bank:checking");
 
-        expect(inbound?.color).toBe(CATEGORICAL[0]);
-        expect(outbound?.color).toBe(CATEGORICAL[0]);
+        expect(inbound?.color).toBe(DEFAULT_PALETTE.categorical[0]);
+        expect(outbound?.color).toBe(DEFAULT_PALETTE.categorical[0]);
     });
 
     it("titles a ribbon with both ends and the amount", () => {
@@ -144,5 +144,15 @@ describe("UNIT sankeyView", () => {
         // LayerChart's Sankey clones the graph it is handed, and a `Dec` carries
         // a bigint. Cloning here is the assertion.
         expect(() => structuredClone({nodes: OUT.nodes, links: OUT.links})).not.toThrow();
+    });
+});
+
+describe("UNIT flowPalette theme colours", () => {
+    it("paints from the palette it is handed, not a built-in one", () => {
+        const themed = {...DEFAULT_PALETTE, categorical: DEFAULT_PALETTE.categorical.map((_, i) => `#00000${i}`), other: "#abcdef"};
+        const view = sankeyView(REPORT.outflows, flowPalette(REPORT, themed), REPORT.base, STYLES);
+
+        expect(view.nodes.find((node) => node.account === "assets:bank:checking")?.color).toBe("#000000");
+        expect(view.nodes.find((node) => node.key === OTHER_KEY)?.color).toBe("#abcdef");
     });
 });

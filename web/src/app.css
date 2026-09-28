@@ -3,3 +3,36 @@
 @plugin "daisyui" {
     themes: dark --default;
 }
+
+/*
+ * Chart colour tokens, one block per daisyUI theme.
+ *
+ * Charts never use these as `var(...)` directly: `$lib/format/chartColors.svelte.ts`
+ * resolves them to concrete colours at runtime and re-resolves when
+ * `<html data-theme>` changes. `$lib/format/palette.ts` documents the rules and
+ * holds a copy of the dark values as the no-CSS fallback; a unit test fails if
+ * the two drift.
+ *
+ * TO ADD A THEME: add it to the daisyUI `themes` list above, then add a
+ * `[data-theme="<name>"]` block below defining ALL twelve tokens, validated
+ * against that theme's --color-base-100. Slot ORDER is the colour-blind-safety
+ * mechanism (adjacent slots must stay distinguishable), so validate in order.
+ *
+ * dark: validated on base-100 #1d232a — worst adjacent CVD ΔE 15.2,
+ * normal-vision ΔE 29.5, every slot ≥ 3:1 contrast.
+ */
+:root,
+[data-theme="dark"] {
+    --chart-1: #6c72fb; /* indigo  oklch(0.62 0.20 277) ≈ primary, lifted */
+    --chart-2: #e7ad01; /* amber   oklch(0.78 0.16 84)  ≈ warning */
+    --chart-3: #00b3f2; /* sky     oklch(0.72 0.15 233) ≈ info */
+    --chart-4: #f6722b; /* orange  oklch(0.70 0.18 45) */
+    --chart-5: #00c7b1; /* teal    oklch(0.74 0.13 181) ≈ accent */
+    --chart-6: #af6af2; /* violet  oklch(0.66 0.20 305) */
+    --chart-7: #8ac738; /* lime    oklch(0.76 0.18 130) */
+    --chart-8: #f74ca1; /* pink    oklch(0.68 0.22 354) ≈ secondary */
+    --chart-other: #81878d; /* neutral grey, folded tail */
+    --chart-in: #00d390; /* = success */
+    --chart-out: #e44062; /* rose, deeper than error for CVD separation (ΔE 13.3 vs in) */
+    --chart-net: #ecf9ff; /* = base-content */
+}

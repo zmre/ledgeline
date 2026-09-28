@@ -33,6 +33,7 @@
     import {Sankey} from "layerchart/graph";
     import AsyncSection from "$lib/components/AsyncSection.svelte";
     import type {AmountStyle} from "$lib/domain/types";
+    import {chartColors} from "$lib/format/chartColors.svelte";
     import type {FlowReport} from "$lib/reports/types";
     import {flowPalette, sankeyView, type FlowsPanel} from "./sankeyModel";
 
@@ -64,7 +65,8 @@
 
     // The palette is built from the WHOLE report, never from the one graph
     // below: that is what keeps an account the same colour in both diagrams.
-    const viewOf = (report: FlowReport) => sankeyView(inbound ? report.inflows : report.outflows, flowPalette(report), report.base, styles);
+    const viewOf = (report: FlowReport) =>
+        sankeyView(inbound ? report.inflows : report.outflows, flowPalette(report, chartColors.current), report.base, styles);
 
     // The header figure, and only when there IS one. `AsyncSection`'s own
     // condition, mirrored: a zero standing in for an unknown total would be a

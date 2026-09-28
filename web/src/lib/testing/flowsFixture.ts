@@ -12,7 +12,7 @@
 // `fixtures/sample.journal` does not contain them:
 //
 //   * A FOLDED TAIL. The golden's two graphs name exactly 8 distinct accounts
-//     between them, which is `CATEGORICAL.length`, so nothing in it folds. This
+//     between them, which is `SLOT_COUNT`, so nothing in it folds. This
 //     body names 11, three of them past the last slot, and all three feed the
 //     SAME statement line, so the three links have to re-aggregate into one.
 //   * AN INCOMPLETE GRAPH. `inflows.total` is $300.00 short of its
@@ -77,7 +77,7 @@ const OUTFLOWS = {
             total: usd("20000"),
         },
         {key: "g:Depreciation", label: "Depreciation", side: "target", account: null, total: usd("20000")},
-        // The tail: three accounts past `CATEGORICAL.length`, all paying Utilities.
+        // The tail: three accounts past `SLOT_COUNT`, all paying Utilities.
         {key: "a:liabilities:loan:auto", label: "Loan: Auto", side: "source", account: "liabilities:loan:auto", total: usd("15000")},
         {key: "a:assets:bank:joint", label: "Bank: Joint", side: "source", account: "assets:bank:joint", total: usd("10000")},
         {key: "a:assets:prepaid:transit", label: "Prepaid: Transit", side: "source", account: "assets:prepaid:transit", total: usd("5000")},

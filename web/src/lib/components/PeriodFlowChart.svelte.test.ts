@@ -21,7 +21,7 @@
 
 import {render} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import {CATEGORICAL, FLOW_IN, FLOW_NET, FLOW_OUT} from "$lib/format/palette";
+import {chartColors} from "$lib/format/chartColors.svelte";
 import PeriodFlowChart from "./PeriodFlowChart.svelte";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -101,8 +101,8 @@ describe("COMPONENT PeriodFlowChart", () => {
             const {container} = mount();
             const fills = barFills(container);
 
-            expect(fills.filter((f) => f === FLOW_IN)).toHaveLength(MONTHS.length);
-            expect(fills.filter((f) => f === FLOW_OUT)).toHaveLength(MONTHS.length);
+            expect(fills.filter((f) => f === chartColors.flowIn)).toHaveLength(MONTHS.length);
+            expect(fills.filter((f) => f === chartColors.flowOut)).toHaveLength(MONTHS.length);
         });
     });
 
@@ -127,7 +127,7 @@ describe("COMPONENT PeriodFlowChart", () => {
 
             expect(drawn).toHaveLength(2);
             expect(drawn[0].class).toContain("stroke-base-200");
-            expect(drawn[1].stroke).toBe(FLOW_NET);
+            expect(drawn[1].stroke).toBe(chartColors.flowNet);
             expect(drawn.every((s) => s.class.includes("[stroke-dasharray:5_3]"))).toBe(true);
         });
     });
@@ -137,8 +137,8 @@ describe("COMPONENT PeriodFlowChart", () => {
             const {container} = mount();
             const used = new Set(barFills(container));
 
-            expect([...used].sort()).toEqual([FLOW_OUT, FLOW_IN].sort());
-            expect(CATEGORICAL.some((slot) => used.has(slot))).toBe(false);
+            expect([...used].sort()).toEqual([chartColors.flowOut, chartColors.flowIn].sort());
+            expect(chartColors.categorical.some((slot) => used.has(slot))).toBe(false);
         });
 
         it("outlines no bar, because a border around a mark is ink that is not data", () => {

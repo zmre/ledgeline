@@ -23,7 +23,8 @@
     import type {AccountDecl} from "$lib/domain/accountTypes";
     import {formatAmount, toNumber, type Dec} from "$lib/domain/money";
     import type {Transaction} from "$lib/domain/types";
-    import {colorAt, OTHER_COLOR, OTHER_LABEL} from "$lib/format/palette";
+    import {chartColors} from "$lib/format/chartColors.svelte";
+    import {OTHER_LABEL} from "$lib/format/palette";
     import {signClass} from "$lib/format/sign";
     import {accountBalances, balanceCommodities, guessedLongTerm, summarize, visibleRows, type BalanceRow} from "$lib/reports/cashBalances";
     import {today} from "$lib/reports/periods";
@@ -103,12 +104,12 @@
             account: row.account,
             value: toNumber(row.qty),
             formatted: fmt(row.qty),
-            color: colorAt(i),
+            color: chartColors.colorAt(i),
         }));
         const tail = positive.slice(keep);
         if (tail.length === 0) return head;
         const total = tail.reduce((sum, row) => sum + toNumber(row.qty), 0);
-        return [...head, {account: OTHER_LABEL, value: total, formatted: `${tail.length} more`, color: OTHER_COLOR}];
+        return [...head, {account: OTHER_LABEL, value: total, formatted: `${tail.length} more`, color: chartColors.other}];
     });
     /** Slice colour by account, so a list row's dot matches its wedge. */
     const colorOf = $derived(new Map(slices.map((slice) => [slice.account, slice.color])));

@@ -1,7 +1,7 @@
 <!-- Chart widget (WP-05): LayerChart pie/line for the filtered period.
      - mode toggle (pie | line), interval select (line only), commodity select when >1 in use
      - one commodity at a time; never sums across commodities
-     - colors: the shared categorical palette ($lib/format/palette) + muted gray for
+     - colors: the theme's categorical chart tokens (`chartColors`) + muted gray for
        "(other)". That module documents the validator run and the slot order.
        Secondary encoding, required by the skill at this CVD separation, is the
        always-on legend, pad-angle gaps between pie slices, and full tooltips.
@@ -13,7 +13,7 @@
     import {labelFormatter, tickIndices} from "$lib/components/periodAxis";
     import type {RootCategory} from "$lib/domain/accounts";
     import type {Transaction} from "$lib/domain/types";
-    import {colorAt, OTHER_COLOR} from "$lib/format/palette";
+    import {chartColors} from "$lib/format/chartColors.svelte";
     import {
         categoriesInUse,
         commoditiesInUse,
@@ -118,10 +118,10 @@
     // PALETTE.length]`, which handed a 7th account slot 1's blue and made it
     // indistinguishable from the 1st.
     const colorOf: Record<string, string> = $derived.by(() => {
-        const colors: Record<string, string> = {[OTHER]: OTHER_COLOR};
+        const colors: Record<string, string> = {[OTHER]: chartColors.other};
         let slot = 0;
         for (const account of groupOrder(ranked, MAX_GROUPS)) {
-            colors[account] ??= colorAt(slot++);
+            colors[account] ??= chartColors.colorAt(slot++);
         }
         return colors;
     });
@@ -145,7 +145,7 @@
         line.map((s) => ({
             key: s.account,
             label: s.account,
-            color: colorOf[s.account] ?? OTHER_COLOR,
+            color: colorOf[s.account] ?? chartColors.other,
             value: (d: Row) => d.values[s.account] ?? 0,
         }))
     );
@@ -220,7 +220,7 @@
                     key="account"
                     label="account"
                     value={(d) => d.value}
-                    cRange={pieSlices.map((d) => colorOf[d.account] ?? OTHER_COLOR)}
+                    cRange={pieSlices.map((d) => colorOf[d.account] ?? chartColors.other)}
                     padAngle={0.02}
                     legend={{placement: "right", orientation: "vertical", classes: {root: "hidden sm:block"}}}
                 >
@@ -229,7 +229,7 @@
                             {#snippet children({data})}
                                 {@const d = data as PieDatum}
                                 <div class="flex items-center gap-2 text-xs">
-                                    <span class="inline-block h-2 w-2 rounded-full" style="background:{colorOf[d.account] ?? OTHER_COLOR}"></span>
+                                    <span class="inline-block h-2 w-2 rounded-full" style="background:{colorOf[d.account] ?? chartColors.other}"></span>
                                     <span class="text-base-content/70">{d.account}</span>
                                     <span class="font-semibold">{d.formatted}</span>
                                 </div>
@@ -242,7 +242,7 @@
             <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70 sm:hidden">
                 {#each pieSlices as d (d.account)}
                     <li class="flex items-center gap-1">
-                        <span class="inline-block h-2 w-2 rounded-full" style="background:{colorOf[d.account] ?? OTHER_COLOR}"></span>
+                        <span class="inline-block h-2 w-2 rounded-full" style="background:{colorOf[d.account] ?? chartColors.other}"></span>
                         {d.account}
                     </li>
                 {/each}

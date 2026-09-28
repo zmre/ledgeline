@@ -1,9 +1,9 @@
 <!-- Holdings pie (WP-10): slice per symbol by toNumber(marketValue), unpriced
      holdings excluded (the inline warning covers them), tail folded into one
      "(other)" bucket.
-     - colors: the shared categorical palette ($lib/format/palette) — all 8
-       slots in fixed order, plus muted gray for the folded tail. The palette
-       module documents the validator run and why the slot ORDER changed.
+     - colors: the theme's categorical chart tokens via `chartColors` — all 8
+       slots in fixed order, plus muted gray for the folded tail.
+       $lib/format/palette documents the validator run and why ORDER matters.
        Secondary encoding, which the skill requires at this CVD separation, is
        the always-visible legend (symbol + % share, identity never color-alone),
        the pad-angle gaps between slices, and the tooltips.
@@ -12,14 +12,15 @@
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
     import type {Dec} from "$lib/domain/money";
-    import {CATEGORICAL, colorAt, OTHER_COLOR} from "$lib/format/palette";
+    import {chartColors} from "$lib/format/chartColors.svelte";
+    import {SLOT_COUNT} from "$lib/format/palette";
     import type {Holding} from "$lib/holdings/types";
     import {pieSlices, PIE_OTHER, type PieSlice} from "./view";
 
     let {holdings, format}: {holdings: Holding[]; format: (v: Dec) => string} = $props();
 
-    const slices = $derived(pieSlices(holdings, format, CATEGORICAL.length));
-    const colorOf = (slice: PieSlice, i: number): string => (slice.symbol === PIE_OTHER ? OTHER_COLOR : colorAt(i));
+    const slices = $derived(pieSlices(holdings, format, SLOT_COUNT));
+    const colorOf = (slice: PieSlice, i: number): string => (slice.symbol === PIE_OTHER ? chartColors.other : chartColors.colorAt(i));
 </script>
 
 {#if slices.length === 0}
