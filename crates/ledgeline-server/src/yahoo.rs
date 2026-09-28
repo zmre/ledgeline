@@ -19,7 +19,28 @@ use ledgeline_core::reports::periods::iso_from_days;
 use ledgeline_core::{Dec, DecError};
 use reqwest::Url;
 use serde::Deserialize;
+use std::time::Duration;
 use thiserror::Error;
+
+/// The User-Agent every Yahoo request identifies itself with, unless it needs
+/// to look like a browser (`yahoo_profile`'s crumb handshake). Yahoo's chart
+/// endpoint 999s a client with no User-Agent at all.
+pub(crate) const USER_AGENT: &str = "ledgeline/0.1 (+https://github.com/zmre/ledgeline)";
+
+/// Every Yahoo request's default ceiling. reqwest's own default never times
+/// out, and a hung connection must cost a failed fetch, not a request held
+/// open indefinitely. A request may set a tighter one (`yahoo_profile` does).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The one HTTP client every Yahoo feed shares, so they pool connections (a
+/// fresh client per feed, or per request, re-negotiates TLS each time).
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .unwrap_or_default()
+}
 
 /// One fetched close: a calendar date and a per-unit quantity, still unstyled —
 /// the caller renders it in the journal's own `AmountStyle`
@@ -101,7 +122,7 @@ const CHART_BASE: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
 /// that becomes a real call pattern.
 const RANGE: &str = "1mo";
 
-pub(crate) fn chart_url(ticker: &str) -> Result<Url, YahooError> {
+fn chart_url(ticker: &str) -> Result<Url, YahooError> {
     let mut url = Url::parse(CHART_BASE).map_err(|error| YahooError::Shape(error.to_string()))?;
     url.path_segments_mut()
         .map_err(|()| YahooError::Shape("the chart endpoint URL cannot take a path".to_string()))?
@@ -119,67 +140,128 @@ async fn fetch_latest_close(
     ticker: &str,
     as_of: &str,
 ) -> Result<Option<FetchedPrice>, YahooError> {
-    let url = chart_url(ticker)?;
+    let bytes = send_chart(client, ticker, &[("interval", "1d"), ("range", RANGE)]).await?;
+    parse_chart_response(bytes.as_ref(), as_of)
+}
+
+/// GET the chart endpoint for `ticker` with `query`, returning the body of a
+/// SUCCESSFUL reply ([`check_chart_status`]).
+pub(crate) async fn send_chart(
+    client: &reqwest::Client,
+    ticker: &str,
+    query: &[(&str, &str)],
+) -> Result<impl AsRef<[u8]> + use<>, YahooError> {
     let response = client
-        .get(url)
-        .query(&[("interval", "1d"), ("range", RANGE)])
-        // Yahoo's chart endpoint 999s a client with no User-Agent at all.
-        .header(
-            reqwest::header::USER_AGENT,
-            "ledgeline/0.1 (+https://github.com/zmre/ledgeline)",
-        )
+        .get(chart_url(ticker)?)
+        .query(query)
         .send()
         .await
-        .map_err(|error| YahooError::Http(error.to_string()))?
-        .error_for_status()
         .map_err(|error| YahooError::Http(error.to_string()))?;
+    let status = response.status();
     let bytes = response
         .bytes()
         .await
         .map_err(|error| YahooError::Http(error.to_string()))?;
-    parse_chart_response(&bytes, as_of)
+    check_chart_status(status, &bytes)?;
+    Ok(bytes)
+}
+
+/// A non-success status is an error whatever the body says. A `400` with a
+/// well-formed `{"chart":{"result":null,"error":…}}` body is Yahoo REFUSING the
+/// request, not answering "no data" — reading it as an empty success would let
+/// a caller record coverage it never received. Yahoo's own description, when
+/// the body carries one, is kept for the message.
+pub(crate) fn check_chart_status(
+    status: reqwest::StatusCode,
+    bytes: &[u8],
+) -> Result<(), YahooError> {
+    if status.is_success() {
+        return Ok(());
+    }
+    let detail = serde_json::from_slice::<ChartResponse>(bytes)
+        .ok()
+        .and_then(|parsed| parsed.chart.error)
+        .and_then(ChartError::describe)
+        .map(|description| format!(": {description}"))
+        .unwrap_or_default();
+    Err(YahooError::Http(format!(
+        "Yahoo Finance answered {status}{detail}"
+    )))
+}
+
+/// The chart endpoint's reply — one shape for both the latest close (`quote`)
+/// and the adjusted history (`adjclose`).
+#[derive(Debug, Deserialize)]
+pub(crate) struct ChartResponse {
+    pub(crate) chart: Chart,
 }
 
 #[derive(Debug, Deserialize)]
-struct ChartResponse {
-    chart: Chart,
+pub(crate) struct Chart {
+    #[serde(default)]
+    pub(crate) result: Option<Vec<ChartResult>>,
+    #[serde(default)]
+    pub(crate) error: Option<ChartError>,
+}
+
+/// Yahoo's `chart.error` object: `{"code":"Not Found","description":"…"}`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ChartError {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+impl ChartError {
+    /// The most specific text the error carries, if any.
+    pub(crate) fn describe(self) -> Option<String> {
+        self.description
+            .or(self.code)
+            .filter(|text| !text.trim().is_empty())
+    }
 }
 
 #[derive(Debug, Deserialize)]
-struct Chart {
+pub(crate) struct ChartResult {
     #[serde(default)]
-    result: Option<Vec<ChartResult>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChartResult {
+    pub(crate) meta: ChartMeta,
     #[serde(default)]
-    meta: ChartMeta,
-    #[serde(default)]
-    timestamp: Vec<i64>,
-    indicators: Indicators,
+    pub(crate) timestamp: Vec<i64>,
+    pub(crate) indicators: Indicators,
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct ChartMeta {
+pub(crate) struct ChartMeta {
     /// Seconds east of UTC for the exchange this symbol trades on. Shifting a
     /// candle's timestamp by this before taking its calendar date is what keeps
     /// a 4pm-close US stock from landing on tomorrow's date for a journal
     /// that's read in a timezone west of Greenwich (or the reverse, east of it).
     #[serde(default)]
-    gmtoffset: Option<i64>,
+    pub(crate) gmtoffset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Indicators {
+pub(crate) struct Indicators {
+    /// The raw closes (`fetch_latest_close`).
     #[serde(default)]
-    quote: Vec<Quote>,
+    pub(crate) quote: Vec<Quote>,
+    /// The dividend-adjusted closes (`yahoo_history`), present only when asked
+    /// for with `includeAdjustedClose`.
+    #[serde(default)]
+    pub(crate) adjclose: Vec<AdjClose>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Quote {
+pub(crate) struct Quote {
     #[serde(default)]
     close: Vec<Option<f64>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AdjClose {
+    #[serde(default)]
+    pub(crate) adjclose: Vec<Option<f64>>,
 }
 
 /// The pure half of a fetch: given a chart response body, the latest close
@@ -343,6 +425,22 @@ mod tests {
         )
         .unwrap();
         assert!(parsed.is_none());
+    }
+
+    /// A refused request is an error even when its body is a well-formed chart
+    /// reply, and Yahoo's own description is kept for the message.
+    #[test]
+    fn a_non_success_status_is_an_error_whatever_the_body() {
+        let refused = br#"{"chart":{"result":null,"error":{"code":"Not Found","description":"No data found"}}}"#;
+        match check_chart_status(reqwest::StatusCode::NOT_FOUND, refused) {
+            Err(YahooError::Http(message)) => {
+                assert!(message.contains("404"), "{message}");
+                assert!(message.contains("No data found"), "{message}");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+        assert!(check_chart_status(reqwest::StatusCode::BAD_GATEWAY, b"<html>").is_err());
+        assert!(check_chart_status(reqwest::StatusCode::OK, b"{}").is_ok());
     }
 
     /// Garbage in the body is a `Shape` error, not a panic or a silent `None`.

@@ -339,26 +339,29 @@ pub struct AppState {
     benchmark_cache: Arc<tokio::sync::Mutex<benchmarks_api::SessionCache>>,
 }
 
-/// The default [`yahoo::PriceFeed`]: the real Yahoo Finance chart endpoint,
-/// over one shared `reqwest::Client` (connection pooling — a fresh client per
-/// request would re-negotiate TLS on every symbol).
-fn default_price_source() -> Arc<dyn yahoo::PriceFeed> {
-    Arc::new(yahoo::YahooClient::new(reqwest::Client::new()))
+/// The real Yahoo feeds, over ONE `reqwest::Client` ([`yahoo::http_client`])
+/// so they share its connection pool: the chart endpoint answers both the
+/// latest close ([`yahoo::PriceFeed`]) and dividend-adjusted history
+/// ([`yahoo_history::HistoryFeed`]), and `quoteSummary` classifies holdings.
+struct YahooFeeds {
+    prices: Arc<dyn yahoo::PriceFeed>,
+    profiles: Arc<profiles_api::Profiles>,
+    history: Arc<dyn yahoo_history::HistoryFeed>,
 }
 
-/// The default classification source: Yahoo's `quoteSummary`, with an empty
-/// cache that loads from `commodity-profiles.json` on first use.
-fn default_profiles() -> Arc<profiles_api::Profiles> {
-    let transport = Arc::new(yahoo_profile::ReqwestTransport::new(reqwest::Client::new()));
-    Arc::new(profiles_api::Profiles::new(Arc::new(
-        yahoo_profile::YahooProfileClient::new(transport),
-    )))
-}
-
-/// The default [`yahoo_history::HistoryFeed`]: the same Yahoo Finance chart
-/// endpoint, asked for dividend-adjusted daily history.
-fn default_history_source() -> Arc<dyn yahoo_history::HistoryFeed> {
-    Arc::new(yahoo::YahooClient::new(reqwest::Client::new()))
+impl YahooFeeds {
+    fn new() -> Self {
+        let client = yahoo::http_client();
+        let chart = Arc::new(yahoo::YahooClient::new(client.clone()));
+        let transport = Arc::new(yahoo_profile::ReqwestTransport::new(client));
+        Self {
+            prices: chart.clone(),
+            profiles: Arc::new(profiles_api::Profiles::new(Arc::new(
+                yahoo_profile::YahooProfileClient::new(transport),
+            ))),
+            history: chart,
+        }
+    }
 }
 
 impl AppState {
@@ -377,6 +380,7 @@ impl AppState {
     /// [`replace_journal`]: Self::replace_journal
     #[must_use]
     pub fn from_journal(journal: &Journal) -> Self {
+        let yahoo = YahooFeeds::new();
         Self {
             inner: Arc::new(ArcSwap::from_pointee(Snapshot::from_journal(Arc::new(
                 journal.clone(),
@@ -386,9 +390,9 @@ impl AppState {
             stages: Arc::new(stage::StageArea::default()),
             qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
-            price_source: default_price_source(),
-            profiles: default_profiles(),
-            history_source: default_history_source(),
+            price_source: yahoo.prices,
+            profiles: yahoo.profiles,
+            history_source: yahoo.history,
             benchmark_cache: Arc::default(),
         }
     }
@@ -404,6 +408,7 @@ impl AppState {
     pub fn from_journal_path(path: impl AsRef<Path>) -> Result<Self, EditError> {
         let editor = JournalEditor::open(path.as_ref())?;
         let snapshot = Snapshot::from_journal(Arc::clone(editor.journal()));
+        let yahoo = YahooFeeds::new();
         Ok(Self {
             inner: Arc::new(ArcSwap::from_pointee(snapshot)),
             editor: Arc::new(Mutex::new(Some(editor))),
@@ -411,9 +416,9 @@ impl AppState {
             stages: Arc::new(stage::StageArea::default()),
             qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
-            price_source: default_price_source(),
-            profiles: default_profiles(),
-            history_source: default_history_source(),
+            price_source: yahoo.prices,
+            profiles: yahoo.profiles,
+            history_source: yahoo.history,
             benchmark_cache: Arc::default(),
         })
     }
