@@ -770,8 +770,15 @@ export interface HoldingsQuery {
     gainSince?: string;
 }
 export interface HoldingsSeriesQuery extends HoldingsQuery {
+    /** `daily|weekly|monthly|quarterly|yearly`, or `auto` alongside `since`. */
     interval?: string;
     count?: number;
+    /**
+     * Start the series here instead of `count` buckets back: `YYYY-MM-DD`, or
+     * `inception` for the scope's first holding activity on that tab. Exclusive
+     * with `count`.
+     */
+    since?: string;
 }
 /**
  * The Other-holdings query (plans/14): the stock query's params, verbatim, plus
@@ -789,6 +796,11 @@ export interface OtherHoldingsQuery extends HoldingsQuery {
 }
 export interface OtherHoldingsSeriesQuery extends HoldingsSeriesQuery {
     valueIn?: string;
+}
+/** The benchmark overlay: the stock series' window params, plus which benchmarks. */
+export interface HoldingsBenchmarksQuery extends HoldingsSeriesQuery {
+    /** Comma-separated catalog symbols, e.g. `SPY,QQQ`. */
+    symbols: string;
 }
 
 /** Cancellation + deadline for one client's requests; see `REQUEST_TIMEOUT_MS`. */
@@ -1009,7 +1021,18 @@ export class LedgelineApi {
 
     holdingsSeries(query: HoldingsSeriesQuery = {}): Promise<unknown> {
         return this.getJson(
-            `/api/holdings/series${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count})}`
+            `/api/holdings/series${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, since: query.since})}`
+        );
+    }
+
+    /**
+     * What the portfolio would be worth had its flows gone into each benchmark
+     * instead (decode with `decodeBenchmarks`). May reach Yahoo Finance on the
+     * server, so it is fetched only after the base chart has drawn.
+     */
+    holdingsBenchmarks(query: HoldingsBenchmarksQuery): Promise<unknown> {
+        return this.getJson(
+            `/api/holdings/benchmarks${queryString({symbols: query.symbols, asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, since: query.since})}`
         );
     }
 
@@ -1032,7 +1055,7 @@ export class LedgelineApi {
      */
     otherHoldingsSeries(query: OtherHoldingsSeriesQuery = {}): Promise<unknown> {
         return this.getJson(
-            `/api/holdings/other/series${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, valueIn: query.valueIn})}`
+            `/api/holdings/other/series${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, since: query.since, valueIn: query.valueIn})}`
         );
     }
 

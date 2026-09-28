@@ -17,7 +17,11 @@
        more always get one: identity is never colour-alone.
      - COLOURS ARE `chartColors.colorAt(i)`, THE THEME'S `--chart-N` TOKENS
        ($lib/format/palette documents the validator run). Slots are taken in series order and
-       never cycled.
+       never cycled — unless a series names its own `slot`, which is how an
+       optional line (a benchmark the reader can tick on and off) keeps ONE
+       colour whatever else is shown: colour follows the entity, not its row.
+     - `null` IS A GAP. The line breaks there and no marker is drawn, and the
+       tooltip reads "—". A missing value is never drawn as zero.
 
      - THE ZERO RULE AND THE MARKER ARE OPT-IN, AND SOLID. `includeZero` seeds
        the y-domain at zero so the baseline is always in frame (the rule
@@ -33,21 +37,14 @@
      always visible, at every width, and it survives a container that has not
      been measured yet. -->
 <script lang="ts" module>
-    /** One line. `values` is index-aligned to the chart's `labels`. */
-    export interface PeriodSeries {
-        /** Legend and tooltip name. */
-        name: string;
-        /**
-         * One number per bucket, zero-filled rather than sparse — a gap and a
-         * zero are different claims and only the caller knows which it has.
-         */
-        values: readonly number[];
-        /** Draw dashed: for a projection, a target, or any derived line beside actuals. */
-        dashed?: boolean;
-    }
+    // Declared in a plain .ts file so .ts modules can import it too (tsc cannot
+    // see a type exported from a .svelte module); re-exported here for callers.
+    import type {PeriodSeries as Series} from "./periodSeries";
+    export type PeriodSeries = Series;
 </script>
 
 <script lang="ts">
+    import type {Snippet} from "svelte";
     import {LineChart, Rule} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
     import {labelFormatter, tickIndices} from "./periodAxis";
@@ -64,6 +61,7 @@
         empty = "Nothing to chart in this range.",
         height = "h-56 sm:h-64",
         testid,
+        actions,
     }: {
         /** Names what is plotted. A single series relies on this instead of a legend. */
         heading: string;
@@ -85,20 +83,25 @@
         /** Height utilities for the plot box. */
         height?: string;
         testid?: string;
+        /** Controls that change what the chart shows (toggles, pickers), set in the heading row. */
+        actions?: Snippet;
     } = $props();
 
     const axisFormat = $derived(formatAxis ?? formatValue);
 
-    /** One row per bucket; `v[k]` is series `k`'s value there. */
+    /** One row per bucket; `v[k]` is series `k`'s value there, `null` for a gap. */
     interface Row {
         i: number;
-        v: number[];
+        v: (number | null)[];
     }
-    const rows = $derived<Row[]>(labels.map((_, i) => ({i, v: series.map((s) => s.values[i] ?? 0)})));
+    const rows = $derived<Row[]>(labels.map((_, i) => ({i, v: series.map((s) => (i < s.values.length ? (s.values[i] ?? null) : 0))})));
 
-    // A plot of nothing but zeroes is a flat line on the axis that says less
-    // than a sentence does, and an empty bucket list draws nothing at all.
-    const nothingToDraw = $derived(rows.length === 0 || rows.every((r) => r.v.every((n) => n === 0)));
+    // A plot of nothing but zeroes (and gaps) is a flat line on the axis that
+    // says less than a sentence does, and an empty bucket list draws nothing.
+    const nothingToDraw = $derived(rows.length === 0 || rows.every((r) => r.v.every((n) => n === null || n === 0)));
+
+    /** The tooltip's formatter: a gap reads as an em-dash, never as "$0.00" or "NaN". */
+    const tooltipFormat = $derived((n: number | null | undefined): string => (typeof n === "number" && Number.isFinite(n) ? formatValue(n) : "—"));
 
     const xTicks = $derived(tickIndices(rows.length));
     const labelOf = $derived(labelFormatter(labels));
@@ -114,6 +117,7 @@
         let hi = 0;
         for (const r of rows) {
             for (const n of r.v) {
+                if (n === null) continue;
                 lo = Math.min(lo, n);
                 hi = Math.max(hi, n);
             }
@@ -135,18 +139,23 @@
             // would silently collapse them into one line.
             key: String(k),
             label: s.name,
-            color: chartColors.colorAt(k),
-            value: (d: Row) => d.v[k] ?? 0,
+            color: chartColors.colorAt(s.slot ?? k),
+            // `null` (not 0) where the series has a gap: layerchart's default
+            // `defined` breaks the line there and its points skip the marker.
+            value: (d: Row) => d.v[k] ?? null,
             ...(s.dashed === true ? {props: {class: DASHED_CLASS}} : {}),
         }))
     );
 </script>
 
 <div class="w-full">
-    <h3 class="mb-1 text-xs font-semibold tracking-tight text-base-content/70">
-        {heading}
-        {#if note !== undefined}<span class="font-normal text-base-content/40">· {note}</span>{/if}
-    </h3>
+    <div class="mb-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h3 class="text-xs font-semibold tracking-tight text-base-content/70">
+            {heading}
+            {#if note !== undefined}<span class="font-normal text-base-content/40">· {note}</span>{/if}
+        </h3>
+        {#if actions !== undefined}{@render actions()}{/if}
+    </div>
     {#if nothingToDraw}
         <p class="py-8 text-center text-sm text-base-content/60">{empty}</p>
     {:else}
@@ -164,7 +173,7 @@
                     xAxis: {format: labelOf, ticks: xTicks},
                     yAxis: {format: axisFormat},
                     spline: {class: LINE_CLASS},
-                    tooltip: {header: {format: labelOf}, item: {format: formatValue}},
+                    tooltip: {header: {format: labelOf}, item: {format: tooltipFormat}},
                 }}
             >
                 {#snippet belowMarks()}
@@ -191,7 +200,7 @@
                     <li class="flex items-center gap-1">
                         <span
                             class="inline-block w-4 shrink-0 border-t-2 {s.dashed === true ? 'border-dashed' : ''}"
-                            style="border-color:{chartColors.colorAt(k)}"
+                            style="border-color:{chartColors.colorAt(s.slot ?? k)}"
                         ></span>
                         {s.name}
                     </li>

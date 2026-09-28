@@ -66,7 +66,7 @@ pub trait PriceFeed: Send + Sync {
 
 /// The real Yahoo Finance chart endpoint.
 pub(crate) struct YahooClient {
-    client: reqwest::Client,
+    pub(crate) client: reqwest::Client,
 }
 
 impl YahooClient {
@@ -101,7 +101,7 @@ const CHART_BASE: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
 /// that becomes a real call pattern.
 const RANGE: &str = "1mo";
 
-fn chart_url(ticker: &str) -> Result<Url, YahooError> {
+pub(crate) fn chart_url(ticker: &str) -> Result<Url, YahooError> {
     let mut url = Url::parse(CHART_BASE).map_err(|error| YahooError::Shape(error.to_string()))?;
     url.path_segments_mut()
         .map_err(|()| YahooError::Shape("the chart endpoint URL cannot take a path".to_string()))?
@@ -224,7 +224,7 @@ pub(crate) fn parse_chart_response(
 /// date — reusing the same civil-calendar math [`crate::reports_api::today_utc`]
 /// is built on ([`iso_from_days`]), so a "today" computed there and a candle
 /// date computed here can never disagree about what day it is.
-fn date_from_timestamp(timestamp: i64, gmtoffset: i64) -> String {
+pub(crate) fn date_from_timestamp(timestamp: i64, gmtoffset: i64) -> String {
     let days = (timestamp + gmtoffset).div_euclid(86_400);
     iso_from_days(days)
 }

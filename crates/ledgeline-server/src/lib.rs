@@ -38,6 +38,7 @@
 
 mod account_api;
 mod alias_api;
+mod benchmarks_api;
 mod budget_api;
 mod commodity_profile;
 mod edit_api;
@@ -56,6 +57,7 @@ mod security;
 mod spa;
 mod stage;
 mod yahoo;
+mod yahoo_history;
 mod yahoo_profile;
 
 use arc_swap::ArcSwap;
@@ -104,6 +106,9 @@ pub use yahoo::{FetchedPrice, PriceFeed, YahooError};
 // `ProfileFeed` handed to `AppState::with_profile_source` is how
 // `/api/holdings/profiles` is tested with no network.
 pub use yahoo_profile::{AssetMix, ProfileError, ProfileFeed, YahooProfile};
+// `HistoryFeed` likewise, for `AppState::with_history_source`: the benchmark
+// overlay's integration tests hand it a fake instead of Yahoo Finance.
+pub use yahoo_history::HistoryFeed;
 
 /// An immutable, atomically-publishable view of one parsed journal: the parsed
 /// [`Journal`] for the per-request report handlers, plus every wire endpoint's
@@ -321,6 +326,16 @@ pub struct AppState {
     /// for a fake through [`AppState::with_profile_source`], like
     /// `price_source`.
     profiles: Arc<profiles_api::Profiles>,
+    /// Where `benchmarks_api` fetches benchmark price HISTORY from — the
+    /// second (and last) outbound-network field, swappable for the same reason
+    /// as [`Self::price_source`] via [`AppState::with_history_source`].
+    history_source: Arc<dyn yahoo_history::HistoryFeed>,
+    /// Serializes read-merge-write cycles on the benchmark price cache beside
+    /// the journal. Its own lock, not [`Self::import_writes`]: the cache is not
+    /// the journal, and a slow Yahoo response for a chart overlay must never
+    /// hold up an import or a price update. A `tokio` mutex for the usual
+    /// reason — the guard spans a blocking-pool `.await`.
+    benchmark_writes: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// The default [`yahoo::PriceFeed`]: the real Yahoo Finance chart endpoint,
@@ -337,6 +352,12 @@ fn default_profiles() -> Arc<profiles_api::Profiles> {
     Arc::new(profiles_api::Profiles::new(Arc::new(
         yahoo_profile::YahooProfileClient::new(transport),
     )))
+}
+
+/// The default [`yahoo_history::HistoryFeed`]: the same Yahoo Finance chart
+/// endpoint, asked for dividend-adjusted daily history.
+fn default_history_source() -> Arc<dyn yahoo_history::HistoryFeed> {
+    Arc::new(yahoo::YahooClient::new(reqwest::Client::new()))
 }
 
 impl AppState {
@@ -366,6 +387,8 @@ impl AppState {
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: default_price_source(),
             profiles: default_profiles(),
+            history_source: default_history_source(),
+            benchmark_writes: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -389,6 +412,8 @@ impl AppState {
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: default_price_source(),
             profiles: default_profiles(),
+            history_source: default_history_source(),
+            benchmark_writes: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -550,6 +575,26 @@ impl AppState {
     #[must_use]
     pub fn with_profile_source(mut self, source: Arc<dyn yahoo_profile::ProfileFeed>) -> Self {
         self.profiles = Arc::new(profiles_api::Profiles::new(source));
+        self
+    }
+
+    /// This state's benchmark history source. `pub(crate)` — only
+    /// `benchmarks_api` reads it.
+    pub(crate) fn history_source(&self) -> &Arc<dyn yahoo_history::HistoryFeed> {
+        &self.history_source
+    }
+
+    /// The benchmark cache's write mutex, shared by all clones.
+    pub(crate) fn benchmark_writes(&self) -> &tokio::sync::Mutex<()> {
+        &self.benchmark_writes
+    }
+
+    /// Substitute a different benchmark history source, replacing the real
+    /// Yahoo client. `pub` for [`Self::with_price_source`]'s reason: only the
+    /// integration tests, an external crate, call it.
+    #[must_use]
+    pub fn with_history_source(mut self, source: Arc<dyn yahoo_history::HistoryFeed>) -> Self {
+        self.history_source = source;
         self
     }
 }
@@ -731,6 +776,10 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             "/api/holdings/other/series",
             get(reports_api::other_holdings_series_report),
         )
+        // Benchmark overlay for the Stocks value-over-time chart. A GET, but it
+        // may fetch from Yahoo Finance and write the benchmark cache beside the
+        // journal, so it belongs above the token guard with everything else.
+        .route("/api/holdings/benchmarks", get(benchmarks_api::benchmarks))
         // Write path (Phase 5.2+): add / delete / replace (PUT) / partial-edit
         // (PATCH) a transaction through the editor.
         .route("/api/transactions", post(edit_api::add_transaction))

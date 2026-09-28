@@ -137,6 +137,25 @@ test("holdings: value-over-time trend renders and time-travel shrinks the window
     await expect(page.getByTestId("holdings-empty")).toBeVisible();
 });
 
+test("holdings: the period drives the chart's window and survives the URL", async ({page}) => {
+    await page.goto("/holdings");
+    const heading = page.locator("h3", {hasText: "Value over time"});
+    await expect(heading).toContainText("last 12 months");
+
+    await page.getByLabel("Gain period").selectOption("1wk");
+    await expect(heading).toContainText("last 7 days");
+    await expect(page.getByRole("columnheader", {name: /^Gain \(1wk\)/})).toBeVisible();
+    await expect(page).toHaveURL(/gain=1wk/);
+
+    await page.getByLabel("Gain period").selectOption("all");
+    await expect(heading).toContainText("all time");
+    await expect(page.getByTestId("holdings-trend")).toBeVisible();
+
+    // The benchmark picker is offered, and nothing is compared until asked.
+    await expect(page.getByTestId("benchmark-picker")).toBeVisible();
+    await expect(page.getByTestId("holdings-trend-legend")).toHaveCount(0);
+});
+
 /**
  * The "Update prices" button, rendered — and deliberately NOT pressed.
  *
