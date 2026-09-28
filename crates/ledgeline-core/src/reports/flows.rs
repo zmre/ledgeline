@@ -87,7 +87,7 @@ use super::income_statement::{
 use super::mixed_amount::MixedAmount;
 use super::prices::{PriceDb, ValuationMeta, value_at};
 use super::types::ReportMeta;
-use crate::decimal::{Dec, Remainder, allocate};
+use crate::decimal::{Dec, allocate};
 use crate::model::{Commodity, PriceDirective, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -297,11 +297,7 @@ impl Edges {
                 value
             };
             let weights: Vec<Dec> = counterparties.iter().map(|&(_, w)| w).collect();
-            for (&(other, _), share) in
-                counterparties
-                    .iter()
-                    .zip(allocate(displayed, &weights, Remainder::Last)?)
-            {
+            for (&(other, _), share) in counterparties.iter().zip(allocate(displayed, &weights)?) {
                 let slot = self
                     .totals
                     .entry((account.to_string(), other.to_string()))
