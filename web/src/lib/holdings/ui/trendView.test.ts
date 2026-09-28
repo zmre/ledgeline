@@ -48,13 +48,13 @@ describe("UNIT holdings trendView", () => {
 
         it("draws each ticked line dashed, in its catalog slot, keeping null gaps", () => {
             expect(benchmarkOverlays(trend, ["SPY", "GLD"], lookup)).toEqual([
-                {name: "S&P 500 (SPY)", values: [100, 110], dashed: true, slot: 1},
-                {name: "Gold (GLD)", values: [null, 90], dashed: true, slot: 8},
+                {name: "S&P 500 (SPY)", values: [100, 110], dashed: true, slot: 0},
+                {name: "Gold (GLD)", values: [null, 90], dashed: true, slot: 7},
             ]);
         });
 
         it("keeps a benchmark's slot whatever else is ticked", () => {
-            expect(benchmarkOverlays(trend, ["GLD"], lookup).map((s) => s.slot)).toEqual([8]);
+            expect(benchmarkOverlays(trend, ["GLD"], lookup).map((s) => s.slot)).toEqual([7]);
         });
 
         it("drops a line computed for other dates rather than stretching it onto this chart", () => {

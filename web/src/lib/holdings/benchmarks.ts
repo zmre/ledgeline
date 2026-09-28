@@ -4,8 +4,10 @@
 // The catalog mirrors `BENCHMARKS` in crates/ledgeline-server/src/benchmarks_api.rs
 // symbol for symbol (the server refuses anything else). It lives here too
 // because its ORDER is the colour contract: benchmark k always draws in palette
-// slot k + 1 (slot 0 is the portfolio), so ticking or unticking one box never
-// repaints another line.
+// slot k, so ticking or unticking one box never repaints another line. The
+// portfolio they are compared with takes no slot at all — it is drawn in the
+// foreground ink (`HoldingsTrend`) — which is what lets all eight catalog
+// entries have a categorical hue of their own.
 
 import type {ISODate} from "../domain/types";
 
@@ -33,11 +35,12 @@ export function isBenchmarkSymbol(value: unknown): value is string {
 }
 
 /**
- * The palette slot a benchmark's line is drawn in: fixed by catalog position,
- * after the portfolio's slot 0, so it never depends on which others are shown.
+ * The palette slot a benchmark's line is drawn in: its catalog position, so it
+ * never depends on which others are shown. Only ever called with a catalog
+ * symbol (`isBenchmarkSymbol` gates what reaches the picker).
  */
 export function benchmarkSlot(symbol: string): number {
-    return BENCHMARKS.findIndex((b) => b.symbol === symbol) + 1;
+    return BENCHMARKS.findIndex((b) => b.symbol === symbol);
 }
 
 /** One simulated line, index-aligned to the value-over-time series it was computed for. */

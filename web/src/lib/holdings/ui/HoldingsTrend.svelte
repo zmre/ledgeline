@@ -9,7 +9,9 @@
      legend box, colours from the shared palette. Everything below the props is
      that component's.
 
-     `overlays` are extra lines drawn over the portfolio's (the Stocks tab's
+     The portfolio is drawn in the foreground ink, solid and a little heavier:
+     it is the subject, and the palette's eight slots belong to the eight
+     benchmarks. `overlays` are extra lines drawn over it (the Stocks tab's
      benchmarks): each carries its own palette slot and dash, and from the first
      one on the legend appears, because two lines are never told apart by
      colour alone. `controls` renders in the chart's heading row — the
@@ -22,6 +24,7 @@
     import type {Snippet} from "svelte";
     import PeriodLineChart, {type PeriodSeries} from "$lib/components/PeriodLineChart.svelte";
     import {toNumber} from "$lib/domain/money";
+    import {chartColors} from "$lib/format/chartColors.svelte";
     import type {GainPeriod, HoldingsSeries} from "$lib/holdings/types";
     import {trendWindowNote} from "./gainPeriod";
     import {trendLabels} from "./trendView";
@@ -49,9 +52,12 @@
     const labels = $derived(trendLabels(trend.points));
     const values = $derived(trend.points.map((p) => toNumber(p.marketValue)));
     const note = $derived(trendWindowNote(period));
-    // The portfolio stays in slot 0 whatever is overlaid on it.
+    // The portfolio is ink whatever is overlaid on it, so it never repaints.
     // "Market value" alone; "Your portfolio" once a benchmark sits beside it in the legend.
-    const series = $derived<PeriodSeries[]>([{name: overlays.length > 0 ? "Your portfolio" : "Market value", values, slot: 0}, ...overlays]);
+    const series = $derived<PeriodSeries[]>([
+        {name: overlays.length > 0 ? "Your portfolio" : "Market value", values, color: chartColors.flowNet, hero: true},
+        ...overlays,
+    ]);
 </script>
 
 <PeriodLineChart

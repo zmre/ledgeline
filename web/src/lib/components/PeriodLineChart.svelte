@@ -21,6 +21,9 @@
        never cycled — unless a series names its own `slot`, which is how an
        optional line (a benchmark the reader can tick on and off) keeps ONE
        colour whatever else is shown: colour follows the entity, not its row.
+       A series may instead name its own `color` (the foreground ink for the
+       subject the others are compared with), and a `hero` line is drawn a
+       little heavier.
      - `null` IS A GAP. The line breaks there and no marker is drawn, and the
        tooltip reads "—". A missing value is never drawn as zero.
 
@@ -128,8 +131,16 @@
     const marker = $derived(markAt !== null && Number.isInteger(markAt) && markAt >= 0 && markAt < rows.length ? markAt : null);
 
     const LINE_CLASS = "stroke-2";
-    /** Overrides `props.spline` for the one series, since a series' own props are spread last. */
+    /** Override `props.spline` for the one series, since a series' own props are spread last. */
     const DASHED_CLASS = "stroke-2 [stroke-dasharray:4_3]";
+    const HERO_CLASS = "stroke-[2.5px]";
+
+    /** A series' own line class, or nothing to keep `props.spline`'s. */
+    const lineProps = (s: PeriodSeries): {props?: {class: string}} => {
+        if (s.dashed === true) return {props: {class: DASHED_CLASS}};
+        if (s.hero === true) return {props: {class: HERO_CLASS}};
+        return {};
+    };
 
     const chartSeries = $derived(
         series.map((s, k) => ({
@@ -138,11 +149,11 @@
             // would silently collapse them into one line.
             key: String(k),
             label: s.name,
-            color: chartColors.colorAt(s.slot ?? k),
+            color: s.color ?? chartColors.colorAt(s.slot ?? k),
             // `null` (not 0) where the series has a gap: layerchart's default
             // `defined` breaks the line there and its points skip the marker.
             value: (d: Row) => d.v[k] ?? null,
-            ...(s.dashed === true ? {props: {class: DASHED_CLASS}} : {}),
+            ...lineProps(s),
         }))
     );
 </script>

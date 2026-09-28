@@ -20,4 +20,11 @@ export interface PeriodSeries {
      * others.
      */
     slot?: number;
+    /**
+     * A colour outside the categorical palette, overriding `slot`: the
+     * foreground ink for the line the others are compared with.
+     */
+    color?: string;
+    /** The chart's subject: drawn a little heavier than the lines beside it. */
+    hero?: boolean;
 }

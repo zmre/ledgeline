@@ -112,8 +112,8 @@ describe("COMPONENT StocksTrend benchmark overlay", () => {
         expect(params.get("asOf")).toBe("2026-09-28");
 
         const [portfolio, spy] = lines();
-        expect(portfolio.getAttribute("stroke")).toBe(chartColors.colorAt(0));
-        expect(spy.getAttribute("stroke")).toBe(chartColors.colorAt(1));
+        expect(portfolio.getAttribute("stroke")).toBe(chartColors.flowNet);
+        expect(spy.getAttribute("stroke")).toBe(chartColors.colorAt(0));
         expect(spy.getAttribute("class")).toContain("[stroke-dasharray:4_3]");
 
         const legend = document.querySelector('[data-testid="holdings-trend-legend"]')?.textContent ?? "";

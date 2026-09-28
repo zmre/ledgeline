@@ -22,6 +22,7 @@ import {render} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
 import {chartColors} from "$lib/format/chartColors.svelte";
 import PeriodLineChart from "./PeriodLineChart.svelte";
+import type {PeriodSeries} from "./periodSeries";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const money = (n: number): string => `$${n.toFixed(2)}`;
@@ -33,7 +34,7 @@ interface MountOptions {
     heading?: string;
     note?: string;
     labels?: readonly string[];
-    series?: {name: string; values: readonly (number | null)[]; dashed?: boolean; slot?: number}[];
+    series?: PeriodSeries[];
     includeZero?: boolean;
     markAt?: number | null;
     empty?: string;
@@ -265,5 +266,18 @@ describe("COMPONENT PeriodLineChart gaps and fixed slots", () => {
         const keys = [...document.querySelectorAll('[data-testid="trend-legend"] li span:first-child')].map((key) => (key as HTMLElement).style.borderColor);
         expect(keys).toHaveLength(2);
         expect(keys[0]).not.toBe(keys[1]);
+    });
+
+    it("draws a series in its own colour, outside the palette, and a hero line heavier", () => {
+        const {container} = mount({
+            series: [
+                {name: "Portfolio", values: ramp(MONTHS), color: chartColors.flowNet, hero: true},
+                {name: "S&P 500 (SPY)", values: ramp(MONTHS), dashed: true, slot: 0},
+            ],
+        });
+
+        expect(lines(container).map((l) => l.stroke)).toEqual([chartColors.flowNet, chartColors.colorAt(0)]);
+        expect(lines(container)[0].class).toContain("stroke-[2.5px]");
+        expect(lines(container)[1].class).toContain("[stroke-dasharray:4_3]");
     });
 });
