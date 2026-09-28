@@ -2,6 +2,7 @@
 // under a versioned key. `setServerUrl` verifies GET /version before persisting.
 
 import {HledgerApi, SETTINGS_STORAGE_KEY} from "$lib/api/client";
+import {PIE_DIMENSIONS, type PieDimension} from "$lib/holdings/profileTypes";
 
 /** Journal table column toggles (defaults per WP-03: Date, Status, Description, Accounts, Amount). */
 export interface ColumnConfig {
@@ -51,6 +52,13 @@ interface PersistedSettings {
      */
     budgetGapsOpen: boolean;
     /**
+     * What the Holdings pie is divided by: one slice per holding (the
+     * default), or one per asset class / sector / … (see
+     * `$lib/holdings/profileTypes`). Per-browser view state, like
+     * `insightsTab`.
+     */
+    holdingsPieDimension: PieDimension;
+    /**
      * The Projections tab's last-loaded scenario FILE, by its relative id
      * (`plans/projection-series-a.journal`), reopened on the next mount.
      *
@@ -77,6 +85,7 @@ const defaults = (): PersistedSettings => ({
     flowsInOpen: true,
     flowsOutOpen: true,
     budgetGapsOpen: false,
+    holdingsPieDimension: "holding",
     lastProjectionId: null,
 });
 
@@ -125,6 +134,11 @@ function load(): PersistedSettings {
             flowsInOpen: typeof parsed.flowsInOpen === "boolean" ? parsed.flowsInOpen : true,
             flowsOutOpen: typeof parsed.flowsOutOpen === "boolean" ? parsed.flowsOutOpen : true,
             budgetGapsOpen: typeof parsed.budgetGapsOpen === "boolean" ? parsed.budgetGapsOpen : false,
+            // Validated against the union, like `insightsTab`: a dimension a
+            // later version dropped must fall back rather than select nothing.
+            holdingsPieDimension: PIE_DIMENSIONS.includes(parsed.holdingsPieDimension as PieDimension)
+                ? (parsed.holdingsPieDimension as PieDimension)
+                : "holding",
             // Typechecked as a string, like `serverToken` and unlike
             // `insightsTab`: a file id has no closed set to validate against,
             // and the server re-validates its shape on every request anyway.
@@ -165,6 +179,7 @@ function persist(): void {
             flowsInOpen: state.flowsInOpen,
             flowsOutOpen: state.flowsOutOpen,
             budgetGapsOpen: state.budgetGapsOpen,
+            holdingsPieDimension: state.holdingsPieDimension,
             lastProjectionId: state.lastProjectionId,
         })
     );
@@ -235,6 +250,14 @@ export const settings = {
     },
     set budgetGapsOpen(open: boolean) {
         state.budgetGapsOpen = open;
+        persist();
+    },
+    /** What the Holdings pie is divided by — see the field. */
+    get holdingsPieDimension(): PieDimension {
+        return state.holdingsPieDimension;
+    },
+    set holdingsPieDimension(dimension: PieDimension) {
+        state.holdingsPieDimension = dimension;
         persist();
     },
     /** The Projections tab's last-loaded scenario file id — see the field. */

@@ -5,7 +5,7 @@
 import {readFileSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {describe, expect, it} from "vitest";
-import {CHART_TOKENS, DEFAULT_PALETTE, resolvePalette, samePalette} from "./palette";
+import {CHART_TOKENS, DEFAULT_PALETTE, resolvePalette, samePalette, unknownColor} from "./palette";
 
 const APP_CSS = readFileSync(fileURLToPath(new URL("../../app.css", import.meta.url)), "utf8");
 
@@ -65,5 +65,20 @@ describe("UNIT resolvePalette", () => {
                 DEFAULT_PALETTE
             )
         ).toBe(false);
+    });
+});
+
+describe("UNIT unknownColor", () => {
+    it("adds a hex alpha to a hex muted colour", () => {
+        expect(unknownColor(DEFAULT_PALETTE)).toBe(`${DEFAULT_PALETTE.other}73`);
+        expect(unknownColor({...DEFAULT_PALETTE, other: "#abc"}, 1)).toBe("#aabbccff");
+    });
+
+    it("falls back to color-mix for any other syntax", () => {
+        expect(unknownColor({...DEFAULT_PALETTE, other: "oklch(0.6 0 0)"}, 0.5)).toBe("color-mix(in srgb, oklch(0.6 0 0) 50%, transparent)");
+    });
+
+    it("is never the solid muted colour itself", () => {
+        expect(unknownColor(DEFAULT_PALETTE)).not.toBe(DEFAULT_PALETTE.other);
     });
 });
