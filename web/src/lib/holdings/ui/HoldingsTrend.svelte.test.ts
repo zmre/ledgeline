@@ -73,4 +73,25 @@ describe("COMPONENT HoldingsTrend", () => {
 
         expect(labels).toEqual(["Aug 2025", "Oct 2025", "Dec 2025", "Feb 2026", "Apr 2026", "Jun 2026", "Jul 2026"]);
     });
+
+    it("names the window it was fetched for, and labels daily points by date", () => {
+        const days = ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28"];
+        const week: HoldingsSeries = {
+            base: "$",
+            points: days.map((date, i) => ({date, bucket: date, label: date, marketValue: dec(100_000 + i, 2), basis: null})),
+            hasBasis: false,
+        };
+        render(HoldingsTrend, {trend: week, period: "1wk", formatValue: money});
+        const labels = [...document.querySelectorAll('[data-placement="bottom"] .lc-axis-tick-label')].map((t) => t.textContent?.trim());
+
+        expect(document.querySelector("h3")?.textContent).toContain("· last 7 days");
+        expect(labels[0]).toBe("Sep 21");
+        expect(labels.at(-1)).toBe("Sep 28");
+    });
+
+    it("words its empty state for the window", () => {
+        render(HoldingsTrend, {trend: series(MONTHS.map(() => 0)), period: "all", formatValue: money});
+
+        expect(document.body.textContent).toContain("No priced holdings yet.");
+    });
 });

@@ -19,6 +19,7 @@
 import type {ISODate} from "$lib/domain/types";
 import {isTab, TAB_ORDER, type HoldingsTab} from "$lib/holdings/params";
 import type {GainPeriod, HoldingsScope} from "$lib/holdings/types";
+import {isGainPeriod} from "./gainPeriod";
 import {safeDecode} from "$lib/url/safeDecode";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -75,7 +76,7 @@ export function searchToScope(search: string, today: ISODate): HoldingsScope {
                       .map(safeDecode) // never throws: `?acct=%` must not break the mount (SEC-12)
               );
     const gain = params.get("gain");
-    const gainPeriod: GainPeriod = gain === "ytd" || gain === "12mo" ? gain : "all";
+    const gainPeriod: GainPeriod = isGainPeriod(gain) ? gain : "all";
     return {
         asOf: asof !== null && ISO_DATE.test(asof) ? asof : today,
         accounts,

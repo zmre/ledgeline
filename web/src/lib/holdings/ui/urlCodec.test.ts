@@ -59,6 +59,20 @@ describe("UNIT holdings urlCodec", () => {
             expect(searchToScope("?gain=banana", TODAY)).toEqual(scope());
         });
 
+        it("round-trips every gain window, the new ones included", () => {
+            for (const gainPeriod of ["1wk", "1mo", "3mo", "ytd", "12mo", "5yr", "all"] as const) {
+                const s = scope({gainPeriod});
+                expect(searchToScope(scopeToSearch(s, TODAY), TODAY)).toEqual(s);
+            }
+            expect(scopeToSearch(scope({gainPeriod: "1wk"}), TODAY)).toBe("gain=1wk");
+            expect(scopeToSearch(scope({gainPeriod: "5yr"}), TODAY)).toBe("gain=5yr");
+        });
+
+        it("refuses a near-miss window rather than guessing", () => {
+            expect(searchToScope("?gain=1w", TODAY)).toEqual(scope());
+            expect(searchToScope("?gain=5YR", TODAY)).toEqual(scope());
+        });
+
         it("ignores empty account segments", () => {
             expect([...searchToScope("?acct=a,,b", TODAY).accounts].sort()).toEqual(["a", "b"]);
         });

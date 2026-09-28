@@ -14,15 +14,30 @@ import type {ISODate} from "$lib/domain/types";
 import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
 import {TAB_ORDER, type HoldingsTab} from "$lib/holdings/params";
 import type {GainPeriod, HoldingsReport, HoldingsScope, HoldingsSeries, OtherHoldingsReport} from "$lib/holdings/types";
-import {gainSinceFor} from "$lib/holdings/ui/gainPeriod";
+import {gainSinceFor, trendWindowFor} from "$lib/holdings/ui/gainPeriod";
 import type {HoldingsUrlState} from "$lib/holdings/ui/urlCodec";
 import {localToday} from "./filters.svelte";
 import type {DataView, LoadStatus} from "./loadState";
 import {createResource} from "./resource.svelte";
 
-/** Trailing series window shown under the details table (matches the former client-side default). */
-const TREND_INTERVAL = "monthly";
-const TREND_COUNT = 12;
+/**
+ * The value-over-time query for `scope`: its accounts, mode and asOf, and the
+ * window its GAIN PERIOD names (`trendWindowFor`). One function because three
+ * requests must agree on it byte for byte — the Stocks series, the Other
+ * series, and the benchmark overlay drawn over the Stocks one, whose points
+ * are only meaningful index-aligned to the chart beneath them.
+ */
+export function trendQuery(scope: HoldingsScope): {
+    asOf: ISODate;
+    accounts: string;
+    mode: HoldingsScope["mode"];
+    interval: string;
+    count?: number;
+    since?: string;
+} {
+    const window = trendWindowFor(scope.gainPeriod, scope.asOf);
+    return {asOf: scope.asOf, accounts: [...scope.accounts].join(","), mode: scope.mode, ...window};
+}
 
 /** Fresh-visit default: everything included, as of today, all-time gain (recomputed per call, never remembered). */
 export function defaultScope(): HoldingsScope {
@@ -90,7 +105,7 @@ export const holdingsScope = {
     setAsOf(asOf: ISODate): void {
         value = {...value, asOf};
     },
-    /** Switch the gain window (all-time vs YTD vs trailing 12mo); everything else is kept. */
+    /** Switch the gain window — which also sets the value-over-time chart's window; everything else is kept. */
     setGainPeriod(gainPeriod: GainPeriod): void {
         value = {...value, gainPeriod};
     },
@@ -121,11 +136,11 @@ interface HoldingsPayload {
 const resource = createResource<HoldingsScope, HoldingsPayload>(async (serverUrl, scope) => {
     const api = new LedgelineApi(serverUrl);
     const accounts = [...scope.accounts].join(",");
-    // gainSince narrows only the report's gain; the value-over-time series is always all-time.
+    // The gain period narrows the report's gain AND sets the chart's window.
     const gainSince = gainSinceFor(scope.gainPeriod, scope.asOf);
     const [rawReport, rawSeries] = await Promise.all([
         api.holdings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince}),
-        api.holdingsSeries({asOf: scope.asOf, accounts, mode: scope.mode, interval: TREND_INTERVAL, count: TREND_COUNT}),
+        api.holdingsSeries(trendQuery(scope)),
     ]);
     return {report: decodeHoldingsReport(rawReport), trend: decodeHoldingsSeries(rawSeries)};
 });
@@ -138,6 +153,10 @@ export const holdingsData = {
     /** The value-over-time series for the last loaded scope, or null before the first load. */
     get trend(): HoldingsSeries | null {
         return resource.value?.trend ?? null;
+    },
+    /** The scope `report` and `trend` were loaded for — what an overlay on the trend must be computed for. */
+    get scope(): HoldingsScope | null {
+        return resource.query;
     },
     get status(): LoadStatus {
         return resource.status;
@@ -175,11 +194,11 @@ interface OtherHoldingsPayload {
 const otherResource = createResource<HoldingsScope, OtherHoldingsPayload>(async (serverUrl, scope) => {
     const api = new LedgelineApi(serverUrl);
     const accounts = [...scope.accounts].join(",");
-    // gainSince narrows only the report's change column; the value-over-time series is always all-time.
+    // The gain period narrows the change column AND sets the chart's window — the same control, meaning the same thing, on both tabs.
     const gainSince = gainSinceFor(scope.gainPeriod, scope.asOf);
     const [rawReport, rawSeries] = await Promise.all([
         api.otherHoldings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince}),
-        api.otherHoldingsSeries({asOf: scope.asOf, accounts, mode: scope.mode, interval: TREND_INTERVAL, count: TREND_COUNT}),
+        api.otherHoldingsSeries(trendQuery(scope)),
     ]);
     // The series wire shape is the stock series', byte for byte — hence no second decoder.
     return {report: decodeOtherHoldingsReport(rawReport), trend: decodeHoldingsSeries(rawSeries)};
@@ -193,6 +212,10 @@ export const otherHoldingsData = {
     /** The value-over-time series for the last loaded scope, or null before the first load. */
     get trend(): HoldingsSeries | null {
         return otherResource.value?.trend ?? null;
+    },
+    /** The scope `report` and `trend` were loaded for. */
+    get scope(): HoldingsScope | null {
+        return otherResource.query;
     },
     get status(): LoadStatus {
         return otherResource.status;

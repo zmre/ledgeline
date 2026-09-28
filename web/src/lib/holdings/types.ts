@@ -5,12 +5,13 @@ import type {Dec, MixedAmount} from "../domain/money";
 import type {ISODate} from "../domain/types";
 
 /**
- * Gain/loss window selector. "all" = all-time gain (marketValue − basis, the
- * original behavior). "ytd"/"12mo" are WINDOWED: the report's gain/gainPct
- * become marketValue − value-at-window-start, keyed off a `gainSince` date
- * derived from the scope's asOf (see ui/gainPeriod.ts). basis stays all-time.
+ * Gain/loss window selector, and the window of the value-over-time chart beside
+ * it. "all" = all-time gain (marketValue − basis, the original behavior). Every
+ * other value is WINDOWED: the report's gain/gainPct become marketValue −
+ * value-at-window-start, keyed off a `gainSince` date derived from the scope's
+ * asOf (see ui/gainPeriod.ts). basis stays all-time.
  */
-export type GainPeriod = "all" | "ytd" | "12mo";
+export type GainPeriod = "1wk" | "1mo" | "3mo" | "ytd" | "12mo" | "5yr" | "all";
 
 export interface HoldingsScope {
     /** Subtree roots, same invariant as JournalFilter. */
