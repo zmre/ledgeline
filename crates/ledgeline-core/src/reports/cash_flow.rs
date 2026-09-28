@@ -185,7 +185,10 @@ pub fn cash_flow(
 ///    `$100` grocery bill is `−$100` of groceries. Otherwise the shares are
 ///    [`allocate`]d: truncated, with the largest weight taking the remainder,
 ///    so they still sum to `D` EXACTLY.
-/// 4. No usable weights (a currency exchange between two cash accounts, or
+/// 4. No weight in `k`, but every counterparty amount is in one other
+///    commodity (an implicit conversion: a stock buy written without `@`) →
+///    the counterparties weigh by their quantities in that commodity.
+/// 5. No usable weights (a currency exchange between two cash accounts, or
 ///    transfer legs split across buckets) → the whole `D` goes to
 ///    [`UNATTRIBUTED`].
 ///
@@ -263,14 +266,44 @@ fn weight_in(commodity: &Commodity, amount: &Amount) -> Result<Option<Dec>, DecE
 
 /// The counterparties' weights in `commodity` (see [`weight_in`]). Zero
 /// weights are dropped: they could only ever receive a zero share.
+///
+/// When nothing weighs in `commodity` but every counterparty amount is in ONE
+/// other commodity, the transaction is an implicit conversion (`checking
+/// $-400` against `broker 2 AAPL`, no `@`), which hledger balances by inferring
+/// the cost. The counterparties then weigh by their quantities in that
+/// commodity, so the stock buy is attributed to the broker account rather than
+/// to [`UNATTRIBUTED`].
 fn weights<'a>(
     commodity: &Commodity,
     counterparties: &[&'a Posting],
 ) -> Result<Vec<(&'a str, Dec)>, DecError> {
+    let direct = weighed(counterparties, |amount| weight_in(commodity, amount))?;
+    if !direct.is_empty() {
+        return Ok(direct);
+    }
+    let others: BTreeSet<&Commodity> = counterparties
+        .iter()
+        .flat_map(|posting| &posting.amounts)
+        .filter(|amount| !amount.quantity.is_zero())
+        .map(|amount| &amount.commodity)
+        .collect();
+    match others.into_iter().collect::<Vec<_>>().as_slice() {
+        [only] => weighed(counterparties, |amount| {
+            Ok((&amount.commodity == *only).then_some(amount.quantity))
+        }),
+        _ => Ok(direct),
+    }
+}
+
+/// Every counterparty amount's non-zero weight under `weigh`.
+fn weighed<'a>(
+    counterparties: &[&'a Posting],
+    weigh: impl Fn(&Amount) -> Result<Option<Dec>, DecError>,
+) -> Result<Vec<(&'a str, Dec)>, DecError> {
     let mut out = Vec::new();
     for posting in counterparties {
         for amount in &posting.amounts {
-            if let Some(quantity) = weight_in(commodity, amount)?
+            if let Some(quantity) = weigh(amount)?
                 && !quantity.is_zero()
             {
                 out.push((posting.account.0.as_str(), quantity));
@@ -547,12 +580,15 @@ mod tests {
         let report =
             cash_flow_sources(&sample(), "2026-03-15", Interval::Monthly, 3, 4, None).unwrap();
         // The savings transfer is cash↔cash and so is nobody's source; the
-        // stock bought with broker cash has no `$` counterparty and no cost, so
-        // its $400 is unattributed rather than dropped.
+        // stock bought with broker cash (no `@`) is an implicit conversion, so
+        // its $400 goes to the stock account.
         assert_eq!(
             accounts(&report),
             [
-                UNATTRIBUTED,
+                "assets",
+                "assets:broker",
+                "assets:broker:taxable",
+                "assets:broker:taxable:aapl",
                 "expenses",
                 "expenses:food",
                 "income",
@@ -568,7 +604,7 @@ mod tests {
             [MixedAmount::new(), usd_ma(-3000), MixedAmount::new()]
         );
         assert_eq!(
-            row(&report, UNATTRIBUTED),
+            row(&report, "assets:broker:taxable:aapl"),
             [MixedAmount::new(), usd_ma(-40_000), MixedAmount::new()]
         );
         assert!(report.rows.iter().all(|r| r.kind.is_none()));
@@ -724,6 +760,43 @@ mod tests {
             .map(|a| row(&report, a)[0].clone())
             .collect();
         assert_eq!(shares, [usd_ma(-3334), usd_ma(-3333), usd_ma(-3333)]);
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    #[test]
+    fn an_implicit_conversion_weighs_by_the_one_other_commodity() {
+        // checking −$300 → 2 AAPL in one account and 1 in another, no `@`:
+        // hledger infers the cost, so the cash splits 2:1 by share count.
+        let txns = vec![txn(
+            1,
+            "2026-01-15",
+            vec![
+                ("assets:bank:checking", vec![usd(-30_000)]),
+                ("assets:broker:a", vec![amount("AAPL", 2, 0)]),
+                ("assets:broker:b", vec![amount("AAPL", 1, 0)]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 3, None).unwrap();
+        assert_eq!(row(&report, "assets:broker:a"), [usd_ma(-20_000)]);
+        assert_eq!(row(&report, "assets:broker:b"), [usd_ma(-10_000)]);
+        assert!(!accounts(&report).contains(&UNATTRIBUTED));
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    #[test]
+    fn two_other_commodities_are_not_an_implicit_conversion() {
+        // Nothing says how $400 splits between AAPL and MSFT shares.
+        let txns = vec![txn(
+            1,
+            "2026-01-15",
+            vec![
+                ("assets:bank:checking", vec![usd(-40_000)]),
+                ("assets:broker:aapl", vec![amount("AAPL", 1, 0)]),
+                ("assets:broker:msft", vec![amount("MSFT", 1, 0)]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 3, None).unwrap();
+        assert_eq!(accounts(&report), [UNATTRIBUTED]);
         assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
     }
 
