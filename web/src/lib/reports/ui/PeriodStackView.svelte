@@ -1,18 +1,21 @@
-<!-- One `PeriodReport` drawn as a stacked diverging period chart: the model
-     (`periodStack`), the commodity's display style, and the "charted in X only"
-     note, joined to `PeriodStackChart`. Shared by the Net Worth and Cash Flow
-     panels so neither restates the commodity pick or the formatting. -->
+<!-- One `PeriodReport` drawn as a stacked diverging period chart: a model
+     (`periodStack` for Net Worth, `cashFlowStack` for Cash Flow), the
+     commodity's display style, and the "charted in X only" note, joined to
+     `PeriodStackChart`. Shared by the Net Worth and Cash Flow panels so neither
+     restates the commodity note or the formatting. -->
 <script lang="ts">
     import PeriodStackChart from "$lib/components/PeriodStackChart.svelte";
     import type {AmountStyle} from "$lib/domain/types";
     import {styleOf} from "$lib/format/amounts";
     import {chartColors} from "$lib/format/chartColors.svelte";
+    import type {ChartPalette} from "$lib/format/palette";
     import {formatChartValue, formatCompactChartValue} from "$lib/insights/series";
     import type {PeriodReport} from "../types";
-    import {periodStack} from "./periodStack";
+    import type {PeriodStack} from "./periodStack";
 
     let {
         report,
+        model,
         styles,
         mark,
         netLabel,
@@ -21,6 +24,8 @@
         testid,
     }: {
         report: PeriodReport;
+        /** Turns the report into what is drawn. */
+        model: (report: PeriodReport, palette: ChartPalette, fallback: string) => PeriodStack;
         styles: ReadonlyMap<string, AmountStyle>;
         mark: "bar" | "area";
         netLabel: string;
@@ -30,7 +35,7 @@
         testid: string;
     } = $props();
 
-    const stack = $derived(periodStack(report, chartColors.current, ""));
+    const stack = $derived(model(report, chartColors.current, ""));
     const style = $derived<AmountStyle>(styleOf(styles, stack.commodity));
     const format = $derived((n: number) => formatChartValue(n, stack.commodity, style));
     const formatAxis = $derived((n: number) => formatCompactChartValue(n, stack.commodity, style));

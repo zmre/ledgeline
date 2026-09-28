@@ -1,17 +1,16 @@
 // The Net Worth and Cash Flow chart panels, mounted over literal reports.
 //
 // Structure only (jsdom draws into a 0×0 box): the panel shell, the persisted
-// collapse flag, the legend the model produced, the Cash Flow mode toggle and
-// which report each mode draws, the sources' loading/error states, and the
-// friendly empty and one-bucket states.
+// collapse flag, the legend the model produced — for Cash Flow, exactly the
+// table's displayed accounts — and the friendly empty and one-bucket states.
 
 import {fireEvent, render} from "@testing-library/svelte";
-import {afterEach, describe, expect, it, vi} from "vitest";
+import {afterEach, describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "$lib/domain/money";
 import {settings} from "$lib/stores/settings.svelte";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
-import type {SourcesPanel} from "$lib/stores/cashFlowSources.svelte";
 import CashFlowChart from "./CashFlowChart.svelte";
+import {compressPeriodRows} from "./displayRows";
 import NetWorthChart from "./NetWorthChart.svelte";
 
 const usd = (n: number): MixedAmount => (n === 0 ? new Map() : new Map([["$", dec(Math.round(n * 100), 2)]]));
@@ -38,31 +37,28 @@ const NET_WORTH: PeriodReport = {
     totals: [200, 220, 270, 330, 360].map(usd),
 };
 
+/**
+ * The table shows `assets` › `bank` (with postings of its own) › `checking`,
+ * `savings`, and `broker:cash` (a collapsed single-child chain).
+ */
 const CASH_FLOW: PeriodReport = {
     buckets: ["2026-01", "2026-02", "2026-03"],
-    rows: [row("assets", [50, -30, 20]), row("assets:checking", [80, -60, 10]), row("assets:savings", [-30, 30, 10])],
-    totals: [50, -30, 20].map(usd),
-};
-
-const SOURCES: PeriodReport = {
-    buckets: ["2026-01", "2026-02", "2026-03"],
     rows: [
-        row("expenses", [-100, -130, -130]),
-        row("expenses:rent", [-100, -130, -130]),
-        row("income", [150, 100, 150]),
-        row("income:salary", [150, 100, 150]),
+        row("assets", [50, -30, 20]),
+        row("assets:bank", [60, -20, 20]),
+        row("assets:bank:checking", [80, -60, 10]),
+        row("assets:bank:savings", [-30, 30, 10]),
+        row("assets:broker", [-10, -10, 0]),
+        row("assets:broker:cash", [-10, -10, 0]),
     ],
     totals: [50, -30, 20].map(usd),
 };
-
-const panel = (overrides: Partial<SourcesPanel> = {}): SourcesPanel => ({view: "data", report: SOURCES, error: null, retry: () => {}, ...overrides});
 
 const legend = (testid: string): string[] => [...document.querySelectorAll(`[data-testid="${testid}-legend"] li`)].map((li) => li.textContent?.trim() ?? "");
 
 afterEach(() => {
     settings.netWorthChartOpen = true;
     settings.cashFlowChartOpen = true;
-    settings.cashFlowChartMode = "source";
 });
 
 describe("COMPONENT NetWorthChart", () => {
@@ -125,53 +121,56 @@ describe("COMPONENT NetWorthChart", () => {
 });
 
 describe("COMPONENT CashFlowChart", () => {
-    it("shows the breakdown by source by default, as areas", () => {
-        const {container} = render(CashFlowChart, {report: CASH_FLOW, sources: panel(), styles: STYLES});
+    it("stacks exactly the table's displayed leaves, plus a parent's own postings, under the table's labels", () => {
+        render(CashFlowChart, {report: CASH_FLOW, styles: STYLES});
 
-        expect(legend("cashflow-chart")).toEqual(["income:salary", "expenses:rent", "Net change"]);
-        expect(container.querySelectorAll("path.lc-area-path").length).toBeGreaterThan(0);
-        expect(container.querySelector('[data-testid="cashflow-chart-mode-source"]')?.getAttribute("aria-checked")).toBe("true");
+        // The table's own rows, by the table's own function: every displayed
+        // row with no displayed child, and `bank` again for its own postings.
+        const display = compressPeriodRows(CASH_FLOW.rows);
+        const leaves = display.filter((d) => !display.some((other) => other.row.account.startsWith(`${d.row.account}:`))).map((d) => d.label);
+        expect(leaves).toEqual(["checking", "savings", "broker:cash"]);
+        expect(legend("cashflow-chart")).toEqual(["bank", ...leaves, "Net change"]);
     });
 
-    it("switches to the table's own cash accounts, and remembers the choice", async () => {
-        const {container} = render(CashFlowChart, {report: CASH_FLOW, sources: panel(), styles: STYLES});
+    it("has no breakdown toggle", () => {
+        const {container} = render(CashFlowChart, {report: CASH_FLOW, styles: STYLES});
 
-        await fireEvent.click(container.querySelector('[data-testid="cashflow-chart-mode-account"]')!);
-
-        expect(settings.cashFlowChartMode).toBe("account");
-        // savings flips sign between buckets: it is split into two drawn halves
-        // but stays ONE legend entry.
-        expect(legend("cashflow-chart")).toEqual(["assets:checking", "assets:savings", "Net change"]);
-        expect(container.querySelectorAll("path.lc-area-path")).toHaveLength(4);
+        expect(container.querySelector('[role="radiogroup"]')).toBeNull();
+        expect(container.querySelector('[data-testid^="cashflow-chart-mode"]')).toBeNull();
+        expect(container.textContent).not.toMatch(/By (source|account)/);
     });
 
-    it("needs no sources to draw By account", () => {
-        settings.cashFlowChartMode = "account";
-        render(CashFlowChart, {report: CASH_FLOW, sources: panel({view: "loading", report: null}), styles: STYLES});
+    it("draws areas, one per sign half", () => {
+        const {container} = render(CashFlowChart, {report: CASH_FLOW, styles: STYLES});
 
-        expect(legend("cashflow-chart")).toContain("assets:checking");
+        // bank's own +, checking ±, savings ±, broker:cash −: an account that
+        // flips sign between buckets is two drawn halves but ONE legend entry.
+        expect(container.querySelectorAll("path.lc-area-path")).toHaveLength(6);
     });
 
-    it("waits for the sources, and offers a retry when they fail", async () => {
-        const retry = vi.fn();
-        const loading = render(CashFlowChart, {report: CASH_FLOW, sources: panel({view: "loading", report: null}), styles: STYLES});
-        expect(loading.container.querySelector('[aria-label="Loading cash-flow sources"]')).not.toBeNull();
-        loading.unmount();
+    it("names the commodities it could not chart", () => {
+        const mixed: PeriodReport = {
+            buckets: ["2026-01", "2026-02"],
+            rows: [row("assets:bank", [5, 6]), {account: "assets:wise", depth: 2, values: [eur(1), eur(2)]}],
+            totals: [new Map([...usd(5), ...eur(1)]), new Map([...usd(6), ...eur(2)])],
+        };
+        render(CashFlowChart, {report: mixed, styles: STYLES});
 
-        const failed = render(CashFlowChart, {
-            report: CASH_FLOW,
-            sources: panel({view: "error", report: null, error: new Error("boom"), retry}),
-            styles: STYLES,
-        });
-        const alert = failed.container.querySelector('[data-testid="cashflow-sources-error"]');
-        expect(alert?.textContent).toContain("boom");
-        await fireEvent.click(alert!.querySelector("button")!);
-        expect(retry).toHaveBeenCalledOnce();
+        expect(document.querySelector('[data-testid="cashflow-chart-omitted"]')?.textContent).toContain("EUR not shown");
+    });
+
+    it("collapses, and persists that it did", async () => {
+        const {container} = render(CashFlowChart, {report: CASH_FLOW, styles: STYLES});
+
+        await fireEvent.click(container.querySelector<HTMLInputElement>('[data-testid="cashflow-chart-panel"] input[type="checkbox"]')!);
+
+        expect(settings.cashFlowChartOpen).toBe(false);
+        expect(container.querySelector('[data-testid="cashflow-chart"]')).toBeNull();
     });
 
     it("says so when no cash moved", () => {
         const still: PeriodReport = {buckets: CASH_FLOW.buckets, rows: [], totals: CASH_FLOW.buckets.map(() => new Map())};
-        render(CashFlowChart, {report: CASH_FLOW, sources: panel({report: still}), styles: STYLES});
+        render(CashFlowChart, {report: still, styles: STYLES});
 
         expect(document.querySelector('[data-testid="cashflow-chart-empty"]')?.textContent).toContain("No cash moved");
     });

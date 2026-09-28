@@ -250,17 +250,23 @@ test("reports: net worth and cash flow draw their charts above the tables", asyn
     // empty columns and get no "$0" label.
     await expect(worth.locator("g.lc-net-point")).toHaveCount(3);
 
-    // Cash flow: by source first — the salary that funds it, not the account it lands in.
+    // Cash flow: exactly the table's accounts, under the table's own labels,
+    // and no breakdown toggle. At the default depth the table shows assets ›
+    // bank › checking, savings, wise, and the collapsed broker:taxable; wise
+    // holds only EUR, which the $ chart cannot draw and says so.
     await page.getByRole("tab", {name: "Cash Flow"}).click();
     const cash = page.getByTestId("cashflow-chart-panel");
-    await expect(cash.getByTestId("cashflow-chart-mode-source")).toHaveAttribute("aria-checked", "true");
-    await expect(cash.getByTestId("cashflow-chart-legend")).toContainText("income:salary");
-    await expect(cash.getByTestId("cashflow-chart-legend")).not.toContainText("assets:bank:checking");
-
-    // By account is the table's own rows.
-    await cash.getByTestId("cashflow-chart-mode-account").click();
-    await expect(cash.getByTestId("cashflow-chart-legend")).toContainText("assets:bank:checking");
-    await expect(cash.getByTestId("cashflow-chart-legend")).not.toContainText("income:salary");
+    await expect(cash.getByTestId("cashflow-chart-legend").locator("li")).toHaveText(["checking", "savings", "broker:taxable", "Net change"]);
+    await expect(cash.getByTestId("cashflow-chart-omitted")).toContainText("EUR not shown");
+    await expect(cash.getByRole("radiogroup")).toHaveCount(0);
+    await expect(cash.getByText(/By (source|account)/)).toHaveCount(0);
+    for (const [account, label] of [
+        ["assets:bank:checking", "checking"],
+        ["assets:bank:savings", "savings"],
+        ["assets:broker:taxable", "broker:taxable"],
+    ]) {
+        await expect(page.locator(`tr[data-account="${account}"] th`)).toHaveText(label);
+    }
 });
 
 test("reports: P&L groups start collapsed and open to their accounts", async ({page}) => {

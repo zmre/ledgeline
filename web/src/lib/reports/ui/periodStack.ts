@@ -1,6 +1,8 @@
 // A `PeriodReport` as a stacked, diverging period chart: the numbers the Net
-// Worth and Cash Flow charts draw, decided here so they can be tested by
-// calling a function rather than by reading SVG.
+// Worth chart draws, decided here so they can be tested by calling a function
+// rather than by reading SVG. The Cash Flow chart shares the shape
+// (`PeriodStack`), the commodity pick and the sign split, but takes its parts
+// from the table's displayed rows and folds nothing — see `cashFlowStack`.
 //
 // Pure — no Svelte, no DOM, no live palette (the caller hands one in).
 //
@@ -18,8 +20,8 @@
 //      is either exactly zero and dropped or real and drawn.
 //   3. SIDES. Each part is assigned the side it stacks on: a net-worth row by the
 //      ENGINE's classification (`kind`, by effective declared type — never sign
-//      or name); anything else (cash accounts, counterparties, a `mixed` row) by
-//      the sign of its total over the window.
+//      or name); anything else (a `mixed` row) by the sign of its total over the
+//      window.
 //   4. FOLD THE TAIL, PER SIDE. At most `MAX_NAMED` parts keep their names; the
 //      rest of each side sums into one `OTHER_LABEL` entity in the muted tail
 //      colour. Each side is guaranteed a couple of names so a large asset base
@@ -88,7 +90,10 @@ export interface PeriodStack {
     /** Other commodities the report holds that the chart does not show, alphabetical. */
     omitted: readonly string[];
     labels: readonly string[];
-    /** Legend order: the up side, then the down side, each largest first; any "(other)" last on its side. */
+    /**
+     * Legend order. `periodStack`: the up side, then the down side, each largest
+     * first, any "(other)" last on its side. `cashFlowStack`: the table's row order.
+     */
     entities: readonly StackEntity[];
     /** Draw order (stacked outward from zero). */
     series: readonly StackSeries[];

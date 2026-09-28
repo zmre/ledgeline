@@ -12,6 +12,7 @@
     import {settings} from "$lib/stores/settings.svelte";
     import type {PeriodReport} from "../types";
     import ChartPanel from "./ChartPanel.svelte";
+    import {periodStack} from "./periodStack";
     import PeriodStackView from "./PeriodStackView.svelte";
 
     let {report, styles}: {report: PeriodReport; styles: ReadonlyMap<string, AmountStyle>} = $props();
@@ -24,5 +25,14 @@
     onToggle={(next) => (settings.netWorthChartOpen = next)}
     testid="networth-chart-panel"
 >
-    <PeriodStackView {report} {styles} mark="bar" netLabel="Net worth" labelNet empty="No assets or liabilities in this range." testid="networth-chart" />
+    <PeriodStackView
+        {report}
+        model={periodStack}
+        {styles}
+        mark="bar"
+        netLabel="Net worth"
+        labelNet
+        empty="No assets or liabilities in this range."
+        testid="networth-chart"
+    />
 </ChartPanel>
