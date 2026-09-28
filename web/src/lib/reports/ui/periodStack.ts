@@ -264,17 +264,3 @@ export function periodStack(report: PeriodReport, palette: ChartPalette, fallbac
         netLabelAt: netLabelIndices(report.buckets.length),
     };
 }
-
-/** Why a stack cannot be drawn, or `null` when it can. */
-export type StackEmpty = "no-data" | "single-bucket";
-
-/**
- * A chart needs at least two buckets to show a change, and something non-zero
- * to show. One bucket is a single column or a zero-width area — a number, not a
- * trend, and the table below already says it.
- */
-export function stackEmptyReason(stack: PeriodStack): StackEmpty | null {
-    const nothing = stack.series.length === 0 && stack.net.every((n) => n === 0);
-    if (nothing) return "no-data";
-    return stack.labels.length < 2 ? "single-bucket" : null;
-}

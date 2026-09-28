@@ -38,6 +38,7 @@
     import {Area, AreaChart, BarChart, Spline, Tooltip} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
     import {labelFormatter, tickIndices} from "./periodAxis";
+    import {stackEmptyReason} from "./periodStackEmpty";
 
     /** One drawn series. Every value must share one sign (zeros aside). */
     interface Series {
@@ -83,7 +84,7 @@
         mark?: "bar" | "area";
         /** Px of surface between stacked bar segments (dataviz: 2 when segments touch). */
         stackGap?: number;
-        /** Fewer buckets than this shows `tooShort` instead of a plot. */
+        /** Fewer buckets than this shows `tooShort` instead of a plot (`stackEmptyReason`). */
         minBuckets?: number;
         /** Full precision, for the tooltip and net labels. */
         formatValue: (n: number) => string;
@@ -159,8 +160,7 @@
         })
     );
 
-    const nothingToDraw = $derived(rows.length === 0 || rows.every((r) => r.net === 0 && r.v.every((v) => v === 0)));
-    const tooFew = $derived(!nothingToDraw && rows.length < minBuckets);
+    const emptyReason = $derived(stackEmptyReason(labels, series, net, minBuckets));
 
     // Seeded at [0, 0] so zero is always in frame; widened by each bucket's
     // stacked extremes and by the net.
@@ -308,10 +308,10 @@
             {#if note !== undefined}<span class="font-normal text-base-content/40">· {note}</span>{/if}
         </h3>
     {/if}
-    {#if nothingToDraw}
-        <p class="py-8 text-center text-sm text-base-content/60" data-testid={testid === undefined ? undefined : `${testid}-empty`}>{empty}</p>
-    {:else if tooFew}
-        <p class="py-8 text-center text-sm text-base-content/60" data-testid={testid === undefined ? undefined : `${testid}-empty`}>{tooShort}</p>
+    {#if emptyReason !== null}
+        <p class="py-8 text-center text-sm text-base-content/60" data-testid={testid === undefined ? undefined : `${testid}-empty`}>
+            {emptyReason === "no-data" ? empty : tooShort}
+        </p>
     {:else}
         <div class="w-full {height}" bind:clientWidth={width} data-testid={testid}>
             {#if mark === "bar"}

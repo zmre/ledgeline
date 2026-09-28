@@ -2,7 +2,7 @@ import {describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "$lib/domain/money";
 import {DEFAULT_PALETTE, OTHER_LABEL} from "$lib/format/palette";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
-import {MAX_NAMED, NET_LABEL_LIMIT, netLabelIndices, otherKey, periodStack, splitBySign, stackCommodity, stackEmptyReason, stackParts} from "./periodStack";
+import {MAX_NAMED, NET_LABEL_LIMIT, netLabelIndices, otherKey, periodStack, splitBySign, stackCommodity, stackParts} from "./periodStack";
 
 /** `{$: 12.34}`-style amounts from whole dollars, exact. */
 const usd = (n: number): MixedAmount => (n === 0 ? new Map() : new Map([["$", dec(Math.round(n * 100), 2)]]));
@@ -190,23 +190,5 @@ describe("UNIT periodStack — net and labels", () => {
         expect(netLabelIndices(NET_LABEL_LIMIT)).toHaveLength(NET_LABEL_LIMIT);
         expect(netLabelIndices(12)).toEqual([11]);
         expect(netLabelIndices(0)).toEqual([]);
-    });
-});
-
-describe("UNIT periodStack — empty and degenerate", () => {
-    it("says there is nothing when there are no rows and no net", () => {
-        expect(stackEmptyReason(periodStack({buckets: ["a", "b"], rows: [], totals: [new Map(), new Map()]}, DEFAULT_PALETTE, "$"))).toBe("no-data");
-    });
-
-    it("says nothing when every row is zero", () => {
-        expect(stackEmptyReason(periodStack(report([row("assets:a", [0, 0])], [0, 0]), DEFAULT_PALETTE, "$"))).toBe("no-data");
-    });
-
-    it("refuses a single bucket — a number, not a trend", () => {
-        expect(stackEmptyReason(periodStack(report([row("assets:a", [5])], [5], ["2026"]), DEFAULT_PALETTE, "$"))).toBe("single-bucket");
-    });
-
-    it("draws two buckets", () => {
-        expect(stackEmptyReason(periodStack(report([row("assets:a", [5, 6])], [5, 6]), DEFAULT_PALETTE, "$"))).toBeNull();
     });
 });
