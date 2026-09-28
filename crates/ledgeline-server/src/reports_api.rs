@@ -27,8 +27,9 @@ use ledgeline_core::holdings::engine::prices_any_held_other;
 use ledgeline_core::holdings::{
     Holding, HoldingPrice, HoldingsPoint, HoldingsReport, HoldingsScope, HoldingsSeries,
     HoldingsTotals, HoldingsWarning, OtherHolding, OtherHoldingsReport, OtherHoldingsTotals,
-    OtherHoldingsWarning, OtherWarningKind, PriceSource, ScopeMode, WarningKind, compute_holdings,
-    holdings_series, other_holdings, other_holdings_series, prices_any_held,
+    OtherHoldingsWarning, OtherWarningKind, PriceSource, ScopeMode, WarningKind, auto_interval,
+    compute_holdings, first_holding_date, first_other_holding_date, holdings_series,
+    other_holdings, other_holdings_series, prices_any_held, series_count,
 };
 use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods;
@@ -1436,6 +1437,85 @@ fn parse_count(raw: Option<usize>) -> Result<usize, AppError> {
     }
 }
 
+/// The `since` value that asks for a series starting at the scope's first
+/// holding activity rather than at a date the caller already knows.
+const SINCE_INCEPTION: &str = "inception";
+
+/// Resolve a holdings series' `(interval, count)` from its query: either the
+/// original `interval` + `count` pair (unchanged, `count` trailing buckets
+/// ending at `asOf`), or a `since` START from which the count is derived.
+///
+/// `since` is how the SPA asks for a window it cannot count itself. "All time"
+/// begins at the scope's first holding activity on THIS tab, which only the
+/// engine knows, so `since=inception` resolves it here rather than making the
+/// SPA guess; `interval=auto` then picks a granularity for the span
+/// ([`auto_interval`]). An explicit date works with any interval.
+///
+/// Every mis-combination is a `400`, matching [`parse_interval`] and
+/// [`parse_count`]: `count` beside `since` (two answers to one question),
+/// `auto` without `since` (nothing to size it by), a `since` after `asOf`, or a
+/// span needing more than [`MAX_BUCKETS`] buckets.
+///
+/// Runs on the blocking pool: `inception` scans the journal.
+pub(crate) fn series_window(
+    journal: &Journal,
+    tab: HoldingsTab,
+    scope: &HoldingsScope,
+    interval: Option<&str>,
+    count: Option<usize>,
+    since: Option<&str>,
+) -> Result<(Interval, usize), AppError> {
+    let Some(since) = since.map(str::trim).filter(|value| !value.is_empty()) else {
+        if interval == Some("auto") {
+            return Err(AppError::BadRequest(
+                "interval=auto needs a since to size the window by".to_string(),
+            ));
+        }
+        return Ok((parse_interval(interval)?, parse_count(count)?));
+    };
+    if let Some(count) = count {
+        return Err(AppError::BadRequest(format!(
+            "count {count} and since '{since}' both set the window's length; send one"
+        )));
+    }
+    let start = if since == SINCE_INCEPTION {
+        let first = match tab {
+            HoldingsTab::Stocks => {
+                first_holding_date(&journal.transactions, &journal.accounts, scope)
+            }
+            HoldingsTab::Other => first_other_holding_date(
+                &journal.transactions,
+                &journal.prices,
+                &journal.accounts,
+                scope,
+            )?,
+        };
+        // Nothing held yet: a one-point series at `asOf`, which the chart
+        // reports as empty in words rather than as a line on the axis.
+        first.unwrap_or_else(|| scope.as_of.clone())
+    } else {
+        checked_date("since", since)?
+    };
+    if start.as_str() > scope.as_of.as_str() {
+        return Err(AppError::BadRequest(format!(
+            "since {start} is after asOf {}",
+            scope.as_of
+        )));
+    }
+    let interval = match interval {
+        Some("auto") => auto_interval(&start, &scope.as_of),
+        other => parse_interval(other)?,
+    };
+    let count = series_count(&start, &scope.as_of, interval);
+    if count > MAX_BUCKETS {
+        return Err(AppError::BadRequest(format!(
+            "since {start} needs {count} buckets at this interval (at most {MAX_BUCKETS}); \
+             choose a coarser interval"
+        )));
+    }
+    Ok((interval, count))
+}
+
 /// The deepest account a `depth` param may ask for.
 ///
 /// Nothing in the engine breaks past it — `at_depth` is a filter, and hledger
@@ -1675,7 +1755,7 @@ fn parse_mode(raw: Option<&str>) -> Result<ScopeMode, AppError> {
 /// was a 400 because it priced no stock, and a journal with no stocks at all
 /// vacuously admitted any typo — the plausible-zero HOLD-3 exists to prevent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HoldingsTab {
+pub(crate) enum HoldingsTab {
     /// `/api/holdings[/series]` — commodity-keyed securities.
     Stocks,
     /// `/api/holdings/other[/series]` — account-keyed everything else.
@@ -1794,7 +1874,7 @@ fn resolve_grouped_value_in(
 /// The scope shared by a tab's report and series endpoints: the same account
 /// selection, date and valuation commodity, validated the same way — with the
 /// `valueIn` admission test measured over `tab`'s own rows.
-fn holdings_scope(
+pub(crate) fn holdings_scope(
     journal: &Journal,
     tab: HoldingsTab,
     accounts: Option<&str>,
@@ -2088,19 +2168,24 @@ pub(crate) struct HoldingsQuery {
     gain_since: Option<String>,
 }
 
-/// `?asOf=&accounts=&mode=&interval=&count=&valueIn=` — holdings trend.
+/// `?asOf=&accounts=&mode=&interval=&count=&since=&valueIn=` — holdings trend.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HoldingsSeriesQuery {
-    as_of: Option<String>,
-    accounts: Option<String>,
-    mode: Option<String>,
-    interval: Option<String>,
-    count: Option<usize>,
+    pub(crate) as_of: Option<String>,
+    pub(crate) accounts: Option<String>,
+    pub(crate) mode: Option<String>,
+    /// `daily|weekly|monthly|quarterly|yearly`, or `auto` alongside `since`.
+    pub(crate) interval: Option<String>,
+    pub(crate) count: Option<usize>,
+    /// Where the series starts instead of `count` buckets back: a
+    /// `YYYY-MM-DD`, or `inception` for the scope's first holding activity on
+    /// this tab. See [`series_window`].
+    pub(crate) since: Option<String>,
     /// Commodity to value the trend in. Same contract as [`HoldingsQuery`]'s,
     /// and validated against the same scope, so the chart and the table beside
     /// it can never end up in different commodities.
-    value_in: Option<String>,
+    pub(crate) value_in: Option<String>,
 }
 
 // ===========================================================================
@@ -2681,15 +2766,14 @@ pub(crate) async fn holdings(
 }
 
 /// `GET /api/holdings/series` — portfolio market value (and basis) at each of the
-/// last `count` period boundaries ending at `asOf`. Same scope — and same
-/// `valueIn` contract — as `/api/holdings`.
+/// last `count` period boundaries ending at `asOf`, or at every boundary from
+/// `since` (see [`series_window`]). Same scope — and same `valueIn` contract —
+/// as `/api/holdings`.
 pub(crate) async fn holdings_series_report(
     State(state): State<AppState>,
     Query(query): Query<HoldingsSeriesQuery>,
 ) -> Result<Json<WireHoldingsSeries>, AppError> {
     let snapshot = state.snapshot();
-    let interval = parse_interval(query.interval.as_deref())?;
-    let count = parse_count(query.count)?;
     compute(move || {
         let scope = holdings_scope(
             &snapshot.journal,
@@ -2700,6 +2784,14 @@ pub(crate) async fn holdings_series_report(
             // The trend tracks market value/basis only — no per-point gain window.
             None,
             query.value_in.as_deref(),
+        )?;
+        let (interval, count) = series_window(
+            &snapshot.journal,
+            HoldingsTab::Stocks,
+            &scope,
+            query.interval.as_deref(),
+            query.count,
+            query.since.as_deref(),
         )?;
         let series = holdings_series(
             &snapshot.journal.transactions,
@@ -2759,8 +2851,6 @@ pub(crate) async fn other_holdings_series_report(
     Query(query): Query<HoldingsSeriesQuery>,
 ) -> Result<Json<WireHoldingsSeries>, AppError> {
     let snapshot = state.snapshot();
-    let interval = parse_interval(query.interval.as_deref())?;
-    let count = parse_count(query.count)?;
     compute(move || {
         let scope = holdings_scope(
             &snapshot.journal,
@@ -2771,6 +2861,14 @@ pub(crate) async fn other_holdings_series_report(
             // The trend tracks value/cost only — no per-point change window.
             None,
             query.value_in.as_deref(),
+        )?;
+        let (interval, count) = series_window(
+            &snapshot.journal,
+            HoldingsTab::Other,
+            &scope,
+            query.interval.as_deref(),
+            query.count,
+            query.since.as_deref(),
         )?;
         let series = other_holdings_series(
             &snapshot.journal.transactions,

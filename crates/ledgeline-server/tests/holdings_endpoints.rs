@@ -446,3 +446,83 @@ async fn an_unusable_d_directive_falls_through_to_the_engine() {
     assert_eq!(body["base"], "$");
     assert_eq!(canon(&body["totals"]["marketValue"]), (1200, 0));
 }
+
+// ===========================================================================
+// `since` — a series window the SPA cannot count by itself
+// ===========================================================================
+
+fn buckets(body: &Value) -> Vec<&str> {
+    body["points"]
+        .as_array()
+        .expect("points")
+        .iter()
+        .map(|point| point["bucket"].as_str().expect("bucket"))
+        .collect()
+}
+
+/// "All time" starts at the first stock activity in scope — the 2024-09-16 AAPL
+/// buy — and `auto` draws its 23 months monthly.
+#[tokio::test]
+async fn since_inception_starts_at_the_first_holding_activity() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        &format!("/api/holdings/series?asOf={AS_OF}&since=inception&interval=auto"),
+    )
+    .await;
+    let keys = buckets(&body);
+    assert_eq!(keys.len(), 23);
+    assert_eq!(keys.first(), Some(&"2024-09"));
+    assert_eq!(keys.last(), Some(&"2026-07"));
+}
+
+/// A week back, daily: eight points, the first on `since` itself.
+#[tokio::test]
+async fn since_a_date_counts_the_buckets_from_it() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        &format!("/api/holdings/series?asOf={AS_OF}&since=2026-07-09&interval=daily"),
+    )
+    .await;
+    let points = body["points"].as_array().expect("points");
+    assert_eq!(points.len(), 8);
+    assert_eq!(points[0]["date"], "2026-07-09");
+    assert_eq!(points[7]["date"], AS_OF);
+}
+
+#[tokio::test]
+async fn since_rejects_contradictory_or_oversized_windows() {
+    let journal = sample_journal();
+    for query in [
+        // Two answers to "how long".
+        "since=2026-01-01&count=3",
+        // Nothing to size `auto` by.
+        "interval=auto",
+        // A start after the end.
+        "since=2026-08-01",
+        // 2,389 daily buckets.
+        "since=2020-01-01&interval=daily",
+        "since=not-a-date",
+    ] {
+        let (status, _, _) = get_on(
+            &journal,
+            &format!("/api/holdings/series?asOf={AS_OF}&{query}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+    }
+}
+
+/// The Other tab resolves `inception` against ITS rows: the house opened on
+/// 2024-07-01, before any stock was bought.
+#[tokio::test]
+async fn other_series_since_inception_uses_the_other_tabs_first_activity() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        &format!("/api/holdings/other/series?asOf={AS_OF}&since=inception&interval=auto"),
+    )
+    .await;
+    assert_eq!(buckets(&body).first(), Some(&"2024-07"));
+}
