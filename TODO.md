@@ -54,9 +54,6 @@
   - for forms and displays of numbers and such, it would probably be a great improvement
   - for charts, i expect we'd be in trouble; egui has some libraries that might do
 - chore: publish docs to website using mbr
-- feature: better colors
-  - our colors, particularly in our charts, are sort of dull. in another project, i use daisy ui and their dark theme and that has a more vibrant feel.  we will in the future support different themes, probably, but right now lets try to define some colors that are used and could swap out in the future
-  - match the daisy ui "dark" theme colors. if we need more colors, work with similar vibrancy and saturation to make a consistent feel
 
 ## Performance
 - perf: **`/api/insights` misses its gate by 2.4×** — 968 ms at 200k against a 400 ms target, and it
@@ -161,19 +158,7 @@ user's first click on "All time".
 
 ## Stocks
 
-- feat: gain timeline improvements
-  - when i change the gain timeline, everything else should update, too, notably the "value over time" which is fixed to previous 12 months
-  - the gain timeline also needs more options. lets do 5yr, 3mo, 1mo, and 1 week as additions
-- feat: in holdings tab, optional compare performance to S&P, Dow, Nasdaq, Bonds, US Stock Index, and any other three or four standard measures we can think of as an option
-  - Idea is to be able to see how one's portfolio is doing versus the market or market segments where each comparison can be shown optionally with a checkbox
-  - Our current line chart is value (dollars) over time and we need to overlay basically what it would have been like if every investment was made at the same time with the same money but into X as a separate line (dotted and different color) to show the comparison and difference in the chart.
-  - We don't need this per stock and we don't need it as an overall percentage -- just the line chart.
-  - The chart should load with local data before we go fetching data needed for comparisons, which should be a progressive enhancement
-  - In order to avoid refetching historical data every time, we should probably have a file of prices just for these comparisons, probably not included since it won't be an owned commodity, but in the same format
-- feat: more pie chart views of stocks
-  - if yahoo gives us more than just price information then it might be nice to have a drop down on our stock holdings pie chart to show it divided up in a few ways: risk categorization, asset class, security type, industry, etc. -- whatever we can get -- then we show the pie chart instead of by investment, by category
-  - we would need a way to have a tag on commodities that could specify (or override even) this information
-  - if yahoo doesn't provide this information for free, then we'd need to see if there's another place that does. there's no server, so any sort of signup or account requirement is a blocker. we'll skip this feature if we don't have a data source.
+- feat: benchmark comparison lines need a USD valuation base. Convert the dividend-adjusted closes through journal prices so a non-USD book gets them too.
 
 ## Ledger 
 
@@ -189,41 +174,8 @@ user's first click on "All time".
   - the challenge here is when a single entry has more than two accounts, so we'd probably do this as multi-line. see if you can research how quickbooks exports journal/ledger reports, which i think we already know because we can import them. if not, i can get a sample.  but lets try to be compatible with that.
 - feat: saved report filters?
 
-## Reports
-
-* feat(charts): let's add a chart over the Net Worth report
-  * This should be a stacked bar chart with x-axis being interval for the shown periods (so by default, each of the last 5 years) and y-axis being dollars
-  * The size of the column stack in total will be total net worth
-  * Each item (per account depth) will show its amount in the column stack
-  * We probably want to lump together the long tail
-  * Hmmm, I was only thinking about assets and not liabilities. I think perhaps we show a separate bar underneath the assets one showing liabilities going down below zero (negative).  So this bar chart will have a positive component and a negative component for each time period. Similarly stacked for the components.
-  * We can imagine if we paid off our mortgage, we'd see both the assets shrink and the liabilities shrink in that time period
-  * We can put the net amount as a label
-* feat(charts): lets put a stacked area line graph over the Cash Flow report with a dotted line over the top showing the Net and negative components below the line and positive components above it
-  * Subject to the same interval and periods
-  * Should be able to see what's healthy or not at a glance and how things are trending overall and individually at whatever account depth
-
 ## Budgeting / planning / modeling
 
 - feat: personal planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
   - TODO: investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
-  - in business, I also build modeling spreadsheets that allow for what-ifs and let me model sales growth, investments, ramp up in hiring/expenses, etc., so i can understand runway (cash balance over time anyway)
-    - It would be great if we had a mechanism for unifying this
-  - we need to understand how forecasting works in hledger -- is it just the budgeting? can we use that for forecasts meaningfully?
-    - partly answered by the budget editor (`plans/15-budget-editor.md`): hledger's `--forecast` reads the
-      SAME `~` periodic rules `bal --budget` does, so `ledgeline-core/src/periodic.rs` — the span editor
-      the budget tab writes through — is already the document model a forecast scenario would be written
-      with. It is named `periodic` rather than `budget` for exactly that reason.
-  - fix: our parser REJECTS every period expression outside the five fixed intervals — `~ every 2 weeks`,
-    `~ monthly from 2026-01 to 2027-01` — and the rejection fails the WHOLE journal parse, not just the
-    rule. Forecasts need those forms (a scenario is bounded by definition), and today a user who writes
-    one cannot open their journal at all. `parse::parse_period_expr` + `model::PeriodExpr` are where it
-    lives; `periodic::BlockLock::Period` already presents an unmodelled period read-only, so the editor
-    side is ready for whatever the parser learns to read.
-  - i want to be able to save different forecasts, probably as files not included in the main, but which we can read in and apply and then produce reports into the future (balance sheet, p&l, cash flow, etc).
-  - we should be able to do things with percentages, too, so we can assume some percentage return on investments or increase in salaries, expenses, and so on.  Not sure if we'd have to calculate this and save it out or if we could bake it in using hledger's auto postings
-  - I really want this feature to be a nice GUI but then something that persists and still works with hledger to the greatest extent possible.
-  - We should be able to have pre-canned report templates where there are sliders that for indicating certain things and they produce the forecast files that we then show based on those values (which could be captured as comments if needed so we can edit and change easily later).
-    - The idea here would be for a basic personal one with questions about how many years until retirement, how much invested into retirement accounts, assumptions on stock returns and inflation, assumptions on spending per year in retirement, taxes, what income streams will continue (dollar amount and adjustment per year) in retirement, etc.
-    - There would be different questions for business ones and other ideas, but the core here is that a user could do absolutely anything, but we make it really simple to setup some basic forecast scenarios.
