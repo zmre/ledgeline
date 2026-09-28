@@ -33,7 +33,7 @@ interface MountOptions {
     heading?: string;
     note?: string;
     labels?: readonly string[];
-    series?: {name: string; values: readonly number[]; dashed?: boolean}[];
+    series?: {name: string; values: readonly (number | null)[]; dashed?: boolean; slot?: number}[];
     includeZero?: boolean;
     markAt?: number | null;
     empty?: string;
@@ -215,5 +215,55 @@ describe("COMPONENT PeriodLineChart", () => {
 
         expect(h3?.textContent).toContain("Value over time");
         expect(h3?.textContent).toContain("· last 12 months");
+    });
+});
+
+describe("COMPONENT PeriodLineChart gaps and fixed slots", () => {
+    /** How many separate runs a drawn path has: one `M` per unbroken stretch. */
+    const runs = (path: Element | undefined): number => (path?.getAttribute("d") ?? "").split("M").length - 1;
+    const paths = (root: HTMLElement): Element[] => [...root.querySelectorAll("path.lc-path")];
+
+    it("breaks the line at a null instead of drawing it through zero", () => {
+        const {container} = mount({series: [{name: "Benchmark", values: [1, 2, 3, null, 5, 6, 7, 8, 9, 10, 11, 12]}]});
+
+        expect(runs(paths(container)[0])).toBe(2);
+    });
+
+    it("draws an unbroken line when nothing is null", () => {
+        const {container} = mount({series: [{name: "Portfolio", values: ramp(MONTHS)}]});
+
+        expect(runs(paths(container)[0])).toBe(1);
+    });
+
+    it("starts a line late when its leading values are null", () => {
+        const {container} = mount({
+            series: [
+                {name: "Portfolio", values: ramp(MONTHS)},
+                {name: "Young fund", values: [null, null, null, 4, 5, 6, 7, 8, 9, 10, 11, 12], dashed: true},
+            ],
+        });
+
+        expect(paths(container).map(runs)).toEqual([1, 1]);
+    });
+
+    it("treats a chart of nothing but gaps and zeroes as nothing to draw", () => {
+        mount({series: [{name: "A", values: MONTHS.map(() => null)}], empty: "Nothing here."});
+
+        expect(document.querySelector('[data-testid="trend"]')).toBeNull();
+        expect(document.body.textContent).toContain("Nothing here.");
+    });
+
+    it("colours a series by its own slot, so an optional line never repaints the others", () => {
+        const {container} = mount({
+            series: [
+                {name: "Portfolio", values: ramp(MONTHS), slot: 0},
+                {name: "Gold (GLD)", values: ramp(MONTHS), dashed: true, slot: 5},
+            ],
+        });
+
+        expect(paths(container).map((p) => p.getAttribute("stroke"))).toEqual([chartColors.colorAt(0), chartColors.colorAt(5)]);
+        const keys = [...document.querySelectorAll('[data-testid="trend-legend"] li span')].map((key) => (key as HTMLElement).style.borderColor);
+        expect(keys).toHaveLength(2);
+        expect(keys[0]).not.toBe(keys[1]);
     });
 });
