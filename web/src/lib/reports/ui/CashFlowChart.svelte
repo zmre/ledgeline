@@ -31,6 +31,11 @@
     const mode = $derived(settings.cashFlowChartMode);
 </script>
 
+<!-- Either breakdown, drawn the same way. -->
+{#snippet chart(breakdown: PeriodReport)}
+    <PeriodStackView report={breakdown} {styles} mark="area" netLabel="Net change" empty="No cash moved in this range." testid="cashflow-chart" />
+{/snippet}
+
 <ChartPanel
     heading="Cash flow over time"
     note="into cash above zero, out below"
@@ -51,7 +56,7 @@
         {/each}
     </div>
     {#if mode === "account"}
-        <PeriodStackView {report} {styles} mark="area" netLabel="Net change" empty="No cash moved in this range." testid="cashflow-chart" />
+        {@render chart(report)}
     {:else}
         <AsyncSection
             view={sources.view}
@@ -61,10 +66,7 @@
             label="the cash-flow sources"
             loadingLabel="Loading cash-flow sources"
             onRetry={sources.retry}
-        >
-            {#snippet children(breakdown)}
-                <PeriodStackView report={breakdown} {styles} mark="area" netLabel="Net change" empty="No cash moved in this range." testid="cashflow-chart" />
-            {/snippet}
-        </AsyncSection>
+            children={chart}
+        />
     {/if}
 </ChartPanel>

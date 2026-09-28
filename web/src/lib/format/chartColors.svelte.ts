@@ -26,8 +26,10 @@ export interface ChartColors {
     readonly flowNet: string;
     /** Slot `i`'s colour, folding to `other` past the last slot (never cycling). */
     colorAt(i: number): string;
-    /** Re-read the tokens now. The attribute observer calls this; exposed for a caller that swaps stylesheets. */
-    refresh(): void;
+}
+
+/** A palette built by `createChartColors`, which a test can stop watching. */
+export interface WatchedChartColors extends ChartColors {
     /** Stop watching `data-theme`. Only a test needs this; the app instance lives as long as the page. */
     destroy(): void;
 }
@@ -38,19 +40,19 @@ function browserSource(): ChartColorsSource {
     return {root, read: (token) => getComputedStyle(root).getPropertyValue(token)};
 }
 
-class ReactiveChartColors implements ChartColors {
+class ReactiveChartColors implements WatchedChartColors {
     #current = $state.raw<ChartPalette>(DEFAULT_PALETTE);
     readonly #read: (token: string) => string;
     readonly #observer: MutationObserver | null;
 
     constructor({root, read}: ChartColorsSource) {
         this.#read = read;
-        this.refresh();
+        this.#refresh();
         if (root === null || typeof MutationObserver === "undefined") {
             this.#observer = null;
             return;
         }
-        this.#observer = new MutationObserver(() => this.refresh());
+        this.#observer = new MutationObserver(() => this.#refresh());
         this.#observer.observe(root, {attributes: true, attributeFilter: ["data-theme"]});
     }
 
@@ -77,7 +79,8 @@ class ReactiveChartColors implements ChartColors {
         return colorAt(this.#current, i);
     }
 
-    refresh(): void {
+    /** Re-read the tokens; the attribute observer calls this on a theme switch. */
+    #refresh(): void {
         const next = resolvePalette(this.#read);
         if (!samePalette(next, this.#current)) this.#current = next;
     }
@@ -88,7 +91,7 @@ class ReactiveChartColors implements ChartColors {
 }
 
 /** A palette bound to `source`. Tests build their own; the app uses `chartColors`. */
-export function createChartColors(source: ChartColorsSource = browserSource()): ChartColors {
+export function createChartColors(source: ChartColorsSource = browserSource()): WatchedChartColors {
     return new ReactiveChartColors(source);
 }
 

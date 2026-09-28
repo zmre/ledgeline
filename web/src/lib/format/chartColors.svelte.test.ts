@@ -5,7 +5,7 @@
 
 import {flushSync} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
-import {chartColors, createChartColors, type ChartColors} from "./chartColors.svelte";
+import {chartColors, createChartColors, type WatchedChartColors} from "./chartColors.svelte";
 import {DEFAULT_PALETTE} from "./palette";
 
 const THEMES: Record<string, Record<string, string>> = {
@@ -18,9 +18,9 @@ const observed = (): Promise<void> => new Promise((resolve) => queueMicrotask(re
 
 describe("COMPONENT chartColors", () => {
     let root: HTMLElement;
-    let colors: ChartColors | null = null;
+    let colors: WatchedChartColors | null = null;
 
-    const build = (): ChartColors => {
+    const build = (): WatchedChartColors => {
         root = document.createElement("div");
         root.setAttribute("data-theme", "dark");
         colors = createChartColors({root, read: (token) => THEMES[root.getAttribute("data-theme") ?? ""]?.[token] ?? ""});
