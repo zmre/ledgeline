@@ -2,7 +2,7 @@ import {describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "$lib/domain/money";
 import {DEFAULT_PALETTE, OTHER_LABEL} from "$lib/format/palette";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
-import {MAX_NAMED, NET_LABEL_LIMIT, netLabelIndices, otherKey, periodStack, splitBySign, stackCommodity, stackParts} from "./periodStack";
+import {MAX_NAMED, otherKey, periodStack, splitBySign, stackCommodity, stackParts} from "./periodStack";
 
 /** `{$: 12.34}`-style amounts from whole dollars, exact. */
 const usd = (n: number): MixedAmount => (n === 0 ? new Map() : new Map([["$", dec(Math.round(n * 100), 2)]]));
@@ -179,16 +179,9 @@ describe("UNIT periodStack — commodity", () => {
     });
 });
 
-describe("UNIT periodStack — net and labels", () => {
+describe("UNIT periodStack — the net", () => {
     it("takes the net from the engine's totals, not from the parts", () => {
         const stack = periodStack(report([row("assets:a", [5, 5])], [7, 9]), DEFAULT_PALETTE, "$");
         expect(stack.net).toEqual([7, 9]);
-    });
-
-    it("labels every net point up to the limit, and only the last past it", () => {
-        expect(netLabelIndices(5)).toEqual([0, 1, 2, 3, 4]);
-        expect(netLabelIndices(NET_LABEL_LIMIT)).toHaveLength(NET_LABEL_LIMIT);
-        expect(netLabelIndices(12)).toEqual([11]);
-        expect(netLabelIndices(0)).toEqual([]);
     });
 });

@@ -52,15 +52,6 @@ export const MAX_NAMED = 6;
 /** Names each side keeps before the rest compete on magnitude, so one side cannot take every slot. */
 const MIN_NAMED_PER_SIDE = 2;
 
-/**
- * Net value labels are drawn on every bucket up to this many, and on the last
- * one only past it. Six is what fits across the 375px viewport without two
- * labels touching (`periodAxis`'s tick budget, for the same reason); past it a
- * label per point is the dataviz "number on every point" failure, and the last
- * point — the figure the reader came for — is the one worth keeping.
- */
-export const NET_LABEL_LIMIT = 6;
-
 /** A part of the stack before folding: a leaf row, or a parent's own residual. */
 export interface StackPart {
     /** Stable identity: the account, or `account (own)` for a residual. */
@@ -102,8 +93,6 @@ export interface PeriodStack {
     series: readonly StackSeries[];
     /** The engine's own per-bucket total, not a sum of the parts. */
     net: readonly number[];
-    /** Bucket indices whose net point carries a value label. */
-    netLabelAt: readonly number[];
 }
 
 /** The folded tail's key on one side. */
@@ -200,12 +189,6 @@ function namedKeys(measured: readonly Measured[]): Set<string> {
     return named;
 }
 
-/** Past `NET_LABEL_LIMIT` buckets, label the last net point only. */
-export function netLabelIndices(count: number): number[] {
-    if (count <= 0) return [];
-    return count <= NET_LABEL_LIMIT ? Array.from({length: count}, (_, i) => i) : [count - 1];
-}
-
 /** Split every entity into its non-zero positive and negative halves. */
 export function splitBySign(entities: readonly StackEntity[]): StackSeries[] {
     const halves: StackSeries[] = [];
@@ -261,6 +244,5 @@ export function periodStack(report: PeriodReport, palette: ChartPalette, fallbac
         entities,
         series: splitBySign(entities),
         net: report.totals.map((total) => amountIn(total, commodity)),
-        netLabelAt: netLabelIndices(report.buckets.length),
     };
 }

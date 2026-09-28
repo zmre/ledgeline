@@ -28,8 +28,10 @@
        surface between layers.
      - THE NET IS DRAWN TWICE, a wide surface-coloured halo under the dashed
        ink, so it reads against the surface rather than against whichever mark
-       it crosses. `netLabelAt` adds a dot and a value label at those buckets
-       only; the caller decides which (never every point by default).
+       it crosses. `labelNet` adds a dot and a value label, off by default and
+       never on every point: the buckets are picked by `periodAxis.tickIndices`,
+       the axis's own spacing rule, fitted to the plot width and the formatted
+       labels. A bucket with nothing in it gets none.
      - ONE TOOLTIP PER BUCKET listing every non-zero series in legend order —
        values lead, labels follow, keyed by a short line — then the net.
      - The LEGEND is always shown, one entry per entity (a folded "(other)" on
@@ -38,7 +40,7 @@
 <script lang="ts">
     import {Area, AreaChart, BarChart, Spline, Tooltip, type ChartState} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
-    import {fittedTicks, labelFormatter} from "./periodAxis";
+    import {fittedTicks, labelFormatter, tickIndices} from "./periodAxis";
     import {stackEmptyReason} from "./periodStackEmpty";
 
     /** One drawn series. Every value must share one sign (zeros aside). */
@@ -58,7 +60,7 @@
         series,
         net,
         netLabel = "Net",
-        netLabelAt = [],
+        labelNet = false,
         mark = "bar",
         stackGap = 0,
         minBuckets = 1,
@@ -80,8 +82,8 @@
         /** The net per bucket, signed. Drawn as given: nothing reconciles it with the stacks. */
         net: readonly number[];
         netLabel?: string;
-        /** Bucket indices that get a net dot and value label. */
-        netLabelAt?: readonly number[];
+        /** Dot and label the net at as many buckets as fit apart. */
+        labelNet?: boolean;
         mark?: "bar" | "area";
         /** Px of surface between stacked bar segments (dataviz: 2 when segments touch). */
         stackGap?: number;
@@ -215,27 +217,21 @@
     }
 
     const netOf = (d: Row): number => d.net;
+
+    /** The px size the net value labels are drawn at (the `text-[11px]` below). */
+    const NET_LABEL_FONT_PX = 11;
+    const netTexts = $derived(rows.map((r) => axisFormat(r.net)));
     /**
-     * Px one compact net label needs (`$211.9K` at 11px, plus air). The caller's
-     * `netLabelAt` assumes a phone-width budget; this MEASURES instead. Labels sit
-     * one per bucket, so they fit only when a BUCKET is at least this wide; when
-     * it is not, only the last is kept, since overlapping labels are unreadable
-     * and the latest figure is the one worth keeping. The tooltip still carries
-     * every value.
+     * The buckets whose net gets a dot and value label in a plot `plotWidth` px
+     * wide: the x axis's own spacing rule over the formatted labels, so they
+     * thin out exactly as the ticks do and never touch. The tooltip still
+     * carries every value. A bucket with nothing in it (the years before the
+     * journal starts) gets no "$0" label: it would be a number that says nothing.
      */
-    const NET_LABEL_PX = 64;
-    // A bucket with nothing in it (the years before the journal starts)
-    // gets no "$0" label: it would be a number that says nothing.
-    const wantedLabels = $derived(
-        netLabelAt.filter((i) => {
-            const row = rows[i];
-            return row !== undefined && (row.net !== 0 || row.v.some((v) => v !== 0));
-        })
-    );
-    /** The labelled buckets for a plot `plotWidth` px wide (≤ 0 before layout, when every wanted one is kept). */
-    function labelledAt(plotWidth: number): Set<number> {
-        const bucketPx = plotWidth <= 0 || rows.length === 0 ? Infinity : plotWidth / rows.length;
-        return new Set(wantedLabels.length <= 1 || bucketPx >= NET_LABEL_PX ? wantedLabels : wantedLabels.slice(-1));
+    function netLabelsAt(plotWidth: number): Set<number> {
+        if (!labelNet) return new Set();
+        const fitted = tickIndices(rows.length, {plotWidth, labels: netTexts, fontPx: NET_LABEL_FONT_PX});
+        return new Set(fitted.filter((i) => rows[i].net !== 0 || rows[i].v.some((v) => v !== 0)));
     }
 
     const NET_CLASS = "stroke-2 [stroke-dasharray:5_3]";
@@ -287,7 +283,7 @@
     <!-- Halo first, then the ink, so the net reads against the surface. -->
     <Spline y={netOf} class="{NET_HALO_CLASS} stroke-base-200" />
     <Spline y={netOf} stroke={chartColors.flowNet} class={NET_CLASS} />
-    {@const labelled = labelledAt(context.width)}
+    {@const labelled = netLabelsAt(context.width)}
     {#each rows.filter((r) => labelled.has(r.i)) as r (r.i)}
         {@const cx = context.xScale(r.i) + (context.xScale.bandwidth?.() ?? 0) / 2}
         {@const cy = context.yScale(r.net)}
@@ -298,8 +294,7 @@
                 x={cx}
                 y={r.net >= 0 ? cy - 9 : cy + 16}
                 text-anchor={edge}
-                class="fill-base-content stroke-base-200 [stroke-width:3px] text-[11px] font-semibold tabular-nums [paint-order:stroke]"
-                >{axisFormat(r.net)}</text
+                class="fill-base-content stroke-base-200 [stroke-width:3px] text-[11px] font-semibold tabular-nums [paint-order:stroke]">{netTexts[r.i]}</text
             >
         </g>
     {/each}

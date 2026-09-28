@@ -30,18 +30,18 @@ interface MountOptions {
     series?: typeof SERIES;
     net?: readonly number[];
     mark?: "bar" | "area";
-    netLabelAt?: readonly number[];
+    labelNet?: boolean;
     minBuckets?: number;
 }
 
-function mount({labels = LABELS, series = SERIES, net = NET, mark = "bar", netLabelAt, minBuckets}: MountOptions = {}) {
+function mount({labels = LABELS, series = SERIES, net = NET, mark = "bar", labelNet, minBuckets}: MountOptions = {}) {
     return render(PeriodStackChart, {
         heading: "Net worth",
         labels,
         series,
         net,
         mark,
-        netLabelAt,
+        labelNet,
         minBuckets,
         netLabel: "Net worth",
         formatValue: money,
@@ -95,14 +95,23 @@ describe("COMPONENT PeriodStackChart", () => {
             expect(splines[1].getAttribute("stroke")).toBe(chartColors.flowNet);
         });
 
-        it("labels only the buckets it is told to, with the formatted net", () => {
-            const {container} = mount({netLabelAt: [4]});
+        // jsdom lays nothing out, so the plot has no width and the labels get
+        // the axis's unfitted budget (about six) — every one of these five.
+        it("labels the net with the formatted value where asked", () => {
+            const {container} = mount({labelNet: true});
             const points = [...container.querySelectorAll("g.lc-net-point")];
 
-            expect(points).toHaveLength(1);
-            expect(points[0].getAttribute("data-bucket")).toBe("4");
-            expect(points[0].querySelector("text")?.textContent).toBe("$674.00");
-            expect(points[0].querySelector("circle")?.getAttribute("fill")).toBe(chartColors.flowNet);
+            expect(points.map((p) => p.getAttribute("data-bucket"))).toEqual(["0", "1", "2", "3", "4"]);
+            expect(points[4].querySelector("text")?.textContent).toBe("$674.00");
+            expect(points[4].querySelector("circle")?.getAttribute("fill")).toBe(chartColors.flowNet);
+        });
+
+        it("puts no label on a bucket with nothing in it", () => {
+            const series = SERIES.map((s) => ({...s, values: [0, ...s.values.slice(1)]}));
+            const {container} = mount({series, net: [0, ...NET.slice(1)], labelNet: true});
+            const buckets = [...container.querySelectorAll("g.lc-net-point")].map((p) => p.getAttribute("data-bucket"));
+
+            expect(buckets).toEqual(["1", "2", "3", "4"]);
         });
 
         it("labels none by default — never a number on every point unasked", () => {

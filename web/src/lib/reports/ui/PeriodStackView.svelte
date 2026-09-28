@@ -24,7 +24,7 @@
         styles: ReadonlyMap<string, AmountStyle>;
         mark: "bar" | "area";
         netLabel: string;
-        /** Dot and label the net per `periodStack.netLabelIndices`; off draws the line alone. */
+        /** Dot and label the net where the chart has room (`PeriodStackChart`); off draws the line alone. */
         labelNet?: boolean;
         empty: string;
         testid: string;
@@ -41,7 +41,7 @@
     series={stack.series}
     net={stack.net}
     {netLabel}
-    netLabelAt={labelNet ? stack.netLabelAt : []}
+    {labelNet}
     {mark}
     stackGap={mark === "bar" ? 2 : 0}
     minBuckets={2}
