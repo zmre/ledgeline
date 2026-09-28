@@ -25,7 +25,7 @@ use super::aggregate::{at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
 use super::periods::{Interval, bucket_as_of, last_n_buckets};
 use super::prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
-use super::types::{PeriodReport, PeriodRow, ReportMeta};
+use super::types::{PeriodReport, PeriodRow, ReportMeta, RowKind};
 use crate::model::{Commodity, PriceDirective, Transaction};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -97,6 +97,48 @@ pub struct NetWorthOpts<'a> {
 fn first_bucket(as_ofs: &[String], date: &str) -> Option<usize> {
     let index = as_ofs.partition_point(|as_of| as_of.as_str() < date);
     (index < as_ofs.len()).then_some(index)
+}
+
+/// Which side of the balance sheet `account` is on, by EFFECTIVE type — `None`
+/// when it is in neither and so is not part of net worth at all. Cash is an
+/// asset subtype, so `type: C` lands on the asset side.
+fn balance_side(account: &str, declared: &BTreeMap<String, AccountType>) -> Option<RowKind> {
+    if is_account_type(account, declared, AccountType::Asset) {
+        Some(RowKind::Asset)
+    } else if is_account_type(account, declared, AccountType::Liability) {
+        Some(RowKind::Liability)
+    } else {
+        None
+    }
+}
+
+/// The `kind` of every row a roll-up of `members` can produce: each member's
+/// side, merged into the member itself and every ancestor of it. An ancestor
+/// whose subtree holds both sides is [`RowKind::Mixed`].
+///
+/// Computed over the same member set the rows are rolled up from, so a row's
+/// kind describes exactly the balances summed into it — a clamped
+/// `assets` row over an `assets:receivable ; type: L` child says `Mixed`
+/// rather than claiming to be an asset it is not wholly made of.
+fn row_kinds<'a>(members: impl Iterator<Item = (&'a str, RowKind)>) -> HashMap<String, RowKind> {
+    let mut kinds: HashMap<String, RowKind> = HashMap::new();
+    for (account, side) in members {
+        let prefixes = account
+            .match_indices(':')
+            .map(|(cut, _)| &account[..cut])
+            .chain(std::iter::once(account));
+        for prefix in prefixes {
+            kinds
+                .entry(prefix.to_string())
+                .and_modify(|kind| {
+                    if *kind != side {
+                        *kind = RowKind::Mixed;
+                    }
+                })
+                .or_insert(side);
+        }
+    }
+    kinds
 }
 
 /// Net worth per bucket, valued at market prices, with asset/liability rows
@@ -184,7 +226,9 @@ pub(crate) fn net_worth_priced(
     // the asset/liability accounts beneath it. Membership is a pure function of
     // the account name, so it is resolved once per DISTINCT name (~250) rather
     // than once per posting per bucket (PERF-5e).
-    let mut membership: HashMap<&str, bool> = HashMap::new();
+    // The side is kept (not just a yes/no) because the row `kind` on the wire is
+    // decided here too, from the very same test: see [`row_kinds`].
+    let mut membership: HashMap<&str, Option<RowKind>> = HashMap::new();
     for txn in txns {
         for posting in &txn.postings {
             let date = posting.date.as_deref().unwrap_or(&txn.date);
@@ -192,11 +236,10 @@ pub(crate) fn net_worth_priced(
                 continue;
             };
             let account = posting.account.0.as_str();
-            let member = *membership.entry(account).or_insert_with(|| {
-                is_account_type(account, declared, AccountType::Asset)
-                    || is_account_type(account, declared, AccountType::Liability)
-            });
-            if !member {
+            let side = *membership
+                .entry(account)
+                .or_insert_with(|| balance_side(account, declared));
+            if side.is_none() {
                 continue;
             }
             let entry = deltas[bucket].entry(account).or_default();
@@ -243,6 +286,11 @@ pub(crate) fn net_worth_priced(
         .iter()
         .flat_map(|bucket| bucket.rows.keys().cloned())
         .collect();
+    let kinds = row_kinds(
+        membership
+            .iter()
+            .filter_map(|(account, side)| side.map(|side| (*account, side))),
+    );
 
     // Only the latest bucket feeds `meta.unpriced` (see the module doc): a sink
     // is passed for the last period and withheld (`None`) for every earlier one,
@@ -264,6 +312,7 @@ pub(crate) fn net_worth_priced(
             account: account.clone(),
             depth: account.split(':').count(),
             values,
+            kind: kinds.get(account).copied(),
         });
     }
 
@@ -580,5 +629,135 @@ mod tests {
             }),
             "STK is genuinely unvalued at the latest period"
         );
+    }
+
+    fn kinds_of(report: &PeriodReport) -> Vec<(&str, Option<RowKind>)> {
+        report
+            .rows
+            .iter()
+            .map(|row| (row.account.as_str(), row.kind))
+            .collect()
+    }
+
+    #[test]
+    fn tags_each_row_with_its_balance_sheet_side() {
+        let report = net_worth(
+            &sample(),
+            &prices(),
+            "2026-02-28",
+            Interval::Monthly,
+            2,
+            2,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            kinds_of(&report),
+            [
+                ("assets", Some(RowKind::Asset)),
+                ("assets:bank", Some(RowKind::Asset)),
+                ("assets:wise", Some(RowKind::Asset)),
+                ("liabilities", Some(RowKind::Liability)),
+                ("liabilities:visa", Some(RowKind::Liability)),
+            ]
+        );
+    }
+
+    /// The side is the account's TYPE, not its sign or its name: an overdrawn
+    /// declared asset is still an asset, and a declared liability under a root
+    /// no English heuristic recognises is still a liability.
+    #[test]
+    fn kind_follows_declared_type_not_sign_or_name() {
+        let txns = vec![
+            txn(
+                1,
+                "2026-01-10",
+                vec![
+                    ("activo:banco", vec![usd(-5000)]), // overdrawn
+                    ("gastos:comida", vec![usd(5000)]),
+                ],
+            ),
+            txn(
+                2,
+                "2026-01-11",
+                vec![
+                    ("pasivo:tarjeta", vec![usd(3000)]), // a refund: positive liability
+                    ("gastos:comida", vec![usd(-3000)]),
+                ],
+            ),
+        ];
+        let declared = BTreeMap::from([
+            ("activo".to_string(), AccountType::Asset),
+            ("pasivo".to_string(), AccountType::Liability),
+        ]);
+        let report = super::net_worth(
+            &txns,
+            &[],
+            &NetWorthOpts {
+                end: "2026-01-31",
+                interval: Interval::Monthly,
+                count: 1,
+                depth: 2,
+                value_in: None,
+                declared: &declared,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            kinds_of(&report),
+            [
+                ("activo", Some(RowKind::Asset)),
+                ("activo:banco", Some(RowKind::Asset)),
+                ("pasivo", Some(RowKind::Liability)),
+                ("pasivo:tarjeta", Some(RowKind::Liability)),
+            ]
+        );
+    }
+
+    /// RPT-2's shape: a liability declared beneath an asset parent. The leaf
+    /// rows keep their own sides; the clamped parent that sums both says so.
+    #[test]
+    fn a_row_summing_both_sides_is_mixed() {
+        let txns = vec![
+            txn(
+                1,
+                "2026-01-10",
+                vec![
+                    ("assets:bank", vec![usd(10_000)]),
+                    ("equity:opening", vec![usd(-10_000)]),
+                ],
+            ),
+            txn(
+                2,
+                "2026-01-11",
+                vec![
+                    ("assets:receivable", vec![usd(-2000)]),
+                    ("income:misc", vec![usd(2000)]),
+                ],
+            ),
+        ];
+        let declared = BTreeMap::from([
+            ("assets".to_string(), AccountType::Asset),
+            ("assets:receivable".to_string(), AccountType::Liability),
+        ]);
+        let opts = |depth| NetWorthOpts {
+            end: "2026-01-31",
+            interval: Interval::Monthly,
+            count: 1,
+            depth,
+            value_in: None,
+            declared: &declared,
+        };
+        let deep = super::net_worth(&txns, &[], &opts(2)).unwrap();
+        assert_eq!(
+            kinds_of(&deep),
+            [
+                ("assets", Some(RowKind::Mixed)),
+                ("assets:bank", Some(RowKind::Asset)),
+                ("assets:receivable", Some(RowKind::Liability)),
+            ]
+        );
+        let shallow = super::net_worth(&txns, &[], &opts(1)).unwrap();
+        assert_eq!(kinds_of(&shallow), [("assets", Some(RowKind::Mixed))]);
     }
 }

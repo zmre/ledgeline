@@ -45,9 +45,9 @@ use ledgeline_core::model::{Commodity, CostKind, Journal, PriceDirective, Transa
 use ledgeline_core::reports::{
     AccountType, InsightsOpts, Interval, MixedAmount, NetWorthOpts, PeriodReport, PostingFilter,
     PriceDb, ReportRow, Section, SectionedReport, account_decls, account_totals, add_days,
-    balance_sheet, bucket_end, bucket_start, cash_flow, cash_predicate, days_between,
-    declared_types, income_statement, infer_market_prices, insights, is_account_type, net_worth,
-    next_bucket, value_at,
+    balance_sheet, bucket_end, bucket_start, cash_flow, cash_flow_sources, cash_predicate,
+    days_between, declared_types, income_statement, infer_market_prices, insights, is_account_type,
+    net_worth, next_bucket, value_at,
 };
 use ledgeline_core::{Dec, parse_journal};
 use std::collections::BTreeMap;
@@ -568,6 +568,77 @@ fn net_worth_totals_are_depth_independent_and_rows_roll_up() {
             );
         }
     }
+}
+
+/// The cash-flow SOURCES breakdown re-attributes the cash flow; it must never
+/// invent or lose a unit of it. Per bucket, at every depth and interval, its
+/// totals equal the cash flow's own, and its depth-1 rows sum to those totals.
+/// No source row is a cash account: cash↔cash movement is internal.
+#[test]
+fn cash_flow_sources_reconcile_with_cash_flow() {
+    let journal = common::fixture_journal();
+    let decls = account_decls(&journal);
+    let is_cash = cash_predicate(&decls);
+    let mut attributed_somewhere = false;
+
+    for end in AS_OF_DATES {
+        for (interval, count) in [
+            (Interval::Monthly, 12),
+            (Interval::Quarterly, 4),
+            (Interval::Yearly, 3),
+        ] {
+            let flow = cash_flow(
+                &journal.transactions,
+                end,
+                interval,
+                count,
+                1,
+                Some(&is_cash),
+            )
+            .expect("cash_flow");
+            for depth in DEPTHS {
+                let sources = cash_flow_sources(
+                    &journal.transactions,
+                    end,
+                    interval,
+                    count,
+                    depth,
+                    Some(&is_cash),
+                )
+                .expect("cash_flow_sources");
+                assert_eq!(sources.buckets, flow.buckets);
+                assert_eq!(
+                    sources.totals, flow.totals,
+                    "sources vs cash flow at {end} {interval:?} depth {depth}"
+                );
+                if depth > 0 {
+                    for bucket in 0..sources.buckets.len() {
+                        let roots = sources
+                            .rows
+                            .iter()
+                            .filter(|row| row.depth == 1)
+                            .try_fold(MixedAmount::new(), |acc, row| {
+                                acc.ma_add(&row.values[bucket])
+                            })
+                            .expect("sum");
+                        assert_eq!(
+                            roots, sources.totals[bucket],
+                            "roots at {end} bucket {bucket}"
+                        );
+                    }
+                }
+                assert!(
+                    sources.rows.iter().all(|row| !is_cash(&row.account)),
+                    "a cash account is nobody's source"
+                );
+                attributed_somewhere |= !sources.rows.is_empty();
+            }
+        }
+    }
+    assert!(
+        attributed_somewhere,
+        "the fixture must exercise attribution"
+    );
 }
 
 #[test]

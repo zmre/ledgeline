@@ -69,7 +69,7 @@ pub use budget::{
     BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,
     budget_report,
 };
-pub use cash_flow::{cash_flow, is_cash_like};
+pub use cash_flow::{UNATTRIBUTED, cash_flow, cash_flow_sources, is_cash_like};
 pub use flows::{
     FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide, income_statement_flows,
 };
@@ -95,7 +95,9 @@ pub use subscriptions::{
     Cadence, DEFAULT_EXCLUDE_DESC, Subscription, SubscriptionOpts, SubscriptionsReport,
     detect_subscriptions,
 };
-pub use types::{PeriodReport, PeriodRow, ReportMeta, ReportRow, Section, SectionedReport};
+pub use types::{
+    PeriodReport, PeriodRow, ReportMeta, ReportRow, RowKind, Section, SectionedReport,
+};
 
 /// Errors surfaced by the report engine.
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
