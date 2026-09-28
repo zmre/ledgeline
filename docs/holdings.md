@@ -252,8 +252,8 @@ Both work, and the Other tab shows both:
 A dollar-booked asset's cost and value are the same number by construction, so
 its **all-time** change is exactly `$0.00`. That is the honest answer, not a
 missing feature — nothing has revalued it, the balance simply went down. Switch
-the window to Year-to-date or 12 months and the depreciation shows up as the loss
-it is.
+the period to any bounded window (year to date, 12 months, …) and the
+depreciation shows up as the loss it is.
 
 ## What the columns mean
 
@@ -269,7 +269,8 @@ means the same thing on both:
 
 - **All time** → the reference is *cost*, so change is the gain over what you
   paid.
-- **Year-to-date / 12 months** → the reference is the account's *value at the
+- **Any bounded window** (1 week, 1 month, 3 months, year to date, 12 months,
+  5 years) → the reference is the account's *value at the
   start of the window*. An asset you bought inside the window references zero, so
   the whole purchase reads as that window's change.
 
@@ -376,11 +377,123 @@ something, so a `holdings:` that changes nothing is worth telling you about.
 
 ## Scope, dates and the account chooser
 
-Both tabs share one scope bar: the account filter, the as-of date, and the change
-window all apply to whichever tab is open.
+Both tabs share one scope bar: the account filter, the as-of date, and the
+period all apply to whichever tab is open.
+
+### The period
+
+The **Period** control sets two things at once, on both tabs: the window the
+gain (Stocks) or change (Other) figures are measured over, and the span of the
+*Value over time* chart. A chart of the last twelve months beside a one-week
+gain would be two answers to the same question, so there is one control.
+
+Every window ends at the as-of date. Gain and change columns carry a suffix
+naming it — `Gain (1wk)`, `Change (5yr)` — so a windowed number is never read as
+an all-time one.
+
+| Period        | Gain measured from                     | Chart                                   |
+|---------------|----------------------------------------|-----------------------------------------|
+| 1 week        | seven days before as-of                | daily, 8 points                          |
+| 1 month       | one calendar month before (31st → 28th/29th) | daily                              |
+| 3 months      | three calendar months before           | weekly                                   |
+| Year to date  | January 1                              | from December 31, daily → weekly → monthly as the year goes on |
+| 12 months     | one year before                        | the last 12 month-ends                   |
+| 5 years       | five years before                      | the last 60 month-ends                   |
+| All time      | cost (the gain over what you paid)     | from the scope's first holding activity  |
+
+For **year to date** and **all time** the engine picks the interval so the line
+has enough points to read without crowding: months once there are at least six
+of them, weeks (or days) before that, and quarters or years past ten years of
+history. "All time" starts at the first transaction that moved a holding in the
+current scope *on that tab* — so the Other tab's chart starts at the house, not
+at the first share you bought.
+
+Daily and weekly points are labelled by date on the chart ("Sep 28"); a weekly
+point is the value at the end of its week. The period is part of the page URL
+(`?gain=1wk`, `?gain=5yr`, …), so a shared link opens on the same window.
 
 The account chooser's options are **not** filtered by the current scope or date,
 deliberately. An option that vanished the moment you deselected it could not be
 reselected, and one that vanished when you travelled back a month would make a
 scope impossible to compose. So it offers every account that could ever be a row,
 whether or not it holds anything today.
+
+## Comparing against a benchmark
+
+The Stocks tab's *Value over time* chart can draw what your portfolio would be
+worth had the same money gone into an index fund instead. Open **Compare** in
+the chart's heading and tick any of:
+
+| Box                    | Fund |
+|------------------------|------|
+| S&P 500 (SPY)          | SPDR S&P 500 ETF |
+| Dow Jones (DIA)        | SPDR Dow Jones Industrial Average ETF |
+| Nasdaq-100 (QQQ)       | Invesco QQQ |
+| US total market (VTI)  | Vanguard Total Stock Market ETF |
+| US bonds (BND)         | Vanguard Total Bond Market ETF |
+| International (VXUS)   | Vanguard Total International Stock ETF |
+| Small cap (IWM)        | iShares Russell 2000 ETF |
+| Gold (GLD)             | SPDR Gold Shares |
+
+Each ticked benchmark is a dashed line in its own colour — always the same
+colour, whichever others are showing — and the legend under the chart names
+it. Your choices are remembered in this browser. None are ticked by default.
+
+### What the line means
+
+It is **the same cash flows, on the same dates, into that fund**. Every buy in
+the current scope is money that could have bought the fund that day; every sale
+or return of capital is money taken out of it that day. Moves between your own
+accounts and stock splits are not cash flows and are ignored — exactly the rules
+the windowed gain already uses to tell a contribution from a gain.
+
+The two lines **start together** at the chart's left edge: the benchmark account
+is seeded with your portfolio's actual market value on the first point, then
+only the flows after that are replayed. So over 12 months the question is "given
+what I had a year ago and what I have put in and taken out since, would I be
+ahead in the fund?". A fund younger than the window (VXUS began trading in 2011)
+starts at the first point it has a price for.
+
+A withdrawal larger than the simulated account holds empties it rather than
+driving it below zero. A share movement with neither a cost nor a market price
+on its date cannot be valued, so it is left out of the simulation.
+
+The comparison needs holdings valued in US dollars (`$` or `USD`), because the
+funds are priced in dollars. In any other base currency the box explains that
+instead of drawing a line.
+
+### Dividends are included
+
+Prices are Yahoo Finance's **adjusted close**, which folds dividends (and
+splits) back into the price. A line from plain closing prices would leave out a
+bond fund's entire income and understate a stock fund by a couple of percent a
+year. So the benchmark line is a total return, as if every distribution had
+been reinvested.
+
+### Where the prices come from, and the cache file
+
+Your journal is not touched. The chart draws your portfolio from local data
+first; each benchmark is then fetched in the background by the Ledgeline server
+(the page itself never contacts Yahoo), and its line appears when it arrives. If
+Yahoo cannot be reached the box says so, with a retry, and the rest of the chart
+is unaffected.
+
+Fetched history is kept in **`benchmarks.prices.journal`, beside your main
+journal**, as ordinary hledger price directives:
+
+```journal
+; ledgeline-benchmark SPY from 2025-09-18 through 2026-09-27
+P 2025-09-29 SPY 656.5962 USD
+P 2025-09-30 SPY 659.0695 USD
+```
+
+It is deliberately **not included** in your journal and must not be: these are
+adjusted closes, not market prices, and would misvalue a real holding of the
+same fund. Ledgeline never adds an `include` for it, never commits it with the
+git safety net, and the live-reload watcher ignores it. Only the days missing
+since the last fetch are downloaded; when a fund pays a dividend and Yahoo
+re-bases its adjusted history, the cached days are re-scaled to match.
+
+It is **safe to delete** at any time. The next comparison simply downloads the
+history again.
+
