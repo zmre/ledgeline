@@ -2,7 +2,7 @@
 
 Both tabs are period reports: one column per bucket (monthly, quarterly or yearly), the last `count` buckets ending with the one that holds the end date, accounts rolled up and clamped to the chosen depth. Cash Flow defaults to twelve months, Net Worth to five years. Each tab draws a chart above its table. The table is the chart's accessible twin: every number the chart draws is in the table too.
 
-Each chart sits in a collapsible panel that is open by default. Whether it is open, and which Cash Flow breakdown it shows, is remembered per browser.
+Each chart sits in a collapsible panel that is open by default. Whether it is open is remembered per browser.
 
 ## Net Worth
 
@@ -24,27 +24,17 @@ The per-bucket change in every *cash* account (effective type Cash, or the hledg
 
 ### The chart
 
-Stacked areas: money into cash above zero, money out below it, and the net change as a dashed line. A toggle switches between two breakdowns of *the same* movement. The net line is identical in both.
+Stacked areas: money into cash above zero, money out below it, and the net change as a dashed line. The chart draws exactly what the table below it shows. It is built from the same displayed rows, so the two cannot disagree:
 
-**By source** (the default) answers *why* cash moved. Each bucket's movement is attributed to the accounts on the other side of each transaction: salary above the axis, rent, groceries and the card payment below it, and a stock purchase below it as `assets:broker`. This needs its own request, which is made only while this view is open.
+- **The accounts are the table's accounts.** Each displayed row with no displayed child is a layer. A parent's figure in the table is the sum of the layers under it. When a parent has postings of its own, so that its figure differs from the sum of its children's, the difference is one more layer carrying the parent's name. Every figure in the table is therefore a layer, or a sum of layers.
+- **The labels are the table's labels.** A layer is named with the text its row shows in the table: `checking` under `bank`, or `broker:taxable` for a chain the table collapses into one row. Only when two layers would read the same (a `cash` under two parents) do both use the full account name.
+- **The net line is the table's Net row**, bucket for bucket.
+- **Nothing is folded into "(other)".** Colours are assigned in table order. The first eight layers get their own colours. Any after that are drawn in the muted grey, each still its own layer with its own legend entry and tooltip line, rather than reusing a colour and making two accounts look alike.
+- **One currency is charted.** Amounts in the other currencies cannot be drawn on the same axis, so the note under the chart names them ("Charted in $ only; EUR not shown"), and an account that holds only those currencies has no layer. The table still shows them.
 
-**By account** answers *where* it moved. It uses the table's own rows (the cash accounts). A transfer from checking to savings shows as one layer up and one down, and it cancels in the net.
+A transfer from checking to savings shows as one layer up and one down, and it cancels in the net. An account can be positive one month and negative the next. It is drawn as two layers, one per sign, that share its colour and a single legend entry. Stacking an account whose sign flips as one layer would trace the layer's edge on the wrong side of the axis.
 
-An account can be positive one month and negative the next. It is drawn as two layers, one per sign, that share its colour and a single legend entry. Stacking an account whose sign flips as one layer would trace the layer's edge on the wrong side of the axis.
-
-### How a transaction's cash is attributed to its sources
-
-For each transaction that touches cash, for each bucket (a cash posting's own `date:` decides the bucket, as in the table), and for each commodity:
-
-1. **D** is the sum of the transaction's cash postings. If D is zero, as in a transfer between two cash accounts, nothing is attributed: cash moving between cash accounts is internal.
-2. Every non-cash posting gets a **weight** in the cash's commodity: its own amount if it is written in that commodity, or else its cost (`@` or `@@`) if the cost is in that commodity. Buying shares with cash, the counterparty is in `AAPL`, so it weighs its cost. A buy or sell with a commission therefore splits between the shares (at cost) and the fee, rather than charging the whole payment to the fee.
-3. Each counterparty receives `D × weight / Σ weights`. In the ordinary balanced transaction that is exactly the negation of what it was posted, with no division involved: a `$100.00` grocery bill is `−$100.00` of groceries, and a paycheck split between checking and savings, with taxes withheld, credits salary with the gross and debits taxes with the withholding. Otherwise each share is truncated, and the largest weight absorbs the remainder.
-4. When nothing weighs in the cash's commodity but every counterparty amount is in one other commodity, the transaction is an implicit conversion (checking `−$400` against `2 AAPL` with no `@`), which hledger balances by inferring the cost. The counterparties then weigh by their quantities in that commodity, so the purchase is attributed to the brokerage account.
-5. When nothing can explain the movement, the whole of D goes to a row named `(unattributed)`. This happens with a currency exchange between two cash accounts, or with transfer legs dated into different buckets.
-
-As a result, **per bucket, the sources add up to the cash flow total exactly**. The engine tests assert this on `fixtures/sample.journal` at every depth and interval.
-
-Counterparties roll up and clamp to the chosen depth like any report row. Note that at depth 1 an `assets` source means *non-cash* assets, because cash accounts are never sources.
+Layers are filled solid, with a thin line of the page background between neighbours so adjacent accounts stay distinct.
 
 ## Empty charts
 
@@ -62,9 +52,6 @@ Each row carries `"kind": "asset" | "liability" | "mixed"`. The key is omitted, 
 ```
 GET /api/reports/cashflow
       ?end=YYYY-MM-DD&interval=monthly|quarterly|yearly&count=N&depth=N
-
-GET /api/reports/cashflow/sources
-      ?end=…&interval=…&count=…&depth=…   (exactly the cash flow's query)
 ```
 
-`/sources` returns the same shape as the cash flow (`buckets`, `rows`, `totals`), with counterparty accounts as the rows and totals equal to the cash flow's, bucket for bucket. It is a separate route, rather than a field on the cash flow, because it is a second pass over every posting and only the collapsible chart reads it.
+The chart needs no request of its own: it draws the report the table shows.
