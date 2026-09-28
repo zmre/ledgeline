@@ -3,21 +3,17 @@
 // counterparty accounts. The stale-response and payload-tagging behaviour is
 // `createResource`'s (see resource.svelte.ts).
 
+import {untrack} from "svelte";
 import {LedgelineApi} from "$lib/api/native";
 import {decodePeriodReport} from "$lib/api/nativeDecode";
 import type {PeriodReport} from "$lib/reports/types";
-import type {ReportInterval} from "$lib/reports/ui/params";
 import type {DataView} from "./loadState";
+import {sameReportQuery, type ReportQuery} from "./reports.svelte";
 import {createResource} from "./resource.svelte";
 import {settings} from "./settings.svelte";
 
 /** Exactly the cash flow's own query: the breakdown must answer the table's window. */
-export interface CashFlowSourcesQuery {
-    end: string;
-    interval: ReportInterval;
-    count: number;
-    depth: number;
-}
+export type CashFlowSourcesQuery = Omit<Extract<ReportQuery, {tab: "cf"}>, "tab">;
 
 /** The sources fetch as the chart sees it: a view already gated on the window matching the table's. */
 export interface SourcesPanel {
@@ -33,8 +29,14 @@ export const cashFlowSources = createResource<CashFlowSourcesQuery, PeriodReport
 
 /** Whether a held breakdown answers exactly `query` — anything else must not be drawn over this table. */
 export function sourcesMatch(held: CashFlowSourcesQuery | null, query: CashFlowSourcesQuery): boolean {
-    return held !== null && held.end === query.end && held.interval === query.interval && held.count === query.count && held.depth === query.depth;
+    return held !== null && sameReportQuery({tab: "cf", ...held}, {tab: "cf", ...query});
 }
+
+/**
+ * What the breakdown was last requested for: server, connection (`serverNonce`)
+ * and window. Plain, not `$state`: written by the effect that reads it.
+ */
+let requested: {serverUrl: string; nonce: number; query: CashFlowSourcesQuery} | null = null;
 
 /**
  * Fetch the breakdown only while something is looking at it.
@@ -47,18 +49,30 @@ export function sourcesMatch(held: CashFlowSourcesQuery | null, query: CashFlowS
  * Every flag is read inside the effect, unconditionally, so flipping any of
  * them re-runs it (a short-circuited read is not a subscription).
  *
+ * A re-run that asks for what was already requested on this connection — the
+ * panel re-expanded, the mode toggled back, the tab revisited — sends nothing:
+ * the held (or in-flight) answer is still the answer. Only a failed request is
+ * asked again. `serverNonce` is the invalidation, exactly as for the report
+ * table this breakdown sits above: a reconnect moves it, and the next look
+ * refetches.
+ *
  * Must be called during component initialization (it declares an `$effect`).
  */
 export function loadSourcesWhenWatched(read: () => {tab: string; query: CashFlowSourcesQuery}): void {
     $effect(() => {
         const {tab, query} = read();
         const serverUrl = settings.serverUrl;
-        // Read for its dependency alone: a reconnect usually leaves the URL
+        // The nonce, not just the URL: a reconnect usually leaves the URL
         // identical, so an effect keyed on the URL never retries after one (FE-5d).
-        void settings.serverNonce;
+        const nonce = settings.serverNonce;
         const open = settings.cashFlowChartOpen;
         const mode = settings.cashFlowChartMode;
         if (serverUrl === null || tab !== "cf" || !open || mode !== "source") return;
+        const same = requested !== null && requested.serverUrl === serverUrl && requested.nonce === nonce && sourcesMatch(requested.query, query);
+        // Untracked: a request settling must not re-run this, or a persistent
+        // failure would retry itself in a loop.
+        if (same && untrack(() => cashFlowSources.status) !== "error") return;
+        requested = {serverUrl, nonce, query};
         void cashFlowSources.load(serverUrl, query);
     });
 }

@@ -4,7 +4,7 @@
 
 import {flushSync} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {loadSourcesWhenWatched, sourcesMatch} from "./cashFlowSources.svelte";
+import {cashFlowSources, loadSourcesWhenWatched, sourcesMatch} from "./cashFlowSources.svelte";
 import {settings} from "./settings.svelte";
 
 const QUERY = {end: "2026-07-08", interval: "monthly" as const, count: 12, depth: 3};
@@ -63,6 +63,32 @@ describe("UNIT cash-flow sources are fetched only while the chart shows them", (
         flushSync();
 
         expect(requested).toHaveLength(1);
+    });
+
+    it("asks nothing again for a window it already requested: re-expanding, or toggling the mode back", async () => {
+        watch(() => "cf");
+        await vi.waitFor(() => expect(cashFlowSources.status).toBe("ready"));
+
+        settings.cashFlowChartOpen = false;
+        flushSync();
+        settings.cashFlowChartOpen = true;
+        flushSync();
+        settings.cashFlowChartMode = "account";
+        flushSync();
+        settings.cashFlowChartMode = "source";
+        flushSync();
+
+        expect(requested).toHaveLength(1);
+    });
+
+    it("refetches the same window after a reconnect", async () => {
+        watch(() => "cf");
+        await vi.waitFor(() => expect(cashFlowSources.status).toBe("ready"));
+
+        await settings.setServerUrl("http://engine");
+        flushSync();
+
+        expect(requested.filter((url) => url.includes("/cashflow/sources"))).toHaveLength(2);
     });
 
     it("issues nothing on another tab", () => {
