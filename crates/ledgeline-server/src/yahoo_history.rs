@@ -41,7 +41,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub trait HistoryFeed: Send + Sync {
     /// Daily dividend-adjusted closes for `ticker` dated `from..=to`
     /// (`YYYY-MM-DD`), ascending, one per trading day. Empty when the source
-    /// has no data in the range at all — a fund younger than the range, say.
+    /// answered but had no candles in the range; an `Err` when it refused or
+    /// failed. The cache never reads either as coverage (`benchmarks_api`).
     async fn adjusted_history(
         &self,
         ticker: &str,
@@ -101,18 +102,32 @@ async fn fetch_adjusted_history(
         .bytes()
         .await
         .map_err(|error| YahooError::Http(error.to_string()))?;
-    // A range entirely before a fund's first trade is a 400 whose body is a
-    // well-formed chart response with a null result ("Data doesn't exist for
-    // startDate…"). That is an answer — no history there — not a failure, so a
-    // client error whose body parses is read like any other.
-    match parse_adjusted_history(&bytes, to) {
-        Ok(prices) if status.is_success() || status.is_client_error() => Ok(prices),
-        Ok(_) => Err(YahooError::Http(format!("Yahoo Finance answered {status}"))),
-        Err(_) if !status.is_success() => {
-            Err(YahooError::Http(format!("Yahoo Finance answered {status}")))
-        }
-        Err(error) => Err(error),
+    read_history_response(status, &bytes, to)
+}
+
+/// Read a history reply: a non-success status is an error whatever its body
+/// says. A `400` with a well-formed `{"chart":{"result":null,"error":…}}` body
+/// is Yahoo REFUSING the request, not answering "no history" — reading it as
+/// an empty success would let the cache record coverage it never received and
+/// stop retrying until the date rolls over. Yahoo's own description, when the
+/// body carries one, is kept for the message.
+fn read_history_response(
+    status: reqwest::StatusCode,
+    bytes: &[u8],
+    to: &str,
+) -> Result<Vec<FetchedPrice>, YahooError> {
+    if !status.is_success() {
+        let detail = serde_json::from_slice::<ChartResponse>(bytes)
+            .ok()
+            .and_then(|parsed| parsed.chart.error)
+            .and_then(ChartError::describe)
+            .map(|description| format!(": {description}"))
+            .unwrap_or_default();
+        return Err(YahooError::Http(format!(
+            "Yahoo Finance answered {status}{detail}"
+        )));
     }
+    parse_adjusted_history(bytes, to)
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +139,26 @@ struct ChartResponse {
 struct Chart {
     #[serde(default)]
     result: Option<Vec<ChartResult>>,
+    #[serde(default)]
+    error: Option<ChartError>,
+}
+
+/// Yahoo's `chart.error` object: `{"code":"Not Found","description":"…"}`.
+#[derive(Debug, Deserialize)]
+struct ChartError {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+impl ChartError {
+    /// The most specific text the error carries, if any.
+    fn describe(self) -> Option<String> {
+        self.description
+            .or(self.code)
+            .filter(|text| !text.trim().is_empty())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +191,9 @@ struct AdjClose {
 /// The pure half of a history fetch: every dividend-adjusted close in a chart
 /// response dated on or before `to`, ascending, one per date.
 ///
+/// A result with no candles is an empty success; a null result is an error
+/// (see [`read_history_response`]).
+///
 /// A null (a holiday, or today's still-forming candle) is skipped rather than
 /// read as zero. Two candles on one date — Yahoo appends a live candle that can
 /// share the last session's date — keep the later one. A response with no
@@ -173,7 +211,12 @@ pub(crate) fn parse_adjusted_history(
     let parsed: ChartResponse =
         serde_json::from_slice(bytes).map_err(|error| YahooError::Shape(error.to_string()))?;
     let Some(result) = parsed.chart.result.into_iter().flatten().next() else {
-        return Ok(Vec::new());
+        // No result is never "no history": either Yahoo said why (an error
+        // object), or the body is not the answer it claims to be.
+        return Err(match parsed.chart.error.and_then(ChartError::describe) {
+            Some(description) => YahooError::Http(description),
+            None => YahooError::Shape("the chart response has no result".to_string()),
+        });
     };
     if result.timestamp.is_empty() {
         return Ok(Vec::new());
@@ -262,9 +305,51 @@ mod tests {
         assert_eq!(prices[0].date, "2021-09-27");
     }
 
+    const REFUSED: &[u8] = br#"{"chart":{"result":null,"error":{"code":"Bad Request","description":"Data doesn't exist for startDate = 946684800, endDate = 1296000000"}}}"#;
+
     #[test]
-    fn a_null_result_is_no_history_not_an_error() {
-        let body = br#"{"chart":{"result":null,"error":{"code":"Bad Request","description":"Data doesn't exist for startDate = 946684800, endDate = 1296000000"}}}"#;
+    fn a_null_result_with_an_error_is_an_error_not_an_empty_history() {
+        match parse_adjusted_history(REFUSED, "2026-01-01") {
+            Err(YahooError::Http(message)) => assert!(message.contains("Data doesn't exist")),
+            other => panic!("expected an error, got {other:?}"),
+        }
+        let bare = br#"{"chart":{"result":null}}"#;
+        assert!(matches!(
+            parse_adjusted_history(bare, "2026-01-01"),
+            Err(YahooError::Shape(_))
+        ));
+    }
+
+    /// A client error is an error even when its body parses as a chart reply.
+    #[test]
+    fn a_non_success_status_is_an_error_whatever_the_body() {
+        let status = reqwest::StatusCode::BAD_REQUEST;
+        match read_history_response(status, REFUSED, "2026-01-01") {
+            Err(YahooError::Http(message)) => {
+                assert!(message.contains("400"), "{message}");
+                assert!(message.contains("Data doesn't exist"), "{message}");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+        // Even a body with real candles in it.
+        assert!(read_history_response(status, SPY_1Y, "2026-12-31").is_err());
+        assert!(
+            read_history_response(reqwest::StatusCode::BAD_GATEWAY, b"<html>", "2026-12-31")
+                .is_err()
+        );
+        assert_eq!(
+            read_history_response(reqwest::StatusCode::OK, SPY_1Y, "2026-12-31")
+                .unwrap()
+                .len(),
+            251
+        );
+    }
+
+    /// A result with no candles parses as an empty success; the cache layer
+    /// decides what that means (it never advances coverage on it).
+    #[test]
+    fn a_result_without_candles_is_an_empty_success() {
+        let body = br#"{"chart":{"result":[{"meta":{"gmtoffset":0},"indicators":{"adjclose":[{}]}}],"error":null}}"#;
         assert!(
             parse_adjusted_history(body, "2026-01-01")
                 .unwrap()

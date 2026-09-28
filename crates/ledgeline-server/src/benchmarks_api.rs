@@ -359,7 +359,8 @@ impl Fetch {
 
 /// Fold a fetch into a symbol's history. `None` for a tail that does not
 /// overlap the cached body — nothing to re-scale by — so the caller refetches
-/// the whole range instead.
+/// the whole range instead; and `None` for a fetch with no completed session
+/// in it, which proves no coverage at all.
 ///
 /// `through` is the last complete session date (yesterday); fetched candles
 /// after it are dropped.
@@ -374,6 +375,13 @@ fn merge(
         .filter(|price| price.date.as_str() <= through)
         .map(|price| (price.date.clone(), price.quantity))
         .collect();
+    if fresh.is_empty() && *fetch != Fetch::Nothing {
+        // No completed session came back — not even a tail's anchor, which a
+        // real answer always repeats. Nothing here proves the range is
+        // covered, so coverage must not move (the handler never gets here:
+        // [`completed`] already turned such an answer into a failure).
+        return None;
+    }
     match fetch {
         Fetch::Nothing => cached.cloned(),
         Fetch::Full { from } => Some(History {
@@ -383,13 +391,7 @@ fn merge(
         }),
         Fetch::Tail { .. } => {
             let history = cached?;
-            let Some((first_fresh, _)) = fresh.first() else {
-                // Nothing new has traded: still covered through `through`.
-                return Some(History {
-                    through: through.to_string(),
-                    ..history.clone()
-                });
-            };
+            let (first_fresh, _) = fresh.first()?;
             let fresh_at: BTreeMap<&str, Dec> = fresh
                 .iter()
                 .map(|(date, close)| (date.as_str(), *close))
@@ -528,14 +530,40 @@ struct Job {
     fetch: Fetch,
 }
 
-/// Run one [`Job`] against `source`, through `today`.
-async fn fetch_one(source: Arc<dyn HistoryFeed>, job: Job, today: String) -> Fetched {
+/// Run one [`Job`] against `source`, through `today`, keeping sessions
+/// completed by `through`.
+async fn fetch_one(
+    source: Arc<dyn HistoryFeed>,
+    job: Job,
+    today: String,
+    through: String,
+) -> Fetched {
     let from = job.fetch.start().unwrap_or(&today).to_string();
     let result = source.adjusted_history(job.symbol, &from, &today).await;
     Fetched {
         symbol: job.symbol,
         fetch: job.fetch,
-        result,
+        result: completed(result, job.symbol, &through),
+    }
+}
+
+/// A fetch that returned no session completed by `through` is a failure, not
+/// an empty success. Every planned range reaches back at least to a session
+/// that has traded (a tail starts ON the last cached close; a full fetch spans
+/// the lookback), so such an answer means the source did not really answer,
+/// and recording coverage for it would stop retries until the date rolls over.
+fn completed(
+    result: Result<Vec<FetchedPrice>, YahooError>,
+    symbol: &str,
+    through: &str,
+) -> Result<Vec<FetchedPrice>, YahooError> {
+    let prices = result?;
+    if prices.iter().any(|price| price.date.as_str() <= through) {
+        Ok(prices)
+    } else {
+        Err(YahooError::Shape(format!(
+            "no completed {symbol} sessions in the answer"
+        )))
     }
 }
 
@@ -604,7 +632,7 @@ pub(crate) async fn benchmarks(
     let source = Arc::clone(state.history_source());
     let today = today_utc();
     let fetched: Vec<Fetched> = stream::iter(jobs)
-        .map(|job| fetch_one(Arc::clone(&source), job, today.clone()))
+        .map(|job| fetch_one(Arc::clone(&source), job, today.clone(), yesterday.clone()))
         .buffer_unordered(FETCH_CONCURRENCY)
         .collect()
         .await;
@@ -622,7 +650,11 @@ pub(crate) async fn benchmarks(
             let from = cached
                 .get(outcome.symbol)
                 .map_or_else(|| need_from.clone(), |history| history.from.clone());
-            let result = source.adjusted_history(outcome.symbol, &from, &today).await;
+            let result = completed(
+                source.adjusted_history(outcome.symbol, &from, &today).await,
+                outcome.symbol,
+                &yesterday,
+            );
             let fetch = Fetch::Full { from };
             refetched.push(Fetched {
                 symbol: outcome.symbol,
@@ -991,15 +1023,43 @@ mod tests {
         );
     }
 
+    /// An answer with no completed session proves nothing, so coverage stays
+    /// where it was — for a tail and for a full fetch alike.
     #[test]
-    fn an_empty_tail_still_advances_coverage() {
+    fn an_empty_fetch_never_advances_coverage() {
         let cached = history("2025-01-01", "2025-01-03", &[("2025-01-03", "11")]);
-        let fetch = Fetch::Tail {
+        let tail = Fetch::Tail {
             from: "2025-01-03".to_string(),
         };
-        let merged = merge(Some(&cached), &fetch, &[], "2025-01-05").unwrap();
-        assert_eq!(merged.through, "2025-01-05");
-        assert_eq!(merged.closes, cached.closes);
+        assert!(merge(Some(&cached), &tail, &[], "2025-01-05").is_none());
+        // Only today's still-forming candle: nothing completed either.
+        let live = fetched(&[("2025-01-06", "12")]);
+        assert!(merge(Some(&cached), &tail, &live, "2025-01-05").is_none());
+        let full = Fetch::Full {
+            from: "2024-12-01".to_string(),
+        };
+        assert!(merge(Some(&cached), &full, &[], "2025-01-05").is_none());
+        assert!(merge(None, &full, &[], "2025-01-05").is_none());
+    }
+
+    #[test]
+    fn an_answer_without_a_completed_session_is_a_failure() {
+        assert!(completed(Ok(Vec::new()), "SPY", "2025-01-05").is_err());
+        assert!(completed(Ok(fetched(&[("2025-01-06", "12")])), "SPY", "2025-01-05").is_err());
+        assert_eq!(
+            completed(Ok(fetched(&[("2025-01-03", "11")])), "SPY", "2025-01-05")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            completed(
+                Err(YahooError::Http("down".to_string())),
+                "SPY",
+                "2025-01-05"
+            )
+            .is_err()
+        );
     }
 
     #[test]

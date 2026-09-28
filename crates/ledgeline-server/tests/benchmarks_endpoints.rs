@@ -231,12 +231,30 @@ async fn several_benchmarks_come_back_in_catalog_order() {
     assert_eq!(symbols, ["SPY", "GLD"]);
     let gld = &body["benchmarks"][1];
     assert_eq!(values(gld), vec![None, None, None]);
+    assert!(gld["error"].as_str().unwrap().contains("GLD"));
+}
+
+/// An answer with no sessions in it is not "covered": nothing is recorded for
+/// the symbol, so the next request asks again instead of waiting for tomorrow.
+#[tokio::test]
+async fn an_empty_answer_records_no_coverage_and_is_retried() {
+    let tree = Tree::with(JOURNAL, FakeHistory::new([("SPY", spy())]));
+    let uri = format!("/api/holdings/benchmarks?symbols=GLD&{WINDOW}");
+    let (status, body) = tree.get(&uri).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(
-        gld["error"]
+        body["benchmarks"][0]["error"]
             .as_str()
             .unwrap()
-            .contains("No GLD price history")
+            .contains("Could not fetch GLD")
     );
+    assert!(
+        !tree.cache().unwrap_or_default().contains("GLD"),
+        "no coverage recorded for an empty answer"
+    );
+    let calls = tree.calls();
+    tree.get(&uri).await;
+    assert!(tree.calls() > calls, "the next request retries");
 }
 
 // ---------------------------------------------------------------------------
