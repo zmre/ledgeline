@@ -209,11 +209,33 @@ pub fn cash_flow_sources(
     let buckets = last_n_buckets(end, interval, count)?;
     let ranges = bucket_ranges(&buckets, end)?;
 
+    let (Some((window_start, _)), Some((_, window_end))) = (ranges.first(), ranges.last()) else {
+        return Ok(PeriodReport {
+            buckets,
+            rows: Vec::new(),
+            totals: Vec::new(),
+            meta: None,
+        });
+    };
+    let in_window = |date: &str| date >= window_start.as_str() && date <= window_end.as_str();
+
     let mut direct: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); ranges.len()];
     let mut cash_like: HashMap<&str, bool> = HashMap::new();
+    let mut deltas: BTreeMap<(usize, &Commodity), Dec> = BTreeMap::new();
+    let mut counterparties: Vec<&Posting> = Vec::new();
     for txn in txns {
-        let mut deltas: BTreeMap<(usize, &Commodity), Dec> = BTreeMap::new();
-        let mut counterparties: Vec<&Posting> = Vec::new();
+        // Only a posting dated inside the window can move cash in a bucket, so a
+        // transaction with none is skipped before any posting is classified.
+        if !in_window(&txn.date)
+            && !txn
+                .postings
+                .iter()
+                .any(|posting| posting.date.as_deref().is_some_and(in_window))
+        {
+            continue;
+        }
+        deltas.clear();
+        counterparties.clear();
         for posting in &txn.postings {
             let account = posting.account.0.as_str();
             if !*cash_like.entry(account).or_insert_with(|| is_cash(account)) {
@@ -231,7 +253,7 @@ pub fn cash_flow_sources(
                 *delta = delta.add(amount.quantity)?;
             }
         }
-        for ((index, commodity), delta) in deltas {
+        for (&(index, commodity), &delta) in &deltas {
             if delta.is_zero() {
                 continue;
             }
