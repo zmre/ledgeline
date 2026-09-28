@@ -480,10 +480,13 @@ pub(crate) fn parse_quote_summary(bytes: &[u8]) -> Result<Option<YahooProfile>, 
                 .collect()
         })
         .unwrap_or_default();
-    Ok(Some(YahooProfile {
+    let profile = YahooProfile {
+        // Yahoo answers an unknown or delisted symbol with a result whose
+        // quoteType is the literal `"NONE"` rather than with "not found".
         quote_type: result
             .quote_type
-            .and_then(|module| non_blank(module.quote_type)),
+            .and_then(|module| non_blank(module.quote_type))
+            .filter(|quote_type| !quote_type.eq_ignore_ascii_case("NONE")),
         sector,
         industry,
         category: result
@@ -497,7 +500,10 @@ pub(crate) fn parse_quote_summary(bytes: &[u8]) -> Result<Option<YahooProfile>, 
             .filter(|rating| (1.0..=5.0).contains(rating))
             // In range 1..=5 by the filter, so the cast cannot truncate.
             .map(|rating| rating.round() as u8),
-    }))
+    };
+    // A result that says nothing at all is a "not found" in all but name, and
+    // is cached with the shorter not-found lifetime.
+    Ok((profile != YahooProfile::default()).then_some(profile))
 }
 
 /// The position split, or `None` when every position is absent or zero — an
@@ -635,6 +641,14 @@ mod tests {
         assert_eq!(parse_quote_summary(body).unwrap(), None);
     }
 
+    /// Seen live (2026-09-28) for a symbol Yahoo does not list: a result, with
+    /// `quoteType: "NONE"` and nothing else of use.
+    #[test]
+    fn a_quote_type_of_none_with_nothing_else_is_not_found() {
+        let body = br#"{"quoteSummary":{"result":[{"quoteType":{"quoteType":"NONE","symbol":"BAL"},"assetProfile":{}}],"error":null}}"#;
+        assert_eq!(parse_quote_summary(body).unwrap(), None);
+    }
+
     #[test]
     fn missing_modules_leave_their_fields_empty() {
         let body = br#"{"quoteSummary":{"result":[{"quoteType":{"quoteType":"CRYPTOCURRENCY"}}],"error":null}}"#;
@@ -666,7 +680,7 @@ mod tests {
 
     #[test]
     fn an_out_of_range_risk_rating_is_dropped() {
-        let body = br#"{"quoteSummary":{"result":[{"defaultKeyStatistics":{"morningStarRiskRating":{"raw":0}}}],"error":null}}"#;
+        let body = br#"{"quoteSummary":{"result":[{"quoteType":{"quoteType":"MUTUALFUND"},"defaultKeyStatistics":{"morningStarRiskRating":{"raw":0}}}],"error":null}}"#;
         assert_eq!(
             parse_quote_summary(body).unwrap().unwrap().risk_rating,
             None
