@@ -10,6 +10,7 @@
        only the active mode is computed; capped at 6 groups incl. "(other)". -->
 <script lang="ts">
     import {LineChart, PieChart, Tooltip} from "layerchart";
+    import ChartLegend from "$lib/components/ChartLegend.svelte";
     import {fittedTicks, labelFormatter} from "$lib/components/periodAxis";
     import type {RootCategory} from "$lib/domain/accounts";
     import type {Transaction} from "$lib/domain/types";
@@ -241,14 +242,10 @@
                 </PieChart>
             </div>
             <!-- legend fallback for narrow screens (identity is never color-alone) -->
-            <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70 sm:hidden">
-                {#each pieSlices as d (d.account)}
-                    <li class="flex items-center gap-1">
-                        <span class="inline-block h-2 w-2 rounded-full" style="background:{colorOf[d.account] ?? chartColors.other}"></span>
-                        {d.account}
-                    </li>
-                {/each}
-            </ul>
+            <ChartLegend
+                entries={pieSlices.map((d) => ({key: d.account, label: d.account, color: colorOf[d.account] ?? chartColors.other}))}
+                class="mt-1 sm:hidden"
+            />
         {/if}
         <!-- Categories that net to a credit have no area in a pie; name them instead of drawing them positive. -->
         {#if pieCredits.length > 0}

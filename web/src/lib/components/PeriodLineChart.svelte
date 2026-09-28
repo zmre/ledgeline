@@ -33,10 +33,7 @@
        dataviz rule against dashing is about exactly these marks. Neither is a
        channel — the sentence above the chart says what they mean.
 
-     The legend is this component's own markup rather than layerchart's built-in
-     one, for the reason `reports/ui/SankeyPanel.svelte` gives: it is then
-     always visible, at every width, and it survives a container that has not
-     been measured yet. -->
+     The legend is `ChartLegend`, not layerchart's built-in one — see there. -->
 <script lang="ts" module>
     // Declared in a plain .ts file so .ts modules can import it too (tsc cannot
     // see a type exported from a .svelte module); re-exported here for callers.
@@ -48,6 +45,7 @@
     import type {Snippet} from "svelte";
     import {LineChart, Rule} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
+    import ChartLegend from "./ChartLegend.svelte";
     import {fittedTicks, labelFormatter} from "./periodAxis";
 
     let {
@@ -196,17 +194,11 @@
         <!-- Two or more series: always visible, so identity is never colour-alone.
              A short line-key rather than a dot, because it can also carry the dash. -->
         {#if series.length > 1}
-            <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70" data-testid={testid === undefined ? undefined : `${testid}-legend`}>
-                {#each series as s, k (k)}
-                    <li class="flex items-center gap-1">
-                        <span
-                            class="inline-block w-4 shrink-0 border-t-2 {s.dashed === true ? 'border-dashed' : ''}"
-                            style="border-color:{chartColors.colorAt(s.slot ?? k)}"
-                        ></span>
-                        {s.name}
-                    </li>
-                {/each}
-            </ul>
+            <ChartLegend
+                entries={series.map((s, k) => ({key: String(k), label: s.name, color: chartSeries[k].color, swatch: "line", dash: s.dashed === true}))}
+                class="mt-1"
+                testid={testid === undefined ? undefined : `${testid}-legend`}
+            />
         {/if}
     {/if}
 </div>

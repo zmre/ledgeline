@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {dec, toNumber} from "../domain/money";
-import {OTHER_LABEL} from "../format/palette";
+import {OTHER_LABEL, SLOT_COUNT} from "../format/palette";
 import {availableDimensions, categorySlices, UNCLASSIFIED_LABEL, type CategorySlice} from "./categories";
 import type {Breakdown, CategoryWeight, HoldingsProfiles, SymbolProfile} from "./profileTypes";
 import type {Holding} from "./types";
@@ -42,7 +42,8 @@ describe("UNIT categorySlices", () => {
         const slices = categorySlices(
             [holding("BAL", 1000)],
             profiles(profile("BAL", {sector: [w("Technology", 0.3), w("Healthcare", 0.3), w("Bonds", 0.4)]})),
-            "sector"
+            "sector",
+            SLOT_COUNT
         );
         expect(summary(slices)).toEqual([
             ["Bonds", 400],
@@ -57,7 +58,8 @@ describe("UNIT categorySlices", () => {
         const slices = categorySlices(
             [holding("AAPL", 600), holding("VTI", 400)],
             profiles(profile("AAPL", {sector: [w("Technology", 1)]}), profile("VTI", {sector: [w("Technology", 0.5), w("Energy", 0.5)]})),
-            "sector"
+            "sector",
+            SLOT_COUNT
         );
         expect(summary(slices)).toEqual([
             ["Technology", 800],
@@ -70,7 +72,8 @@ describe("UNIT categorySlices", () => {
         const slices = categorySlices(
             [holding("AAPL", 100), holding("PRIVATE", 300), holding("HALF", 200)],
             profiles(profile("AAPL", {industry: [w("Consumer Electronics", 1)]}), profile("HALF", {industry: [w("Chips", 0.5)]})),
-            "industry"
+            "industry",
+            SLOT_COUNT
         );
         // Equal values tie-break by label.
         expect(summary(slices)).toEqual([
@@ -86,18 +89,18 @@ describe("UNIT categorySlices", () => {
     });
 
     it("treats no profiles at all as one unclassified disc", () => {
-        const slices = categorySlices([holding("A", 10), holding("B", 20)], null, "sector");
+        const slices = categorySlices([holding("A", 10), holding("B", 20)], null, "sector", SLOT_COUNT);
         expect(summary(slices)).toEqual([[UNCLASSIFIED_LABEL, 30]]);
         expect(slices[0].share).toBe(100);
     });
 
     it("ignores float noise in weights that should sum to one", () => {
-        const slices = categorySlices([holding("A", 100)], profiles(profile("A", {sector: [w("X", 0.3333333), w("Y", 0.6666667)]})), "sector");
+        const slices = categorySlices([holding("A", 100)], profiles(profile("A", {sector: [w("X", 0.3333333), w("Y", 0.6666667)]})), "sector", SLOT_COUNT);
         expect(slices.map((s) => s.kind)).toEqual(["named", "named"]);
     });
 
     it("caps weights that overshoot one rather than inventing negative unclassified value", () => {
-        const slices = categorySlices([holding("A", 100)], profiles(profile("A", {sector: [w("X", 0.7), w("Y", 0.5)]})), "sector");
+        const slices = categorySlices([holding("A", 100)], profiles(profile("A", {sector: [w("X", 0.7), w("Y", 0.5)]})), "sector", SLOT_COUNT);
         expect(slices.some((s) => s.kind === "unclassified")).toBe(false);
     });
 
@@ -105,7 +108,8 @@ describe("UNIT categorySlices", () => {
         const slices = categorySlices(
             [holding("A", null), holding("B", -50), holding("C", 0), holding("D", 10)],
             profiles(profile("D", {sector: [w("X", 1)]})),
-            "sector"
+            "sector",
+            SLOT_COUNT
         );
         expect(summary(slices)).toEqual([["X", 10]]);
     });
@@ -114,7 +118,8 @@ describe("UNIT categorySlices", () => {
         const slices = categorySlices(
             [holding("A", 10), holding("B", 5)],
             profiles(profile("A", {assetClass: [w("real estate", 1)]}), profile("B", {assetClass: [w("Real Estate", 1)]})),
-            "assetClass"
+            "assetClass",
+            SLOT_COUNT
         );
         expect(summary(slices)).toEqual([["real estate", 15]]);
     });
@@ -141,7 +146,8 @@ describe("UNIT categorySlices", () => {
         const slices = categorySlices(
             [holding("BND", 900), holding("VTI", 100)],
             profiles(profile("BND", {assetClass: [w("Bonds", 1)]}), profile("VTI", {assetClass: [w("Equity", 1)]})),
-            "assetClass"
+            "assetClass",
+            SLOT_COUNT
         );
         expect(slices.map((s) => [s.label, s.slot])).toEqual([
             ["Bonds", 1],
@@ -152,7 +158,8 @@ describe("UNIT categorySlices", () => {
         const withRealEstate = categorySlices(
             [holding("R", 50), holding("VTI", 10)],
             profiles(profile("R", {assetClass: [w("Real estate", 1)]}), profile("VTI", {assetClass: [w("Equity", 1)]})),
-            "assetClass"
+            "assetClass",
+            SLOT_COUNT
         );
         expect(withRealEstate.map((s) => [s.label, s.slot])).toEqual([
             ["Real estate", 5],
@@ -162,7 +169,7 @@ describe("UNIT categorySlices", () => {
 
     it("lends absent pinned slots out only once the unpinned ones run out", () => {
         const classes = ["A", "B", "C", "D", "E"].map((label) => w(label, 0.2));
-        const slices = categorySlices([holding("X", 100)], profiles(profile("X", {assetClass: classes})), "assetClass");
+        const slices = categorySlices([holding("X", 100)], profiles(profile("X", {assetClass: classes})), "assetClass", SLOT_COUNT);
         expect(slices.map((s) => s.slot)).toEqual([5, 6, 7, 0, 1]);
     });
 
@@ -170,7 +177,8 @@ describe("UNIT categorySlices", () => {
         const slices = categorySlices(
             [holding("A", 10), holding("B", 90)],
             profiles(profile("A", {sector: [w("Energy", 1)]}), profile("B", {sector: [w("Technology", 1)]})),
-            "sector"
+            "sector",
+            SLOT_COUNT
         );
         expect(slices.map((s) => [s.label, s.slot])).toEqual([
             ["Technology", 0],
@@ -179,18 +187,18 @@ describe("UNIT categorySlices", () => {
     });
 
     it("gives every slice a unique key, even a category named like a bucket", () => {
-        const slices = categorySlices([holding("A", 10), holding("B", 10)], profiles(profile("A", {category: [w(OTHER_LABEL, 1)]})), "category");
+        const slices = categorySlices([holding("A", 10), holding("B", 10)], profiles(profile("A", {category: [w(OTHER_LABEL, 1)]})), "category", SLOT_COUNT);
         const keys = slices.map((s) => s.key);
         expect(new Set(keys).size).toBe(keys.length);
     });
 
     it("carries a cents-rounded Dec for formatting", () => {
-        const [slice] = categorySlices([holding("A", 123.456)], profiles(profile("A", {sector: [w("X", 1)]})), "sector");
+        const [slice] = categorySlices([holding("A", 123.456)], profiles(profile("A", {sector: [w("X", 1)]})), "sector", SLOT_COUNT);
         expect(toNumber(slice.amount)).toBe(123.46);
     });
 
     it("is empty for no chartable holdings", () => {
-        expect(categorySlices([], null, "sector")).toEqual([]);
+        expect(categorySlices([], null, "sector", SLOT_COUNT)).toEqual([]);
     });
 });
 

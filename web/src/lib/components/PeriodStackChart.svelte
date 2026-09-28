@@ -40,6 +40,7 @@
 <script lang="ts">
     import {Area, AreaChart, BarChart, Spline, Tooltip, type ChartState} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
+    import ChartLegend, {type LegendEntry} from "./ChartLegend.svelte";
     import {fittedTicks, labelFormatter, tickIndices} from "./periodAxis";
     import {stackEmptyReason} from "./periodStackEmpty";
 
@@ -196,6 +197,7 @@
 
     /** Each entity's series (its one or two sign halves), in first-seen order: the legend's order and the tooltip's. */
     const entities = $derived.by(() => {
+        // eslint-disable-next-line svelte/prefer-svelte-reactivity -- rebuilt wholesale inside $derived.by, never mutated afterwards
         const byEntity = new Map<string, Series[]>();
         for (const s of series) {
             const key = s.entity ?? s.key;
@@ -204,15 +206,17 @@
         return byEntity;
     });
 
-    /** One entry per entity; two entities that look alike (the up and down "(other)") are one entry. */
-    const legend = $derived.by(() => {
+    /** One entry per entity, then the net; two entities that look alike (the up and down "(other)") are one entry. */
+    const legend = $derived.by((): LegendEntry[] => {
+        // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local to this derivation
         const seen = new Set<string>();
-        return [...entities].flatMap(([key, [first]]) => {
+        const named = [...entities].flatMap(([key, [first]]): LegendEntry[] => {
             const look = `${first.label}\u0000${first.color}`;
             if (seen.has(look)) return [];
             seen.add(look);
-            return [{key, label: first.label, color: first.color}];
+            return [{key, label: first.label, color: first.color, swatch: "square"}];
         });
+        return [...named, {key: "\u0000net", label: netLabel, color: chartColors.flowNet, swatch: "line", dash: true}];
     });
 
     /** The tooltip rows for bucket `i`: each entity's value (its halves summed), non-zero only, legend order. */
@@ -361,17 +365,6 @@
                 />
             {/if}
         </div>
-        <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70" data-testid={testid === undefined ? undefined : `${testid}-legend`}>
-            {#each legend as entry (entry.key)}
-                <li class="flex items-center gap-1">
-                    <span class="inline-block h-2 w-2 shrink-0 rounded-xs" style="background:{entry.color}"></span>
-                    {entry.label}
-                </li>
-            {/each}
-            <li class="flex items-center gap-1">
-                <span class="inline-block w-4 shrink-0 border-t-2 border-dashed" style="border-color:{chartColors.flowNet}"></span>
-                {netLabel}
-            </li>
-        </ul>
+        <ChartLegend entries={legend} class="mt-1" testid={testid === undefined ? undefined : `${testid}-legend`} />
     {/if}
 </div>

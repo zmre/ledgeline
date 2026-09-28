@@ -262,7 +262,7 @@ describe("COMPONENT PeriodLineChart gaps and fixed slots", () => {
         });
 
         expect(paths(container).map((p) => p.getAttribute("stroke"))).toEqual([chartColors.colorAt(0), chartColors.colorAt(5)]);
-        const keys = [...document.querySelectorAll('[data-testid="trend-legend"] li span')].map((key) => (key as HTMLElement).style.borderColor);
+        const keys = [...document.querySelectorAll('[data-testid="trend-legend"] li span:first-child')].map((key) => (key as HTMLElement).style.borderColor);
         expect(keys).toHaveLength(2);
         expect(keys[0]).not.toBe(keys[1]);
     });

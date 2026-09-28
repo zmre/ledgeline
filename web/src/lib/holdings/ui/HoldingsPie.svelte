@@ -20,6 +20,7 @@
        (dataviz non-negotiable), which is why the named-slice cap is 8. -->
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
+    import ChartLegend from "$lib/components/ChartLegend.svelte";
     import type {Dec} from "$lib/domain/money";
     import {chartColors} from "$lib/format/chartColors.svelte";
     import {SLOT_COUNT, unknownColor} from "$lib/format/palette";
@@ -42,7 +43,12 @@
         risk: "Risk (Morningstar)",
     };
 
-    /** The tag that classifies a commodity along each dimension — named in the empty state. */
+    /**
+     * The tag that classifies a commodity along each dimension — named in the
+     * empty state. Mirrors `Dimension::tag()` in
+     * crates/ledgeline-server/src/commodity_profile.rs, which is what reads the
+     * tag; the two cannot share code, so change both together.
+     */
     const DIMENSION_TAGS: Record<CategoryDimension, string> = {
         assetClass: "assetclass",
         sector: "sector",
@@ -76,11 +82,9 @@
         return ["holding", ...CATEGORY_DIMENSIONS.filter((d) => known.includes(d) || d === dimension)];
     });
 
-    const holdingSlices = $derived(pieSlices(holdings, format, SLOT_COUNT));
     const slices = $derived(category === null || profiles === null ? [] : categorySlices(holdings, profiles, category, SLOT_COUNT));
     const onlyUnclassified = $derived(slices.length > 0 && slices.every((s) => s.kind === "unclassified"));
 
-    const holdingColor = (slice: PieSlice, i: number): string => (slice.symbol === PIE_OTHER ? chartColors.other : chartColors.colorAt(i));
     const categoryColor = (slice: CategorySlice): string => {
         if (slice.kind === "unclassified") return unknownColor(chartColors.current);
         if (slice.kind === "other" || slice.slot === null) return chartColors.other;
@@ -103,6 +107,57 @@
         const n = slice.holdings;
         return `${n} holding${n === 1 ? "" : "s"}`;
     };
+
+    /** One drawn slice, whichever way the pie is divided: its wedge, tooltip and legend entry. */
+    interface Wedge {
+        key: string;
+        /** The legend's name for it: a symbol, or a category. */
+        label: string;
+        /** The tooltip's name for it: the holding's full name, or the category. */
+        name: string;
+        color: string;
+        value: number;
+        formatted: string;
+        /** A second tooltip line, when there is more to say. */
+        detail: string | null;
+        /** The muted figure after the legend label. */
+        extra: string;
+        title: string;
+        italic: boolean;
+    }
+
+    const share = (percent: number): string => `${percent.toFixed(1)}%`;
+
+    const holdingWedge = (slice: PieSlice, i: number): Wedge => ({
+        key: slice.symbol,
+        label: slice.symbol,
+        name: slice.name,
+        color: slice.symbol === PIE_OTHER ? chartColors.other : chartColors.colorAt(i),
+        value: slice.value,
+        formatted: slice.formatted,
+        detail: null,
+        extra: share(slice.share),
+        title: `${slice.name} — ${slice.formatted}`,
+        italic: false,
+    });
+
+    const categoryWedge = (slice: CategorySlice): Wedge => {
+        const formatted = format(slice.amount);
+        return {
+            key: slice.key,
+            label: slice.label,
+            name: slice.label,
+            color: categoryColor(slice),
+            value: slice.value,
+            formatted,
+            detail: `${share(slice.share)} · ${describe(slice)}`,
+            extra: `${share(slice.share)} · ${formatted}`,
+            title: `${slice.label} — ${formatted} (${describe(slice)})`,
+            italic: slice.kind === "unclassified",
+        };
+    };
+
+    const wedges = $derived(category === null ? pieSlices(holdings, format, SLOT_COUNT).map(holdingWedge) : slices.map(categoryWedge));
 </script>
 
 <div class="flex flex-col gap-1" data-testid="holdings-pie-panel">
@@ -137,38 +192,7 @@
         {/if}
     </div>
 
-    {#if category === null}
-        {#if holdingSlices.length === 0}
-            <p class="py-10 text-center text-sm text-base-content/60">No priced holdings to chart.</p>
-        {:else}
-            <div class="h-56 w-full sm:h-64" data-testid="holdings-pie">
-                <PieChart data={holdingSlices} key="symbol" label="symbol" value={(d) => d.value} cRange={holdingSlices.map(holdingColor)} padAngle={0.02}>
-                    {#snippet tooltip()}
-                        <Tooltip.Root>
-                            {#snippet children({data})}
-                                {@const d = data as PieSlice}
-                                <div class="flex items-center gap-2 text-xs">
-                                    <span class="inline-block h-2 w-2 rounded-full" style="background:{holdingColor(d, holdingSlices.indexOf(d))}"></span>
-                                    <span class="text-base-content/70">{d.name}</span>
-                                    <span class="font-semibold">{d.formatted}</span>
-                                </div>
-                            {/snippet}
-                        </Tooltip.Root>
-                    {/snippet}
-                </PieChart>
-            </div>
-            <!-- always-visible legend: symbol + % share (identity is never color-alone) -->
-            <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70" data-testid="holdings-pie-legend">
-                {#each holdingSlices as slice, i (slice.symbol)}
-                    <li class="flex items-center gap-1" title="{slice.name} — {slice.formatted}">
-                        <span class="inline-block h-2 w-2 rounded-full" style="background:{holdingColor(slice, i)}"></span>
-                        {slice.symbol}
-                        <span class="text-base-content/50">{slice.share.toFixed(1)}%</span>
-                    </li>
-                {/each}
-            </ul>
-        {/if}
-    {:else if profiles === null}
+    {#if category !== null && profiles === null}
         <!-- No answer yet: hold the pie's own height so nothing below jumps when it lands. -->
         <div class="flex h-56 w-full flex-col items-center justify-center gap-2 text-sm text-base-content/60 sm:h-64" data-testid="holdings-pie-pending">
             {#if failed}
@@ -178,9 +202,9 @@
                 <span class="loading loading-md loading-spinner" aria-hidden="true"></span>
             {/if}
         </div>
-    {:else if slices.length === 0}
+    {:else if wedges.length === 0}
         <p class="py-10 text-center text-sm text-base-content/60">No priced holdings to chart.</p>
-    {:else if onlyUnclassified}
+    {:else if category !== null && onlyUnclassified}
         <div
             class="flex h-56 w-full flex-col items-center justify-center gap-1 px-4 text-center text-sm text-base-content/60 sm:h-64"
             data-testid="holdings-pie-unclassified"
@@ -193,33 +217,25 @@
     {:else}
         <!-- A refetch keeps the previous pie at reduced opacity rather than flashing a spinner (dataviz: no skeleton on refetch). -->
         <div class={["h-56 w-full transition-opacity sm:h-64", loading && "opacity-50"]} data-testid="holdings-pie">
-            <PieChart data={slices} key="key" label="label" value={(d) => d.value} cRange={slices.map(categoryColor)} padAngle={0.02}>
+            <PieChart data={wedges} key="key" label="label" value={(d) => d.value} cRange={wedges.map((d) => d.color)} padAngle={0.02}>
                 {#snippet tooltip()}
                     <Tooltip.Root>
                         {#snippet children({data})}
-                            {@const d = data as CategorySlice}
+                            {@const d = data as Wedge}
                             <div class="flex flex-col gap-0.5 text-xs">
                                 <div class="flex items-center gap-2">
-                                    <span class="inline-block h-2 w-2 rounded-full" style="background:{categoryColor(d)}"></span>
-                                    <span class="font-semibold">{format(d.amount)}</span>
-                                    <span class="text-base-content/70">{d.label}</span>
+                                    <span class="inline-block h-2 w-2 rounded-full" style="background:{d.color}"></span>
+                                    <span class="text-base-content/70">{d.name}</span>
+                                    <span class="font-semibold">{d.formatted}</span>
                                 </div>
-                                <span class="text-base-content/60">{d.share.toFixed(1)}% · {describe(d)}</span>
+                                {#if d.detail !== null}<span class="text-base-content/60">{d.detail}</span>{/if}
                             </div>
                         {/snippet}
                     </Tooltip.Root>
                 {/snippet}
             </PieChart>
         </div>
-        <!-- always-visible legend: category + % share + value (identity is never color-alone) -->
-        <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70" data-testid="holdings-pie-legend">
-            {#each slices as slice (slice.key)}
-                <li class="flex items-center gap-1" title="{slice.label} — {format(slice.amount)} ({describe(slice)})">
-                    <span class="inline-block h-2 w-2 rounded-full" style="background:{categoryColor(slice)}"></span>
-                    <span class={slice.kind === "unclassified" ? "italic" : undefined}>{slice.label}</span>
-                    <span class="text-base-content/50">{slice.share.toFixed(1)}% · {format(slice.amount)}</span>
-                </li>
-            {/each}
-        </ul>
+        <!-- always-visible legend: name + % share (+ value by category); identity is never color-alone -->
+        <ChartLegend entries={wedges} class="mt-1" testid="holdings-pie-legend" />
     {/if}
 </div>

@@ -107,7 +107,12 @@ function toAmount(value: number): Dec {
  * dataviz rule the by-holding pie follows too: fold, never generate a ninth
  * hue. The unclassified slice, when there is one, is always last.
  */
-export function categorySlices(holdings: readonly Holding[], profiles: HoldingsProfiles | null, dimension: CategoryDimension, maxNamed = 8): CategorySlice[] {
+export function categorySlices(
+    holdings: readonly Holding[],
+    profiles: HoldingsProfiles | null,
+    dimension: CategoryDimension,
+    maxNamed: number
+): CategorySlice[] {
     const named = new Map<string, {label: string; value: number; holdings: Set<string>}>();
     let unclassified = 0;
     const unclassifiedHoldings = new Set<string>();

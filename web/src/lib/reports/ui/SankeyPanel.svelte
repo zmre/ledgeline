@@ -32,6 +32,7 @@
     import {Chart, Link, Svg, Text} from "layerchart";
     import {Sankey} from "layerchart/graph";
     import AsyncSection from "$lib/components/AsyncSection.svelte";
+    import ChartLegend from "$lib/components/ChartLegend.svelte";
     import type {AmountStyle} from "$lib/domain/types";
     import {chartColors} from "$lib/format/chartColors.svelte";
     import type {FlowReport} from "$lib/reports/types";
@@ -199,15 +200,7 @@
                     </div>
 
                     <!-- Always visible: identity is never colour-alone. -->
-                    <ul class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70" data-testid="sankey-legend-{slug}">
-                        {#each view.legend as entry (entry.key)}
-                            <li class="flex items-center gap-1">
-                                <span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background:{entry.color}"></span>
-                                {entry.label}
-                                <span class="text-base-content/50">{entry.amount}</span>
-                            </li>
-                        {/each}
-                    </ul>
+                    <ChartLegend entries={view.legend.map((entry) => ({...entry, extra: entry.amount}))} testid="sankey-legend-{slug}" />
 
                     {#if !view.complete}
                         <!-- The gap is a fact about the journal (a posting with no
