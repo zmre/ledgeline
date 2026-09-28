@@ -40,6 +40,13 @@ Without any tag, the rule is mechanical:
 Other tab tests for `type:A` *specifically*, or every bank account would appear
 on it.
 
+"Currency" means a symbol like `$`, `€` or `£`, or a three-letter ISO code
+that your journal uses as money: one that is posted to a cash, liability,
+income or expense account, or that a cost is written in (`@ 5 CHF`). Some codes
+are also tickers. `BND` is both the Brunei dollar and Vanguard's bond fund.
+Bought and held in a brokerage account, never spent or banked, `BND` is the
+fund, so it lands on Stocks.
+
 ## The `holdings:` tag
 
 Tag an account declaration to override the mechanical rule:
@@ -616,9 +623,11 @@ P 2025-09-30 SPY 659.0695 USD
 It is deliberately **not included** in your journal and must not be: these are
 adjusted closes, not market prices, and would misvalue a real holding of the
 same fund. Ledgeline never adds an `include` for it, never commits it with the
-git safety net, and the live-reload watcher ignores it. Only the days missing
-since the last fetch are downloaded; when a fund pays a dividend and Yahoo
-re-bases its adjusted history, the cached days are re-scaled to match.
+git safety net, and the live-reload watcher ignores it. When a chart needs days
+the file doesn't have yet, that fund's whole history for the chart is
+downloaded again in one request. That keeps every cached day on the same
+dividend adjustment, because Yahoo re-bases the adjusted history each time a
+fund pays a dividend.
 
 It is **safe to delete** at any time. The next comparison simply downloads the
 history again. A read-only session (one that cannot edit the journal) writes no
