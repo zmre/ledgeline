@@ -421,6 +421,13 @@ pub(crate) fn no_store() -> HeaderValue {
     HeaderValue::from_static("no-store")
 }
 
+/// A JSON response marked [`no_store`] — the canonical form of the private
+/// `no_store(body)` helpers several `*_api` modules still carry (tracked for
+/// consolidation); new code uses this one.
+pub(crate) fn no_store_json<T: serde::Serialize>(body: T) -> Response {
+    ([(header::CACHE_CONTROL, no_store())], axum::Json(body)).into_response()
+}
+
 /// The Content-Security-Policy for every response that carries no inline script
 /// (JSON, static assets, errors).
 pub(crate) fn base_csp() -> HeaderValue {

@@ -111,6 +111,22 @@ pub fn iso_from_days(days: i64) -> String {
     to_iso(year, month, day)
 }
 
+/// The day number of ISO `date` — days after 1970-01-01, the inverse of
+/// [`iso_from_days`]. Times 86 400 it is the Unix timestamp of `date`'s UTC
+/// midnight.
+#[must_use]
+pub fn days_from_iso(date: &str) -> i64 {
+    let (year, month, day) = parts(date);
+    days_from_civil(year, month, day)
+}
+
+/// `date` itself if it is a weekday, else the Friday before it.
+#[must_use]
+pub fn weekday_on_or_before(date: &str) -> String {
+    let days = days_from_iso(date);
+    iso_from_days(days - (iso_weekday(days) - 5).max(0))
+}
+
 /// ISO weekday for a `days_from_civil` day number: 1 = Monday … 7 = Sunday.
 fn iso_weekday(days: i64) -> i64 {
     (days + 3).rem_euclid(7) + 1
@@ -629,7 +645,17 @@ mod tests {
             let iso = iso_from_days(days);
             let (y, m, d) = parts(&iso);
             assert_eq!(days_from_civil(y, m, d), days, "round trip at {iso}");
+            assert_eq!(days_from_iso(&iso), days, "public inverse at {iso}");
         }
+    }
+
+    #[test]
+    fn weekday_on_or_before_steps_a_weekend_back_to_friday() {
+        // 2026-09-25 is a Friday.
+        assert_eq!(weekday_on_or_before("2026-09-25"), "2026-09-25");
+        assert_eq!(weekday_on_or_before("2026-09-26"), "2026-09-25");
+        assert_eq!(weekday_on_or_before("2026-09-27"), "2026-09-25");
+        assert_eq!(weekday_on_or_before("2026-09-28"), "2026-09-28");
     }
 
     /// The final bucket is truncated at the report end — a deliberate hledger

@@ -32,27 +32,16 @@
 
 use super::engine::DatedFlow;
 use super::series::HoldingsPoint;
+use crate::reports::prices::on_or_before;
 
 /// One benchmark close: `(YYYY-MM-DD, dividend-adjusted close)`.
 pub type Close = (String, f64);
-
-/// A simulated benchmark line, index-aligned to the series points it was built
-/// against.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BenchmarkLine {
-    /// The simulated account's value at each point; `None` before the first
-    /// point the benchmark can price.
-    pub values: Vec<Option<f64>>,
-    /// Index of the first `Some` in `values` — where the line was seeded.
-    pub start: Option<usize>,
-}
 
 /// The latest positive close on or before `date`, from `closes` sorted
 /// ascending by date. A weekend, a holiday, or a point dated today (whose close
 /// has not happened) all read the previous session's close.
 fn close_at(closes: &[Close], date: &str) -> Option<f64> {
-    let after = closes.partition_point(|(day, _)| day.as_str() <= date);
-    closes[..after]
+    on_or_before(closes, date, |(day, _)| day)
         .iter()
         .rev()
         .map(|&(_, close)| close)
@@ -70,20 +59,20 @@ fn close_at(closes: &[Close], date: &str) -> Option<f64> {
 /// A withdrawal larger than the simulated account holds empties it rather than
 /// driving it negative: the benchmark portfolio cannot sell shares it does not
 /// own, and a below-zero line would claim a debt nobody took on.
+///
+/// Returns the simulated account's value at each point, index-aligned to
+/// `points`; `None` before the first point the benchmark can price.
 #[must_use]
 pub fn simulate_benchmark(
     points: &[HoldingsPoint],
     flows: &[DatedFlow],
     closes: &[Close],
-) -> BenchmarkLine {
+) -> Vec<Option<f64>> {
     let Some(start) = points
         .iter()
         .position(|point| close_at(closes, &point.date).is_some())
     else {
-        return BenchmarkLine {
-            values: vec![None; points.len()],
-            start: None,
-        };
+        return vec![None; points.len()];
     };
 
     let seed_date = points[start].date.as_str();
@@ -105,10 +94,7 @@ pub fn simulate_benchmark(
         }
         values.push(close_at(closes, &point.date).map(|close| units * close));
     }
-    BenchmarkLine {
-        values,
-        start: Some(start),
-    }
+    values
 }
 
 #[cfg(test)]
@@ -157,10 +143,9 @@ mod tests {
             ("2026-03-31", 150.0),
         ]);
         let line = simulate_benchmark(&points, &[], &prices);
-        assert_eq!(line.start, Some(0));
         // Seeded with 10 units at $100; no flows; the benchmark's price moves it.
         assert_eq!(
-            approx(&line.values),
+            approx(&line),
             vec![Some(100_000), Some(120_000), Some(150_000)]
         );
     }
@@ -186,7 +171,7 @@ mod tests {
         ];
         let line = simulate_benchmark(&points, &flows, &prices);
         assert_eq!(
-            approx(&line.values),
+            approx(&line),
             vec![Some(100_000), Some(120_000), Some(100_000)]
         );
     }
@@ -198,7 +183,7 @@ mod tests {
         // Saturday 2026-01-03: priced at Friday's $10 → 10 units; the point on
         // Saturday the 10th reads Friday the 9th's $20.
         let line = simulate_benchmark(&points, &[flow("2026-01-03", 100)], &prices);
-        assert_eq!(approx(&line.values), vec![Some(0), Some(20_000)]);
+        assert_eq!(approx(&line), vec![Some(0), Some(20_000)]);
     }
 
     #[test]
@@ -211,21 +196,16 @@ mod tests {
         let prices = closes(&[("2011-01-28", 40.0), ("2011-12-30", 50.0)]);
         let flows = [flow("2011-03-01", 100_000)]; // before its first close: unpriceable, but seed is later
         let line = simulate_benchmark(&points, &flows, &prices);
-        assert_eq!(line.start, Some(1));
         // Seeded on 2011-06-30 with $800 at $40 = 20 units; the March flow is
         // before the seed, so it is already inside the $800.
-        assert_eq!(
-            approx(&line.values),
-            vec![None, Some(80_000), Some(100_000)]
-        );
+        assert_eq!(approx(&line), vec![None, Some(80_000), Some(100_000)]);
     }
 
     #[test]
     fn no_close_at_all_is_an_all_gap_line() {
         let points = [point("2026-01-31", 1000), point("2026-02-28", 1000)];
         let line = simulate_benchmark(&points, &[], &[]);
-        assert_eq!(line.start, None);
-        assert_eq!(line.values, vec![None, None]);
+        assert_eq!(line, vec![None, None]);
     }
 
     #[test]
@@ -244,10 +224,7 @@ mod tests {
         let line = simulate_benchmark(&points, &flows, &prices);
         // 10 units, then a −$1000 sale at $10 would be −100 units: empty at 0.
         // The March buy of $50 at Feb's $5 close = 10 units, worth $100 at $10.
-        assert_eq!(
-            approx(&line.values),
-            vec![Some(10_000), Some(0), Some(10_000)]
-        );
+        assert_eq!(approx(&line), vec![Some(10_000), Some(0), Some(10_000)]);
     }
 
     #[test]

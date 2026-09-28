@@ -19,7 +19,7 @@
 /* eslint-disable svelte/prefer-svelte-reactivity -- `entries` is replaced
    wholesale on every change (an immutable snapshot), so a plain Map is correct. */
 import {LedgelineApi} from "$lib/api/native";
-import {decodeBenchmarks} from "$lib/api/benchmarksDecode";
+import {decodeBenchmarks} from "$lib/api/nativeDecode";
 import type {BenchmarkLine} from "$lib/holdings/benchmarks";
 import type {HoldingsScope} from "$lib/holdings/types";
 import {trendQuery} from "./holdings.svelte";

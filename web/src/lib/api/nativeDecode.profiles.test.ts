@@ -13,9 +13,6 @@ const WIRE = {
     profiles: [
         {
             symbol: "BAL",
-            yahooTicker: "VBAL-X",
-            source: "mixed",
-            fetchedAt: "2026-09-28",
             breakdown: {
                 assetClass: [
                     {label: "Equity", weight: 0.6},
@@ -30,8 +27,6 @@ const WIRE = {
         },
         {
             symbol: "PRIVATE",
-            yahooTicker: "PRIVATE",
-            source: "none",
             breakdown: {assetClass: [], sector: [], industry: [], securityType: [], category: [], risk: []},
         },
     ],
@@ -43,9 +38,6 @@ describe("UNIT decodeHoldingsProfiles", () => {
         expect(decoded.yahoo).toBe("partial");
         expect([...decoded.profiles.keys()]).toEqual(["BAL", "PRIVATE"]);
         const bal = decoded.profiles.get("BAL");
-        expect(bal?.yahooTicker).toBe("VBAL-X");
-        expect(bal?.source).toBe("mixed");
-        expect(bal?.fetchedAt).toBe("2026-09-28");
         expect(bal?.breakdown.assetClass).toEqual([
             {label: "Equity", weight: 0.6},
             {label: "Bonds", weight: 0.4},
@@ -53,12 +45,8 @@ describe("UNIT decodeHoldingsProfiles", () => {
         expect(bal?.breakdown.risk).toEqual([{label: "Below average", weight: 1}]);
     });
 
-    it("reads an absent fetchedAt as null", () => {
-        expect(decodeHoldingsProfiles(WIRE).profiles.get("PRIVATE")?.fetchedAt).toBeNull();
-    });
-
     it("reads a dimension an older engine did not send as nothing known", () => {
-        const older = {yahoo: "ok", profiles: [{symbol: "A", yahooTicker: "A", source: "tags", breakdown: {sector: [{label: "X", weight: 1}]}}]};
+        const older = {yahoo: "ok", profiles: [{symbol: "A", breakdown: {sector: [{label: "X", weight: 1}]}}]};
         const decoded = decodeHoldingsProfiles(older).profiles.get("A");
         expect(decoded?.breakdown.risk).toEqual([]);
         expect(decoded?.breakdown.sector).toEqual([{label: "X", weight: 1}]);
@@ -73,8 +61,9 @@ describe("UNIT decodeHoldingsProfiles", () => {
     it.each([
         ["a missing profiles array", {yahoo: "ok"}],
         ["an unknown yahoo status", {yahoo: "maybe", profiles: []}],
-        ["an unknown source", {yahoo: "ok", profiles: [{...WIRE.profiles[1], source: "guess"}]}],
-        ["a missing breakdown", {yahoo: "ok", profiles: [{symbol: "A", yahooTicker: "A", source: "none"}]}],
+        ["a missing yahoo status", {profiles: []}],
+        ["a missing symbol", {yahoo: "ok", profiles: [{breakdown: WIRE.profiles[1].breakdown}]}],
+        ["a missing breakdown", {yahoo: "ok", profiles: [{symbol: "A"}]}],
         ["a weight above one", {yahoo: "ok", profiles: [{...WIRE.profiles[1], breakdown: {sector: [{label: "X", weight: 1.5}]}}]}],
         ["a non-numeric weight", {yahoo: "ok", profiles: [{...WIRE.profiles[1], breakdown: {sector: [{label: "X", weight: "1"}]}}]}],
         ["a missing label", {yahoo: "ok", profiles: [{...WIRE.profiles[1], breakdown: {sector: [{weight: 1}]}}]}],

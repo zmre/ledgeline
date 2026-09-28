@@ -34,25 +34,19 @@ const lineOf = (symbol: string): unknown =>
     symbol === "GLD"
         ? {
               symbol,
-              label: "Gold (GLD)",
               points: DATES.map((date) => ({date, value: null})),
-              pricedThrough: null,
               stale: false,
-              unvaluedFlows: 0,
               error: "Could not fetch GLD history from Yahoo Finance (offline).",
           }
         : {
               symbol,
-              label: `${symbol} benchmark`,
               points: DATES.map((date, i) => ({date, value: 1000 + i * 100})),
-              pricedThrough: "2026-09-25",
               stale: false,
-              unvaluedFlows: 0,
               error: null,
           };
 
 /** The server's answer to `symbols=A,B`: one line per symbol. */
-const lineFor = (symbols: string): unknown => ({base: "$", benchmarks: symbols.split(",").map(lineOf)});
+const lineFor = (symbols: string): unknown => ({benchmarks: symbols.split(",").map(lineOf)});
 
 let benchmarkRequests: URL[] = [];
 
@@ -118,7 +112,7 @@ describe("COMPONENT StocksTrend benchmark overlay", () => {
 
         const legend = document.querySelector('[data-testid="holdings-trend-legend"]')?.textContent ?? "";
         expect(legend).toContain("Your portfolio");
-        expect(legend).toContain("SPY benchmark");
+        expect(legend).toContain("S&P 500 (SPY)");
         expect(settings.benchmarks).toEqual(["SPY"]);
     });
 

@@ -7,7 +7,8 @@
 //! into that benchmark instead. The arithmetic is the engine's
 //! (`ledgeline_core::holdings::benchmark`); this module supplies its inputs —
 //! the series, the dated flows, and the benchmark's dividend-adjusted history —
-//! and keeps that history on disk so it is fetched once, not per chart.
+//! and keeps that history beside the journal so it is fetched once, not per
+//! chart.
 //!
 //! # The price cache
 //!
@@ -16,27 +17,25 @@
 //! header saying what they are. It is deliberately NOT `include`d anywhere:
 //! these are dividend-adjusted closes, which are not market prices and must
 //! never value a real holding of SPY. Same format so any hledger tool can read
-//! it; separate file so none ever does by accident. Deleting it loses nothing
-//! but a re-download. It is written with `atomic_write` and never passed to the
-//! git safety net (that only ever commits the paths an import names), and it is
-//! outside the journal's include tree, so the file watcher ignores it too.
-//!
-//! A read-only session (no editor: `AppState::editing_enabled` is false) writes
-//! nothing beside the journal. It keeps the same cache in memory instead, for
-//! the life of the session, exactly as `profiles_api` does.
+//! it; separate file so none ever does by accident. [`crate::sidecar`] has the
+//! rules it shares with the profile cache: loaded once, kept in memory, written
+//! through atomically only by a session that may write, safe to delete.
 //!
 //! Each symbol carries a coverage comment (`; ledgeline-benchmark SPY from
-//! 2021-09-17 through 2026-09-27`) so a later request knows what has already
+//! 2021-09-17 through 2026-09-25`) so a later request knows what has already
 //! been asked for — including ranges where the fund had not yet traded, which
-//! would otherwise be re-requested forever. Only the missing TAIL is fetched
-//! once a symbol is covered, and only sessions before today are stored: today's
-//! candle is still forming.
+//! would otherwise be re-requested forever. `through` is the last close Yahoo
+//! actually returned, and a symbol is recorded at all only when the answer had
+//! a close in it, so an empty or refused answer advances nothing. Only sessions
+//! before today are kept: today's candle is still forming.
 //!
-//! Adjusted closes are re-based by Yahoo every time a fund pays a dividend —
-//! the whole history is scaled by a factor. A tail fetched after that event is
-//! on the new scale and the cached body on the old, so the tail always overlaps
-//! the last cached session and the cached body is re-scaled by the ratio on
-//! that day. Without it every dividend would leave a step in the line.
+//! # Refreshing
+//!
+//! A symbol whose coverage falls short of the window is refetched WHOLE, in one
+//! request, from the earlier of the window's start and its cached start: a few
+//! thousand daily rows at most. Yahoo re-bases adjusted closes every time a
+//! fund pays a dividend, so a fetched tail would be on a different scale from
+//! the cached body; a whole refetch is always on one scale.
 //!
 //! # Failure
 //!
@@ -46,87 +45,38 @@
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use futures::stream::{self, StreamExt};
+use ledgeline_core::edit::render_dec;
 use ledgeline_core::holdings::benchmark::{Close, simulate_benchmark};
-use ledgeline_core::holdings::{DatedFlow, HoldingsPoint, holdings_series_and_flows};
-use ledgeline_core::reports::periods::add_days;
-use ledgeline_core::{Dec, parse_journal};
+use ledgeline_core::holdings::{DatedFlow, HoldingsPoint, holdings_series_and_flows, is_us_dollar};
+use ledgeline_core::parse_journal;
+use ledgeline_core::reports::periods::{add_days, weekday_on_or_before};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::AppState;
 use crate::error::AppError;
 use crate::reports_api::{HoldingsSeriesQuery, compute, stocks_series_request, today_utc};
+use crate::security::no_store_json;
+use crate::sidecar::{FETCH_CONCURRENCY, Sidecar, parse_symbol_list};
 use crate::yahoo::{FetchedPrice, YahooError};
-use crate::yahoo_history::HistoryFeed;
+use crate::yahoo_history::{HistoryFeed, one_per_date};
 
-/// One benchmark the overlay offers: a total-return ETF proxy for a standard
-/// measure, labelled by the measure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Benchmark {
-    pub(crate) symbol: &'static str,
-    pub(crate) label: &'static str,
-}
-
-/// Every benchmark the overlay can draw, in display order. The SPA keeps the
-/// same list (`web/src/lib/holdings/benchmarks.ts`) because its order fixes
-/// each line's colour; a symbol outside this list is a `400`, which also keeps
-/// the server from being asked to fetch arbitrary tickers.
-pub(crate) const BENCHMARKS: &[Benchmark] = &[
-    Benchmark {
-        symbol: "SPY",
-        label: "S&P 500 (SPY)",
-    },
-    Benchmark {
-        symbol: "DIA",
-        label: "Dow Jones (DIA)",
-    },
-    Benchmark {
-        symbol: "QQQ",
-        label: "Nasdaq-100 (QQQ)",
-    },
-    Benchmark {
-        symbol: "VTI",
-        label: "US total market (VTI)",
-    },
-    Benchmark {
-        symbol: "BND",
-        label: "US bonds (BND)",
-    },
-    Benchmark {
-        symbol: "VXUS",
-        label: "International (VXUS)",
-    },
-    Benchmark {
-        symbol: "IWM",
-        label: "Small cap (IWM)",
-    },
-    Benchmark {
-        symbol: "GLD",
-        label: "Gold (GLD)",
-    },
-];
-
-/// The cache file's name, beside the main journal.
-pub(crate) const CACHE_FILE: &str = "benchmarks.prices.journal";
+/// Every benchmark the overlay can draw, in display order: total-return ETF
+/// proxies for standard measures. The SPA keeps the same list, with each
+/// symbol's label (`web/src/lib/holdings/benchmarks.ts`), because its order
+/// fixes each line's colour; a symbol outside this list is a `400`, which also
+/// keeps the server from being asked to fetch arbitrary tickers.
+pub(crate) const BENCHMARKS: &[&str] = &["SPY", "DIA", "QQQ", "VTI", "BND", "VXUS", "IWM", "GLD"];
 
 /// The commodity every cached close is quoted in.
 const QUOTE: &str = "USD";
 
-/// The base commodities a USD-quoted benchmark can be compared against without
-/// a currency conversion.
-const USD_BASES: &[&str] = &["$", "USD", "US$"];
-
 /// How far before the first chart point history is requested, so a point on a
 /// weekend or after a long holiday still finds the previous session's close.
 const LOOKBACK_DAYS: i64 = 10;
-
-/// Concurrent fetches for one request (at most the catalog's eight).
-const FETCH_CONCURRENCY: usize = 4;
 
 /// The coverage comment's prefix. hledger reads it as a comment.
 const COVERAGE: &str = "; ledgeline-benchmark ";
@@ -158,34 +108,24 @@ pub(crate) struct BenchmarksQuery {
 
 /// The response: one line per requested benchmark, in catalog order.
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct WireBenchmarks {
-    base: String,
     benchmarks: Vec<WireBenchmark>,
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct WireBenchmark {
     symbol: String,
-    label: String,
     /// Index-aligned to the series' points; `value` is `null` where the
     /// benchmark has no price yet (a gap, not a zero).
     points: Vec<WireBenchmarkPoint>,
-    /// The last session the cached history reaches, if any.
-    priced_through: Option<String>,
-    /// A refresh was needed and failed, so the line is drawn from an older
-    /// cache and its last points may be flat.
+    /// A refresh was needed and did not land, so the line is drawn from an
+    /// older cache and its last points may be flat.
     stale: bool,
-    /// Portfolio flows that could not be valued and so are missing from the
-    /// simulation (see `HoldingsFlows::unvalued`).
-    unvalued_flows: usize,
     /// Why there is no line at all, when there is not.
     error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct WireBenchmarkPoint {
     date: String,
     /// Display-boundary number, rounded to cents: a hypothetical line, never a
@@ -203,63 +143,81 @@ struct History {
     /// The earliest date this history has been REQUESTED from — which may be
     /// before its first close, for a fund younger than the request.
     from: String,
-    /// The last date the history is complete through.
+    /// The last close's date: the history is complete through it.
     through: String,
     /// Ascending, one per session.
-    closes: Vec<(String, Dec)>,
+    closes: Vec<FetchedPrice>,
 }
 
-type Cache = BTreeMap<String, History>;
+impl History {
+    /// What an answer to a request from `from` proves: its closes up to
+    /// `completed` (the last session that has closed), covered from `from`
+    /// through the last of them. `None` when it has no such close — an empty
+    /// or live-candle-only answer proves no coverage at all.
+    fn from_answer(from: String, mut prices: Vec<FetchedPrice>, completed: &str) -> Option<Self> {
+        prices.retain(|price| price.date.as_str() <= completed);
+        let through = prices.last()?.date.clone();
+        Some(Self {
+            from,
+            through,
+            closes: prices,
+        })
+    }
 
-/// A read-only session's benchmark history: fetched and served exactly as the
-/// file's would be, but kept in memory and never written beside the journal —
-/// the same rule `profiles_api` follows for its cache. Unused (empty) in a
-/// session that may write.
-#[derive(Debug, Default)]
-pub(crate) struct SessionCache(Cache);
-
-/// Where this request's cache lives.
-#[derive(Debug, Clone)]
-enum Store {
-    /// `benchmarks.prices.journal` beside the journal (an editing session).
-    Disk(PathBuf),
-    /// [`SessionCache`], in memory (a read-only session, or one with no
-    /// journal file to sit beside).
-    Memory,
-}
-
-impl Store {
-    fn new(cache_path: Option<PathBuf>, editable: bool) -> Self {
-        match cache_path {
-            Some(path) if editable => Self::Disk(path),
-            _ => Self::Memory,
+    /// Where a refresh must start for this history to cover
+    /// `need_from..=need_through`, or `None` when it already does. Behind or
+    /// short, the whole range is refetched (see the module docs).
+    fn refetch_from(history: Option<&Self>, need_from: &str, need_through: &str) -> Option<String> {
+        let Some(history) = history.filter(|history| !history.from.is_empty()) else {
+            return Some(need_from.to_string());
+        };
+        if history.from.as_str() <= need_from && history.through.as_str() >= need_through {
+            return None;
         }
+        Some(need_from.min(history.from.as_str()).to_string())
+    }
+
+    fn closes(&self) -> Vec<Close> {
+        self.closes
+            .iter()
+            .map(|price| (price.date.clone(), price.quantity.floating_point()))
+            .collect()
     }
 }
 
-/// A `Dec` as plain decimal text (`766.29`, `-0.5`), exact.
-fn plain(value: Dec) -> String {
-    let digits = value.mantissa.unsigned_abs().to_string();
-    let places = value.places as usize;
-    let sign = if value.mantissa < 0 { "-" } else { "" };
-    if places == 0 {
-        return format!("{sign}{digits}");
+/// `benchmarks.prices.journal`: every cached symbol's history.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct BenchmarkCache(BTreeMap<String, History>);
+
+impl Sidecar for BenchmarkCache {
+    const FILE: &'static str = "benchmarks.prices.journal";
+
+    fn decode(bytes: &[u8]) -> Self {
+        parse_cache(&String::from_utf8_lossy(bytes)).unwrap_or_else(|error| {
+            eprintln!("ledgeline: ignoring an unreadable {}: {error}", Self::FILE);
+            Self::default()
+        })
     }
-    let padded = format!("{digits:0>width$}", width = places + 1);
-    let (whole, fraction) = padded.split_at(padded.len() - places);
-    format!("{sign}{whole}.{fraction}")
+
+    fn encode(&self) -> std::io::Result<Vec<u8>> {
+        Ok(render_cache(self).into_bytes())
+    }
 }
 
-fn render_cache(cache: &Cache) -> String {
+fn render_cache(cache: &BenchmarkCache) -> String {
     let mut out = String::from(CACHE_HEADER);
-    for (symbol, history) in cache {
+    for (symbol, history) in &cache.0 {
         out.push('\n');
         out.push_str(&format!(
             "{COVERAGE}{symbol} from {} through {}\n",
             history.from, history.through
         ));
-        for (date, close) in &history.closes {
-            out.push_str(&format!("P {date} {symbol} {} {QUOTE}\n", plain(*close)));
+        for close in &history.closes {
+            out.push_str(&format!(
+                "P {} {symbol} {} {QUOTE}\n",
+                close.date,
+                render_dec(close.quantity, '.')
+            ));
         }
     }
     out
@@ -269,39 +227,34 @@ fn render_cache(cache: &Cache) -> String {
 /// journal parser (so the file is provably something hledger reads), the
 /// coverage comments by hand. A symbol with prices but no coverage line is
 /// covered exactly as far as its prices reach.
-fn parse_cache(text: &str) -> Result<Cache, String> {
-    let journal = parse_journal(text, CACHE_FILE).map_err(|error| error.to_string())?;
-    let mut cache: Cache = BTreeMap::new();
+fn parse_cache(text: &str) -> Result<BenchmarkCache, String> {
+    let journal = parse_journal(text, BenchmarkCache::FILE).map_err(|error| error.to_string())?;
+    let mut prices: BTreeMap<String, Vec<FetchedPrice>> = BTreeMap::new();
     for price in journal.prices {
-        if price.price.commodity.0 != QUOTE {
-            continue;
+        if price.price.commodity.0 == QUOTE {
+            prices
+                .entry(price.commodity.0)
+                .or_default()
+                .push(FetchedPrice {
+                    date: price.date,
+                    quantity: price.price.quantity,
+                });
         }
-        cache
-            .entry(price.commodity.0)
-            .or_default()
-            .closes
-            .push((price.date, price.price.quantity));
     }
-    for history in cache.values_mut() {
-        history.closes.sort_by(|a, b| a.0.cmp(&b.0));
-        history.closes.dedup_by(|later, earlier| {
-            let same = later.0 == earlier.0;
-            if same {
-                earlier.1 = later.1;
-            }
-            same
-        });
-        history.from = history
-            .closes
-            .first()
-            .map(|c| c.0.clone())
-            .unwrap_or_default();
-        history.through = history
-            .closes
-            .last()
-            .map(|c| c.0.clone())
-            .unwrap_or_default();
-    }
+    let mut cache: BTreeMap<String, History> = prices
+        .into_iter()
+        .map(|(symbol, prices)| {
+            let closes = one_per_date(prices);
+            let span =
+                |price: Option<&FetchedPrice>| price.map(|p| p.date.clone()).unwrap_or_default();
+            let history = History {
+                from: span(closes.first()),
+                through: span(closes.last()),
+                closes,
+            };
+            (symbol, history)
+        })
+        .collect();
     for line in text.lines() {
         let Some(rest) = line.strip_prefix(COVERAGE) else {
             continue;
@@ -313,138 +266,7 @@ fn parse_cache(text: &str) -> Result<Cache, String> {
             history.through = (*through).to_string();
         }
     }
-    Ok(cache)
-}
-
-/// The cache beside the journal, or empty when there is none — or when it
-/// cannot be read or parsed: it is a cache, and the next write replaces it.
-fn read_cache(path: &Path) -> Cache {
-    match std::fs::read_to_string(path) {
-        Ok(text) => parse_cache(&text).unwrap_or_else(|error| {
-            eprintln!("ledgeline: ignoring an unreadable {CACHE_FILE}: {error}");
-            Cache::new()
-        }),
-        Err(_) => Cache::new(),
-    }
-}
-
-// ===========================================================================
-// Planning and merging a fetch
-// ===========================================================================
-
-/// What one symbol needs fetched to cover `need_from..=need_through`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Fetch {
-    /// Already covered.
-    Nothing,
-    /// The whole range, replacing whatever is cached.
-    Full { from: String },
-    /// From the last cached session on, merged onto the cached body.
-    Tail { from: String },
-}
-
-fn plan_fetch(cached: Option<&History>, need_from: &str, need_through: &str) -> Fetch {
-    let full = || Fetch::Full {
-        from: need_from.to_string(),
-    };
-    let Some(history) = cached else {
-        return full();
-    };
-    if history.from.is_empty() || need_from < history.from.as_str() {
-        // Extend the start by refetching everything: the head and the cached
-        // body would otherwise be on different dividend scales.
-        return full();
-    }
-    if history.through.as_str() >= need_through {
-        return Fetch::Nothing;
-    }
-    match history.closes.last() {
-        Some((last, _)) => Fetch::Tail { from: last.clone() },
-        // Requested before but nothing traded yet: ask again from the start.
-        None => Fetch::Full {
-            from: history.from.clone(),
-        },
-    }
-}
-
-impl Fetch {
-    /// The first date this fetch asks for; `None` when nothing is fetched.
-    fn start(&self) -> Option<&str> {
-        match self {
-            Self::Full { from } | Self::Tail { from } => Some(from),
-            Self::Nothing => None,
-        }
-    }
-}
-
-/// Fold a fetch into a symbol's history. `None` for a tail that does not
-/// overlap the cached body — nothing to re-scale by — so the caller refetches
-/// the whole range instead; and `None` for a fetch with no completed session
-/// in it, which proves no coverage at all.
-///
-/// `through` is the last complete session date (yesterday); fetched candles
-/// after it are dropped.
-fn merge(
-    cached: Option<&History>,
-    fetch: &Fetch,
-    fetched: &[FetchedPrice],
-    through: &str,
-) -> Option<History> {
-    let fresh: Vec<(String, Dec)> = fetched
-        .iter()
-        .filter(|price| price.date.as_str() <= through)
-        .map(|price| (price.date.clone(), price.quantity))
-        .collect();
-    if fresh.is_empty() && *fetch != Fetch::Nothing {
-        // No completed session came back — not even a tail's anchor, which a
-        // real answer always repeats. Nothing here proves the range is
-        // covered, so coverage must not move (the handler never gets here:
-        // [`completed`] already turned such an answer into a failure).
-        return None;
-    }
-    match fetch {
-        Fetch::Nothing => cached.cloned(),
-        Fetch::Full { from } => Some(History {
-            from: from.clone(),
-            through: through.to_string(),
-            closes: fresh,
-        }),
-        Fetch::Tail { .. } => {
-            let history = cached?;
-            let (first_fresh, _) = fresh.first()?;
-            let fresh_at: BTreeMap<&str, Dec> = fresh
-                .iter()
-                .map(|(date, close)| (date.as_str(), *close))
-                .collect();
-            let (anchor_old, anchor_new) = history
-                .closes
-                .iter()
-                .rev()
-                .find_map(|(date, old)| fresh_at.get(date.as_str()).map(|new| (*old, *new)))?;
-            let ratio = anchor_new.floating_point() / anchor_old.floating_point();
-            let rescale = (ratio - 1.0).abs() > 1e-9 && ratio.is_finite() && ratio > 0.0;
-            let mut closes: Vec<(String, Dec)> = history
-                .closes
-                .iter()
-                .filter(|(date, _)| date < first_fresh)
-                .map(|(date, close)| {
-                    let close = if rescale {
-                        Dec::parse(&format!("{:.4}", close.floating_point() * ratio), '.')
-                            .unwrap_or(*close)
-                    } else {
-                        *close
-                    };
-                    (date.clone(), close)
-                })
-                .collect();
-            closes.extend(fresh);
-            Some(History {
-                from: history.from.clone(),
-                through: through.to_string(),
-                closes,
-            })
-        }
-    }
+    Ok(BenchmarkCache(cache))
 }
 
 // ===========================================================================
@@ -456,52 +278,43 @@ struct Prepared {
     base: String,
     points: Vec<HoldingsPoint>,
     flows: Vec<DatedFlow>,
-    unvalued: usize,
-    wanted: Vec<Benchmark>,
-    cache_path: Option<PathBuf>,
+    wanted: Vec<&'static str>,
 }
 
-fn parse_symbols(raw: Option<&str>) -> Result<Vec<Benchmark>, AppError> {
-    let requested: Vec<&str> = raw
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|symbol| !symbol.is_empty())
-        .collect();
+/// The requested benchmarks, in catalog order. None, or one outside the
+/// catalog, is a `400`.
+fn parse_benchmarks(raw: Option<&str>) -> Result<Vec<&'static str>, AppError> {
+    let requested = parse_symbol_list(raw, BENCHMARKS.len())?;
     if requested.is_empty() {
         return Err(AppError::BadRequest(
             "symbols is required (a comma-separated list of benchmarks)".to_string(),
         ));
     }
-    if let Some(unknown) = requested
-        .iter()
-        .find(|symbol| !BENCHMARKS.iter().any(|b| b.symbol == **symbol))
-    {
-        let known: Vec<&str> = BENCHMARKS.iter().map(|b| b.symbol).collect();
+    if let Some(unknown) = requested.iter().find(|symbol| !BENCHMARKS.contains(symbol)) {
         return Err(AppError::BadRequest(format!(
             "unknown benchmark '{unknown}' (expected one of {})",
-            known.join(", ")
+            BENCHMARKS.join(", ")
         )));
     }
     Ok(BENCHMARKS
         .iter()
-        .filter(|b| requested.contains(&b.symbol))
         .copied()
+        .filter(|symbol| requested.contains(symbol))
         .collect())
 }
 
 /// The request's shared inputs: the series and the portfolio's flows are
-/// computed ONCE per request and every requested symbol's line is simulated
-/// from them, which is why the SPA batches its ticked benchmarks into one
-/// request rather than asking per symbol. The series is recomputed here even
-/// though the page already has it: the seed must be the engine's own values,
-/// not numbers a client sends back.
+/// computed ONCE per request, by one replay, and every requested symbol's line
+/// is simulated from them, which is why the SPA batches its ticked benchmarks
+/// into one request rather than asking per symbol. The series is recomputed
+/// here even though the page already has it: the seed must be the engine's own
+/// values, not numbers a client sends back.
 fn prepare(
     state: &AppState,
     symbols: BenchmarksQuery,
     series_query: HoldingsSeriesQuery,
 ) -> Result<Prepared, AppError> {
-    let wanted = parse_symbols(symbols.symbols.as_deref())?;
+    let wanted = parse_benchmarks(symbols.symbols.as_deref())?;
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
     let (scope, window) = stocks_series_request(journal, series_query)?;
@@ -513,75 +326,12 @@ fn prepare(
         &scope,
         &window,
     )?;
-    let cache_path = journal
-        .source_files
-        .first()
-        .and_then(|main| main.parent())
-        .map(|dir| dir.join(CACHE_FILE));
     Ok(Prepared {
         base: series.base,
         points: series.points,
         flows: flows.flows,
-        unvalued: flows.unvalued,
         wanted,
-        cache_path,
     })
-}
-
-/// One symbol's planned fetch.
-struct Job {
-    symbol: &'static str,
-    fetch: Fetch,
-}
-
-/// Run one [`Job`] against `source`, through `today`, keeping sessions
-/// completed by `through`.
-async fn fetch_one(
-    source: Arc<dyn HistoryFeed>,
-    job: Job,
-    today: String,
-    through: String,
-) -> Fetched {
-    let from = job.fetch.start().unwrap_or(&today).to_string();
-    let result = source.adjusted_history(job.symbol, &from, &today).await;
-    Fetched {
-        symbol: job.symbol,
-        fetch: job.fetch,
-        result: completed(result, job.symbol, &through),
-    }
-}
-
-/// A fetch that returned no session completed by `through` is a failure, not
-/// an empty success. Every planned range reaches back at least to a session
-/// that has traded (a tail starts ON the last cached close; a full fetch spans
-/// the lookback), so such an answer means the source did not really answer,
-/// and recording coverage for it would stop retries until the date rolls over.
-fn completed(
-    result: Result<Vec<FetchedPrice>, YahooError>,
-    symbol: &str,
-    through: &str,
-) -> Result<Vec<FetchedPrice>, YahooError> {
-    let prices = result?;
-    if prices.iter().any(|price| price.date.as_str() <= through) {
-        Ok(prices)
-    } else {
-        Err(YahooError::Shape(format!(
-            "no completed {symbol} sessions in the answer"
-        )))
-    }
-}
-
-/// One symbol's fetch outcome.
-struct Fetched {
-    symbol: &'static str,
-    fetch: Fetch,
-    result: Result<Vec<FetchedPrice>, YahooError>,
-}
-
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
 }
 
 /// `GET /api/holdings/benchmarks`. See the module docs.
@@ -593,13 +343,12 @@ pub(crate) async fn benchmarks(
     let prep_state = state.clone();
     let Json(prepared) = compute(move || prepare(&prep_state, symbols, series_query)).await?;
 
-    let Some(last_point) = prepared.points.last().map(|p| p.date.clone()) else {
-        return Ok(no_store(WireBenchmarks {
-            base: prepared.base,
+    let (Some(first), Some(last)) = (prepared.points.first(), prepared.points.last()) else {
+        return Ok(no_store_json(WireBenchmarks {
             benchmarks: Vec::new(),
         }));
     };
-    if !USD_BASES.contains(&prepared.base.as_str()) {
+    if !is_us_dollar(&prepared.base) {
         let message = format!(
             "Benchmarks are priced in US dollars, and these holdings are valued in {}.",
             prepared.base
@@ -607,191 +356,96 @@ pub(crate) async fn benchmarks(
         let benchmarks = prepared
             .wanted
             .iter()
-            .map(|b| failed(b, &prepared.points, message.clone(), prepared.unvalued))
+            .map(|symbol| failed(symbol, &prepared.points, message.clone()))
             .collect();
-        return Ok(no_store(WireBenchmarks {
-            base: prepared.base,
-            benchmarks,
-        }));
+        return Ok(no_store_json(WireBenchmarks { benchmarks }));
     }
 
-    let yesterday = add_days(&today_utc(), -1);
-    let need_from = add_days(&prepared.points[0].date, -LOOKBACK_DAYS);
-    let need_through = last_point.as_str().min(yesterday.as_str()).to_string();
+    let today = today_utc();
+    let yesterday = add_days(&today, -1);
+    let need_from = add_days(&first.date, -LOOKBACK_DAYS);
+    // No session closes on a weekend, so one ending there is covered by Friday's.
+    let need_through = weekday_on_or_before(last.date.as_str().min(yesterday.as_str()));
 
-    // Plan against the cache as it is now: read ONCE here, and again below
-    // only when a fetch makes a write necessary. A disk read needs no lock:
-    // every write is an atomic rename, so a reader sees the old file or the
-    // new one.
-    let store = Store::new(prepared.cache_path.clone(), state.editing_enabled());
-    let cached = match &store {
-        Store::Disk(path) => {
-            let path = path.clone();
-            let Json(cached) = compute(move || Ok(read_cache(&path))).await?;
-            cached
-        }
-        Store::Memory => state.benchmark_cache().lock().await.0.clone(),
-    };
-    let jobs: Vec<Job> = prepared
+    let cache = state.benchmark_cache();
+    let cached = cache.snapshot(&state).await?;
+    // Owned symbols: a borrowed one in a stream item trips rustc's
+    // higher-ranked `Send` check on the handler's future.
+    let jobs: Vec<(String, String)> = prepared
         .wanted
         .iter()
-        .map(|b| Job {
-            symbol: b.symbol,
-            fetch: plan_fetch(cached.get(b.symbol), &need_from, &need_through),
+        .filter_map(|&symbol| {
+            History::refetch_from(cached.0.get(symbol), &need_from, &need_through)
+                .map(|from| (symbol.to_string(), from))
         })
-        .filter(|job| job.fetch != Fetch::Nothing)
         .collect();
 
+    // Fetched with no lock held; only the merge below takes it.
     let source = Arc::clone(state.history_source());
-    let today = today_utc();
-    let fetched: Vec<Fetched> = stream::iter(jobs)
-        .map(|job| fetch_one(Arc::clone(&source), job, today.clone(), yesterday.clone()))
+    let answers: Vec<(String, Result<Option<History>, YahooError>)> = stream::iter(jobs)
+        .map(|(symbol, from)| {
+            fetch_history(
+                Arc::clone(&source),
+                symbol,
+                from,
+                today.clone(),
+                yesterday.clone(),
+            )
+        })
         .buffer_unordered(FETCH_CONCURRENCY)
         .collect()
         .await;
 
-    // A tail that does not overlap the cache gets one full refetch, outside
-    // the lock like every other network call.
-    let mut refetched: Vec<Fetched> = Vec::with_capacity(fetched.len());
-    for outcome in fetched {
-        let unanchored = matches!(outcome.fetch, Fetch::Tail { .. })
-            && matches!(&outcome.result, Ok(prices)
-                if merge(cached.get(outcome.symbol), &outcome.fetch, prices, &yesterday).is_none());
-        if unanchored {
-            // A tail is only planned for a history whose start already covers
-            // `need_from`, so its own start is the range to refetch.
-            let from = cached
-                .get(outcome.symbol)
-                .map_or_else(|| need_from.clone(), |history| history.from.clone());
-            let result = completed(
-                source.adjusted_history(outcome.symbol, &from, &today).await,
-                outcome.symbol,
-                &yesterday,
-            );
-            let fetch = Fetch::Full { from };
-            refetched.push(Fetched {
-                symbol: outcome.symbol,
-                fetch,
-                result,
-            });
-        } else {
-            refetched.push(outcome);
-        }
+    let mut refreshes: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut fresh: Vec<(String, History)> = Vec::new();
+    for (symbol, answer) in answers {
+        let failure = match answer {
+            Ok(Some(history)) => {
+                fresh.push((symbol, history));
+                continue;
+            }
+            Ok(None) => None,
+            Err(error) => Some(error.to_string()),
+        };
+        refreshes.insert(symbol, failure);
     }
-
-    let outcome = if refetched.is_empty() {
-        // Everything was covered: the cache as read is the answer.
-        MergeOutcome {
-            cache: cached,
-            failures: BTreeMap::new(),
-        }
+    let cache = if fresh.is_empty() {
+        cached
     } else {
-        // Read-merge-write under the lock, re-reading the store so a
-        // concurrent request's symbols survive this one's write.
-        let mut session = state.benchmark_cache().lock().await;
-        let through = yesterday.clone();
-        match store {
-            Store::Disk(path) => {
-                let Json(outcome) = compute(move || {
-                    let merged = merge_fetched(read_cache(&path), &refetched, &through);
-                    if merged.changed {
-                        write_cache(&path, &merged.outcome.cache);
-                    }
-                    Ok(merged.outcome)
-                })
-                .await?;
-                outcome
-            }
-            Store::Memory => {
-                let merged = merge_fetched(session.0.clone(), &refetched, &through);
-                if merged.changed {
-                    session.0.clone_from(&merged.outcome.cache);
-                }
-                merged.outcome
-            }
-        }
+        drop(cached); // so the merge need not copy a snapshot nobody reads
+        cache.update(&state, |cache| cache.0.extend(fresh)).await?
     };
 
     let benchmarks = prepared
         .wanted
         .iter()
-        .map(|benchmark| {
-            let history = outcome.cache.get(benchmark.symbol);
-            let failure = outcome.failures.get(benchmark.symbol);
-            line(benchmark, &prepared, history, failure)
+        .map(|&symbol| {
+            let missed = refreshes.get(symbol).map(Option::as_deref);
+            line(symbol, &prepared, cache.0.get(symbol), missed)
         })
         .collect();
-    Ok(no_store(WireBenchmarks {
-        base: prepared.base.clone(),
-        benchmarks,
-    }))
+    Ok(no_store_json(WireBenchmarks { benchmarks }))
 }
 
-/// The merged cache and any per-symbol fetch failure.
-struct MergeOutcome {
-    cache: Cache,
-    failures: BTreeMap<&'static str, String>,
+/// Ask `source` for `symbol` from `from` through `today`, keeping what the
+/// answer proves through `completed` ([`History::from_answer`]).
+async fn fetch_history(
+    source: Arc<dyn HistoryFeed>,
+    symbol: String,
+    from: String,
+    today: String,
+    completed: String,
+) -> (String, Result<Option<History>, YahooError>) {
+    let answer = source
+        .adjusted_history(&symbol, &from, &today)
+        .await
+        .map(|prices| History::from_answer(from, prices, &completed));
+    (symbol, answer)
 }
 
-/// A [`MergeOutcome`], and whether the cache changed (and so needs storing).
-struct Merged {
-    outcome: MergeOutcome,
-    changed: bool,
-}
-
-/// Fold every fetch outcome into `cache` — the store as it is NOW, read under
-/// the lock: a concurrent request may have extended it meanwhile, and a tail
-/// still anchors onto that. One that no longer can leaves the stored version
-/// alone.
-fn merge_fetched(mut cache: Cache, fetched: &[Fetched], through: &str) -> Merged {
-    let mut failures: BTreeMap<&'static str, String> = BTreeMap::new();
-    let mut changed = false;
-    for outcome in fetched {
-        match &outcome.result {
-            Err(error) => {
-                failures.insert(outcome.symbol, error.to_string());
-            }
-            Ok(prices) => {
-                if let Some(history) =
-                    merge(cache.get(outcome.symbol), &outcome.fetch, prices, through)
-                {
-                    cache.insert(outcome.symbol.to_string(), history);
-                    changed = true;
-                }
-            }
-        }
-    }
-    Merged {
-        outcome: MergeOutcome { cache, failures },
-        changed,
-    }
-}
-
-/// Write the cache file. A failure is logged, not raised: the line is served
-/// from memory all the same, and the next request refetches.
-fn write_cache(path: &Path, cache: &Cache) {
-    if let Err(error) = ledgeline_core::edit::atomic_write(path, render_cache(cache).as_bytes()) {
-        eprintln!("ledgeline: could not write {CACHE_FILE}: {}", error.kind());
-    }
-}
-
-fn closes_of(history: &History) -> Vec<Close> {
-    history
-        .closes
-        .iter()
-        .map(|(date, close)| (date.clone(), close.floating_point()))
-        .collect()
-}
-
-fn failed(
-    benchmark: &Benchmark,
-    points: &[HoldingsPoint],
-    error: String,
-    unvalued: usize,
-) -> WireBenchmark {
+fn failed(symbol: &str, points: &[HoldingsPoint], error: String) -> WireBenchmark {
     WireBenchmark {
-        symbol: benchmark.symbol.to_string(),
-        label: benchmark.label.to_string(),
+        symbol: symbol.to_string(),
         points: points
             .iter()
             .map(|point| WireBenchmarkPoint {
@@ -799,46 +453,41 @@ fn failed(
                 value: None,
             })
             .collect(),
-        priced_through: None,
         stale: false,
-        unvalued_flows: unvalued,
         error: Some(error),
     }
 }
 
+/// One benchmark's line. `missed` is `Some` when a refresh was needed and did
+/// not land — carrying the fetch error, if it was one.
 fn line(
-    benchmark: &Benchmark,
+    symbol: &str,
     prepared: &Prepared,
     history: Option<&History>,
-    failure: Option<&String>,
+    missed: Option<Option<&str>>,
 ) -> WireBenchmark {
-    let usable = history.filter(|h| !h.closes.is_empty());
-    let Some(history) = usable else {
-        let error = match failure {
-            Some(error) => format!(
-                "Could not fetch {} history from Yahoo Finance ({error}).",
-                benchmark.symbol
-            ),
-            None => format!("No {} price history covers this window.", benchmark.symbol),
+    let Some(history) = history.filter(|history| !history.closes.is_empty()) else {
+        let error = match missed.flatten() {
+            Some(error) => {
+                format!("Could not fetch {symbol} history from Yahoo Finance ({error}).")
+            }
+            None => format!("No {symbol} price history covers this window."),
         };
-        return failed(benchmark, &prepared.points, error, prepared.unvalued);
+        return failed(symbol, &prepared.points, error);
     };
-    let simulated = simulate_benchmark(&prepared.points, &prepared.flows, &closes_of(history));
+    let simulated = simulate_benchmark(&prepared.points, &prepared.flows, &history.closes());
     WireBenchmark {
-        symbol: benchmark.symbol.to_string(),
-        label: benchmark.label.to_string(),
+        symbol: symbol.to_string(),
         points: prepared
             .points
             .iter()
-            .zip(simulated.values)
+            .zip(simulated)
             .map(|(point, value)| WireBenchmarkPoint {
                 date: point.date.clone(),
                 value: value.map(|v| (v * 100.0).round() / 100.0),
             })
             .collect(),
-        priced_through: history.closes.last().map(|(date, _)| date.clone()),
-        stale: failure.is_some(),
-        unvalued_flows: prepared.unvalued,
+        stale: missed.is_some(),
         error: None,
     }
 }
@@ -846,53 +495,43 @@ fn line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ledgeline_core::Dec;
 
-    fn dec(text: &str) -> Dec {
-        Dec::parse(text, '.').unwrap()
+    fn prices(rows: &[(&str, &str)]) -> Vec<FetchedPrice> {
+        rows.iter()
+            .map(|(date, close)| FetchedPrice {
+                date: (*date).to_string(),
+                quantity: Dec::parse(close, '.').unwrap(),
+            })
+            .collect()
     }
 
     fn history(from: &str, through: &str, closes: &[(&str, &str)]) -> History {
         History {
             from: from.to_string(),
             through: through.to_string(),
-            closes: closes
-                .iter()
-                .map(|(d, c)| ((*d).to_string(), dec(c)))
-                .collect(),
+            closes: prices(closes),
         }
-    }
-
-    fn fetched(rows: &[(&str, &str)]) -> Vec<FetchedPrice> {
-        rows.iter()
-            .map(|(d, c)| FetchedPrice {
-                date: (*d).to_string(),
-                quantity: dec(c),
-            })
-            .collect()
-    }
-
-    #[test]
-    fn plain_renders_decimals_exactly() {
-        assert_eq!(plain(dec("766.2900")), "766.2900");
-        assert_eq!(plain(dec("0.05")), "0.05");
-        assert_eq!(plain(dec("-12.5")), "-12.5");
-        assert_eq!(plain(dec("42")), "42");
     }
 
     /// The file is a real hledger journal — the project's own parser reads the
     /// `P` lines back — and the coverage survives the round trip.
     #[test]
     fn the_cache_round_trips_through_the_journal_parser() {
-        let mut cache = Cache::new();
-        cache.insert(
-            "SPY".to_string(),
-            history(
-                "2025-01-01",
-                "2025-01-03",
-                &[("2025-01-02", "580.1234"), ("2025-01-03", "585.5")],
-            ),
+        let cache = BenchmarkCache(
+            [
+                (
+                    "SPY".to_string(),
+                    history(
+                        "2025-01-01",
+                        "2025-01-03",
+                        &[("2025-01-02", "580.1234"), ("2025-01-03", "585.5")],
+                    ),
+                ),
+                ("VXUS".to_string(), history("1990-01-01", "1990-12-31", &[])),
+            ]
+            .into(),
         );
-        cache.insert("VXUS".to_string(), history("1990-01-01", "1990-12-31", &[]));
         let text = render_cache(&cache);
         assert!(text.starts_with("; Ledgeline benchmark price cache."));
         assert!(text.contains("P 2025-01-02 SPY 580.1234 USD\n"));
@@ -902,11 +541,12 @@ mod tests {
                 .any(|line| line.trim_start().starts_with("include"))
         );
 
-        let journal = parse_journal(&text, CACHE_FILE).expect("hledger-format text parses");
+        let journal =
+            parse_journal(&text, BenchmarkCache::FILE).expect("hledger-format text parses");
         assert_eq!(journal.prices.len(), 2);
         assert_eq!(journal.transactions.len(), 0);
 
-        assert_eq!(parse_cache(&text).unwrap(), cache);
+        assert_eq!(BenchmarkCache::decode(text.as_bytes()), cache);
     }
 
     #[test]
@@ -914,55 +554,45 @@ mod tests {
         let text = "P 2025-01-03 SPY 2.00 USD\nP 2025-01-02 SPY 1.00 USD\nP 2025-01-02 EUR 1.10 USD\nP 2025-01-02 QQQ 9 EUR\n";
         let cache = parse_cache(text).unwrap();
         assert_eq!(
-            cache.get("SPY"),
+            cache.0.get("SPY"),
             Some(&history(
                 "2025-01-02",
                 "2025-01-03",
                 &[("2025-01-02", "1.00"), ("2025-01-03", "2.00")]
             ))
         );
-        assert!(!cache.contains_key("QQQ"), "not quoted in USD");
+        assert!(!cache.0.contains_key("QQQ"), "not quoted in USD");
     }
 
     #[test]
     fn an_unreadable_cache_is_treated_as_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(CACHE_FILE);
-        std::fs::write(&path, "this is not ::: a journal\n  bad indent\n").unwrap();
-        assert!(
-            read_cache(&path).is_empty() || read_cache(&path).values().all(|h| h.closes.is_empty())
-        );
-        assert!(read_cache(&dir.path().join("missing")).is_empty());
+        let cache = BenchmarkCache::decode(b"this is not ::: a journal\n  bad indent\n");
+        assert!(cache.0.values().all(|history| history.closes.is_empty()));
     }
 
     #[test]
-    fn plans_nothing_when_covered_a_tail_when_behind_and_a_full_fetch_to_extend_the_start() {
+    fn nothing_is_refetched_when_covered_and_the_whole_range_is_when_not() {
         let cached = history(
             "2025-01-01",
             "2025-06-30",
-            &[("2025-01-02", "1"), ("2025-06-27", "2")],
+            &[("2025-01-02", "1"), ("2025-06-30", "2")],
+        );
+        let refetch =
+            |need_from, need_through| History::refetch_from(Some(&cached), need_from, need_through);
+        assert_eq!(refetch("2025-02-01", "2025-06-30"), None);
+        // Behind: everything from the cached start, in one request.
+        assert_eq!(
+            refetch("2025-02-01", "2025-07-15").as_deref(),
+            Some("2025-01-01")
+        );
+        // Short at the start: from the new start.
+        assert_eq!(
+            refetch("2024-06-01", "2025-06-30").as_deref(),
+            Some("2024-06-01")
         );
         assert_eq!(
-            plan_fetch(Some(&cached), "2025-02-01", "2025-06-30"),
-            Fetch::Nothing
-        );
-        assert_eq!(
-            plan_fetch(Some(&cached), "2025-02-01", "2025-07-15"),
-            Fetch::Tail {
-                from: "2025-06-27".to_string()
-            }
-        );
-        assert_eq!(
-            plan_fetch(Some(&cached), "2024-06-01", "2025-06-30"),
-            Fetch::Full {
-                from: "2024-06-01".to_string()
-            }
-        );
-        assert_eq!(
-            plan_fetch(None, "2024-06-01", "2025-06-30"),
-            Fetch::Full {
-                from: "2024-06-01".to_string()
-            }
+            History::refetch_from(None, "2024-06-01", "2025-06-30").as_deref(),
+            Some("2024-06-01")
         );
     }
 
@@ -976,146 +606,53 @@ mod tests {
             &[("2011-01-28", "31.0"), ("2025-06-30", "70")],
         );
         assert_eq!(
-            plan_fetch(Some(&cached), "2008-01-01", "2025-06-30"),
-            Fetch::Nothing
+            History::refetch_from(Some(&cached), "2008-01-01", "2025-06-30"),
+            None
         );
     }
 
+    /// Coverage runs to the last close received, and today's still-forming
+    /// candle is not kept.
     #[test]
-    fn a_tail_is_appended_and_today_is_not_stored() {
-        let cached = history(
-            "2025-01-01",
-            "2025-01-03",
-            &[("2025-01-02", "10"), ("2025-01-03", "11")],
-        );
-        let fetch = Fetch::Tail {
-            from: "2025-01-03".to_string(),
-        };
-        let merged = merge(
-            Some(&cached),
-            &fetch,
-            &fetched(&[
-                ("2025-01-03", "11"),
-                ("2025-01-06", "12"),
-                ("2025-01-07", "13"),
-            ]),
-            "2025-01-06",
-        )
-        .unwrap();
+    fn an_answer_covers_through_its_last_completed_close() {
+        let answer = prices(&[
+            ("2025-01-02", "10"),
+            ("2025-01-03", "11"),
+            ("2025-01-06", "12"),
+        ]);
         assert_eq!(
-            merged,
-            history(
-                "2025-01-01",
-                "2025-01-06",
-                &[
-                    ("2025-01-02", "10"),
-                    ("2025-01-03", "11"),
-                    ("2025-01-06", "12")
-                ]
-            )
+            History::from_answer("2024-12-20".to_string(), answer, "2025-01-05"),
+            Some(history(
+                "2024-12-20",
+                "2025-01-03",
+                &[("2025-01-02", "10"), ("2025-01-03", "11")]
+            ))
         );
     }
 
-    /// Yahoo re-bases adjusted closes after each dividend. The tail comes back
-    /// on the new scale; the cached body is re-scaled by the ratio on the
-    /// overlapping session so the line has no step.
+    /// An answer with no completed session proves nothing, so it records no
+    /// coverage at all.
     #[test]
-    fn a_rebased_tail_rescales_the_cached_body() {
-        let cached = history(
-            "2025-01-01",
-            "2025-01-03",
-            &[("2025-01-02", "100"), ("2025-01-03", "110")],
-        );
-        let fetch = Fetch::Tail {
-            from: "2025-01-03".to_string(),
-        };
-        let merged = merge(
-            Some(&cached),
-            &fetch,
-            &fetched(&[("2025-01-03", "99"), ("2025-01-06", "108")]),
-            "2025-01-06",
-        )
-        .unwrap();
-        let closes: Vec<(&str, f64)> = merged
-            .closes
-            .iter()
-            .map(|(d, c)| (d.as_str(), c.floating_point()))
-            .collect();
+    fn an_answer_without_a_completed_close_proves_nothing() {
         assert_eq!(
-            closes,
-            vec![
-                ("2025-01-02", 90.0),
-                ("2025-01-03", 99.0),
-                ("2025-01-06", 108.0)
-            ]
+            History::from_answer("2025-01-01".to_string(), Vec::new(), "2025-01-05"),
+            None
         );
-    }
-
-    #[test]
-    fn a_tail_that_does_not_overlap_cannot_be_merged() {
-        let cached = history("2025-01-01", "2025-01-03", &[("2025-01-03", "11")]);
-        let fetch = Fetch::Tail {
-            from: "2025-01-03".to_string(),
-        };
-        assert!(
-            merge(
-                Some(&cached),
-                &fetch,
-                &fetched(&[("2025-02-03", "12")]),
-                "2025-02-03"
-            )
-            .is_none()
-        );
-    }
-
-    /// An answer with no completed session proves nothing, so coverage stays
-    /// where it was — for a tail and for a full fetch alike.
-    #[test]
-    fn an_empty_fetch_never_advances_coverage() {
-        let cached = history("2025-01-01", "2025-01-03", &[("2025-01-03", "11")]);
-        let tail = Fetch::Tail {
-            from: "2025-01-03".to_string(),
-        };
-        assert!(merge(Some(&cached), &tail, &[], "2025-01-05").is_none());
-        // Only today's still-forming candle: nothing completed either.
-        let live = fetched(&[("2025-01-06", "12")]);
-        assert!(merge(Some(&cached), &tail, &live, "2025-01-05").is_none());
-        let full = Fetch::Full {
-            from: "2024-12-01".to_string(),
-        };
-        assert!(merge(Some(&cached), &full, &[], "2025-01-05").is_none());
-        assert!(merge(None, &full, &[], "2025-01-05").is_none());
-    }
-
-    #[test]
-    fn an_answer_without_a_completed_session_is_a_failure() {
-        assert!(completed(Ok(Vec::new()), "SPY", "2025-01-05").is_err());
-        assert!(completed(Ok(fetched(&[("2025-01-06", "12")])), "SPY", "2025-01-05").is_err());
+        let live = prices(&[("2025-01-06", "12")]);
         assert_eq!(
-            completed(Ok(fetched(&[("2025-01-03", "11")])), "SPY", "2025-01-05")
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(
-            completed(
-                Err(YahooError::Http("down".to_string())),
-                "SPY",
-                "2025-01-05"
-            )
-            .is_err()
+            History::from_answer("2025-01-01".to_string(), live, "2025-01-05"),
+            None
         );
     }
 
     #[test]
     fn symbols_are_validated_against_the_catalog_and_returned_in_its_order() {
-        let picked = parse_symbols(Some("QQQ, SPY,QQQ")).unwrap();
         assert_eq!(
-            picked.iter().map(|b| b.symbol).collect::<Vec<_>>(),
+            parse_benchmarks(Some("QQQ, SPY,QQQ")).unwrap(),
             ["SPY", "QQQ"]
         );
-        assert!(parse_symbols(Some("SPY,EVIL/../x")).is_err());
-        assert!(parse_symbols(None).is_err());
-        assert!(parse_symbols(Some(" , ")).is_err());
+        assert!(parse_benchmarks(Some("SPY,EVIL/../x")).is_err());
+        assert!(parse_benchmarks(None).is_err());
+        assert!(parse_benchmarks(Some(" , ")).is_err());
     }
 }

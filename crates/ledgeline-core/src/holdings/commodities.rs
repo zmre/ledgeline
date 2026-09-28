@@ -86,6 +86,13 @@ impl Currencies {
     }
 }
 
+/// True for the spellings of the US dollar a journal may use: a quote in USD
+/// needs no conversion into any of them.
+#[must_use]
+pub fn is_us_dollar(commodity: &str) -> bool {
+    matches!(commodity, "$" | "USD" | "US$")
+}
+
 /// The currency glyphs hledger journals commonly use.
 fn is_glyph(commodity: &str) -> bool {
     matches!(

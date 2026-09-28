@@ -42,16 +42,10 @@ const PROFILES = {
     profiles: [
         {
             symbol: "AAPL",
-            yahooTicker: "AAPL",
-            source: "yahoo",
-            fetchedAt: "2026-09-28",
             breakdown: {...EMPTY, assetClass: [{label: "Equity", weight: 1}], sector: [{label: "Technology", weight: 1}]},
         },
         {
             symbol: "VTI",
-            yahooTicker: "VTI",
-            source: "yahoo",
-            fetchedAt: "2026-09-28",
             breakdown: {
                 ...EMPTY,
                 assetClass: [{label: "Equity", weight: 1}],
@@ -68,8 +62,8 @@ const PROFILES = {
 const TAGS_ONLY = {
     yahoo: "unavailable",
     profiles: [
-        {symbol: "AAPL", yahooTicker: "AAPL", source: "none", breakdown: EMPTY},
-        {symbol: "VTI", yahooTicker: "VTI", source: "tags", breakdown: {...EMPTY, sector: [{label: "Diversified", weight: 1}]}},
+        {symbol: "AAPL", breakdown: EMPTY},
+        {symbol: "VTI", breakdown: {...EMPTY, sector: [{label: "Diversified", weight: 1}]}},
     ],
 };
 

@@ -32,6 +32,11 @@ export function isBenchmarkSymbol(value: unknown): value is string {
     return typeof value === "string" && BENCHMARKS.some((b) => b.symbol === value);
 }
 
+/** A catalog benchmark's label ("S&P 500 (SPY)"); the symbol itself for any other. */
+export function benchmarkLabel(symbol: string): string {
+    return BENCHMARKS.find((b) => b.symbol === symbol)?.label ?? symbol;
+}
+
 /**
  * The palette slot a benchmark's line is drawn in: fixed by catalog position,
  * after the portfolio's slot 0, so it never depends on which others are shown.
@@ -43,19 +48,13 @@ export function benchmarkSlot(symbol: string): number {
 /** One simulated line, index-aligned to the value-over-time series it was computed for. */
 export interface BenchmarkLine {
     symbol: string;
-    label: string;
     points: readonly {date: ISODate; value: number | null}[];
-    /** Last session the cached history reaches, or null when there is none. */
-    pricedThrough: ISODate | null;
     /** A refresh failed and an older cache drew the line. */
     stale: boolean;
-    /** Portfolio flows that could not be valued and are missing from the simulation. */
-    unvaluedFlows: number;
     /** Why there is no line, when there is not. */
     error: string | null;
 }
 
 export interface BenchmarksResponse {
-    base: string;
     benchmarks: readonly BenchmarkLine[];
 }

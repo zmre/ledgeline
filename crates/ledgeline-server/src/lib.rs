@@ -54,6 +54,7 @@ mod qb_journal_api;
 mod reports_api;
 mod rules_api;
 mod security;
+mod sidecar;
 mod spa;
 mod stage;
 mod yahoo;
@@ -330,13 +331,11 @@ pub struct AppState {
     /// second (and last) outbound-network field, swappable for the same reason
     /// as [`Self::price_source`] via [`AppState::with_history_source`].
     history_source: Arc<dyn yahoo_history::HistoryFeed>,
-    /// Serializes read-merge-write cycles on the benchmark price cache, and
-    /// holds that cache itself in a read-only session (which may not write the
-    /// file beside the journal). Its own lock, not [`Self::import_writes`]: the
-    /// cache is not the journal, and a slow Yahoo response for a chart overlay
-    /// must never hold up an import or a price update. A `tokio` mutex for the
-    /// usual reason — the guard spans a blocking-pool `.await`.
-    benchmark_cache: Arc<tokio::sync::Mutex<benchmarks_api::SessionCache>>,
+    /// The benchmark price cache (`benchmarks.prices.journal`), in memory and
+    /// written through beside the journal — see [`sidecar`]. Its own lock, not
+    /// [`Self::import_writes`]: the cache is not the journal, and a chart
+    /// overlay must never hold up an import or a price update.
+    benchmark_cache: Arc<sidecar::SidecarCache<benchmarks_api::BenchmarkCache>>,
 }
 
 /// The real Yahoo feeds, over ONE `reqwest::Client` ([`yahoo::http_client`])
@@ -590,9 +589,8 @@ impl AppState {
         &self.history_source
     }
 
-    /// The benchmark cache's mutex (and a read-only session's in-memory
-    /// cache), shared by all clones.
-    pub(crate) fn benchmark_cache(&self) -> &tokio::sync::Mutex<benchmarks_api::SessionCache> {
+    /// The benchmark price cache, shared by all clones.
+    pub(crate) fn benchmark_cache(&self) -> &sidecar::SidecarCache<benchmarks_api::BenchmarkCache> {
         &self.benchmark_cache
     }
 

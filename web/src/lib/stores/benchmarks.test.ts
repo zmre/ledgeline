@@ -8,17 +8,13 @@ const scope = (gainPeriod: HoldingsScope["gainPeriod"]): HoldingsScope => ({acco
 
 const line = (symbol: string, error: string | null = null) => ({
     symbol,
-    label: symbol,
     points: [{date: "2026-09-28", value: error === null ? 1 : null}],
-    pricedThrough: error === null ? "2026-09-25" : null,
     stale: false,
-    unvaluedFlows: 0,
     error,
 });
 
 /** The server's answer: one line per requested symbol, in request order. */
 const body = (symbols: string, failing: readonly string[] = []) => ({
-    base: "$",
     benchmarks: symbols
         .split(",")
         .filter((s) => s !== "")

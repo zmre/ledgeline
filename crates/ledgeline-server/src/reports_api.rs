@@ -1387,16 +1387,21 @@ impl From<&OtherHoldingsReport> for WireOtherHoldingsReport {
 // Query params, defaults, and helpers
 // ===========================================================================
 
+/// Seconds since the Unix epoch, from the system clock (0 for a clock set
+/// before 1970). The server's one clock read: [`today_utc`] is built on it.
+pub(crate) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
 /// Current UTC date as `YYYY-MM-DD`, from the system clock.
 ///
 /// The report engine is deliberately clock-free (see `reports::periods`);
 /// "today" is a server-side request default only, so it lives here rather than
 /// in `ledgeline-core`, and needs no third-party date dependency.
 pub(crate) fn today_utc() -> String {
-    let days = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| (elapsed.as_secs() / 86_400) as i64)
-        .unwrap_or(0);
+    let days = i64::try_from(unix_now() / 86_400).unwrap_or(0);
     // The calendar itself lives in `reports::periods` — this file used to carry a
     // verbatim copy of Howard Hinnant's `civil_from_days` (DRY-2). The clock read
     // stays here, because `reports` is deliberately clock-free.

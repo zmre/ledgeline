@@ -30,23 +30,20 @@ describe("UNIT holdings trendView", () => {
 
     describe("benchmarkOverlays", () => {
         const trend = series([point("2026-08", "2026-08-31"), point("2026-09", "2026-09-28")]);
-        const line = (symbol: string, label: string, dates: string[], values: (number | null)[]): BenchmarkLine => ({
+        const line = (symbol: string, dates: string[], values: (number | null)[]): BenchmarkLine => ({
             symbol,
-            label,
             points: dates.map((date, i) => ({date, value: values[i] ?? null})),
-            pricedThrough: "2026-09-25",
             stale: false,
-            unvaluedFlows: 0,
             error: null,
         });
         const lines: Record<string, BenchmarkLine> = {
-            SPY: line("SPY", "S&P 500 (SPY)", ["2026-08-31", "2026-09-28"], [100, 110]),
-            GLD: line("GLD", "Gold (GLD)", ["2026-08-31", "2026-09-28"], [null, 90]),
-            QQQ: line("QQQ", "Nasdaq-100 (QQQ)", ["2026-07-31", "2026-08-31"], [1, 2]),
+            SPY: line("SPY", ["2026-08-31", "2026-09-28"], [100, 110]),
+            GLD: line("GLD", ["2026-08-31", "2026-09-28"], [null, 90]),
+            QQQ: line("QQQ", ["2026-07-31", "2026-08-31"], [1, 2]),
         };
         const lookup = (symbol: string): BenchmarkLine | null => lines[symbol] ?? null;
 
-        it("draws each ticked line dashed, in its catalog slot, keeping null gaps", () => {
+        it("draws each ticked line dashed, under its catalog label and in its catalog slot, keeping null gaps", () => {
             expect(benchmarkOverlays(trend, ["SPY", "GLD"], lookup)).toEqual([
                 {name: "S&P 500 (SPY)", values: [100, 110], dashed: true, slot: 1},
                 {name: "Gold (GLD)", values: [null, 90], dashed: true, slot: 8},

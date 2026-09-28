@@ -37,7 +37,7 @@ pub use classify::{
     declared_valuation_roles, parse_holdings_tag, parse_valuation_tag, resolve_holdings_class,
     resolve_valuation_role,
 };
-pub use commodities::Currencies;
+pub use commodities::{Currencies, is_us_dollar};
 pub use engine::{
     DatedFlow, HoldingsFlows, compute_holdings, first_holding_date, holdings_flows,
     prices_any_held, valuation_base,
