@@ -441,6 +441,53 @@ fn candidate_accounts(inputs: &OtherInputs<'_>) -> Result<Vec<String>, ReportErr
         .collect())
 }
 
+/// The date of the first transaction, on or before `scope.as_of`, that posts to
+/// an in-scope account this tab reports — where an "all time" Other chart
+/// starts. `None` when nothing in scope ever qualified.
+///
+/// Membership is [`candidate_accounts`]' ever-held test, so the chart's first
+/// point and the scope chooser's options agree about which accounts count.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn first_other_holding_date(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    scope: &HoldingsScope,
+) -> Result<Option<String>, ReportError> {
+    let inputs = OtherInputs::build(txns, prices, accounts)?;
+    let in_scope = scope_accounts(scope);
+    let mut gross: BTreeMap<&str, MixedAmount> = BTreeMap::new();
+    for posting in txns.iter().flat_map(|txn| txn.postings.iter()) {
+        let entry = gross.entry(posting.account.0.as_str()).or_default();
+        for amount in &posting.amounts {
+            entry.accumulate(&amount.commodity, amount.quantity.abs()?)?;
+        }
+    }
+    let qualifies: BTreeSet<&str> = gross
+        .into_iter()
+        .filter(|(account, commodities)| {
+            let mut commodities = commodities.clone();
+            commodities.drop_zeros();
+            !commodities.is_zero()
+                && in_scope(account)
+                && is_other_holding(&inputs, account, &commodities)
+        })
+        .map(|(account, _)| account)
+        .collect();
+    Ok(txns
+        .iter()
+        .filter(|txn| txn.date.as_str() <= scope.as_of.as_str())
+        .filter(|txn| {
+            txn.postings
+                .iter()
+                .any(|posting| qualifies.contains(posting.account.0.as_str()))
+        })
+        .map(|txn| txn.date.clone())
+        .min())
+}
+
 /// Every in-scope other holding at `as_of`, unsorted: the accounts passing
 /// [`is_other_holding`] that also hold a non-zero balance at `as_of` and sit
 /// inside the scope.

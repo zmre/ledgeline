@@ -1026,3 +1026,31 @@ fn the_final_point_is_clamped_to_as_of() {
         "house $430,000 + van $32,000 + acme $75,000"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Where an all-time chart starts
+// ---------------------------------------------------------------------------
+
+/// The Other tab's "all time" chart begins at its own first row's activity —
+/// the house, 2026-01-15 — not at the journal's opening balances (cash, which
+/// this tab never shows) and not at the VTI buy (the Stocks tab's).
+#[test]
+fn an_all_time_chart_starts_at_the_first_other_holding_activity() {
+    let journal = fixture();
+    let first = |scope: &HoldingsScope| {
+        ledgeline_core::holdings::first_other_holding_date(
+            &journal.transactions,
+            &journal.prices,
+            &journal.accounts,
+            scope,
+        )
+        .expect("first date computes")
+    };
+    assert_eq!(first(&scope(AS_OF, None)).as_deref(), Some("2026-01-15"));
+    let vehicles = HoldingsScope {
+        accounts: BTreeSet::from(["assets:vehicles".to_string()]),
+        ..scope(AS_OF, None)
+    };
+    assert_eq!(first(&vehicles).as_deref(), Some("2026-02-01"));
+    assert_eq!(first(&scope("2026-01-10", None)), None);
+}

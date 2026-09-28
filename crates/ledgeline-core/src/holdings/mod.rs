@@ -20,12 +20,14 @@
 //! Money stays exact-decimal (`Dec`); every fallible op surfaces through
 //! [`crate::reports::ReportError`] rather than unwrapping.
 
+pub mod benchmark;
 pub mod classify;
 pub mod commodities;
 pub mod engine;
 pub mod other;
 pub mod series;
 pub mod types;
+pub mod window;
 
 #[cfg(test)]
 mod test_helpers;
@@ -36,13 +38,17 @@ pub use classify::{
     resolve_valuation_role,
 };
 pub use commodities::is_currency;
-pub use engine::{compute_holdings, prices_any_held, valuation_base};
+pub use engine::{
+    DatedFlow, HoldingsFlows, compute_holdings, first_holding_date, holdings_flows,
+    prices_any_held, valuation_base,
+};
 pub use other::{
     OtherHolding, OtherHoldingsReport, OtherHoldingsTotals, OtherHoldingsWarning, OtherWarningKind,
-    other_holdings, other_holdings_series,
+    first_other_holding_date, other_holdings, other_holdings_series,
 };
 pub use series::{HoldingsPoint, HoldingsSeries, holdings_series};
 pub use types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
     PriceSource, ScopeMode, WarningKind,
 };
+pub use window::{auto_interval, series_count};

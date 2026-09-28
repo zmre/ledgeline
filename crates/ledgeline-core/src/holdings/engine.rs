@@ -727,6 +727,11 @@ fn freeze(
 /// `window_flow`: the value contributed to (or withdrawn from) the symbol over
 /// `(window_start, as_of]`, which the windowed gain subtracts so a paycheck
 /// contribution is not reported as a gain.
+///
+/// `flow_log`, when given, additionally receives every in-window flow as it is
+/// accumulated — one [`LoggedFlow`] per leg, dated — which is how
+/// [`holdings_flows`] exposes the SAME contributions `window_flow` sums without
+/// a second copy of the rules that decide what a contribution is.
 fn replay_pools(
     inputs: &HoldingsInputs<'_>,
     base: &Commodity,
@@ -734,6 +739,7 @@ fn replay_pools(
     window_start: Option<&str>,
     in_scope: &dyn Fn(&str) -> bool,
     sole_symbols: &BTreeMap<String, Option<String>>,
+    mut flow_log: Option<&mut Vec<LoggedFlow>>,
 ) -> Result<Vec<PoolSnapshot>, ReportError> {
     let HoldingsInputs {
         ordered,
@@ -885,6 +891,12 @@ fn replay_pools(
                 let leg_after = leg_before.add(entry.qty)?;
                 if in_window {
                     let flow = leg_flow(entry, &commodity, db, base, &txn.date)?;
+                    if let Some(log) = flow_log.as_deref_mut() {
+                        log.push(LoggedFlow {
+                            date: txn.date.clone(),
+                            amount: flow,
+                        });
+                    }
                     pool.window_flow = match (pool.window_flow, flow) {
                         (Some(running), Some(flow)) => Some(running.add(flow)?),
                         _ => None, // an unvaluable in-window leg: gain unknowable
@@ -967,6 +979,12 @@ fn replay_pools(
             } else {
                 reduced
             };
+            if in_window && let Some(log) = flow_log.as_deref_mut() {
+                log.push(LoggedFlow {
+                    date: txn.date.clone(),
+                    amount: Some(*reduction),
+                });
+            }
             if in_window && let Some(running) = pool.window_flow {
                 // Cash left the position: a withdrawal, like a partial sell.
                 pool.window_flow = Some(running.add(*reduction)?);
@@ -1008,6 +1026,7 @@ fn pool_snapshots(
                 window_start,
                 in_scope,
                 &run_symbols,
+                None,
             )?);
             run.clear();
         }
@@ -1022,6 +1041,7 @@ fn pool_snapshots(
             window_start,
             in_scope,
             &run_symbols,
+            None,
         )?);
     }
     Ok(snapshots)
@@ -1608,6 +1628,133 @@ pub(super) fn holdings_at_each(
     Ok((base_commodity, reports))
 }
 
+/// One leg's contribution as [`replay_pools`] computed it, before aggregation:
+/// `None` when the leg had neither a usable cost nor a market price on its date.
+struct LoggedFlow {
+    date: String,
+    amount: Option<Dec>,
+}
+
+/// Net money moved into (`> 0`) or out of (`< 0`) the in-scope stock holdings on
+/// one date, in the report's base commodity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatedFlow {
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    /// Buys minus sells minus returns of capital, summed over the date.
+    pub amount: Dec,
+}
+
+/// The dated contributions behind a windowed gain — see [`holdings_flows`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoldingsFlows {
+    /// The commodity every `amount` is in: the one the report and series for the
+    /// same scope are valued in.
+    pub base: Commodity,
+    /// Date-ascending, one entry per date with a non-zero net flow.
+    pub flows: Vec<DatedFlow>,
+    /// Legs that moved shares but could be valued neither from a cost
+    /// annotation nor from a market price on their date. They are left OUT of
+    /// `flows`, so a non-zero count means the flows understate what moved.
+    pub unvalued: usize,
+}
+
+/// Every contribution to (or withdrawal from) the in-scope stock holdings over
+/// `(after, scope.as_of]`, dated and summed per day, in the base commodity.
+///
+/// These are exactly the flows a `gain_since = after` report subtracts from its
+/// windowed gain — the same replay records them, so the rules cannot drift: a
+/// buy is positive at its cost, a sell negative at its proceeds, a bare leg is
+/// valued at the market price on its date, a return of capital is negative,
+/// and a transfer between in-scope accounts or a split is no flow at all.
+///
+/// `after: None` means "since the beginning of the journal".
+///
+/// This is the input a benchmark comparison needs: "the same money, on the same
+/// dates, into something else" — see [`super::benchmark`].
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn holdings_flows(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    commodity_tags: &[(Commodity, Vec<(String, String)>)],
+    scope: &HoldingsScope,
+    after: Option<&str>,
+) -> Result<HoldingsFlows, ReportError> {
+    let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags)?;
+    let predicate = scope_predicate(scope, &inputs.classes);
+    let base = choose_base(&inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
+    let facts = sole_symbol_facts(&inputs.ordered, &scope.as_of, &predicate, &inputs.declared);
+    let sole = sole_symbols_at(&facts, &scope.as_of);
+    let mut log: Vec<LoggedFlow> = Vec::new();
+    // Every ISO date sorts after "", so an absent bound opens the window at the
+    // journal's first transaction.
+    replay_pools(
+        &inputs,
+        &base,
+        &[scope.as_of.as_str()],
+        Some(after.unwrap_or("")),
+        &predicate,
+        &sole,
+        Some(&mut log),
+    )?;
+
+    let mut by_date: BTreeMap<String, Dec> = BTreeMap::new();
+    let mut unvalued = 0usize;
+    for LoggedFlow { date, amount } in log {
+        match amount {
+            None => unvalued += 1,
+            Some(amount) => {
+                let slot = by_date.entry(date).or_insert_with(Dec::zero);
+                *slot = slot.add(amount)?;
+            }
+        }
+    }
+    Ok(HoldingsFlows {
+        base,
+        flows: by_date
+            .into_iter()
+            .filter(|(_, amount)| !amount.is_zero())
+            .map(|(date, amount)| DatedFlow { date, amount })
+            .collect(),
+        unvalued,
+    })
+}
+
+/// The date of the first transaction, on or before `scope.as_of`, that moves a
+/// security into or out of an in-scope stock-holding account — where an
+/// "all time" chart of the Stocks tab starts. `None` when nothing in scope has
+/// ever held a security.
+///
+/// Uses the same membership test as the report ([`scope_predicate`] plus
+/// [`is_holding_account`]), so the chart cannot start at activity the table
+/// would never show.
+#[must_use]
+pub fn first_holding_date(
+    txns: &[Transaction],
+    accounts: &[AccountDeclaration],
+    scope: &HoldingsScope,
+) -> Option<String> {
+    let declared = declared_types(&account_decls_from(accounts));
+    let classes = declared_holdings_classes(accounts);
+    let predicate = scope_predicate(scope, &classes);
+    txns.iter()
+        .filter(|txn| txn.date.as_str() <= scope.as_of.as_str())
+        .filter(|txn| {
+            txn.postings.iter().any(|posting| {
+                predicate(&posting.account.0)
+                    && is_holding_account(&posting.account.0, &declared)
+                    && posting.amounts.iter().any(|amount| {
+                        !is_currency(&amount.commodity.0) && !amount.quantity.is_zero()
+                    })
+            })
+        })
+        .map(|txn| txn.date.clone())
+        .min()
+}
+
 /// One holdings snapshot at `as_of` from prebuilt inputs — [`compute_holdings`]
 /// minus the per-call setup, so the `gain_since` start snapshot can reuse it
 /// instead of rebuilding the whole world one level down.
@@ -1627,6 +1774,7 @@ fn report_at(
         gain_since,
         in_scope,
         &sole,
+        None,
     )?
     .pop()
     .unwrap_or_default(); // one date in, one snapshot out
@@ -4733,5 +4881,203 @@ mod tests {
                 assert_eq!(from_full.get(account), Some(sole), "{account} at {as_of}");
             }
         }
+    }
+}
+
+/// [`holdings_flows`] and [`first_holding_date`]: the dated contributions a
+/// benchmark comparison replays, and where an all-time chart begins.
+#[cfg(test)]
+mod flows_tests {
+    use super::*;
+    use crate::holdings::test_helpers::{amt, buy, pd, posting, scope, sell, txn, usd, with_cost};
+
+    fn dollars(flows: &HoldingsFlows) -> Vec<(&str, f64)> {
+        flows
+            .flows
+            .iter()
+            .map(|flow| (flow.date.as_str(), flow.amount.floating_point()))
+            .collect()
+    }
+
+    /// Buys at cost, a sell at its `@@` proceeds, a move between two in-scope
+    /// accounts, and a two-sided split in one account.
+    fn journal() -> Vec<Transaction> {
+        vec![
+            txn(
+                1,
+                "2025-01-10",
+                vec![
+                    buy("assets:broker:a", "VTI", 10, 10000, true),
+                    posting("assets:broker:cash", vec![usd(-100_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-03-01",
+                vec![
+                    buy("assets:broker:a", "VTI", 5, 12000, true),
+                    posting("assets:broker:cash", vec![usd(-60_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                3,
+                "2025-04-01",
+                vec![
+                    sell("assets:broker:a", "VTI", 3),
+                    posting("assets:broker:b", vec![amt("VTI", 3, 0)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                4,
+                "2025-05-01",
+                vec![
+                    sell("assets:broker:b", "VTI", 3),
+                    posting("assets:broker:b", vec![amt("VTI", 6, 0)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                5,
+                "2025-06-01",
+                vec![
+                    posting(
+                        "assets:broker:a",
+                        vec![with_cost(amt("VTI", -4, 0), 50_000, false, "$")],
+                        &[],
+                    ),
+                    posting("assets:broker:cash", vec![usd(50_000)], &[]),
+                ],
+                &[],
+            ),
+        ]
+    }
+
+    #[test]
+    fn buys_are_positive_sells_negative_and_transfers_and_splits_are_not_flows() {
+        let flows = holdings_flows(
+            &journal(),
+            &[pd("2025-01-01", "VTI", 10000, "$")],
+            &[],
+            &[],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(flows.base, Commodity("$".to_string()));
+        assert_eq!(
+            dollars(&flows),
+            vec![
+                ("2025-01-10", 1000.0),
+                ("2025-03-01", 600.0),
+                ("2025-06-01", -500.0)
+            ]
+        );
+        assert_eq!(flows.unvalued, 0);
+    }
+
+    #[test]
+    fn only_flows_after_the_bound_and_up_to_as_of_are_reported() {
+        let flows = holdings_flows(
+            &journal(),
+            &[pd("2025-01-01", "VTI", 10000, "$")],
+            &[],
+            &[],
+            &scope("2025-05-31", ScopeMode::Include, &[]),
+            Some("2025-01-10"),
+        )
+        .unwrap();
+        assert_eq!(dollars(&flows), vec![("2025-03-01", 600.0)]);
+    }
+
+    /// Shares arriving from OUTSIDE the scope with no cost are money into the
+    /// scope, valued at the market on the day; with no price they are counted
+    /// as unvalued rather than guessed.
+    #[test]
+    fn a_bare_transfer_in_is_valued_at_market_or_counted_as_unvalued() {
+        let txns = vec![
+            txn(
+                1,
+                "2025-02-01",
+                vec![
+                    posting("assets:outside", vec![amt("VTI", -2, 0)], &[]),
+                    posting("assets:broker:a", vec![amt("VTI", 2, 0)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-02-02",
+                vec![
+                    posting("assets:outside", vec![amt("XYZ", -1, 0)], &[]),
+                    posting("assets:broker:a", vec![amt("XYZ", 1, 0)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let flows = holdings_flows(
+            &txns,
+            &[pd("2025-01-15", "VTI", 15000, "$")],
+            &[],
+            &[],
+            &scope("2025-12-31", ScopeMode::Include, &["assets:broker"]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(dollars(&flows), vec![("2025-02-01", 300.0)]);
+        assert_eq!(flows.unvalued, 1);
+    }
+
+    #[test]
+    fn same_day_flows_are_summed_into_one_entry() {
+        let txns = vec![
+            txn(
+                1,
+                "2025-02-01",
+                vec![
+                    buy("assets:broker:a", "VTI", 1, 10000, true),
+                    posting("assets:cash", vec![usd(-10_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                2,
+                "2025-02-01",
+                vec![
+                    buy("assets:broker:a", "VXUS", 2, 7000, true),
+                    posting("assets:cash", vec![usd(-14_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let flows = holdings_flows(
+            &txns,
+            &[],
+            &[],
+            &[],
+            &scope("2025-12-31", ScopeMode::Include, &["assets:broker"]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(dollars(&flows), vec![("2025-02-01", 240.0)]);
+    }
+
+    #[test]
+    fn first_holding_date_is_the_earliest_in_scope_security_movement() {
+        let txns = journal();
+        let everything = scope("2025-12-31", ScopeMode::Include, &[]);
+        assert_eq!(
+            first_holding_date(&txns, &[], &everything).as_deref(),
+            Some("2025-01-10")
+        );
+        let only_b = scope("2025-12-31", ScopeMode::Include, &["assets:broker:b"]);
+        assert_eq!(
+            first_holding_date(&txns, &[], &only_b).as_deref(),
+            Some("2025-04-01")
+        );
+        let too_early = scope("2024-12-31", ScopeMode::Include, &[]);
+        assert_eq!(first_holding_date(&txns, &[], &too_early), None);
     }
 }
