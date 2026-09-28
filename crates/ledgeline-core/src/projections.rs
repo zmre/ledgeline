@@ -1191,6 +1191,7 @@ pub fn project(
                 .map(|bucket| bucket.get(&account).cloned().unwrap_or_default())
                 .collect(),
             account,
+            kind: None,
         })
         .collect();
 

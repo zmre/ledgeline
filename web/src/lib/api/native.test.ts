@@ -54,6 +54,13 @@ describe("UNIT LedgelineApi — query building", () => {
         expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08");
     });
 
+    it("builds the cash-flow sources query on its own route, with the cash flow's own params", async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({buckets: [], rows: [], totals: []}));
+        vi.stubGlobal("fetch", fetchMock);
+        await new LedgelineApi("http://127.0.0.1:5000").cashFlowSources({end: "2026-07-08", interval: "monthly", count: 12, depth: 3});
+        expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/reports/cashflow/sources?end=2026-07-08&interval=monthly&count=12&depth=3");
+    });
+
     it("omits value/valueIn/compare so the engine's own defaults apply", async () => {
         const fetchMock = vi.fn().mockResolvedValue(jsonResponse({sections: []}));
         vi.stubGlobal("fetch", fetchMock);

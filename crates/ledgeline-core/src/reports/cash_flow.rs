@@ -3,6 +3,10 @@
 //! Per-bucket changes (natural signs: inflow positive) in cash-like asset
 //! accounts, for the last `count` buckets ending with the bucket containing
 //! `end`. The final bucket is truncated at `end`.
+//!
+//! [`cash_flow_sources`] answers the companion question — not WHICH cash
+//! account moved, but WHY: the same per-bucket cash movement, attributed to
+//! the non-cash accounts on the other side of each transaction.
 
 use super::ReportError;
 use super::account_types::{AccountType, infer_account_type};
@@ -10,8 +14,15 @@ use super::aggregate::{at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
 use super::periods::{Interval, bucket_span, last_n_buckets};
 use super::types::{PeriodReport, PeriodRow};
-use crate::model::Transaction;
+use crate::decimal::{Dec, DecError};
+use crate::model::{Amount, Commodity, Posting, Transaction};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// The source row for cash movement no counterparty can explain: a transfer
+/// between two cash accounts whose legs land in different buckets, a currency
+/// exchange between two cash accounts, or an unbalanced virtual posting. Named
+/// rather than dropped so the sources still sum to the cash flow.
+pub const UNATTRIBUTED: &str = "(unattributed)";
 
 /// Name-based "cash-like asset" heuristic — the fallback when a journal declares
 /// no account types. Delegates to hledger's Cash name inference.
@@ -20,85 +31,39 @@ pub fn is_cash_like(account: &str) -> bool {
     infer_account_type(account) == Some(AccountType::Cash)
 }
 
-/// Per-bucket cash flow. `is_cash` overrides the name heuristic (pass the result
-/// of [`super::account_types::cash_predicate`] to honor declared `type:` tags).
-///
-/// `is_cash` must be a pure function of the account name: it is consulted once
-/// per DISTINCT account rather than once per account per bucket.
-///
-/// # Errors
-/// Returns [`ReportError`] on decimal overflow or bad bucket math.
-pub fn cash_flow(
-    txns: &[Transaction],
-    end: &str,
-    interval: Interval,
-    count: usize,
+/// Each bucket's inclusive `[start, to]` range, with the last one truncated at
+/// `end`. `last_n_buckets` yields CONTIGUOUS, non-overlapping buckets oldest →
+/// newest, so the `to` bounds ascend strictly and every posting falls in at most
+/// one of them — which is what lets [`bucket_of`] binary-search rather than
+/// re-scan the journal once per bucket (PERF-5).
+fn bucket_ranges(buckets: &[String], end: &str) -> Result<Vec<(String, String)>, ReportError> {
+    buckets.iter().map(|key| bucket_span(key, end)).collect()
+}
+
+/// The bucket a posting dated `date` falls in, or `None` outside the span.
+fn bucket_of(ranges: &[(String, String)], date: &str) -> Option<usize> {
+    let index = ranges.partition_point(|(_, to)| to.as_str() < date);
+    let (start, _) = ranges.get(index)?;
+    (date >= start.as_str()).then_some(index)
+}
+
+/// Roll each bucket's direct per-account amounts up, clamp to `depth`, and
+/// pivot into rows (the union of accounts across buckets, sorted). Also returns
+/// each bucket's total, summed over the UNCLAMPED accounts so it does not move
+/// with `depth` (RPT-4).
+fn pivot(
+    direct: &[BTreeMap<String, MixedAmount>],
     depth: usize,
-    is_cash: Option<&dyn Fn(&str) -> bool>,
-) -> Result<PeriodReport, ReportError> {
-    let default_pred = |account: &str| is_cash_like(account);
-    let is_cash: &dyn Fn(&str) -> bool = match is_cash {
-        Some(pred) => pred,
-        None => &default_pred,
-    };
-
-    let buckets = last_n_buckets(end, interval, count)?;
-    let mut totals: Vec<MixedAmount> = Vec::with_capacity(buckets.len());
-    let mut per_bucket: Vec<BTreeMap<String, MixedAmount>> = Vec::with_capacity(buckets.len());
-
-    // Each bucket's inclusive `[start, to]` range, with the last one truncated
-    // at `end`. `last_n_buckets` yields CONTIGUOUS, non-overlapping buckets
-    // oldest → newest, so the `to` bounds ascend strictly and every posting
-    // falls in at most one of them — which is what lets the binary search below
-    // replace one `account_totals` re-scan per bucket (PERF-5).
-    let ranges: Vec<(String, String)> = buckets
-        .iter()
-        .map(|key| bucket_span(key, end))
-        .collect::<Result<_, ReportError>>()?;
-
-    // ONE pass over every posting, summing per FULL account name into its own
-    // bucket — i.e. exactly what `account_totals(from, to)` would have produced
-    // for that bucket, and in the same transaction order, so no number can move.
-    let mut direct: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); ranges.len()];
-    let mut cash_like: HashMap<&str, bool> = HashMap::new();
-    for txn in txns {
-        for posting in &txn.postings {
-            let date = posting.date.as_deref().unwrap_or(&txn.date);
-            let index = ranges.partition_point(|(_, to)| to.as_str() < date);
-            let Some((start, _)) = ranges.get(index) else {
-                continue; // after the last bucket
-            };
-            if date < start.as_str() {
-                continue; // before the report span
-            }
-            let account = posting.account.0.as_str();
-            if !*cash_like.entry(account).or_insert_with(|| is_cash(account)) {
-                continue;
-            }
-            let entry = direct[index].entry(account).or_default();
-            for amount in &posting.amounts {
-                entry.accumulate(&amount.commodity, amount.quantity)?;
-            }
-        }
-    }
-
-    for bucket in &direct {
-        // `account_totals` prunes zero commodities in one final sweep.
-        let direct: BTreeMap<String, MixedAmount> = bucket
-            .iter()
-            .map(|(account, ma)| {
-                let mut pruned = ma.clone();
-                pruned.drop_zeros();
-                ((*account).to_string(), pruned)
-            })
-            .collect();
-
+) -> Result<(Vec<PeriodRow>, Vec<MixedAmount>), ReportError> {
+    let mut totals: Vec<MixedAmount> = Vec::with_capacity(direct.len());
+    let mut per_bucket: Vec<BTreeMap<String, MixedAmount>> = Vec::with_capacity(direct.len());
+    for bucket in direct {
         let mut total = MixedAmount::new();
-        for ma in direct.values() {
+        for ma in bucket.values() {
             total = total.ma_add(ma)?;
         }
         totals.push(total);
-        per_bucket.push(at_depth(&roll_up(&direct)?, depth));
+        per_bucket.push(at_depth(&roll_up(bucket)?, depth));
     }
 
     let accounts: BTreeSet<String> = per_bucket
@@ -117,16 +82,279 @@ pub fn cash_flow(
                 account,
                 depth,
                 values,
+                kind: None,
             }
         })
         .collect();
+    Ok((rows, totals))
+}
 
+/// `account_totals` prunes zero commodities in one final sweep; so does this.
+fn pruned(bucket: BTreeMap<&str, MixedAmount>) -> BTreeMap<String, MixedAmount> {
+    bucket
+        .into_iter()
+        .map(|(account, mut ma)| {
+            ma.drop_zeros();
+            (account.to_string(), ma)
+        })
+        .collect()
+}
+
+/// Resolve the caller's cash predicate, defaulting to the name heuristic.
+fn cash_test<'a>(
+    is_cash: Option<&'a dyn Fn(&str) -> bool>,
+    default: &'a dyn Fn(&str) -> bool,
+) -> &'a dyn Fn(&str) -> bool {
+    is_cash.unwrap_or(default)
+}
+
+/// Per-bucket cash flow. `is_cash` overrides the name heuristic (pass the result
+/// of [`super::account_types::cash_predicate`] to honor declared `type:` tags).
+///
+/// `is_cash` must be a pure function of the account name: it is consulted once
+/// per DISTINCT account rather than once per account per bucket.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or bad bucket math.
+pub fn cash_flow(
+    txns: &[Transaction],
+    end: &str,
+    interval: Interval,
+    count: usize,
+    depth: usize,
+    is_cash: Option<&dyn Fn(&str) -> bool>,
+) -> Result<PeriodReport, ReportError> {
+    let is_cash = cash_test(is_cash, &is_cash_like);
+    let buckets = last_n_buckets(end, interval, count)?;
+    let ranges = bucket_ranges(&buckets, end)?;
+
+    // ONE pass over every posting, summing per FULL account name into its own
+    // bucket — i.e. exactly what `account_totals(from, to)` would have produced
+    // for that bucket, and in the same transaction order, so no number can move.
+    let mut direct: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); ranges.len()];
+    let mut cash_like: HashMap<&str, bool> = HashMap::new();
+    for txn in txns {
+        for posting in &txn.postings {
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            let Some(index) = bucket_of(&ranges, date) else {
+                continue;
+            };
+            let account = posting.account.0.as_str();
+            if !*cash_like.entry(account).or_insert_with(|| is_cash(account)) {
+                continue;
+            }
+            let entry = direct[index].entry(account).or_default();
+            for amount in &posting.amounts {
+                entry.accumulate(&amount.commodity, amount.quantity)?;
+            }
+        }
+    }
+
+    let direct: Vec<BTreeMap<String, MixedAmount>> = direct.into_iter().map(pruned).collect();
+    let (rows, totals) = pivot(&direct, depth)?;
     Ok(PeriodReport {
         buckets,
         rows,
         totals,
         meta: None,
     })
+}
+
+/// Where each bucket's cash came from and went to: the cash flow of
+/// [`cash_flow`], attributed to COUNTERPARTY accounts instead of cash accounts.
+///
+/// Same window, same cash predicate, same natural signs (money into cash is
+/// positive, so an income source reads positive and a spending category
+/// negative). Rows are the counterparty accounts rolled up and clamped to
+/// `depth` exactly as the cash flow's own rows are; `kind` is `None`.
+///
+/// # The attribution
+///
+/// Per transaction, per bucket (a cash posting's own `date:` decides its
+/// bucket, as in [`cash_flow`]), per commodity `k`:
+///
+/// 1. `D` is the sum of the transaction's CASH postings in `k` in that bucket.
+///    Zero — a transfer between two cash accounts, say — attributes nothing:
+///    cash moving between cash accounts is internal and is not a source.
+/// 2. The weights are the transaction's NON-CASH postings' amounts in `k`. If
+///    none are (buying stock with cash: the counterparty is in `AAPL`, the
+///    cash in `$`), they are the non-cash postings' amounts AT COST in `k`.
+/// 3. Each weighted counterparty receives `D × w / Σw`. In the ordinary
+///    balanced case (`Σw == −D`) that is exactly `−w`, with no division — a
+///    `$100` grocery bill is `−$100` of groceries. Otherwise the share is
+///    rounded to `D`'s scale and the largest weight takes the remainder, so
+///    the shares still sum to `D` EXACTLY.
+/// 4. No usable weights (a currency exchange between two cash accounts, or
+///    transfer legs split across buckets) → the whole `D` goes to
+///    [`UNATTRIBUTED`].
+///
+/// So per bucket, `Σ sources == cash_flow(...).totals` exactly: every unit of
+/// cash movement is attributed once, and only once.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or bad bucket math.
+pub fn cash_flow_sources(
+    txns: &[Transaction],
+    end: &str,
+    interval: Interval,
+    count: usize,
+    depth: usize,
+    is_cash: Option<&dyn Fn(&str) -> bool>,
+) -> Result<PeriodReport, ReportError> {
+    let is_cash = cash_test(is_cash, &is_cash_like);
+    let buckets = last_n_buckets(end, interval, count)?;
+    let ranges = bucket_ranges(&buckets, end)?;
+
+    let mut direct: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); ranges.len()];
+    let mut cash_like: HashMap<&str, bool> = HashMap::new();
+    for txn in txns {
+        let mut deltas: BTreeMap<(usize, &Commodity), Dec> = BTreeMap::new();
+        let mut counterparties: Vec<&Posting> = Vec::new();
+        for posting in &txn.postings {
+            let account = posting.account.0.as_str();
+            if !*cash_like.entry(account).or_insert_with(|| is_cash(account)) {
+                counterparties.push(posting);
+                continue;
+            }
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            let Some(index) = bucket_of(&ranges, date) else {
+                continue;
+            };
+            for amount in &posting.amounts {
+                let delta = deltas
+                    .entry((index, &amount.commodity))
+                    .or_insert(Dec::zero());
+                *delta = delta.add(amount.quantity)?;
+            }
+        }
+        for ((index, commodity), delta) in deltas {
+            if delta.is_zero() {
+                continue;
+            }
+            for (account, share) in attribute(delta, commodity, &counterparties)? {
+                direct[index]
+                    .entry(account)
+                    .or_default()
+                    .accumulate(commodity, share)?;
+            }
+        }
+    }
+
+    let direct: Vec<BTreeMap<String, MixedAmount>> = direct.into_iter().map(pruned).collect();
+    let (rows, totals) = pivot(&direct, depth)?;
+    Ok(PeriodReport {
+        buckets,
+        rows,
+        totals,
+        meta: None,
+    })
+}
+
+/// The counterparties' weights in `commodity`, read through `value` (the
+/// amount as written, or at cost). Zero weights are dropped: they could only
+/// ever receive a zero share.
+fn weights<'a>(
+    commodity: &Commodity,
+    counterparties: &[&'a Posting],
+    value: impl Fn(&Amount) -> Result<(&Commodity, Dec), DecError>,
+) -> Result<Vec<(&'a str, Dec)>, DecError> {
+    let mut out = Vec::new();
+    for posting in counterparties {
+        for amount in &posting.amounts {
+            let (held, quantity) = value(amount)?;
+            if held == commodity && !quantity.is_zero() {
+                out.push((posting.account.0.as_str(), quantity));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn sum(weights: &[(&str, Dec)]) -> Result<Dec, DecError> {
+    weights
+        .iter()
+        .try_fold(Dec::zero(), |acc, (_, weight)| acc.add(*weight))
+}
+
+/// Split one transaction's cash movement `delta` in `commodity` across its
+/// counterparties — see [`cash_flow_sources`] for the rule.
+fn attribute<'a>(
+    delta: Dec,
+    commodity: &Commodity,
+    counterparties: &[&'a Posting],
+) -> Result<Vec<(&'a str, Dec)>, DecError> {
+    let natural = weights(commodity, counterparties, |amount| {
+        Ok((&amount.commodity, amount.quantity))
+    })?;
+    let natural_sum = sum(&natural)?;
+    let (chosen, total) = if natural_sum.is_zero() {
+        let costed = weights(commodity, counterparties, Amount::at_cost)?;
+        let costed_sum = sum(&costed)?;
+        (costed, costed_sum)
+    } else {
+        (natural, natural_sum)
+    };
+    if total.is_zero() {
+        return Ok(vec![(UNATTRIBUTED, delta)]);
+    }
+    // The ordinary balanced transaction: each counterparty's share is exactly
+    // the negation of what it was posted.
+    if delta == total.neg()? {
+        return chosen
+            .into_iter()
+            .map(|(account, weight)| Ok((account, weight.neg()?)))
+            .collect();
+    }
+    prorate(delta, &chosen, total)
+}
+
+/// `delta × w / total` for each weight, rounded to `delta`'s scale, with the
+/// LARGEST weight absorbing the rounding remainder so the shares sum to
+/// `delta` exactly.
+fn prorate<'a>(
+    delta: Dec,
+    weights: &[(&'a str, Dec)],
+    total: Dec,
+) -> Result<Vec<(&'a str, Dec)>, DecError> {
+    let anchor = weights
+        .iter()
+        .enumerate()
+        .map(|(i, (_, weight))| weight.abs().map(|magnitude| (magnitude, i)))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .max_by(|(a, i), (b, j)| a.cmp(b).then(j.cmp(i)))
+        .map_or(0, |(_, i)| i);
+    let mut shares = weights
+        .iter()
+        .map(|(account, weight)| Ok((*account, share_of(delta, *weight, total)?)))
+        .collect::<Result<Vec<_>, DecError>>()?;
+    let others = shares
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != anchor)
+        .try_fold(Dec::zero(), |acc, (_, (_, share))| acc.add(*share))?;
+    shares[anchor].1 = delta.sub(others)?;
+    Ok(shares)
+}
+
+/// `delta × weight / total`, at `delta`'s scale, rounded half away from zero.
+fn share_of(delta: Dec, weight: Dec, total: Dec) -> Result<Dec, DecError> {
+    // Align the ratio's two terms to one scale so their mantissas divide.
+    let places = weight.places.max(total.places);
+    let weight = weight.add(Dec::new(0, places))?;
+    let total = total.add(Dec::new(0, places))?;
+    let numerator = delta
+        .mantissa
+        .checked_mul(weight.mantissa)
+        .ok_or(DecError::Overflow)?;
+    let quotient = numerator / total.mantissa;
+    let remainder = numerator % total.mantissa;
+    let rounded = if remainder.unsigned_abs() * 2 >= total.mantissa.unsigned_abs() {
+        quotient + numerator.signum() * total.mantissa.signum()
+    } else {
+        quotient
+    };
+    Ok(Dec::new(rounded, delta.places))
 }
 
 #[cfg(test)]
@@ -328,6 +556,198 @@ mod tests {
         assert_eq!(
             report.totals,
             [MixedAmount::new(), aapl, MixedAmount::new()]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cash_flow_sources
+    // -----------------------------------------------------------------------
+
+    fn row<'a>(report: &'a PeriodReport, account: &str) -> &'a [MixedAmount] {
+        &report
+            .rows
+            .iter()
+            .find(|r| r.account == account)
+            .unwrap_or_else(|| panic!("no row {account}"))
+            .values
+    }
+
+    fn accounts(report: &PeriodReport) -> Vec<&str> {
+        report.rows.iter().map(|r| r.account.as_str()).collect()
+    }
+
+    /// The contract: per bucket, the sources sum to the cash flow's own total.
+    fn assert_reconciles(txns: &[Transaction], end: &str, interval: Interval, count: usize) {
+        for depth in 0..=5 {
+            let flow = cash_flow(txns, end, interval, count, depth, None).unwrap();
+            let sources = cash_flow_sources(txns, end, interval, count, depth, None).unwrap();
+            assert_eq!(sources.buckets, flow.buckets);
+            assert_eq!(sources.totals, flow.totals, "depth {depth}");
+        }
+    }
+
+    #[test]
+    fn attributes_cash_to_counterparties_and_skips_internal_transfers() {
+        let report =
+            cash_flow_sources(&sample(), "2026-03-15", Interval::Monthly, 3, 4, None).unwrap();
+        // The savings transfer is cash↔cash and so is nobody's source; the
+        // stock bought with broker cash has no `$` counterparty and no cost, so
+        // its $400 is unattributed rather than dropped.
+        assert_eq!(
+            accounts(&report),
+            [
+                UNATTRIBUTED,
+                "expenses",
+                "expenses:food",
+                "income",
+                "income:salary"
+            ]
+        );
+        assert_eq!(
+            row(&report, "income:salary"),
+            [usd_ma(10_000), MixedAmount::new(), usd_ma(7000)]
+        );
+        assert_eq!(
+            row(&report, "expenses:food"),
+            [MixedAmount::new(), usd_ma(-3000), MixedAmount::new()]
+        );
+        assert_eq!(
+            row(&report, UNATTRIBUTED),
+            [MixedAmount::new(), usd_ma(-40_000), MixedAmount::new()]
+        );
+        assert!(report.rows.iter().all(|r| r.kind.is_none()));
+        assert_reconciles(&sample(), "2026-03-15", Interval::Monthly, 3);
+    }
+
+    #[test]
+    fn splits_a_multi_leg_paycheck_exactly() {
+        let txns = vec![txn(
+            1,
+            "2026-01-31",
+            vec![
+                ("assets:bank:checking", vec![usd(300_000)]),
+                ("assets:bank:savings", vec![usd(50_000)]),
+                ("income:salary", vec![usd(-400_000)]),
+                ("expenses:taxes", vec![usd(50_000)]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 2, None).unwrap();
+        assert_eq!(row(&report, "income:salary"), [usd_ma(400_000)]);
+        assert_eq!(row(&report, "expenses:taxes"), [usd_ma(-50_000)]);
+        assert_eq!(report.totals, [usd_ma(350_000)]);
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    #[test]
+    fn falls_back_to_cost_when_the_counterparty_is_another_commodity() {
+        let mut shares = amount("AAPL", 10, 0);
+        shares.cost = Some(Box::new(crate::model::Cost {
+            kind: crate::model::CostKind::Unit,
+            amount: usd(22_000),
+        }));
+        let txns = vec![txn(
+            1,
+            "2026-01-15",
+            vec![
+                ("assets:broker:aapl", vec![shares]),
+                ("assets:broker:cash", vec![usd(-220_000)]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 3, None).unwrap();
+        assert_eq!(row(&report, "assets:broker:aapl"), [usd_ma(-220_000)]);
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    #[test]
+    fn prorates_when_cash_legs_straddle_buckets() {
+        // One bill paid in two instalments dated into consecutive months.
+        let mut bill = txn(
+            1,
+            "2026-01-20",
+            vec![
+                ("assets:bank:checking", vec![usd(-10_000)]),
+                ("assets:bank:checking", vec![usd(-5000)]),
+                ("expenses:a", vec![usd(9000)]),
+                ("expenses:b", vec![usd(6000)]),
+            ],
+        );
+        bill.postings[1].date = Some("2026-02-05".into());
+        let txns = vec![bill];
+        let report = cash_flow_sources(&txns, "2026-02-28", Interval::Monthly, 2, 2, None).unwrap();
+        // Jan: −100 over weights 90/60 → −60/−40; Feb: −50 → −30/−20.
+        assert_eq!(row(&report, "expenses:a"), [usd_ma(-6000), usd_ma(-3000)]);
+        assert_eq!(row(&report, "expenses:b"), [usd_ma(-4000), usd_ma(-2000)]);
+        assert_reconciles(&txns, "2026-02-28", Interval::Monthly, 2);
+    }
+
+    #[test]
+    fn a_rounded_split_still_sums_to_the_cash_exactly() {
+        // Unbalanced on purpose (virtual-posting style): $100 over three equal
+        // weights cannot divide evenly; the remainder lands on one of them.
+        let txns = vec![txn(
+            1,
+            "2026-01-10",
+            vec![
+                ("assets:bank:checking", vec![usd(-10_000)]),
+                ("expenses:a", vec![usd(100)]),
+                ("expenses:b", vec![usd(100)]),
+                ("expenses:c", vec![usd(100)]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 2, None).unwrap();
+        let shares: Vec<MixedAmount> = ["expenses:a", "expenses:b", "expenses:c"]
+            .iter()
+            .map(|a| row(&report, a)[0].clone())
+            .collect();
+        assert_eq!(shares, [usd_ma(-3334), usd_ma(-3333), usd_ma(-3333)]);
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    #[test]
+    fn a_currency_exchange_between_cash_accounts_is_unattributed() {
+        let mut euros = amount("EUR", 10_000, 2);
+        euros.cost = Some(Box::new(crate::model::Cost {
+            kind: crate::model::CostKind::Total,
+            amount: usd(11_000),
+        }));
+        let txns = vec![txn(
+            1,
+            "2026-01-10",
+            vec![
+                ("assets:bank:wise:eur", vec![euros]),
+                ("assets:bank:checking", vec![usd(-11_000)]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 2, None).unwrap();
+        assert_eq!(accounts(&report), [UNATTRIBUTED]);
+        assert_eq!(
+            row(&report, UNATTRIBUTED),
+            [mixed(&[("$", -11_000, 2), ("EUR", 10_000, 2)])]
+        );
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    #[test]
+    fn honours_the_declared_cash_predicate() {
+        // With checking NOT cash, the salary deposit is no cash movement at all.
+        let pred = |account: &str| account == "assets:bank:savings";
+        let report = cash_flow_sources(
+            &sample(),
+            "2026-03-15",
+            Interval::Monthly,
+            3,
+            3,
+            Some(&pred),
+        )
+        .unwrap();
+        // Only the savings leg of the transfer is cash now, so checking is its source.
+        assert_eq!(
+            accounts(&report),
+            ["assets", "assets:bank", "assets:bank:checking"]
+        );
+        assert_eq!(
+            row(&report, "assets:bank:checking"),
+            [MixedAmount::new(), usd_ma(5000), MixedAmount::new()]
         );
     }
 }

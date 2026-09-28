@@ -708,6 +708,13 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             get(reports_api::incomestatement_flows),
         )
         .route("/api/reports/cashflow", get(reports_api::cashflow))
+        // The cash flow by counterparty, for the chart above the Cash Flow
+        // table. A sibling route for the reason the P&L flows are one: a
+        // second pass over every posting, read only by a collapsible panel.
+        .route(
+            "/api/reports/cashflow/sources",
+            get(reports_api::cashflow_sources),
+        )
         .route("/api/reports/networth", get(reports_api::networth))
         .route("/api/insights", get(reports_api::insights_report))
         .route("/api/subscriptions", get(reports_api::subscriptions))

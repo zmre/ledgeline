@@ -165,6 +165,8 @@ import type {
     IsSubtotal,
     IsSubtotalKind,
     PeriodReport,
+    PeriodRow,
+    PeriodRowKind,
     ReportMeta,
     ReportRow,
     Section,
@@ -326,6 +328,7 @@ interface RawPeriodRow {
     account?: string;
     depth?: number;
     values?: RawMixed[];
+    kind?: unknown;
 }
 
 interface RawReportMeta {
@@ -1682,15 +1685,25 @@ export function decodeFlowReport(raw: unknown): FlowReport {
 // PeriodReport (cash flow / net worth)
 // ---------------------------------------------------------------------------
 
-function decodePeriodRow(raw: RawPeriodRow | undefined, context: string): PeriodReport["rows"][number] {
+const PERIOD_ROW_KINDS: readonly PeriodRowKind[] = ["asset", "liability", "mixed"];
+
+function decodePeriodRow(raw: RawPeriodRow | undefined, context: string): PeriodRow {
     if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number" || !Array.isArray(raw.values)) {
         throw new ApiShapeError(`${context}: missing account/depth/values`);
     }
-    return Object.freeze({
+    const row: PeriodRow = {
         account: raw.account,
         depth: raw.depth,
         values: frozen(raw.values.map((value, i) => decodeMixed(value, `${context} values[${i}]`))),
-    });
+    };
+    // Absent on every period report but net worth. Present, it must be one of
+    // the three sides: a side the chart does not know would be stacked on
+    // neither, and that is a wire change to fail loudly on, not to guess at.
+    if (raw.kind !== undefined) {
+        if (!PERIOD_ROW_KINDS.includes(raw.kind as PeriodRowKind)) throw new ApiShapeError(`${context}: unknown kind ${JSON.stringify(raw.kind)}`);
+        row.kind = raw.kind as PeriodRowKind;
+    }
+    return Object.freeze(row);
 }
 
 export function decodePeriodReport(raw: unknown): PeriodReport {

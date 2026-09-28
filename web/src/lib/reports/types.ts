@@ -407,10 +407,26 @@ export interface FlowReport {
     meta?: ReportMeta;
 }
 
+/**
+ * The balance-sheet side a net-worth row's balance comes from, decided by the
+ * engine from the EFFECTIVE declared type of the accounts rolled into it —
+ * never by sign or name. `mixed` is a clamped row whose subtree holds both.
+ */
+export type PeriodRowKind = "asset" | "liability" | "mixed";
+
+/** One period-report row: one `MixedAmount` per bucket. */
+export interface PeriodRow {
+    account: string;
+    depth: number;
+    values: MixedAmount[];
+    /** Net worth only; absent on every other period report. */
+    kind?: PeriodRowKind;
+}
+
 /** Cash flow / net worth: one column per bucket, oldest → newest. */
 export interface PeriodReport {
     buckets: string[];
-    rows: {account: string; depth: number; values: MixedAmount[]}[];
+    rows: PeriodRow[];
     totals: MixedAmount[];
     /** Present only when something noteworthy happened (e.g. unpriced commodities in netWorth). */
     meta?: ReportMeta;

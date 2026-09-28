@@ -21,6 +21,11 @@ export type InsightsTab = "activity" | "balances";
 
 const INSIGHTS_TABS: readonly InsightsTab[] = ["activity", "balances"];
 
+/** What the Cash Flow chart attributes each bucket's movement to: the counterparties (why cash moved) or the cash accounts (where). */
+export type CashFlowChartMode = "source" | "account";
+
+const CASH_FLOW_CHART_MODES: readonly CashFlowChartMode[] = ["source", "account"];
+
 interface PersistedSettings {
     serverUrl: string | null;
     /**
@@ -43,6 +48,15 @@ interface PersistedSettings {
      */
     flowsInOpen: boolean;
     flowsOutOpen: boolean;
+    /**
+     * The chart panels above the Net Worth and Cash Flow tables, one flag each,
+     * open by default. The cash-flow flag also gates the sources fetch: a shut
+     * panel costs no second pass over the journal.
+     */
+    netWorthChartOpen: boolean;
+    cashFlowChartOpen: boolean;
+    /** The Cash Flow chart's "By source" / "By account" toggle. */
+    cashFlowChartMode: CashFlowChartMode;
     /**
      * The Budget tab's "not budgeted" section. Closed by default, and the flag
      * is what GATES ITS FETCH — a section nobody has opened costs no request.
@@ -97,6 +111,9 @@ const defaults = (): PersistedSettings => ({
     hideZeroBalances: true,
     flowsInOpen: true,
     flowsOutOpen: true,
+    netWorthChartOpen: true,
+    cashFlowChartOpen: true,
+    cashFlowChartMode: "source",
     budgetGapsOpen: false,
     holdingsPieDimension: "holding",
     lastProjectionId: null,
@@ -147,6 +164,13 @@ function load(): PersistedSettings {
             hideZeroBalances: typeof parsed.hideZeroBalances === "boolean" ? parsed.hideZeroBalances : true,
             flowsInOpen: typeof parsed.flowsInOpen === "boolean" ? parsed.flowsInOpen : true,
             flowsOutOpen: typeof parsed.flowsOutOpen === "boolean" ? parsed.flowsOutOpen : true,
+            netWorthChartOpen: typeof parsed.netWorthChartOpen === "boolean" ? parsed.netWorthChartOpen : true,
+            cashFlowChartOpen: typeof parsed.cashFlowChartOpen === "boolean" ? parsed.cashFlowChartOpen : true,
+            // Validated against the union, like `insightsTab`: a stale mode would
+            // otherwise select neither button.
+            cashFlowChartMode: CASH_FLOW_CHART_MODES.includes(parsed.cashFlowChartMode as CashFlowChartMode)
+                ? (parsed.cashFlowChartMode as CashFlowChartMode)
+                : "source",
             budgetGapsOpen: typeof parsed.budgetGapsOpen === "boolean" ? parsed.budgetGapsOpen : false,
             // Validated against the union, like `insightsTab`: a dimension a
             // later version dropped must fall back rather than select nothing.
@@ -195,6 +219,9 @@ function persist(): void {
             hideZeroBalances: state.hideZeroBalances,
             flowsInOpen: state.flowsInOpen,
             flowsOutOpen: state.flowsOutOpen,
+            netWorthChartOpen: state.netWorthChartOpen,
+            cashFlowChartOpen: state.cashFlowChartOpen,
+            cashFlowChartMode: state.cashFlowChartMode,
             budgetGapsOpen: state.budgetGapsOpen,
             holdingsPieDimension: state.holdingsPieDimension,
             lastProjectionId: state.lastProjectionId,
@@ -260,6 +287,30 @@ export const settings = {
     },
     set flowsOutOpen(open: boolean) {
         state.flowsOutOpen = open;
+        persist();
+    },
+    /** Whether the Net Worth chart is expanded. */
+    get netWorthChartOpen(): boolean {
+        return state.netWorthChartOpen;
+    },
+    set netWorthChartOpen(open: boolean) {
+        state.netWorthChartOpen = open;
+        persist();
+    },
+    /** Whether the Cash Flow chart is expanded — and, in "source" mode, whether the sources are fetched. */
+    get cashFlowChartOpen(): boolean {
+        return state.cashFlowChartOpen;
+    },
+    set cashFlowChartOpen(open: boolean) {
+        state.cashFlowChartOpen = open;
+        persist();
+    },
+    /** The Cash Flow chart's breakdown. */
+    get cashFlowChartMode(): CashFlowChartMode {
+        return state.cashFlowChartMode;
+    },
+    set cashFlowChartMode(mode: CashFlowChartMode) {
+        state.cashFlowChartMode = mode;
         persist();
     },
     /** Whether the Budget tab's "not budgeted" section is expanded — and thus whether it is fetched. */
