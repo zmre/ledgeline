@@ -532,23 +532,13 @@ fn non_blank(value: Option<String>) -> Option<String> {
 }
 
 /// A fund's `sectorWeightings` key as the display name a stock's `sector`
-/// field uses for the same sector. Yahoo's fund keys are snake-case and not
-/// always a mechanical transform of the stock names (`realestate`,
-/// `financial_services`), so the known ones are mapped explicitly; anything
-/// new is title-cased rather than dropped.
+/// field uses for the same sector. Yahoo's fund keys are snake-case, and
+/// title-casing them (`financial_services` → `Financial Services`) gives the
+/// stock names — except `realestate`, the one key that is not a mechanical
+/// transform, which is mapped explicitly.
 fn sector_name(key: &str) -> String {
     match key {
-        "realestate" | "real_estate" => "Real Estate".to_string(),
-        "consumer_cyclical" => "Consumer Cyclical".to_string(),
-        "basic_materials" => "Basic Materials".to_string(),
-        "consumer_defensive" => "Consumer Defensive".to_string(),
-        "technology" => "Technology".to_string(),
-        "communication_services" => "Communication Services".to_string(),
-        "financial_services" => "Financial Services".to_string(),
-        "utilities" => "Utilities".to_string(),
-        "industrials" => "Industrials".to_string(),
-        "energy" => "Energy".to_string(),
-        "healthcare" => "Healthcare".to_string(),
+        "realestate" => "Real Estate".to_string(),
         other => other
             .split('_')
             .filter(|word| !word.is_empty())
@@ -909,5 +899,13 @@ mod tests {
             client.profile("AAPL").await,
             Err(ProfileError::Handshake(_))
         ));
+    }
+
+    #[test]
+    fn a_fund_sector_key_reads_as_the_stock_sector_name() {
+        assert_eq!(sector_name("financial_services"), "Financial Services");
+        assert_eq!(sector_name("technology"), "Technology");
+        assert_eq!(sector_name("real_estate"), "Real Estate");
+        assert_eq!(sector_name("realestate"), "Real Estate");
     }
 }

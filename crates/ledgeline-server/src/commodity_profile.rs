@@ -266,7 +266,8 @@ fn derived_sector(yahoo: Option<&YahooProfile>, asset_class: &[Weight]) -> Vec<W
     equity.chain(rest).collect()
 }
 
-/// A Yahoo `quoteType` as a reader would say it.
+/// A Yahoo `quoteType` as a reader would say it: sentence case (`INDEX` →
+/// `Index`), except the types whose reading is not their code.
 fn quote_type_label(quote_type: &str) -> String {
     match quote_type.to_ascii_uppercase().as_str() {
         "EQUITY" => "Stock".to_string(),
@@ -274,10 +275,6 @@ fn quote_type_label(quote_type: &str) -> String {
         "MUTUALFUND" => "Mutual fund".to_string(),
         "MONEYMARKET" => "Money market".to_string(),
         "CRYPTOCURRENCY" => "Crypto".to_string(),
-        "INDEX" => "Index".to_string(),
-        "CURRENCY" => "Currency".to_string(),
-        "FUTURE" => "Future".to_string(),
-        "OPTION" => "Option".to_string(),
         _ => sentence_case(quote_type),
     }
 }
@@ -607,5 +604,14 @@ mod tests {
                 assert!(weights.iter().all(|w| w.weight > 0.0));
             }
         }
+    }
+
+    #[test]
+    fn a_quote_type_reads_in_sentence_case_unless_its_code_is_not_its_name() {
+        assert_eq!(quote_type_label("INDEX"), "Index");
+        assert_eq!(quote_type_label("CURRENCY"), "Currency");
+        assert_eq!(quote_type_label("EQUITY"), "Stock");
+        assert_eq!(quote_type_label("etf"), "ETF");
+        assert_eq!(quote_type_label("MUTUALFUND"), "Mutual fund");
     }
 }

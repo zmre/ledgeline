@@ -14,7 +14,7 @@
 
 use async_trait::async_trait;
 use ledgeline_core::Dec;
-use ledgeline_core::reports::periods::days_between;
+use ledgeline_core::reports::periods::days_from_iso;
 
 use crate::yahoo::{
     ChartError, ChartResponse, FetchedPrice, YahooClient, YahooError, date_from_timestamp,
@@ -26,6 +26,8 @@ use crate::yahoo::{
 /// far below anything a chart line can show, and keeps the cache file honest
 /// about the precision it actually has.
 const ADJUSTED_PLACES: usize = 4;
+
+const SECONDS_PER_DAY: i64 = 86_400;
 
 /// Where `benchmarks_api` fetches benchmark history from — the seam the
 /// integration tests replace with a fake that never leaves the process.
@@ -59,11 +61,6 @@ impl HistoryFeed for YahooClient {
     }
 }
 
-/// Seconds since the Unix epoch at midnight UTC on `date`.
-fn epoch_seconds(date: &str) -> i64 {
-    days_between("1970-01-01", date) * 86_400
-}
-
 async fn fetch_adjusted_history(
     client: &reqwest::Client,
     ticker: &str,
@@ -73,8 +70,8 @@ async fn fetch_adjusted_history(
     // `period2` is exclusive, so the day after `to` — plus a day's slack for an
     // exchange west of Greenwich, whose last candle carries a timestamp that is
     // already "tomorrow" in UTC. The parser filters back to `to`.
-    let period1 = epoch_seconds(from).to_string();
-    let period2 = (epoch_seconds(to) + 2 * 86_400).to_string();
+    let period1 = (days_from_iso(from) * SECONDS_PER_DAY).to_string();
+    let period2 = ((days_from_iso(to) + 2) * SECONDS_PER_DAY).to_string();
     let bytes = send_chart(
         client,
         ticker,
@@ -273,11 +270,5 @@ mod tests {
             price("2026-01-02", "2"),
         ]);
         assert_eq!(kept, [price("2026-01-02", "2"), price("2026-01-03", "3")]);
-    }
-
-    #[test]
-    fn epoch_seconds_is_midnight_utc() {
-        assert_eq!(epoch_seconds("1970-01-01"), 0);
-        assert_eq!(epoch_seconds("2000-01-01"), 946_684_800);
     }
 }
