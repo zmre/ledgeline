@@ -33,12 +33,6 @@ export function sourcesMatch(held: CashFlowSourcesQuery | null, query: CashFlowS
 }
 
 /**
- * What the breakdown was last requested for: server, connection (`serverNonce`)
- * and window. Plain, not `$state`: written by the effect that reads it.
- */
-let requested: {serverUrl: string; nonce: number; query: CashFlowSourcesQuery} | null = null;
-
-/**
  * Fetch the breakdown only while something is looking at it.
  *
  * It is a separate endpoint so that costs nothing otherwise: a second pass over
@@ -52,13 +46,19 @@ let requested: {serverUrl: string; nonce: number; query: CashFlowSourcesQuery} |
  * A re-run that asks for what was already requested on this connection — the
  * panel re-expanded, the mode toggled back, the tab revisited — sends nothing:
  * the held (or in-flight) answer is still the answer. Only a failed request is
- * asked again. `serverNonce` is the invalidation, exactly as for the report
+ * asked again. A fresh mount of the page starts with nothing requested, so it
+ * refetches as the table does. `serverNonce` is the invalidation, exactly as for the report
  * table this breakdown sits above: a reconnect moves it, and the next look
  * refetches.
  *
  * Must be called during component initialization (it declares an `$effect`).
  */
 export function loadSourcesWhenWatched(read: () => {tab: string; query: CashFlowSourcesQuery}): void {
+    // What was last requested for: server, connection (`serverNonce`) and window.
+    // Per call (so per page mount), like the report table's own load: leaving the
+    // page and coming back refetches, which is what picks up a journal edit.
+    // Plain, not `$state`: written by the effect that reads it.
+    let requested: {serverUrl: string; nonce: number; query: CashFlowSourcesQuery} | null = null;
     $effect(() => {
         const {tab, query} = read();
         const serverUrl = settings.serverUrl;

@@ -91,6 +91,16 @@ describe("UNIT cash-flow sources are fetched only while the chart shows them", (
         expect(requested.filter((url) => url.includes("/cashflow/sources"))).toHaveLength(2);
     });
 
+    it("refetches the same window when the page mounts again, as the table does (picks up a journal edit)", async () => {
+        watch(() => "cf");
+        await vi.waitFor(() => expect(cashFlowSources.status).toBe("ready"));
+
+        stop();
+        watch(() => "cf");
+
+        expect(requested.filter((url) => url.includes("/cashflow/sources"))).toHaveLength(2);
+    });
+
     it("issues nothing on another tab", () => {
         watch(() => "nw");
 
