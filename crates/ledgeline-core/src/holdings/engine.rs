@@ -1005,13 +1005,18 @@ fn replay_pools(
 /// share a pass. Consecutive points that agree — nearly always all of them, see
 /// [`sole_symbol_facts`] — get one replay between them; a disagreement splits
 /// the series there and costs one extra pass, never a wrong number.
+///
+/// `flows`, when given, is a flow window start and the log its flows go to.
+/// Only the FINAL run records them: it replays the whole journal up to the last
+/// date with that date's sole-symbol map, which is exactly the replay
+/// [`holdings_flows`] runs, so the log is identical and never doubled.
 fn pool_snapshots(
     inputs: &HoldingsInputs<'_>,
     facts: &BTreeMap<String, SoleSymbolFacts>,
     base: &Commodity,
     as_ofs: &[String],
-    window_start: Option<&str>,
     in_scope: &dyn Fn(&str) -> bool,
+    flows: Option<(&str, &mut Vec<LoggedFlow>)>,
 ) -> Result<Vec<PoolSnapshot>, ReportError> {
     let mut snapshots: Vec<PoolSnapshot> = Vec::with_capacity(as_ofs.len());
     let mut run: Vec<&str> = Vec::new();
@@ -1023,7 +1028,7 @@ fn pool_snapshots(
                 inputs,
                 base,
                 &run,
-                window_start,
+                None,
                 in_scope,
                 &run_symbols,
                 None,
@@ -1034,6 +1039,8 @@ fn pool_snapshots(
         run.push(as_of.as_str());
     }
     if !run.is_empty() {
+        let (window_start, log) =
+            flows.map_or((None, None), |(start, log)| (Some(start), Some(log)));
         snapshots.extend(replay_pools(
             inputs,
             base,
@@ -1041,7 +1048,7 @@ fn pool_snapshots(
             window_start,
             in_scope,
             &run_symbols,
-            None,
+            log,
         )?);
     }
     Ok(snapshots)
@@ -1592,6 +1599,7 @@ pub fn compute_holdings(
 /// pinned `base` is returned alongside, resolved ONCE from `scope.as_of` (see
 /// [`valuation_base`], which this replaces for the series so the journal is
 /// sorted and the `PriceDb` built once rather than twice).
+#[cfg(test)]
 pub(super) fn holdings_at_each(
     txns: &[Transaction],
     prices: &[PriceDirective],
@@ -1600,17 +1608,45 @@ pub(super) fn holdings_at_each(
     scope: &HoldingsScope,
     as_ofs: &[String],
 ) -> Result<(Commodity, Vec<HoldingsReport>), ReportError> {
+    let (base, reports, _) =
+        holdings_at_each_with_flows(txns, prices, accounts, commodity_tags, scope, as_ofs, None)?;
+    Ok((base, reports))
+}
+
+/// [`holdings_at_each`], and — when `flows_after` is given — the in-scope flows
+/// over `(flows_after, scope.as_of]` exactly as [`holdings_flows`] reports them,
+/// recorded by the same replay rather than a second one. `as_ofs` must then end
+/// at `scope.as_of`, as a series' dates do.
+pub(super) fn holdings_at_each_with_flows(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    commodity_tags: &[(Commodity, Vec<(String, String)>)],
+    scope: &HoldingsScope,
+    as_ofs: &[String],
+    flows_after: Option<&str>,
+) -> Result<(Commodity, Vec<HoldingsReport>, Option<HoldingsFlows>), ReportError> {
     let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags)?;
     let predicate = scope_predicate(scope, &inputs.classes);
     let base_commodity = choose_base(&inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
     let Some(last) = as_ofs.last() else {
-        return Ok((base_commodity, Vec::new()));
+        return Ok((base_commodity, Vec::new(), None));
     };
+    debug_assert!(flows_after.is_none() || last == &scope.as_of);
     let facts = sole_symbol_facts(&inputs.ordered, last, &predicate, &inputs.declared);
     // The trend tracks market value/basis only; gain windowing is a per-snapshot
-    // concern and never applies to a series point, so there is no window flow to
-    // accumulate and no start snapshot to recurse into.
-    let snapshots = pool_snapshots(&inputs, &facts, &base_commodity, as_ofs, None, &predicate)?;
+    // concern and never applies to a series point, so the flow window (when
+    // asked for) only feeds the log and no start snapshot is recursed into.
+    let mut log: Vec<LoggedFlow> = Vec::new();
+    let snapshots = pool_snapshots(
+        &inputs,
+        &facts,
+        &base_commodity,
+        as_ofs,
+        &predicate,
+        flows_after.map(|after| (after, &mut log)),
+    )?;
+    let flows = flows_after.map(|_| aggregate_flows(log)).transpose()?;
     let reports = as_ofs
         .iter()
         .zip(snapshots)
@@ -1625,7 +1661,7 @@ pub(super) fn holdings_at_each(
             )
         })
         .collect::<Result<Vec<_>, ReportError>>()?;
-    Ok((base_commodity, reports))
+    Ok((base_commodity, reports, flows))
 }
 
 /// One leg's contribution as [`replay_pools`] computed it, before aggregation:
@@ -1646,11 +1682,8 @@ pub struct DatedFlow {
 }
 
 /// The dated contributions behind a windowed gain — see [`holdings_flows`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HoldingsFlows {
-    /// The commodity every `amount` is in: the one the report and series for the
-    /// same scope are valued in.
-    pub base: Commodity,
     /// Date-ascending, one entry per date with a non-zero net flow.
     pub flows: Vec<DatedFlow>,
     /// Legs that moved shares but could be valued neither from a cost
@@ -1683,24 +1716,22 @@ pub fn holdings_flows(
     scope: &HoldingsScope,
     after: Option<&str>,
 ) -> Result<HoldingsFlows, ReportError> {
-    let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags)?;
-    let predicate = scope_predicate(scope, &inputs.classes);
-    let base = choose_base(&inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
-    let facts = sole_symbol_facts(&inputs.ordered, &scope.as_of, &predicate, &inputs.declared);
-    let sole = sole_symbols_at(&facts, &scope.as_of);
-    let mut log: Vec<LoggedFlow> = Vec::new();
     // Every ISO date sorts after "", so an absent bound opens the window at the
     // journal's first transaction.
-    replay_pools(
-        &inputs,
-        &base,
-        &[scope.as_of.as_str()],
+    let (_, _, flows) = holdings_at_each_with_flows(
+        txns,
+        prices,
+        accounts,
+        commodity_tags,
+        scope,
+        std::slice::from_ref(&scope.as_of),
         Some(after.unwrap_or("")),
-        &predicate,
-        &sole,
-        Some(&mut log),
     )?;
+    Ok(flows.unwrap_or_default())
+}
 
+/// Sum a replay's logged legs per date into [`HoldingsFlows`].
+fn aggregate_flows(log: Vec<LoggedFlow>) -> Result<HoldingsFlows, ReportError> {
     let mut by_date: BTreeMap<String, Dec> = BTreeMap::new();
     let mut unvalued = 0usize;
     for LoggedFlow { date, amount } in log {
@@ -1713,7 +1744,6 @@ pub fn holdings_flows(
         }
     }
     Ok(HoldingsFlows {
-        base,
         flows: by_date
             .into_iter()
             .filter(|(_, amount)| !amount.is_zero())
@@ -4966,7 +4996,6 @@ mod flows_tests {
             None,
         )
         .unwrap();
-        assert_eq!(flows.base, Commodity("$".to_string()));
         assert_eq!(
             dollars(&flows),
             vec![

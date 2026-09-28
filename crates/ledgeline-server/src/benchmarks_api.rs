@@ -50,7 +50,7 @@ use axum::http::{HeaderName, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use futures::stream::{self, StreamExt};
 use ledgeline_core::holdings::benchmark::{Close, simulate_benchmark};
-use ledgeline_core::holdings::{DatedFlow, HoldingsPoint, holdings_flows, holdings_series};
+use ledgeline_core::holdings::{DatedFlow, HoldingsPoint, holdings_series_and_flows};
 use ledgeline_core::reports::periods::add_days;
 use ledgeline_core::{Dec, parse_journal};
 use serde::{Deserialize, Serialize};
@@ -60,7 +60,7 @@ use std::sync::Arc;
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::reports_api::{HoldingsTab, compute, holdings_scope, series_window, today_utc};
+use crate::reports_api::{HoldingsSeriesQuery, compute, stocks_series_request, today_utc};
 use crate::yahoo::{FetchedPrice, YahooError};
 use crate::yahoo_history::HistoryFeed;
 
@@ -148,22 +148,12 @@ const CACHE_HEADER: &str = "\
 // Wire types
 // ===========================================================================
 
-/// `?symbols=SPY,QQQ&asOf=&accounts=&mode=&interval=&count=&since=&valueIn=`.
-///
-/// Everything but `symbols` is `/api/holdings/series`' query, field for field
-/// and validated by the same functions, so the overlay is computed for exactly
-/// the window the base chart was.
+/// `?symbols=SPY,QQQ`, read beside `/api/holdings/series`' own query
+/// ([`HoldingsSeriesQuery`]) from the same query string, so the overlay is
+/// computed for exactly the window the base chart was.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct BenchmarksQuery {
     symbols: Option<String>,
-    as_of: Option<String>,
-    accounts: Option<String>,
-    mode: Option<String>,
-    interval: Option<String>,
-    count: Option<usize>,
-    since: Option<String>,
-    value_in: Option<String>,
 }
 
 /// The response: one line per requested benchmark, in catalog order.
@@ -506,43 +496,22 @@ fn parse_symbols(raw: Option<&str>) -> Result<Vec<Benchmark>, AppError> {
 /// request rather than asking per symbol. The series is recomputed here even
 /// though the page already has it: the seed must be the engine's own values,
 /// not numbers a client sends back.
-fn prepare(state: &AppState, query: BenchmarksQuery) -> Result<Prepared, AppError> {
-    let wanted = parse_symbols(query.symbols.as_deref())?;
+fn prepare(
+    state: &AppState,
+    symbols: BenchmarksQuery,
+    series_query: HoldingsSeriesQuery,
+) -> Result<Prepared, AppError> {
+    let wanted = parse_symbols(symbols.symbols.as_deref())?;
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let scope = holdings_scope(
-        journal,
-        HoldingsTab::Stocks,
-        query.accounts.as_deref(),
-        query.mode.as_deref(),
-        query.as_of,
-        None,
-        query.value_in.as_deref(),
-    )?;
-    let window = series_window(
-        journal,
-        HoldingsTab::Stocks,
-        &scope,
-        query.interval.as_deref(),
-        query.count,
-        query.since.as_deref(),
-    )?;
-    let series = holdings_series(
+    let (scope, window) = stocks_series_request(journal, series_query)?;
+    let (series, flows) = holdings_series_and_flows(
         &journal.transactions,
         &journal.prices,
         &journal.accounts,
         &journal.commodity_tags,
         &scope,
         &window,
-    )?;
-    let after = series.points.first().map(|point| point.date.as_str());
-    let flows = holdings_flows(
-        &journal.transactions,
-        &journal.prices,
-        &journal.accounts,
-        &journal.commodity_tags,
-        &scope,
-        after,
     )?;
     let cache_path = journal
         .source_files
@@ -618,10 +587,11 @@ fn no_store<T: Serialize>(body: T) -> Response {
 /// `GET /api/holdings/benchmarks`. See the module docs.
 pub(crate) async fn benchmarks(
     State(state): State<AppState>,
-    Query(query): Query<BenchmarksQuery>,
+    Query(symbols): Query<BenchmarksQuery>,
+    Query(series_query): Query<HoldingsSeriesQuery>,
 ) -> Result<Response, AppError> {
     let prep_state = state.clone();
-    let Json(prepared) = compute(move || prepare(&prep_state, query)).await?;
+    let Json(prepared) = compute(move || prepare(&prep_state, symbols, series_query)).await?;
 
     let Some(last_point) = prepared.points.last().map(|p| p.date.clone()) else {
         return Ok(no_store(WireBenchmarks {

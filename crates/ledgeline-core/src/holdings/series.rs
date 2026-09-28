@@ -12,7 +12,7 @@ use crate::decimal::Dec;
 use crate::model::{AccountDeclaration, Commodity, PriceDirective, Transaction};
 use crate::reports::{ReportError, bucket_label, last_n_buckets};
 
-use super::engine::holdings_at_each;
+use super::engine::{HoldingsFlows, holdings_at_each_with_flows};
 use super::types::HoldingsScope;
 use super::window::{SeriesWindow, series_dates};
 
@@ -62,6 +62,37 @@ pub fn holdings_series(
     scope: &HoldingsScope,
     window: &SeriesWindow,
 ) -> Result<HoldingsSeries, ReportError> {
+    series_and_flows(txns, prices, accounts, commodity_tags, scope, window, false)
+        .map(|(series, _)| series)
+}
+
+/// [`holdings_series`] together with the [`holdings_flows`] over
+/// `(first point, scope.as_of]` — the pair a benchmark comparison simulates
+/// from — built from one set of inputs and recorded by one replay.
+///
+/// # Errors
+/// As [`holdings_series`].
+pub fn holdings_series_and_flows(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    commodity_tags: &[(Commodity, Vec<(String, String)>)],
+    scope: &HoldingsScope,
+    window: &SeriesWindow,
+) -> Result<(HoldingsSeries, HoldingsFlows), ReportError> {
+    series_and_flows(txns, prices, accounts, commodity_tags, scope, window, true)
+        .map(|(series, flows)| (series, flows.unwrap_or_default()))
+}
+
+fn series_and_flows(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    commodity_tags: &[(Commodity, Vec<(String, String)>)],
+    scope: &HoldingsScope,
+    window: &SeriesWindow,
+    with_flows: bool,
+) -> Result<(HoldingsSeries, Option<HoldingsFlows>), ReportError> {
     let keys = last_n_buckets(&scope.as_of, window.interval, window.count)?;
     // Each bucket's last day (the first one at `window.start`, when given),
     // clamped so the final point never overshoots `scope.as_of`. Ascending,
@@ -73,7 +104,16 @@ pub fn holdings_series(
     // (or empty) bucket could legitimately land on a different commodity than
     // the last one — and a trend line whose units change partway along is worse
     // than no trend.
-    let (_, reports) = holdings_at_each(txns, prices, accounts, commodity_tags, scope, &dates)?;
+    let flows_after = with_flows.then(|| dates.first().cloned()).flatten();
+    let (_, reports, flows) = holdings_at_each_with_flows(
+        txns,
+        prices,
+        accounts,
+        commodity_tags,
+        scope,
+        &dates,
+        flows_after.as_deref(),
+    )?;
 
     let mut base = "$".to_string();
     let mut has_basis = false;
@@ -91,11 +131,12 @@ pub fn holdings_series(
             basis: report.totals.basis,
         });
     }
-    Ok(HoldingsSeries {
+    let series = HoldingsSeries {
         base,
         points,
         has_basis,
-    })
+    };
+    Ok((series, flows))
 }
 
 #[cfg(test)]
@@ -292,5 +333,34 @@ mod tests {
         let buckets: Vec<&str> = series.points.iter().map(|p| p.bucket.as_str()).collect();
         assert_eq!(buckets, ["2025-02", "2025-03"]);
         assert_eq!(values(&series), vec![2500.0, 2500.0]); // second buy (Apr) is in the future
+    }
+
+    #[test]
+    fn one_replay_answers_exactly_what_the_series_and_flows_answer_apart() {
+        let mut journal = txns();
+        journal.push(txn(
+            3,
+            "2025-05-01",
+            vec![
+                crate::holdings::test_helpers::sell("assets:broker:vti", "VTI", 5),
+                posting("assets:broker:cash", vec![usd(125_000)], &[]),
+            ],
+            &[],
+        ));
+        let sc = scope("2025-05-15", ScopeMode::Include, &[]);
+        for window in [
+            SeriesWindow::counted(Interval::Monthly, 5),
+            SeriesWindow::counted(Interval::Monthly, 2),
+            SeriesWindow::counted(Interval::Daily, 1),
+        ] {
+            let (series, flows) =
+                holdings_series_and_flows(&journal, &prices(), &[], &[], &sc, &window).unwrap();
+            let apart = holdings_series(&journal, &prices(), &[], &[], &sc, &window).unwrap();
+            let after = apart.points.first().map(|point| point.date.as_str());
+            let apart_flows =
+                crate::holdings::holdings_flows(&journal, &prices(), &[], &[], &sc, after).unwrap();
+            assert_eq!(series, apart);
+            assert_eq!(flows, apart_flows);
+        }
     }
 }

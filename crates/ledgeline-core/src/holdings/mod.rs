@@ -43,10 +43,10 @@ pub use engine::{
     prices_any_held, valuation_base,
 };
 pub use other::{
-    OtherHolding, OtherHoldingsReport, OtherHoldingsTotals, OtherHoldingsWarning, OtherWarningKind,
-    first_other_holding_date, other_holdings, other_holdings_series,
+    OtherHolding, OtherHoldingsReport, OtherHoldingsTotals, OtherHoldingsWarning, OtherInputs,
+    OtherWarningKind, first_other_holding_date, other_holdings, other_holdings_series,
 };
-pub use series::{HoldingsPoint, HoldingsSeries, holdings_series};
+pub use series::{HoldingsPoint, HoldingsSeries, holdings_series, holdings_series_and_flows};
 pub use types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
     PriceSource, ScopeMode, WarningKind,
