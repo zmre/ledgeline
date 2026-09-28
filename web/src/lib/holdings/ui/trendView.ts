@@ -5,14 +5,14 @@
 import type {PeriodSeries} from "$lib/components/periodSeries";
 import {benchmarkSlot, type BenchmarkLine} from "$lib/holdings/benchmarks";
 import type {HoldingsPoint, HoldingsSeries} from "$lib/holdings/types";
+import {MONTH_NAMES} from "$lib/reports/periods";
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 const WEEK_KEY = /^\d{4}-W\d{2}$/;
 
 /** "2026-09-28" → "Sep 28", or "Sep 28 '26" when the chart spans more than one year. */
 function dayLabel(date: string, withYear: boolean): string {
-    const month = MONTHS[Number(date.slice(5, 7)) - 1] ?? date.slice(5, 7);
+    const month = MONTH_NAMES[Number(date.slice(5, 7)) - 1] ?? date.slice(5, 7);
     const day = Number(date.slice(8, 10));
     return withYear ? `${month} ${day} '${date.slice(2, 4)}` : `${month} ${day}`;
 }

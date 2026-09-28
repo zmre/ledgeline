@@ -1,5 +1,18 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {bucketEnd, bucketKey, bucketLabel, bucketStart, compareISO, daysBetween, lastNBuckets, nextBucket, nextNBuckets, today} from "./periods";
+import {
+    addDays,
+    addMonths,
+    bucketEnd,
+    bucketKey,
+    bucketLabel,
+    bucketStart,
+    compareISO,
+    daysBetween,
+    lastNBuckets,
+    nextBucket,
+    nextNBuckets,
+    today,
+} from "./periods";
 
 /** The zone vite.config.ts pins the suite to; restored after the `today()` cases retune it. */
 const PINNED_TZ = process.env.TZ;
@@ -201,6 +214,27 @@ describe("UNIT reports/periods", () => {
         it("spans a century rule (1900 is not a leap year, 2000 is)", () => {
             expect(daysBetween("1900-02-28", "1900-03-01")).toBe(1);
             expect(daysBetween("2000-02-28", "2000-03-01")).toBe(2);
+        });
+    });
+
+    // Twins of reports::periods add_days / add_months in the Rust engine.
+    describe("addDays / addMonths", () => {
+        it("steps whole days across month, year and leap-day boundaries", () => {
+            expect(addDays("2026-09-28", -7)).toBe("2026-09-21");
+            expect(addDays("2026-03-03", -7)).toBe("2026-02-24");
+            expect(addDays("2024-02-28", 1)).toBe("2024-02-29");
+            expect(addDays("2025-12-31", 1)).toBe("2026-01-01");
+            expect(addDays("2026-07-08", 0)).toBe("2026-07-08");
+        });
+
+        it("steps calendar months, clamping the day into a shorter month", () => {
+            expect(addMonths("2026-01-31", 1)).toBe("2026-02-28");
+            expect(addMonths("2024-01-31", 1)).toBe("2024-02-29");
+            expect(addMonths("2026-03-31", -1)).toBe("2026-02-28");
+            expect(addMonths("2026-01-15", -1)).toBe("2025-12-15");
+            expect(addMonths("2026-02-10", -3)).toBe("2025-11-10");
+            expect(addMonths("2024-02-29", -12)).toBe("2023-02-28");
+            expect(addMonths("2026-11-30", 14)).toBe("2028-01-30");
         });
     });
 

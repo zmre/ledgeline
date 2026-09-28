@@ -9,6 +9,7 @@
    is correct (and the contract exposes ReadonlySet); Date is read-once. */
 import type {ISODate} from "$lib/domain/types";
 import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
+import {addDays} from "$lib/reports/periods";
 
 export interface JournalFilter {
     from: ISODate | null; // inclusive
@@ -41,15 +42,6 @@ function lastDayOfMonth(y: number, m: number): number {
     return new Date(Date.UTC(y, m, 0)).getUTCDate();
 }
 
-/** Shift an ISO date by whole days using numeric-parts Date math (no string parsing of dates). */
-function shiftDays(date: ISODate, days: number): ISODate {
-    const y = Number(date.slice(0, 4));
-    const m = Number(date.slice(5, 7));
-    const d = Number(date.slice(8, 10));
-    const t = new Date(Date.UTC(y, m - 1, d + days));
-    return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
-}
-
 /** Pure preset → inclusive range math with an injected `today` (unit-tested; `last90` includes today, i.e. today-89 … today). */
 export function presetRange(p: DatePreset, today: ISODate): {from: ISODate | null; to: ISODate | null} {
     const y = Number(today.slice(0, 4));
@@ -63,7 +55,7 @@ export function presetRange(p: DatePreset, today: ISODate): {from: ISODate | nul
             return {from: `${ly}-${pad(lm)}-01`, to: `${ly}-${pad(lm)}-${pad(lastDayOfMonth(ly, lm))}`};
         }
         case "last90":
-            return {from: shiftDays(today, -89), to: today};
+            return {from: addDays(today, -89), to: today};
         case "ytd":
             return {from: `${y}-01-01`, to: today};
         case "thisYear":
