@@ -150,9 +150,12 @@
         }))
     );
     // Explicit integer ticks so index-based x labels never land between buckets
-    // — `periodAxis` owns both that rule and the spacing, for both period charts.
-    const xTicks = $derived(tickIndices(rows.length));
-    const bucketLabel = $derived(labelFormatter(rows.map((r) => r.bucket)));
+    // — `periodAxis` owns both that rule and the width-aware spacing, for every
+    // period chart. The padding subtracted is the LineChart's below (56 + 8).
+    const bucketLabels = $derived(rows.map((r) => r.bucket));
+    let lineWidth = $state(0);
+    const xTicks = $derived(tickIndices(rows.length, {plotWidth: lineWidth - 56 - 8, labels: bucketLabels}));
+    const bucketLabel = $derived(labelFormatter(bucketLabels));
 </script>
 
 <div class="w-full">
@@ -257,7 +260,7 @@
     {:else if rows.length === 0}
         <p class="py-10 text-center text-sm text-base-content/60">No {commodity} activity in the filtered period.</p>
     {:else}
-        <div class="h-64 w-full sm:h-72" data-testid="insights-line">
+        <div class="h-64 w-full sm:h-72" bind:clientWidth={lineWidth} data-testid="insights-line">
             <LineChart
                 data={rows}
                 x={(d) => d.i}

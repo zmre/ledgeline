@@ -11,7 +11,8 @@
 
      The specs (the dataviz skill's, first set down in `PeriodFlowChart`):
 
-     - X IS THE BUCKET INDEX with explicit integer ticks — see `periodAxis.ts`.
+     - X IS THE BUCKET INDEX with explicit integer ticks, spaced for the
+       measured width so labels never collide — see `periodAxis.ts`.
      - THE ZERO RULE IS ALWAYS IN FRAME: `yDomain` is seeded at [0, 0] and
        widened by each bucket's positive stack, negative stack AND the net, so a
        net outside the stacks is scaled rather than clipped.
@@ -176,10 +177,10 @@
         return [lo, hi];
     });
 
-    const xTicks = $derived(tickIndices(rows.length));
+    let width = $state(0);
+    const xTicks = $derived(tickIndices(rows.length, {plotWidth: width - PAD_LEFT - PAD_RIGHT, labels}));
     const labelOf = $derived(labelFormatter(labels));
 
-    let width = $state(0);
     const barWidth = $derived.by(() => {
         if (mark !== "bar" || width <= 0 || rows.length === 0) return 0;
         const plot = Math.max(0, width - PAD_LEFT - PAD_RIGHT);

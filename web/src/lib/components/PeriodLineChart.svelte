@@ -7,7 +7,8 @@
        already formatted, printed by the axis formatter. A month is 28 to 31
        days and a quarter is 90 to 92, so a time scale spaces the buckets
        unevenly and invites a reader to compare widths that mean nothing.
-     - EXPLICIT INTEGER `xTicks`, about six of them (`periodAxis.tickIndices`).
+     - EXPLICIT INTEGER `xTicks`, at most about six, fewer when the measured
+       width cannot fit the labels apart (`periodAxis.tickIndices`).
        A continuous scale over 0..n-1 otherwise puts a tick at 2.5 and labels it
        with whichever bucket rounds to it.
      - `points` ONLY AT 31 BUCKETS OR FEWER. Past that the markers touch and the
@@ -103,7 +104,10 @@
     /** The tooltip's formatter: a gap reads as an em-dash, never as "$0.00" or "NaN". */
     const tooltipFormat = $derived((n: number | null | undefined): string => (typeof n === "number" && Number.isFinite(n) ? formatValue(n) : "—"));
 
-    const xTicks = $derived(tickIndices(rows.length));
+    const PAD_LEFT = 56;
+    const PAD_RIGHT = 8;
+    let width = $state(0);
+    const xTicks = $derived(tickIndices(rows.length, {plotWidth: width - PAD_LEFT - PAD_RIGHT, labels}));
     const labelOf = $derived(labelFormatter(labels));
 
     /**
@@ -159,7 +163,7 @@
     {#if nothingToDraw}
         <p class="py-8 text-center text-sm text-base-content/60">{empty}</p>
     {:else}
-        <div class="w-full {height}" data-testid={testid}>
+        <div class="w-full {height}" bind:clientWidth={width} data-testid={testid}>
             <LineChart
                 data={rows}
                 x={(d) => d.i}
@@ -168,7 +172,7 @@
                 brush={false}
                 {yDomain}
                 yNice={includeZero}
-                padding={{top: 8, right: 8, bottom: 24, left: 56}}
+                padding={{top: 8, right: PAD_RIGHT, bottom: 24, left: PAD_LEFT}}
                 props={{
                     xAxis: {format: labelOf, ticks: xTicks},
                     yAxis: {format: axisFormat},
