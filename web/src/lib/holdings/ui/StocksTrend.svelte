@@ -7,6 +7,8 @@
      boxes. Each benchmark's line appears when its own response lands, and a
      failure is a hint in the picker — the base chart is never waiting on, or
      blanked by, Yahoo Finance.
+     A reloaded `trend` (Refresh, Update prices, a journal edit) re-requests
+     every line, since each is seeded from the portfolio's value.
 
      Lines are requested for `scope`'s window (`trendQuery`), the same one the
      page fetched `trend` for, and `benchmarkOverlays` drops any line whose
@@ -39,14 +41,15 @@
     const picked = $derived(settings.benchmarks);
 
     // Re-sync when the chart, its window or the ticked set changes. `trend` is
-    // read so a new window's requests wait for that window's base line.
+    // the cache key: a new window's requests wait for that window's base line,
+    // and a reloaded one (same window, fresh values) drops the held lines.
     $effect(() => {
         const url = serverUrl;
         const current = scope;
+        const base = trend;
         const symbols = picked;
-        void trend;
         if (url === null) return;
-        untrack(() => benchmarkLines.sync(url, current, symbols));
+        untrack(() => benchmarkLines.sync(url, current, base, symbols));
     });
 
     const overlays = $derived(
@@ -64,7 +67,7 @@
             states={benchmarkLines.entries}
             onToggle={(symbol, on) => settings.toggleBenchmark(symbol, on)}
             onRetry={(symbol) => {
-                if (serverUrl !== null) benchmarkLines.retry(serverUrl, scope, symbol);
+                if (serverUrl !== null) benchmarkLines.retry(serverUrl, scope, trend, symbol);
             }}
         />
     {/snippet}

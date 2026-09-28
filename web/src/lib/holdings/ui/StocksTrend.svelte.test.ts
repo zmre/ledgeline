@@ -30,30 +30,29 @@ const TREND: HoldingsSeries = {
 
 const SCOPE: HoldingsScope = {accounts: new Set(), mode: "include", asOf: "2026-09-28", gainPeriod: "12mo"};
 
-const lineFor = (symbol: string): unknown => ({
-    base: "$",
-    benchmarks: [
-        symbol === "GLD"
-            ? {
-                  symbol,
-                  label: "Gold (GLD)",
-                  points: DATES.map((date) => ({date, value: null})),
-                  pricedThrough: null,
-                  stale: false,
-                  unvaluedFlows: 0,
-                  error: "Could not fetch GLD history from Yahoo Finance (offline).",
-              }
-            : {
-                  symbol,
-                  label: "S&P 500 (SPY)",
-                  points: DATES.map((date, i) => ({date, value: 1000 + i * 100})),
-                  pricedThrough: "2026-09-25",
-                  stale: false,
-                  unvaluedFlows: 0,
-                  error: null,
-              },
-    ],
-});
+const lineOf = (symbol: string): unknown =>
+    symbol === "GLD"
+        ? {
+              symbol,
+              label: "Gold (GLD)",
+              points: DATES.map((date) => ({date, value: null})),
+              pricedThrough: null,
+              stale: false,
+              unvaluedFlows: 0,
+              error: "Could not fetch GLD history from Yahoo Finance (offline).",
+          }
+        : {
+              symbol,
+              label: `${symbol} benchmark`,
+              points: DATES.map((date, i) => ({date, value: 1000 + i * 100})),
+              pricedThrough: "2026-09-25",
+              stale: false,
+              unvaluedFlows: 0,
+              error: null,
+          };
+
+/** The server's answer to `symbols=A,B`: one line per symbol. */
+const lineFor = (symbols: string): unknown => ({base: "$", benchmarks: symbols.split(",").map(lineOf)});
 
 let benchmarkRequests: URL[] = [];
 
@@ -119,7 +118,7 @@ describe("COMPONENT StocksTrend benchmark overlay", () => {
 
         const legend = document.querySelector('[data-testid="holdings-trend-legend"]')?.textContent ?? "";
         expect(legend).toContain("Your portfolio");
-        expect(legend).toContain("S&P 500 (SPY)");
+        expect(legend).toContain("SPY benchmark");
         expect(settings.benchmarks).toEqual(["SPY"]);
     });
 
@@ -134,6 +133,18 @@ describe("COMPONENT StocksTrend benchmark overlay", () => {
         await waitFor(() => expect(lines()).toHaveLength(2));
 
         expect(benchmarkRequests).toHaveLength(1);
+    });
+
+    it("a reloaded base series (same window) refetches the lines seeded from it", async () => {
+        settings.toggleBenchmark("SPY", true);
+        const view = mount();
+        await waitFor(() => expect(lines()).toHaveLength(2));
+        expect(benchmarkRequests).toHaveLength(1);
+
+        // Refresh / Update prices: the page hands down a NEW series for the same scope.
+        await view.rerender({trend: {...TREND, points: [...TREND.points]}});
+        await waitFor(() => expect(benchmarkRequests).toHaveLength(2));
+        await waitFor(() => expect(lines()).toHaveLength(2));
     });
 
     it("a benchmark that cannot be fetched shows its hint and leaves the chart as it was", async () => {
