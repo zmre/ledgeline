@@ -29,13 +29,14 @@
 //      an account is the same colour in every bucket by construction.
 //   6. SPLIT BY SIGN. Every entity becomes a positive series and a negative
 //      series (only those that are non-zero somewhere), sharing the entity's key,
-//      colour and legend entry. A stacked AREA picks which edge of a layer to
-//      trace from its FIRST point's sign alone (layerchart's `Area`), so a
-//      series that changes sign between buckets draws its outline on the wrong
-//      side; halves of one sign cannot. The stack itself is by sign per point
-//      (d3's diverging offset), so what is drawn above zero is exactly what was
-//      positive: an overdrawn asset is a negative asset segment BELOW the axis,
-//      and a liability with a refund on it is a positive segment above it.
+//      colour and legend entry. The chart stacks its areas by SERIES, not by
+//      point (`PeriodStackChart`'s `bandsAt`: a series with any negative value
+//      stacks down in every bucket, zeros included), which is what keeps each
+//      layer one unbroken band; a series that changed sign would have its
+//      positive buckets stacked below the axis. Halves of one sign cannot, so
+//      what is drawn above zero is exactly what was positive: an overdrawn asset
+//      is a negative asset segment BELOW the axis, and a liability with a refund
+//      on it is a positive segment above it.
 
 import {maAdd, maIsZero, maNeg, rankCommodities, type MixedAmount} from "$lib/domain/money";
 import {colorAt, OTHER_LABEL, type ChartPalette} from "$lib/format/palette";

@@ -194,25 +194,31 @@
     // names the legend entry and the tooltip row; it is never handed to the chart.
     const chartSeries = $derived(series.map((s, idx) => ({key: `s${idx}`, label: s.label, color: s.color, value: (d: Row) => d.v[idx] ?? 0})));
 
-    const entityOf = (s: Series): string => s.entity ?? s.key;
+    /** Each entity's series (its one or two sign halves), in first-seen order: the legend's order and the tooltip's. */
+    const entities = $derived.by(() => {
+        const byEntity = new Map<string, Series[]>();
+        for (const s of series) {
+            const key = s.entity ?? s.key;
+            byEntity.set(key, [...(byEntity.get(key) ?? []), s]);
+        }
+        return byEntity;
+    });
 
-    /** One entry per entity, in series order; a label+colour seen twice (the two "(other)"s) is one entry. */
-    const legend = $derived(
-        series
-            .filter((s, idx) => series.findIndex((t) => t.label === s.label && t.color === s.color) === idx)
-            .map((s) => ({key: entityOf(s), label: s.label, color: s.color}))
-    );
+    /** One entry per entity; two entities that look alike (the up and down "(other)") are one entry. */
+    const legend = $derived.by(() => {
+        const seen = new Set<string>();
+        return [...entities].flatMap(([key, [first]]) => {
+            const look = `${first.label}\u0000${first.color}`;
+            if (seen.has(look)) return [];
+            seen.add(look);
+            return [{key, label: first.label, color: first.color}];
+        });
+    });
 
     /** The tooltip rows for bucket `i`: each entity's value (its halves summed), non-zero only, legend order. */
     function itemsAt(i: number): {key: string; label: string; color: string; value: number}[] {
-        return series
-            .filter((s, idx) => series.findIndex((t) => entityOf(t) === entityOf(s)) === idx)
-            .map((s) => ({
-                key: entityOf(s),
-                label: s.label,
-                color: s.color,
-                value: series.filter((t) => entityOf(t) === entityOf(s)).reduce((sum, t) => sum + (t.values[i] ?? 0), 0),
-            }))
+        return [...entities]
+            .map(([key, halves]) => ({key, label: halves[0].label, color: halves[0].color, value: halves.reduce((sum, s) => sum + (s.values[i] ?? 0), 0)}))
             .filter((item) => item.value !== 0);
     }
 
