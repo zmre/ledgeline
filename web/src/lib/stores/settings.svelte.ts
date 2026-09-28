@@ -2,6 +2,7 @@
 // under a versioned key. `setServerUrl` verifies GET /version before persisting.
 
 import {HledgerApi, SETTINGS_STORAGE_KEY} from "$lib/api/client";
+import {BENCHMARKS, isBenchmarkSymbol} from "$lib/holdings/benchmarks";
 
 /** Journal table column toggles (defaults per WP-03: Date, Status, Description, Accounts, Amount). */
 export interface ColumnConfig {
@@ -65,6 +66,18 @@ interface PersistedSettings {
      * tab falls back to seeding and clears it.
      */
     lastProjectionId: string | null;
+    /**
+     * Which benchmark lines the Stocks value-over-time chart overlays, by
+     * catalog symbol. Per browser, like every other view toggle here; none by
+     * default, because each one is a request that may reach Yahoo Finance.
+     */
+    benchmarks: string[];
+}
+
+/** Keep only catalog symbols, once each, in catalog order. */
+function cleanBenchmarks(value: unknown): string[] {
+    const picked = Array.isArray(value) ? value.filter(isBenchmarkSymbol) : [];
+    return BENCHMARKS.map((b) => b.symbol).filter((symbol) => picked.includes(symbol));
 }
 
 const defaults = (): PersistedSettings => ({
@@ -78,6 +91,7 @@ const defaults = (): PersistedSettings => ({
     flowsOutOpen: true,
     budgetGapsOpen: false,
     lastProjectionId: null,
+    benchmarks: [],
 });
 
 /**
@@ -130,6 +144,9 @@ function load(): PersistedSettings {
             // and the server re-validates its shape on every request anyway.
             // A non-empty string is the only thing worth keeping.
             lastProjectionId: typeof parsed.lastProjectionId === "string" && parsed.lastProjectionId !== "" ? parsed.lastProjectionId : null,
+            // Validated against the catalog: a symbol the server no longer
+            // offers would otherwise be a checkbox-less request that 400s.
+            benchmarks: cleanBenchmarks(parsed.benchmarks),
         };
     } catch (cause) {
         storageError = `Saved settings couldn't be read (${cause instanceof Error ? cause.message : String(cause)}) — starting from defaults.`;
@@ -166,6 +183,7 @@ function persist(): void {
             flowsOutOpen: state.flowsOutOpen,
             budgetGapsOpen: state.budgetGapsOpen,
             lastProjectionId: state.lastProjectionId,
+            benchmarks: state.benchmarks,
         })
     );
 }
@@ -243,6 +261,16 @@ export const settings = {
     },
     set lastProjectionId(id: string | null) {
         state.lastProjectionId = id === null || id === "" ? null : id;
+        persist();
+    },
+    /** The benchmark lines overlaid on the Stocks chart, in catalog order. */
+    get benchmarks(): readonly string[] {
+        return state.benchmarks;
+    },
+    /** Tick or untick one benchmark; unknown symbols are ignored. */
+    toggleBenchmark(symbol: string, on: boolean): void {
+        const others = state.benchmarks.filter((s) => s !== symbol);
+        state.benchmarks = cleanBenchmarks(on ? [...others, symbol] : others);
         persist();
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */

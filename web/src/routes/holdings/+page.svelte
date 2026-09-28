@@ -28,6 +28,7 @@
     import HoldingsTable from "$lib/holdings/ui/HoldingsTable.svelte";
     import HoldingsTabs from "$lib/holdings/ui/HoldingsTabs.svelte";
     import HoldingsTrend from "$lib/holdings/ui/HoldingsTrend.svelte";
+    import StocksTrend from "$lib/holdings/ui/StocksTrend.svelte";
     import OtherHoldingsTable from "$lib/holdings/ui/OtherHoldingsTable.svelte";
     import ScopeBar from "$lib/holdings/ui/ScopeBar.svelte";
     import UpdatePricesButton from "$lib/holdings/ui/UpdatePricesButton.svelte";
@@ -197,7 +198,13 @@
                                     <GainersLosers {report} {format} />
                                 </div>
                                 {#if trend !== null}
-                                    <HoldingsTrend {trend} formatValue={formatTrendValue} formatAxis={formatTrendAxis} />
+                                    <StocksTrend
+                                        {trend}
+                                        scope={holdingsData.scope ?? holdingsScope.value}
+                                        serverUrl={settings.serverUrl}
+                                        formatValue={formatTrendValue}
+                                        formatAxis={formatTrendAxis}
+                                    />
                                 {/if}
                             </div>
                         </section>
@@ -257,7 +264,12 @@
                          the stock series' wire shape byte for byte, which is exactly
                          why the engine reuses it. -->
                         {#if otherTrend !== null}
-                            <HoldingsTrend trend={otherTrend} formatValue={formatTrendValue} formatAxis={formatTrendAxis} />
+                            <HoldingsTrend
+                                trend={otherTrend}
+                                period={otherHoldingsData.scope?.gainPeriod ?? gainPeriod}
+                                formatValue={formatTrendValue}
+                                formatAxis={formatTrendAxis}
+                            />
                         {/if}
                         <OtherHoldingsTable holdings={report.holdings} totals={report.totals} base={report.base} {format} {formatUnits} {gainPeriod} />
                     {/if}
