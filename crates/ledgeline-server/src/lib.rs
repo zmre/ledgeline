@@ -330,12 +330,13 @@ pub struct AppState {
     /// second (and last) outbound-network field, swappable for the same reason
     /// as [`Self::price_source`] via [`AppState::with_history_source`].
     history_source: Arc<dyn yahoo_history::HistoryFeed>,
-    /// Serializes read-merge-write cycles on the benchmark price cache beside
-    /// the journal. Its own lock, not [`Self::import_writes`]: the cache is not
-    /// the journal, and a slow Yahoo response for a chart overlay must never
-    /// hold up an import or a price update. A `tokio` mutex for the usual
-    /// reason — the guard spans a blocking-pool `.await`.
-    benchmark_writes: Arc<tokio::sync::Mutex<()>>,
+    /// Serializes read-merge-write cycles on the benchmark price cache, and
+    /// holds that cache itself in a read-only session (which may not write the
+    /// file beside the journal). Its own lock, not [`Self::import_writes`]: the
+    /// cache is not the journal, and a slow Yahoo response for a chart overlay
+    /// must never hold up an import or a price update. A `tokio` mutex for the
+    /// usual reason — the guard spans a blocking-pool `.await`.
+    benchmark_cache: Arc<tokio::sync::Mutex<benchmarks_api::SessionCache>>,
 }
 
 /// The default [`yahoo::PriceFeed`]: the real Yahoo Finance chart endpoint,
@@ -388,7 +389,7 @@ impl AppState {
             price_source: default_price_source(),
             profiles: default_profiles(),
             history_source: default_history_source(),
-            benchmark_writes: Arc::new(tokio::sync::Mutex::new(())),
+            benchmark_cache: Arc::default(),
         }
     }
 
@@ -413,7 +414,7 @@ impl AppState {
             price_source: default_price_source(),
             profiles: default_profiles(),
             history_source: default_history_source(),
-            benchmark_writes: Arc::new(tokio::sync::Mutex::new(())),
+            benchmark_cache: Arc::default(),
         })
     }
 
@@ -584,9 +585,10 @@ impl AppState {
         &self.history_source
     }
 
-    /// The benchmark cache's write mutex, shared by all clones.
-    pub(crate) fn benchmark_writes(&self) -> &tokio::sync::Mutex<()> {
-        &self.benchmark_writes
+    /// The benchmark cache's mutex (and a read-only session's in-memory
+    /// cache), shared by all clones.
+    pub(crate) fn benchmark_cache(&self) -> &tokio::sync::Mutex<benchmarks_api::SessionCache> {
+        &self.benchmark_cache
     }
 
     /// Substitute a different benchmark history source, replacing the real

@@ -286,6 +286,36 @@ async fn history_is_cached_beside_the_journal_and_not_refetched() {
     assert_eq!(first, second);
 }
 
+/// A read-only session may not write beside the journal: the history is kept
+/// in memory — still drawn, still fetched only once — and no file appears.
+#[tokio::test]
+async fn a_read_only_session_caches_in_memory_only() {
+    let tree = Tree::with(JOURNAL, FakeHistory::new([("SPY", spy())]));
+    let path = tree.dir.path().join("main.journal");
+    let journal = parse_journal(JOURNAL, &path.to_string_lossy()).expect("parses");
+    let read_only = Tree {
+        state: AppState::from_journal(&journal).with_history_source(tree.feed.clone()),
+        ..tree
+    };
+    let uri = format!("/api/holdings/benchmarks?symbols=SPY&{WINDOW}");
+
+    let (status, first) = read_only.get(&uri).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(
+        values(&first["benchmarks"][0]),
+        vec![Some(1100.0), Some(1210.0), Some(2112.0)]
+    );
+    assert!(
+        read_only.cache().is_none(),
+        "no file written without an editor"
+    );
+
+    let (_, second) = read_only.get(&uri).await;
+    assert_eq!(read_only.calls(), 1, "cached in memory");
+    assert_eq!(first, second);
+    assert!(read_only.cache().is_none());
+}
+
 /// A cache that answers when the network does not: the line is drawn from it,
 /// flagged stale.
 #[tokio::test]

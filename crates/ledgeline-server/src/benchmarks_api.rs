@@ -21,6 +21,10 @@
 //! git safety net (that only ever commits the paths an import names), and it is
 //! outside the journal's include tree, so the file watcher ignores it too.
 //!
+//! A read-only session (no editor: `AppState::editing_enabled` is false) writes
+//! nothing beside the journal. It keeps the same cache in memory instead, for
+//! the life of the session, exactly as `profiles_api` does.
+//!
 //! Each symbol carries a coverage comment (`; ledgeline-benchmark SPY from
 //! 2021-09-17 through 2026-09-27`) so a later request knows what has already
 //! been asked for — including ranges where the fund had not yet traded, which
@@ -216,6 +220,32 @@ struct History {
 }
 
 type Cache = BTreeMap<String, History>;
+
+/// A read-only session's benchmark history: fetched and served exactly as the
+/// file's would be, but kept in memory and never written beside the journal —
+/// the same rule `profiles_api` follows for its cache. Unused (empty) in a
+/// session that may write.
+#[derive(Debug, Default)]
+pub(crate) struct SessionCache(Cache);
+
+/// Where this request's cache lives.
+#[derive(Debug, Clone)]
+enum Store {
+    /// `benchmarks.prices.journal` beside the journal (an editing session).
+    Disk(PathBuf),
+    /// [`SessionCache`], in memory (a read-only session, or one with no
+    /// journal file to sit beside).
+    Memory,
+}
+
+impl Store {
+    fn new(cache_path: Option<PathBuf>, editable: bool) -> Self {
+        match cache_path {
+            Some(path) if editable => Self::Disk(path),
+            _ => Self::Memory,
+        }
+    }
+}
 
 /// A `Dec` as plain decimal text (`766.29`, `-0.5`), exact.
 fn plain(value: Dec) -> String {
@@ -614,11 +644,19 @@ pub(crate) async fn benchmarks(
     let need_from = add_days(&prepared.points[0].date, -LOOKBACK_DAYS);
     let need_through = last_point.as_str().min(yesterday.as_str()).to_string();
 
-    // Plan against the cache as it is now. A read needs no lock: every write
-    // is an atomic rename, so a reader sees the old file or the new one.
-    let cache_path = prepared.cache_path.clone();
-    let Json(cached) =
-        compute(move || Ok(cache_path.as_deref().map(read_cache).unwrap_or_default())).await?;
+    // Plan against the cache as it is now: read ONCE here, and again below
+    // only when a fetch makes a write necessary. A disk read needs no lock:
+    // every write is an atomic rename, so a reader sees the old file or the
+    // new one.
+    let store = Store::new(prepared.cache_path.clone(), state.editing_enabled());
+    let cached = match &store {
+        Store::Disk(path) => {
+            let path = path.clone();
+            let Json(cached) = compute(move || Ok(read_cache(&path))).await?;
+            cached
+        }
+        Store::Memory => state.benchmark_cache().lock().await.0.clone(),
+    };
     let jobs: Vec<Job> = prepared
         .wanted
         .iter()
@@ -666,15 +704,38 @@ pub(crate) async fn benchmarks(
         }
     }
 
-    // Read-merge-write under the lock, re-reading the file so a concurrent
-    // request's symbols survive this one's write.
-    let guard = state.clone();
-    let _write = guard.benchmark_writes().lock().await;
-    let cache_path = prepared.cache_path.clone();
-    let through = yesterday.clone();
-    let Json(outcome) =
-        compute(move || Ok(merge_and_write(cache_path.as_deref(), &refetched, &through))).await?;
-    drop(_write);
+    let outcome = if refetched.is_empty() {
+        // Everything was covered: the cache as read is the answer.
+        MergeOutcome {
+            cache: cached,
+            failures: BTreeMap::new(),
+        }
+    } else {
+        // Read-merge-write under the lock, re-reading the store so a
+        // concurrent request's symbols survive this one's write.
+        let mut session = state.benchmark_cache().lock().await;
+        let through = yesterday.clone();
+        match store {
+            Store::Disk(path) => {
+                let Json(outcome) = compute(move || {
+                    let merged = merge_fetched(read_cache(&path), &refetched, &through);
+                    if merged.changed {
+                        write_cache(&path, &merged.outcome.cache);
+                    }
+                    Ok(merged.outcome)
+                })
+                .await?;
+                outcome
+            }
+            Store::Memory => {
+                let merged = merge_fetched(session.0.clone(), &refetched, &through);
+                if merged.changed {
+                    session.0.clone_from(&merged.outcome.cache);
+                }
+                merged.outcome
+            }
+        }
+    };
 
     let benchmarks = prepared
         .wanted
@@ -697,8 +758,17 @@ struct MergeOutcome {
     failures: BTreeMap<&'static str, String>,
 }
 
-fn merge_and_write(path: Option<&Path>, fetched: &[Fetched], through: &str) -> MergeOutcome {
-    let mut cache = path.map(read_cache).unwrap_or_default();
+/// A [`MergeOutcome`], and whether the cache changed (and so needs storing).
+struct Merged {
+    outcome: MergeOutcome,
+    changed: bool,
+}
+
+/// Fold every fetch outcome into `cache` — the store as it is NOW, read under
+/// the lock: a concurrent request may have extended it meanwhile, and a tail
+/// still anchors onto that. One that no longer can leaves the stored version
+/// alone.
+fn merge_fetched(mut cache: Cache, fetched: &[Fetched], through: &str) -> Merged {
     let mut failures: BTreeMap<&'static str, String> = BTreeMap::new();
     let mut changed = false;
     for outcome in fetched {
@@ -707,9 +777,6 @@ fn merge_and_write(path: Option<&Path>, fetched: &[Fetched], through: &str) -> M
                 failures.insert(outcome.symbol, error.to_string());
             }
             Ok(prices) => {
-                // Merged onto the file as it is NOW: a concurrent request may
-                // have extended it meanwhile, and a tail still anchors onto
-                // that. One that no longer can leaves the file's version alone.
                 if let Some(history) =
                     merge(cache.get(outcome.symbol), &outcome.fetch, prices, through)
                 {
@@ -719,15 +786,18 @@ fn merge_and_write(path: Option<&Path>, fetched: &[Fetched], through: &str) -> M
             }
         }
     }
-    if changed
-        && let Some(path) = path
-        && let Err(error) =
-            ledgeline_core::edit::atomic_write(path, render_cache(&cache).as_bytes())
-    {
-        // Served from memory all the same; the next request refetches.
+    Merged {
+        outcome: MergeOutcome { cache, failures },
+        changed,
+    }
+}
+
+/// Write the cache file. A failure is logged, not raised: the line is served
+/// from memory all the same, and the next request refetches.
+fn write_cache(path: &Path, cache: &Cache) {
+    if let Err(error) = ledgeline_core::edit::atomic_write(path, render_cache(cache).as_bytes()) {
         eprintln!("ledgeline: could not write {CACHE_FILE}: {}", error.kind());
     }
-    MergeOutcome { cache, failures }
 }
 
 fn closes_of(history: &History) -> Vec<Close> {
