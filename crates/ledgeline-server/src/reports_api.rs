@@ -44,10 +44,9 @@ use ledgeline_core::reports::{
     PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, RowKind, Section,
     SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
     account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped,
-    bs_terms, budget_gaps, budget_report, cash_flow, cash_flow_sources, cash_predicate,
-    declared_groups, declared_types, detect_subscriptions, income_statement,
-    income_statement_flows, income_statement_grouped, insights, net_worth, prices_any_on_sheet,
-    prices_any_on_statement,
+    bs_terms, budget_gaps, budget_report, cash_flow, cash_predicate, declared_groups,
+    declared_types, detect_subscriptions, income_statement, income_statement_flows,
+    income_statement_grouped, insights, net_worth, prices_any_on_sheet, prices_any_on_statement,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2537,41 +2536,6 @@ pub(crate) async fn cashflow(
     State(state): State<AppState>,
     Query(query): Query<CashFlowQuery>,
 ) -> Result<Json<WirePeriodReport>, AppError> {
-    cash_report(state, query, cash_flow).await
-}
-
-/// `GET /api/reports/cashflow/sources` — the same window's cash movement,
-/// attributed to the COUNTERPARTY (non-cash) accounts that caused it; see
-/// [`cash_flow_sources`] for the rule. Same query, same wire shape, and per
-/// bucket its `totals` equal `/api/reports/cashflow`'s exactly.
-///
-/// A sibling route rather than a field on the cash flow, for the reason the
-/// income-statement flows are one: it is a second pass over every posting, and
-/// only the chart above the table — a collapsible panel — reads it.
-pub(crate) async fn cashflow_sources(
-    State(state): State<AppState>,
-    Query(query): Query<CashFlowQuery>,
-) -> Result<Json<WirePeriodReport>, AppError> {
-    cash_report(state, query, cash_flow_sources).await
-}
-
-/// The engine entry point both cash routes call; they differ in nothing else.
-type CashReport = fn(
-    &[ledgeline_core::model::Transaction],
-    &str,
-    Interval,
-    usize,
-    usize,
-    Option<&dyn Fn(&str) -> bool>,
-) -> Result<PeriodReport, ReportError>;
-
-/// Resolve the window and the journal's declared cash predicate, then run
-/// `report` off the async runtime.
-async fn cash_report(
-    state: AppState,
-    query: CashFlowQuery,
-    report: CashReport,
-) -> Result<Json<WirePeriodReport>, AppError> {
     let snapshot = state.snapshot();
     let window = Window::resolve(
         query.end,
@@ -2584,7 +2548,7 @@ async fn cash_report(
         let decls = account_decls(&snapshot.journal);
         let predicate = cash_predicate(&decls);
         let is_cash: &dyn Fn(&str) -> bool = &predicate;
-        let report = report(
+        let report = cash_flow(
             &snapshot.journal.transactions,
             &window.end,
             window.interval,

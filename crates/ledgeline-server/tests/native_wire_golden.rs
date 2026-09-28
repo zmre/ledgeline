@@ -211,11 +211,6 @@ async fn cashflow_matches_the_native_golden() {
 }
 
 #[tokio::test]
-async fn cashflow_sources_matches_the_native_golden() {
-    assert_matches_golden("cashflow-sources").await;
-}
-
-#[tokio::test]
 async fn networth_matches_the_native_golden() {
     assert_matches_golden("networth").await;
 }
@@ -291,7 +286,7 @@ fn every_manifest_entry_is_covered_by_a_committed_body() {
     let entries = requests();
     assert_eq!(
         entries.len(),
-        18,
+        17,
         "the manifest gained or lost an endpoint; add/remove the matching \
          #[tokio::test] above and update this count"
     );

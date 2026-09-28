@@ -657,18 +657,6 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
         const raw = {buckets: ["2026-07"], rows: [{account: "assets", depth: 1, values: [{}], kind: "equity"}], totals: [{}]};
         expect(() => decodePeriodReport(raw)).toThrow(/kind: expected one of asset\/liability\/mixed, got "equity"/);
     });
-
-    it("decodes the cash-flow sources breakdown, which reconciles with the cash flow", () => {
-        const sources = decodePeriodReport(golden("cashflow-sources"));
-        const flow = decodePeriodReport(golden("cashflow"));
-        expect(sources.buckets).toEqual(flow.buckets);
-        expect(sources.totals).toEqual(flow.totals);
-        const accounts = sources.rows.map((r) => r.account);
-        expect(accounts).toContain("income:salary");
-        expect(accounts).toContain("(unattributed)");
-        expect(accounts.some((a) => a.startsWith("assets:bank"))).toBe(false);
-        expect(sources.rows.find((r) => r.account === "income:salary")?.values[0].get("$")).toEqual({m: 566000n, p: 2});
-    });
 });
 
 describe("UNIT nativeDecode — BudgetGaps over the budget-gaps golden", () => {
@@ -2033,7 +2021,6 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         ["incomestatement-grouped", decodeIncomeStatementReport, golden("incomestatement-grouped")],
         ["incomestatement-flows", decodeFlowReport, golden("incomestatement-flows")],
         ["cashflow", decodePeriodReport, golden("cashflow")],
-        ["cashflow-sources", decodePeriodReport, golden("cashflow-sources")],
         ["networth", decodePeriodReport, golden("networth")],
         ["budget", decodeBudgetReport, golden("budget")],
         ["budget-gaps", decodeBudgetGaps, golden("budget-gaps")],
