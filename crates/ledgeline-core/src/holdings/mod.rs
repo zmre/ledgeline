@@ -51,4 +51,4 @@ pub use types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
     PriceSource, ScopeMode, WarningKind,
 };
-pub use window::{auto_interval, series_count};
+pub use window::{SeriesWindow, auto_interval, series_count, series_dates};

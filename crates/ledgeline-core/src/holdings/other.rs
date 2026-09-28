@@ -27,9 +27,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::decimal::Dec;
 use crate::model::{AccountDeclaration, AccountName, Commodity, PriceDirective, Transaction};
 use crate::reports::{
-    AccountType, AccountTypes, Interval, MixedAmount, PostingFilter, PriceDb, ReportError,
-    ValuationMeta, account_decls_from, account_totals, bucket_end, bucket_label, compare_iso,
-    declared_types, infer_market_prices, last_n_buckets, value_at,
+    AccountType, AccountTypes, MixedAmount, PostingFilter, PriceDb, ReportError, ValuationMeta,
+    account_decls_from, account_totals, bucket_label, declared_types, infer_market_prices,
+    last_n_buckets, value_at,
 };
 use crate::wire::{account_tag_map, inherited_account_tags};
 
@@ -41,6 +41,7 @@ use super::commodities::is_currency;
 use super::engine::{FALLBACK_BASE, gain_pct, scope_accounts};
 use super::series::{HoldingsPoint, HoldingsSeries};
 use super::types::HoldingsScope;
+use super::window::{SeriesWindow, series_dates};
 
 /// One non-stock, non-cash asset account.
 #[derive(Debug, Clone, PartialEq)]
@@ -734,7 +735,8 @@ pub fn other_holdings(
 ///
 /// Returns the stock tab's [`HoldingsSeries`] unchanged so one chart component
 /// draws both trends: `market_value` is the summed row values at each bucket
-/// end, `basis` the summed costs.
+/// end, `basis` the summed costs. A `start` dates the first point exactly as
+/// the stock series does ([`super::window::series_dates`]).
 ///
 /// The base commodity is resolved ONCE from `scope.as_of` and every point pinned
 /// to it, for [`holdings_series`](super::series::holdings_series)' reason: a
@@ -748,23 +750,16 @@ pub fn other_holdings_series(
     prices: &[PriceDirective],
     accounts: &[AccountDeclaration],
     scope: &HoldingsScope,
-    interval: Interval,
-    count: usize,
+    window: &SeriesWindow,
 ) -> Result<HoldingsSeries, ReportError> {
-    let keys = last_n_buckets(&scope.as_of, interval, count)?;
+    let keys = last_n_buckets(&scope.as_of, window.interval, window.count)?;
+    let dates = series_dates(&keys, &scope.as_of, window.start.as_deref())?;
     let inputs = OtherInputs::build(txns, prices, accounts)?;
     let base = inputs.base(scope);
 
     let mut has_basis = false;
     let mut points = Vec::with_capacity(keys.len());
-    for key in &keys {
-        // Clamped so the final point never overshoots `scope.as_of`.
-        let end = bucket_end(key)?;
-        let date = if compare_iso(&end, &scope.as_of) == Ordering::Greater {
-            scope.as_of.clone()
-        } else {
-            end
-        };
+    for (key, date) in keys.iter().zip(dates) {
         // One `account_totals` pass per point. The stock series went to some
         // length to avoid that (PERF-5b) because its per-point cost included
         // rebuilding the price database and re-sorting the journal; here those

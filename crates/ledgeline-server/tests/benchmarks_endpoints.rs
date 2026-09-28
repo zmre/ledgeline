@@ -211,6 +211,28 @@ async fn the_line_is_the_same_money_into_the_benchmark() {
     assert_eq!(spy["error"], Value::Null);
 }
 
+/// A dated window (the gain period's) seeds the line at `since` itself — the
+/// value the gain is measured against — not at the end of `since`'s month.
+/// On 2025-01-02 the ten VTI just bought are valued at their $100 cost (no `P`
+/// yet): $1,000, and SPY closed at $95 that day.
+#[tokio::test]
+async fn a_dated_window_seeds_the_line_at_its_start() {
+    let tree = Tree::with(JOURNAL, FakeHistory::new([("SPY", spy())]));
+    let (status, body) = tree
+        .get("/api/holdings/benchmarks?symbols=SPY&asOf=2025-03-31&since=2025-01-02&interval=monthly")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let spy = &body["benchmarks"][0];
+    let dates: Vec<&str> = spy["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["date"].as_str().unwrap())
+        .collect();
+    assert_eq!(dates, ["2025-01-02", "2025-02-28", "2025-03-31"]);
+    assert_eq!(values(spy)[0], Some(1000.0));
+}
+
 /// Requested out of order, answered in catalog order; a symbol the feed has no
 /// history for is an all-null line with a reason, beside a good one.
 #[tokio::test]

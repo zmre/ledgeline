@@ -41,6 +41,7 @@ mod corpus;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ledgeline_core::decimal::Dec;
+use ledgeline_core::holdings::SeriesWindow;
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings, holdings_series};
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
 use ledgeline_core::reports::{
@@ -501,8 +502,7 @@ fn bench_holdings(c: &mut Criterion, fixtures: &[Fixture]) {
                             &fixture.journal.accounts,
                             &fixture.journal.commodity_tags,
                             &fixture.scope,
-                            Interval::Monthly,
-                            count,
+                            &SeriesWindow::counted(Interval::Monthly, count),
                         )
                         .unwrap()
                     });

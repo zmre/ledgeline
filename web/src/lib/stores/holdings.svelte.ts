@@ -32,8 +32,7 @@ export function trendQuery(scope: HoldingsScope): {
     accounts: string;
     mode: HoldingsScope["mode"];
     interval: string;
-    count?: number;
-    since?: string;
+    since: string;
 } {
     const window = trendWindowFor(scope.gainPeriod, scope.asOf);
     return {asOf: scope.asOf, accounts: [...scope.accounts].join(","), mode: scope.mode, ...window};

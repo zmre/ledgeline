@@ -11,7 +11,10 @@
 //   1wk  → asOf minus seven days
 //   1mo  → asOf minus one calendar month, the day clamped to the month's end (03-31 → 02-28)
 //   3mo  → asOf minus three calendar months, clamped the same way
-//   ytd  → Jan 1 of asOf's year
+//   ytd  → Dec 31 of the prior year — the engine measures a windowed gain
+//          against the value AT gainSince (end of that day) and counts flows
+//          strictly after it, so the year's reference is the last day of the
+//          previous one; Jan 1 would leave anything dated Jan 1 out of the gain
 //   12mo → asOf minus one year (Feb-29 normalizes forward, e.g. 2024-02-29 → 2023-03-01)
 //   5yr  → asOf minus five years, normalized the same way
 //   all  → undefined (send nothing ⇒ all-time gain = marketValue − basis)
@@ -81,7 +84,7 @@ export function gainSinceFor(period: GainPeriod, asOf: ISODate): string | undefi
         case "3mo":
             return minusMonths(asOf, 3);
         case "ytd":
-            return `${asOf.slice(0, 4)}-01-01`;
+            return `${Number(asOf.slice(0, 4)) - 1}-12-31`;
         case "12mo":
             return minusYears(asOf, 1);
         case "5yr":
@@ -113,38 +116,34 @@ export function gainWindowSuffix(period: GainPeriod): string {
  * The value-over-time series window for a period: what `/api/holdings/series`
  * (and `/other/series`, and `/benchmarks`) are asked for.
  *
- * Either a trailing `count` of buckets (twelve and sixty month-ends — the
- * twelve-month chart is exactly what it always was) or a `since` START the
- * engine counts from. "all" sends `since=inception`: only the engine knows when
- * the scope's first holding activity was. `auto` lets the engine size the
- * interval to the span, so an early-January year to date is drawn daily and a
- * twenty-year history quarterly — see `holdings::window::auto_interval`.
+ * Always a `since` START, and for every windowed period it is exactly
+ * `gainSinceFor(period, asOf)`: the engine takes a dated window's FIRST point
+ * at `since` itself, so the chart opens on the very value the gain beside it is
+ * measured against, and the benchmark overlay is seeded there too. "all" sends
+ * `since=inception`: only the engine knows when the scope's first holding
+ * activity was (and "all time" gain is against cost basis, not a date).
+ * `auto` lets the engine size the interval to the span, so an early-January
+ * year to date is drawn daily and a twenty-year history quarterly — see
+ * `holdings::window::auto_interval`.
  */
 export interface TrendWindow {
     interval: "daily" | "weekly" | "monthly" | "auto";
-    count?: number;
-    since?: string;
+    since: string;
 }
 
+/** The grain each period is drawn at: enough points for a line, few enough to read. */
+const TREND_INTERVAL: Record<GainPeriod, TrendWindow["interval"]> = {
+    "1wk": "daily",
+    "1mo": "daily",
+    "3mo": "weekly",
+    ytd: "auto",
+    "12mo": "monthly",
+    "5yr": "monthly",
+    all: "auto",
+};
+
 export function trendWindowFor(period: GainPeriod, asOf: ISODate): TrendWindow {
-    switch (period) {
-        case "1wk":
-            return {interval: "daily", since: minusDays(asOf, 7)};
-        case "1mo":
-            return {interval: "daily", since: minusMonths(asOf, 1)};
-        case "3mo":
-            return {interval: "weekly", since: minusMonths(asOf, 3)};
-        case "ytd":
-            // The last day of the prior year, so the first point is where the
-            // year started from — the value the YTD gain is measured against.
-            return {interval: "auto", since: `${Number(asOf.slice(0, 4)) - 1}-12-31`};
-        case "12mo":
-            return {interval: "monthly", count: 12};
-        case "5yr":
-            return {interval: "monthly", count: 60};
-        case "all":
-            return {interval: "auto", since: "inception"};
-    }
+    return {interval: TREND_INTERVAL[period], since: gainSinceFor(period, asOf) ?? "inception"};
 }
 
 /** The muted qualifier beside the chart heading, naming its window in words. */

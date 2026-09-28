@@ -491,6 +491,34 @@ async fn since_a_date_counts_the_buckets_from_it() {
     assert_eq!(points[7]["date"], AS_OF);
 }
 
+/// A dated window is the gain period's: its first point is taken AT `since`
+/// (not at the end of `since`'s month), and is the market value the windowed
+/// gain is measured against — the report's own value as of that date. Then
+/// one point per month-end, the last at `asOf`.
+#[tokio::test]
+async fn a_dated_windows_first_point_is_the_gain_reference() {
+    let journal = sample_journal();
+    for (tab, total) in [("", "marketValue"), ("/other", "value")] {
+        let series = body_ok(
+            &journal,
+            &format!("/api/holdings{tab}/series?asOf={AS_OF}&since=2025-07-16&interval=monthly"),
+        )
+        .await;
+        let points = series["points"].as_array().expect("points");
+        assert_eq!(points.len(), 13, "{tab}");
+        assert_eq!(points[0]["date"], "2025-07-16", "{tab}");
+        assert_eq!(points[1]["date"], "2025-08-31", "{tab}");
+        assert_eq!(points[12]["date"], AS_OF, "{tab}");
+
+        let at_start = body_ok(&journal, &format!("/api/holdings{tab}?asOf=2025-07-16")).await;
+        assert_eq!(
+            canon(&points[0]["marketValue"]),
+            canon(&at_start["totals"][total]),
+            "{tab}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn since_rejects_contradictory_or_oversized_windows() {
     let journal = sample_journal();

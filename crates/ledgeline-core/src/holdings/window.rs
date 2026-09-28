@@ -10,8 +10,10 @@
 //! the `(interval, count)` pair `holdings_series` already takes, so neither
 //! series engine grows a second way to be asked for a window.
 
-use crate::reports::Interval;
+use std::cmp::Ordering;
+
 use crate::reports::periods::{bucket_key, bucket_start, days_between, months_between, parts};
+use crate::reports::{Interval, ReportError, bucket_end, compare_iso};
 
 /// How few points an auto-chosen interval aims to plot at least: fewer than
 /// this and the line is a couple of segments that say less than the table.
@@ -55,6 +57,70 @@ pub fn series_count(since: &str, as_of: &str, interval: Interval) -> usize {
         Interval::Yearly => parts(as_of).0 - parts(since).0,
     };
     usize::try_from(span).map_or(1, |span| span.saturating_add(1))
+}
+
+/// Which points a value-over-time series takes: `count` buckets of `interval`
+/// ending at the scope's `as_of`, the first taken at `start` when there is one
+/// (see [`series_dates`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeriesWindow {
+    /// The bucket grain.
+    pub interval: Interval,
+    /// How many buckets, the last containing `as_of`.
+    pub count: usize,
+    /// For a window asked for from a date: that date, where the first point is
+    /// taken — the gain period's reference. `None` for a counted window.
+    pub start: Option<String>,
+}
+
+impl SeriesWindow {
+    /// The last `count` buckets, each point at its bucket's end.
+    #[must_use]
+    pub fn counted(interval: Interval, count: usize) -> Self {
+        Self {
+            interval,
+            count,
+            start: None,
+        }
+    }
+}
+
+/// The date each bucket's point is taken at: the bucket's last day, clamped so
+/// the final point never overshoots `as_of`.
+///
+/// With a `start` (a window asked for by date, `since=YYYY-MM-DD`), the FIRST
+/// point is taken at `start` itself rather than at the end of `start`'s bucket:
+/// the window is the gain period's, so its first point must be the value the
+/// gain is measured against — `mv(start)` — and the benchmark overlay is seeded
+/// there too. A twelve-month window from 2025-09-28 is then 2025-09-28 followed
+/// by twelve month-ends, not 2025-09-30. A single-bucket window keeps its one
+/// point at `as_of`: moving it would leave no point at the window's end.
+///
+/// # Errors
+/// [`ReportError`] for an unparseable bucket key (unreachable for keys from
+/// `last_n_buckets`).
+pub fn series_dates(
+    keys: &[String],
+    as_of: &str,
+    start: Option<&str>,
+) -> Result<Vec<String>, ReportError> {
+    let mut dates = keys
+        .iter()
+        .map(|key| {
+            let end = bucket_end(key)?;
+            Ok(if compare_iso(&end, as_of) == Ordering::Greater {
+                as_of.to_string()
+            } else {
+                end
+            })
+        })
+        .collect::<Result<Vec<String>, ReportError>>()?;
+    if let (Some(start), [first, _, ..]) = (start, dates.as_mut_slice())
+        && compare_iso(start, first) == Ordering::Less
+    {
+        *first = start.to_string();
+    }
+    Ok(dates)
 }
 
 /// The interval an open-ended window from `since` to `as_of` is drawn at.
@@ -144,6 +210,50 @@ mod tests {
             .unwrap();
             assert_eq!(keys[0], bucket_key(since, interval), "{interval:?}");
         }
+    }
+
+    fn keys(as_of: &str, since: &str, interval: Interval) -> Vec<String> {
+        last_n_buckets(as_of, interval, series_count(since, as_of, interval)).unwrap()
+    }
+
+    #[test]
+    fn a_dated_window_takes_its_first_point_at_the_start_itself() {
+        let monthly = keys("2026-09-28", "2025-09-28", Interval::Monthly);
+        let dates = series_dates(&monthly, "2026-09-28", Some("2025-09-28")).unwrap();
+        assert_eq!(dates.len(), 13);
+        assert_eq!(dates[0], "2025-09-28");
+        assert_eq!(dates[1], "2025-10-31");
+        assert_eq!(dates.last().unwrap(), "2026-09-28");
+
+        // Year to date from the prior year's last day, drawn quarterly: the
+        // first point is Dec 31 (already its bucket's end), then quarter-ends.
+        let quarterly = keys("2026-09-28", "2025-12-31", Interval::Quarterly);
+        let dates = series_dates(&quarterly, "2026-09-28", Some("2025-12-31")).unwrap();
+        assert_eq!(
+            dates,
+            ["2025-12-31", "2026-03-31", "2026-06-30", "2026-09-28"]
+        );
+
+        // A weekly window starting mid-week starts mid-week.
+        let weekly = keys("2026-09-28", "2026-06-24", Interval::Weekly);
+        let dates = series_dates(&weekly, "2026-09-28", Some("2026-06-24")).unwrap();
+        assert_eq!(dates[0], "2026-06-24");
+        assert_eq!(dates[1], "2026-07-05");
+    }
+
+    #[test]
+    fn without_a_start_every_point_is_its_buckets_end() {
+        let monthly = last_n_buckets("2026-09-28", Interval::Monthly, 3).unwrap();
+        assert_eq!(
+            series_dates(&monthly, "2026-09-28", None).unwrap(),
+            ["2026-07-31", "2026-08-31", "2026-09-28"]
+        );
+        // One bucket: its point stays at as_of whatever the start.
+        let one = last_n_buckets("2026-09-28", Interval::Monthly, 1).unwrap();
+        assert_eq!(
+            series_dates(&one, "2026-09-28", Some("2026-09-02")).unwrap(),
+            ["2026-09-28"]
+        );
     }
 
     #[test]

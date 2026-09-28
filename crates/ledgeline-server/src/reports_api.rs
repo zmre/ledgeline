@@ -27,8 +27,8 @@ use ledgeline_core::holdings::engine::prices_any_held_other;
 use ledgeline_core::holdings::{
     Holding, HoldingPrice, HoldingsPoint, HoldingsReport, HoldingsScope, HoldingsSeries,
     HoldingsTotals, HoldingsWarning, OtherHolding, OtherHoldingsReport, OtherHoldingsTotals,
-    OtherHoldingsWarning, OtherWarningKind, PriceSource, ScopeMode, WarningKind, auto_interval,
-    compute_holdings, first_holding_date, first_other_holding_date, holdings_series,
+    OtherHoldingsWarning, OtherWarningKind, PriceSource, ScopeMode, SeriesWindow, WarningKind,
+    auto_interval, compute_holdings, first_holding_date, first_other_holding_date, holdings_series,
     other_holdings, other_holdings_series, prices_any_held, series_count,
 };
 use ledgeline_core::model::{Commodity, Journal};
@@ -1449,9 +1449,10 @@ fn parse_count(raw: Option<usize>) -> Result<usize, AppError> {
 /// holding activity rather than at a date the caller already knows.
 const SINCE_INCEPTION: &str = "inception";
 
-/// Resolve a holdings series' `(interval, count)` from its query: either the
+/// Resolve a holdings series' [`SeriesWindow`] from its query: either the
 /// original `interval` + `count` pair (unchanged, `count` trailing buckets
-/// ending at `asOf`), or a `since` START from which the count is derived.
+/// ending at `asOf`), or a `since` START from which the count is derived. A
+/// dated `since` is also where the first point is taken (`SeriesWindow::start`).
 ///
 /// `since` is how the SPA asks for a window it cannot count itself. "All time"
 /// begins at the scope's first holding activity on THIS tab, which only the
@@ -1472,21 +1473,25 @@ pub(crate) fn series_window(
     interval: Option<&str>,
     count: Option<usize>,
     since: Option<&str>,
-) -> Result<(Interval, usize), AppError> {
+) -> Result<SeriesWindow, AppError> {
     let Some(since) = since.map(str::trim).filter(|value| !value.is_empty()) else {
         if interval == Some("auto") {
             return Err(AppError::BadRequest(
                 "interval=auto needs a since to size the window by".to_string(),
             ));
         }
-        return Ok((parse_interval(interval)?, parse_count(count)?));
+        return Ok(SeriesWindow::counted(
+            parse_interval(interval)?,
+            parse_count(count)?,
+        ));
     };
     if let Some(count) = count {
         return Err(AppError::BadRequest(format!(
             "count {count} and since '{since}' both set the window's length; send one"
         )));
     }
-    let start = if since == SINCE_INCEPTION {
+    let dated = since != SINCE_INCEPTION;
+    let start = if !dated {
         let first = match tab {
             HoldingsTab::Stocks => {
                 first_holding_date(&journal.transactions, &journal.accounts, scope)
@@ -1521,7 +1526,11 @@ pub(crate) fn series_window(
              choose a coarser interval"
         )));
     }
-    Ok((interval, count))
+    Ok(SeriesWindow {
+        interval,
+        count,
+        start: dated.then_some(start),
+    })
 }
 
 /// The deepest account a `depth` param may ask for.
@@ -2828,7 +2837,7 @@ pub(crate) async fn holdings_series_report(
             None,
             query.value_in.as_deref(),
         )?;
-        let (interval, count) = series_window(
+        let window = series_window(
             &snapshot.journal,
             HoldingsTab::Stocks,
             &scope,
@@ -2842,8 +2851,7 @@ pub(crate) async fn holdings_series_report(
             &snapshot.journal.accounts,
             &snapshot.journal.commodity_tags,
             &scope,
-            interval,
-            count,
+            &window,
         )?;
         Ok(WireHoldingsSeries::from(&series))
     })
@@ -2905,7 +2913,7 @@ pub(crate) async fn other_holdings_series_report(
             None,
             query.value_in.as_deref(),
         )?;
-        let (interval, count) = series_window(
+        let window = series_window(
             &snapshot.journal,
             HoldingsTab::Other,
             &scope,
@@ -2918,8 +2926,7 @@ pub(crate) async fn other_holdings_series_report(
             &snapshot.journal.prices,
             &snapshot.journal.accounts,
             &scope,
-            interval,
-            count,
+            &window,
         )?;
         Ok(WireHoldingsSeries::from(&series))
     })

@@ -519,7 +519,7 @@ fn prepare(state: &AppState, query: BenchmarksQuery) -> Result<Prepared, AppErro
         None,
         query.value_in.as_deref(),
     )?;
-    let (interval, count) = series_window(
+    let window = series_window(
         journal,
         HoldingsTab::Stocks,
         &scope,
@@ -533,8 +533,7 @@ fn prepare(state: &AppState, query: BenchmarksQuery) -> Result<Prepared, AppErro
         &journal.accounts,
         &journal.commodity_tags,
         &scope,
-        interval,
-        count,
+        &window,
     )?;
     let after = series.points.first().map(|point| point.date.as_str());
     let flows = holdings_flows(

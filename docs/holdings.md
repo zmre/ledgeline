@@ -506,10 +506,23 @@ an all-time one.
 | 1 week        | seven days before as-of                | daily, 8 points                          |
 | 1 month       | one calendar month before (31st → 28th/29th) | daily                              |
 | 3 months      | three calendar months before           | weekly                                   |
-| Year to date  | January 1                              | from December 31, daily → weekly → monthly as the year goes on |
-| 12 months     | one year before                        | the last 12 month-ends                   |
-| 5 years       | five years before                      | the last 60 month-ends                   |
+| Year to date  | December 31 of the previous year       | daily → weekly → monthly as the year goes on |
+| 12 months     | one year before                        | monthly: 13 points                       |
+| 5 years       | five years before                      | monthly: 61 points                       |
 | All time      | cost (the gain over what you paid)     | from the scope's first holding activity  |
+
+For every bounded window the chart's **first point is the gain's reference**:
+it is taken on the date the gain is measured from, not at the end of that
+date's month or week, and shows exactly the value the gain subtracts. The
+points after it fall at the end of each day, week or month, and the last one
+is the as-of date. So the twelve-month chart for an as-of of 28 September 2026
+starts on 28 September 2025, then runs through the twelve month-ends to 28
+September 2026. The benchmark comparison is seeded at that same first point.
+
+A windowed gain is measured against the value at the *end* of its start date,
+and counts only money moved in or out after it. That is why year to date starts
+from December 31: its closing value is what the year opened with, and anything
+you bought or sold on January 1 belongs to this year.
 
 For **year to date** and **all time** the engine picks the interval so the line
 has enough points to read without crowding: months once there are at least six

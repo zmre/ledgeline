@@ -73,14 +73,14 @@ describe("UNIT holdings scope store (module state, reset between tests)", () => 
 describe("UNIT holdings trend window follows the gain period", () => {
     const at = (gainPeriod: GainPeriod): HoldingsScope => ({accounts: new Set(["assets:broker"]), mode: "exclude", asOf: "2026-09-28", gainPeriod});
 
-    it("keeps the twelve-month chart exactly as it was", () => {
-        expect(trendQuery(at("12mo"))).toEqual({asOf: "2026-09-28", accounts: "assets:broker", mode: "exclude", interval: "monthly", count: 12});
+    it("starts the twelve-month chart at the twelve-month gain's own reference date", () => {
+        expect(trendQuery(at("12mo"))).toEqual({asOf: "2026-09-28", accounts: "assets:broker", mode: "exclude", interval: "monthly", since: "2025-09-28"});
     });
 
-    it("sends a since for the windows only the engine can count", () => {
+    it("sends a since for every window, inception for all time", () => {
         expect(trendQuery(at("1wk"))).toMatchObject({interval: "daily", since: "2026-09-21"});
+        expect(trendQuery(at("ytd"))).toMatchObject({interval: "auto", since: "2025-12-31"});
         expect(trendQuery(at("all"))).toMatchObject({interval: "auto", since: "inception"});
-        expect(trendQuery(at("all")).count).toBeUndefined();
     });
 
     afterEach(() => {
@@ -101,8 +101,8 @@ describe("UNIT holdings trend window follows the gain period", () => {
         for (const url of series) {
             const params = new URL(url).searchParams;
             expect(params.get("interval")).toBe("monthly");
-            expect(params.get("count")).toBe("60");
-            expect(params.get("since")).toBeNull();
+            expect(params.get("since")).toBe("2021-09-28");
+            expect(params.get("count")).toBeNull();
         }
         expect(urls.some((url) => url.includes("/api/holdings?") && url.includes("gainSince=2021-09-28"))).toBe(true);
     });

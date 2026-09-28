@@ -19,6 +19,7 @@
 
 mod common;
 
+use ledgeline_core::holdings::SeriesWindow;
 use ledgeline_core::holdings::{
     HoldingsScope, OtherWarningKind, ScopeMode, compute_holdings, other_holdings,
     other_holdings_series,
@@ -960,8 +961,7 @@ fn the_series_tracks_total_value_at_each_boundary() {
         &journal.prices,
         &journal.accounts,
         &scope(AS_OF, None),
-        Interval::Monthly,
-        5,
+        &SeriesWindow::counted(Interval::Monthly, 5),
     )
     .expect("series computes");
 
@@ -1012,8 +1012,7 @@ fn the_final_point_is_clamped_to_as_of() {
         &journal.prices,
         &journal.accounts,
         &scope("2026-06-15", None),
-        Interval::Monthly,
-        2,
+        &SeriesWindow::counted(Interval::Monthly, 2),
     )
     .expect("series computes");
 

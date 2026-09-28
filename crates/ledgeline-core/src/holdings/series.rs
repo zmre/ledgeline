@@ -8,22 +8,20 @@
 //! recompute per point, which used to make the endpoint cost `count ×
 //! compute_holdings` and made it the slowest one measured.
 
-use std::cmp::Ordering;
-
 use crate::decimal::Dec;
 use crate::model::{AccountDeclaration, Commodity, PriceDirective, Transaction};
-use crate::reports::{
-    Interval, ReportError, bucket_end, bucket_label, compare_iso, last_n_buckets,
-};
+use crate::reports::{ReportError, bucket_label, last_n_buckets};
 
 use super::engine::holdings_at_each;
 use super::types::HoldingsScope;
+use super::window::{SeriesWindow, series_dates};
 
 /// One point in a [`HoldingsSeries`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct HoldingsPoint {
     /// Snapshot date: the bucket's last day, clamped so the final point never
-    /// overshoots `scope.as_of`.
+    /// overshoots `scope.as_of` — or, for the first point of a window asked
+    /// for from a `start` date, that date (see [`super::window::series_dates`]).
     pub date: String,
     /// Bucket key (e.g. `"2026-07"`), for axis labels.
     pub bucket: String,
@@ -48,9 +46,10 @@ pub struct HoldingsSeries {
     pub has_basis: bool,
 }
 
-/// Portfolio market value (and cost basis) at each of the last `count` period
-/// boundaries ending at `scope.as_of`, oldest first. Port of the TS
-/// `holdingsSeries`.
+/// Portfolio market value (and cost basis) at each of `window`'s points: the
+/// last `window.count` period boundaries ending at `scope.as_of`, oldest
+/// first, the first taken at `window.start` when there is one (see
+/// [`super::window::series_dates`]). Port of the TS `holdingsSeries`.
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow or an unrecognized bucket key
@@ -61,23 +60,13 @@ pub fn holdings_series(
     accounts: &[AccountDeclaration],
     commodity_tags: &[(Commodity, Vec<(String, String)>)],
     scope: &HoldingsScope,
-    interval: Interval,
-    count: usize,
+    window: &SeriesWindow,
 ) -> Result<HoldingsSeries, ReportError> {
-    let keys = last_n_buckets(&scope.as_of, interval, count)?;
-    // Each bucket's last day, clamped so the final point never overshoots
-    // `scope.as_of`. Ascending, which is what lets one replay serve them all.
-    let dates = keys
-        .iter()
-        .map(|key| {
-            let end = bucket_end(key)?;
-            Ok(if compare_iso(&end, &scope.as_of) == Ordering::Greater {
-                scope.as_of.clone()
-            } else {
-                end
-            })
-        })
-        .collect::<Result<Vec<String>, ReportError>>()?;
+    let keys = last_n_buckets(&scope.as_of, window.interval, window.count)?;
+    // Each bucket's last day (the first one at `window.start`, when given),
+    // clamped so the final point never overshoots `scope.as_of`. Ascending,
+    // which is what lets one replay serve them all.
+    let dates = series_dates(&keys, &scope.as_of, window.start.as_deref())?;
     // The valuation commodity is resolved ONCE, from the scope's own `as_of`,
     // and every point is pinned to it. Each point is a different snapshot
     // holding a different set of symbols, so left to choose for itself an early
@@ -117,6 +106,7 @@ mod tests {
     use super::*;
     use crate::holdings::test_helpers::{amt, buy, pd, posting, scope, txn, usd, with_cost};
     use crate::holdings::types::ScopeMode;
+    use crate::reports::Interval;
 
     // VTI: 10 @ $200 on 2025-02-10, +10 @ $220 on 2025-04-10; priced $250 from
     // 2025-01.
@@ -163,8 +153,7 @@ mod tests {
             &[],
             &[],
             &scope("2025-05-15", ScopeMode::Include, &[]),
-            Interval::Monthly,
-            5,
+            &SeriesWindow::counted(Interval::Monthly, 5),
         )
         .unwrap();
         assert_eq!(series.base, "$");
@@ -188,8 +177,7 @@ mod tests {
             &[],
             &[],
             &scope("2025-05-15", ScopeMode::Include, &[]),
-            Interval::Monthly,
-            5,
+            &SeriesWindow::counted(Interval::Monthly, 5),
         )
         .unwrap();
         assert!(series.has_basis);
@@ -218,8 +206,7 @@ mod tests {
             &[],
             &[],
             &scope("2025-05-15", ScopeMode::Exclude, &["assets:broker:vti"]),
-            Interval::Monthly,
-            3,
+            &SeriesWindow::counted(Interval::Monthly, 3),
         )
         .unwrap();
         assert!(series.points.iter().all(|p| p.market_value.is_zero()));
@@ -281,8 +268,7 @@ mod tests {
             &[],
             &[],
             &scope("2025-05-31", ScopeMode::Include, &[]),
-            Interval::Monthly,
-            5,
+            &SeriesWindow::counted(Interval::Monthly, 5),
         )
         .unwrap();
         // At `as_of` only EURSYM is held, and nothing connects it to `$`.
@@ -300,8 +286,7 @@ mod tests {
             &[],
             &[],
             &scope("2025-03-31", ScopeMode::Include, &[]),
-            Interval::Monthly,
-            2,
+            &SeriesWindow::counted(Interval::Monthly, 2),
         )
         .unwrap();
         let buckets: Vec<&str> = series.points.iter().map(|p| p.bucket.as_str()).collect();

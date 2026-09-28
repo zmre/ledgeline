@@ -108,7 +108,7 @@ describe("COMPONENT StocksTrend benchmark overlay", () => {
         const params = benchmarkRequests[0].searchParams;
         expect(params.get("symbols")).toBe("SPY");
         expect(params.get("interval")).toBe("monthly");
-        expect(params.get("count")).toBe("12");
+        expect(params.get("since")).toBe("2025-09-28");
         expect(params.get("asOf")).toBe("2026-09-28");
 
         const [portfolio, spy] = lines();

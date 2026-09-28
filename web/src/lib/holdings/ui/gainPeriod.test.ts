@@ -8,14 +8,17 @@ describe("UNIT holdings gainPeriod", () => {
             expect(gainSinceFor("all", "2026-07-16")).toBeUndefined();
         });
 
-        it("YTD is Jan 1 of the asOf's year", () => {
-            expect(gainSinceFor("ytd", "2026-07-16")).toBe("2026-01-01");
-            expect(gainSinceFor("ytd", "2024-02-29")).toBe("2024-01-01");
+        // The engine's reference is the value AT gainSince, flows strictly after
+        // it: the year's opening value is the prior Dec 31's closing one.
+        it("YTD is Dec 31 of the year before the asOf's", () => {
+            expect(gainSinceFor("ytd", "2026-07-16")).toBe("2025-12-31");
+            expect(gainSinceFor("ytd", "2024-02-29")).toBe("2023-12-31");
+            expect(gainSinceFor("ytd", "2026-01-01")).toBe("2025-12-31");
         });
 
-        it("YTD off today lands on Jan 1 of the current year (no hardcoded year)", () => {
+        it("YTD off today lands on Dec 31 of last year (no hardcoded year)", () => {
             const today = localToday();
-            expect(gainSinceFor("ytd", today)).toBe(`${today.slice(0, 4)}-01-01`);
+            expect(gainSinceFor("ytd", today)).toBe(`${Number(today.slice(0, 4)) - 1}-12-31`);
         });
 
         it("trailing 12 months is asOf minus one year", () => {
@@ -82,20 +85,21 @@ describe("UNIT holdings gainPeriod", () => {
     });
 
     describe("trendWindowFor", () => {
-        it("keeps the twelve-month chart as twelve month-ends and five years as sixty", () => {
-            expect(trendWindowFor("12mo", "2026-09-28")).toEqual({interval: "monthly", count: 12});
-            expect(trendWindowFor("5yr", "2026-09-28")).toEqual({interval: "monthly", count: 60});
+        it("starts every windowed chart at exactly the gain reference date", () => {
+            for (const asOf of ["2026-09-28", "2024-02-29", "2026-01-01", "2026-03-31"]) {
+                for (const {value} of GAIN_PERIODS.filter((p) => p.value !== "all")) {
+                    expect(trendWindowFor(value, asOf).since, `${value} @ ${asOf}`).toBe(gainSinceFor(value, asOf));
+                }
+            }
         });
 
-        it("draws the short windows from the gain window's own start, at a grain that gives a line", () => {
-            // 1wk: daily from seven days back — eight points, both ends included.
+        it("draws each window at a grain that gives a line", () => {
             expect(trendWindowFor("1wk", "2026-09-28")).toEqual({interval: "daily", since: "2026-09-21"});
             expect(trendWindowFor("1mo", "2026-09-28")).toEqual({interval: "daily", since: "2026-08-28"});
             expect(trendWindowFor("3mo", "2026-09-28")).toEqual({interval: "weekly", since: "2026-06-28"});
-        });
-
-        it("starts year to date at the prior year's last day, so the first point is the YTD reference", () => {
             expect(trendWindowFor("ytd", "2026-09-28")).toEqual({interval: "auto", since: "2025-12-31"});
+            expect(trendWindowFor("12mo", "2026-09-28")).toEqual({interval: "monthly", since: "2025-09-28"});
+            expect(trendWindowFor("5yr", "2026-09-28")).toEqual({interval: "monthly", since: "2021-09-28"});
         });
 
         it("leaves all time to the engine, which alone knows when the scope began", () => {

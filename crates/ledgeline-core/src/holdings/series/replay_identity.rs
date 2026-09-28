@@ -22,6 +22,7 @@ use crate::holdings::test_helpers::{
     account_decl, amt, buy, buy_no_cost, commodity_tags, pd, posting, scope, txn, usd, with_cost,
 };
 use crate::holdings::types::{Holding, HoldingsReport, PriceSource, ScopeMode, WarningKind};
+use crate::reports::{Interval, bucket_end, compare_iso};
 
 // ---------------------------------------------------------------------------
 // exact-scale fingerprints
@@ -536,8 +537,15 @@ fn holdings_series_matches_the_per_point_series() {
             (Interval::Quarterly, 9),
             (Interval::Yearly, 3),
         ] {
-            let got = holdings_series(&txns, &prices, &accounts, &tags, sc, interval, count)
-                .expect("series");
+            let got = holdings_series(
+                &txns,
+                &prices,
+                &accounts,
+                &tags,
+                sc,
+                &SeriesWindow::counted(interval, count),
+            )
+            .expect("series");
             let want = per_point_series(&txns, &prices, &accounts, &tags, sc, interval, count);
             let label = format!("{:?}/{count} as_of {}", interval, sc.as_of);
             assert_eq!(got.base, want.base, "base for {label}");
@@ -734,8 +742,15 @@ fn a_transaction_dated_exactly_on_a_point_is_included() {
     );
 
     // And through the public series, whose final point clamps to `as_of`.
-    let series =
-        holdings_series(&txns, &prices, &[], &[], &sc, Interval::Monthly, 3).expect("series");
+    let series = holdings_series(
+        &txns,
+        &prices,
+        &[],
+        &[],
+        &sc,
+        &SeriesWindow::counted(Interval::Monthly, 3),
+    )
+    .expect("series");
     assert_eq!(series.points.last().expect("point").date, "2025-05-31");
     assert_eq!(
         exact(series.points.last().expect("point").market_value),
