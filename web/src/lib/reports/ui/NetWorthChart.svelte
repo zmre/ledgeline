@@ -3,6 +3,10 @@
      worth as a dashed line and, where few enough to stay legible, its value at
      each point.
 
+     It draws exactly the table below it: the same displayed rows, under the same
+     labels, and the table's Net row as the net line (`periodStack`). A parent
+     row is its children stacked, plus its own postings when it has any.
+
      Which side an account stacks on is the ENGINE's call (the row `kind`, by
      effective declared type). Within a bucket each segment is drawn on the side
      its sign puts it: an overdrawn asset is a short asset-coloured segment below
@@ -12,7 +16,6 @@
     import {settings} from "$lib/stores/settings.svelte";
     import type {PeriodReport} from "../types";
     import ChartPanel from "./ChartPanel.svelte";
-    import {periodStack} from "./periodStack";
     import PeriodStackView from "./PeriodStackView.svelte";
 
     let {report, styles}: {report: PeriodReport; styles: ReadonlyMap<string, AmountStyle>} = $props();
@@ -25,14 +28,5 @@
     onToggle={(next) => (settings.netWorthChartOpen = next)}
     testid="networth-chart-panel"
 >
-    <PeriodStackView
-        {report}
-        model={periodStack}
-        {styles}
-        mark="bar"
-        netLabel="Net worth"
-        labelNet
-        empty="No assets or liabilities in this range."
-        testid="networth-chart"
-    />
+    <PeriodStackView {report} {styles} mark="bar" netLabel="Net worth" labelNet empty="No assets or liabilities in this range." testid="networth-chart" />
 </ChartPanel>

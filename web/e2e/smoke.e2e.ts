@@ -237,14 +237,25 @@ test("reports: net worth and cash flow draw their charts above the tables", asyn
     await page.goto("/");
     await page.getByRole("link", {name: "Reports"}).click();
 
-    // Net worth: one stacked column per year, assets up and liabilities down,
-    // each account a legend entry — the mortgage by its declared type.
+    // Net worth: one stacked column per year, assets up and liabilities down
+    // (the mortgage by its declared type), and exactly the table's accounts
+    // under the table's own labels — at the default depth, assets › bank ›
+    // checking, savings, wise, then the collapsed chains, then liabilities.
     await page.getByRole("tab", {name: "Net Worth"}).click();
     const worth = page.getByTestId("networth-chart-panel");
     await expect(worth.getByTestId("networth-chart")).toBeVisible();
-    const worthLegend = worth.getByTestId("networth-chart-legend");
-    await expect(worthLegend).toContainText("liabilities:mortgage");
-    await expect(worthLegend).toContainText("Net worth");
+    await expect(worth.getByTestId("networth-chart-legend").locator("li")).toHaveText([
+        "checking",
+        "savings",
+        "wise",
+        "broker:taxable",
+        "property:home",
+        "vehicles:car",
+        "cc:visa",
+        "mortgage",
+        "Net worth",
+    ]);
+    await expect(page.locator('tr[data-account="liabilities:mortgage"] th')).toHaveText("mortgage");
     // Five yearly buckets is few enough to label every net point — every one
     // that holds anything: sample.journal starts in 2024, so 2022 and 2023 are
     // empty columns and get no "$0" label.

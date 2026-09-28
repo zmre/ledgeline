@@ -20,8 +20,9 @@ const SERIES = [
     {key: "checking|-", entity: "checking", label: "assets:checking", color: "#111111", values: [0, -20, 0, 0, 0]},
     {key: "home|+", entity: "home", label: "assets:home", color: "#222222", values: [500, 510, 520, 530, 540]},
     {key: "visa|-", entity: "visa", label: "liabilities:visa", color: "#333333", values: [-40, -50, -30, -20, -10]},
-    {key: "other-up|+", entity: "(other):up", label: "(other)", color: "#999999", values: [5, 5, 5, 5, 5]},
-    {key: "other-down|-", entity: "(other):down", label: "(other)", color: "#999999", values: [-1, -1, -1, -1, -1]},
+    // Two accounts past the palette's slots: the same muted colour, still two entries.
+    {key: "car|+", entity: "car", label: "assets:car", color: "#999999", values: [5, 5, 5, 5, 5]},
+    {key: "loan|-", entity: "loan", label: "liabilities:loan", color: "#999999", values: [-1, -1, -1, -1, -1]},
 ];
 const NET = [564, 444, 614, 644, 674];
 
@@ -130,10 +131,10 @@ describe("COMPONENT PeriodStackChart", () => {
     });
 
     describe("legend", () => {
-        it("has one entry per entity, not per drawn half, one (other), and the net", () => {
+        it("has one entry per entity, not per drawn half — two that share a colour included — and the net", () => {
             mount();
 
-            expect(legend()).toEqual(["assets:checking", "assets:home", "liabilities:visa", "(other)", "Net worth"]);
+            expect(legend()).toEqual(["assets:checking", "assets:home", "liabilities:visa", "assets:car", "liabilities:loan", "Net worth"]);
         });
     });
 

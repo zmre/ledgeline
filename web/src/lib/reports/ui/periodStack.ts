@@ -1,34 +1,46 @@
 // A `PeriodReport` as a stacked, diverging period chart: the numbers the Net
-// Worth chart draws, decided here so they can be tested by calling a function
-// rather than by reading SVG. The Cash Flow chart shares the shape
-// (`PeriodStack`), the commodity pick and the sign split, but takes its parts
-// from the table's displayed rows and folds nothing — see `cashFlowStack`.
+// Worth and Cash Flow charts draw, decided here so they can be tested by
+// calling a function rather than by reading SVG.
 //
 // Pure — no Svelte, no DOM, no live palette (the caller hands one in).
 //
-// # The pipeline
+// A chart and the table below it must never disagree, so the chart is built
+// from the SAME displayed row list the table renders: `compressPeriodRows` over
+// the report's rows (`ReportTable`'s `periodRows`), with the same labels. There
+// is no second source of accounts to drift from.
+//
+// # The rule
 //
 //   1. PICK ONE COMMODITY. A `MixedAmount` has no single number, and cash flow
 //      is not valued, so the chart plots the commodity the report carries most
 //      figures in and names the rest (`omitted`) rather than quietly plotting a
-//      fraction of the answer — the projections tab's rule, reused.
-//   2. PARTS, NOT ROWS. A depth-clamped report lists a parent AND its children,
-//      so stacking every row counts `assets:bank:checking` twice (once under
-//      `assets:bank`). The stack is the LEAVES of the clamped tree, plus one
-//      RESIDUAL part per parent whose own postings are not in any child row —
-//      `parent − Σ children`, computed on the exact `MixedAmount`s, so a residual
-//      is either exactly zero and dropped or real and drawn.
-//   3. SIDES. Each part is assigned the side it stacks on: a net-worth row by the
-//      ENGINE's classification (`kind`, by effective declared type — never sign
-//      or name); anything else (a `mixed` row) by the sign of its total over the
-//      window.
-//   4. FOLD THE TAIL, PER SIDE. At most `MAX_NAMED` parts keep their names; the
-//      rest of each side sums into one `OTHER_LABEL` entity in the muted tail
-//      colour. Each side is guaranteed a couple of names so a large asset base
-//      cannot crowd every liability into "(other)". A tail of ONE is not folded:
-//      "(other)" standing for a single account just hides its name.
-//   5. COLOUR BY ENTITY. Slots are handed out once, in the fixed legend order, so
-//      an account is the same colour in every bucket by construction.
+//      fraction of the answer — the projections tab's rule, reused. A segment
+//      with nothing in that commodity has nothing to draw and is left out.
+//   2. SEGMENTS ARE THE DISPLAYED TREE'S PARTS. Every displayed row with no
+//      displayed child is a segment carrying that row's values. A displayed
+//      parent's figure is its children's plus its own postings, so it is drawn
+//      as its children's segments stacked, plus — when the parent's value
+//      differs from the sum of its displayed children in any bucket — one OWN
+//      segment, `parent − Σ children`, computed on the exact `MixedAmount`s. So
+//      each displayed row's value is exactly the sum of the segments under it,
+//      and the roots' segments sum to the table's Net.
+//   3. LABELS ARE THE TABLE'S. A segment is labelled with its row's displayed
+//      text (an own segment with its parent's). Only when two segments would
+//      read the same (`cash` under two parents) do both fall back to the full
+//      account name, which is what the table's indentation says about them.
+//   4. NO TAIL FOLDING. The table's accounts are the chart's accounts. Colours
+//      are handed out in table row order: the first `SLOT_COUNT` drawn segments
+//      get their own palette slot and every later one gets the muted `other`
+//      colour — never a recycled slot, which would make two accounts look alike
+//      — while still being its own segment, tooltip row and legend entry. An
+//      account's colour is the same in every bucket by construction.
+//   5. SIDES. A segment with an engine classification (a net-worth row's
+//      `kind`, by effective declared type — never sign or name) is on the side
+//      that kind says: assets up, liabilities down; a `mixed` row, or a row
+//      with no kind (cash flow), by the sign of its total over the window. When
+//      the engine classified the rows, the legend and stack list the up side
+//      and then the down side, each in table order; otherwise they are plain
+//      table order.
 //   6. SPLIT BY SIGN. Every entity becomes a positive series and a negative
 //      series (only those that are non-zero somewhere), sharing the entity's key,
 //      colour and legend entry. The chart stacks its areas by SERIES, not by
@@ -39,34 +51,35 @@
 //      what is drawn above zero is exactly what was positive: an overdrawn asset
 //      is a negative asset segment BELOW the axis, and a liability with a refund
 //      on it is a positive segment above it.
+//   7. THE NET is the table's Net row (`report.totals`) in the charted commodity.
 
 import {maAdd, maIsZero, maNeg, rankCommodities, type MixedAmount} from "$lib/domain/money";
-import {colorAt, OTHER_LABEL, type ChartPalette} from "$lib/format/palette";
+import {colorAt, type ChartPalette} from "$lib/format/palette";
 import {amountIn} from "$lib/projections/projectionView";
 import {bucketLabel} from "../periods";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
+import {compressPeriodRows, type DisplayRow} from "./displayRows";
 
 /** Which way from zero an entity stacks. */
 export type StackSide = "up" | "down";
 
-/** Named parts kept before the tail folds; ~6 named + "(other)" is legible at 375px. */
-export const MAX_NAMED = 6;
-
-/** Names each side keeps before the rest compete on magnitude, so one side cannot take every slot. */
-const MIN_NAMED_PER_SIDE = 2;
-
-/** A part of the stack before folding: a leaf row, or a parent's own residual. */
-export interface StackPart {
-    /** Stable identity: the account, or `account (own)` for a residual. */
+/** One non-overlapping part of the displayed tree, in exact amounts. */
+export interface StackSegment {
+    /** The row's account, or `account (own)` for a parent's own postings. */
     key: string;
+    /** The displayed row this segment belongs to. */
+    account: string;
+    /** True for a parent's own-postings segment. */
+    own: boolean;
+    /** What the legend and tooltip say: the table's text for the row. */
     label: string;
-    /** The engine's side, when it gave one (net worth). */
+    /** The engine's side for the row, when it gave one (net worth). */
     kind?: PeriodRowKind;
     /** Exact per-bucket values. */
     values: readonly MixedAmount[];
 }
 
-/** One legend entry: an account (or folded tail) and its per-bucket signed value. */
+/** One legend entry: an account and its per-bucket signed value. */
 export interface StackEntity {
     key: string;
     label: string;
@@ -90,19 +103,13 @@ export interface PeriodStack {
     /** Other commodities the report holds that the chart does not show, alphabetical. */
     omitted: readonly string[];
     labels: readonly string[];
-    /**
-     * Legend order. `periodStack`: the up side, then the down side, each largest
-     * first, any "(other)" last on its side. `cashFlowStack`: the table's row order.
-     */
+    /** Legend order: table order, grouped up side then down side when the engine classified the rows. */
     entities: readonly StackEntity[];
     /** Draw order (stacked outward from zero). */
     series: readonly StackSeries[];
-    /** The engine's own per-bucket total, not a sum of the parts. */
+    /** The table's Net row, not a sum of the parts. */
     net: readonly number[];
 }
-
-/** The folded tail's key on one side. */
-export const otherKey = (side: StackSide): string => `${OTHER_LABEL}:${side}`;
 
 /**
  * The commodity to chart and what that leaves out.
@@ -117,48 +124,48 @@ export function stackCommodity(report: PeriodReport, fallback: string): {commodi
     return {commodity, omitted: ranked.filter((c) => c !== commodity).sort()};
 }
 
-const parentOf = (account: string): string | null => {
-    const cut = account.lastIndexOf(":");
-    return cut < 0 ? null : account.slice(0, cut);
-};
+const difference = (a: MixedAmount, b: MixedAmount): MixedAmount => maAdd(a, maNeg(b));
 
 /**
- * The non-overlapping parts of a depth-clamped tree: every leaf row, plus a
- * residual for every parent whose value is not fully explained by its child rows
- * (its own postings, or children below the clamp that were not rows).
- *
- * A child is a row whose account's parent IS the parent's account; the rows are
- * the union across buckets, so "has a child row" is decided once for the whole
- * window and a bucket where the child happens to be zero still subtracts zero.
+ * The displayed children of each displayed row, by index. `compressRows` emits
+ * depth-first with each child one indent deeper than its parent, so a row's
+ * children are the rows one indent deeper before the next row at its own
+ * indent or shallower.
  */
-export function stackParts(rows: readonly PeriodRow[]): StackPart[] {
-    const children = new Map<string, PeriodRow[]>();
-    const present = new Set(rows.map((row) => row.account));
-    for (const row of rows) {
-        const parent = parentOf(row.account);
-        if (parent !== null && present.has(parent)) children.set(parent, [...(children.get(parent) ?? []), row]);
-    }
-    const parts: StackPart[] = [];
-    for (const row of rows) {
-        const kids = children.get(row.account);
-        if (kids === undefined) {
-            parts.push({key: row.account, label: row.account, kind: row.kind, values: row.values});
-            continue;
-        }
-        const residual = row.values.map((value, i) => kids.reduce((rest, kid) => maAdd(rest, maNeg(kid.values[i] ?? new Map())), value));
-        if (residual.some((value) => !maIsZero(value))) {
-            parts.push({key: `${row.account} (own)`, label: `${row.account} (own)`, kind: row.kind, values: residual});
-        }
-    }
-    return parts;
+function displayedChildren(display: readonly DisplayRow<PeriodRow>[]): number[][] {
+    const children: number[][] = display.map(() => []);
+    const open: number[] = [];
+    display.forEach((row, i) => {
+        while (open.length > 0 && display[open[open.length - 1]].indent >= row.indent) open.pop();
+        if (open.length > 0) children[open[open.length - 1]].push(i);
+        open.push(i);
+    });
+    return children;
 }
 
-interface Measured {
-    key: string;
-    label: string;
-    side: StackSide;
-    values: number[];
-    magnitude: number;
+/**
+ * The table's displayed rows as stack segments, in table order: a leaf's own
+ * values, and for a parent whose value is not its displayed children's sum, the
+ * remainder as an own segment at the parent's place (before its children).
+ */
+export function stackSegments(display: readonly DisplayRow<PeriodRow>[]): StackSegment[] {
+    const children = displayedChildren(display);
+    const segments: StackSegment[] = [];
+    display.forEach((shown, i) => {
+        const {row} = shown;
+        const kids = children[i];
+        const base = {account: row.account, label: shown.label, ...(row.kind === undefined ? {} : {kind: row.kind})};
+        if (kids.length === 0) {
+            segments.push({...base, key: row.account, own: false, values: row.values});
+            return;
+        }
+        const own = row.values.map((value, b) => kids.reduce((rest, k) => difference(rest, display[k].row.values[b] ?? new Map()), value));
+        if (own.some((value) => !maIsZero(value))) segments.push({...base, key: `${row.account} (own)`, own: true, values: own});
+    });
+
+    const counts = new Map<string, number>();
+    for (const segment of segments) counts.set(segment.label, (counts.get(segment.label) ?? 0) + 1);
+    return segments.map((segment) => ((counts.get(segment.label) ?? 0) > 1 ? {...segment, label: segment.account} : segment));
 }
 
 const sum = (values: readonly number[]): number => values.reduce((a, b) => a + b, 0);
@@ -167,32 +174,6 @@ function sideOf(kind: PeriodRowKind | undefined, values: readonly number[]): Sta
     if (kind === "asset") return "up";
     if (kind === "liability") return "down";
     return sum(values) >= 0 ? "up" : "down";
-}
-
-/** Largest first; ties by key so the order never depends on input order. */
-const byMagnitude = (a: Measured, b: Measured): number => b.magnitude - a.magnitude || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
-
-/**
- * Which parts keep their names: each side's `MIN_NAMED_PER_SIDE` largest, then
- * the largest of the rest up to `MAX_NAMED` — and then any side whose tail is a
- * single part keeps that one too (so never more than `MAX_NAMED + 2`, within
- * `SLOT_COUNT`).
- */
-function namedKeys(measured: readonly Measured[]): Set<string> {
-    const ranked = [...measured].sort(byMagnitude);
-    const named = new Set<string>();
-    for (const side of ["up", "down"] as const) {
-        for (const part of ranked.filter((p) => p.side === side).slice(0, MIN_NAMED_PER_SIDE)) named.add(part.key);
-    }
-    for (const part of ranked) {
-        if (named.size >= MAX_NAMED) break;
-        named.add(part.key);
-    }
-    for (const side of ["up", "down"] as const) {
-        const tail = ranked.filter((p) => p.side === side && !named.has(p.key));
-        if (tail.length === 1) named.add(tail[0].key);
-    }
-    return named;
 }
 
 /** Split every entity into its non-zero positive and negative halves. */
@@ -219,29 +200,20 @@ export function splitBySign(entities: readonly StackEntity[]): StackSeries[] {
  */
 export function periodStack(report: PeriodReport, palette: ChartPalette, fallback: string): PeriodStack {
     const {commodity, omitted} = stackCommodity(report, fallback);
-    const measured: Measured[] = stackParts(report.rows)
-        .map((part) => {
-            const values = part.values.map((value) => amountIn(value, commodity));
-            return {key: part.key, label: part.label, side: sideOf(part.kind, values), values, magnitude: sum(values.map(Math.abs))};
-        })
-        .filter((part) => part.magnitude > 0);
-
-    const named = namedKeys(measured);
-    const entities: StackEntity[] = [];
-    let slot = 0;
-    for (const side of ["up", "down"] as const) {
-        const onSide = measured.filter((p) => p.side === side).sort(byMagnitude);
-        for (const part of onSide.filter((p) => named.has(p.key))) {
-            // `namedKeys` keeps at most MAX_NAMED + 2 = SLOT_COUNT names, and
-            // `colorAt` folds to the tail colour rather than cycling if it did not.
-            entities.push({key: part.key, label: part.label, color: colorAt(palette, slot++), side, values: part.values});
-        }
-        const tail = onSide.filter((p) => !named.has(p.key));
-        if (tail.length > 0) {
-            const values = report.buckets.map((_, i) => sum(tail.map((p) => p.values[i] ?? 0)));
-            entities.push({key: otherKey(side), label: OTHER_LABEL, color: palette.other, side, values});
-        }
-    }
+    const drawn = stackSegments(compressPeriodRows(report.rows))
+        .map((segment) => ({segment, values: segment.values.map((value) => amountIn(value, commodity))}))
+        .filter(({values}) => values.some((v) => v !== 0));
+    // Slots in table order; past `SLOT_COUNT`, `colorAt` gives the `other`
+    // colour rather than cycling — see rule 4.
+    const inTableOrder = drawn.map(({segment, values}, slot): StackEntity => ({
+        key: segment.key,
+        label: segment.label,
+        color: colorAt(palette, slot),
+        side: sideOf(segment.kind, values),
+        values,
+    }));
+    const classified = drawn.some(({segment}) => segment.kind !== undefined);
+    const entities = classified ? (["up", "down"] as const).flatMap((side) => inTableOrder.filter((e) => e.side === side)) : inTableOrder;
 
     return {
         commodity,

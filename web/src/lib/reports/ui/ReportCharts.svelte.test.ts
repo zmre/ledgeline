@@ -1,8 +1,8 @@
 // The Net Worth and Cash Flow chart panels, mounted over literal reports.
 //
 // Structure only (jsdom draws into a 0×0 box): the panel shell, the persisted
-// collapse flag, the legend the model produced — for Cash Flow, exactly the
-// table's displayed accounts — and the friendly empty and one-bucket states.
+// collapse flag, the legend the model produced — exactly the table's displayed
+// accounts — and the friendly empty and one-bucket states.
 
 import {fireEvent, render} from "@testing-library/svelte";
 import {afterEach, describe, expect, it} from "vitest";
@@ -54,6 +54,12 @@ const CASH_FLOW: PeriodReport = {
     totals: [50, -30, 20].map(usd),
 };
 
+/** The table's displayed rows with no displayed child, by the table's own function, as labelled there. */
+function displayedLeaves(report: PeriodReport): string[] {
+    const display = compressPeriodRows(report.rows);
+    return display.filter((d) => !display.some((other) => other.row.account.startsWith(`${d.row.account}:`))).map((d) => d.label);
+}
+
 const legend = (testid: string): string[] => [...document.querySelectorAll(`[data-testid="${testid}-legend"] li`)].map((li) => li.textContent?.trim() ?? "");
 
 afterEach(() => {
@@ -62,10 +68,23 @@ afterEach(() => {
 });
 
 describe("COMPONENT NetWorthChart", () => {
-    it("stacks the leaf accounts, assets then liabilities, with the net worth", () => {
+    it("stacks exactly the table's displayed leaves, assets then liabilities, under the table's labels", () => {
         render(NetWorthChart, {report: NET_WORTH, styles: STYLES});
 
-        expect(legend("networth-chart")).toEqual(["assets:home", "assets:bank", "liabilities:mortgage", "Net worth"]);
+        // The table shows assets › bank, home and the collapsed
+        // liabilities:mortgage chain; no parent has postings of its own.
+        expect(displayedLeaves(NET_WORTH)).toEqual(["bank", "home", "liabilities:mortgage"]);
+        expect(legend("networth-chart")).toEqual([...displayedLeaves(NET_WORTH), "Net worth"]);
+    });
+
+    it("folds nothing: a parent's own postings are their own entry, named like the parent", () => {
+        const own: PeriodReport = {
+            ...NET_WORTH,
+            rows: NET_WORTH.rows.map((r) => (r.account === "assets" ? row("assets", [650, 660, 700, 750, 770], "asset") : r)),
+        };
+        render(NetWorthChart, {report: {...own, totals: [250, 270, 320, 380, 410].map(usd)}, styles: STYLES});
+
+        expect(legend("networth-chart")).toEqual(["assets", "bank", "home", "liabilities:mortgage", "Net worth"]);
     });
 
     it("labels every net point on a five-year chart", () => {
@@ -126,10 +145,8 @@ describe("COMPONENT CashFlowChart", () => {
 
         // The table's own rows, by the table's own function: every displayed
         // row with no displayed child, and `bank` again for its own postings.
-        const display = compressPeriodRows(CASH_FLOW.rows);
-        const leaves = display.filter((d) => !display.some((other) => other.row.account.startsWith(`${d.row.account}:`))).map((d) => d.label);
-        expect(leaves).toEqual(["checking", "savings", "broker:cash"]);
-        expect(legend("cashflow-chart")).toEqual(["bank", ...leaves, "Net change"]);
+        expect(displayedLeaves(CASH_FLOW)).toEqual(["checking", "savings", "broker:cash"]);
+        expect(legend("cashflow-chart")).toEqual(["bank", ...displayedLeaves(CASH_FLOW), "Net change"]);
     });
 
     it("has no breakdown toggle", () => {

@@ -37,9 +37,8 @@
        labels. A bucket with nothing in it gets none.
      - ONE TOOLTIP PER BUCKET listing every non-zero series in legend order —
        values lead, labels follow, keyed by a short line — then the net.
-     - The LEGEND is always shown, one entry per entity (a folded "(other)" on
-       both sides is one entry), with the net as a dashed line key: identity is
-       never colour alone. -->
+     - The LEGEND is always shown, one entry per entity, with the net as a
+       dashed line key: identity is never colour alone. -->
 <script lang="ts">
     import {Area, AreaChart, BarChart, Spline, Tooltip, type ChartState} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
@@ -203,18 +202,11 @@
         return byEntity;
     });
 
-    /** One entry per entity, then the net; two entities that look alike (the up and down "(other)") are one entry. */
-    const legend = $derived.by((): LegendEntry[] => {
-        // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local to this derivation
-        const seen = new Set<string>();
-        const named = [...entities].flatMap(([key, [first]]): LegendEntry[] => {
-            const look = `${first.label}\u0000${first.color}`;
-            if (seen.has(look)) return [];
-            seen.add(look);
-            return [{key, label: first.label, color: first.color, swatch: "square"}];
-        });
-        return [...named, {key: "\u0000net", label: netLabel, color: chartColors.flowNet, swatch: "line", dash: true}];
-    });
+    /** One entry per entity, then the net. */
+    const legend = $derived<LegendEntry[]>([
+        ...[...entities].map(([key, [first]]): LegendEntry => ({key, label: first.label, color: first.color, swatch: "square"})),
+        {key: "\u0000net", label: netLabel, color: chartColors.flowNet, swatch: "line", dash: true},
+    ]);
 
     /** The tooltip rows for bucket `i`: each entity's value (its halves summed), non-zero only, legend order. */
     function itemsAt(i: number): {key: string; label: string; color: string; value: number}[] {
