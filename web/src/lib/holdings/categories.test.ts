@@ -23,7 +23,7 @@ function holding(symbol: string, dollars: number | null): Holding {
 const EMPTY: Breakdown = {assetClass: [], sector: [], industry: [], securityType: [], category: [], risk: []};
 
 function profile(symbol: string, breakdown: Partial<Record<keyof Breakdown, CategoryWeight[]>>): SymbolProfile {
-    return {symbol, yahooTicker: symbol, source: "yahoo", fetchedAt: "2026-09-28", breakdown: {...EMPTY, ...breakdown}};
+    return {symbol, breakdown: {...EMPTY, ...breakdown}};
 }
 
 function profiles(...list: SymbolProfile[]): HoldingsProfiles {

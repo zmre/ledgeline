@@ -27,9 +27,9 @@ use ledgeline_core::holdings::engine::prices_any_held_other;
 use ledgeline_core::holdings::{
     Holding, HoldingPrice, HoldingsPoint, HoldingsReport, HoldingsScope, HoldingsSeries,
     HoldingsTotals, HoldingsWarning, OtherHolding, OtherHoldingsReport, OtherHoldingsTotals,
-    OtherHoldingsWarning, OtherWarningKind, PriceSource, ScopeMode, SeriesWindow, WarningKind,
-    auto_interval, compute_holdings, first_holding_date, first_other_holding_date, holdings_series,
-    other_holdings, other_holdings_series, prices_any_held, series_count,
+    OtherHoldingsWarning, OtherInputs, OtherWarningKind, PriceSource, ScopeMode, SeriesWindow,
+    WarningKind, auto_interval, compute_holdings, first_holding_date, holdings_series,
+    other_holdings, prices_any_held, series_count,
 };
 use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods;
@@ -1387,16 +1387,21 @@ impl From<&OtherHoldingsReport> for WireOtherHoldingsReport {
 // Query params, defaults, and helpers
 // ===========================================================================
 
+/// Seconds since the Unix epoch, from the system clock (0 for a clock set
+/// before 1970). The server's one clock read: [`today_utc`] is built on it.
+pub(crate) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
 /// Current UTC date as `YYYY-MM-DD`, from the system clock.
 ///
 /// The report engine is deliberately clock-free (see `reports::periods`);
 /// "today" is a server-side request default only, so it lives here rather than
 /// in `ledgeline-core`, and needs no third-party date dependency.
 pub(crate) fn today_utc() -> String {
-    let days = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| (elapsed.as_secs() / 86_400) as i64)
-        .unwrap_or(0);
+    let days = i64::try_from(unix_now() / 86_400).unwrap_or(0);
     // The calendar itself lives in `reports::periods` — this file used to carry a
     // verbatim copy of Howard Hinnant's `civil_from_days` (DRY-2). The clock read
     // stays here, because `reports` is deliberately clock-free.
@@ -1465,14 +1470,14 @@ const SINCE_INCEPTION: &str = "inception";
 /// `auto` without `since` (nothing to size it by), a `since` after `asOf`, or a
 /// span needing more than [`MAX_BUCKETS`] buckets.
 ///
-/// Runs on the blocking pool: `inception` scans the journal.
+/// `inception` answers the tab's first holding date, and is only called for
+/// `since=inception`. Runs on the blocking pool: that scans the journal.
 pub(crate) fn series_window(
-    journal: &Journal,
-    tab: HoldingsTab,
     scope: &HoldingsScope,
     interval: Option<&str>,
     count: Option<usize>,
     since: Option<&str>,
+    inception: impl FnOnce() -> Result<Option<String>, AppError>,
 ) -> Result<SeriesWindow, AppError> {
     let Some(since) = since.map(str::trim).filter(|value| !value.is_empty()) else {
         if interval == Some("auto") {
@@ -1492,17 +1497,7 @@ pub(crate) fn series_window(
     }
     let dated = since != SINCE_INCEPTION;
     let start = if !dated {
-        let first = match tab {
-            HoldingsTab::Stocks => {
-                first_holding_date(&journal.transactions, &journal.accounts, scope)
-            }
-            HoldingsTab::Other => first_other_holding_date(
-                &journal.transactions,
-                &journal.prices,
-                &journal.accounts,
-                scope,
-            )?,
-        };
+        let first = inception()?;
         // Nothing held yet: a one-point series at `asOf`, which the chart
         // reports as empty in words rather than as a line on the axis.
         first.unwrap_or_else(|| scope.as_of.clone())
@@ -2189,20 +2184,20 @@ pub(crate) struct HoldingsQuery {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HoldingsSeriesQuery {
-    pub(crate) as_of: Option<String>,
-    pub(crate) accounts: Option<String>,
-    pub(crate) mode: Option<String>,
+    as_of: Option<String>,
+    accounts: Option<String>,
+    mode: Option<String>,
     /// `daily|weekly|monthly|quarterly|yearly`, or `auto` alongside `since`.
-    pub(crate) interval: Option<String>,
-    pub(crate) count: Option<usize>,
+    interval: Option<String>,
+    count: Option<usize>,
     /// Where the series starts instead of `count` buckets back: a
     /// `YYYY-MM-DD`, or `inception` for the scope's first holding activity on
     /// this tab. See [`series_window`].
-    pub(crate) since: Option<String>,
+    since: Option<String>,
     /// Commodity to value the trend in. Same contract as [`HoldingsQuery`]'s,
     /// and validated against the same scope, so the chart and the table beside
     /// it can never end up in different commodities.
-    pub(crate) value_in: Option<String>,
+    value_in: Option<String>,
 }
 
 // ===========================================================================
@@ -2827,24 +2822,7 @@ pub(crate) async fn holdings_series_report(
 ) -> Result<Json<WireHoldingsSeries>, AppError> {
     let snapshot = state.snapshot();
     compute(move || {
-        let scope = holdings_scope(
-            &snapshot.journal,
-            HoldingsTab::Stocks,
-            query.accounts.as_deref(),
-            query.mode.as_deref(),
-            query.as_of,
-            // The trend tracks market value/basis only — no per-point gain window.
-            None,
-            query.value_in.as_deref(),
-        )?;
-        let window = series_window(
-            &snapshot.journal,
-            HoldingsTab::Stocks,
-            &scope,
-            query.interval.as_deref(),
-            query.count,
-            query.since.as_deref(),
-        )?;
+        let (scope, window) = stocks_series_request(&snapshot.journal, query)?;
         let series = holdings_series(
             &snapshot.journal.transactions,
             &snapshot.journal.prices,
@@ -2856,6 +2834,39 @@ pub(crate) async fn holdings_series_report(
         Ok(WireHoldingsSeries::from(&series))
     })
     .await
+}
+
+/// The Stocks tab's series scope and window, resolved from its query. Shared by
+/// `/api/holdings/series` and `/api/holdings/benchmarks`, so the benchmark
+/// overlay is always computed for exactly the window the base chart was.
+pub(crate) fn stocks_series_request(
+    journal: &Journal,
+    query: HoldingsSeriesQuery,
+) -> Result<(HoldingsScope, SeriesWindow), AppError> {
+    let scope = holdings_scope(
+        journal,
+        HoldingsTab::Stocks,
+        query.accounts.as_deref(),
+        query.mode.as_deref(),
+        query.as_of,
+        // The trend tracks market value/basis only — no per-point gain window.
+        None,
+        query.value_in.as_deref(),
+    )?;
+    let window = series_window(
+        &scope,
+        query.interval.as_deref(),
+        query.count,
+        query.since.as_deref(),
+        || {
+            Ok(first_holding_date(
+                &journal.transactions,
+                &journal.accounts,
+                &scope,
+            ))
+        },
+    )?;
+    Ok((scope, window))
 }
 
 /// `GET /api/holdings/other` — the assets you own that are neither securities
@@ -2913,21 +2924,20 @@ pub(crate) async fn other_holdings_series_report(
             None,
             query.value_in.as_deref(),
         )?;
+        // Built once: `since=inception` and the series both read them.
+        let inputs = OtherInputs::build(
+            &snapshot.journal.transactions,
+            &snapshot.journal.prices,
+            &snapshot.journal.accounts,
+        )?;
         let window = series_window(
-            &snapshot.journal,
-            HoldingsTab::Other,
             &scope,
             query.interval.as_deref(),
             query.count,
             query.since.as_deref(),
+            || Ok(inputs.first_holding_date(&scope)?),
         )?;
-        let series = other_holdings_series(
-            &snapshot.journal.transactions,
-            &snapshot.journal.prices,
-            &snapshot.journal.accounts,
-            &scope,
-            &window,
-        )?;
+        let series = inputs.series(&scope, &window)?;
         Ok(WireHoldingsSeries::from(&series))
     })
     .await

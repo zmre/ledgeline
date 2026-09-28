@@ -26,16 +26,8 @@ export interface CategoryWeight {
  */
 export type Breakdown = Readonly<Record<CategoryDimension, readonly CategoryWeight[]>>;
 
-/** Where a profile's data came from, as a whole. */
-export type ProfileSource = "tags" | "yahoo" | "mixed" | "none";
-
 export interface SymbolProfile {
     symbol: string;
-    /** The ticker Yahoo was (or would be) asked for: the commodity's `yahoo:` tag, else its symbol. */
-    yahooTicker: string;
-    source: ProfileSource;
-    /** When the Yahoo data used was fetched (YYYY-MM-DD); null when none was used. */
-    fetchedAt: string | null;
     breakdown: Breakdown;
 }
 

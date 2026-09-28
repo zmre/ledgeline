@@ -72,20 +72,6 @@ impl Dimension {
     ];
 }
 
-/// Where a profile's data came from, as a whole.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum Source {
-    /// Every classified dimension came from a commodity tag.
-    Tags,
-    /// Every classified dimension came from Yahoo Finance.
-    Yahoo,
-    /// Some of each.
-    Mixed,
-    /// Nothing is known.
-    None,
-}
-
 /// One label's share of a holding.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct Weight {
@@ -110,13 +96,6 @@ pub(crate) struct Breakdown {
     pub(crate) security_type: Vec<Weight>,
     pub(crate) category: Vec<Weight>,
     pub(crate) risk: Vec<Weight>,
-}
-
-/// A commodity's resolved classification.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Resolved {
-    pub(crate) breakdown: Breakdown,
-    pub(crate) source: Source,
 }
 
 /// Canonical asset-class labels. `Other assets`, not `Other`, because the pie
@@ -145,15 +124,14 @@ fn tag_value<'a>(tags: &'a [(String, String)], key: &str) -> Option<&'a str> {
 }
 
 /// Merge `tags` over `yahoo` into every dimension's breakdown.
-pub(crate) fn resolve(tags: &[(String, String)], yahoo: Option<&YahooProfile>) -> Resolved {
+pub(crate) fn resolve(tags: &[(String, String)], yahoo: Option<&YahooProfile>) -> Breakdown {
     let tag = |dimension: Dimension| tag_value(tags, dimension.tag());
     let single = |label: String| vec![weight(label, 1.0)];
-    let fetched_single =
-        |value: Option<String>| Found::yahoo(value.map(single).unwrap_or_default());
+    let fetched_single = |value: Option<String>| value.map(single).unwrap_or_default();
 
     // Security type first: the asset-class fallback reads it.
     let security_type = match tag(Dimension::SecurityType) {
-        Some(value) => Found::tag(single(security_type_label(value))),
+        Some(value) => single(security_type_label(value)),
         None => fetched_single(
             yahoo
                 .and_then(|profile| profile.quote_type.as_deref())
@@ -162,46 +140,40 @@ pub(crate) fn resolve(tags: &[(String, String)], yahoo: Option<&YahooProfile>) -
     };
 
     // Asset class. A fund's position split beats the implication of its type;
-    // the implication (a stock is equity) beats nothing, and carries the
-    // origin of the type it was implied from.
+    // the implication (a stock is equity) beats nothing.
     let asset_class = match tag(Dimension::AssetClass) {
-        Some(value) => Found::tag(single(asset_class_label(value))),
+        Some(value) => single(asset_class_label(value)),
         None => {
             let mix = yahoo
                 .and_then(|profile| profile.asset_mix)
                 .map(mix_weights)
                 .unwrap_or_default();
             if mix.is_empty() {
-                let implied = security_type
-                    .weights
+                security_type
                     .first()
                     .and_then(|entry| implied_asset_class(&entry.label))
                     .map(|label| single(label.to_string()))
-                    .unwrap_or_default();
-                Found {
-                    weights: implied,
-                    origin: security_type.origin,
-                }
+                    .unwrap_or_default()
             } else {
-                Found::yahoo(mix)
+                mix
             }
         }
     };
 
     let sector = match tag(Dimension::Sector) {
-        Some(value) => Found::tag(single(value.to_string())),
+        Some(value) => single(value.to_string()),
         None => derived_sector(yahoo, &asset_class),
     };
     let industry = match tag(Dimension::Industry) {
-        Some(value) => Found::tag(single(value.to_string())),
+        Some(value) => single(value.to_string()),
         None => fetched_single(yahoo.and_then(|profile| profile.industry.clone())),
     };
     let category = match tag(Dimension::Category) {
-        Some(value) => Found::tag(single(value.to_string())),
+        Some(value) => single(value.to_string()),
         None => fetched_single(yahoo.and_then(|profile| profile.category.clone())),
     };
     let risk = match tag(Dimension::Risk) {
-        Some(value) => Found::tag(single(value.to_string())),
+        Some(value) => single(value.to_string()),
         None => fetched_single(
             yahoo
                 .and_then(|profile| profile.risk_rating)
@@ -210,63 +182,13 @@ pub(crate) fn resolve(tags: &[(String, String)], yahoo: Option<&YahooProfile>) -
         ),
     };
 
-    let found = [
-        &asset_class,
-        &sector,
-        &industry,
-        &security_type,
-        &category,
-        &risk,
-    ];
-    let from = |origin: Origin| {
-        found
-            .iter()
-            .any(|dimension| !dimension.weights.is_empty() && dimension.origin == origin)
-    };
-    let source = match (from(Origin::Tag), from(Origin::Yahoo)) {
-        (true, true) => Source::Mixed,
-        (true, false) => Source::Tags,
-        (false, true) => Source::Yahoo,
-        (false, false) => Source::None,
-    };
-    Resolved {
-        breakdown: Breakdown {
-            asset_class: asset_class.weights,
-            sector: sector.weights,
-            industry: industry.weights,
-            security_type: security_type.weights,
-            category: category.weights,
-            risk: risk.weights,
-        },
-        source,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Origin {
-    Tag,
-    Yahoo,
-}
-
-/// One dimension's weights and where they came from.
-struct Found {
-    weights: Vec<Weight>,
-    origin: Origin,
-}
-
-impl Found {
-    fn tag(weights: Vec<Weight>) -> Self {
-        Self {
-            weights,
-            origin: Origin::Tag,
-        }
-    }
-
-    fn yahoo(weights: Vec<Weight>) -> Self {
-        Self {
-            weights,
-            origin: Origin::Yahoo,
-        }
+    Breakdown {
+        asset_class,
+        sector,
+        industry,
+        security_type,
+        category,
+        risk,
     }
 }
 
@@ -305,11 +227,7 @@ fn mix_weights(mix: crate::yahoo_profile::AssetMix) -> Vec<Weight> {
 /// split by Yahoo's sector data, every other asset class labelled as itself
 /// (see the module docs). With no asset class known, Yahoo's sectors are taken
 /// as the whole holding.
-///
-/// Its origin is Yahoo when Yahoo supplied any sector; otherwise the result is
-/// only the asset-class labels, and it carries the asset class's own origin —
-/// so `assetclass: bonds` with no network is a tag-sourced "Bonds" here too.
-fn derived_sector(yahoo: Option<&YahooProfile>, asset_class: &Found) -> Found {
+fn derived_sector(yahoo: Option<&YahooProfile>, asset_class: &[Weight]) -> Vec<Weight> {
     let sectors: Vec<Weight> = match yahoo {
         Some(YahooProfile {
             sector: Some(sector),
@@ -329,16 +247,10 @@ fn derived_sector(yahoo: Option<&YahooProfile>, asset_class: &Found) -> Found {
         }
         None => Vec::new(),
     };
-    let origin = if sectors.is_empty() {
-        asset_class.origin
-    } else {
-        Origin::Yahoo
-    };
-    if asset_class.weights.is_empty() {
-        return Found::yahoo(sectors);
+    if asset_class.is_empty() {
+        return sectors;
     }
     let equity_share: f64 = asset_class
-        .weights
         .iter()
         .filter(|entry| entry.label == EQUITY)
         .map(|entry| entry.weight)
@@ -348,17 +260,14 @@ fn derived_sector(yahoo: Option<&YahooProfile>, asset_class: &Found) -> Found {
         .map(|entry| weight(entry.label, entry.weight * equity_share))
         .filter(|entry| entry.weight > 0.0);
     let rest = asset_class
-        .weights
         .iter()
         .filter(|entry| entry.label != EQUITY)
         .cloned();
-    Found {
-        weights: equity.chain(rest).collect(),
-        origin,
-    }
+    equity.chain(rest).collect()
 }
 
-/// A Yahoo `quoteType` as a reader would say it.
+/// A Yahoo `quoteType` as a reader would say it: sentence case (`INDEX` →
+/// `Index`), except the types whose reading is not their code.
 fn quote_type_label(quote_type: &str) -> String {
     match quote_type.to_ascii_uppercase().as_str() {
         "EQUITY" => "Stock".to_string(),
@@ -366,10 +275,6 @@ fn quote_type_label(quote_type: &str) -> String {
         "MUTUALFUND" => "Mutual fund".to_string(),
         "MONEYMARKET" => "Money market".to_string(),
         "CRYPTOCURRENCY" => "Crypto".to_string(),
-        "INDEX" => "Index".to_string(),
-        "CURRENCY" => "Currency".to_string(),
-        "FUTURE" => "Future".to_string(),
-        "OPTION" => "Option".to_string(),
         _ => sentence_case(quote_type),
     }
 }
@@ -502,19 +407,18 @@ mod tests {
     #[test]
     fn a_stock_from_yahoo_is_all_equity_and_its_own_sector() {
         let resolved = resolve(&[], Some(&stock()));
-        let b = &resolved.breakdown;
+        let b = &resolved;
         assert_eq!(labels(&b.asset_class), vec![("Equity", 1.0)]);
         assert_eq!(labels(&b.sector), vec![("Technology", 1.0)]);
         assert_eq!(labels(&b.industry), vec![("Consumer Electronics", 1.0)]);
         assert_eq!(labels(&b.security_type), vec![("Stock", 1.0)]);
         assert!(b.category.is_empty(), "stocks have no category");
         assert!(b.risk.is_empty());
-        assert_eq!(resolved.source, Source::Yahoo);
     }
 
     #[test]
     fn a_balanced_funds_sectors_cover_only_its_equity_share() {
-        let b = resolve(&[], Some(&balanced_fund())).breakdown;
+        let b = resolve(&[], Some(&balanced_fund()));
         assert_eq!(
             labels(&b.asset_class),
             vec![("Equity", 0.6), ("Bonds", 0.35), ("Cash", 0.05)]
@@ -549,7 +453,7 @@ mod tests {
             }),
             ..YahooProfile::default()
         };
-        let b = resolve(&[], Some(&profile)).breakdown;
+        let b = resolve(&[], Some(&profile));
         assert_eq!(
             labels(&b.asset_class),
             vec![("Equity", 0.75), ("Other assets", 0.25)]
@@ -562,7 +466,7 @@ mod tests {
             sector_weights: vec![("Energy".to_string(), 0.3), ("Utilities".to_string(), 0.1)],
             ..YahooProfile::default()
         };
-        let b = resolve(&[], Some(&profile)).breakdown;
+        let b = resolve(&[], Some(&profile));
         assert_eq!(
             labels(&b.sector),
             vec![("Energy", 0.75), ("Utilities", 0.25)]
@@ -581,7 +485,7 @@ mod tests {
             }),
             ..YahooProfile::default()
         };
-        let b = resolve(&[], Some(&profile)).breakdown;
+        let b = resolve(&[], Some(&profile));
         assert_eq!(labels(&b.sector), vec![("Bonds", 0.98), ("Cash", 0.02)]);
     }
 
@@ -596,7 +500,7 @@ mod tests {
             }),
             ..YahooProfile::default()
         };
-        let b = resolve(&[], Some(&profile)).breakdown;
+        let b = resolve(&[], Some(&profile));
         assert_eq!(labels(&b.sector), vec![("Cash", 0.1)]);
     }
 
@@ -606,18 +510,17 @@ mod tests {
             &tags(&[("sector", "Diversified"), ("category", " Target Date ")]),
             Some(&balanced_fund()),
         );
-        let b = &resolved.breakdown;
+        let b = &resolved;
         assert_eq!(labels(&b.sector), vec![("Diversified", 1.0)]);
         assert_eq!(labels(&b.category), vec![("Target Date", 1.0)]);
         // Untagged dimensions still come from Yahoo.
         assert_eq!(b.asset_class.len(), 3);
-        assert_eq!(resolved.source, Source::Mixed);
     }
 
     #[test]
     fn an_assetclass_tag_reshapes_the_yahoo_sector_view() {
         // Told it is all bonds, a stock's Technology sector no longer applies.
-        let b = resolve(&tags(&[("assetclass", "fixed income")]), Some(&stock())).breakdown;
+        let b = resolve(&tags(&[("assetclass", "fixed income")]), Some(&stock()));
         assert_eq!(labels(&b.asset_class), vec![("Bonds", 1.0)]);
         assert_eq!(labels(&b.sector), vec![("Bonds", 1.0)]);
     }
@@ -628,29 +531,24 @@ mod tests {
             &tags(&[("type", "mutualfund"), ("assetclass", "Real Estate")]),
             None,
         );
-        let b = &resolved.breakdown;
+        let b = &resolved;
         assert_eq!(labels(&b.security_type), vec![("Mutual fund", 1.0)]);
         assert_eq!(labels(&b.asset_class), vec![("Real Estate", 1.0)]);
         // A non-equity class answers the Sector view as itself, from the tag.
         assert_eq!(labels(&b.sector), vec![("Real Estate", 1.0)]);
-        assert_eq!(resolved.source, Source::Tags);
     }
 
     #[test]
     fn a_type_tag_implies_an_asset_class_and_counts_as_a_tag() {
         let resolved = resolve(&tags(&[("type", "Stock")]), None);
-        assert_eq!(
-            labels(&resolved.breakdown.asset_class),
-            vec![("Equity", 1.0)]
-        );
-        assert_eq!(resolved.source, Source::Tags);
+        assert_eq!(labels(&resolved.asset_class), vec![("Equity", 1.0)]);
         let crypto = resolve(&tags(&[("type", "crypto")]), None);
-        assert_eq!(labels(&crypto.breakdown.asset_class), vec![("Crypto", 1.0)]);
+        assert_eq!(labels(&crypto.asset_class), vec![("Crypto", 1.0)]);
     }
 
     #[test]
     fn a_type_tag_beats_yahoo_quote_type() {
-        let b = resolve(&tags(&[("type", "etf")]), Some(&stock())).breakdown;
+        let b = resolve(&tags(&[("type", "etf")]), Some(&stock()));
         assert_eq!(labels(&b.security_type), vec![("ETF", 1.0)]);
         // ETF implies nothing, and Yahoo gave no mix: asset class unknown.
         assert!(b.asset_class.is_empty());
@@ -659,13 +557,12 @@ mod tests {
     #[test]
     fn nothing_known_is_all_empty_with_no_source() {
         let resolved = resolve(&tags(&[("name", "Private fund")]), None);
-        assert_eq!(resolved.breakdown, Breakdown::default());
-        assert_eq!(resolved.source, Source::None);
+        assert_eq!(resolved, Breakdown::default());
     }
 
     #[test]
     fn blank_tag_values_are_ignored() {
-        let b = resolve(&tags(&[("sector", "  ")]), Some(&stock())).breakdown;
+        let b = resolve(&tags(&[("sector", "  ")]), Some(&stock()));
         assert_eq!(labels(&b.sector), vec![("Technology", 1.0)]);
     }
 
@@ -694,7 +591,7 @@ mod tests {
     #[test]
     fn every_breakdown_sums_to_at_most_one() {
         for profile in [stock(), balanced_fund(), YahooProfile::default()] {
-            let b = resolve(&[], Some(&profile)).breakdown;
+            let b = resolve(&[], Some(&profile));
             for weights in [
                 &b.asset_class,
                 &b.sector,
@@ -707,5 +604,14 @@ mod tests {
                 assert!(weights.iter().all(|w| w.weight > 0.0));
             }
         }
+    }
+
+    #[test]
+    fn a_quote_type_reads_in_sentence_case_unless_its_code_is_not_its_name() {
+        assert_eq!(quote_type_label("INDEX"), "Index");
+        assert_eq!(quote_type_label("CURRENCY"), "Currency");
+        assert_eq!(quote_type_label("EQUITY"), "Stock");
+        assert_eq!(quote_type_label("etf"), "ETF");
+        assert_eq!(quote_type_label("MUTUALFUND"), "Mutual fund");
     }
 }

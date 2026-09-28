@@ -194,10 +194,16 @@ async fn the_line_is_the_same_money_into_the_benchmark() {
         .get(&format!("/api/holdings/benchmarks?symbols=SPY&{WINDOW}"))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["base"], "$");
     let spy = &body["benchmarks"][0];
     assert_eq!(spy["symbol"], "SPY");
-    assert_eq!(spy["label"], "S&P 500 (SPY)");
+    let mut fields: Vec<&str> = spy
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["error", "points", "stale", "symbol"]);
     assert_eq!(values(spy), vec![Some(1100.0), Some(1210.0), Some(2112.0)]);
     let dates: Vec<&str> = spy["points"]
         .as_array()
@@ -206,7 +212,6 @@ async fn the_line_is_the_same_money_into_the_benchmark() {
         .map(|p| p["date"].as_str().unwrap())
         .collect();
     assert_eq!(dates, ["2025-01-31", "2025-02-28", "2025-03-31"]);
-    assert_eq!(spy["pricedThrough"], "2025-03-31");
     assert_eq!(spy["stale"], false);
     assert_eq!(spy["error"], Value::Null);
 }
@@ -294,7 +299,7 @@ async fn an_empty_answer_records_no_coverage_and_is_retried() {
         body["benchmarks"][0]["error"]
             .as_str()
             .unwrap()
-            .contains("Could not fetch GLD")
+            .contains("No GLD price history")
     );
     assert!(
         !tree.cache().unwrap_or_default().contains("GLD"),
@@ -418,12 +423,10 @@ async fn holdings_not_valued_in_dollars_cannot_be_compared() {
         .get(&format!("/api/holdings/benchmarks?symbols=SPY&{WINDOW}"))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["base"], "EUR");
+    let error = body["benchmarks"][0]["error"].as_str().unwrap();
     assert!(
-        body["benchmarks"][0]["error"]
-            .as_str()
-            .unwrap()
-            .contains("US dollars")
+        error.contains("US dollars") && error.contains("EUR"),
+        "{error}"
     );
     assert_eq!(tree.calls(), 0, "no point fetching what cannot be used");
 }

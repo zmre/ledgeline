@@ -218,13 +218,17 @@ impl PriceDb {
 /// to `partition_point` would charge it log₂(N) date compares for an answer that
 /// one compare settles. With the guard, both ends of the range are cheap.
 fn in_effect<'a>(directives: &'a [PriceDirective], as_of: &str) -> &'a [PriceDirective] {
-    if directives
-        .last()
-        .is_some_and(|newest| newest.date.as_str() <= as_of)
-    {
-        return directives;
+    on_or_before(directives, as_of, |directive| &directive.date)
+}
+
+/// The prefix of `items` — sorted ascending by `date_of` — dated on or before
+/// `as_of`: its last element is the latest one in effect. See [`in_effect`] for
+/// why the newest item is tested before any search.
+pub fn on_or_before<'a, T>(items: &'a [T], as_of: &str, date_of: impl Fn(&T) -> &str) -> &'a [T] {
+    if items.last().is_some_and(|newest| date_of(newest) <= as_of) {
+        return items;
     }
-    &directives[..directives.partition_point(|directive| directive.date.as_str() <= as_of)]
+    &items[..items.partition_point(|item| date_of(item) <= as_of)]
 }
 
 /// One directed edge of the price graph: one unit of `from` is worth `rate` of

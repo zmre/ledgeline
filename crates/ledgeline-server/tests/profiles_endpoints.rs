@@ -220,7 +220,14 @@ async fn yahoo_fills_what_tags_leave_open_and_a_tag_wins_its_dimension() {
     assert_eq!(body["yahoo"], json!("ok"));
 
     let aapl = profile(&body, "AAPL");
-    assert_eq!(aapl["source"], json!("yahoo"));
+    let mut fields: Vec<&str> = aapl
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["breakdown", "symbol"]);
     assert_eq!(
         labels(&aapl["breakdown"]["sector"]),
         vec![l("Technology", 1.0)]
@@ -229,13 +236,10 @@ async fn yahoo_fills_what_tags_leave_open_and_a_tag_wins_its_dimension() {
         labels(&aapl["breakdown"]["assetClass"]),
         vec![l("Equity", 1.0)]
     );
-    assert!(aapl["fetchedAt"].is_string());
 
     // Looked up under its `yahoo:` tag; its `sector:` tag replaces Yahoo's
     // sector split, and nothing else.
     let bal = profile(&body, "BAL");
-    assert_eq!(bal["yahooTicker"], json!("VBAL-X"));
-    assert_eq!(bal["source"], json!("mixed"));
     assert_eq!(
         labels(&bal["breakdown"]["sector"]),
         vec![l("Diversified", 1.0)]
@@ -251,8 +255,6 @@ async fn yahoo_fills_what_tags_leave_open_and_a_tag_wins_its_dimension() {
 
     // Every dimension tagged: Yahoo is never asked about it.
     let house = profile(&body, "HOUSEFUND");
-    assert_eq!(house["source"], json!("tags"));
-    assert!(house.get("fetchedAt").is_none());
     assert_eq!(
         labels(&house["breakdown"]["securityType"]),
         vec![l("Mutual fund", 1.0)]
@@ -300,9 +302,12 @@ async fn yahoo_down_degrades_to_tags_only_and_says_so() {
     let (status, body) = get(tree.state(feed), ALL).await;
     assert_eq!(status, StatusCode::OK, "never an error response: {body}");
     assert_eq!(body["yahoo"], json!("unavailable"));
-    assert_eq!(profile(&body, "AAPL")["source"], json!("none"));
+    assert_eq!(
+        profile(&body, "AAPL")["breakdown"]["sector"],
+        json!([]),
+        "nothing is known about an untagged symbol without Yahoo"
+    );
     let bal = profile(&body, "BAL");
-    assert_eq!(bal["source"], json!("tags"));
     assert_eq!(
         labels(&bal["breakdown"]["sector"]),
         vec![l("Diversified", 1.0)]
@@ -414,7 +419,6 @@ async fn an_expired_entry_is_still_served_when_the_refetch_fails() {
         labels(&aapl["breakdown"]["sector"]),
         vec![l("Old Sector", 1.0)]
     );
-    assert_eq!(aapl["fetchedAt"], json!("1970-01-01"));
 }
 
 #[tokio::test]

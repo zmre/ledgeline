@@ -14,11 +14,12 @@
 
 use async_trait::async_trait;
 use ledgeline_core::Dec;
-use ledgeline_core::reports::periods::days_between;
-use serde::Deserialize;
-use std::time::Duration;
+use ledgeline_core::reports::periods::days_from_iso;
 
-use crate::yahoo::{FetchedPrice, YahooClient, YahooError, chart_url, date_from_timestamp};
+use crate::yahoo::{
+    ChartError, ChartResponse, FetchedPrice, YahooClient, YahooError, date_from_timestamp,
+    send_chart,
+};
 
 /// How many decimal places an adjusted close is kept to. Yahoo answers in
 /// binary floats (`656.59619140625`); four places is a hundredth of a cent,
@@ -26,10 +27,7 @@ use crate::yahoo::{FetchedPrice, YahooClient, YahooError, chart_url, date_from_t
 /// about the precision it actually has.
 const ADJUSTED_PLACES: usize = 4;
 
-/// A history request's ceiling. The default `reqwest::Client` never times out,
-/// and a benchmark is decoration on a chart that is already drawn: better to
-/// report the fetch as failed than to hold the request open indefinitely.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const SECONDS_PER_DAY: i64 = 86_400;
 
 /// Where `benchmarks_api` fetches benchmark history from — the seam the
 /// integration tests replace with a fake that never leaves the process.
@@ -63,136 +61,37 @@ impl HistoryFeed for YahooClient {
     }
 }
 
-/// Seconds since the Unix epoch at midnight UTC on `date`.
-fn epoch_seconds(date: &str) -> i64 {
-    days_between("1970-01-01", date) * 86_400
-}
-
 async fn fetch_adjusted_history(
     client: &reqwest::Client,
     ticker: &str,
     from: &str,
     to: &str,
 ) -> Result<Vec<FetchedPrice>, YahooError> {
-    let url = chart_url(ticker)?;
     // `period2` is exclusive, so the day after `to` — plus a day's slack for an
     // exchange west of Greenwich, whose last candle carries a timestamp that is
     // already "tomorrow" in UTC. The parser filters back to `to`.
-    let period1 = epoch_seconds(from).to_string();
-    let period2 = (epoch_seconds(to) + 2 * 86_400).to_string();
-    let response = client
-        .get(url)
-        .query(&[
+    let period1 = (days_from_iso(from) * SECONDS_PER_DAY).to_string();
+    let period2 = ((days_from_iso(to) + 2) * SECONDS_PER_DAY).to_string();
+    let bytes = send_chart(
+        client,
+        ticker,
+        &[
             ("interval", "1d"),
             ("period1", period1.as_str()),
             ("period2", period2.as_str()),
             ("events", "div,splits"),
             ("includeAdjustedClose", "true"),
-        ])
-        .header(
-            reqwest::header::USER_AGENT,
-            "ledgeline/0.1 (+https://github.com/zmre/ledgeline)",
-        )
-        .timeout(REQUEST_TIMEOUT)
-        .send()
-        .await
-        .map_err(|error| YahooError::Http(error.to_string()))?;
-    let status = response.status();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| YahooError::Http(error.to_string()))?;
-    read_history_response(status, &bytes, to)
-}
-
-/// Read a history reply: a non-success status is an error whatever its body
-/// says. A `400` with a well-formed `{"chart":{"result":null,"error":…}}` body
-/// is Yahoo REFUSING the request, not answering "no history" — reading it as
-/// an empty success would let the cache record coverage it never received and
-/// stop retrying until the date rolls over. Yahoo's own description, when the
-/// body carries one, is kept for the message.
-fn read_history_response(
-    status: reqwest::StatusCode,
-    bytes: &[u8],
-    to: &str,
-) -> Result<Vec<FetchedPrice>, YahooError> {
-    if !status.is_success() {
-        let detail = serde_json::from_slice::<ChartResponse>(bytes)
-            .ok()
-            .and_then(|parsed| parsed.chart.error)
-            .and_then(ChartError::describe)
-            .map(|description| format!(": {description}"))
-            .unwrap_or_default();
-        return Err(YahooError::Http(format!(
-            "Yahoo Finance answered {status}{detail}"
-        )));
-    }
-    parse_adjusted_history(bytes, to)
-}
-
-#[derive(Debug, Deserialize)]
-struct ChartResponse {
-    chart: Chart,
-}
-
-#[derive(Debug, Deserialize)]
-struct Chart {
-    #[serde(default)]
-    result: Option<Vec<ChartResult>>,
-    #[serde(default)]
-    error: Option<ChartError>,
-}
-
-/// Yahoo's `chart.error` object: `{"code":"Not Found","description":"…"}`.
-#[derive(Debug, Deserialize)]
-struct ChartError {
-    #[serde(default)]
-    code: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-}
-
-impl ChartError {
-    /// The most specific text the error carries, if any.
-    fn describe(self) -> Option<String> {
-        self.description
-            .or(self.code)
-            .filter(|text| !text.trim().is_empty())
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct ChartResult {
-    #[serde(default)]
-    meta: ChartMeta,
-    #[serde(default)]
-    timestamp: Vec<i64>,
-    indicators: Indicators,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct ChartMeta {
-    #[serde(default)]
-    gmtoffset: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Indicators {
-    #[serde(default)]
-    adjclose: Vec<AdjClose>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdjClose {
-    #[serde(default)]
-    adjclose: Vec<Option<f64>>,
+        ],
+    )
+    .await?;
+    parse_adjusted_history(bytes.as_ref(), to)
 }
 
 /// The pure half of a history fetch: every dividend-adjusted close in a chart
 /// response dated on or before `to`, ascending, one per date.
 ///
 /// A result with no candles is an empty success; a null result is an error
-/// (see [`read_history_response`]).
+/// (as is a non-success status: [`crate::yahoo::check_chart_status`]).
 ///
 /// A null (a holiday, or today's still-forming candle) is skipped rather than
 /// read as zero. Two candles on one date — Yahoo appends a live candle that can
@@ -238,21 +137,25 @@ pub(crate) fn parse_adjusted_history(
             continue;
         }
         let quantity = Dec::parse(&format!("{close:.ADJUSTED_PLACES$}"), '.')?;
-        match prices.last_mut() {
-            Some(last) if last.date == date => last.quantity = quantity,
-            _ => prices.push(FetchedPrice { date, quantity }),
-        }
+        prices.push(FetchedPrice { date, quantity });
     }
+    Ok(one_per_date(prices))
+}
+
+/// `prices` in date order, one per date: the LAST of any that share a date (in
+/// their input order) wins.
+pub(crate) fn one_per_date(mut prices: Vec<FetchedPrice>) -> Vec<FetchedPrice> {
+    // Stable, so same-date prices keep their input order for `dedup_by` to
+    // resolve: it drops the later element, so copy its value back first.
     prices.sort_by(|a, b| a.date.cmp(&b.date));
     prices.dedup_by(|later, earlier| {
-        if later.date == earlier.date {
-            earlier.quantity = later.quantity;
-            true
-        } else {
-            false
+        let same = later.date == earlier.date;
+        if same {
+            std::mem::swap(&mut earlier.quantity, &mut later.quantity);
         }
+        same
     });
-    Ok(prices)
+    prices
 }
 
 #[cfg(test)]
@@ -320,31 +223,6 @@ mod tests {
         ));
     }
 
-    /// A client error is an error even when its body parses as a chart reply.
-    #[test]
-    fn a_non_success_status_is_an_error_whatever_the_body() {
-        let status = reqwest::StatusCode::BAD_REQUEST;
-        match read_history_response(status, REFUSED, "2026-01-01") {
-            Err(YahooError::Http(message)) => {
-                assert!(message.contains("400"), "{message}");
-                assert!(message.contains("Data doesn't exist"), "{message}");
-            }
-            other => panic!("expected an error, got {other:?}"),
-        }
-        // Even a body with real candles in it.
-        assert!(read_history_response(status, SPY_1Y, "2026-12-31").is_err());
-        assert!(
-            read_history_response(reqwest::StatusCode::BAD_GATEWAY, b"<html>", "2026-12-31")
-                .is_err()
-        );
-        assert_eq!(
-            read_history_response(reqwest::StatusCode::OK, SPY_1Y, "2026-12-31")
-                .unwrap()
-                .len(),
-            251
-        );
-    }
-
     /// A result with no candles parses as an empty success; the cache layer
     /// decides what that means (it never advances coverage on it).
     #[test]
@@ -381,8 +259,16 @@ mod tests {
     }
 
     #[test]
-    fn epoch_seconds_is_midnight_utc() {
-        assert_eq!(epoch_seconds("1970-01-01"), 0);
-        assert_eq!(epoch_seconds("2000-01-01"), 946_684_800);
+    fn one_per_date_sorts_and_keeps_the_last_of_a_date() {
+        let price = |date: &str, close: &str| FetchedPrice {
+            date: date.to_string(),
+            quantity: dec(close),
+        };
+        let kept = one_per_date(vec![
+            price("2026-01-03", "3"),
+            price("2026-01-02", "1"),
+            price("2026-01-02", "2"),
+        ]);
+        assert_eq!(kept, [price("2026-01-02", "2"), price("2026-01-03", "3")]);
     }
 }

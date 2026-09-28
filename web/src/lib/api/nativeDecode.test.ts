@@ -655,7 +655,7 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
 
     it("throws on a row side it does not know rather than stacking it nowhere", () => {
         const raw = {buckets: ["2026-07"], rows: [{account: "assets", depth: 1, values: [{}], kind: "equity"}], totals: [{}]};
-        expect(() => decodePeriodReport(raw)).toThrow(/unknown kind "equity"/);
+        expect(() => decodePeriodReport(raw)).toThrow(/kind: expected one of asset\/liability\/mixed, got "equity"/);
     });
 
     it("decodes the cash-flow sources breakdown, which reconciles with the cash flow", () => {

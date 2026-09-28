@@ -17,7 +17,7 @@
 use std::cmp::Ordering;
 
 use super::*;
-use crate::holdings::engine::{compute_holdings, valuation_base};
+use crate::holdings::engine::{compute_holdings, holdings_at_each, valuation_base};
 use crate::holdings::test_helpers::{
     account_decl, amt, buy, buy_no_cost, commodity_tags, pd, posting, scope, txn, usd, with_cost,
 };

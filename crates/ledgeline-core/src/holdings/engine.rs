@@ -48,7 +48,7 @@ use crate::reports::{
 use crate::wire::{account_tag_map, inherited_account_tags};
 
 use super::classify::{HoldingsClass, declared_holdings_classes, resolve_holdings_class};
-use super::commodities::is_currency;
+use super::commodities::Currencies;
 use super::types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
     PriceSource, ScopeMode, WarningKind,
@@ -494,6 +494,7 @@ fn sole_symbols_by_account(
     as_of: &str,
     in_scope: &dyn Fn(&str) -> bool,
     declared: &BTreeMap<String, AccountType>,
+    currencies: &Currencies,
 ) -> BTreeMap<String, Option<String>> {
     let mut sole: BTreeMap<String, Option<String>> = BTreeMap::new();
     for txn in txns {
@@ -505,7 +506,7 @@ fn sole_symbols_by_account(
                 continue;
             }
             for amount in &posting.amounts {
-                if is_currency(&amount.commodity.0) {
+                if currencies.is_currency(&amount.commodity.0) {
                     continue;
                 }
                 let slot = sole
@@ -560,6 +561,7 @@ fn sole_symbol_facts(
     as_of: &str,
     in_scope: &dyn Fn(&str) -> bool,
     declared: &BTreeMap<String, AccountType>,
+    currencies: &Currencies,
 ) -> BTreeMap<String, SoleSymbolFacts> {
     let mut facts: BTreeMap<String, SoleSymbolFacts> = BTreeMap::new();
     let mut asked_about: BTreeSet<&str> = BTreeSet::new();
@@ -572,7 +574,7 @@ fn sole_symbol_facts(
                 continue;
             }
             for amount in &posting.amounts {
-                if is_currency(&amount.commodity.0) {
+                if currencies.is_currency(&amount.commodity.0) {
                     if amount.quantity.mantissa < 0 {
                         asked_about.insert(posting.account.0.as_str());
                     }
@@ -647,6 +649,8 @@ struct HoldingsInputs<'a> {
     /// neither the scope nor `as_of` — so a `count`-point series computes it
     /// once rather than once per point.
     accounts: Vec<String>,
+    /// Which commodities this journal uses as money ([`Currencies`]).
+    currencies: Currencies,
 }
 
 impl<'a> HoldingsInputs<'a> {
@@ -663,15 +667,17 @@ impl<'a> HoldingsInputs<'a> {
     ) -> Result<Self, ReportError> {
         let declared = declared_types(&account_decls_from(accounts));
         let classes = declared_holdings_classes(accounts);
+        let currencies = Currencies::from_declared(txns, &declared);
         Ok(Self {
             txns,
             ordered: journal_order(txns),
             db: PriceDb::build(prices),
             account_tags: account_tag_map(accounts),
             commodity_names: commodity_name_map(commodity_tags),
-            accounts: stock_accounts(txns, &declared, &classes),
+            accounts: stock_accounts(txns, &declared, &classes, &currencies),
             declared,
             classes,
+            currencies,
         })
     }
 }
@@ -747,6 +753,7 @@ fn replay_pools(
         account_tags,
         commodity_names,
         declared,
+        currencies,
         ..
     } = inputs;
     let mut pools: BTreeMap<String, SymbolPool> = BTreeMap::new();
@@ -771,7 +778,7 @@ fn replay_pools(
         while snapshots.len() < as_ofs.len() && txn.date.as_str() > as_ofs[snapshots.len()] {
             snapshots.push(freeze(&pools, &per_account, &cost_prices));
         }
-        fold_cost_prices(txn, db, base, &mut cost_prices)?;
+        fold_cost_prices(txn, db, base, &mut cost_prices, currencies)?;
         // The gain window is half-open: `mv(window_start)` already includes
         // everything dated ≤ `window_start`, so only later flows are additions.
         let in_window = window_start.is_some_and(|start| txn.date.as_str() > start);
@@ -789,7 +796,7 @@ fn replay_pools(
                 continue;
             }
             for amount in &posting.amounts {
-                if is_currency(&amount.commodity.0) {
+                if currencies.is_currency(&amount.commodity.0) {
                     // Return of capital: cash paid OUT of an account that holds
                     // exactly one security, in a transaction that moves none of
                     // that security and touches no income/expense account, is a
@@ -1005,13 +1012,18 @@ fn replay_pools(
 /// share a pass. Consecutive points that agree — nearly always all of them, see
 /// [`sole_symbol_facts`] — get one replay between them; a disagreement splits
 /// the series there and costs one extra pass, never a wrong number.
+///
+/// `flows`, when given, is a flow window start and the log its flows go to.
+/// Only the FINAL run records them: it replays the whole journal up to the last
+/// date with that date's sole-symbol map, which is exactly the replay
+/// [`holdings_flows`] runs, so the log is identical and never doubled.
 fn pool_snapshots(
     inputs: &HoldingsInputs<'_>,
     facts: &BTreeMap<String, SoleSymbolFacts>,
     base: &Commodity,
     as_ofs: &[String],
-    window_start: Option<&str>,
     in_scope: &dyn Fn(&str) -> bool,
+    flows: Option<(&str, &mut Vec<LoggedFlow>)>,
 ) -> Result<Vec<PoolSnapshot>, ReportError> {
     let mut snapshots: Vec<PoolSnapshot> = Vec::with_capacity(as_ofs.len());
     let mut run: Vec<&str> = Vec::new();
@@ -1023,7 +1035,7 @@ fn pool_snapshots(
                 inputs,
                 base,
                 &run,
-                window_start,
+                None,
                 in_scope,
                 &run_symbols,
                 None,
@@ -1034,6 +1046,8 @@ fn pool_snapshots(
         run.push(as_of.as_str());
     }
     if !run.is_empty() {
+        let (window_start, log) =
+            flows.map_or((None, None), |(start, log)| (Some(start), Some(log)));
         snapshots.extend(replay_pools(
             inputs,
             base,
@@ -1041,7 +1055,7 @@ fn pool_snapshots(
             window_start,
             in_scope,
             &run_symbols,
-            None,
+            log,
         )?);
     }
     Ok(snapshots)
@@ -1107,13 +1121,14 @@ fn fold_cost_prices(
     db: &PriceDb,
     base: &Commodity,
     latest: &mut BTreeMap<String, DatedPrice>,
+    currencies: &Currencies,
 ) -> Result<(), ReportError> {
     for posting in &txn.postings {
         for amount in &posting.amounts {
             let Some(cost) = amount.cost.as_deref() else {
                 continue;
             };
-            if is_currency(&amount.commodity.0) || amount.quantity.is_zero() {
+            if currencies.is_currency(&amount.commodity.0) || amount.quantity.is_zero() {
                 continue;
             }
             let per_unit = if cost.kind == CostKind::Unit {
@@ -1152,13 +1167,14 @@ fn latest_cost_prices(
     db: &PriceDb,
     base: &Commodity,
     as_of: &str,
+    currencies: &Currencies,
 ) -> Result<BTreeMap<String, DatedPrice>, ReportError> {
     let mut latest: BTreeMap<String, DatedPrice> = BTreeMap::new();
     for txn in ordered {
         if txn.date.as_str() > as_of {
             break; // `ordered` is date-ascending
         }
-        fold_cost_prices(txn, db, base, &mut latest)?;
+        fold_cost_prices(txn, db, base, &mut latest, currencies)?;
     }
     Ok(latest)
 }
@@ -1181,6 +1197,7 @@ fn held_symbols(
     as_of: &str,
     in_scope: &dyn Fn(&str) -> bool,
     declared: &BTreeMap<String, AccountType>,
+    currencies: &Currencies,
 ) -> Result<Vec<Commodity>, ReportError> {
     let mut net: BTreeMap<&str, Dec> = BTreeMap::new();
     for txn in txns {
@@ -1192,7 +1209,7 @@ fn held_symbols(
                 continue;
             }
             for amount in &posting.amounts {
-                if is_currency(&amount.commodity.0) {
+                if currencies.is_currency(&amount.commodity.0) {
                     continue;
                 }
                 let slot = net
@@ -1226,6 +1243,7 @@ fn stock_accounts(
     txns: &[Transaction],
     declared: &BTreeMap<String, AccountType>,
     classes: &BTreeMap<String, HoldingsClass>,
+    currencies: &Currencies,
 ) -> Vec<String> {
     let mut out = BTreeSet::new();
     for txn in txns {
@@ -1242,7 +1260,7 @@ fn stock_accounts(
             if posting
                 .amounts
                 .iter()
-                .any(|amount| !is_currency(&amount.commodity.0))
+                .any(|amount| !currencies.is_currency(&amount.commodity.0))
             {
                 out.insert(posting.account.0.clone());
             }
@@ -1264,8 +1282,9 @@ fn coverage(
     ordered: &[&Transaction],
     db: &PriceDb,
     as_of: &str,
+    currencies: &Currencies,
 ) -> Result<usize, ReportError> {
-    let cost_prices = latest_cost_prices(ordered, db, target, as_of)?;
+    let cost_prices = latest_cost_prices(ordered, db, target, as_of, currencies)?;
     let mut covered = 0;
     for symbol in held {
         let priced = symbol == target
@@ -1320,14 +1339,27 @@ fn choose_base(
             .cloned()
             .unwrap_or_else(|| Commodity(FALLBACK_BASE.to_string())));
     }
-    let held = held_symbols(inputs.txns, as_of, in_scope, &inputs.declared)?;
+    let held = held_symbols(
+        inputs.txns,
+        as_of,
+        in_scope,
+        &inputs.declared,
+        &inputs.currencies,
+    )?;
     if held.is_empty() {
         return Ok(candidates[0].clone());
     }
     let mut best = &candidates[0];
     let mut best_covered = 0;
     for candidate in candidates {
-        let covered = coverage(&held, candidate, &inputs.ordered, db, as_of)?;
+        let covered = coverage(
+            &held,
+            candidate,
+            &inputs.ordered,
+            db,
+            as_of,
+            &inputs.currencies,
+        )?;
         if covered > best_covered {
             best = candidate;
             best_covered = covered;
@@ -1382,11 +1414,24 @@ pub fn prices_any_held(
     // No `commodity` directives: measuring coverage never reads a security's name.
     let inputs = HoldingsInputs::build(txns, prices, accounts, &[])?;
     let predicate = scope_predicate(scope, &inputs.classes);
-    let held = held_symbols(txns, &scope.as_of, &predicate, &inputs.declared)?;
+    let held = held_symbols(
+        txns,
+        &scope.as_of,
+        &predicate,
+        &inputs.declared,
+        &inputs.currencies,
+    )?;
     if held.is_empty() {
         return Ok(true);
     }
-    Ok(coverage(&held, target, &inputs.ordered, &inputs.db, &scope.as_of)? > 0)
+    Ok(coverage(
+        &held,
+        target,
+        &inputs.ordered,
+        &inputs.db,
+        &scope.as_of,
+        &inputs.currencies,
+    )? > 0)
 }
 
 /// [`prices_any_held`]'s admission question, asked about the OTHER tab: true
@@ -1448,6 +1493,7 @@ fn other_held_commodities(
 ) -> Result<BTreeSet<Commodity>, ReportError> {
     let types = AccountTypes::from_declared(declared_types(&account_decls_from(accounts)));
     let classes = declared_holdings_classes(accounts);
+    let currencies = Currencies::from_journal(txns, |account| types.resolve(account));
     let in_scope = scope_accounts(scope);
     let totals = account_totals(
         txns,
@@ -1462,7 +1508,7 @@ fn other_held_commodities(
             let mut commodities = balance.clone();
             commodities.drop_zeros();
             if !commodities.is_zero()
-                && is_other_holding_account(account, &commodities, &types, &classes)
+                && is_other_holding_account(account, &commodities, &types, &classes, &currencies)
             {
                 held.extend(commodities.iter().map(|(commodity, _)| commodity.clone()));
             }
@@ -1482,6 +1528,7 @@ fn is_other_holding_account(
     commodities: &MixedAmount,
     types: &AccountTypes,
     classes: &BTreeMap<String, HoldingsClass>,
+    currencies: &Currencies,
 ) -> bool {
     types.resolve(account) == Some(AccountType::Asset)
         && match resolve_holdings_class(account, classes) {
@@ -1489,7 +1536,7 @@ fn is_other_holding_account(
             Some(HoldingsClass::Stocks | HoldingsClass::None) => false,
             None => commodities
                 .iter()
-                .all(|(commodity, _)| is_currency(&commodity.0)),
+                .all(|(commodity, _)| currencies.is_currency(&commodity.0)),
         }
 }
 
@@ -1573,7 +1620,13 @@ pub fn compute_holdings(
     let base_commodity = choose_base(&inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
     // `gain_since` re-runs the report at the window start, so the facts have to
     // cover the LATER of the two dates; `as_of` is it.
-    let facts = sole_symbol_facts(&inputs.ordered, &scope.as_of, &predicate, &inputs.declared);
+    let facts = sole_symbol_facts(
+        &inputs.ordered,
+        &scope.as_of,
+        &predicate,
+        &inputs.declared,
+        &inputs.currencies,
+    );
     report_at(
         &inputs,
         &facts,
@@ -1592,6 +1645,7 @@ pub fn compute_holdings(
 /// pinned `base` is returned alongside, resolved ONCE from `scope.as_of` (see
 /// [`valuation_base`], which this replaces for the series so the journal is
 /// sorted and the `PriceDb` built once rather than twice).
+#[cfg(test)]
 pub(super) fn holdings_at_each(
     txns: &[Transaction],
     prices: &[PriceDirective],
@@ -1600,17 +1654,51 @@ pub(super) fn holdings_at_each(
     scope: &HoldingsScope,
     as_ofs: &[String],
 ) -> Result<(Commodity, Vec<HoldingsReport>), ReportError> {
+    let (base, reports, _) =
+        holdings_at_each_with_flows(txns, prices, accounts, commodity_tags, scope, as_ofs, None)?;
+    Ok((base, reports))
+}
+
+/// [`holdings_at_each`], and — when `flows_after` is given — the in-scope flows
+/// over `(flows_after, scope.as_of]` exactly as [`holdings_flows`] reports them,
+/// recorded by the same replay rather than a second one. `as_ofs` must then end
+/// at `scope.as_of`, as a series' dates do.
+pub(super) fn holdings_at_each_with_flows(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    commodity_tags: &[(Commodity, Vec<(String, String)>)],
+    scope: &HoldingsScope,
+    as_ofs: &[String],
+    flows_after: Option<&str>,
+) -> Result<(Commodity, Vec<HoldingsReport>, Option<HoldingsFlows>), ReportError> {
     let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags)?;
     let predicate = scope_predicate(scope, &inputs.classes);
     let base_commodity = choose_base(&inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
     let Some(last) = as_ofs.last() else {
-        return Ok((base_commodity, Vec::new()));
+        return Ok((base_commodity, Vec::new(), None));
     };
-    let facts = sole_symbol_facts(&inputs.ordered, last, &predicate, &inputs.declared);
+    debug_assert!(flows_after.is_none() || last == &scope.as_of);
+    let facts = sole_symbol_facts(
+        &inputs.ordered,
+        last,
+        &predicate,
+        &inputs.declared,
+        &inputs.currencies,
+    );
     // The trend tracks market value/basis only; gain windowing is a per-snapshot
-    // concern and never applies to a series point, so there is no window flow to
-    // accumulate and no start snapshot to recurse into.
-    let snapshots = pool_snapshots(&inputs, &facts, &base_commodity, as_ofs, None, &predicate)?;
+    // concern and never applies to a series point, so the flow window (when
+    // asked for) only feeds the log and no start snapshot is recursed into.
+    let mut log: Vec<LoggedFlow> = Vec::new();
+    let snapshots = pool_snapshots(
+        &inputs,
+        &facts,
+        &base_commodity,
+        as_ofs,
+        &predicate,
+        flows_after.map(|after| (after, &mut log)),
+    )?;
+    let flows = flows_after.map(|_| aggregate_flows(log)).transpose()?;
     let reports = as_ofs
         .iter()
         .zip(snapshots)
@@ -1625,7 +1713,7 @@ pub(super) fn holdings_at_each(
             )
         })
         .collect::<Result<Vec<_>, ReportError>>()?;
-    Ok((base_commodity, reports))
+    Ok((base_commodity, reports, flows))
 }
 
 /// One leg's contribution as [`replay_pools`] computed it, before aggregation:
@@ -1646,11 +1734,8 @@ pub struct DatedFlow {
 }
 
 /// The dated contributions behind a windowed gain — see [`holdings_flows`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HoldingsFlows {
-    /// The commodity every `amount` is in: the one the report and series for the
-    /// same scope are valued in.
-    pub base: Commodity,
     /// Date-ascending, one entry per date with a non-zero net flow.
     pub flows: Vec<DatedFlow>,
     /// Legs that moved shares but could be valued neither from a cost
@@ -1683,24 +1768,22 @@ pub fn holdings_flows(
     scope: &HoldingsScope,
     after: Option<&str>,
 ) -> Result<HoldingsFlows, ReportError> {
-    let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags)?;
-    let predicate = scope_predicate(scope, &inputs.classes);
-    let base = choose_base(&inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
-    let facts = sole_symbol_facts(&inputs.ordered, &scope.as_of, &predicate, &inputs.declared);
-    let sole = sole_symbols_at(&facts, &scope.as_of);
-    let mut log: Vec<LoggedFlow> = Vec::new();
     // Every ISO date sorts after "", so an absent bound opens the window at the
     // journal's first transaction.
-    replay_pools(
-        &inputs,
-        &base,
-        &[scope.as_of.as_str()],
+    let (_, _, flows) = holdings_at_each_with_flows(
+        txns,
+        prices,
+        accounts,
+        commodity_tags,
+        scope,
+        std::slice::from_ref(&scope.as_of),
         Some(after.unwrap_or("")),
-        &predicate,
-        &sole,
-        Some(&mut log),
     )?;
+    Ok(flows.unwrap_or_default())
+}
 
+/// Sum a replay's logged legs per date into [`HoldingsFlows`].
+fn aggregate_flows(log: Vec<LoggedFlow>) -> Result<HoldingsFlows, ReportError> {
     let mut by_date: BTreeMap<String, Dec> = BTreeMap::new();
     let mut unvalued = 0usize;
     for LoggedFlow { date, amount } in log {
@@ -1713,7 +1796,6 @@ pub fn holdings_flows(
         }
     }
     Ok(HoldingsFlows {
-        base,
         flows: by_date
             .into_iter()
             .filter(|(_, amount)| !amount.is_zero())
@@ -1739,6 +1821,7 @@ pub fn first_holding_date(
 ) -> Option<String> {
     let declared = declared_types(&account_decls_from(accounts));
     let classes = declared_holdings_classes(accounts);
+    let currencies = Currencies::from_declared(txns, &declared);
     let predicate = scope_predicate(scope, &classes);
     txns.iter()
         .filter(|txn| txn.date.as_str() <= scope.as_of.as_str())
@@ -1747,7 +1830,7 @@ pub fn first_holding_date(
                 predicate(&posting.account.0)
                     && is_holding_account(&posting.account.0, &declared)
                     && posting.amounts.iter().any(|amount| {
-                        !is_currency(&amount.commodity.0) && !amount.quantity.is_zero()
+                        !currencies.is_currency(&amount.commodity.0) && !amount.quantity.is_zero()
                     })
             })
         })
@@ -4823,8 +4906,9 @@ mod tests {
         let sc = scope("2025-12-31", ScopeMode::Include, &[]);
         let predicate = scope_accounts(&sc);
         let declared = BTreeMap::new();
+        let currencies = Currencies::from_declared(&txns, &declared);
         let ordered = journal_order(&txns);
-        let facts = sole_symbol_facts(&ordered, "2025-12-31", &predicate, &declared);
+        let facts = sole_symbol_facts(&ordered, "2025-12-31", &predicate, &declared, &currencies);
 
         // Only the accounts that both hold a security AND pay cash out survive;
         // `quiet` (never asked) and `assets:broker:cash`-alikes (never holds)
@@ -4845,7 +4929,8 @@ mod tests {
         for month in 1..=12 {
             for day in [1, 10, 11, 28] {
                 let as_of = format!("2025-{month:02}-{day:02}");
-                let rescanned = sole_symbols_by_account(&txns, &as_of, &predicate, &declared);
+                let rescanned =
+                    sole_symbols_by_account(&txns, &as_of, &predicate, &declared, &currencies);
                 let precomputed = sole_symbols_at(&facts, &as_of);
                 for account in facts.keys() {
                     assert_eq!(
@@ -4868,11 +4953,12 @@ mod tests {
         let sc = scope("2025-12-31", ScopeMode::Include, &[]);
         let predicate = scope_accounts(&sc);
         let declared = BTreeMap::new();
+        let currencies = Currencies::from_declared(&txns, &declared);
         let ordered = journal_order(&txns);
-        let full = sole_symbol_facts(&ordered, "2025-12-31", &predicate, &declared);
+        let full = sole_symbol_facts(&ordered, "2025-12-31", &predicate, &declared, &currencies);
         for month in 1..=12 {
             let as_of = format!("2025-{month:02}-15");
-            let capped = sole_symbol_facts(&ordered, &as_of, &predicate, &declared);
+            let capped = sole_symbol_facts(&ordered, &as_of, &predicate, &declared, &currencies);
             let from_full = sole_symbols_at(&full, &as_of);
             let from_capped = sole_symbols_at(&capped, &as_of);
             // The wider cap may KEEP an account the narrow one drops (it is
@@ -4966,7 +5052,6 @@ mod flows_tests {
             None,
         )
         .unwrap();
-        assert_eq!(flows.base, Commodity("$".to_string()));
         assert_eq!(
             dollars(&flows),
             vec![
@@ -5062,6 +5147,34 @@ mod flows_tests {
         )
         .unwrap();
         assert_eq!(dollars(&flows), vec![("2025-02-01", 240.0)]);
+    }
+
+    /// `BND` is also the Brunei dollar's ISO code. A journal that buys and holds
+    /// the bond ETF, and never spends or banks BND as money, holds a security:
+    /// it is a row, it is valued, and it dates the chart's inception.
+    #[test]
+    fn a_bond_fund_sharing_a_currency_code_is_a_holding() {
+        let txns = vec![txn(
+            1,
+            "2025-03-03",
+            vec![
+                buy("assets:broker:bnd", "BND", 10, 7200, true),
+                posting("assets:broker:cash", vec![usd(-72_000)], &[]),
+            ],
+            &[],
+        )];
+        let prices = [pd("2025-06-30", "BND", 7400, "$")];
+        let sc = scope("2025-06-30", ScopeMode::Include, &[]);
+        let report = compute_holdings(&txns, &prices, &[], &[], &sc).unwrap();
+        let symbols: Vec<&str> = report.holdings.iter().map(|h| h.symbol.as_str()).collect();
+        assert_eq!(symbols, ["BND"]);
+        assert_eq!(report.holdings[0].shares, Dec::new(10, 0));
+        assert_eq!(report.totals.market_value, Dec::new(74_000, 2));
+        assert_eq!(report.accounts, ["assets:broker:bnd"]);
+        assert_eq!(
+            first_holding_date(&txns, &[], &sc).as_deref(),
+            Some("2025-03-03")
+        );
     }
 
     #[test]

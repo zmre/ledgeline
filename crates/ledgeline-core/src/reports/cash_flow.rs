@@ -14,7 +14,7 @@ use super::aggregate::{at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
 use super::periods::{Interval, bucket_span, last_n_buckets};
 use super::types::{PeriodReport, PeriodRow};
-use crate::decimal::{Dec, DecError};
+use crate::decimal::{Dec, DecError, Remainder, allocate};
 use crate::model::{Amount, Commodity, Posting, Transaction};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -182,10 +182,13 @@ pub fn cash_flow(
 ///    buy with a commission weighs the shares at cost AND the fee, together.
 /// 3. Each weighted counterparty receives `D × w / Σw`. In the ordinary
 ///    balanced case (`Σw == −D`) that is exactly `−w`, with no division — a
-///    `$100` grocery bill is `−$100` of groceries. Otherwise the share is
-///    rounded to `D`'s scale and the largest weight takes the remainder, so
-///    the shares still sum to `D` EXACTLY.
-/// 4. No usable weights (a currency exchange between two cash accounts, or
+///    `$100` grocery bill is `−$100` of groceries. Otherwise the shares are
+///    [`allocate`]d: truncated, with the largest weight taking the remainder,
+///    so they still sum to `D` EXACTLY.
+/// 4. No weight in `k`, but every counterparty amount is in one other
+///    commodity (an implicit conversion: a stock buy written without `@`) →
+///    the counterparties weigh by their quantities in that commodity.
+/// 5. No usable weights (a currency exchange between two cash accounts, or
 ///    transfer legs split across buckets) → the whole `D` goes to
 ///    [`UNATTRIBUTED`].
 ///
@@ -206,11 +209,33 @@ pub fn cash_flow_sources(
     let buckets = last_n_buckets(end, interval, count)?;
     let ranges = bucket_ranges(&buckets, end)?;
 
+    let (Some((window_start, _)), Some((_, window_end))) = (ranges.first(), ranges.last()) else {
+        return Ok(PeriodReport {
+            buckets,
+            rows: Vec::new(),
+            totals: Vec::new(),
+            meta: None,
+        });
+    };
+    let in_window = |date: &str| date >= window_start.as_str() && date <= window_end.as_str();
+
     let mut direct: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); ranges.len()];
     let mut cash_like: HashMap<&str, bool> = HashMap::new();
+    let mut deltas: BTreeMap<(usize, &Commodity), Dec> = BTreeMap::new();
+    let mut counterparties: Vec<&Posting> = Vec::new();
     for txn in txns {
-        let mut deltas: BTreeMap<(usize, &Commodity), Dec> = BTreeMap::new();
-        let mut counterparties: Vec<&Posting> = Vec::new();
+        // Only a posting dated inside the window can move cash in a bucket, so a
+        // transaction with none is skipped before any posting is classified.
+        if !in_window(&txn.date)
+            && !txn
+                .postings
+                .iter()
+                .any(|posting| posting.date.as_deref().is_some_and(in_window))
+        {
+            continue;
+        }
+        deltas.clear();
+        counterparties.clear();
         for posting in &txn.postings {
             let account = posting.account.0.as_str();
             if !*cash_like.entry(account).or_insert_with(|| is_cash(account)) {
@@ -228,7 +253,7 @@ pub fn cash_flow_sources(
                 *delta = delta.add(amount.quantity)?;
             }
         }
-        for ((index, commodity), delta) in deltas {
+        for (&(index, commodity), &delta) in &deltas {
             if delta.is_zero() {
                 continue;
             }
@@ -263,14 +288,44 @@ fn weight_in(commodity: &Commodity, amount: &Amount) -> Result<Option<Dec>, DecE
 
 /// The counterparties' weights in `commodity` (see [`weight_in`]). Zero
 /// weights are dropped: they could only ever receive a zero share.
+///
+/// When nothing weighs in `commodity` but every counterparty amount is in ONE
+/// other commodity, the transaction is an implicit conversion (`checking
+/// $-400` against `broker 2 AAPL`, no `@`), which hledger balances by inferring
+/// the cost. The counterparties then weigh by their quantities in that
+/// commodity, so the stock buy is attributed to the broker account rather than
+/// to [`UNATTRIBUTED`].
 fn weights<'a>(
     commodity: &Commodity,
     counterparties: &[&'a Posting],
 ) -> Result<Vec<(&'a str, Dec)>, DecError> {
+    let direct = weighed(counterparties, |amount| weight_in(commodity, amount))?;
+    if !direct.is_empty() {
+        return Ok(direct);
+    }
+    let others: BTreeSet<&Commodity> = counterparties
+        .iter()
+        .flat_map(|posting| &posting.amounts)
+        .filter(|amount| !amount.quantity.is_zero())
+        .map(|amount| &amount.commodity)
+        .collect();
+    match others.into_iter().collect::<Vec<_>>().as_slice() {
+        [only] => weighed(counterparties, |amount| {
+            Ok((&amount.commodity == *only).then_some(amount.quantity))
+        }),
+        _ => Ok(direct),
+    }
+}
+
+/// Every counterparty amount's non-zero weight under `weigh`.
+fn weighed<'a>(
+    counterparties: &[&'a Posting],
+    weigh: impl Fn(&Amount) -> Result<Option<Dec>, DecError>,
+) -> Result<Vec<(&'a str, Dec)>, DecError> {
     let mut out = Vec::new();
     for posting in counterparties {
         for amount in &posting.amounts {
-            if let Some(quantity) = weight_in(commodity, amount)?
+            if let Some(quantity) = weigh(amount)?
                 && !quantity.is_zero()
             {
                 out.push((posting.account.0.as_str(), quantity));
@@ -306,56 +361,11 @@ fn attribute<'a>(
             .map(|(account, weight)| Ok((account, weight.neg()?)))
             .collect();
     }
-    prorate(delta, &chosen, total)
-}
-
-/// `delta × w / total` for each weight, rounded to `delta`'s scale, with the
-/// LARGEST weight absorbing the rounding remainder so the shares sum to
-/// `delta` exactly.
-fn prorate<'a>(
-    delta: Dec,
-    weights: &[(&'a str, Dec)],
-    total: Dec,
-) -> Result<Vec<(&'a str, Dec)>, DecError> {
-    let anchor = weights
-        .iter()
-        .enumerate()
-        .map(|(i, (_, weight))| weight.abs().map(|magnitude| (magnitude, i)))
-        .collect::<Result<Vec<_>, _>>()?
+    let (accounts, weights): (Vec<&str>, Vec<Dec>) = chosen.into_iter().unzip();
+    Ok(accounts
         .into_iter()
-        .max_by(|(a, i), (b, j)| a.cmp(b).then(j.cmp(i)))
-        .map_or(0, |(_, i)| i);
-    let mut shares = weights
-        .iter()
-        .map(|(account, weight)| Ok((*account, share_of(delta, *weight, total)?)))
-        .collect::<Result<Vec<_>, DecError>>()?;
-    let others = shares
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != anchor)
-        .try_fold(Dec::zero(), |acc, (_, (_, share))| acc.add(*share))?;
-    shares[anchor].1 = delta.sub(others)?;
-    Ok(shares)
-}
-
-/// `delta × weight / total`, at `delta`'s scale, rounded half away from zero.
-fn share_of(delta: Dec, weight: Dec, total: Dec) -> Result<Dec, DecError> {
-    // Align the ratio's two terms to one scale so their mantissas divide.
-    let places = weight.places.max(total.places);
-    let weight = weight.add(Dec::new(0, places))?;
-    let total = total.add(Dec::new(0, places))?;
-    let numerator = delta
-        .mantissa
-        .checked_mul(weight.mantissa)
-        .ok_or(DecError::Overflow)?;
-    let quotient = numerator / total.mantissa;
-    let remainder = numerator % total.mantissa;
-    let rounded = if remainder.unsigned_abs() * 2 >= total.mantissa.unsigned_abs() {
-        quotient + numerator.signum() * total.mantissa.signum()
-    } else {
-        quotient
-    };
-    Ok(Dec::new(rounded, delta.places))
+        .zip(allocate(delta, &weights, Remainder::Largest)?)
+        .collect())
 }
 
 #[cfg(test)]
@@ -592,12 +602,15 @@ mod tests {
         let report =
             cash_flow_sources(&sample(), "2026-03-15", Interval::Monthly, 3, 4, None).unwrap();
         // The savings transfer is cash↔cash and so is nobody's source; the
-        // stock bought with broker cash has no `$` counterparty and no cost, so
-        // its $400 is unattributed rather than dropped.
+        // stock bought with broker cash (no `@`) is an implicit conversion, so
+        // its $400 goes to the stock account.
         assert_eq!(
             accounts(&report),
             [
-                UNATTRIBUTED,
+                "assets",
+                "assets:broker",
+                "assets:broker:taxable",
+                "assets:broker:taxable:aapl",
                 "expenses",
                 "expenses:food",
                 "income",
@@ -613,7 +626,7 @@ mod tests {
             [MixedAmount::new(), usd_ma(-3000), MixedAmount::new()]
         );
         assert_eq!(
-            row(&report, UNATTRIBUTED),
+            row(&report, "assets:broker:taxable:aapl"),
             [MixedAmount::new(), usd_ma(-40_000), MixedAmount::new()]
         );
         assert!(report.rows.iter().all(|r| r.kind.is_none()));
@@ -769,6 +782,43 @@ mod tests {
             .map(|a| row(&report, a)[0].clone())
             .collect();
         assert_eq!(shares, [usd_ma(-3334), usd_ma(-3333), usd_ma(-3333)]);
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    #[test]
+    fn an_implicit_conversion_weighs_by_the_one_other_commodity() {
+        // checking −$300 → 2 AAPL in one account and 1 in another, no `@`:
+        // hledger infers the cost, so the cash splits 2:1 by share count.
+        let txns = vec![txn(
+            1,
+            "2026-01-15",
+            vec![
+                ("assets:bank:checking", vec![usd(-30_000)]),
+                ("assets:broker:a", vec![amount("AAPL", 2, 0)]),
+                ("assets:broker:b", vec![amount("AAPL", 1, 0)]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 3, None).unwrap();
+        assert_eq!(row(&report, "assets:broker:a"), [usd_ma(-20_000)]);
+        assert_eq!(row(&report, "assets:broker:b"), [usd_ma(-10_000)]);
+        assert!(!accounts(&report).contains(&UNATTRIBUTED));
+        assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
+    }
+
+    #[test]
+    fn two_other_commodities_are_not_an_implicit_conversion() {
+        // Nothing says how $400 splits between AAPL and MSFT shares.
+        let txns = vec![txn(
+            1,
+            "2026-01-15",
+            vec![
+                ("assets:bank:checking", vec![usd(-40_000)]),
+                ("assets:broker:aapl", vec![amount("AAPL", 1, 0)]),
+                ("assets:broker:msft", vec![amount("MSFT", 1, 0)]),
+            ],
+        )];
+        let report = cash_flow_sources(&txns, "2026-01-31", Interval::Monthly, 1, 3, None).unwrap();
+        assert_eq!(accounts(&report), [UNATTRIBUTED]);
         assert_reconciles(&txns, "2026-01-31", Interval::Monthly, 1);
     }
 

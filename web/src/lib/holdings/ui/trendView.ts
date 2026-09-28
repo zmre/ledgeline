@@ -3,7 +3,7 @@
 // No Svelte runtime — node-testable.
 
 import type {PeriodSeries} from "$lib/components/periodSeries";
-import {benchmarkSlot, type BenchmarkLine} from "$lib/holdings/benchmarks";
+import {benchmarkLabel, benchmarkSlot, type BenchmarkLine} from "$lib/holdings/benchmarks";
 import type {HoldingsPoint, HoldingsSeries} from "$lib/holdings/types";
 import {MONTH_NAMES} from "$lib/reports/periods";
 
@@ -46,6 +46,6 @@ export function benchmarkOverlays(trend: HoldingsSeries, picked: readonly string
     return picked.flatMap((symbol) => {
         const line = lineOf(symbol);
         if (line === null || line.points.length !== dates.length || line.points.some((p, i) => p.date !== dates[i])) return [];
-        return [{name: line.label, values: line.points.map((p) => p.value), dashed: true, slot: benchmarkSlot(symbol)}];
+        return [{name: benchmarkLabel(symbol), values: line.points.map((p) => p.value), dashed: true, slot: benchmarkSlot(symbol)}];
     });
 }

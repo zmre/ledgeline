@@ -42,7 +42,8 @@ import type {
 } from "$lib/holdings/types";
 import type {CreatedPricesFile, PriceOutcome, PriceResult, PricesFile, PricesStatus, PricesUpdateResponse} from "$lib/holdings/pricesTypes";
 import {CATEGORY_DIMENSIONS} from "$lib/holdings/profileTypes";
-import type {Breakdown, CategoryWeight, HoldingsProfiles, ProfileSource, SymbolProfile, YahooStatus} from "$lib/holdings/profileTypes";
+import type {BenchmarkLine, BenchmarksResponse} from "$lib/holdings/benchmarks";
+import type {Breakdown, CategoryWeight, HoldingsProfiles, SymbolProfile, YahooStatus} from "$lib/holdings/profileTypes";
 import type {
     AliasEffect,
     AliasEntry,
@@ -1700,8 +1701,7 @@ function decodePeriodRow(raw: RawPeriodRow | undefined, context: string): Period
     // the three sides: a side the chart does not know would be stacked on
     // neither, and that is a wire change to fail loudly on, not to guess at.
     if (raw.kind !== undefined) {
-        if (!PERIOD_ROW_KINDS.includes(raw.kind as PeriodRowKind)) throw new ApiShapeError(`${context}: unknown kind ${JSON.stringify(raw.kind)}`);
-        row.kind = raw.kind as PeriodRowKind;
+        row.kind = decodeEnum(PERIOD_ROW_KINDS, str(raw.kind, `${context} kind`), `${context} kind`);
     }
     return Object.freeze(row);
 }
@@ -2203,6 +2203,51 @@ export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
         base: series.base,
         points: frozen(series.points.map((point, i) => decodeHoldingsPoint(point, `series point #${i}`))),
         hasBasis: series.hasBasis === true,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Benchmarks (`/api/holdings/benchmarks`, WireBenchmarks in benchmarks_api.rs)
+//
+// Never quietly defaulted: every field the engine always sends is required,
+// because a benchmark drawn from a zero-filled misread would be a confident
+// wrong comparison.
+// ---------------------------------------------------------------------------
+
+interface RawBenchmarkPoint {
+    date?: unknown;
+    value?: unknown;
+}
+
+interface RawBenchmarkLine {
+    symbol?: unknown;
+    points?: unknown;
+    stale?: unknown;
+    error?: string | null;
+}
+
+function decodeBenchmarkLine(raw: RawBenchmarkLine | undefined, context: string): BenchmarkLine {
+    if (typeof raw !== "object" || raw === null || !Array.isArray(raw.points)) throw new ApiShapeError(`${context}: expected symbol/points`);
+    const points = (raw.points as RawBenchmarkPoint[]).map((point, i) =>
+        Object.freeze({
+            date: str(point?.date, `${context} point #${i} date`) as ISODate,
+            // A gap is an explicit null; anything else must be a real number.
+            value: point?.value === null ? null : num(point?.value, `${context} point #${i} value`),
+        })
+    );
+    return Object.freeze({
+        symbol: str(raw.symbol, `${context} symbol`),
+        points: frozen(points),
+        stale: flag(raw.stale, `${context} stale`),
+        error: decodeNullableStr(raw.error, `${context} error`),
+    });
+}
+
+export function decodeBenchmarks(raw: unknown): BenchmarksResponse {
+    const body = raw as {benchmarks?: unknown} | null;
+    if (typeof body !== "object" || body === null || !Array.isArray(body.benchmarks)) throw new ApiShapeError("benchmarks: expected a benchmarks array");
+    return Object.freeze({
+        benchmarks: frozen((body.benchmarks as RawBenchmarkLine[]).map((line, i) => decodeBenchmarkLine(line, `benchmark #${i}`))),
     });
 }
 
@@ -3759,9 +3804,6 @@ interface RawCategoryWeight {
 
 interface RawSymbolProfile {
     symbol?: string;
-    yahooTicker?: string;
-    source?: string;
-    fetchedAt?: string | null;
     breakdown?: Partial<Record<string, RawCategoryWeight[]>>;
 }
 
@@ -3770,7 +3812,6 @@ interface RawHoldingsProfiles {
     profiles?: RawSymbolProfile[];
 }
 
-const PROFILE_SOURCES: readonly ProfileSource[] = ["tags", "yahoo", "mixed", "none"];
 const YAHOO_STATUSES: readonly YahooStatus[] = ["ok", "partial", "unavailable"];
 
 function decodeCategoryWeights(raw: RawCategoryWeight[] | undefined, context: string): readonly CategoryWeight[] {
@@ -3790,8 +3831,6 @@ function decodeCategoryWeights(raw: RawCategoryWeight[] | undefined, context: st
 
 function decodeSymbolProfile(raw: RawSymbolProfile, context: string): SymbolProfile {
     if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected an object`);
-    const source = str(raw.source, `${context} source`);
-    if (!PROFILE_SOURCES.includes(source as ProfileSource)) throw new ApiShapeError(`${context} source: unknown value ${JSON.stringify(source)}`);
     const breakdown = raw.breakdown;
     if (typeof breakdown !== "object" || breakdown === null) throw new ApiShapeError(`${context}: expected a breakdown object`);
     const decoded = Object.fromEntries(
@@ -3799,9 +3838,6 @@ function decodeSymbolProfile(raw: RawSymbolProfile, context: string): SymbolProf
     ) as Breakdown;
     return Object.freeze({
         symbol: str(raw.symbol, `${context} symbol`),
-        yahooTicker: str(raw.yahooTicker, `${context} yahooTicker`),
-        source: source as ProfileSource,
-        fetchedAt: optStr(raw.fetchedAt, `${context} fetchedAt`),
         breakdown: Object.freeze(decoded),
     });
 }
@@ -3812,10 +3848,9 @@ export function decodeHoldingsProfiles(raw: unknown): HoldingsProfiles {
     if (typeof body !== "object" || body === null || !Array.isArray(body.profiles)) {
         throw new ApiShapeError("holdings profiles: expected a profiles array");
     }
-    const yahoo = str(body.yahoo, "holdings profiles yahoo");
-    if (!YAHOO_STATUSES.includes(yahoo as YahooStatus)) throw new ApiShapeError(`holdings profiles yahoo: unknown value ${JSON.stringify(yahoo)}`);
+    const yahoo = decodeEnum(YAHOO_STATUSES, body.yahoo, "holdings profiles yahoo");
     const profiles = body.profiles.map((profile, i) => decodeSymbolProfile(profile, `holdings profiles[${i}]`));
-    return Object.freeze({yahoo: yahoo as YahooStatus, profiles: new Map(profiles.map((profile) => [profile.symbol, profile]))});
+    return Object.freeze({yahoo, profiles: new Map(profiles.map((profile) => [profile.symbol, profile]))});
 }
 
 // ---------------------------------------------------------------------------
