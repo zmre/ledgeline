@@ -512,9 +512,175 @@ impl Ord for Dec {
     }
 }
 
+/// Which share of an [`allocate`] absorbs the rounding remainder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Remainder {
+    /// The last share, whatever its weight.
+    Last,
+    /// The share with the largest-magnitude weight (the first, on a tie), so a
+    /// small weight — a fee beside a stock purchase — is never the one nudged.
+    Largest,
+}
+
+/// Split `total` across `weights` in proportion to them.
+///
+/// The shares sum to `total` EXACTLY: every share but one is a truncated integer
+/// mantissa quotient, and the one `remainder` names takes what is left, so
+/// nothing is lost to rounding and no epsilon can accumulate over a year of
+/// transactions. `total` may be negative, and weights may carry either sign.
+///
+/// # Scale
+///
+/// The shares carry `total`'s own scale, or a weight's if one is finer. `total`
+/// is deliberately NOT normalized first: `$-50.00` normalizes to scale 0, and
+/// splitting it three ways at scale 0 gives whole dollars for money written in
+/// cents. The weights ARE normalized, because their scale only affects the
+/// proportion and valuation products arrive padded with trailing zeros, which
+/// would otherwise push the intermediate product toward the `i128` ceiling for
+/// nothing.
+///
+/// # Errors
+/// [`DecError::Overflow`] on overflow, and when `weights` is empty or sums to
+/// zero (there is no proportion to split by).
+pub fn allocate(total: Dec, weights: &[Dec], remainder: Remainder) -> Result<Vec<Dec>, DecError> {
+    let weights: Vec<Dec> = weights.iter().map(|w| w.normalized()).collect();
+    let places = weights
+        .iter()
+        .map(|w| w.places)
+        .chain([total.places])
+        .max()
+        .unwrap_or(0);
+
+    let target = total.rescaled(places)?.mantissa;
+    let scaled: Vec<i128> = weights
+        .iter()
+        .map(|w| w.rescaled(places).map(|w| w.mantissa))
+        .collect::<Result<_, _>>()?;
+    let sum = scaled.iter().try_fold(0i128, |acc, w| {
+        acc.checked_add(*w).ok_or(DecError::Overflow)
+    })?;
+    if sum == 0 {
+        return Err(DecError::Overflow);
+    }
+    let absorber = match remainder {
+        Remainder::Last => scaled.len() - 1,
+        Remainder::Largest => scaled
+            .iter()
+            .enumerate()
+            .rev()
+            .max_by_key(|(_, w)| w.unsigned_abs())
+            .map_or(0, |(i, _)| i),
+    };
+
+    let mut shares = scaled
+        .iter()
+        .map(|weight| {
+            target
+                .checked_mul(*weight)
+                .and_then(|product| product.checked_div(sum))
+                .ok_or(DecError::Overflow)
+        })
+        .collect::<Result<Vec<i128>, _>>()?;
+    let others = shares
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != absorber)
+        .try_fold(0i128, |acc, (_, share)| {
+            acc.checked_add(*share).ok_or(DecError::Overflow)
+        })?;
+    shares[absorber] = target.checked_sub(others).ok_or(DecError::Overflow)?;
+    Ok(shares
+        .into_iter()
+        .map(|share| Dec::new(share, places))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allocated_shares_sum_to_the_total_exactly() {
+        // $100.00 across three equal legs: 33.33 + 33.33 + 33.34, never 99.99.
+        let shares = allocate(Dec::new(10_000, 2), &[Dec::new(1, 0); 3], Remainder::Last)
+            .expect("allocates");
+        assert_eq!(
+            shares,
+            [Dec::new(3333, 2), Dec::new(3333, 2), Dec::new(3334, 2)]
+        );
+    }
+
+    #[test]
+    fn a_negative_total_allocates_negative_shares() {
+        let shares = allocate(
+            Dec::new(-5_000, 2),
+            &[Dec::new(1, 0), Dec::new(3, 0)],
+            Remainder::Last,
+        )
+        .expect("allocates");
+        assert_eq!(shares, [Dec::new(-1_250, 2), Dec::new(-3_750, 2)]);
+    }
+
+    #[test]
+    fn allocation_weights_at_different_scales_are_compared_at_the_finer_one() {
+        // 0.5 against 1.5 is one quarter, not one third: a naive mantissa
+        // comparison would read 5 against 15 at different scales.
+        let shares = allocate(
+            Dec::new(400, 2),
+            &[Dec::new(5, 1), Dec::new(15, 1)],
+            Remainder::Last,
+        )
+        .expect("allocates");
+        assert_eq!(shares, [Dec::new(100, 2), Dec::new(300, 2)]);
+    }
+
+    #[test]
+    fn the_largest_weight_absorbs_the_remainder_first_on_a_tie() {
+        let even = allocate(
+            Dec::new(-10_000, 2),
+            &[Dec::new(1, 0); 3],
+            Remainder::Largest,
+        )
+        .expect("allocates");
+        assert_eq!(
+            even,
+            [Dec::new(-3334, 2), Dec::new(-3333, 2), Dec::new(-3333, 2)]
+        );
+        // A negative weight's magnitude counts: −3 outweighs 1 and 1.
+        let signed = allocate(
+            Dec::new(100, 2),
+            &[
+                Dec::new(1, 0),
+                Dec::new(-3, 0),
+                Dec::new(1, 0),
+                Dec::new(2, 0),
+            ],
+            Remainder::Largest,
+        )
+        .expect("allocates");
+        assert_eq!(
+            signed,
+            [
+                Dec::new(100, 2),
+                Dec::new(-300, 2),
+                Dec::new(100, 2),
+                Dec::new(200, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn allocating_over_no_proportion_is_an_error() {
+        assert!(allocate(Dec::new(1, 0), &[], Remainder::Last).is_err());
+        assert!(
+            allocate(
+                Dec::new(1, 0),
+                &[Dec::new(1, 0), Dec::new(-1, 0)],
+                Remainder::Largest
+            )
+            .is_err()
+        );
+    }
     use proptest::prelude::*;
 
     /// Stripping trailing zeros is a CANONICAL form: for a value `m / 10^p`, the

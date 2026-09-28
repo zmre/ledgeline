@@ -14,7 +14,7 @@ use super::aggregate::{at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
 use super::periods::{Interval, bucket_span, last_n_buckets};
 use super::types::{PeriodReport, PeriodRow};
-use crate::decimal::{Dec, DecError};
+use crate::decimal::{Dec, DecError, Remainder, allocate};
 use crate::model::{Amount, Commodity, Posting, Transaction};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -182,9 +182,9 @@ pub fn cash_flow(
 ///    buy with a commission weighs the shares at cost AND the fee, together.
 /// 3. Each weighted counterparty receives `D × w / Σw`. In the ordinary
 ///    balanced case (`Σw == −D`) that is exactly `−w`, with no division — a
-///    `$100` grocery bill is `−$100` of groceries. Otherwise the share is
-///    rounded to `D`'s scale and the largest weight takes the remainder, so
-///    the shares still sum to `D` EXACTLY.
+///    `$100` grocery bill is `−$100` of groceries. Otherwise the shares are
+///    [`allocate`]d: truncated, with the largest weight taking the remainder,
+///    so they still sum to `D` EXACTLY.
 /// 4. No usable weights (a currency exchange between two cash accounts, or
 ///    transfer legs split across buckets) → the whole `D` goes to
 ///    [`UNATTRIBUTED`].
@@ -306,56 +306,11 @@ fn attribute<'a>(
             .map(|(account, weight)| Ok((account, weight.neg()?)))
             .collect();
     }
-    prorate(delta, &chosen, total)
-}
-
-/// `delta × w / total` for each weight, rounded to `delta`'s scale, with the
-/// LARGEST weight absorbing the rounding remainder so the shares sum to
-/// `delta` exactly.
-fn prorate<'a>(
-    delta: Dec,
-    weights: &[(&'a str, Dec)],
-    total: Dec,
-) -> Result<Vec<(&'a str, Dec)>, DecError> {
-    let anchor = weights
-        .iter()
-        .enumerate()
-        .map(|(i, (_, weight))| weight.abs().map(|magnitude| (magnitude, i)))
-        .collect::<Result<Vec<_>, _>>()?
+    let (accounts, weights): (Vec<&str>, Vec<Dec>) = chosen.into_iter().unzip();
+    Ok(accounts
         .into_iter()
-        .max_by(|(a, i), (b, j)| a.cmp(b).then(j.cmp(i)))
-        .map_or(0, |(_, i)| i);
-    let mut shares = weights
-        .iter()
-        .map(|(account, weight)| Ok((*account, share_of(delta, *weight, total)?)))
-        .collect::<Result<Vec<_>, DecError>>()?;
-    let others = shares
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != anchor)
-        .try_fold(Dec::zero(), |acc, (_, (_, share))| acc.add(*share))?;
-    shares[anchor].1 = delta.sub(others)?;
-    Ok(shares)
-}
-
-/// `delta × weight / total`, at `delta`'s scale, rounded half away from zero.
-fn share_of(delta: Dec, weight: Dec, total: Dec) -> Result<Dec, DecError> {
-    // Align the ratio's two terms to one scale so their mantissas divide.
-    let places = weight.places.max(total.places);
-    let weight = weight.add(Dec::new(0, places))?;
-    let total = total.add(Dec::new(0, places))?;
-    let numerator = delta
-        .mantissa
-        .checked_mul(weight.mantissa)
-        .ok_or(DecError::Overflow)?;
-    let quotient = numerator / total.mantissa;
-    let remainder = numerator % total.mantissa;
-    let rounded = if remainder.unsigned_abs() * 2 >= total.mantissa.unsigned_abs() {
-        quotient + numerator.signum() * total.mantissa.signum()
-    } else {
-        quotient
-    };
-    Ok(Dec::new(rounded, delta.places))
+        .zip(allocate(delta, &weights, Remainder::Largest)?)
+        .collect())
 }
 
 #[cfg(test)]

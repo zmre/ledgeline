@@ -87,7 +87,7 @@ use super::income_statement::{
 use super::mixed_amount::MixedAmount;
 use super::prices::{PriceDb, ValuationMeta, value_at};
 use super::types::ReportMeta;
-use crate::decimal::{Dec, DecError};
+use crate::decimal::{Dec, Remainder, allocate};
 use crate::model::{Commodity, PriceDirective, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -228,73 +228,6 @@ impl Direction {
     }
 }
 
-/// `d`'s mantissa restated at `places` fractional digits.
-fn mantissa_at(d: Dec, places: u32) -> Result<i128, DecError> {
-    let factor = 10i128
-        .checked_pow(places.saturating_sub(d.places))
-        .ok_or(DecError::Overflow)?;
-    d.mantissa.checked_mul(factor).ok_or(DecError::Overflow)
-}
-
-/// Split `total` across `weights` in proportion to them.
-///
-/// The shares sum to `total` EXACTLY: the first `n-1` are truncated integer
-/// mantissa quotients and the last takes what is left, so nothing is lost to
-/// rounding and no per-link epsilon can accumulate over a year of transactions.
-/// `total` may be negative (an expense refunded, revenue returned), in which case
-/// every share is.
-///
-/// # Scale
-///
-/// The shares carry `total`'s own scale, or a weight's if one is finer. `total`
-/// is deliberately NOT normalized first: `$-50.00` normalizes to scale 0, and
-/// splitting it three ways at scale 0 gives whole dollars for money written in
-/// cents. The weights ARE normalized, because their scale only affects the
-/// proportion and valuation products arrive padded with trailing zeros, which
-/// would otherwise push the intermediate product toward the `i128` ceiling for
-/// nothing.
-///
-/// `weights` must be non-empty magnitudes summing to something non-zero, which is
-/// what [`Edges::absorb`] selects them to be.
-fn allocate(total: Dec, weights: &[Dec]) -> Result<Vec<Dec>, DecError> {
-    let weights: Vec<Dec> = weights.iter().map(|w| w.normalized()).collect();
-    let places = weights
-        .iter()
-        .map(|w| w.places)
-        .chain([total.places])
-        .max()
-        .unwrap_or(0);
-
-    let target = mantissa_at(total, places)?;
-    let scaled: Vec<i128> = weights
-        .iter()
-        .map(|w| mantissa_at(*w, places))
-        .collect::<Result<_, _>>()?;
-    let sum = scaled.iter().try_fold(0i128, |acc, w| {
-        acc.checked_add(*w).ok_or(DecError::Overflow)
-    })?;
-    if sum == 0 {
-        return Err(DecError::Overflow);
-    }
-
-    let mut shares = Vec::with_capacity(scaled.len());
-    let mut used: i128 = 0;
-    for (i, weight) in scaled.iter().enumerate() {
-        let share = if i + 1 == scaled.len() {
-            target.checked_sub(used).ok_or(DecError::Overflow)?
-        } else {
-            target
-                .checked_mul(*weight)
-                .ok_or(DecError::Overflow)?
-                .checked_div(sum)
-                .ok_or(DecError::Overflow)?
-        };
-        used = used.checked_add(share).ok_or(DecError::Overflow)?;
-        shares.push(Dec::new(share, places));
-    }
-    Ok(shares)
-}
-
 /// One graph's links while they are still keyed by account at both ends.
 ///
 /// The statement end cannot be resolved to a LINE until the whole window has been
@@ -364,7 +297,11 @@ impl Edges {
                 value
             };
             let weights: Vec<Dec> = counterparties.iter().map(|&(_, w)| w).collect();
-            for (&(other, _), share) in counterparties.iter().zip(allocate(displayed, &weights)?) {
+            for (&(other, _), share) in
+                counterparties
+                    .iter()
+                    .zip(allocate(displayed, &weights, Remainder::Last)?)
+            {
                 let slot = self
                     .totals
                     .entry((account.to_string(), other.to_string()))
@@ -701,36 +638,6 @@ pub fn income_statement_flows(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn d(mantissa: i128, places: u32) -> Dec {
-        Dec::new(mantissa, places)
-    }
-
-    #[test]
-    fn shares_sum_to_the_allocated_total_exactly() {
-        // $100.00 across three equal legs: 33.33 + 33.33 + 33.34, never 99.99.
-        let shares = allocate(d(10_000, 2), &[d(1, 0), d(1, 0), d(1, 0)]).expect("allocates");
-        let sum = shares
-            .iter()
-            .try_fold(Dec::zero(), |acc, share| acc.add(*share))
-            .expect("sums");
-        assert_eq!(sum, d(10_000, 2));
-        assert_eq!(shares[2].cmp(&shares[0]), std::cmp::Ordering::Greater);
-    }
-
-    #[test]
-    fn a_negative_total_allocates_negative_shares() {
-        let shares = allocate(d(-5_000, 2), &[d(1, 0), d(3, 0)]).expect("allocates");
-        assert_eq!(shares, vec![d(-1_250, 2), d(-3_750, 2)]);
-    }
-
-    #[test]
-    fn weights_at_different_scales_are_compared_at_the_finer_one() {
-        // 0.5 against 1.5 is one quarter, not one third: a naive mantissa
-        // comparison would read 5 against 15 at different scales.
-        let shares = allocate(d(400, 2), &[d(5, 1), d(15, 1)]).expect("allocates");
-        assert_eq!(shares, vec![d(100, 2), d(300, 2)]);
-    }
 
     #[test]
     fn only_revenue_is_claimed_going_in_and_only_costs_going_out() {
