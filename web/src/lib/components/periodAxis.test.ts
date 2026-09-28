@@ -1,5 +1,11 @@
-import {describe, expect, it} from "vitest";
-import {labelFormatter, tickIndices, type AxisFit} from "./periodAxis";
+import {afterEach, describe, expect, it, vi} from "vitest";
+import {fittedTicks, labelFormatter, tickIndices, type AxisFit} from "./periodAxis";
+import {textMeasurer} from "./textWidth";
+
+// The measuring seam: jsdom has no canvas, so the real `textMeasurer` answers
+// null. Stubbed to a deterministic measure; a test that wants the unmeasurable
+// path makes it answer null again.
+vi.mock("./textWidth", () => ({textMeasurer: vi.fn()}));
 
 /** Twelve monthly labels, "Oct 2025" … "Sep 2026". */
 const MONTHS = ["Oct 2025", "Nov 2025", "Dec 2025", "Jan 2026", "Feb 2026", "Mar 2026", "Apr 2026", "May 2026", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"];
@@ -7,7 +13,10 @@ const MONTHS = ["Oct 2025", "Nov 2025", "Dec 2025", "Jan 2026", "Feb 2026", "Mar
 /** A deterministic measure: 5.5px per character (≈ a 10px UI font). */
 const measure = (text: string): number => text.length * 5.5;
 
-const fit = (plotWidth: number, labels: readonly string[] = MONTHS): AxisFit => ({plotWidth, labels, measure});
+vi.mocked(textMeasurer).mockReturnValue(measure);
+afterEach(() => vi.mocked(textMeasurer).mockReturnValue(measure));
+
+const fit = (plotWidth: number, labels: readonly string[] = MONTHS): AxisFit => ({plotWidth, labels});
 
 /** No two neighbouring tick labels overlap, given `bucketPx` per bucket. */
 function clear(ticks: readonly number[], labels: readonly string[], plotWidth: number): boolean {
@@ -65,7 +74,8 @@ describe("UNIT periodAxis tickIndices", () => {
     });
 
     it("estimates label widths when the text cannot be measured", () => {
-        const estimated = tickIndices(12, {plotWidth: 326, labels: MONTHS, measure: null});
+        vi.mocked(textMeasurer).mockReturnValue(null);
+        const estimated = tickIndices(12, fit(326));
         expect(estimated.length).toBeLessThan(tickIndices(12).length);
         expect(estimated[estimated.length - 1]).toBe(11);
     });
@@ -73,6 +83,21 @@ describe("UNIT periodAxis tickIndices", () => {
     it("gives short labels more ticks than long ones in the same width", () => {
         const short = MONTHS.map((m) => m.slice(0, 3));
         expect(tickIndices(12, fit(326, short)).length).toBeGreaterThan(tickIndices(12, fit(326)).length);
+    });
+});
+
+describe("UNIT periodAxis fittedTicks", () => {
+    const scale = (start: number, end: number) => ({range: () => [start, end]});
+
+    it("fits the labels to the plot width the axis scale was sized to", () => {
+        // The ~390px phone chart again, as layerchart hands it over: a scale
+        // whose range is the plot area (390 − 56 − 8).
+        expect(fittedTicks(MONTHS)(scale(0, 326))).toEqual(tickIndices(12, fit(326)));
+        expect(fittedTicks(MONTHS)(scale(0, 326)).length).toBeLessThan(tickIndices(12).length);
+    });
+
+    it("keeps the fixed target before layout, when the padding exceeds the box", () => {
+        expect(fittedTicks(MONTHS)(scale(0, -64))).toEqual(tickIndices(12));
     });
 });
 

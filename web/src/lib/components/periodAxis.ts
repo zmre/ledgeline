@@ -45,25 +45,24 @@ const FALLBACK_EM_PER_CHAR = 0.62;
  * What a chart knows about its x axis beyond the bucket count: the width the
  * plot actually has, and the labels it will print. With it, `tickIndices`
  * spaces the ticks so no two labels touch; without it (or before the chart has
- * been laid out, `plotWidth` 0), it falls back to the fixed target.
+ * been laid out, `plotWidth` 0 or less), it falls back to the fixed target.
  */
 export interface AxisFit {
     /** The plot area's width in px: the chart's width less its left and right padding. */
     plotWidth: number;
-    /** Every bucket's label, as the axis will print it. */
+    /** Every bucket's label, as it will be printed. */
     labels: readonly string[];
-    /**
-     * Measures a label at `AXIS_LABEL_PX`. Omitted: the document's own font via
-     * `textMeasurer`, falling back to an estimate. `null`: always estimate.
-     */
-    measure?: ((text: string) => number) | null;
+    /** The px size the labels are drawn at. Defaults to `AXIS_LABEL_PX`. */
+    fontPx?: number;
 }
 
-/** The widest label's px width plus the gap kept beside it. */
-function labelSlotPx(fit: AxisFit): number {
-    const measure = fit.measure === undefined ? textMeasurer(AXIS_LABEL_PX) : fit.measure;
-    const widthOf = measure ?? ((text: string) => text.length * AXIS_LABEL_PX * FALLBACK_EM_PER_CHAR);
-    const widest = fit.labels.reduce((max, label) => Math.max(max, widthOf(label)), 0);
+/**
+ * The widest label's px width plus the gap kept beside it: measured in the
+ * document's font (`textMeasurer`), or estimated when nothing can measure.
+ */
+function labelSlotPx({labels, fontPx = AXIS_LABEL_PX}: AxisFit): number {
+    const widthOf = textMeasurer(fontPx) ?? ((text: string) => text.length * fontPx * FALLBACK_EM_PER_CHAR);
+    const widest = labels.reduce((max, label) => Math.max(max, widthOf(label)), 0);
     return widest + LABEL_GAP_PX;
 }
 
@@ -77,6 +76,9 @@ function labelSlotPx(fit: AxisFit): number {
  * because an unlabelled final bucket reads as if the series stops before it
  * does; when it would crowd the stride tick just before it, that one is dropped
  * instead.
+ *
+ * The same rule places any other one-per-bucket text (the stacked chart's net
+ * value labels): pass those strings and their size as the `fit`.
  */
 export function tickIndices(count: number, fit?: AxisFit): number[] {
     const fitted = fit !== undefined && fit.plotWidth > 0 && count > 0;
@@ -94,6 +96,23 @@ export function tickIndices(count: number, fit?: AxisFit): number[] {
         ticks.push(last);
     }
     return ticks;
+}
+
+/** The px extent of a scale's range: the plot width for an x scale. Negative before layout (padding exceeds the box). */
+export function rangeWidth(scale: {range(): readonly unknown[]}): number {
+    const [start, end] = scale.range();
+    return Number(end) - Number(start);
+}
+
+/**
+ * The x axis `ticks` for a period chart with these bucket labels: a function
+ * of the axis scale, which layerchart calls with the scale it has already
+ * sized to the plot. So the chart's own measurement is the width the labels are
+ * fitted to — no second `bind:clientWidth`, no copy of the chart's padding.
+ * Before layout the range is empty and this is the fixed ~six-tick target.
+ */
+export function fittedTicks(labels: readonly string[]): (scale: {range(): readonly unknown[]}) => number[] {
+    return (scale) => tickIndices(labels.length, {plotWidth: rangeWidth(scale), labels});
 }
 
 /**

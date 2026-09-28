@@ -10,7 +10,7 @@
        only the active mode is computed; capped at 6 groups incl. "(other)". -->
 <script lang="ts">
     import {LineChart, PieChart, Tooltip} from "layerchart";
-    import {labelFormatter, tickIndices} from "$lib/components/periodAxis";
+    import {fittedTicks, labelFormatter} from "$lib/components/periodAxis";
     import type {RootCategory} from "$lib/domain/accounts";
     import type {Transaction} from "$lib/domain/types";
     import {chartColors} from "$lib/format/chartColors.svelte";
@@ -151,10 +151,9 @@
     );
     // Explicit integer ticks so index-based x labels never land between buckets
     // — `periodAxis` owns both that rule and the width-aware spacing, for every
-    // period chart. The padding subtracted is the LineChart's below (56 + 8).
+    // period chart.
     const bucketLabels = $derived(rows.map((r) => r.bucket));
-    let lineWidth = $state(0);
-    const xTicks = $derived(tickIndices(rows.length, {plotWidth: lineWidth - 56 - 8, labels: bucketLabels}));
+    const xTicks = $derived(fittedTicks(bucketLabels));
     const bucketLabel = $derived(labelFormatter(bucketLabels));
 </script>
 
@@ -260,7 +259,7 @@
     {:else if rows.length === 0}
         <p class="py-10 text-center text-sm text-base-content/60">No {commodity} activity in the filtered period.</p>
     {:else}
-        <div class="h-64 w-full sm:h-72" bind:clientWidth={lineWidth} data-testid="insights-line">
+        <div class="h-64 w-full sm:h-72" data-testid="insights-line">
             <LineChart
                 data={rows}
                 x={(d) => d.i}

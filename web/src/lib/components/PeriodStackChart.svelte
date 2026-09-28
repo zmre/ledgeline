@@ -36,9 +36,9 @@
        both sides is one entry), with the net as a dashed line key: identity is
        never colour alone. -->
 <script lang="ts">
-    import {Area, AreaChart, BarChart, Spline, Tooltip} from "layerchart";
+    import {Area, AreaChart, BarChart, Spline, Tooltip, type ChartState} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
-    import {labelFormatter, tickIndices} from "./periodAxis";
+    import {fittedTicks, labelFormatter} from "./periodAxis";
     import {stackEmptyReason} from "./periodStackEmpty";
 
     /** One drawn series. Every value must share one sign (zeros aside). */
@@ -101,8 +101,7 @@
 
     const axisFormat = $derived(formatAxis ?? formatValue);
 
-    const PAD_LEFT = 56;
-    const PAD_RIGHT = 8;
+    const PADDING = {top: 16, right: 8, bottom: 24, left: 56};
     const BAND_PADDING = 0.4;
     /** dataviz mark spec: a bar never exceeds this, however much room its band has. */
     const MAX_BAR_WIDTH = 24;
@@ -177,15 +176,15 @@
         return [lo, hi];
     });
 
-    let width = $state(0);
-    const xTicks = $derived(tickIndices(rows.length, {plotWidth: width - PAD_LEFT - PAD_RIGHT, labels}));
+    const xTicks = $derived(fittedTicks(labels));
     const labelOf = $derived(labelFormatter(labels));
 
+    /** The bar chart's own state: its band scale is what the bar cap is measured against. */
+    let barChart = $state<ChartState<Row>>();
+    /** The band's width capped at `MAX_BAR_WIDTH`; 0 (layerchart's own width) before layout. */
     const barWidth = $derived.by(() => {
-        if (mark !== "bar" || width <= 0 || rows.length === 0) return 0;
-        const plot = Math.max(0, width - PAD_LEFT - PAD_RIGHT);
-        const band = (plot / rows.length) * (1 - BAND_PADDING);
-        return Math.max(1, Math.min(MAX_BAR_WIDTH, Math.floor(band)));
+        const band = (barChart?.xScale as Scale | undefined)?.bandwidth?.() ?? 0;
+        return band > 0 ? Math.max(1, Math.min(MAX_BAR_WIDTH, Math.floor(band))) : 0;
     });
 
     // Layerchart keys are the series INDEX (the row holds one value per series,
@@ -225,16 +224,19 @@
      * every value.
      */
     const NET_LABEL_PX = 64;
-    const labelled = $derived.by(() => {
-        // A bucket with nothing in it (the years before the journal starts)
-        // gets no "$0" label: it would be a number that says nothing.
-        const wanted = netLabelAt.filter((i) => {
+    // A bucket with nothing in it (the years before the journal starts)
+    // gets no "$0" label: it would be a number that says nothing.
+    const wantedLabels = $derived(
+        netLabelAt.filter((i) => {
             const row = rows[i];
             return row !== undefined && (row.net !== 0 || row.v.some((v) => v !== 0));
-        });
-        const bucketPx = width <= 0 || rows.length === 0 ? Infinity : (width - PAD_LEFT - PAD_RIGHT) / rows.length;
-        return new Set(wanted.length <= 1 || bucketPx >= NET_LABEL_PX ? wanted : wanted.slice(-1));
-    });
+        })
+    );
+    /** The labelled buckets for a plot `plotWidth` px wide (≤ 0 before layout, when every wanted one is kept). */
+    function labelledAt(plotWidth: number): Set<number> {
+        const bucketPx = plotWidth <= 0 || rows.length === 0 ? Infinity : plotWidth / rows.length;
+        return new Set(wantedLabels.length <= 1 || bucketPx >= NET_LABEL_PX ? wantedLabels : wantedLabels.slice(-1));
+    }
 
     const NET_CLASS = "stroke-2 [stroke-dasharray:5_3]";
     const NET_HALO_CLASS = "stroke-[6px] [stroke-dasharray:5_3]";
@@ -281,10 +283,11 @@
     {/each}
 {/snippet}
 
-{#snippet netLine({context}: {context: {xScale: Scale; yScale: Scale}})}
+{#snippet netLine({context}: {context: {xScale: Scale; yScale: Scale; width: number}})}
     <!-- Halo first, then the ink, so the net reads against the surface. -->
     <Spline y={netOf} class="{NET_HALO_CLASS} stroke-base-200" />
     <Spline y={netOf} stroke={chartColors.flowNet} class={NET_CLASS} />
+    {@const labelled = labelledAt(context.width)}
     {#each rows.filter((r) => labelled.has(r.i)) as r (r.i)}
         {@const cx = context.xScale(r.i) + (context.xScale.bandwidth?.() ?? 0) / 2}
         {@const cy = context.yScale(r.net)}
@@ -314,9 +317,10 @@
             {emptyReason === "no-data" ? empty : tooShort}
         </p>
     {:else}
-        <div class="w-full {height}" bind:clientWidth={width} data-testid={testid}>
+        <div class="w-full {height}" data-testid={testid}>
             {#if mark === "bar"}
                 <BarChart
+                    bind:context={barChart}
                     data={rows}
                     x={(d) => d.i}
                     series={chartSeries}
@@ -326,7 +330,7 @@
                     bandPadding={BAND_PADDING}
                     stackPadding={stackGap}
                     brush={false}
-                    padding={{top: 16, right: PAD_RIGHT, bottom: 24, left: PAD_LEFT}}
+                    padding={PADDING}
                     props={{
                         xAxis: {format: labelOf, ticks: xTicks},
                         yAxis: {format: axisFormat},
@@ -346,7 +350,7 @@
                     brush={false}
                     highlight={{lines: true, points: false}}
                     marks={areas}
-                    padding={{top: 16, right: PAD_RIGHT, bottom: 24, left: PAD_LEFT}}
+                    padding={PADDING}
                     props={{
                         xAxis: {format: labelOf, ticks: xTicks},
                         yAxis: {format: axisFormat},

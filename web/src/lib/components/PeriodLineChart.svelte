@@ -7,8 +7,8 @@
        already formatted, printed by the axis formatter. A month is 28 to 31
        days and a quarter is 90 to 92, so a time scale spaces the buckets
        unevenly and invites a reader to compare widths that mean nothing.
-     - EXPLICIT INTEGER `xTicks`, at most about six, fewer when the measured
-       width cannot fit the labels apart (`periodAxis.tickIndices`).
+     - EXPLICIT INTEGER x ticks, at most about six, fewer when the plot's
+       width cannot fit the labels apart (`periodAxis.fittedTicks`).
        A continuous scale over 0..n-1 otherwise puts a tick at 2.5 and labels it
        with whichever bucket rounds to it.
      - `points` ONLY AT 31 BUCKETS OR FEWER. Past that the markers touch and the
@@ -48,7 +48,7 @@
     import type {Snippet} from "svelte";
     import {LineChart, Rule} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
-    import {labelFormatter, tickIndices} from "./periodAxis";
+    import {fittedTicks, labelFormatter} from "./periodAxis";
 
     let {
         heading,
@@ -104,10 +104,7 @@
     /** The tooltip's formatter: a gap reads as an em-dash, never as "$0.00" or "NaN". */
     const tooltipFormat = $derived((n: number | null | undefined): string => (typeof n === "number" && Number.isFinite(n) ? formatValue(n) : "—"));
 
-    const PAD_LEFT = 56;
-    const PAD_RIGHT = 8;
-    let width = $state(0);
-    const xTicks = $derived(tickIndices(rows.length, {plotWidth: width - PAD_LEFT - PAD_RIGHT, labels}));
+    const xTicks = $derived(fittedTicks(labels));
     const labelOf = $derived(labelFormatter(labels));
 
     /**
@@ -163,7 +160,7 @@
     {#if nothingToDraw}
         <p class="py-8 text-center text-sm text-base-content/60">{empty}</p>
     {:else}
-        <div class="w-full {height}" bind:clientWidth={width} data-testid={testid}>
+        <div class="w-full {height}" data-testid={testid}>
             <LineChart
                 data={rows}
                 x={(d) => d.i}
@@ -172,7 +169,7 @@
                 brush={false}
                 {yDomain}
                 yNice={includeZero}
-                padding={{top: 8, right: PAD_RIGHT, bottom: 24, left: PAD_LEFT}}
+                padding={{top: 8, right: 8, bottom: 24, left: 56}}
                 props={{
                     xAxis: {format: labelOf, ticks: xTicks},
                     yAxis: {format: axisFormat},
