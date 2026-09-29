@@ -10,7 +10,7 @@
      that component's.
 
      The portfolio is drawn in the foreground ink, solid and a little heavier:
-     it is the subject, and the palette's eight slots belong to the eight
+     it is the subject, and the palette's first eight slots belong to the eight
      benchmarks. `overlays` are extra lines drawn over it (the Stocks tab's
      benchmarks): each carries its own palette slot and dash, and from the first
      one on the legend appears, because two lines are never told apart by

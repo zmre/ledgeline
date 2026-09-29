@@ -4,36 +4,40 @@
 //
 // ── WHERE THE COLOURS LIVE ───────────────────────────────────────────────────
 //
-// The source of truth is CSS: `--chart-1` … `--chart-8`, `--chart-other`,
+// The source of truth is CSS: `--chart-1` … `--chart-N`, `--chart-other`,
 // `--chart-in`, `--chart-out` and `--chart-net`, declared per daisyUI theme in
-// `src/app.css`. Charts cannot be handed `var(--chart-1)` — SVG presentation
-// attributes set from JS, canvas, and any colour maths (layerchart's scales,
-// opacity mixing) need a concrete colour string — so `chartColors` resolves the
-// tokens with `getComputedStyle` and re-resolves when `<html data-theme>`
-// changes. `DEFAULT_PALETTE` below is the fallback for when no stylesheet is
-// there to ask (unit tests, jsdom, SSR) or a token is missing; `palette.test.ts`
-// parses `app.css` and fails if the dark block and this object disagree.
+// `src/app.css`. A theme defines as many categorical `--chart-N` slots as it
+// likes, contiguous from 1: `resolvePalette` reads `--chart-1`, `--chart-2`, …
+// up to the first empty one, and every chart sizes itself to that count
+// (`palette.categorical.length`), folding to `other` only past the last slot.
+// Charts cannot be handed `var(--chart-1)` — SVG presentation attributes set
+// from JS, canvas, and any colour maths (layerchart's scales, opacity mixing)
+// need a concrete colour string — so `chartColors` resolves the tokens with
+// `getComputedStyle` and re-resolves when `<html data-theme>` changes.
+// `DEFAULT_PALETTE` below is the fallback for when no stylesheet is there to
+// ask (unit tests, jsdom, SSR) or the theme defines no categorical slots at
+// all; `palette.test.ts` parses `app.css` and fails if the dark block and this
+// object disagree.
 //
 // ── ADDING A THEME ───────────────────────────────────────────────────────────
 //
 //   1. Add the daisyUI theme to the `@plugin "daisyui"` list in `app.css`.
-//   2. Add a `[data-theme="<name>"] { --chart-*: … }` block beside the dark one,
-//      all twelve tokens. A missing token silently falls back to the DARK value
-//      here, which will be wrong on a light surface.
-//   3. Validate the 8 slots, in order, against that theme's `--color-base-100`
+//   2. Add a `[data-theme="<name>"] { --chart-*: … }` block beside the dark one:
+//      any number of `--chart-N` slots (no gaps — reading stops at the first
+//      missing one) plus the four named tokens. A missing named token silently
+//      falls back to the DARK value here, which will be wrong on a light surface.
+//   3. Validate the slots, in order, against that theme's `--color-base-100`
 //      with the dataviz skill's validator before shipping them.
 //
 // ── THE DARK VALUES AND WHY ──────────────────────────────────────────────────
 //
-// Built from daisyUI dark's own semantic hues (primary, warning, info, accent,
-// secondary) plus four fills, so the charts carry the same vibrancy as the
-// buttons and badges around them. The old palette sat inside the dataviz
-// skill's dark lightness band and read as dull next to daisy's saturated UI;
-// these are deliberately lifted ABOVE that band. Validated against daisy dark
-// `--color-base-100` #1d232a:
+// Fourteen hues generated from daisyUI dark's primary (#615dff) and warning
+// (#fcb700) as anchors, so the charts carry the same vibrancy as the buttons
+// and badges around them, then REORDERED so neighbours differ in both hue and
+// lightness. Validated against daisy dark `--color-base-100` #1d232a:
 //
-//   worst ADJACENT CVD ΔE 15.2 · worst normal-vision ΔE 29.5 · every slot ≥ 3:1
-//   contrast on the surface
+//   worst ADJACENT CVD ΔE 12.6 · worst adjacent normal-vision ΔE 30.7 · every
+//   slot ≥ 3:1 contrast on the surface
 //
 // SLOT ORDER IS LOAD-BEARING. Adjacent slots are what share a pie edge or sit
 // next to each other in a legend, so the order is what makes the palette
@@ -52,7 +56,7 @@
 
 /** Resolved chart colours for one theme. Every value is a concrete CSS colour, never a `var(...)`. */
 export interface ChartPalette {
-    /** Categorical slots 1..8, fixed order. */
+    /** Categorical slots `--chart-1` … `--chart-N`, fixed order; its length is the chart's slot count. */
     readonly categorical: readonly string[];
     /** Muted tail colour for the folded `OTHER_LABEL` bucket — context, not a series identity. */
     readonly other: string;
@@ -64,15 +68,20 @@ export interface ChartPalette {
     readonly flowNet: string;
 }
 
-/** How many categorical slots every theme provides. Callers fold past this. */
-export const SLOT_COUNT = 8;
+/**
+ * The most `--chart-N` slots `resolvePalette` will read — a safety cap on the
+ * probe, far past what any validated palette holds.
+ */
+export const MAX_SLOTS = 32;
 
 /** The folded tail's label. One literal: `series.ts` and `holdings/ui/view.ts` both alias this. */
 export const OTHER_LABEL = "(other)";
 
-/** The CSS custom property behind each palette entry, as declared in `app.css`. */
+/** The CSS custom property for categorical slot `i` (0-based): `--chart-{i+1}`. */
+export const slotToken = (i: number): string => `--chart-${i + 1}`;
+
+/** The CSS custom property behind each named palette entry, as declared in `app.css`. */
 export const CHART_TOKENS = {
-    categorical: Array.from({length: SLOT_COUNT}, (_, i) => `--chart-${i + 1}`),
     other: "--chart-other",
     flowIn: "--chart-in",
     flowOut: "--chart-out",
@@ -82,14 +91,20 @@ export const CHART_TOKENS = {
 /** daisyUI dark's chart tokens — the fallback when CSS is absent. Must match `app.css` (tested). */
 export const DEFAULT_PALETTE: ChartPalette = Object.freeze({
     categorical: Object.freeze([
-        "#6c72fb", // 1 indigo  oklch(0.62 0.20 277) ≈ daisy primary, lifted
-        "#e7ad01", // 2 amber   oklch(0.78 0.16 84)  ≈ daisy warning
-        "#00b3f2", // 3 sky     oklch(0.72 0.15 233) ≈ daisy info
-        "#f6722b", // 4 orange  oklch(0.70 0.18 45)
-        "#00c7b1", // 5 teal    oklch(0.74 0.13 181) ≈ daisy accent
-        "#af6af2", // 6 violet  oklch(0.66 0.20 305)
-        "#8ac738", // 7 lime    oklch(0.76 0.18 130)
-        "#f74ca1", // 8 pink    oklch(0.68 0.22 354) ≈ daisy secondary
+        "#615dff", //  1 indigo   = daisy primary
+        "#00c184", //  2 green
+        "#f02bc9", //  3 magenta
+        "#ff942e", //  4 orange
+        "#b947ea", //  5 violet
+        "#a3c500", //  6 lime
+        "#ff4279", //  7 rose
+        "#00b5cc", //  8 cyan
+        "#ff6c53", //  9 coral
+        "#0088ff", // 10 blue
+        "#00c83a", // 11 emerald
+        "#00a3ff", // 12 sky
+        "#ff21a2", // 13 pink
+        "#fcb700", // 14 amber    = daisy warning
     ]),
     other: "#81878d",
     flowIn: "#00d390",
@@ -137,14 +152,24 @@ export function unknownColor(palette: ChartPalette, alpha = UNKNOWN_ALPHA): stri
 
 /**
  * Build a palette by reading each token through `read` (a custom-property
- * lookup such as `getComputedStyle(el).getPropertyValue`). Any token that
- * reads back empty keeps its `fallback` value, so a theme that omits one
- * degrades to a working colour rather than to an invisible mark.
+ * lookup such as `getComputedStyle(el).getPropertyValue`).
+ *
+ * Categorical slots are read `--chart-1`, `--chart-2`, … up to the first that
+ * reads back empty (at most `MAX_SLOTS`), so a theme sets its own slot count. A
+ * theme that defines none keeps `fallback`'s slots. Each named token that reads
+ * back empty keeps its `fallback` value, so a theme that omits one degrades to
+ * a working colour rather than to an invisible mark.
  */
 export function resolvePalette(read: (token: string) => string, fallback: ChartPalette = DEFAULT_PALETTE): ChartPalette {
     const pick = (token: string, backup: string): string => read(token).trim() || backup;
+    const slots: string[] = [];
+    for (let i = 0; i < MAX_SLOTS; i++) {
+        const color = read(slotToken(i)).trim();
+        if (color === "") break;
+        slots.push(color);
+    }
     return Object.freeze({
-        categorical: Object.freeze(CHART_TOKENS.categorical.map((token, i) => pick(token, fallback.categorical[i]))),
+        categorical: Object.freeze(slots.length > 0 ? slots : [...fallback.categorical]),
         other: pick(CHART_TOKENS.other, fallback.other),
         flowIn: pick(CHART_TOKENS.flowIn, fallback.flowIn),
         flowOut: pick(CHART_TOKENS.flowOut, fallback.flowOut),

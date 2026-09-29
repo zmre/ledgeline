@@ -4,7 +4,7 @@
 import {describe, expect, it} from "vitest";
 import {dec} from "$lib/domain/money";
 import {absDec, DEFAULT_AMOUNT_STYLE, EM_DASH, fmt, fmtSignedAmount, fmtSignedPct, ZERO} from "./amounts";
-import {colorAt, DEFAULT_PALETTE, OTHER_LABEL, SLOT_COUNT} from "./palette";
+import {colorAt, DEFAULT_PALETTE, OTHER_LABEL} from "./palette";
 import {NEUTRAL_CLASS, sentimentClass, signClass} from "./sign";
 
 describe("UNIT signClass", () => {
@@ -101,9 +101,9 @@ describe("UNIT absDec / ZERO", () => {
 describe("UNIT the categorical palette folds, never cycles", () => {
     const P = DEFAULT_PALETTE;
 
-    it("has exactly 8 distinct slots", () => {
-        expect(P.categorical).toHaveLength(SLOT_COUNT);
-        expect(new Set(P.categorical).size).toBe(SLOT_COUNT);
+    it("has distinct slots", () => {
+        expect(P.categorical.length).toBeGreaterThan(0);
+        expect(new Set(P.categorical).size).toBe(P.categorical.length);
     });
 
     it("hands out each slot in fixed order", () => {
@@ -114,8 +114,8 @@ describe("UNIT the categorical palette folds, never cycles", () => {
         // `ChartWidget` did `PALETTE[slot++ % PALETTE.length]` over a 6-entry
         // copy, so a 7th account was painted slot 1's blue and became
         // indistinguishable from the 1st — the dataviz non-negotiable.
-        expect(colorAt(P, SLOT_COUNT)).toBe(P.other);
-        expect(colorAt(P, SLOT_COUNT)).not.toBe(P.categorical[0]);
+        expect(colorAt(P, P.categorical.length)).toBe(P.other);
+        expect(colorAt(P, P.categorical.length)).not.toBe(P.categorical[0]);
         expect(colorAt(P, 99)).toBe(P.other);
     });
 

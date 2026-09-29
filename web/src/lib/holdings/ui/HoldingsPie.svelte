@@ -6,8 +6,8 @@
      category, risk) split each holding's value by its classification from
      GET /api/holdings/profiles (commodity tags over Yahoo Finance), fetched
      the first time one is chosen — see $lib/holdings/categories.ts.
-     - colors: the theme's categorical chart tokens via `chartColors` — all 8
-       slots in fixed order, plus muted gray for the folded tail, and that gray
+     - colors: the theme's categorical chart tokens via `chartColors` — every
+       slot the theme defines, in fixed order, plus muted gray for the folded tail, and that gray
        at partial opacity for "(unclassified)": value nothing classifies is
        shown (it is real money) but never dressed as a category, and never
        mistaken for the fold. Asset classes and security types keep a fixed
@@ -16,14 +16,15 @@
        Secondary encoding, which the skill requires at this CVD separation, is
        the always-visible legend (label + % share, identity never color-alone),
        the pad-angle gaps between slices, and the tooltips.
-     - a 9th slice never gets a generated hue: it folds into "(other)"
-       (dataviz non-negotiable), which is why the named-slice cap is 8. -->
+     - a slice past the palette's last slot never gets a generated hue: it
+       folds into "(other)" (dataviz non-negotiable), which is why the
+       named-slice cap is the palette's slot count. -->
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
     import ChartLegend from "$lib/components/ChartLegend.svelte";
     import type {Dec} from "$lib/domain/money";
     import {chartColors} from "$lib/format/chartColors.svelte";
-    import {SLOT_COUNT, unknownColor} from "$lib/format/palette";
+    import {unknownColor} from "$lib/format/palette";
     import {availableDimensions, categorySlices, type CategorySlice} from "$lib/holdings/categories";
     import {CATEGORY_DIMENSIONS, type CategoryDimension, type PieDimension} from "$lib/holdings/profileTypes";
     import type {Holding} from "$lib/holdings/types";
@@ -82,7 +83,7 @@
         return ["holding", ...CATEGORY_DIMENSIONS.filter((d) => known.includes(d) || d === dimension)];
     });
 
-    const slices = $derived(category === null || profiles === null ? [] : categorySlices(holdings, profiles, category, SLOT_COUNT));
+    const slices = $derived(category === null || profiles === null ? [] : categorySlices(holdings, profiles, category, chartColors.categorical.length));
     const onlyUnclassified = $derived(slices.length > 0 && slices.every((s) => s.kind === "unclassified"));
 
     const categoryColor = (slice: CategorySlice): string => {
@@ -157,7 +158,7 @@
         };
     };
 
-    const wedges = $derived(category === null ? pieSlices(holdings, format, SLOT_COUNT).map(holdingWedge) : slices.map(categoryWedge));
+    const wedges = $derived(category === null ? pieSlices(holdings, format, chartColors.categorical.length).map(holdingWedge) : slices.map(categoryWedge));
 </script>
 
 <div class="flex flex-col gap-1" data-testid="holdings-pie-panel">

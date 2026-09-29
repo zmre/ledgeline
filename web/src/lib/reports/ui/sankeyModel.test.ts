@@ -14,7 +14,9 @@
 import {describe, expect, it} from "vitest";
 import {decodeFlowReport} from "$lib/api/nativeDecode";
 import type {AmountStyle} from "$lib/domain/types";
-import {DEFAULT_PALETTE, OTHER_LABEL, SLOT_COUNT} from "$lib/format/palette";
+import {DEFAULT_PALETTE, OTHER_LABEL} from "$lib/format/palette";
+
+const SLOTS = DEFAULT_PALETTE.categorical.length;
 import {FLOW_REPORT} from "$lib/testing/flowsFixture";
 import {flowPalette, OTHER_KEY, sankeyView} from "./sankeyModel";
 
@@ -57,12 +59,27 @@ describe("UNIT flowPalette", () => {
         // Everything with a slot keeps a distinct hue: no two accounts share one.
         const slotted = [...new Set(OUT.legend.filter((entry) => entry.key !== OTHER_KEY).map((entry) => entry.color))];
         expect(slotted.length).toBe(OUT.legend.length - 1);
-        expect(slotted.length).toBeLessThanOrEqual(SLOT_COUNT);
+        expect(slotted.length).toBeLessThanOrEqual(SLOTS);
+    });
+
+    it("uses every slot before folding: the 14th-biggest account keeps a hue, the 15th folds", () => {
+        expect(PALETTE.rank("a:assets:cash:safe")).toBe(SLOTS - 1);
+        expect(PALETTE.color("a:assets:cash:safe")).toBe(DEFAULT_PALETTE.categorical[SLOTS - 1]);
+        expect(PALETTE.folded("a:assets:cash:safe")).toBe(false);
+        expect(PALETTE.folded("a:liabilities:loan:auto")).toBe(true);
+    });
+
+    it("folds at the palette's own length, whatever the theme defines", () => {
+        const eight = {...DEFAULT_PALETTE, categorical: DEFAULT_PALETTE.categorical.slice(0, 8)};
+        const narrow = flowPalette(REPORT, eight);
+        expect(narrow.folded("a:assets:vehicles:car:depreciation")).toBe(false);
+        expect(narrow.folded("a:assets:bank:hsa")).toBe(true);
+        expect(narrow.rank("a:assets:bank:hsa")).toBe(8);
     });
 
     it("never gives a statement line a slot", () => {
         expect(PALETTE.folded("g:Housing")).toBe(false);
-        expect(PALETTE.rank("g:Housing")).toBe(SLOT_COUNT);
+        expect(PALETTE.rank("g:Housing")).toBe(SLOTS);
     });
 });
 
@@ -93,7 +110,7 @@ describe("UNIT sankeyView", () => {
 
     it("never folds a statement line and never colours one", () => {
         const statement = OUT.nodes.filter((node) => node.side === "target");
-        // All six cost lines survive, though the graph names ten accounts.
+        // All six cost lines survive, though the graph names sixteen accounts.
         expect(statement.map((node) => node.label)).toEqual(["Housing", "Food", "Utilities", "Taxes", "Transport", "Depreciation"]);
         for (const node of statement) expect(node.color).toBeNull();
         expect(OUT.legend.some((entry) => entry.label === "Housing")).toBe(false);
@@ -122,6 +139,12 @@ describe("UNIT sankeyView", () => {
             "Credit cards: Amex",
             "Cash: Wallet",
             "Vehicles: Car: Depreciation",
+            "Bank: HSA",
+            "Bank: Union",
+            "Credit cards: Discover",
+            "Credit cards: Citi",
+            "Loan: Heloc",
+            "Cash: Safe",
             OTHER_LABEL,
         ]);
     });

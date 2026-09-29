@@ -36,16 +36,16 @@ describe("COMPONENT chartColors", () => {
         expect(c.flowIn).toBe("#333333");
     });
 
-    it("falls back to DEFAULT_PALETTE for tokens that are empty", () => {
+    it("takes the theme's slot count and falls back to DEFAULT_PALETTE for named tokens that are empty", () => {
         const c = build();
-        expect(c.categorical.slice(1)).toEqual(DEFAULT_PALETTE.categorical.slice(1));
+        expect(c.categorical).toEqual(["#111111"]);
         expect(c.flowOut).toBe(DEFAULT_PALETTE.flowOut);
         expect(c.flowNet).toBe(DEFAULT_PALETTE.flowNet);
     });
 
     it("folds past the last slot to `other`, never cycling", () => {
         const c = build();
-        expect(c.colorAt(DEFAULT_PALETTE.categorical.length)).toBe(c.other);
+        expect(c.colorAt(c.categorical.length)).toBe(c.other);
         expect(c.colorAt(99)).toBe(c.other);
     });
 

@@ -11,10 +11,10 @@
 // This literal exists for the two DISPLAY cases the golden cannot show, because
 // `fixtures/sample.journal` does not contain them:
 //
-//   * A FOLDED TAIL. The golden's two graphs name exactly 8 distinct accounts
-//     between them, which is `SLOT_COUNT`, so nothing in it folds. This
-//     body names 11, three of them past the last slot, and all three feed the
-//     SAME statement line, so the three links have to re-aggregate into one.
+//   * A FOLDED TAIL. The golden's two graphs name 8 distinct accounts between
+//     them, fewer than `DEFAULT_PALETTE`'s 14 slots, so nothing in it folds.
+//     This body names 17, three of them past the last slot, and all three feed
+//     the SAME statement line, so the three links have to re-aggregate into one.
 //   * AN INCOMPLETE GRAPH. `inflows.total` is $300.00 short of its
 //     `sectionTotal`, which is what a revenue line that netted negative over the
 //     window looks like. Every graph in the golden ties out exactly.
@@ -53,12 +53,13 @@ const INFLOWS = {
 };
 
 /**
- * Money out: ten funding accounts against six cost lines. The three smallest
- * accounts fall past the last palette slot, and all three pay Utilities.
+ * Money out: sixteen funding accounts against six cost lines. With the broker
+ * cash account from Money in that is 17 accounts, so the three smallest fall
+ * past `DEFAULT_PALETTE`'s 14 slots, and all three pay Utilities.
  */
 const OUTFLOWS = {
     nodes: [
-        {key: "a:assets:bank:checking", label: "Bank: Checking", side: "source", account: "assets:bank:checking", total: usd("500000")},
+        {key: "a:assets:bank:checking", label: "Bank: Checking", side: "source", account: "assets:bank:checking", total: usd("394000")},
         {key: "g:Housing", label: "Housing", side: "target", account: null, total: usd("400000")},
         {key: "a:liabilities:cc:visa", label: "Credit cards: Visa", side: "source", account: "liabilities:cc:visa", total: usd("300000")},
         {key: "g:Food", label: "Food", side: "target", account: null, total: usd("270000")},
@@ -77,13 +78,20 @@ const OUTFLOWS = {
             total: usd("20000"),
         },
         {key: "g:Depreciation", label: "Depreciation", side: "target", account: null, total: usd("20000")},
-        // The tail: three accounts past `SLOT_COUNT`, all paying Utilities.
+        // Six small accounts that still rank inside the 14 slots, all paying Housing.
+        {key: "a:assets:bank:hsa", label: "Bank: HSA", side: "source", account: "assets:bank:hsa", total: usd("19000")},
+        {key: "a:assets:bank:union", label: "Bank: Union", side: "source", account: "assets:bank:union", total: usd("18500")},
+        {key: "a:liabilities:cc:discover", label: "Credit cards: Discover", side: "source", account: "liabilities:cc:discover", total: usd("18000")},
+        {key: "a:liabilities:cc:citi", label: "Credit cards: Citi", side: "source", account: "liabilities:cc:citi", total: usd("17500")},
+        {key: "a:liabilities:loan:heloc", label: "Loan: Heloc", side: "source", account: "liabilities:loan:heloc", total: usd("17000")},
+        {key: "a:assets:cash:safe", label: "Cash: Safe", side: "source", account: "assets:cash:safe", total: usd("16000")},
+        // The tail: three accounts past the last slot, all paying Utilities.
         {key: "a:liabilities:loan:auto", label: "Loan: Auto", side: "source", account: "liabilities:loan:auto", total: usd("15000")},
         {key: "a:assets:bank:joint", label: "Bank: Joint", side: "source", account: "assets:bank:joint", total: usd("10000")},
         {key: "a:assets:prepaid:transit", label: "Prepaid: Transit", side: "source", account: "assets:prepaid:transit", total: usd("5000")},
     ],
     links: [
-        {source: "a:assets:bank:checking", target: "g:Housing", value: usd("400000")},
+        {source: "a:assets:bank:checking", target: "g:Housing", value: usd("294000")},
         {source: "a:liabilities:cc:visa", target: "g:Food", value: usd("200000")},
         {source: "a:assets:bank:checking", target: "g:Utilities", value: usd("100000")},
         {source: "a:liabilities:cc:visa", target: "g:Transport", value: usd("100000")},
@@ -92,6 +100,12 @@ const OUTFLOWS = {
         {source: "a:liabilities:cc:amex", target: "g:Food", value: usd("30000")},
         {source: "a:assets:cash:wallet", target: "g:Taxes", value: usd("25000")},
         {source: "a:assets:vehicles:car:depreciation", target: "g:Depreciation", value: usd("20000")},
+        {source: "a:assets:bank:hsa", target: "g:Housing", value: usd("19000")},
+        {source: "a:assets:bank:union", target: "g:Housing", value: usd("18500")},
+        {source: "a:liabilities:cc:discover", target: "g:Housing", value: usd("18000")},
+        {source: "a:liabilities:cc:citi", target: "g:Housing", value: usd("17500")},
+        {source: "a:liabilities:loan:heloc", target: "g:Housing", value: usd("17000")},
+        {source: "a:assets:cash:safe", target: "g:Housing", value: usd("16000")},
         {source: "a:liabilities:loan:auto", target: "g:Utilities", value: usd("15000")},
         {source: "a:assets:bank:joint", target: "g:Utilities", value: usd("10000")},
         {source: "a:assets:prepaid:transit", target: "g:Utilities", value: usd("5000")},

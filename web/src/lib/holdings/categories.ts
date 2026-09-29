@@ -104,8 +104,9 @@ function toAmount(value: number): Dec {
  *
  * Named categories are sorted by value (ties by label), the top `maxNamed`
  * keep their names, and the rest fold into one `OTHER_LABEL` slice — the
- * dataviz rule the by-holding pie follows too: fold, never generate a ninth
- * hue. The unclassified slice, when there is one, is always last.
+ * dataviz rule the by-holding pie follows too: fold, never generate a hue
+ * past the palette's last slot. The caller passes the palette's slot count.
+ * The unclassified slice, when there is one, is always last.
  */
 export function categorySlices(
     holdings: readonly Holding[],

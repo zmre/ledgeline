@@ -21,7 +21,7 @@
 import {add, cmp, toNumber, type Dec} from "$lib/domain/money";
 import type {AmountStyle} from "$lib/domain/types";
 import {fmt} from "$lib/format/amounts";
-import {colorAt, OTHER_LABEL, SLOT_COUNT, type ChartPalette} from "$lib/format/palette";
+import {colorAt, OTHER_LABEL, type ChartPalette} from "$lib/format/palette";
 import type {FlowGraph, FlowReport, FlowSide} from "$lib/reports/types";
 import type {DataView} from "$lib/stores/loadState";
 
@@ -39,7 +39,7 @@ export interface FlowPalette {
     /** Whether this account key is past the last slot, and so folds into the tail bucket. */
     folded(key: string): boolean;
     /**
-     * Slot index, or `SLOT_COUNT` for a folded key. This is what puts a
+     * Slot index, or the palette's slot count for a folded key. This is what puts a
      * graph's legend in PALETTE order rather than in its own node order: an
      * account can rank third by combined total and first within one graph.
      */
@@ -71,10 +71,11 @@ export function flowPalette(report: FlowReport, colors: ChartPalette): FlowPalet
     // Ties broken by key so a redraw cannot reshuffle two equal accounts.
     const ranked = [...totals].sort(([aKey, aTotal], [bKey, bTotal]) => cmp(bTotal, aTotal) || (aKey < bKey ? -1 : aKey > bKey ? 1 : 0));
     const slots = new Map(ranked.map(([key], i) => [key, i]));
-    const rank = (key: string): number => Math.min(slots.get(key) ?? SLOT_COUNT, SLOT_COUNT);
+    const slotCount = colors.categorical.length;
+    const rank = (key: string): number => Math.min(slots.get(key) ?? slotCount, slotCount);
     return {
         color: (key) => colorAt(colors, rank(key)),
-        folded: (key) => (slots.get(key) ?? -1) >= SLOT_COUNT,
+        folded: (key) => (slots.get(key) ?? -1) >= slotCount,
         rank,
         other: colors.other,
     };
