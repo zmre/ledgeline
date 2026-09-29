@@ -29,11 +29,15 @@
 //      read the same (`cash` under two parents) do both fall back to the full
 //      account name, which is what the table's indentation says about them.
 //   4. NO TAIL FOLDING. The table's accounts are the chart's accounts. Colours
-//      are handed out in table row order: the first `SLOT_COUNT` drawn segments
-//      get their own palette slot and every later one gets the muted `other`
-//      colour — never a recycled slot, which would make two accounts look alike
-//      — while still being its own segment, tooltip row and legend entry. An
-//      account's colour is the same in every bucket by construction.
+//      are handed out BIGGEST FIRST — by the largest |value| a segment reaches
+//      in any bucket, in the charted commodity, ties by table order — so the
+//      accounts that dominate the chart are the ones that get hues. Every
+//      palette slot is used before any segment falls back to the muted `other`
+//      colour (never a recycled slot, which would make two accounts look
+//      alike); a grey segment is still its own segment, tooltip row and legend
+//      entry. The ranking only picks colours: the legend and stack stay in
+//      table order. An account's colour is the same in every bucket by
+//      construction.
 //   5. SIDES. A segment with an engine classification (a net-worth row's
 //      `kind`, by effective declared type — never sign or name) is on the side
 //      that kind says: assets up, liabilities down; a `mixed` row, or a row
@@ -193,6 +197,21 @@ export function splitBySign(entities: readonly StackEntity[]): StackSeries[] {
 }
 
 /**
+ * Each entity's palette slot, by index: the entity with the largest |value| in
+ * any bucket gets slot 0, the next slot 1, and so on; equal sizes keep their
+ * input (table) order, so a redraw cannot reshuffle them.
+ */
+export function slotsBySize(entities: readonly (readonly number[])[]): number[] {
+    const size = entities.map((values) => values.reduce((peak, v) => Math.max(peak, Math.abs(v)), 0));
+    const ranked = size.map((_, i) => i).sort((a, b) => size[b] - size[a] || a - b);
+    const slots: number[] = Array.from({length: entities.length}, () => 0);
+    ranked.forEach((entity, slot) => {
+        slots[entity] = slot;
+    });
+    return slots;
+}
+
+/**
  * The whole chart model for one `PeriodReport`.
  *
  * `fallback` names the commodity when the report holds none at all (an empty
@@ -203,12 +222,13 @@ export function periodStack(report: PeriodReport, palette: ChartPalette, fallbac
     const drawn = stackSegments(compressPeriodRows(report.rows))
         .map((segment) => ({segment, values: segment.values.map((value) => amountIn(value, commodity))}))
         .filter(({values}) => values.some((v) => v !== 0));
-    // Slots in table order; past `SLOT_COUNT`, `colorAt` gives the `other`
-    // colour rather than cycling — see rule 4.
-    const inTableOrder = drawn.map(({segment, values}, slot): StackEntity => ({
+    // Slots by size, biggest first; past the palette's last slot `colorAt`
+    // gives the `other` colour rather than cycling — see rule 4.
+    const slots = slotsBySize(drawn.map(({values}) => values));
+    const inTableOrder = drawn.map(({segment, values}, i): StackEntity => ({
         key: segment.key,
         label: segment.label,
-        color: colorAt(palette, slot),
+        color: colorAt(palette, slots[i]),
         side: sideOf(segment.kind, values),
         values,
     }));

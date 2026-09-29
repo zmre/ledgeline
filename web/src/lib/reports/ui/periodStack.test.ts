@@ -6,11 +6,13 @@ import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
 import {decodePeriodReport} from "$lib/api/nativeDecode";
 import {dec, maAdd, maIsZero, maNeg, type MixedAmount} from "$lib/domain/money";
-import {DEFAULT_PALETTE, SLOT_COUNT} from "$lib/format/palette";
+import {DEFAULT_PALETTE} from "$lib/format/palette";
+
+const SLOTS = DEFAULT_PALETTE.categorical.length;
 import {amountIn} from "$lib/projections/projectionView";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
 import {compressPeriodRows} from "./displayRows";
-import {periodStack, splitBySign, stackCommodity, stackSegments, type StackSegment} from "./periodStack";
+import {periodStack, slotsBySize, splitBySign, stackCommodity, stackSegments, type StackSegment} from "./periodStack";
 
 /** `{$: 12.34}`-style amounts from whole dollars, exact. */
 const usd = (n: number): MixedAmount => (n === 0 ? new Map() : new Map([["$", dec(Math.round(n * 100), 2)]]));
@@ -248,13 +250,13 @@ describe("UNIT periodStack — sides", () => {
         expect(stack.entities[0].side).toBe("down");
     });
 
-    it("groups classified rows up side first, each in table order, while colours keep table order", () => {
+    it("groups classified rows up side first, each in table order, while colours go biggest first", () => {
         const rows = [dollars("bank", [100], "asset"), dollars("cc", [-30], "liability"), dollars("house", [500], "asset")];
         const stack = periodStack(report(rows, [570], ["2026"]), DEFAULT_PALETTE, "$");
         expect(stack.entities.map((e) => [e.key, e.color])).toEqual([
-            ["bank", DEFAULT_PALETTE.categorical[0]],
-            ["house", DEFAULT_PALETTE.categorical[2]],
-            ["cc", DEFAULT_PALETTE.categorical[1]],
+            ["bank", DEFAULT_PALETTE.categorical[1]],
+            ["house", DEFAULT_PALETTE.categorical[0]],
+            ["cc", DEFAULT_PALETTE.categorical[2]],
         ]);
     });
 });
@@ -280,10 +282,14 @@ describe("UNIT periodStack — splitting by sign", () => {
 });
 
 describe("UNIT periodStack — every account, and its colour", () => {
-    /** Eleven accounts, more than the palette has slots; assets and liabilities when `kinds`. */
-    function wide(kinds: boolean): PeriodReport {
+    /**
+     * `count` accounts, each bigger than the one before it in table order (so
+     * table order is the WORST order to colour by); assets and liabilities
+     * when `kinds`.
+     */
+    function wide(kinds: boolean, count = 11): PeriodReport {
         const kindOf = (i: number): PeriodRowKind | undefined => (kinds ? (i < 7 ? "asset" : "liability") : undefined);
-        const leaves = Array.from({length: 11}, (_, i) =>
+        const leaves = Array.from({length: count}, (_, i) =>
             dollars(`${kindOf(i) === "liability" ? "liabilities" : "assets"}:a${String(i).padStart(2, "0")}`, [i + 1, -(i + 1)], kindOf(i))
         );
         const rootOf = (prefix: string, kind: PeriodRowKind | undefined) => {
@@ -311,14 +317,44 @@ describe("UNIT periodStack — every account, and its colour", () => {
     it.each([
         ["a cash flow", false],
         ["a net worth", true],
-    ])("colours the first SLOT_COUNT in table order and the rest `other`, never cycling, in %s", (_, kinds) => {
+    ])("gives all eleven accounts their own slot, biggest first, and none `other`, in %s", (_, kinds) => {
         const r = wide(kinds);
         const byKey = new Map(periodStack(r, DEFAULT_PALETTE, "$").entities.map((e) => [e.key, e.color]));
         const inTableOrder = compressPeriodRows(r.rows)
             .filter((d) => d.indent > 0)
             .map((d) => byKey.get(d.row.account));
-        expect(inTableOrder.slice(0, SLOT_COUNT)).toEqual(DEFAULT_PALETTE.categorical);
-        expect(inTableOrder.slice(SLOT_COUNT)).toEqual(Array(11 - SLOT_COUNT).fill(DEFAULT_PALETTE.other));
+        expect(inTableOrder).toHaveLength(11);
+        expect(new Set(inTableOrder).size).toBe(11);
+        expect(inTableOrder).not.toContain(DEFAULT_PALETTE.other);
+        // Each account is bigger than the one before it, so the LAST row gets slot 1.
+        expect([...inTableOrder].reverse()).toEqual(DEFAULT_PALETTE.categorical.slice(0, 11));
+    });
+
+    it.each([
+        ["a cash flow", false],
+        ["a net worth", true],
+    ])("uses every slot before grey, and only the smallest accounts past the palette go `other`, never cycling, in %s", (_, kinds) => {
+        const count = SLOTS + 3;
+        const r = wide(kinds, count);
+        const byKey = new Map(periodStack(r, DEFAULT_PALETTE, "$").entities.map((e) => [e.key, e.color]));
+        const inTableOrder = compressPeriodRows(r.rows)
+            .filter((d) => d.indent > 0)
+            .map((d) => byKey.get(d.row.account));
+        // The three smallest (first in table order) are grey; the rest take every slot, biggest first.
+        expect(inTableOrder.slice(0, 3)).toEqual(Array(3).fill(DEFAULT_PALETTE.other));
+        expect(inTableOrder.slice(3).reverse()).toEqual(DEFAULT_PALETTE.categorical);
+    });
+
+    it("ranks by the largest |value| in any bucket, ties in table order", () => {
+        expect(
+            slotsBySize([
+                [1, 2],
+                [-5, 0],
+                [0, 0.5],
+                [5, 1],
+                [2, -2],
+            ])
+        ).toEqual([2, 0, 4, 1, 3]);
     });
 
     it("keeps legend order and colour per account whatever the amounts", () => {
