@@ -411,7 +411,8 @@ Value nothing classifies goes into an **(unclassified)** slice, drawn in a faded
 grey after every other slice. A private fund Yahoo doesn't know lands there,
 and so does a fund's equity share when Yahoo has no sector weights for it. The
 solid grey **(other)** slice is different: it folds together the smallest named
-categories once there are more than eight.
+categories once there are more than the theme has chart colours (fourteen in
+the default theme). The by-holding pie folds its smallest holdings the same way.
 
 ### The tags
 
