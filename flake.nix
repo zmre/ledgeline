@@ -267,9 +267,11 @@
       #    is exactly how it went: the `@testing-library/svelte` + `jsdom` bump
       #    landed weeks before the build that reported it.
       # See `outputHash` below for why this is keyed by system.
-      # Re-pinned for the toolchain bump two commits back (svelte 5.56.9,
-      # vite 8.2.2, playwright 1.61.1 and the rest): the FOD hash covers the
-      # resolved `node_modules`, so any dependency change invalidates it.
+      # Re-pinned (aarch64-darwin, x86_64-linux) for the bun.lock security
+      # bumps — brace-expansion, undici, source-map-js, postcss-selector-parser:
+      # the FOD hash covers the resolved `node_modules`, so any dependency
+      # change, even a transitive patch release, invalidates it. x86_64-darwin
+      # is now stale too and gets re-pinned at the next release dry run.
       #
       # An FOD hash can only be produced ON the platform it describes, so an
       # entry here can only be refreshed by a runner of that architecture: the
@@ -283,8 +285,8 @@
       # on EVERY system (macDist on darwin, linuxDist on Linux), so a stale hash
       # here breaks `nix build github:zmre/ledgeline` with no attribute at all.
       spaNodeModulesHashes = {
-        aarch64-darwin = "sha256-J2La0L/Ku2OucSKjKegK4ygNVaBivuauhawVKS8uhCg=";
-        x86_64-linux = "sha256-V4c8gSXOTbKQOZ6AldEuyhTDBpVzR1TZZ9JwaV+YVvQ=";
+        aarch64-darwin = "sha256-Ob1ul2IbP6oe4MTdsfrneJmrYycVyL/HiPmLxB4edjo=";
+        x86_64-linux = "sha256-+bKDVtWtwj41iMjNBUdhOFWQB1q2993o8IV8gd2pIng=";
         # Intel Macs, for the x86_64 half of the release matrix. Produced by a
         # release-workflow dry run under Rosetta, which is the only machine that
         # can generate it — see docs/releasing.md.

@@ -523,7 +523,7 @@ jobs:
   #
   # BLOCKING. `bun audit` exits non-zero on ANY advisory at ANY severity, so
   # every currently-known one has to be listed below and anything NEW turns
-  # this job red. (Verified both directions: with the nine ignores it exits 0;
+  # this job red. (Verified both directions: with the ignores it exits 0;
   # with a bogus ignore id it still exits 1, so the flags cannot silently
   # neuter the job.)
   spa-audit:
@@ -546,7 +546,7 @@ jobs:
           pushFilter: '-(source|vendor)$'
 
       # --- Ignored advisories ---------------------------------------------
-      # All nine are in build/test tooling, or in code paths Vite's browser
+      # All six are in build/test tooling, or in code paths Vite's browser
       # build drops. None reaches a user. Ledgeline ships ONE artifact out of
       # web/: the static bundle in web/build, embedded into the Rust binary by
       # rust-embed and served by our own axum server. There is no Node runtime
@@ -564,23 +564,14 @@ jobs:
       #     issues are sourceMappingURL path traversal during a build, which
       #     only ever reads our own sources.
       #
-      #   brace-expansion  GHSA-mh99-v99m-4gvg, GHSA-rgw5-rvv9-x895 (high)
-      #     Three paths. Two are build-time (eslint, typescript-eslint). The
-      #     third, `exceljs > archiver > archiver-utils > glob > minimatch`,
-      #     runs through a package that DOES ship — but archiver is exceljs's
-      #     Node-only zip path and Vite drops it: "archiver", "minimatch" and
-      #     "braceExpand" each appear in ZERO bundle files.
-      #
       #   uuid  GHSA-w5hq-g745-h8pq (moderate)
       #     `exceljs > uuid`, and exceljs does ship. The advisory requires uuid
       #     v3/v5/v6 called WITH a `buf` argument; the v3/v5 namespace
       #     constants ("DNS:") and the v4 bit-twiddling are both absent from
       #     the bundle, so the vulnerable entry points are not in it.
       #
-      #   @sveltejs/kit  GHSA-29g2-3rmr-qm68 (moderate)
-      #   cookie         GHSA-pxg6-pf52-xh8x (low)
-      #     Both are SERVER-side: ReDoS in kit's HTTP content negotiation, and
-      #     kit's cookie handling. There is no server here to negotiate with —
+      #   cookie  GHSA-pxg6-pf52-xh8x (low)
+      #     SERVER-side: kit's cookie handling. There is no server here —
       #     adapter-static emits no server bundle, and "sameSite", "Max-Age"
       #     and "httpOnly" appear in ZERO bundle files.
       #
@@ -589,6 +580,13 @@ jobs:
       #   (13 -> 12); upstream vite/kit/eslint still pin the vulnerable
       #   transitives. Re-check whenever this job is touched, and drop any
       #   --ignore whose package has since been bumped past the advisory.
+      #
+      #   NEW ADVISORY WITH A PATCH RELEASE: fix the lockfile, don't add an
+      #   --ignore. `bun update` re-resolves the whole tree (and rewrites
+      #   package.json ranges), so for a transitive bump hand-edit the one
+      #   bun.lock entry instead — version + `dist.integrity` from
+      #   registry.npmjs.org/<pkg>/<ver> — then `bun install --frozen-lockfile`
+      #   to prove bun accepts it.
       - name: bun audit
         run: |
           nix develop -L .#spaAudit -c bash -c 'cd web && bun audit \
@@ -596,8 +594,5 @@ jobs:
             --ignore=GHSA-fxqj-rqcc-2cmp \
             --ignore=GHSA-28wg-ghj8-5hjv \
             --ignore=GHSA-2v37-7h3g-55p8 \
-            --ignore=GHSA-mh99-v99m-4gvg \
-            --ignore=GHSA-rgw5-rvv9-x895 \
             --ignore=GHSA-w5hq-g745-h8pq \
-            --ignore=GHSA-29g2-3rmr-qm68 \
             --ignore=GHSA-pxg6-pf52-xh8x'
