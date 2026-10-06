@@ -22,7 +22,9 @@
        (`periodStack.splitBySign`). Halves share a legend entry and a tooltip row.
      - BARS: capped at 24px and centred in their band (the width is measured),
        4px rounded data-end, square at the baseline, no outline. `stackGap`
-       inserts the surface gap between stacked segments.
+       inserts the surface gap between stacked segments. Stacked by `bandsAt`
+       and drawn as plain paths (`stackBars`), not layerchart `Bars`: a
+       layerchart mark per bar makes mounting quadratic in the bar count.
      - AREAS: stacked here (`bandsAt`), not by layerchart, so a zero keeps its
        place on the stack; filled solid, no top line, a 1px hairline of surface
        between layers. The dataviz ~10% wash is for areas that OVERLAP; stacked
@@ -40,11 +42,12 @@
      - The LEGEND is always shown, one entry per entity, with the net as a
        dashed line key: identity is never colour alone. -->
 <script lang="ts">
-    import {Area, AreaChart, BarChart, Spline, Tooltip, type ChartState} from "layerchart";
+    import {Area, AreaChart, BarChart, Spline, Tooltip} from "layerchart";
     import {chartColors} from "$lib/format/chartColors.svelte";
     import ChartHeading from "./ChartHeading.svelte";
     import ChartLegend, {type LegendEntry} from "./ChartLegend.svelte";
     import {fittedTicks, labelFormatter, tickIndices} from "./periodAxis";
+    import {stackBars} from "./stackBars";
     import {stackEmptyReason} from "./periodStackEmpty";
 
     /** One drawn series. Every value must share one sign (zeros aside). */
@@ -125,9 +128,10 @@
      * Each series' band in one bucket: stacked outward from zero, positives on
      * the positives and negatives on the negatives, in series order.
      *
-     * Computed here rather than by layerchart's `stackDiverging` for the AREAS.
-     * d3's diverging offset parks a ZERO value at the axis ([0, 0]), not on top
-     * of the stack beneath it. Bars do not care, since a zero bar is invisible
+     * Computed here rather than by layerchart's `stackDiverging`. Bars are drawn
+     * from these bands (`stackBars`, see it for why). For the AREAS, d3's
+     * diverging offset parks a ZERO value at the axis ([0, 0]), not on top of
+     * the stack beneath it. Bars would not care, since a zero bar is invisible
      * wherever it sits. An area interpolates between buckets, though, so a layer
      * that is zero in March drops from the top of the stack to the axis and
      * back, cutting a triangle through every layer below it. Here a zero is a
@@ -178,13 +182,12 @@
     const xTicks = $derived(fittedTicks(labels));
     const labelOf = $derived(labelFormatter(labels));
 
-    /** The bar chart's own state: its band scale is what the bar cap is measured against. */
-    let barChart = $state<ChartState<Row>>();
-    /** The band's width capped at `MAX_BAR_WIDTH`; 0 (layerchart's own width) before layout. */
-    const barWidth = $derived.by(() => {
-        const band = (barChart?.xScale as Scale | undefined)?.bandwidth?.() ?? 0;
-        return band > 0 ? Math.max(1, Math.min(MAX_BAR_WIDTH, Math.floor(band))) : 0;
-    });
+    /** The bar segments for the chart's current scales: each band's width capped at `MAX_BAR_WIDTH`, centred in it. */
+    function barsFor(xScale: Scale, yScale: Scale) {
+        const band = xScale.bandwidth?.() ?? 0;
+        const width = Math.max(1, Math.min(MAX_BAR_WIDTH, Math.floor(band)));
+        return stackBars(rows, negative, {left: (i) => xScale(i) + (band - width) / 2, width, y: yScale, gap: stackGap, radius: 4});
+    }
 
     // Layerchart keys are the series INDEX (the row holds one value per series,
     // index-aligned). The caller's key — an account name, a split suffix — still
@@ -262,6 +265,13 @@
     </Tooltip.Root>
 {/snippet}
 
+{#snippet bars({context}: {context: {xScale: Scale; yScale: Scale}})}
+    <!-- Plain paths, no stroke: a border around a mark is ink that is not data. -->
+    {#each barsFor(context.xScale, context.yScale) as bar (bar.key)}
+        <path class="lc-bars-bar" d={bar.d} fill={series[bar.series].color} />
+    {/each}
+{/snippet}
+
 {#snippet areas()}
     <!-- Stacked by `bandsAt`, not by layerchart: see it for why. -->
     {#each series as s, idx (s.key)}
@@ -310,23 +320,18 @@
         <div class="w-full {height}" data-testid={testid}>
             {#if mark === "bar"}
                 <BarChart
-                    bind:context={barChart}
                     data={rows}
                     x={(d) => d.i}
                     series={chartSeries}
                     {yDomain}
                     yNice
-                    seriesLayout="stackDiverging"
                     bandPadding={BAND_PADDING}
-                    stackPadding={stackGap}
                     brush={false}
+                    marks={bars}
                     padding={PADDING}
                     props={{
                         xAxis: {format: labelOf, ticks: xTicks},
                         yAxis: {format: axisFormat},
-                        // `strokeWidth: 0` undoes BarChart's 1px black outline on
-                        // every bar — a border around a mark is ink that is not data.
-                        bars: {stroke: "none", strokeWidth: 0, ...(barWidth > 0 ? {width: barWidth} : {})},
                     }}
                     {tooltip}
                     aboveMarks={netLine}

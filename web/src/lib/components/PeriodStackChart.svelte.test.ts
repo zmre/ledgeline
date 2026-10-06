@@ -1,10 +1,11 @@
 // The shared stacked-diverging period chart, mounted.
 //
 // jsdom has no layout engine (see PeriodFlowChart.svelte.test.ts), so nothing
-// here asserts a coordinate. What it can check is structure: one mark per
-// series per bucket for bars, one area per series, one legend entry per ENTITY
-// (not per drawn half), the net drawn twice, net labels only where asked, and
-// the empty and too-short states instead of a broken plot.
+// here asserts a coordinate (`stackBars.test.ts` covers the bar geometry). What
+// it can check is structure: one bar per non-zero value, one area per series,
+// one legend entry per ENTITY (not per drawn half), the net drawn twice, net
+// labels only where asked, and the empty and too-short states instead of a
+// broken plot.
 
 import {render} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
@@ -55,14 +56,12 @@ const legend = (): string[] => [...document.querySelectorAll('[data-testid="stac
 
 describe("COMPONENT PeriodStackChart", () => {
     describe("bars", () => {
-        it("draws one bar per series per bucket, in the series' own colours, with no outline", () => {
-            // `.lc-bars-bar`, not `path.`: a stacked segment that is not the top of
-            // its stack is a square-cornered `<rect>`; only the top one is a
-            // `<path>` with the rounded data-end.
+        it("draws one bar per non-zero value, in the series' own colours, with no outline", () => {
             const {container} = mount();
             const bars = [...container.querySelectorAll(".lc-bars-bar")];
+            const nonZero = SERIES.flatMap((s) => s.values).filter((v) => v !== 0).length;
 
-            expect(bars).toHaveLength(SERIES.length * LABELS.length);
+            expect(bars.length).toBe(nonZero);
             expect(new Set(bars.map((b) => b.getAttribute("fill")))).toEqual(new Set(SERIES.map((s) => s.color)));
             expect(bars.every((b) => (b.getAttribute("stroke") ?? "none") === "none" || b.getAttribute("stroke-width") === "0")).toBe(true);
         });
