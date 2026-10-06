@@ -37,8 +37,12 @@
        never on every point: the buckets are picked by `periodAxis.tickIndices`,
        the axis's own spacing rule, fitted to the plot width and the formatted
        labels. A bucket with nothing in it gets none.
-     - ONE TOOLTIP PER BUCKET listing every non-zero series in legend order —
-       values lead, labels follow, keyed by a short line — then the net.
+     - ONE TOOLTIP PER BUCKET, then the net. Directly over a segment it names
+       that segment alone (`stackHit.seriesAt`, against the drawn bands — bars
+       within their drawn width, areas at the pointer's x between buckets too).
+       Anywhere else in the bucket it lists every non-zero entity in the order
+       the column is drawn, top to bottom, so the list reads like the stack
+       beside it. Keyed by a short line in the entity's colour.
      - The LEGEND is always shown, one entry per entity, with the net as a
        dashed line key: identity is never colour alone. -->
 <script lang="ts">
@@ -48,6 +52,7 @@
     import ChartLegend, {type LegendEntry} from "./ChartLegend.svelte";
     import {fittedTicks, labelFormatter, tickIndices} from "./periodAxis";
     import {stackBars} from "./stackBars";
+    import {seriesAt, topToBottom} from "./stackHit";
     import {stackEmptyReason} from "./periodStackEmpty";
 
     /** One drawn series. Every value must share one sign (zeros aside). */
@@ -182,11 +187,16 @@
     const xTicks = $derived(fittedTicks(labels));
     const labelOf = $derived(labelFormatter(labels));
 
-    /** The bar segments for the chart's current scales: each band's width capped at `MAX_BAR_WIDTH`, centred in it. */
-    function barsFor(xScale: Scale, yScale: Scale) {
+    /** Where each bucket's bar sits: the band's width capped at `MAX_BAR_WIDTH`, centred in it. */
+    function barLayout(xScale: Scale): {left: (i: number) => number; width: number} {
         const band = xScale.bandwidth?.() ?? 0;
         const width = Math.max(1, Math.min(MAX_BAR_WIDTH, Math.floor(band)));
-        return stackBars(rows, negative, {left: (i) => xScale(i) + (band - width) / 2, width, y: yScale, gap: stackGap, radius: 4});
+        return {left: (i) => xScale(i) + (band - width) / 2, width};
+    }
+
+    /** The bar segments for the chart's current scales. */
+    function barsFor(xScale: Scale, yScale: Scale) {
+        return stackBars(rows, negative, {...barLayout(xScale), y: yScale, gap: stackGap, radius: 4});
     }
 
     // Layerchart keys are the series INDEX (the row holds one value per series,
@@ -194,7 +204,7 @@
     // names the legend entry and the tooltip row; it is never handed to the chart.
     const chartSeries = $derived(series.map((s, idx) => ({key: `s${idx}`, label: s.label, color: s.color, value: (d: Row) => d.v[idx] ?? 0})));
 
-    /** Each entity's series (its one or two sign halves), in first-seen order: the legend's order and the tooltip's. */
+    /** Each entity's series (its one or two sign halves), in first-seen order: the legend's order. */
     const entities = $derived.by(() => {
         // eslint-disable-next-line svelte/prefer-svelte-reactivity -- rebuilt wholesale inside $derived.by, never mutated afterwards
         const byEntity = new Map<string, Series[]>();
@@ -211,11 +221,59 @@
         {key: "\u0000net", label: netLabel, color: chartColors.flowNet, swatch: "line", dash: true},
     ]);
 
-    /** The tooltip rows for bucket `i`: each entity's value (its halves summed), non-zero only, legend order. */
-    function itemsAt(i: number): {key: string; label: string; color: string; value: number}[] {
-        return [...entities]
-            .map(([key, halves]) => ({key, label: halves[0].label, color: halves[0].color, value: halves.reduce((sum, s) => sum + (s.values[i] ?? 0), 0)}))
-            .filter((item) => item.value !== 0);
+    interface TooltipItem {
+        key: string;
+        label: string;
+        color: string;
+        value: number;
+    }
+
+    /**
+     * The tooltip rows for bucket `i`, one per entity (its halves summed),
+     * non-zero only, in the order the stack is drawn from the top of the chart
+     * down, so the list reads like the column it describes.
+     */
+    function itemsAt(i: number): TooltipItem[] {
+        const {v} = rows[i];
+        return topToBottom(v, negative).reduce<TooltipItem[]>((items, idx) => {
+            const s = series[idx];
+            const key = s.entity ?? s.key;
+            const seen = items.find((item) => item.key === key);
+            if (seen !== undefined) {
+                seen.value += v[idx];
+                return items;
+            }
+            return [...items, {key, label: s.label, color: s.color, value: v[idx]}];
+        }, []);
+    }
+
+    /** What the tooltip snippet is handed: the scales, the padding and the pointer (container px). */
+    interface HoverContext {
+        xScale: Scale;
+        yScale: Scale;
+        padding: {left: number; top: number};
+        tooltip: {x: number; y: number};
+    }
+
+    /**
+     * The entity directly under the pointer in bucket `i`, or null when it is
+     * beside a bar, above or below the stacks, or on a gap-thin sliver of
+     * nothing. Bars hit only within their drawn width; areas at the pointer's
+     * exact x, between buckets included (`seriesAt`).
+     */
+    function entityUnderPointer(context: HoverContext, i: number): string | null {
+        const px = context.tooltip.x - context.padding.left;
+        const py = context.tooltip.y - context.padding.top;
+        let at = i;
+        if (mark === "bar") {
+            const {left, width} = barLayout(context.xScale);
+            if (px < left(i) || px > left(i) + width) return null;
+        } else if (context.xScale.invert !== undefined) {
+            at = context.xScale.invert(px);
+        }
+        const value = context.yScale.invert?.(py);
+        const idx = value === undefined ? null : seriesAt(rows, at, value);
+        return idx === null ? null : (series[idx].entity ?? series[idx].key);
     }
 
     const netOf = (d: Row): number => d.net;
@@ -239,16 +297,21 @@
     const NET_CLASS = "stroke-2 [stroke-dasharray:5_3]";
     const NET_HALO_CLASS = "stroke-[6px] [stroke-dasharray:5_3]";
 
-    type Scale = ((value: number) => number) & {bandwidth?: () => number};
+    type Scale = ((value: number) => number) & {bandwidth?: () => number; invert?: (px: number) => number};
 </script>
 
-{#snippet tooltip()}
+{#snippet tooltip({context}: {context: HoverContext})}
     <Tooltip.Root contained="window">
         {#snippet children({data})}
             {@const row = data as Row}
+            {@const items = itemsAt(row.i)}
+            {@const under = entityUnderPointer(context, row.i)}
+            <!-- Directly over a segment: that one alone. Anywhere else in the
+                 bucket: all of them, top to bottom as drawn. -->
+            {@const hit = items.filter((item) => item.key === under)}
             <div class="flex max-w-[min(15rem,60vw)] min-w-36 flex-col gap-1 text-xs" data-testid={testid === undefined ? undefined : `${testid}-tooltip`}>
                 <div class="font-semibold">{labelOf(row.i)}</div>
-                {#each itemsAt(row.i) as item (item.key)}
+                {#each hit.length > 0 ? hit : items as item (item.key)}
                     <div class="flex items-center gap-2">
                         <span class="inline-block w-3 shrink-0 border-t-2" style="border-color:{item.color}"></span>
                         <span class="grow truncate text-base-content/60">{item.label}</span>

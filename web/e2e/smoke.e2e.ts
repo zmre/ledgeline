@@ -280,6 +280,39 @@ test("reports: net worth and cash flow draw their charts above the tables", asyn
     }
 });
 
+test("reports: the net worth tooltip names the segment under the pointer, else the column top to bottom", async ({page}) => {
+    await page.goto("/reports?tab=nw&end=2026-07-08&interval=yearly&count=5&depth=3");
+    const chart = page.getByTestId("networth-chart");
+    await expect(chart.locator(".lc-bars-bar").first()).toBeAttached();
+
+    // The last column's segments, top of the chart first.
+    const column = await chart.locator(".lc-bars-bar").evaluateAll((paths) => {
+        const boxes = paths.map((p) => ({box: p.getBoundingClientRect(), fill: p.getAttribute("fill")}));
+        const right = Math.max(...boxes.map((b) => b.box.x));
+        return boxes
+            .filter((b) => Math.abs(b.box.x - right) < 1)
+            .sort((a, b) => a.box.y - b.box.y)
+            .map(({box, fill}) => ({x: box.x, y: box.y, width: box.width, height: box.height, fill}));
+    });
+    expect(column.length).toBeGreaterThan(1);
+    const tallest = column.reduce((a, b) => (b.height > a.height ? b : a));
+
+    const tooltip = page.getByTestId("networth-chart-tooltip");
+    const items = tooltip.locator(":scope > div.items-center:not(.border-t)");
+    const swatches = (): Promise<string[]> => items.evaluateAll((rows) => rows.map((row) => row.querySelector("span")?.style.borderColor ?? ""));
+
+    // Directly over a segment: that segment alone, then the net.
+    await page.mouse.move(tallest.x + tallest.width / 2, tallest.y + tallest.height / 2);
+    await expect(items).toHaveCount(1);
+    await expect(tooltip).toContainText("Net worth");
+
+    // Beside the bar, in the same bucket: every segment, in the column's order.
+    await page.mouse.move(tallest.x + tallest.width + 8, tallest.y + tallest.height / 2);
+    await expect(items).toHaveCount(column.length);
+    const colour = (hex: string | null): string => (hex === null ? "" : `rgb(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`);
+    expect(await swatches()).toEqual(column.map((segment) => colour(segment.fill)));
+});
+
 test("reports: P&L groups start collapsed and open to their accounts", async ({page}) => {
     // The range the plan's ground-truth table pins, rather than the default
     // calendar year, so the figures below are the ones hledger printed for it.
