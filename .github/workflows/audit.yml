@@ -1,0 +1,109 @@
+# Advisory scans of Cargo.lock and web/bun.lock.
+#
+# Two triggers, one definition:
+#
+#   * workflow_call — ci.yml calls this on every PR and push to main, so both
+#     jobs still gate merges exactly as they did when they lived in ci.yml.
+#   * schedule — daily. These are the only jobs that go red with NO commit from
+#     us: a new advisory is published and the next run fails. Before the
+#     schedule existed, that surfaced on whichever unrelated PR happened to be
+#     open (six of the fifteen CI failures up to 2026-10-06 were exactly
+#     this). A daily run on main reports it first, to whoever last edited this
+#     file's cron line (GitHub notifies that user about scheduled-run failures).
+#
+# The ignore lists, and the reasoning behind every entry, live in
+# scripts/audit.sh — shared with `just audit` so the two cannot drift.
+name: Audit
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 13 * * *"
+
+jobs:
+  # RUSTSEC advisory scan of Cargo.lock (SEC-14).
+  #
+  # Runs in the minimal `.#audit` dev shell rather than as `nix build .#audit`:
+  # cargo-audit fetches the advisory DB from GitHub at run time and the Nix
+  # build sandbox has no network, so this cannot be a `checks.` derivation.
+  # No `needs:` — it reads only Cargo.lock, so it is independent of formatting
+  # and of whether the code compiles, and a real CVE should surface even on a
+  # branch that is red for other reasons.
+  #
+  # BLOCKING, deliberately. `cargo audit` only fails on `vulnerability`-class
+  # advisories; `unmaintained` and `unsound` are reported as warnings and exit
+  # 0. That is exactly the behaviour we want: the twelve gtk3-rs / glib /
+  # proc-macro-error entries stay VISIBLE in the log without wedging CI (there
+  # is no upstream fix to move to — wry/tao still bind GTK3), while a genuinely
+  # new and actionable CVE turns this job red on the next run.
+  audit:
+    name: Cargo audit (RUSTSEC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@8d87e8d5e5b8a8309d4281094560f127d9a265f1 # v3.22.5
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: zmre
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+          # Don't burn cache quota on source trees (see docs/development.md).
+          pushFilter: '-(source|vendor)$'
+
+      - name: cargo audit
+        run: scripts/audit.sh rust
+
+  # GitHub-advisory scan of web/bun.lock — the SPA's counterpart to the Rust
+  # `audit` job above.
+  #
+  # WHY THIS JOB HAS TO EXIST: Dependabot cannot cover the SPA. GitHub
+  # classifies Bun as its own ecosystem and supports version updates but NOT
+  # security updates for it, and the dependency graph only parses
+  # web/package.json — 26 direct packages, against the 478 that bun.lock
+  # actually resolves. Every TRANSITIVE npm dependency, which is where npm
+  # vulnerabilities overwhelmingly live, was therefore invisible to alerts.
+  # This job found thirteen advisories on its first run.
+  #
+  # Mirrors `audit`: no `needs:`, because it reads only package.json +
+  # bun.lock (no node_modules, no install step), so a real advisory surfaces
+  # even on a branch that is red for other reasons. Not a `checks.` derivation
+  # for the same reason either — `bun audit` queries the advisory API over the
+  # network and the Nix sandbox has none.
+  #
+  # BLOCKING. `bun audit` exits non-zero on ANY advisory at ANY severity, so
+  # every currently-known one has to be listed in scripts/audit.sh and
+  # anything NEW turns this job red. (Verified both directions: with the ignores it exits 0;
+  # with a bogus ignore id it still exits 1, so the flags cannot silently
+  # neuter the job.)
+  spa-audit:
+    name: SPA audit (bun)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@8d87e8d5e5b8a8309d4281094560f127d9a265f1 # v3.22.5
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: zmre
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+          # Don't burn cache quota on source trees (see docs/development.md).
+          pushFilter: '-(source|vendor)$'
+
+      - name: bun audit
+        run: scripts/audit.sh spa

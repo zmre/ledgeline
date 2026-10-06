@@ -63,15 +63,47 @@ check:
 lint:
     cd web && bun run lint
 
+# Advisory scans of Cargo.lock + web/bun.lock, with exactly CI's ignore lists.
+# Needs the network. The lists, and why each entry is there, live in
+# scripts/audit.sh.
+# cargo audit + bun audit, as CI runs them
+audit:
+    ./scripts/audit.sh
+
+# Instant: a diff against the merge base, no build. See the script for why a
+# stale pin cannot be caught any other way before CI.
+# Fail if web/bun.lock changed but the spaNodeModules hashes did not
+spa-hash-check:
+    ./scripts/check-spa-hash.sh
+
+# aarch64-darwin locally; x86_64-linux on $LEDGELINE_LINUX_STORE (default
+# ssh-ng://avalon). x86_64-darwin is release-dry-run only.
+# Re-pin spaNodeModulesHashes in flake.nix after a bun.lock change
+repin-spa-hashes:
+    ./scripts/repin-spa-hashes.sh
+
 # The local twin of what a PR is gated on. Every job in .github/workflows/ci.yml
-# runs on `pull_request` with no `if:` and no `continue-on-error`, so all nine of
-# them gate, and the recipes below are the ones a laptop can stand in for.
+# (and the audit jobs it calls from audit.yml) runs on `pull_request` with no
+# `if:` and no `continue-on-error`, so all of them gate, and the recipes below
+# are the ones a laptop can stand in for.
 #
 # Ordered cheapest-first so it fails fast. Measured at 1m54s on a warm cargo
-# cache, roughly half of that `engine-test`; cold, or after a Cargo.lock bump, it
-# is a full workspace compile and several minutes. Type it before pushing.
-# Deliberately NOT a pre-push hook: .pre-commit-config.yaml is generated, and a
-# two-minute hook is a hook people learn to pass --no-verify to.
+# cache before `audit` joined (it adds the advisory-DB fetches), roughly half of
+# that `engine-test`; cold, or after a Cargo.lock bump, it is a full workspace
+# compile and several minutes.
+#
+# It IS the pre-push hook (`just-pre-push` in flake.nix's gitHooks). It used to
+# be a command you had to remember, and the CI failures it would have caught
+# kept happening anyway. `git push --no-verify` skips it when you mean to.
+#
+# `audit` is here even though new advisories arrive without any commit: the
+# daily scheduled run in audit.yml catches those on main, and this catches the
+# ones that landed since.
+#
+# `spa-hash-check` stands in for the one CI failure a Mac cannot rehearse:
+# `nix build .#linuxDist` with a stale x86_64-linux spaNodeModules pin.
+# spaNodeModules' outputHash is per-system and can only be generated ON the
+# system it describes, so the check compares pins instead of building.
 #
 # `test` AND `test-integration`, because CI runs vitest twice: once with no
 # engine (the `spa` job, which is what proves the suite is self-contained) and
@@ -81,12 +113,8 @@ lint:
 #
 # No `build` step: playwright.config.ts's second webServer already runs
 # `bun run build && bun run preview`, so `e2e` builds the SPA for us.
-#
-# `nix build .#linuxDist` is absent and stays absent. spaNodeModules' outputHash
-# is per-system and can only be generated ON the system it describes, so a Mac
-# cannot rehearse it and only the CI `build` job can.
 # Everything a PR is gated on that a laptop can run
-pre-push: version-check engine-check lint check test test-integration engine-test e2e
+pre-push: version-check spa-hash-check audit engine-check lint check test test-integration engine-test e2e
 
 # Regenerate golden report fixtures from fixtures/sample.journal via hledger CLI
 golden:

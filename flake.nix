@@ -751,9 +751,10 @@
           # that silently never appears in a menu.
           desktop-file-validate "$out/share/applications/ledgeline.desktop"
         '';
-      # --- Formatting gate, on PUSH rather than on commit ---------------------
-      # Both formatters CI cares about, run against the whole tree before a
-      # push leaves the machine. Entering `nix develop` installs the hook into
+      # --- Push gate: formatters + `just pre-push` ----------------------------
+      # Both formatters CI cares about, then everything else a laptop can check
+      # of what CI gates on (`just pre-push`), run before a push leaves the
+      # machine. Entering `nix develop` installs the hook into
       # `.git/hooks/pre-push`; there is nothing to run by hand.
       #
       # PRE-PUSH, NOT PRE-COMMIT, deliberately. A pre-commit hook fires on every
@@ -800,6 +801,34 @@
           # likely to be edited by someone who is not set up for Nix. Nothing in
           # CI checks Nix formatting, so this hook is the only thing that does.
           alejandra.enable = true;
+          # Everything else CI gates on that a laptop can run: audits, the
+          # spaNodeModules pin check, clippy, lint, svelte-check, both vitest
+          # passes, cargo test and Playwright (see `pre-push` in the justfile).
+          # Minutes, not seconds — it used to be a command to remember instead,
+          # and the failures it catches kept reaching CI anyway. `git push
+          # --no-verify` is the escape hatch.
+          #
+          # Runs against the WORKING TREE: pre-push hooks get no stash, so
+          # uncommitted edits are tested too. Commit or stash them first if
+          # that matters.
+          just-pre-push = {
+            enable = true;
+            name = "just pre-push (everything CI gates on)";
+            entry = "${pkgs.writeShellScript "ledgeline-just-pre-push" ''
+              # A push from outside the dev shell (a GUI git client, a plain
+              # terminal) has no cargo, bun, hledger or Playwright browsers on
+              # PATH, so enter it first.
+              if [ -n "''${IN_NIX_SHELL:-}" ]; then
+                exec ${pkgs.just}/bin/just pre-push
+              fi
+              exec nix develop --command ${pkgs.just}/bin/just pre-push
+            ''}";
+            pass_filenames = false;
+            # Not gated on which files changed: an advisory or a stale pin can
+            # fail it with no relevant file touched at all.
+            always_run = true;
+            require_serial = true;
+          };
         };
       };
     in {
