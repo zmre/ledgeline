@@ -13,11 +13,32 @@ use ledgeline_core::{Journal, parse_journal};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::process::Command;
 
 pub const DEFAULT_IGNORED_KEYS: [&str; 2] = ["floatingPoint", "sourceName"];
 
 /// `{(aname, aditags-or-null)}`: `None` = undeclared, `Some(tags)` = declared.
 pub type AccountContract = BTreeSet<(String, Option<Vec<(String, String)>>)>;
+
+/// `git`, with every `GIT_*` variable removed, for tests that build throwaway
+/// repositories.
+///
+/// git exports `GIT_DIR` and `GIT_INDEX_FILE` to its hooks, so `cargo test`
+/// run from the pre-push hook used to point every scaffolding `git init` /
+/// `git config` / `git commit` at the REAL repository instead of the temp
+/// directory: it rewrote the shared config and committed over the branch. A
+/// test repo must depend on its `current_dir` and nothing else.
+#[must_use]
+pub fn git_command() -> Command {
+    let mut command = Command::new("git");
+    std::env::vars_os()
+        .map(|(key, _)| key)
+        .filter(|key| key.to_string_lossy().starts_with("GIT_"))
+        .for_each(|key| {
+            command.env_remove(key);
+        });
+    command
+}
 
 #[must_use]
 pub fn fixtures_dir() -> PathBuf {

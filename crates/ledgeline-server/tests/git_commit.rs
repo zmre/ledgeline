@@ -43,6 +43,9 @@
 #[path = "../src/git.rs"]
 mod git;
 
+mod common;
+
+use common::git_command;
 use git::{FileState, GitError, GitStatus, Repo, git_available};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -115,7 +118,7 @@ impl TestRepo {
     /// Run git in this repository, asserting success. Test scaffolding only —
     /// the code under test never shells out this way.
     fn git(&self, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = git_command()
             .args(args)
             .current_dir(self.path())
             .output()
@@ -244,7 +247,7 @@ fn discover_returns_none_outside_a_repository() {
 fn discover_declines_a_bare_repository() {
     require_git!();
     let dir = TempDir::new().expect("temp dir");
-    let output = Command::new("git")
+    let output = git_command()
         .args(["init", "--bare", "--quiet"])
         .current_dir(dir.path())
         .output()

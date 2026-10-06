@@ -94,6 +94,29 @@ use thiserror::Error;
 /// The binary. Resolved through `PATH` by [`Command`]; never through a shell.
 const GIT: &str = "git";
 
+/// Variables that pin git to a repository other than the one `cwd` names:
+/// exactly what `git rev-parse --local-env-vars` lists (git 2.55). git exports
+/// several of them to its hooks, so a Ledgeline started from a hook, or from
+/// any shell that has `GIT_DIR` set, would otherwise read and commit to THAT
+/// repository instead of the journal's. Every invocation removes them.
+const REPO_ENV_VARS: [&str; 15] = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
 /// Global flags every single invocation carries.
 ///
 /// `--no-pager` because a pager on an inherited terminal would block forever,
@@ -531,6 +554,8 @@ impl Run {
 ///   reading a credential from a terminal it happened to inherit.
 /// - **`GIT_EDITOR=false`** so nothing can spawn an editor into a GUI process
 ///   that has no terminal to show it in. It fails loudly instead of hanging.
+/// - **[`REPO_ENV_VARS`] are removed**, so `cwd` alone decides which
+///   repository git operates on.
 /// - **stdout and stderr are drained by threads.** Reading them in sequence
 ///   after `wait()` deadlocks the moment either pipe's buffer fills, which is a
 ///   real prospect for a chatty pre-commit hook.
@@ -559,6 +584,9 @@ pub(crate) fn run(
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "")
         .env("GCM_INTERACTIVE", "never");
+    REPO_ENV_VARS.iter().for_each(|var| {
+        command.env_remove(var);
+    });
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
@@ -1142,5 +1170,34 @@ mod tests {
         let status = GitStatus::unavailable();
         assert!(!status.available);
         assert!(status.files.is_empty() && status.dirty.is_empty());
+    }
+
+    /// `REPO_ENV_VARS` is a copy of git's own list, so a git release that adds
+    /// a repository-pinning variable shows up here rather than as a commit
+    /// landing in the wrong repository. A superset check: an extra name we
+    /// remove costs nothing.
+    #[test]
+    fn repo_env_vars_cover_everything_git_calls_local() {
+        if !git_available() {
+            eprintln!("skipping: no `git` on PATH");
+            return;
+        }
+        let listed = run(
+            None,
+            "rev-parse",
+            &[
+                OsString::from("rev-parse"),
+                OsString::from("--local-env-vars"),
+            ],
+            PROBE_TIMEOUT,
+        )
+        .expect("git rev-parse --local-env-vars");
+        assert!(listed.succeeded());
+        let missing: Vec<String> = String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .filter(|var| !REPO_ENV_VARS.contains(var))
+            .map(str::to_owned)
+            .collect();
+        assert!(missing.is_empty(), "add to REPO_ENV_VARS: {missing:?}");
     }
 }

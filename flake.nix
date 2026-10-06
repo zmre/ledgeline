@@ -815,6 +815,14 @@
             enable = true;
             name = "just pre-push (everything CI gates on)";
             entry = "${pkgs.writeShellScript "ledgeline-just-pre-push" ''
+              # git exports GIT_DIR, GIT_INDEX_FILE and friends to hooks. Left
+              # in place, every `git` the test suites run in a temp repo acts
+              # on THIS repository instead: on 2026-10-06 that rewrote the
+              # shared .bare/config (identity, signing, hooksPath) and
+              # committed over the branch. The suites now guard themselves too;
+              # this keeps anything else `just pre-push` runs from depending on it.
+              unset $(git rev-parse --local-env-vars)
+
               # A push from outside the dev shell (a GUI git client, a plain
               # terminal) has no cargo, bun, hledger or Playwright browsers on
               # PATH, so enter it first.
