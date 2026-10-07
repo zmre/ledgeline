@@ -815,7 +815,7 @@ fn posting(
         cell,
     };
     let debit = amount_of(row.get(layout.debit)).map_err(malformed)?;
-    let credit = amount_of(row.get(layout.credit)).map_err(&malformed)?;
+    let credit = amount_of(row.get(layout.credit)).map_err(malformed)?;
     let account = cell(row, Some(layout.account));
 
     // A row naming no account and moving no money on either side is not a
