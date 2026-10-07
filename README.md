@@ -20,8 +20,8 @@ Finally, I have very different needs for my business as I do for my personal stu
 - **Reports** starts with more insights including year over year (or any period) comparisons highlighting biggest changes, transactions, revenue, expenses and net worth at a glance.  Then use the sub tabs (or the keyboard shortcuts) to navigate to the balance sheet, income statement, cash flow, net worth, and subscriptions reports. Each can be exported as XLSX.  
   - **Balance sheet** is built with flexibility. Tag accounts to customize the balance sheet.  The in-app experience rolls things up intelligently with drill downs at each line while the XLSX export is a more standard view to share. See **[docs/balance-sheet.md](docs/balance-sheet.md)** for grouping rules, valuation, and to explain the built-in checks.
   - **Profit and Loss** shows sources of revenue and expenses, rolled up and compared to previous years. Sankey diagrams visualize inflows and outflows.  As with the balance sheet, you can tag accounts to customize how they show up in the P&L to make things prettier or to make more sophisticated business statements. Again, the XLSX download gives a more standard report for sharing. See **[docs/income-statement.md](docs/income-statement.md)** for the attribution rule, the links that are not drawn, and why colour tracks the account.
-  - **Cash Flow** flocuses on change to cash over a period of time showing month-by-month changes to cash assets (or any period and duration you want) at whatever level of roll-up you prefer.
-  - **Net Worth** uses pricing and other signals to show assets and liabilities over time, with relevant values, by default annually.
+  - **Cash Flow** flocuses on change to cash over a period of time showing month-by-month changes to cash assets (or any period and duration you want) at whatever level of roll-up you prefer. A stacked chart above the table draws exactly the table's accounts, with the net change as a line. See **[docs/cash-flow-and-net-worth.md](docs/cash-flow-and-net-worth.md)**.
+  - **Net Worth** uses pricing and other signals to show assets and liabilities over time, with relevant values, by default annually. A chart above the table stacks exactly the table's accounts, each asset above zero and each liability below it, with net worth drawn as a line.
   - **Subscriptions** looks through journal entries to find recurring entries of similar description and price that happen monthly or annually to sum up what you're getting charged for on a recurring basis. Variable cost items like utility bills may not be caught, but for the things it detects, it says when the next charge is and how much it costs annually. In-app, the P&L has sankey diagrams showing flows and each area is rolled up, but can be independently expanded to drill in. 
   - _All reports are computed in Rust with exact decimal math and hledger parity._
 - **Imports** looks for existing import rules files (`*.rules`) and tries match with any file you want to import regardless of its name or location. By default, we use hledger to do the import, but in some cases we do pre-processing, for example if we're importing QIF, QBO, or XLSX files. Rules can be edited in the GUI or from the command line, but in the GUI you can see your options for field mapping, default accounts, date format, etc. For fancy rules that the GUI doesn't support, we preserve them as-is so nothing is ever messed up.
@@ -95,7 +95,7 @@ direnv allow          # or: nix develop path:.
 just --list           # available tasks
 just engine-test      # cargo test over the workspace
 just check            # SPA type-check + unit tests
-just pre-push         # everything CI gates on, under 2 min warm; run before you push
+just pre-push         # everything CI gates on; the git pre-push hook runs it
 cd web && bun run build && cd .. && cargo build --release && ./target/release/ledgeline ~/.../Ledger/main.journal
 ```
 
@@ -105,6 +105,8 @@ See **[docs/imports.md](docs/imports.md)** for the CSV rules-file editor — the
 model, what it will and won't edit, and the guards on its write path.
 See **[docs/balance-sheet.md](docs/balance-sheet.md)** for the balance sheet — the `bsgroup:` and
 `bsterm:` tags, how untagged accounts are grouped, valuation, and the balance check's tolerance.
+See **[docs/cash-flow-and-net-worth.md](docs/cash-flow-and-net-worth.md)** for the Cash Flow and Net Worth charts — how
+the stacks avoid double counting, which side an account stacks on, and how cash is attributed to its sources.
 See **[docs/holdings.md](docs/holdings.md)** for the Holdings tabs — the `holdings:` and
 `valuation:` tags, how several accounts become one holding, and what "change" measures against.
 See **[docs/projections.md](docs/projections.md)** for the Projections tab — the scenario file

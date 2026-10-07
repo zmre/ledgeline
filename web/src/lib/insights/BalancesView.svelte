@@ -23,7 +23,8 @@
     import type {AccountDecl} from "$lib/domain/accountTypes";
     import {formatAmount, toNumber, type Dec} from "$lib/domain/money";
     import type {Transaction} from "$lib/domain/types";
-    import {colorAt, OTHER_COLOR, OTHER_LABEL} from "$lib/format/palette";
+    import {chartColors} from "$lib/format/chartColors.svelte";
+    import {OTHER_LABEL} from "$lib/format/palette";
     import {signClass} from "$lib/format/sign";
     import {accountBalances, balanceCommodities, guessedLongTerm, summarize, visibleRows, type BalanceRow} from "$lib/reports/cashBalances";
     import {today} from "$lib/reports/periods";
@@ -35,9 +36,6 @@
     // passing the filtered array would silently produce wrong balances rather
     // than an error.
     let {allTxns, decls}: {allTxns: Transaction[]; decls: readonly AccountDecl[]} = $props();
-
-    /** At most this many pie slices, the last of which is "(other)" — same cap the activity chart uses. */
-    const MAX_SLICES = 6;
 
     const asOf = today();
     // Memoized in cashBalances on (txns, decls, asOf) identity, so the
@@ -90,25 +88,25 @@
     }
 
     /**
-     * Cash pie: positive balances only, biggest first, tail folded into
-     * "(other)". Liabilities are excluded on purpose — the ask is "where is my
+     * Cash pie: positive balances only, biggest first, one slice per account
+     * until the palette's slots run out, and only the tail past the last slot
+     * folded into "(other)". Liabilities are excluded on purpose — the ask is "where is my
      * cash", and a pie divides a whole by AREA, which a debt has none of.
      * Negative (overdrawn) cash is left out for the same reason and is already
      * called out in red in the list.
      */
     const slices: Slice[] = $derived.by(() => {
         const positive = cash.filter((row) => row.qty.m > 0n);
-        const keep = positive.length > MAX_SLICES ? MAX_SLICES - 1 : positive.length;
-        const head = positive.slice(0, keep).map((row, i) => ({
+        const head = positive.slice(0, chartColors.categorical.length).map((row, i) => ({
             account: row.account,
             value: toNumber(row.qty),
             formatted: fmt(row.qty),
-            color: colorAt(i),
+            color: chartColors.colorAt(i),
         }));
-        const tail = positive.slice(keep);
+        const tail = positive.slice(head.length);
         if (tail.length === 0) return head;
         const total = tail.reduce((sum, row) => sum + toNumber(row.qty), 0);
-        return [...head, {account: OTHER_LABEL, value: total, formatted: `${tail.length} more`, color: OTHER_COLOR}];
+        return [...head, {account: OTHER_LABEL, value: total, formatted: `${tail.length} more`, color: chartColors.other}];
     });
     /** Slice colour by account, so a list row's dot matches its wedge. */
     const colorOf = $derived(new Map(slices.map((slice) => [slice.account, slice.color])));

@@ -95,7 +95,9 @@ pub use subscriptions::{
     Cadence, DEFAULT_EXCLUDE_DESC, Subscription, SubscriptionOpts, SubscriptionsReport,
     detect_subscriptions,
 };
-pub use types::{PeriodReport, PeriodRow, ReportMeta, ReportRow, Section, SectionedReport};
+pub use types::{
+    PeriodReport, PeriodRow, ReportMeta, ReportRow, RowKind, Section, SectionedReport,
+};
 
 /// Errors surfaced by the report engine.
 #[derive(Debug, Error, PartialEq, Eq, Clone)]

@@ -20,85 +20,39 @@ pub fn is_cash_like(account: &str) -> bool {
     infer_account_type(account) == Some(AccountType::Cash)
 }
 
-/// Per-bucket cash flow. `is_cash` overrides the name heuristic (pass the result
-/// of [`super::account_types::cash_predicate`] to honor declared `type:` tags).
-///
-/// `is_cash` must be a pure function of the account name: it is consulted once
-/// per DISTINCT account rather than once per account per bucket.
-///
-/// # Errors
-/// Returns [`ReportError`] on decimal overflow or bad bucket math.
-pub fn cash_flow(
-    txns: &[Transaction],
-    end: &str,
-    interval: Interval,
-    count: usize,
+/// Each bucket's inclusive `[start, to]` range, with the last one truncated at
+/// `end`. `last_n_buckets` yields CONTIGUOUS, non-overlapping buckets oldest →
+/// newest, so the `to` bounds ascend strictly and every posting falls in at most
+/// one of them — which is what lets [`bucket_of`] binary-search rather than
+/// re-scan the journal once per bucket (PERF-5).
+fn bucket_ranges(buckets: &[String], end: &str) -> Result<Vec<(String, String)>, ReportError> {
+    buckets.iter().map(|key| bucket_span(key, end)).collect()
+}
+
+/// The bucket a posting dated `date` falls in, or `None` outside the span.
+fn bucket_of(ranges: &[(String, String)], date: &str) -> Option<usize> {
+    let index = ranges.partition_point(|(_, to)| to.as_str() < date);
+    let (start, _) = ranges.get(index)?;
+    (date >= start.as_str()).then_some(index)
+}
+
+/// Roll each bucket's direct per-account amounts up, clamp to `depth`, and
+/// pivot into rows (the union of accounts across buckets, sorted). Also returns
+/// each bucket's total, summed over the UNCLAMPED accounts so it does not move
+/// with `depth` (RPT-4).
+fn pivot(
+    direct: &[BTreeMap<String, MixedAmount>],
     depth: usize,
-    is_cash: Option<&dyn Fn(&str) -> bool>,
-) -> Result<PeriodReport, ReportError> {
-    let default_pred = |account: &str| is_cash_like(account);
-    let is_cash: &dyn Fn(&str) -> bool = match is_cash {
-        Some(pred) => pred,
-        None => &default_pred,
-    };
-
-    let buckets = last_n_buckets(end, interval, count)?;
-    let mut totals: Vec<MixedAmount> = Vec::with_capacity(buckets.len());
-    let mut per_bucket: Vec<BTreeMap<String, MixedAmount>> = Vec::with_capacity(buckets.len());
-
-    // Each bucket's inclusive `[start, to]` range, with the last one truncated
-    // at `end`. `last_n_buckets` yields CONTIGUOUS, non-overlapping buckets
-    // oldest → newest, so the `to` bounds ascend strictly and every posting
-    // falls in at most one of them — which is what lets the binary search below
-    // replace one `account_totals` re-scan per bucket (PERF-5).
-    let ranges: Vec<(String, String)> = buckets
-        .iter()
-        .map(|key| bucket_span(key, end))
-        .collect::<Result<_, ReportError>>()?;
-
-    // ONE pass over every posting, summing per FULL account name into its own
-    // bucket — i.e. exactly what `account_totals(from, to)` would have produced
-    // for that bucket, and in the same transaction order, so no number can move.
-    let mut direct: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); ranges.len()];
-    let mut cash_like: HashMap<&str, bool> = HashMap::new();
-    for txn in txns {
-        for posting in &txn.postings {
-            let date = posting.date.as_deref().unwrap_or(&txn.date);
-            let index = ranges.partition_point(|(_, to)| to.as_str() < date);
-            let Some((start, _)) = ranges.get(index) else {
-                continue; // after the last bucket
-            };
-            if date < start.as_str() {
-                continue; // before the report span
-            }
-            let account = posting.account.0.as_str();
-            if !*cash_like.entry(account).or_insert_with(|| is_cash(account)) {
-                continue;
-            }
-            let entry = direct[index].entry(account).or_default();
-            for amount in &posting.amounts {
-                entry.accumulate(&amount.commodity, amount.quantity)?;
-            }
-        }
-    }
-
-    for bucket in &direct {
-        // `account_totals` prunes zero commodities in one final sweep.
-        let direct: BTreeMap<String, MixedAmount> = bucket
-            .iter()
-            .map(|(account, ma)| {
-                let mut pruned = ma.clone();
-                pruned.drop_zeros();
-                ((*account).to_string(), pruned)
-            })
-            .collect();
-
+) -> Result<(Vec<PeriodRow>, Vec<MixedAmount>), ReportError> {
+    let mut totals: Vec<MixedAmount> = Vec::with_capacity(direct.len());
+    let mut per_bucket: Vec<BTreeMap<String, MixedAmount>> = Vec::with_capacity(direct.len());
+    for bucket in direct {
         let mut total = MixedAmount::new();
-        for ma in direct.values() {
+        for ma in bucket.values() {
             total = total.ma_add(ma)?;
         }
         totals.push(total);
-        per_bucket.push(at_depth(&roll_up(&direct)?, depth));
+        per_bucket.push(at_depth(&roll_up(bucket)?, depth));
     }
 
     let accounts: BTreeSet<String> = per_bucket
@@ -117,10 +71,68 @@ pub fn cash_flow(
                 account,
                 depth,
                 values,
+                kind: None,
             }
         })
         .collect();
+    Ok((rows, totals))
+}
 
+/// `account_totals` prunes zero commodities in one final sweep; so does this.
+fn pruned(bucket: BTreeMap<&str, MixedAmount>) -> BTreeMap<String, MixedAmount> {
+    bucket
+        .into_iter()
+        .map(|(account, mut ma)| {
+            ma.drop_zeros();
+            (account.to_string(), ma)
+        })
+        .collect()
+}
+
+/// Per-bucket cash flow. `is_cash` overrides the name heuristic (pass the result
+/// of [`super::account_types::cash_predicate`] to honor declared `type:` tags).
+///
+/// `is_cash` must be a pure function of the account name: it is consulted once
+/// per DISTINCT account rather than once per account per bucket.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or bad bucket math.
+pub fn cash_flow(
+    txns: &[Transaction],
+    end: &str,
+    interval: Interval,
+    count: usize,
+    depth: usize,
+    is_cash: Option<&dyn Fn(&str) -> bool>,
+) -> Result<PeriodReport, ReportError> {
+    let is_cash = is_cash.unwrap_or(&is_cash_like);
+    let buckets = last_n_buckets(end, interval, count)?;
+    let ranges = bucket_ranges(&buckets, end)?;
+
+    // ONE pass over every posting, summing per FULL account name into its own
+    // bucket — i.e. exactly what `account_totals(from, to)` would have produced
+    // for that bucket, and in the same transaction order, so no number can move.
+    let mut direct: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); ranges.len()];
+    let mut cash_like: HashMap<&str, bool> = HashMap::new();
+    for txn in txns {
+        for posting in &txn.postings {
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            let Some(index) = bucket_of(&ranges, date) else {
+                continue;
+            };
+            let account = posting.account.0.as_str();
+            if !*cash_like.entry(account).or_insert_with(|| is_cash(account)) {
+                continue;
+            }
+            let entry = direct[index].entry(account).or_default();
+            for amount in &posting.amounts {
+                entry.accumulate(&amount.commodity, amount.quantity)?;
+            }
+        }
+    }
+
+    let direct: Vec<BTreeMap<String, MixedAmount>> = direct.into_iter().map(pruned).collect();
+    let (rows, totals) = pivot(&direct, depth)?;
     Ok(PeriodReport {
         buckets,
         rows,

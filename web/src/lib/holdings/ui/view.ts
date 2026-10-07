@@ -89,10 +89,11 @@ export interface PieSlice {
  * Pie slices by market value: priced holdings only (unpriced are covered by
  * the inline warning), top `maxNamed` keep their symbol, the rest fold into
  * one PIE_OTHER bucket (summed exactly, converted to number only for the
- * slice value). `maxNamed` defaults to 8 — the validated categorical palette
- * has exactly 8 slots and the dataviz rule is to fold, never to cycle hues.
+ * slice value). The caller passes the palette's slot count
+ * (`chartColors.categorical.length`): every slot is used before anything
+ * folds, and the dataviz rule is to fold, never to cycle hues.
  */
-export function pieSlices(holdings: readonly Holding[], format: (v: Dec) => string, maxNamed = 8): PieSlice[] {
+export function pieSlices(holdings: readonly Holding[], format: (v: Dec) => string, maxNamed: number): PieSlice[] {
     const priced = holdings.filter((h): h is Holding & {marketValue: Dec} => h.marketValue !== null);
     const named = priced.slice(0, maxNamed);
     const tail = priced.slice(maxNamed);

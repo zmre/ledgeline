@@ -53,13 +53,13 @@
             </button>
         </div>
         <label class="ml-auto flex items-center gap-2">
-            <span class="text-xs text-base-content/70">Gain</span>
+            <span class="text-xs text-base-content/70">Period</span>
             <select
                 class="select w-44 select-sm"
                 value={gainPeriod}
                 onchange={(e) => holdingsScope.setGainPeriod(e.currentTarget.value as GainPeriod)}
                 aria-label="Gain period"
-                title="Window the gain/loss column: all-time, year to date, or trailing 12 months"
+                title="The window for the gain/loss figures and the value-over-time chart"
             >
                 {#each GAIN_PERIODS as opt (opt.value)}
                     <option value={opt.value}>{opt.label}</option>

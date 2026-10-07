@@ -7,7 +7,7 @@
 //! date series for the holdings-over-time trend.
 //!
 //! Design mirrors the TS layering and reuses the report engine's substrate:
-//! - [`commodities`] — currency-vs-stock classification (`is_currency`).
+//! - [`commodities`] — currency-vs-stock classification ([`Currencies`]).
 //! - [`types`] — the serde-free report contracts.
 //! - [`engine`] — the average-cost pool math (`compute_holdings`), reusing
 //!   `reports::{PriceDb, account_matches}` and the non-normalizing `mul_raw`.
@@ -20,12 +20,14 @@
 //! Money stays exact-decimal (`Dec`); every fallible op surfaces through
 //! [`crate::reports::ReportError`] rather than unwrapping.
 
+pub mod benchmark;
 pub mod classify;
 pub mod commodities;
 pub mod engine;
 pub mod other;
 pub mod series;
 pub mod types;
+pub mod window;
 
 #[cfg(test)]
 mod test_helpers;
@@ -35,14 +37,18 @@ pub use classify::{
     declared_valuation_roles, parse_holdings_tag, parse_valuation_tag, resolve_holdings_class,
     resolve_valuation_role,
 };
-pub use commodities::is_currency;
-pub use engine::{compute_holdings, prices_any_held, valuation_base};
-pub use other::{
-    OtherHolding, OtherHoldingsReport, OtherHoldingsTotals, OtherHoldingsWarning, OtherWarningKind,
-    other_holdings, other_holdings_series,
+pub use commodities::{Currencies, is_us_dollar};
+pub use engine::{
+    DatedFlow, HoldingsFlows, compute_holdings, first_holding_date, holdings_flows,
+    prices_any_held, valuation_base,
 };
-pub use series::{HoldingsPoint, HoldingsSeries, holdings_series};
+pub use other::{
+    OtherHolding, OtherHoldingsReport, OtherHoldingsTotals, OtherHoldingsWarning, OtherInputs,
+    OtherWarningKind, first_other_holding_date, other_holdings, other_holdings_series,
+};
+pub use series::{HoldingsPoint, HoldingsSeries, holdings_series, holdings_series_and_flows};
 pub use types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
     PriceSource, ScopeMode, WarningKind,
 };
+pub use window::{SeriesWindow, auto_interval, series_count, series_dates};

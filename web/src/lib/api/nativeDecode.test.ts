@@ -636,6 +636,27 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
     it("throws ApiShapeError when totals is missing", () => {
         expect(() => decodePeriodReport({buckets: [], rows: []})).toThrow(ApiShapeError);
     });
+
+    it("carries each net-worth row's balance-sheet side, and no side on the cash flow", () => {
+        const worth = decodePeriodReport(golden("networth"));
+        expect(worth.rows.map((r) => [r.account, r.kind])).toEqual([
+            ["assets", "asset"],
+            ["assets:bank", "asset"],
+            ["assets:broker", "asset"],
+            ["assets:property", "asset"],
+            ["assets:vehicles", "asset"],
+            ["liabilities", "liability"],
+            ["liabilities:cc", "liability"],
+            ["liabilities:mortgage", "liability"],
+        ]);
+        const flow = decodePeriodReport(golden("cashflow"));
+        expect(flow.rows.every((r) => !("kind" in r))).toBe(true);
+    });
+
+    it("throws on a row side it does not know rather than stacking it nowhere", () => {
+        const raw = {buckets: ["2026-07"], rows: [{account: "assets", depth: 1, values: [{}], kind: "equity"}], totals: [{}]};
+        expect(() => decodePeriodReport(raw)).toThrow(/kind: expected one of asset\/liability\/mixed, got "equity"/);
+    });
 });
 
 describe("UNIT nativeDecode — BudgetGaps over the budget-gaps golden", () => {

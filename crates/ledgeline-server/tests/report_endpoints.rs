@@ -1657,6 +1657,56 @@ async fn networth_depth_surfaces_valued_sub_accounts() {
     assert_eq!(wire_ma(&row["values"][0]), sum_golden(&aapl[3]));
 }
 
+/// Every net-worth row names its balance-sheet side, by declared type: the
+/// chart above the table stacks assets up and liabilities down from it.
+#[tokio::test]
+async fn networth_rows_carry_their_balance_sheet_side() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/networth?end=2026-06-30&interval=monthly&count=2&depth=2",
+    )
+    .await;
+    let kinds: BTreeMap<&str, &str> = body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["account"].as_str().unwrap(),
+                row["kind"]
+                    .as_str()
+                    .expect("every net-worth row has a kind"),
+            )
+        })
+        .collect();
+    assert_eq!(kinds.get("assets"), Some(&"asset"));
+    assert_eq!(kinds.get("assets:bank"), Some(&"asset"));
+    assert_eq!(kinds.get("liabilities"), Some(&"liability"));
+    assert_eq!(kinds.get("liabilities:cc"), Some(&"liability"));
+    assert!(
+        kinds
+            .values()
+            .all(|kind| ["asset", "liability", "mixed"].contains(kind)),
+        "{kinds:?}"
+    );
+}
+
+/// The cash flow's own rows carry no `kind`: the key is omitted, not `null`,
+/// so that report's wire is byte-for-byte what it was.
+#[tokio::test]
+async fn cashflow_rows_omit_kind() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/cashflow?end=2026-06-30&interval=monthly&count=3&depth=3",
+    )
+    .await;
+    let rows = body["rows"].as_array().unwrap();
+    assert!(!rows.is_empty());
+    assert!(rows.iter().all(|row| row.get("kind").is_none()));
+}
+
 // ===========================================================================
 // Budget — vs fixtures/budget/basic.budget.json (full cell parity)
 // ===========================================================================

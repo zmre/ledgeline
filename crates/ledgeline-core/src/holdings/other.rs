@@ -3,7 +3,7 @@
 //!
 //! This is the Holdings page's second tab, and it is a DIFFERENT ENGINE, not a
 //! filter over [`super::engine`]. That one is keyed by commodity and its first
-//! act is to drop every currency amount (`engine.rs`, the `is_currency` skip in
+//! act is to drop every currency amount (`engine.rs`, the `Currencies::is_currency` skip in
 //! `replay_pools`), so a house booked as `$150,000.00` produces no pool, no
 //! symbol and no row — it is not hidden, it is structurally invisible. Here the
 //! thing you own IS the account, and its value is that account's balance.
@@ -27,9 +27,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::decimal::Dec;
 use crate::model::{AccountDeclaration, AccountName, Commodity, PriceDirective, Transaction};
 use crate::reports::{
-    AccountType, AccountTypes, Interval, MixedAmount, PostingFilter, PriceDb, ReportError,
-    ValuationMeta, account_decls_from, account_totals, bucket_end, bucket_label, compare_iso,
-    declared_types, infer_market_prices, last_n_buckets, value_at,
+    AccountType, AccountTypes, MixedAmount, PostingFilter, PriceDb, ReportError, ValuationMeta,
+    account_decls_from, account_totals, bucket_label, declared_types, infer_market_prices,
+    last_n_buckets, value_at,
 };
 use crate::wire::{account_tag_map, inherited_account_tags};
 
@@ -37,10 +37,11 @@ use super::classify::{
     HoldingsClass, ValuationRole, declared_holdings_classes, declared_valuation_roles,
     resolve_holdings_class, resolve_valuation_role,
 };
-use super::commodities::is_currency;
+use super::commodities::Currencies;
 use super::engine::{FALLBACK_BASE, gain_pct, scope_accounts};
 use super::series::{HoldingsPoint, HoldingsSeries};
 use super::types::HoldingsScope;
+use super::window::{SeriesWindow, series_dates};
 
 /// One non-stock, non-cash asset account.
 #[derive(Debug, Clone, PartialEq)]
@@ -139,7 +140,7 @@ pub struct OtherHoldingsReport {
 /// `count`-point series builds the price database, the type memo and the tag map
 /// once rather than once per point (the shape [`super::engine::HoldingsInputs`]
 /// exists for, and for the same measured reason).
-struct OtherInputs<'a> {
+pub struct OtherInputs<'a> {
     txns: &'a [Transaction],
     db: PriceDb,
     types: AccountTypes,
@@ -150,10 +151,16 @@ struct OtherInputs<'a> {
     /// Precomputed from the whole journal, so the tree shape — and therefore the
     /// row set — does not change as `as_of` moves.
     row_roots: BTreeMap<String, String>,
+    /// Which commodities this journal uses as money ([`Currencies`]).
+    currencies: Currencies,
 }
 
 impl<'a> OtherInputs<'a> {
-    fn build(
+    /// Build the inputs every Other-holdings question shares, once.
+    ///
+    /// # Errors
+    /// Returns [`ReportError`] on decimal overflow while inferring prices.
+    pub fn build(
         txns: &'a [Transaction],
         explicit_prices: &[PriceDirective],
         accounts: &'a [AccountDeclaration],
@@ -164,14 +171,16 @@ impl<'a> OtherInputs<'a> {
         all_prices.extend_from_slice(explicit_prices);
         let classes = declared_holdings_classes(accounts);
         let types = AccountTypes::from_declared(declared_types(&account_decls_from(accounts)));
+        let currencies = Currencies::from_journal(txns, |account| types.resolve(account));
         Ok(Self {
             txns,
             db: PriceDb::build(&all_prices),
             roles: declared_valuation_roles(accounts),
             account_tags: account_tag_map(accounts),
-            row_roots: row_roots(txns, &classes, &types),
+            row_roots: row_roots(txns, &classes, &types, &currencies),
             classes,
             types,
+            currencies,
         })
     }
 
@@ -242,6 +251,7 @@ fn row_roots(
     txns: &[Transaction],
     classes: &BTreeMap<String, HoldingsClass>,
     types: &AccountTypes,
+    currencies: &Currencies,
 ) -> BTreeMap<String, String> {
     let posted: BTreeSet<&str> = txns
         .iter()
@@ -259,7 +269,7 @@ fn row_roots(
             posting
                 .amounts
                 .iter()
-                .any(|amount| !is_currency(&amount.commodity.0))
+                .any(|amount| !currencies.is_currency(&amount.commodity.0))
         })
         .map(|posting| posting.account.0.as_str())
         .collect();
@@ -393,7 +403,7 @@ fn is_other_holding(inputs: &OtherInputs<'_>, account: &str, commodities: &Mixed
         Some(HoldingsClass::Stocks | HoldingsClass::None) => false,
         None => commodities
             .iter()
-            .all(|(commodity, _)| is_currency(&commodity.0)),
+            .all(|(commodity, _)| inputs.currencies.is_currency(&commodity.0)),
     }
 }
 
@@ -412,33 +422,87 @@ fn is_other_holding(inputs: &OtherInputs<'_>, account: &str, commodities: &Mixed
 /// each posting's ABSOLUTE amount gives `is_other_holding` every commodity the
 /// account ever held, not just what survived the netting.
 fn candidate_accounts(inputs: &OtherInputs<'_>) -> Result<Vec<String>, ReportError> {
-    let mut activity: BTreeMap<&str, MixedAmount> = BTreeMap::new();
-    for posting in inputs.txns.iter().flat_map(|txn| txn.postings.iter()) {
-        let entry = activity.entry(posting.account.0.as_str()).or_default();
-        for amount in &posting.amounts {
-            entry.accumulate(&amount.commodity, amount.quantity.abs()?)?;
-        }
-    }
     // Row ROOTS, deduped — the chooser must offer the same thing the table shows
     // it, or a holding the reader can see is one they cannot deselect. `BTreeSet`
     // both dedupes the siblings that share a root and keeps the list sorted.
-    Ok(activity
-        .iter()
-        .filter(|(account, gross)| {
-            let mut commodities = (*gross).clone();
-            commodities.drop_zeros();
-            !commodities.is_zero() && is_other_holding(inputs, account, &commodities)
-        })
-        .map(|(account, _)| {
+    Ok(ever_held(inputs, |_| true)?
+        .into_iter()
+        .map(|account| {
             inputs
                 .row_roots
-                .get(*account)
+                .get(account)
                 .cloned()
-                .unwrap_or_else(|| (*account).to_string())
+                .unwrap_or_else(|| account.to_string())
         })
         .collect::<BTreeSet<String>>()
         .into_iter()
         .collect())
+}
+
+/// The accounts passing `keep` that ever held an other holding: each posting's
+/// ABSOLUTE amount is summed, so an account that nets to zero over the journal
+/// still carries every commodity it ever held into [`is_other_holding`].
+fn ever_held<'a>(
+    inputs: &OtherInputs<'a>,
+    keep: impl Fn(&str) -> bool,
+) -> Result<BTreeSet<&'a str>, ReportError> {
+    let mut gross: BTreeMap<&str, MixedAmount> = BTreeMap::new();
+    for posting in inputs.txns.iter().flat_map(|txn| txn.postings.iter()) {
+        let entry = gross.entry(posting.account.0.as_str()).or_default();
+        for amount in &posting.amounts {
+            entry.accumulate(&amount.commodity, amount.quantity.abs()?)?;
+        }
+    }
+    Ok(gross
+        .into_iter()
+        .filter_map(|(account, mut commodities)| {
+            commodities.drop_zeros();
+            (!commodities.is_zero()
+                && keep(account)
+                && is_other_holding(inputs, account, &commodities))
+            .then_some(account)
+        })
+        .collect())
+}
+
+/// The date of the first transaction, on or before `scope.as_of`, that posts to
+/// an in-scope account this tab reports — where an "all time" Other chart
+/// starts. `None` when nothing in scope ever qualified.
+///
+/// Membership is [`candidate_accounts`]' ever-held test, so the chart's first
+/// point and the scope chooser's options agree about which accounts count.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn first_other_holding_date(
+    txns: &[Transaction],
+    prices: &[PriceDirective],
+    accounts: &[AccountDeclaration],
+    scope: &HoldingsScope,
+) -> Result<Option<String>, ReportError> {
+    OtherInputs::build(txns, prices, accounts)?.first_holding_date(scope)
+}
+
+impl OtherInputs<'_> {
+    /// [`first_other_holding_date`] over inputs already built, so a series
+    /// that starts at inception builds them once rather than twice.
+    ///
+    /// # Errors
+    /// Returns [`ReportError`] on decimal overflow.
+    pub fn first_holding_date(&self, scope: &HoldingsScope) -> Result<Option<String>, ReportError> {
+        let qualifies = ever_held(self, scope_accounts(scope))?;
+        Ok(self
+            .txns
+            .iter()
+            .filter(|txn| txn.date.as_str() <= scope.as_of.as_str())
+            .filter(|txn| {
+                txn.postings
+                    .iter()
+                    .any(|posting| qualifies.contains(posting.account.0.as_str()))
+            })
+            .map(|txn| txn.date.clone())
+            .min())
+    }
 }
 
 /// Every in-scope other holding at `as_of`, unsorted: the accounts passing
@@ -687,7 +751,8 @@ pub fn other_holdings(
 ///
 /// Returns the stock tab's [`HoldingsSeries`] unchanged so one chart component
 /// draws both trends: `market_value` is the summed row values at each bucket
-/// end, `basis` the summed costs.
+/// end, `basis` the summed costs. A `start` dates the first point exactly as
+/// the stock series does ([`super::window::series_dates`]).
 ///
 /// The base commodity is resolved ONCE from `scope.as_of` and every point pinned
 /// to it, for [`holdings_series`](super::series::holdings_series)' reason: a
@@ -701,58 +766,64 @@ pub fn other_holdings_series(
     prices: &[PriceDirective],
     accounts: &[AccountDeclaration],
     scope: &HoldingsScope,
-    interval: Interval,
-    count: usize,
+    window: &SeriesWindow,
 ) -> Result<HoldingsSeries, ReportError> {
-    let keys = last_n_buckets(&scope.as_of, interval, count)?;
-    let inputs = OtherInputs::build(txns, prices, accounts)?;
-    let base = inputs.base(scope);
+    OtherInputs::build(txns, prices, accounts)?.series(scope, window)
+}
 
-    let mut has_basis = false;
-    let mut points = Vec::with_capacity(keys.len());
-    for key in &keys {
-        // Clamped so the final point never overshoots `scope.as_of`.
-        let end = bucket_end(key)?;
-        let date = if compare_iso(&end, &scope.as_of) == Ordering::Greater {
-            scope.as_of.clone()
-        } else {
-            end
-        };
-        // One `account_totals` pass per point. The stock series went to some
-        // length to avoid that (PERF-5b) because its per-point cost included
-        // rebuilding the price database and re-sorting the journal; here those
-        // are hoisted into `OtherInputs` and what remains is the aggregation
-        // itself. If a profile ever says otherwise, the fix is `net_worth`'s
-        // shape — bucket the postings once and prefix-sum — not a second
-        // aggregation primitive.
-        let rows = rows_at(&inputs, scope, &date, &base)?;
-        let mut market_value = Dec::zero();
-        let mut basis: Option<Dec> = None;
-        for row in rows {
-            if let Some(value) = row.value {
-                market_value = market_value.add(value)?;
-                if let Some(cost) = row.cost {
-                    basis = Some(match basis {
-                        Some(sum) => sum.add(cost)?,
-                        None => cost,
-                    });
+impl OtherInputs<'_> {
+    /// [`other_holdings_series`] over inputs already built.
+    ///
+    /// # Errors
+    /// As [`other_holdings_series`].
+    pub fn series(
+        &self,
+        scope: &HoldingsScope,
+        window: &SeriesWindow,
+    ) -> Result<HoldingsSeries, ReportError> {
+        let keys = last_n_buckets(&scope.as_of, window.interval, window.count)?;
+        let dates = series_dates(&keys, &scope.as_of, window.start.as_deref())?;
+        let base = self.base(scope);
+
+        let mut has_basis = false;
+        let mut points = Vec::with_capacity(keys.len());
+        for (key, date) in keys.iter().zip(dates) {
+            // One `account_totals` pass per point. The stock series went to some
+            // length to avoid that (PERF-5b) because its per-point cost included
+            // rebuilding the price database and re-sorting the journal; here those
+            // are hoisted into `OtherInputs` and what remains is the aggregation
+            // itself. If a profile ever says otherwise, the fix is `net_worth`'s
+            // shape — bucket the postings once and prefix-sum — not a second
+            // aggregation primitive.
+            let rows = rows_at(self, scope, &date, &base)?;
+            let mut market_value = Dec::zero();
+            let mut basis: Option<Dec> = None;
+            for row in rows {
+                if let Some(value) = row.value {
+                    market_value = market_value.add(value)?;
+                    if let Some(cost) = row.cost {
+                        basis = Some(match basis {
+                            Some(sum) => sum.add(cost)?,
+                            None => cost,
+                        });
+                    }
                 }
             }
+            if basis.is_some() {
+                has_basis = true;
+            }
+            points.push(HoldingsPoint {
+                date,
+                bucket: key.clone(),
+                label: bucket_label(key),
+                market_value,
+                basis,
+            });
         }
-        if basis.is_some() {
-            has_basis = true;
-        }
-        points.push(HoldingsPoint {
-            date,
-            bucket: key.clone(),
-            label: bucket_label(key),
-            market_value,
-            basis,
-        });
+        Ok(HoldingsSeries {
+            base: base.0,
+            points,
+            has_basis,
+        })
     }
-    Ok(HoldingsSeries {
-        base: base.0,
-        points,
-        has_basis,
-    })
 }

@@ -267,9 +267,11 @@
       #    is exactly how it went: the `@testing-library/svelte` + `jsdom` bump
       #    landed weeks before the build that reported it.
       # See `outputHash` below for why this is keyed by system.
-      # Re-pinned for the toolchain bump two commits back (svelte 5.56.9,
-      # vite 8.2.2, playwright 1.61.1 and the rest): the FOD hash covers the
-      # resolved `node_modules`, so any dependency change invalidates it.
+      # Re-pinned (aarch64-darwin, x86_64-linux) for the bun.lock security
+      # bumps — brace-expansion, undici, source-map-js, postcss-selector-parser:
+      # the FOD hash covers the resolved `node_modules`, so any dependency
+      # change, even a transitive patch release, invalidates it. x86_64-darwin
+      # is now stale too and gets re-pinned at the next release dry run.
       #
       # An FOD hash can only be produced ON the platform it describes, so an
       # entry here can only be refreshed by a runner of that architecture: the
@@ -283,8 +285,8 @@
       # on EVERY system (macDist on darwin, linuxDist on Linux), so a stale hash
       # here breaks `nix build github:zmre/ledgeline` with no attribute at all.
       spaNodeModulesHashes = {
-        aarch64-darwin = "sha256-J2La0L/Ku2OucSKjKegK4ygNVaBivuauhawVKS8uhCg=";
-        x86_64-linux = "sha256-V4c8gSXOTbKQOZ6AldEuyhTDBpVzR1TZZ9JwaV+YVvQ=";
+        aarch64-darwin = "sha256-Ob1ul2IbP6oe4MTdsfrneJmrYycVyL/HiPmLxB4edjo=";
+        x86_64-linux = "sha256-+bKDVtWtwj41iMjNBUdhOFWQB1q2993o8IV8gd2pIng=";
         # Intel Macs, for the x86_64 half of the release matrix. Produced by a
         # release-workflow dry run under Rosetta, which is the only machine that
         # can generate it — see docs/releasing.md.
@@ -749,9 +751,10 @@
           # that silently never appears in a menu.
           desktop-file-validate "$out/share/applications/ledgeline.desktop"
         '';
-      # --- Formatting gate, on PUSH rather than on commit ---------------------
-      # Both formatters CI cares about, run against the whole tree before a
-      # push leaves the machine. Entering `nix develop` installs the hook into
+      # --- Push gate: formatters + `just pre-push` ----------------------------
+      # Both formatters CI cares about, then everything else a laptop can check
+      # of what CI gates on (`just pre-push`), run before a push leaves the
+      # machine. Entering `nix develop` installs the hook into
       # `.git/hooks/pre-push`; there is nothing to run by hand.
       #
       # PRE-PUSH, NOT PRE-COMMIT, deliberately. A pre-commit hook fires on every
@@ -798,6 +801,42 @@
           # likely to be edited by someone who is not set up for Nix. Nothing in
           # CI checks Nix formatting, so this hook is the only thing that does.
           alejandra.enable = true;
+          # Everything else CI gates on that a laptop can run: audits, the
+          # spaNodeModules pin check, clippy, lint, svelte-check, both vitest
+          # passes, cargo test and Playwright (see `pre-push` in the justfile).
+          # Minutes, not seconds — it used to be a command to remember instead,
+          # and the failures it catches kept reaching CI anyway. `git push
+          # --no-verify` is the escape hatch.
+          #
+          # Runs against the WORKING TREE: pre-push hooks get no stash, so
+          # uncommitted edits are tested too. Commit or stash them first if
+          # that matters.
+          just-pre-push = {
+            enable = true;
+            name = "just pre-push (everything CI gates on)";
+            entry = "${pkgs.writeShellScript "ledgeline-just-pre-push" ''
+              # git exports GIT_DIR, GIT_INDEX_FILE and friends to hooks. Left
+              # in place, every `git` the test suites run in a temp repo acts
+              # on THIS repository instead: on 2026-10-06 that rewrote the
+              # shared .bare/config (identity, signing, hooksPath) and
+              # committed over the branch. The suites now guard themselves too;
+              # this keeps anything else `just pre-push` runs from depending on it.
+              unset $(git rev-parse --local-env-vars)
+
+              # A push from outside the dev shell (a GUI git client, a plain
+              # terminal) has no cargo, bun, hledger or Playwright browsers on
+              # PATH, so enter it first.
+              if [ -n "''${IN_NIX_SHELL:-}" ]; then
+                exec ${pkgs.just}/bin/just pre-push
+              fi
+              exec nix develop --command ${pkgs.just}/bin/just pre-push
+            ''}";
+            pass_filenames = false;
+            # Not gated on which files changed: an advisory or a stale pin can
+            # fail it with no relevant file touched at all.
+            always_run = true;
+            require_serial = true;
+          };
         };
       };
     in {

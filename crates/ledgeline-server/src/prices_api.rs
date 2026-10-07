@@ -373,9 +373,13 @@ fn symbols_to_price(
 
 /// The Yahoo ticker for `symbol`: its commodity `yahoo:` tag, else the symbol
 /// itself. Mirrors `holdings::engine`'s own `commodity_name_map` (built for the
-/// `name:` tag) — the same shape, a different tag key, kept local here rather
-/// than shared since it is three lines and this module is the only caller.
-fn yahoo_ticker(commodity_tags: &[(Commodity, Vec<(String, String)>)], symbol: &str) -> String {
+/// `name:` tag) — the same shape, a different tag key. `profiles_api` looks
+/// commodities up on Yahoo under the same mapping, so a ticker is resolved one
+/// way everywhere.
+pub(crate) fn yahoo_ticker(
+    commodity_tags: &[(Commodity, Vec<(String, String)>)],
+    symbol: &str,
+) -> String {
     commodity_tags
         .iter()
         .find(|(commodity, _)| commodity.0 == symbol)

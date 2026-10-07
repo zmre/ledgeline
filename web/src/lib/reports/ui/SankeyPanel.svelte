@@ -1,9 +1,9 @@
 <!-- One money-flow diagram: the statement side in one column, the accounts in
      the other, ribbons in between.
 
-     Collapsible in the house style (daisyUI `collapse collapse-arrow` driven by
-     a checkbox, state persisted by the caller). The header row always shows the
-     title and the arrow; the graph's total joins it ONLY while the panel is
+     Collapsible through `ChartPanel`, the house shell (state persisted by the
+     caller). The header row always shows the title and the arrow; the graph's
+     total joins it, as the panel's `aside`, ONLY while the panel is
      shut, the same job InsightsPanel's net does. Expanded, the node labels
      below carry the detail and the statement box below that carries the total,
      so a figure in the header would be the duplicate total this report was
@@ -11,11 +11,11 @@
      the box footer, one screen apart.
 
      THE SHELL IS STABLE ACROSS LOAD STATES, and that is why `AsyncSection` is
-     inside this component rather than around it. Wrapped from outside, there
+     inside the panel rather than around it. Wrapped from outside, there
      was no panel at all until the data landed: no title, no total, and no
      arrow to collapse, so a user who had shut the panel still got a spinner
      block sitting where a shut panel belongs. The header is now always
-     rendered and always operable; only `collapse-content` changes.
+     rendered and always operable; only the panel's content changes.
 
      Identity is never colour-alone: an always-visible legend names every
      account, each bar carries its own label and figure, and every ribbon has a
@@ -32,7 +32,10 @@
     import {Chart, Link, Svg, Text} from "layerchart";
     import {Sankey} from "layerchart/graph";
     import AsyncSection from "$lib/components/AsyncSection.svelte";
+    import ChartLegend from "$lib/components/ChartLegend.svelte";
+    import ChartPanel from "./ChartPanel.svelte";
     import type {AmountStyle} from "$lib/domain/types";
+    import {chartColors} from "$lib/format/chartColors.svelte";
     import type {FlowReport} from "$lib/reports/types";
     import {flowPalette, sankeyView, type FlowsPanel} from "./sankeyModel";
 
@@ -64,7 +67,8 @@
 
     // The palette is built from the WHOLE report, never from the one graph
     // below: that is what keeps an account the same colour in both diagrams.
-    const viewOf = (report: FlowReport) => sankeyView(inbound ? report.inflows : report.outflows, flowPalette(report), report.base, styles);
+    const viewOf = (report: FlowReport) =>
+        sankeyView(inbound ? report.inflows : report.outflows, flowPalette(report, chartColors.current), report.base, styles);
 
     // The header figure, and only when there IS one. `AsyncSection`'s own
     // condition, mirrored: a zero standing in for an unknown total would be a
@@ -97,126 +101,114 @@
     }
 </script>
 
-<section class="collapse-arrow collapse bg-base-200" data-testid="sankey-panel-{slug}">
-    <input type="checkbox" checked={open} onchange={(e) => onToggle(e.currentTarget.checked)} aria-label="Toggle {title}" />
-    <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
-        <h3 class="text-sm font-semibold tracking-tight">{title}</h3>
+<ChartPanel heading={title} {open} {onToggle} testid="sankey-panel-{slug}">
+    {#snippet aside()}
         {#if total !== null && !open}
-            <span class="font-mono text-sm font-semibold tabular-nums">{total}</span>
+            <span class="font-mono text-xs font-semibold tabular-nums">{total}</span>
         {/if}
-    </div>
-    <div class="collapse-content flex flex-col gap-2">
-        <p class="text-xs text-base-content/50">{caption}</p>
+    {/snippet}
+    <p class="text-xs text-base-content/50">{caption}</p>
 
-        <!-- Error branch BEFORE the data branch, which is `AsyncSection`'s whole
+    <!-- Error branch BEFORE the data branch, which is `AsyncSection`'s whole
              job (FE-5). A flows fetch that fails says so here and leaves the
              statement below completely untouched. -->
-        <AsyncSection
-            view={panel.view}
-            value={panel.report}
-            error={panel.error}
-            testid="flows-error-{slug}"
-            label="the money flows"
-            loadingLabel="Loading {title}"
-            onRetry={panel.retry}
-        >
-            {#snippet children(report)}
-                {@const view = viewOf(report)}
-                {#if view.links.length === 0}
-                    <!-- The two reasons read differently, and only one of them is
+    <AsyncSection
+        view={panel.view}
+        value={panel.report}
+        error={panel.error}
+        testid="flows-error-{slug}"
+        label="the money flows"
+        loadingLabel="Loading {title}"
+        onRetry={panel.retry}
+    >
+        {#snippet children(report)}
+            {@const view = viewOf(report)}
+            {#if view.links.length === 0}
+                <!-- The two reasons read differently, and only one of them is
                          about this date range. -->
-                    <p class="py-8 text-center text-sm text-base-content/60" data-testid="sankey-empty-{slug}">
-                        {#if report.base === null}
-                            Several commodities here, with no prices between them, so there is no width to draw.
-                        {:else}
-                            Nothing in this range.
-                        {/if}
-                    </p>
-                {:else}
-                    <div class="w-full" style="height: {heightFor(view.nodes)}px" bind:clientWidth={width} data-testid="sankey-chart-{slug}">
-                        {#if width > 0}
-                            <Chart data={{nodes: view.nodes, links: view.links}} padding={{top: 8, right: pad, bottom: 8, left: pad}}>
-                                <Svg>
-                                    <!-- `nodeId` is REQUIRED here: Sankey defaults
-                                         it to `d.index`, and our links reference keys. -->
-                                    <Sankey nodeId={(d) => d.key} nodeWidth={BAR_WIDTH} nodePadding={12}>
-                                        {#snippet children({nodes, links})}
-                                            {#each links as link (`${link.source.key}>${link.target.key}`)}
-                                                <g>
-                                                    <title>{link.title}</title>
-                                                    <Link
-                                                        sankey
-                                                        data={link}
-                                                        fill="none"
-                                                        stroke={link.color}
-                                                        strokeWidth={Math.max(1, link.width)}
-                                                        strokeOpacity={0.28}
-                                                    />
-                                                </g>
-                                            {/each}
-                                            {#each nodes as node (node.key)}
-                                                {@const middle = (node.y0 + node.y1) / 2}
-                                                {@const source = node.side === "source"}
-                                                {@const x = source ? node.x0 - LABEL_GAP : node.x1 + LABEL_GAP}
-                                                <g>
-                                                    <title>{node.label}: {node.amount}</title>
-                                                    <rect
-                                                        x={node.x0}
-                                                        y={node.y0}
-                                                        width={node.x1 - node.x0}
-                                                        height={Math.max(1, node.y1 - node.y0)}
-                                                        rx="2"
-                                                        fill={node.color ?? undefined}
-                                                        class={node.color === null ? "fill-base-content/30" : ""}
-                                                    />
-                                                    <Text
-                                                        value={truncate(node.label)}
-                                                        {x}
-                                                        y={middle - LINE_GAP}
-                                                        textAnchor={source ? "end" : "start"}
-                                                        verticalAnchor="middle"
-                                                        fontSize={11}
-                                                        class="fill-base-content"
-                                                    />
-                                                    <Text
-                                                        value={node.amount}
-                                                        {x}
-                                                        y={middle + LINE_GAP}
-                                                        textAnchor={source ? "end" : "start"}
-                                                        verticalAnchor="middle"
-                                                        fontSize={10}
-                                                        class="fill-base-content/55"
-                                                    />
-                                                </g>
-                                            {/each}
-                                        {/snippet}
-                                    </Sankey>
-                                </Svg>
-                            </Chart>
-                        {/if}
-                    </div>
+                <p class="py-8 text-center text-sm text-base-content/60" data-testid="sankey-empty-{slug}">
+                    {#if report.base === null}
+                        Several commodities here, with no prices between them, so there is no width to draw.
+                    {:else}
+                        Nothing in this range.
+                    {/if}
+                </p>
+            {:else}
+                <div class="w-full" style="height: {heightFor(view.nodes)}px" bind:clientWidth={width} data-testid="sankey-chart-{slug}">
+                    {#if width > 0}
+                        <Chart data={{nodes: view.nodes, links: view.links}} padding={{top: 8, right: pad, bottom: 8, left: pad}}>
+                            <Svg>
+                                <!-- `nodeId` is REQUIRED here: Sankey defaults
+                                     it to `d.index`, and our links reference keys. -->
+                                <Sankey nodeId={(d) => d.key} nodeWidth={BAR_WIDTH} nodePadding={12}>
+                                    {#snippet children({nodes, links})}
+                                        {#each links as link (`${link.source.key}>${link.target.key}`)}
+                                            <g>
+                                                <title>{link.title}</title>
+                                                <Link
+                                                    sankey
+                                                    data={link}
+                                                    fill="none"
+                                                    stroke={link.color}
+                                                    strokeWidth={Math.max(1, link.width)}
+                                                    strokeOpacity={0.28}
+                                                />
+                                            </g>
+                                        {/each}
+                                        {#each nodes as node (node.key)}
+                                            {@const middle = (node.y0 + node.y1) / 2}
+                                            {@const source = node.side === "source"}
+                                            {@const x = source ? node.x0 - LABEL_GAP : node.x1 + LABEL_GAP}
+                                            <g>
+                                                <title>{node.label}: {node.amount}</title>
+                                                <rect
+                                                    x={node.x0}
+                                                    y={node.y0}
+                                                    width={node.x1 - node.x0}
+                                                    height={Math.max(1, node.y1 - node.y0)}
+                                                    rx="2"
+                                                    fill={node.color ?? undefined}
+                                                    class={node.color === null ? "fill-base-content/30" : ""}
+                                                />
+                                                <Text
+                                                    value={truncate(node.label)}
+                                                    {x}
+                                                    y={middle - LINE_GAP}
+                                                    textAnchor={source ? "end" : "start"}
+                                                    verticalAnchor="middle"
+                                                    fontSize={11}
+                                                    class="fill-base-content"
+                                                />
+                                                <Text
+                                                    value={node.amount}
+                                                    {x}
+                                                    y={middle + LINE_GAP}
+                                                    textAnchor={source ? "end" : "start"}
+                                                    verticalAnchor="middle"
+                                                    fontSize={10}
+                                                    class="fill-base-content/55"
+                                                />
+                                            </g>
+                                        {/each}
+                                    {/snippet}
+                                </Sankey>
+                            </Svg>
+                        </Chart>
+                    {/if}
+                </div>
 
-                    <!-- Always visible: identity is never colour-alone. -->
-                    <ul class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-base-content/70" data-testid="sankey-legend-{slug}">
-                        {#each view.legend as entry (entry.key)}
-                            <li class="flex items-center gap-1">
-                                <span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background:{entry.color}"></span>
-                                {entry.label}
-                                <span class="text-base-content/50">{entry.amount}</span>
-                            </li>
-                        {/each}
-                    </ul>
+                <!-- Always visible: identity is never colour-alone. -->
+                <ChartLegend entries={view.legend.map((entry) => ({...entry, extra: entry.amount}))} testid="sankey-legend-{slug}" />
 
-                    {#if !view.complete}
-                        <!-- The gap is a fact about the journal (a posting with no
+                {#if !view.complete}
+                    <!-- The gap is a fact about the journal (a posting with no
                              counterparty, or a line that netted negative over the
                              window), and this line is the only place it can be seen. -->
-                        <p class="text-xs text-base-content/50" data-testid="sankey-incomplete-{slug}">
-                            Showing {view.total} of {view.sectionTotal}
-                        </p>
-                    {/if}
+                    <p class="text-xs text-base-content/50" data-testid="sankey-incomplete-{slug}">
+                        Showing {view.total} of {view.sectionTotal}
+                    </p>
                 {/if}
-            {/snippet}
-        </AsyncSection>
-    </div>
-</section>
+            {/if}
+        {/snippet}
+    </AsyncSection>
+</ChartPanel>

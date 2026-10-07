@@ -223,7 +223,7 @@ Whatever that removes shows up as a line under the diagram reading **`Showing $X
 
 ### Reading the picture
 
-Colour identifies the **account**, and an account keeps its colour in *both* diagrams: `assets:bank:checking` is the same blue wherever it appears. The palette has eight slots; accounts past the eighth fold into one grey `(other)` bar, with their links merged. Statement lines never fold and never take a colour, because folding them would hide exactly the spending categories the diagram exists to show; the panel grows taller instead. Every bar carries its own label and figure, and a legend under each diagram names every account, so identity is never colour alone.
+Colour identifies the **account**, and an account keeps its colour in *both* diagrams: `assets:bank:checking` is the same blue wherever it appears. The palette has fourteen colours in the default theme, handed out biggest account first (by its combined total across both diagrams); only accounts past the last colour fold into one grey `(other)` bar, with their links merged. Statement lines never fold and never take a colour, because folding them would hide exactly the spending categories the diagram exists to show; the panel grows taller instead. Every bar carries its own label and figure, and a legend under each diagram names every account, so identity is never colour alone.
 
 Both panels are collapsible and each remembers its own state across reloads. A collapsed panel is not merely hidden: the diagrams are a separate endpoint and a second pass over every posting in the window, so with both panels shut nothing is fetched at all. Expanding one fetches immediately.
 

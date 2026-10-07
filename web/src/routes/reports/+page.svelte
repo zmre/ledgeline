@@ -15,8 +15,10 @@
     import {exportBalanceSheetXlsx, exportIncomeStatementXlsx, exportXlsx} from "$lib/export/xlsx";
     import InsightsDashboard from "$lib/reports/ui/insights/InsightsDashboard.svelte";
     import BalanceSheetView from "$lib/reports/ui/BalanceSheetView.svelte";
+    import CashFlowChart from "$lib/reports/ui/CashFlowChart.svelte";
     import ExportButton from "$lib/reports/ui/ExportButton.svelte";
     import IncomeStatementView from "$lib/reports/ui/IncomeStatementView.svelte";
+    import NetWorthChart from "$lib/reports/ui/NetWorthChart.svelte";
     import ReportControls from "$lib/reports/ui/ReportControls.svelte";
     import ReportTable from "$lib/reports/ui/ReportTable.svelte";
     import ReportTabs from "$lib/reports/ui/ReportTabs.svelte";
@@ -277,6 +279,15 @@
                         <IncomeStatementView report={current} {styles} flows={flowsPanel} />
                     {/if}
                 {:else}
+                    <!-- The charts sit ABOVE the table they draw; the table is their
+                         accessible twin. -->
+                    <!-- `"buckets" in current` narrows the untagged union to the
+                         PeriodReport both tabs hold (a SectionedReport has none). -->
+                    {#if params.tab === "nw" && "buckets" in current}
+                        <NetWorthChart report={current} {styles} />
+                    {:else if params.tab === "cf" && "buckets" in current}
+                        <CashFlowChart report={current} {styles} />
+                    {/if}
                     <ReportTable report={current} {styles} />
                 {/if}
             {/snippet}

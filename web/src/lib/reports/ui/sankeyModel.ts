@@ -21,7 +21,7 @@
 import {add, cmp, toNumber, type Dec} from "$lib/domain/money";
 import type {AmountStyle} from "$lib/domain/types";
 import {fmt} from "$lib/format/amounts";
-import {CATEGORICAL, colorAt, OTHER_COLOR, OTHER_LABEL} from "$lib/format/palette";
+import {colorAt, OTHER_LABEL, type ChartPalette} from "$lib/format/palette";
 import type {FlowGraph, FlowReport, FlowSide} from "$lib/reports/types";
 import type {DataView} from "$lib/stores/loadState";
 
@@ -34,16 +34,18 @@ export const OTHER_KEY = "x:other";
 
 /** The colour an account-side node keeps in BOTH graphs, and which ones fold away. */
 export interface FlowPalette {
-    /** The slot colour for an account key; `OTHER_COLOR` for a folded or unknown one. */
+    /** The slot colour for an account key; `other` for a folded or unknown one. */
     color(key: string): string;
     /** Whether this account key is past the last slot, and so folds into the tail bucket. */
     folded(key: string): boolean;
     /**
-     * Slot index, or `CATEGORICAL.length` for a folded key. This is what puts a
+     * Slot index, or the palette's slot count for a folded key. This is what puts a
      * graph's legend in PALETTE order rather than in its own node order: an
      * account can rank third by combined total and first within one graph.
      */
     rank(key: string): number;
+    /** The folded tail bucket's colour. */
+    readonly other: string;
 }
 
 /**
@@ -53,8 +55,11 @@ export interface FlowPalette {
  * The tail past the last slot is `folded`, never cycled back onto slot 1 (see
  * `$lib/format/palette`): `sankeyView` is the caller that has to fold it into
  * an `OTHER_LABEL` bucket, and `colorAt` is only the backstop.
+ *
+ * `colors` is the resolved theme palette (`chartColors.current` in a
+ * component), passed in so this stays a pure function of its inputs.
  */
-export function flowPalette(report: FlowReport): FlowPalette {
+export function flowPalette(report: FlowReport, colors: ChartPalette): FlowPalette {
     const totals = new Map<string, Dec>();
     for (const graph of [report.inflows, report.outflows]) {
         for (const node of graph.nodes) {
@@ -66,11 +71,13 @@ export function flowPalette(report: FlowReport): FlowPalette {
     // Ties broken by key so a redraw cannot reshuffle two equal accounts.
     const ranked = [...totals].sort(([aKey, aTotal], [bKey, bTotal]) => cmp(bTotal, aTotal) || (aKey < bKey ? -1 : aKey > bKey ? 1 : 0));
     const slots = new Map(ranked.map(([key], i) => [key, i]));
-    const rank = (key: string): number => Math.min(slots.get(key) ?? CATEGORICAL.length, CATEGORICAL.length);
+    const slotCount = colors.categorical.length;
+    const rank = (key: string): number => Math.min(slots.get(key) ?? slotCount, slotCount);
     return {
-        color: (key) => colorAt(rank(key)),
-        folded: (key) => (slots.get(key) ?? -1) >= CATEGORICAL.length,
+        color: (key) => colorAt(colors, rank(key)),
+        folded: (key) => (slots.get(key) ?? -1) >= slotCount,
         rank,
+        other: colors.other,
     };
 }
 
@@ -162,7 +169,7 @@ export function sankeyView(graph: FlowGraph, palette: FlowPalette, base: string 
             value: toNumber(tail.total),
             amount: money(tail.total),
             share: share(tail.total),
-            color: OTHER_COLOR,
+            color: palette.other,
         });
     }
 

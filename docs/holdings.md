@@ -40,6 +40,13 @@ Without any tag, the rule is mechanical:
 Other tab tests for `type:A` *specifically*, or every bank account would appear
 on it.
 
+"Currency" means a symbol like `$`, `€` or `£`, or a three-letter ISO code
+that your journal uses as money: one that is posted to a cash, liability,
+income or expense account, or that a cost is written in (`@ 5 CHF`). Some codes
+are also tickers. `BND` is both the Brunei dollar and Vanguard's bond fund.
+Bought and held in a brokerage account, never spent or banked, `BND` is the
+fund, so it lands on Stocks.
+
 ## The `holdings:` tag
 
 Tag an account declaration to override the mechanical rule:
@@ -252,8 +259,8 @@ Both work, and the Other tab shows both:
 A dollar-booked asset's cost and value are the same number by construction, so
 its **all-time** change is exactly `$0.00`. That is the honest answer, not a
 missing feature — nothing has revalued it, the balance simply went down. Switch
-the window to Year-to-date or 12 months and the depreciation shows up as the loss
-it is.
+the period to any bounded window (year to date, 12 months, …) and the
+depreciation shows up as the loss it is.
 
 ## What the columns mean
 
@@ -269,7 +276,8 @@ means the same thing on both:
 
 - **All time** → the reference is *cost*, so change is the gain over what you
   paid.
-- **Year-to-date / 12 months** → the reference is the account's *value at the
+- **Any bounded window** (1 week, 1 month, 3 months, year to date, 12 months,
+  5 years) → the reference is the account's *value at the
   start of the window*. An asset you bought inside the window references zero, so
   the whole purchase reads as that window's change.
 
@@ -359,6 +367,117 @@ like `^GSPC`.
   the shell scripts this replaced do. Press it after the close for a settled
   number.
 
+## Dividing the pie by category
+
+The pie on the Stocks tab has a **Divide by** menu. *By holding* (the default)
+gives one slice per security. The other views split your holdings by what they
+are:
+
+| View              | What a slice is                                  | Example slices                         |
+|-------------------|--------------------------------------------------|----------------------------------------|
+| Asset class       | equity, bonds, cash, or anything you tag          | Equity, Bonds, Cash, Real estate        |
+| Sector            | the business sector of the equity you own         | Technology, Healthcare, Energy          |
+| Industry          | a stock's industry                                | Consumer Electronics, Semiconductors    |
+| Security type     | what kind of security it is                       | Stock, ETF, Mutual fund                 |
+| Category          | a fund's Morningstar category                     | Large Blend, Intermediate Core Bond     |
+| Risk (Morningstar)| a fund's Morningstar risk rating                  | Low, Average, Above average             |
+
+The menu lists only the views at least one holding on screen has data for.
+
+### Funds are split, not lumped
+
+A fund is divided in proportion to what it holds. A balanced fund that is 60%
+stocks and 40% bonds puts 60% of its value in Equity and 40% in Bonds.
+
+The Sector view does the same thing one level down. Yahoo reports a fund's
+sector weights for its **stock** holdings only, so those weights split the
+equity share and the rest of the fund is shown by asset class. For that
+balanced fund, the pie shows its technology stocks under Technology and its
+bonds as a "Bonds" slice. Spreading the sector weights over the whole fund
+would count bonds as technology companies.
+
+Industry, Category and Risk come from one field each and are not split. Yahoo
+gives an industry for single stocks and not for funds. It gives a category and
+risk rating for funds and not for single stocks.
+
+### Where the data comes from
+
+1. **Tags on your `commodity` directives.** These always win.
+2. **Yahoo Finance**, for any view a commodity's tags leave open. Yahoo is
+   asked under the commodity's [`yahoo:` tag](#the-yahoo-tag) when it has one,
+   the same way a price update is.
+
+Value nothing classifies goes into an **(unclassified)** slice, drawn in a faded
+grey after every other slice. A private fund Yahoo doesn't know lands there,
+and so does a fund's equity share when Yahoo has no sector weights for it. The
+solid grey **(other)** slice is different: it folds together the smallest named
+categories once there are more than the theme has chart colours (fourteen in
+the default theme). The by-holding pie folds its smallest holdings the same way.
+
+### The tags
+
+Put them on the `commodity` directive line, like `name:` and `yahoo:`. Each tag
+replaces its whole view for that commodity. It becomes one 100% slice, and
+Yahoo's data for that view is ignored. The other views still come from Yahoo.
+
+```journal
+commodity 1.0000 VTSAX     ; category: Large Blend, risk: Average
+commodity 1.0000 FXAIX     ; sector: Diversified
+commodity 1.0000 CREF      ; assetclass: real estate, type: annuity
+commodity 1.0000 BTC       ; type: crypto, yahoo: BTC-USD
+commodity 1.0000 PRIVFUND  ; assetclass: private equity, sector: Healthcare, industry: Biotech, type: fund, category: Venture, risk: High
+```
+
+| Tag          | View          | Notes                                                                                       |
+|--------------|---------------|---------------------------------------------------------------------------------------------|
+| `assetclass` | Asset class   | `equity`/`stocks`, `bonds`/`fixed income`, `cash`/`money market`, `other` and `crypto` merge with Yahoo's labels. Anything else is shown as written. |
+| `sector`     | Sector        | As written.                                                                                 |
+| `industry`   | Industry      | As written.                                                                                 |
+| `type`       | Security type | `stock`, `etf`, `mutualfund`/`fund`, `moneymarket`, `bond`, `crypto`, `currency` merge with Yahoo's labels. Anything else is shown as written. |
+| `category`   | Category      | As written.                                                                                 |
+| `risk`       | Risk          | As written. Yahoo's words are Low, Below average, Average, Above average and High.          |
+
+`type:` is a tag journals already use for this (`type:mutualfund`), so the
+Security type view reads what is already there.
+A `type:` tag also sets the asset class when nothing else does: `type: stock` is
+Equity, `type: bond` is Bonds, `type: moneymarket` is Cash and `type: crypto` is
+Crypto. A `type: fund` implies nothing, because a fund can hold anything.
+
+An `assetclass:` tag also reshapes the Sector view. `assetclass: bonds` on a
+security puts its whole value in a "Bonds" slice there, whatever sector Yahoo
+reports.
+
+Labels that differ only in case are one slice, so `real estate` and
+`Real Estate` land together.
+
+A commodity with all six tags is never looked up on Yahoo.
+
+### When Yahoo is unavailable
+
+Yahoo's classification data sits behind an undocumented session handshake that
+can stop working or rate-limit without notice. When it does, the pie uses your
+tags alone, and a line above it says *Couldn't reach Yahoo — showing tag data
+only*. Nothing else changes, and the next visit tries again.
+
+### The cache: `commodity-profiles.json`
+
+Ledgeline saves what Yahoo reports in `commodity-profiles.json`, in the same
+folder as your main journal, so each security is looked up about once a month
+and not on every visit. A ticker Yahoo doesn't know is asked about again after
+a week, in case you have since added a `yahoo:` tag to fix the lookup.
+
+- It holds only Yahoo's answers, not your tags, so a tag you edit takes effect
+  at once.
+- It is not a journal file. It is never `include`d, never read by hledger,
+  never committed by the import's git step, and editing it does not trigger a
+  reload.
+- It is written only when Ledgeline may write to your journal's folder.
+- **It is safe to delete.** Ledgeline rebuilds it on the next visit. A damaged
+  file is treated as empty and replaced.
+
+If your journal folder is a git repository, add `commodity-profiles.json` to
+`.gitignore`, or it will show up as untracked.
+
 ## A misspelt value is an error
 
 ```
@@ -376,11 +495,142 @@ something, so a `holdings:` that changes nothing is worth telling you about.
 
 ## Scope, dates and the account chooser
 
-Both tabs share one scope bar: the account filter, the as-of date, and the change
-window all apply to whichever tab is open.
+Both tabs share one scope bar: the account filter, the as-of date, and the
+period all apply to whichever tab is open.
+
+### The period
+
+The **Period** control sets two things at once, on both tabs: the window the
+gain (Stocks) or change (Other) figures are measured over, and the span of the
+*Value over time* chart. A chart of the last twelve months beside a one-week
+gain would be two answers to the same question, so there is one control.
+
+Every window ends at the as-of date. Gain and change columns carry a suffix
+naming it — `Gain (1wk)`, `Change (5yr)` — so a windowed number is never read as
+an all-time one.
+
+| Period        | Gain measured from                     | Chart                                   |
+|---------------|----------------------------------------|-----------------------------------------|
+| 1 week        | seven days before as-of                | daily, 8 points                          |
+| 1 month       | one calendar month before (31st → 28th/29th) | daily                              |
+| 3 months      | three calendar months before           | weekly                                   |
+| Year to date  | December 31 of the previous year       | daily → weekly → monthly as the year goes on |
+| 12 months     | one year before                        | monthly: 13 points                       |
+| 5 years       | five years before                      | monthly: 61 points                       |
+| All time      | cost (the gain over what you paid)     | from the scope's first holding activity  |
+
+For every bounded window the chart's **first point is the gain's reference**:
+it is taken on the date the gain is measured from, not at the end of that
+date's month or week, and shows exactly the value the gain subtracts. The
+points after it fall at the end of each day, week or month, and the last one
+is the as-of date. So the twelve-month chart for an as-of of 28 September 2026
+starts on 28 September 2025, then runs through the twelve month-ends to 28
+September 2026. The benchmark comparison is seeded at that same first point.
+
+A windowed gain is measured against the value at the *end* of its start date,
+and counts only money moved in or out after it. That is why year to date starts
+from December 31: its closing value is what the year opened with, and anything
+you bought or sold on January 1 belongs to this year.
+
+For **year to date** and **all time** the engine picks the interval so the line
+has enough points to read without crowding: months once there are at least six
+of them, weeks (or days) before that, and quarters or years past ten years of
+history. "All time" starts at the first transaction that moved a holding in the
+current scope *on that tab* — so the Other tab's chart starts at the house, not
+at the first share you bought.
+
+Daily and weekly points are labelled by date on the chart ("Sep 28"); a weekly
+point is the value at the end of its week. The period is part of the page URL
+(`?gain=1wk`, `?gain=5yr`, …), so a shared link opens on the same window.
 
 The account chooser's options are **not** filtered by the current scope or date,
 deliberately. An option that vanished the moment you deselected it could not be
 reselected, and one that vanished when you travelled back a month would make a
 scope impossible to compose. So it offers every account that could ever be a row,
 whether or not it holds anything today.
+
+## Comparing against a benchmark
+
+The Stocks tab's *Value over time* chart can draw what your portfolio would be
+worth had the same money gone into an index fund instead. Open **Compare** in
+the chart's heading and tick any of:
+
+| Box                    | Fund |
+|------------------------|------|
+| S&P 500 (SPY)          | SPDR S&P 500 ETF |
+| Dow Jones (DIA)        | SPDR Dow Jones Industrial Average ETF |
+| Nasdaq-100 (QQQ)       | Invesco QQQ |
+| US total market (VTI)  | Vanguard Total Stock Market ETF |
+| US bonds (BND)         | Vanguard Total Bond Market ETF |
+| International (VXUS)   | Vanguard Total International Stock ETF |
+| Small cap (IWM)        | iShares Russell 2000 ETF |
+| Gold (GLD)             | SPDR Gold Shares |
+
+Each ticked benchmark is a dashed line in its own colour — always the same
+colour, whichever others are showing — and the legend under the chart names
+it. Your choices are remembered in this browser. None are ticked by default.
+
+### What the line means
+
+It is **the same cash flows, on the same dates, into that fund**. Every buy in
+the current scope is money that could have bought the fund that day; every sale
+or return of capital is money taken out of it that day. Moves between your own
+accounts and stock splits are not cash flows and are ignored — exactly the rules
+the windowed gain already uses to tell a contribution from a gain.
+
+The two lines **start together** at the chart's left edge: the benchmark account
+is seeded with your portfolio's actual market value on the first point, then
+only the flows after that are replayed. So over 12 months the question is "given
+what I had a year ago and what I have put in and taken out since, would I be
+ahead in the fund?". A fund younger than the window (VXUS began trading in 2011)
+starts at the first point it has a price for.
+
+A withdrawal larger than the simulated account holds empties it rather than
+driving it below zero. A share movement with neither a cost nor a market price
+on its date cannot be valued, so it is left out of the simulation.
+
+The comparison needs holdings valued in US dollars (`$` or `USD`), because the
+funds are priced in dollars. In any other base currency the box explains that
+instead of drawing a line.
+
+### Dividends are included
+
+Prices are Yahoo Finance's **adjusted close**, which folds dividends (and
+splits) back into the price. A line from plain closing prices would leave out a
+bond fund's entire income and understate a stock fund by a couple of percent a
+year. So the benchmark line is a total return, as if every distribution had
+been reinvested.
+
+### Where the prices come from, and the cache file
+
+Your journal is not touched. The chart draws your portfolio from local data
+first; the ticked benchmarks are then fetched together in the background by the
+Ledgeline server, in one request (the page itself never contacts Yahoo), and
+their lines appear when it arrives. Ticking another box fetches just that one.
+If Yahoo cannot be reached for a benchmark, its box says so, with a retry, and
+the rest of the chart is unaffected. Refreshing, updating prices or editing the
+journal redraws the portfolio line and re-requests the benchmark lines, because
+each one starts from the portfolio's value.
+
+Fetched history is kept in **`benchmarks.prices.journal`, beside your main
+journal**, as ordinary hledger price directives:
+
+```journal
+; ledgeline-benchmark SPY from 2025-09-18 through 2026-09-27
+P 2025-09-29 SPY 656.5962 USD
+P 2025-09-30 SPY 659.0695 USD
+```
+
+It is deliberately **not included** in your journal and must not be: these are
+adjusted closes, not market prices, and would misvalue a real holding of the
+same fund. Ledgeline never adds an `include` for it, never commits it with the
+git safety net, and the live-reload watcher ignores it. When a chart needs days
+the file doesn't have yet, that fund's whole history for the chart is
+downloaded again in one request. That keeps every cached day on the same
+dividend adjustment, because Yahoo re-bases the adjusted history each time a
+fund pays a dividend.
+
+It is **safe to delete** at any time. The next comparison simply downloads the
+history again. A read-only session (one that cannot edit the journal) writes no
+file at all: it keeps the fetched history in memory until the server stops.
+

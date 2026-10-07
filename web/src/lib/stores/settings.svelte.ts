@@ -2,6 +2,8 @@
 // under a versioned key. `setServerUrl` verifies GET /version before persisting.
 
 import {HledgerApi, SETTINGS_STORAGE_KEY} from "$lib/api/client";
+import {PIE_DIMENSIONS, type PieDimension} from "$lib/holdings/profileTypes";
+import {BENCHMARKS, isBenchmarkSymbol} from "$lib/holdings/benchmarks";
 
 /** Journal table column toggles (defaults per WP-03: Date, Status, Description, Accounts, Amount). */
 export interface ColumnConfig {
@@ -42,6 +44,12 @@ interface PersistedSettings {
     flowsInOpen: boolean;
     flowsOutOpen: boolean;
     /**
+     * The chart panels above the Net Worth and Cash Flow tables, one flag each,
+     * open by default.
+     */
+    netWorthChartOpen: boolean;
+    cashFlowChartOpen: boolean;
+    /**
      * The Budget tab's "not budgeted" section. Closed by default, and the flag
      * is what GATES ITS FETCH — a section nobody has opened costs no request.
      *
@@ -50,6 +58,13 @@ interface PersistedSettings {
      * state worth remembering.
      */
     budgetGapsOpen: boolean;
+    /**
+     * What the Holdings pie is divided by: one slice per holding (the
+     * default), or one per asset class / sector / … (see
+     * `$lib/holdings/profileTypes`). Per-browser view state, like
+     * `insightsTab`.
+     */
+    holdingsPieDimension: PieDimension;
     /**
      * The Projections tab's last-loaded scenario FILE, by its relative id
      * (`plans/projection-series-a.journal`), reopened on the next mount.
@@ -65,6 +80,18 @@ interface PersistedSettings {
      * tab falls back to seeding and clears it.
      */
     lastProjectionId: string | null;
+    /**
+     * Which benchmark lines the Stocks value-over-time chart overlays, by
+     * catalog symbol. Per browser, like every other view toggle here; none by
+     * default, because each one is a request that may reach Yahoo Finance.
+     */
+    benchmarks: string[];
+}
+
+/** Keep only catalog symbols, once each, in catalog order. */
+function cleanBenchmarks(value: unknown): string[] {
+    const picked = Array.isArray(value) ? value.filter(isBenchmarkSymbol) : [];
+    return BENCHMARKS.map((b) => b.symbol).filter((symbol) => picked.includes(symbol));
 }
 
 const defaults = (): PersistedSettings => ({
@@ -76,8 +103,12 @@ const defaults = (): PersistedSettings => ({
     hideZeroBalances: true,
     flowsInOpen: true,
     flowsOutOpen: true,
+    netWorthChartOpen: true,
+    cashFlowChartOpen: true,
     budgetGapsOpen: false,
+    holdingsPieDimension: "holding",
     lastProjectionId: null,
+    benchmarks: [],
 });
 
 /**
@@ -124,12 +155,22 @@ function load(): PersistedSettings {
             hideZeroBalances: typeof parsed.hideZeroBalances === "boolean" ? parsed.hideZeroBalances : true,
             flowsInOpen: typeof parsed.flowsInOpen === "boolean" ? parsed.flowsInOpen : true,
             flowsOutOpen: typeof parsed.flowsOutOpen === "boolean" ? parsed.flowsOutOpen : true,
+            netWorthChartOpen: typeof parsed.netWorthChartOpen === "boolean" ? parsed.netWorthChartOpen : true,
+            cashFlowChartOpen: typeof parsed.cashFlowChartOpen === "boolean" ? parsed.cashFlowChartOpen : true,
             budgetGapsOpen: typeof parsed.budgetGapsOpen === "boolean" ? parsed.budgetGapsOpen : false,
+            // Validated against the union, like `insightsTab`: a dimension a
+            // later version dropped must fall back rather than select nothing.
+            holdingsPieDimension: PIE_DIMENSIONS.includes(parsed.holdingsPieDimension as PieDimension)
+                ? (parsed.holdingsPieDimension as PieDimension)
+                : "holding",
             // Typechecked as a string, like `serverToken` and unlike
             // `insightsTab`: a file id has no closed set to validate against,
             // and the server re-validates its shape on every request anyway.
             // A non-empty string is the only thing worth keeping.
             lastProjectionId: typeof parsed.lastProjectionId === "string" && parsed.lastProjectionId !== "" ? parsed.lastProjectionId : null,
+            // Validated against the catalog: a symbol the server no longer
+            // offers would otherwise be a checkbox-less request that 400s.
+            benchmarks: cleanBenchmarks(parsed.benchmarks),
         };
     } catch (cause) {
         storageError = `Saved settings couldn't be read (${cause instanceof Error ? cause.message : String(cause)}) — starting from defaults.`;
@@ -164,8 +205,12 @@ function persist(): void {
             hideZeroBalances: state.hideZeroBalances,
             flowsInOpen: state.flowsInOpen,
             flowsOutOpen: state.flowsOutOpen,
+            netWorthChartOpen: state.netWorthChartOpen,
+            cashFlowChartOpen: state.cashFlowChartOpen,
             budgetGapsOpen: state.budgetGapsOpen,
+            holdingsPieDimension: state.holdingsPieDimension,
             lastProjectionId: state.lastProjectionId,
+            benchmarks: state.benchmarks,
         })
     );
 }
@@ -229,6 +274,22 @@ export const settings = {
         state.flowsOutOpen = open;
         persist();
     },
+    /** Whether the Net Worth chart is expanded. */
+    get netWorthChartOpen(): boolean {
+        return state.netWorthChartOpen;
+    },
+    set netWorthChartOpen(open: boolean) {
+        state.netWorthChartOpen = open;
+        persist();
+    },
+    /** Whether the Cash Flow chart is expanded. */
+    get cashFlowChartOpen(): boolean {
+        return state.cashFlowChartOpen;
+    },
+    set cashFlowChartOpen(open: boolean) {
+        state.cashFlowChartOpen = open;
+        persist();
+    },
     /** Whether the Budget tab's "not budgeted" section is expanded — and thus whether it is fetched. */
     get budgetGapsOpen(): boolean {
         return state.budgetGapsOpen;
@@ -237,12 +298,30 @@ export const settings = {
         state.budgetGapsOpen = open;
         persist();
     },
+    /** What the Holdings pie is divided by — see the field. */
+    get holdingsPieDimension(): PieDimension {
+        return state.holdingsPieDimension;
+    },
+    set holdingsPieDimension(dimension: PieDimension) {
+        state.holdingsPieDimension = dimension;
+        persist();
+    },
     /** The Projections tab's last-loaded scenario file id — see the field. */
     get lastProjectionId(): string | null {
         return state.lastProjectionId;
     },
     set lastProjectionId(id: string | null) {
         state.lastProjectionId = id === null || id === "" ? null : id;
+        persist();
+    },
+    /** The benchmark lines overlaid on the Stocks chart, in catalog order. */
+    get benchmarks(): readonly string[] {
+        return state.benchmarks;
+    },
+    /** Tick or untick one benchmark; unknown symbols are ignored. */
+    toggleBenchmark(symbol: string, on: boolean): void {
+        const others = state.benchmarks.filter((s) => s !== symbol);
+        state.benchmarks = cleanBenchmarks(on ? [...others, symbol] : others);
         persist();
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */

@@ -38,7 +38,9 @@
 
 mod account_api;
 mod alias_api;
+mod benchmarks_api;
 mod budget_api;
+mod commodity_profile;
 mod edit_api;
 mod error;
 mod git;
@@ -46,14 +48,18 @@ mod hledger;
 mod import_api;
 mod prefs;
 mod prices_api;
+mod profiles_api;
 mod projections_api;
 mod qb_journal_api;
 mod reports_api;
 mod rules_api;
 mod security;
+mod sidecar;
 mod spa;
 mod stage;
 mod yahoo;
+mod yahoo_history;
+mod yahoo_profile;
 
 use arc_swap::ArcSwap;
 use axum::{
@@ -97,6 +103,13 @@ pub use import_api::{
 // it to `AppState::with_price_source` — the only way `/api/prices/update` is
 // tested without a live network call.
 pub use yahoo::{FetchedPrice, PriceFeed, YahooError};
+// Same arrangement for the Holdings pie's classification source: a fake
+// `ProfileFeed` handed to `AppState::with_profile_source` is how
+// `/api/holdings/profiles` is tested with no network.
+pub use yahoo_profile::{AssetMix, ProfileError, ProfileFeed, YahooProfile};
+// `HistoryFeed` likewise, for `AppState::with_history_source`: the benchmark
+// overlay's integration tests hand it a fake instead of Yahoo Finance.
+pub use yahoo_history::HistoryFeed;
 
 /// An immutable, atomically-publishable view of one parsed journal: the parsed
 /// [`Journal`] for the per-request report handlers, plus every wire endpoint's
@@ -309,13 +322,45 @@ pub struct AppState {
     /// tests — the only route in this crate that makes an outbound network
     /// call, and the only state field that is not itself journal-derived.
     price_source: Arc<dyn yahoo::PriceFeed>,
+    /// Where `profiles_api` classifies holdings from (Yahoo's `quoteSummary`
+    /// behind a crumb handshake), plus the cache of what it said. Swappable
+    /// for a fake through [`AppState::with_profile_source`], like
+    /// `price_source`.
+    profiles: Arc<profiles_api::Profiles>,
+    /// Where `benchmarks_api` fetches benchmark price HISTORY from — the
+    /// second (and last) outbound-network field, swappable for the same reason
+    /// as [`Self::price_source`] via [`AppState::with_history_source`].
+    history_source: Arc<dyn yahoo_history::HistoryFeed>,
+    /// The benchmark price cache (`benchmarks.prices.journal`), in memory and
+    /// written through beside the journal — see [`sidecar`]. Its own lock, not
+    /// [`Self::import_writes`]: the cache is not the journal, and a chart
+    /// overlay must never hold up an import or a price update.
+    benchmark_cache: Arc<sidecar::SidecarCache<benchmarks_api::BenchmarkCache>>,
 }
 
-/// The default [`yahoo::PriceFeed`]: the real Yahoo Finance chart endpoint,
-/// over one shared `reqwest::Client` (connection pooling — a fresh client per
-/// request would re-negotiate TLS on every symbol).
-fn default_price_source() -> Arc<dyn yahoo::PriceFeed> {
-    Arc::new(yahoo::YahooClient::new(reqwest::Client::new()))
+/// The real Yahoo feeds, over ONE `reqwest::Client` ([`yahoo::http_client`])
+/// so they share its connection pool: the chart endpoint answers both the
+/// latest close ([`yahoo::PriceFeed`]) and dividend-adjusted history
+/// ([`yahoo_history::HistoryFeed`]), and `quoteSummary` classifies holdings.
+struct YahooFeeds {
+    prices: Arc<dyn yahoo::PriceFeed>,
+    profiles: Arc<profiles_api::Profiles>,
+    history: Arc<dyn yahoo_history::HistoryFeed>,
+}
+
+impl YahooFeeds {
+    fn new() -> Self {
+        let client = yahoo::http_client();
+        let chart = Arc::new(yahoo::YahooClient::new(client.clone()));
+        let transport = Arc::new(yahoo_profile::ReqwestTransport::new(client));
+        Self {
+            prices: chart.clone(),
+            profiles: Arc::new(profiles_api::Profiles::new(Arc::new(
+                yahoo_profile::YahooProfileClient::new(transport),
+            ))),
+            history: chart,
+        }
+    }
 }
 
 impl AppState {
@@ -334,6 +379,7 @@ impl AppState {
     /// [`replace_journal`]: Self::replace_journal
     #[must_use]
     pub fn from_journal(journal: &Journal) -> Self {
+        let yahoo = YahooFeeds::new();
         Self {
             inner: Arc::new(ArcSwap::from_pointee(Snapshot::from_journal(Arc::new(
                 journal.clone(),
@@ -343,7 +389,10 @@ impl AppState {
             stages: Arc::new(stage::StageArea::default()),
             qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
-            price_source: default_price_source(),
+            price_source: yahoo.prices,
+            profiles: yahoo.profiles,
+            history_source: yahoo.history,
+            benchmark_cache: Arc::default(),
         }
     }
 
@@ -358,6 +407,7 @@ impl AppState {
     pub fn from_journal_path(path: impl AsRef<Path>) -> Result<Self, EditError> {
         let editor = JournalEditor::open(path.as_ref())?;
         let snapshot = Snapshot::from_journal(Arc::clone(editor.journal()));
+        let yahoo = YahooFeeds::new();
         Ok(Self {
             inner: Arc::new(ArcSwap::from_pointee(snapshot)),
             editor: Arc::new(Mutex::new(Some(editor))),
@@ -365,7 +415,10 @@ impl AppState {
             stages: Arc::new(stage::StageArea::default()),
             qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
-            price_source: default_price_source(),
+            price_source: yahoo.prices,
+            profiles: yahoo.profiles,
+            history_source: yahoo.history,
+            benchmark_cache: Arc::default(),
         })
     }
 
@@ -512,6 +565,41 @@ impl AppState {
     #[must_use]
     pub fn with_price_source(mut self, source: Arc<dyn yahoo::PriceFeed>) -> Self {
         self.price_source = source;
+        self
+    }
+
+    /// This state's classification source and cache. `pub(crate)` — only
+    /// `profiles_api` reads it.
+    pub(crate) fn profiles(&self) -> &Arc<profiles_api::Profiles> {
+        &self.profiles
+    }
+
+    /// Substitute a different classification source (with a fresh, empty
+    /// cache), replacing the real Yahoo client. `pub` for the integration
+    /// tests, for the reason [`Self::with_price_source`] gives.
+    #[must_use]
+    pub fn with_profile_source(mut self, source: Arc<dyn yahoo_profile::ProfileFeed>) -> Self {
+        self.profiles = Arc::new(profiles_api::Profiles::new(source));
+        self
+    }
+
+    /// This state's benchmark history source. `pub(crate)` — only
+    /// `benchmarks_api` reads it.
+    pub(crate) fn history_source(&self) -> &Arc<dyn yahoo_history::HistoryFeed> {
+        &self.history_source
+    }
+
+    /// The benchmark price cache, shared by all clones.
+    pub(crate) fn benchmark_cache(&self) -> &sidecar::SidecarCache<benchmarks_api::BenchmarkCache> {
+        &self.benchmark_cache
+    }
+
+    /// Substitute a different benchmark history source, replacing the real
+    /// Yahoo client. `pub` for [`Self::with_price_source`]'s reason: only the
+    /// integration tests, an external crate, call it.
+    #[must_use]
+    pub fn with_history_source(mut self, source: Arc<dyn yahoo_history::HistoryFeed>) -> Self {
+        self.history_source = source;
         self
     }
 }
@@ -680,6 +768,7 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             get(projections_api::document).put(projections_api::save),
         )
         .route("/api/holdings", get(reports_api::holdings))
+        .route("/api/holdings/profiles", get(profiles_api::profiles))
         .route(
             "/api/holdings/series",
             get(reports_api::holdings_series_report),
@@ -692,6 +781,10 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             "/api/holdings/other/series",
             get(reports_api::other_holdings_series_report),
         )
+        // Benchmark overlay for the Stocks value-over-time chart. A GET, but it
+        // may fetch from Yahoo Finance and write the benchmark cache beside the
+        // journal, so it belongs above the token guard with everything else.
+        .route("/api/holdings/benchmarks", get(benchmarks_api::benchmarks))
         // Write path (Phase 5.2+): add / delete / replace (PUT) / partial-edit
         // (PATCH) a transaction through the editor.
         .route("/api/transactions", post(edit_api::add_transaction))

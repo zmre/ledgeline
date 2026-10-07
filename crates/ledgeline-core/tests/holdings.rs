@@ -15,6 +15,7 @@
 mod common;
 
 use common::fixture_journal;
+use ledgeline_core::holdings::SeriesWindow;
 use ledgeline_core::holdings::{
     HoldingsReport, HoldingsScope, PriceSource, ScopeMode, WarningKind, compute_holdings,
     holdings_series,
@@ -351,8 +352,7 @@ fn series_tracks_the_portfolio_over_time() {
         &journal.accounts,
         &journal.commodity_tags,
         &all_accounts_scope(),
-        Interval::Monthly,
-        6,
+        &SeriesWindow::counted(Interval::Monthly, 6),
     )
     .expect("series computes");
 

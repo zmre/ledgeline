@@ -41,6 +41,9 @@ import type {
     OtherHoldingsWarning,
 } from "$lib/holdings/types";
 import type {CreatedPricesFile, PriceOutcome, PriceResult, PricesFile, PricesStatus, PricesUpdateResponse} from "$lib/holdings/pricesTypes";
+import {CATEGORY_DIMENSIONS} from "$lib/holdings/profileTypes";
+import type {BenchmarkLine, BenchmarksResponse} from "$lib/holdings/benchmarks";
+import type {Breakdown, CategoryWeight, HoldingsProfiles, SymbolProfile, YahooStatus} from "$lib/holdings/profileTypes";
 import type {
     AliasEffect,
     AliasEntry,
@@ -163,6 +166,8 @@ import type {
     IsSubtotal,
     IsSubtotalKind,
     PeriodReport,
+    PeriodRow,
+    PeriodRowKind,
     ReportMeta,
     ReportRow,
     Section,
@@ -324,6 +329,7 @@ interface RawPeriodRow {
     account?: string;
     depth?: number;
     values?: RawMixed[];
+    kind?: unknown;
 }
 
 interface RawReportMeta {
@@ -1680,15 +1686,24 @@ export function decodeFlowReport(raw: unknown): FlowReport {
 // PeriodReport (cash flow / net worth)
 // ---------------------------------------------------------------------------
 
-function decodePeriodRow(raw: RawPeriodRow | undefined, context: string): PeriodReport["rows"][number] {
+const PERIOD_ROW_KINDS: readonly PeriodRowKind[] = ["asset", "liability", "mixed"];
+
+function decodePeriodRow(raw: RawPeriodRow | undefined, context: string): PeriodRow {
     if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number" || !Array.isArray(raw.values)) {
         throw new ApiShapeError(`${context}: missing account/depth/values`);
     }
-    return Object.freeze({
+    const row: PeriodRow = {
         account: raw.account,
         depth: raw.depth,
         values: frozen(raw.values.map((value, i) => decodeMixed(value, `${context} values[${i}]`))),
-    });
+    };
+    // Absent on every period report but net worth. Present, it must be one of
+    // the three sides: a side the chart does not know would be stacked on
+    // neither, and that is a wire change to fail loudly on, not to guess at.
+    if (raw.kind !== undefined) {
+        row.kind = decodeEnum(PERIOD_ROW_KINDS, str(raw.kind, `${context} kind`), `${context} kind`);
+    }
+    return Object.freeze(row);
 }
 
 export function decodePeriodReport(raw: unknown): PeriodReport {
@@ -2188,6 +2203,51 @@ export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
         base: series.base,
         points: frozen(series.points.map((point, i) => decodeHoldingsPoint(point, `series point #${i}`))),
         hasBasis: series.hasBasis === true,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Benchmarks (`/api/holdings/benchmarks`, WireBenchmarks in benchmarks_api.rs)
+//
+// Never quietly defaulted: every field the engine always sends is required,
+// because a benchmark drawn from a zero-filled misread would be a confident
+// wrong comparison.
+// ---------------------------------------------------------------------------
+
+interface RawBenchmarkPoint {
+    date?: unknown;
+    value?: unknown;
+}
+
+interface RawBenchmarkLine {
+    symbol?: unknown;
+    points?: unknown;
+    stale?: unknown;
+    error?: string | null;
+}
+
+function decodeBenchmarkLine(raw: RawBenchmarkLine | undefined, context: string): BenchmarkLine {
+    if (typeof raw !== "object" || raw === null || !Array.isArray(raw.points)) throw new ApiShapeError(`${context}: expected symbol/points`);
+    const points = (raw.points as RawBenchmarkPoint[]).map((point, i) =>
+        Object.freeze({
+            date: str(point?.date, `${context} point #${i} date`) as ISODate,
+            // A gap is an explicit null; anything else must be a real number.
+            value: point?.value === null ? null : num(point?.value, `${context} point #${i} value`),
+        })
+    );
+    return Object.freeze({
+        symbol: str(raw.symbol, `${context} symbol`),
+        points: frozen(points),
+        stale: flag(raw.stale, `${context} stale`),
+        error: decodeNullableStr(raw.error, `${context} error`),
+    });
+}
+
+export function decodeBenchmarks(raw: unknown): BenchmarksResponse {
+    const body = raw as {benchmarks?: unknown} | null;
+    if (typeof body !== "object" || body === null || !Array.isArray(body.benchmarks)) throw new ApiShapeError("benchmarks: expected a benchmarks array");
+    return Object.freeze({
+        benchmarks: frozen((body.benchmarks as RawBenchmarkLine[]).map((line, i) => decodeBenchmarkLine(line, `benchmark #${i}`))),
     });
 }
 
@@ -3728,6 +3788,69 @@ export function decodePricesUpdateResponse(raw: unknown): PricesUpdateResponse {
         file: decodePricesFile(response.file, "prices update file"),
         results: frozen(response.results.map((result, i) => decodePriceResult(result, `prices update results[${i}]`))),
     });
+}
+
+// ---------------------------------------------------------------------------
+// Holding classifications (`/api/holdings/profiles`)
+//
+// The Holdings pie's "by category" views. Weights are fractions (plain JSON
+// numbers — display-only, never money), and every list sums to at most one.
+// ---------------------------------------------------------------------------
+
+interface RawCategoryWeight {
+    label?: string;
+    weight?: number;
+}
+
+interface RawSymbolProfile {
+    symbol?: string;
+    breakdown?: Partial<Record<string, RawCategoryWeight[]>>;
+}
+
+interface RawHoldingsProfiles {
+    yahoo?: string;
+    profiles?: RawSymbolProfile[];
+}
+
+const YAHOO_STATUSES: readonly YahooStatus[] = ["ok", "partial", "unavailable"];
+
+function decodeCategoryWeights(raw: RawCategoryWeight[] | undefined, context: string): readonly CategoryWeight[] {
+    // An absent dimension is "nothing known", which is exactly what an empty
+    // list already means — so an older engine missing a newer dimension still
+    // decodes, it just offers fewer views.
+    if (raw === undefined) return frozen([]);
+    if (!Array.isArray(raw)) throw new ApiShapeError(`${context}: expected an array`);
+    return frozen(
+        raw.map((entry, i) => {
+            const weight = num(entry.weight, `${context}[${i}] weight`);
+            if (weight < 0 || weight > 1) throw new ApiShapeError(`${context}[${i}] weight: ${weight} is not a fraction`);
+            return Object.freeze({label: str(entry.label, `${context}[${i}] label`), weight});
+        })
+    );
+}
+
+function decodeSymbolProfile(raw: RawSymbolProfile, context: string): SymbolProfile {
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected an object`);
+    const breakdown = raw.breakdown;
+    if (typeof breakdown !== "object" || breakdown === null) throw new ApiShapeError(`${context}: expected a breakdown object`);
+    const decoded = Object.fromEntries(
+        CATEGORY_DIMENSIONS.map((dimension) => [dimension, decodeCategoryWeights(breakdown[dimension], `${context} breakdown.${dimension}`)])
+    ) as Breakdown;
+    return Object.freeze({
+        symbol: str(raw.symbol, `${context} symbol`),
+        breakdown: Object.freeze(decoded),
+    });
+}
+
+/** `GET /api/holdings/profiles` → per-symbol classifications, keyed by symbol. */
+export function decodeHoldingsProfiles(raw: unknown): HoldingsProfiles {
+    const body = raw as RawHoldingsProfiles;
+    if (typeof body !== "object" || body === null || !Array.isArray(body.profiles)) {
+        throw new ApiShapeError("holdings profiles: expected a profiles array");
+    }
+    const yahoo = decodeEnum(YAHOO_STATUSES, body.yahoo, "holdings profiles yahoo");
+    const profiles = body.profiles.map((profile, i) => decodeSymbolProfile(profile, `holdings profiles[${i}]`));
+    return Object.freeze({yahoo, profiles: new Map(profiles.map((profile) => [profile.symbol, profile]))});
 }
 
 // ---------------------------------------------------------------------------

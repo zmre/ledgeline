@@ -33,16 +33,22 @@ Linux GUI libraries (`webkitgtk_4_1`, `gtk3`, `libsoup_3`). It also exports
 nix develop path:. --command bash -c 'cargo --version && node --version && bun --version && hledger --version'
 ```
 
-### The pre-push formatting hook
+### The pre-push hook
 
 Entering the dev shell installs a `pre-push` hook (`git-hooks.nix`, configured
 in `flake.nix` under `gitHooks`). It runs the two formatters CI cares about
-against the whole tree:
+against the whole tree, then `just pre-push`:
 
 | Hook | Runs | Fires when |
 | --- | --- | --- |
 | `rustfmt (workspace)` | `cargo fmt --all -- --check`, from the **pinned** toolchain | any `.rs` file changed |
 | `alejandra` | `alejandra` | any `.nix` file changed |
+| `just pre-push` | everything CI gates on that a laptop can run (see [Continuous integration](#continuous-integration)) | every push |
+
+`just pre-push` takes minutes, not seconds. It used to be a command you had to
+remember to type, and the failures it would have caught kept reaching CI. A push
+from outside the dev shell enters it first. The hook tests the working tree, not
+just the commits being pushed, because pre-push hooks get no stash.
 
 Push-time rather than commit-time on purpose: a pre-commit hook fires on every
 WIP and fixup commit, where half-formatted code is normal, and that friction is
@@ -415,11 +421,16 @@ too). Jobs:
 `clippy`, `tests`, and `build` depend on `format-check` and share the crane
 dependency layer (populated once, then pulled from Cachix on later runs). The
 `e2e` job builds `.#ledgeline`, runs the vitest contract suites against it, then
-runs the Playwright specs; `versions`, `audit` and `spa-audit` round out the nine
-jobs. All of them run on `pull_request`, none is conditional, so all of them gate.
+runs the Playwright specs; `versions`, plus `audit` and `spa-audit` (called from `audit.yml`), round out
+the nine jobs. All of them run on `pull_request`, none is conditional, so all of them gate.
 
 `bun run test:unit` runs BOTH of the SPA's vitest projects — `unit` (node, pure
 functions) and `components` (jsdom, mounted `*.svelte.test.ts`). Neither needs an
 engine or a browser. See `web/README.md` for which to write and why.
 
-`just pre-push` is the local twin of that gate: `version-check`, `engine-check`, `lint`, `check`, `test`, `test-integration`, `engine-test` and `e2e`, cheapest-first so it fails fast. Under two minutes on a warm cargo cache and several minutes on a cold one, which is the price of not learning the same thing from a red PR twenty minutes after pushing. It is a command to type deliberately, not a hook. It is also the only thing that runs `just lint` (prettier plus eslint over `web/`), which no CI job calls at all.
+`just pre-push` is the local twin of that gate: `version-check`, `spa-hash-check`, `audit`, `engine-check`, `lint`, `check`, `test`, `test-integration`, `engine-test` and `e2e`, cheapest-first so it fails fast. A couple of minutes on a warm cargo cache and several on a cold one, which is the price of not learning the same thing from a red PR twenty minutes after pushing. The pre-push hook runs it (see above). It is also the only thing that runs `just lint` (prettier plus eslint over `web/`), which no CI job calls at all.
+
+Two kinds of failure used to reach CI because a laptop couldn't see them:
+
+- **New advisories.** The `audit` and `spa-audit` jobs go red when an advisory is published, with no commit from us. They live in `.github/workflows/audit.yml`. `ci.yml` calls it on every PR, and it also runs daily on `main`, so drift shows up there first. The ignore lists, and the reason for each entry, live in `scripts/audit.sh`, which `just audit` shares. When a new advisory has a patch release, bump the lockfile instead of adding an ignore. See the note at the end of the `spa_audit` comment in that script.
+- **A stale `spaNodeModules` pin.** A Mac can't build the Linux tree, so `just spa-hash-check` fails when `web/bun.lock` changed since `origin/main` but the aarch64-darwin or x86_64-linux pin didn't. `just repin-spa-hashes` fixes it. It builds aarch64-darwin locally and x86_64-linux on `$LEDGELINE_LINUX_STORE` (default `ssh-ng://avalon`).

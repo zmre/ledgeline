@@ -233,6 +233,86 @@ test("reports: P&L flow panels print their total only while shut", async ({page}
     await expect(moneyIn.locator(".collapse-title")).not.toContainText("$");
 });
 
+test("reports: net worth and cash flow draw their charts above the tables", async ({page}) => {
+    await page.goto("/");
+    await page.getByRole("link", {name: "Reports"}).click();
+
+    // Net worth: one stacked column per year, assets up and liabilities down
+    // (the mortgage by its declared type), and exactly the table's accounts
+    // under the table's own labels — at the default depth, assets › bank ›
+    // checking, savings, wise, then the collapsed chains, then liabilities.
+    await page.getByRole("tab", {name: "Net Worth"}).click();
+    const worth = page.getByTestId("networth-chart-panel");
+    await expect(worth.getByTestId("networth-chart")).toBeVisible();
+    await expect(worth.getByTestId("networth-chart-legend").locator("li")).toHaveText([
+        "checking",
+        "savings",
+        "wise",
+        "broker:taxable",
+        "property:home",
+        "vehicles:car",
+        "cc:visa",
+        "mortgage",
+        "Net worth",
+    ]);
+    await expect(page.locator('tr[data-account="liabilities:mortgage"] th')).toHaveText("mortgage");
+    // Five yearly buckets is few enough to label every net point — every one
+    // that holds anything: sample.journal starts in 2024, so 2022 and 2023 are
+    // empty columns and get no "$0" label.
+    await expect(worth.locator("g.lc-net-point")).toHaveCount(3);
+
+    // Cash flow: exactly the table's accounts, under the table's own labels,
+    // and no breakdown toggle. At the default depth the table shows assets ›
+    // bank › checking, savings, wise, and the collapsed broker:taxable; wise
+    // holds only EUR, which the $ chart cannot draw and says so.
+    await page.getByRole("tab", {name: "Cash Flow"}).click();
+    const cash = page.getByTestId("cashflow-chart-panel");
+    await expect(cash.getByTestId("cashflow-chart-legend").locator("li")).toHaveText(["checking", "savings", "broker:taxable", "Net change"]);
+    await expect(cash.getByTestId("cashflow-chart-omitted")).toContainText("EUR not shown");
+    await expect(cash.getByRole("radiogroup")).toHaveCount(0);
+    await expect(cash.getByText(/By (source|account)/)).toHaveCount(0);
+    for (const [account, label] of [
+        ["assets:bank:checking", "checking"],
+        ["assets:bank:savings", "savings"],
+        ["assets:broker:taxable", "broker:taxable"],
+    ]) {
+        await expect(page.locator(`tr[data-account="${account}"] th`)).toHaveText(label);
+    }
+});
+
+test("reports: the net worth tooltip names the segment under the pointer, else the column top to bottom", async ({page}) => {
+    await page.goto("/reports?tab=nw&end=2026-07-08&interval=yearly&count=5&depth=3");
+    const chart = page.getByTestId("networth-chart");
+    await expect(chart.locator(".lc-bars-bar").first()).toBeAttached();
+
+    // The last column's segments, top of the chart first.
+    const column = await chart.locator(".lc-bars-bar").evaluateAll((paths) => {
+        const boxes = paths.map((p) => ({box: p.getBoundingClientRect(), fill: p.getAttribute("fill")}));
+        const right = Math.max(...boxes.map((b) => b.box.x));
+        return boxes
+            .filter((b) => Math.abs(b.box.x - right) < 1)
+            .sort((a, b) => a.box.y - b.box.y)
+            .map(({box, fill}) => ({x: box.x, y: box.y, width: box.width, height: box.height, fill}));
+    });
+    expect(column.length).toBeGreaterThan(1);
+    const tallest = column.reduce((a, b) => (b.height > a.height ? b : a));
+
+    const tooltip = page.getByTestId("networth-chart-tooltip");
+    const items = tooltip.locator(":scope > div.items-center:not(.border-t)");
+    const swatches = (): Promise<string[]> => items.evaluateAll((rows) => rows.map((row) => row.querySelector("span")?.style.borderColor ?? ""));
+
+    // Directly over a segment: that segment alone, then the net.
+    await page.mouse.move(tallest.x + tallest.width / 2, tallest.y + tallest.height / 2);
+    await expect(items).toHaveCount(1);
+    await expect(tooltip).toContainText("Net worth");
+
+    // Beside the bar, in the same bucket: every segment, in the column's order.
+    await page.mouse.move(tallest.x + tallest.width + 8, tallest.y + tallest.height / 2);
+    await expect(items).toHaveCount(column.length);
+    const colour = (hex: string | null): string => (hex === null ? "" : `rgb(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`);
+    expect(await swatches()).toEqual(column.map((segment) => colour(segment.fill)));
+});
+
 test("reports: P&L groups start collapsed and open to their accounts", async ({page}) => {
     // The range the plan's ground-truth table pins, rather than the default
     // calendar year, so the figures below are the ones hledger printed for it.

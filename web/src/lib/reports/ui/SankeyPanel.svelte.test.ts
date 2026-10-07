@@ -72,13 +72,19 @@ describe("COMPONENT SankeyPanel", () => {
             "Credit cards: Amex",
             "Cash: Wallet",
             "Vehicles: Car: Depreciation",
+            "Bank: HSA",
+            "Bank: Union",
+            "Credit cards: Discover",
+            "Credit cards: Citi",
+            "Loan: Heloc",
+            "Cash: Safe",
             OTHER_LABEL,
         ]) {
             expect(legend.textContent).toContain(label);
         }
         // The three folded accounts are named nowhere: they ARE the tail entry.
         expect(legend.textContent).not.toContain("Loan: Auto");
-        expect(legend.querySelectorAll("li").length).toBe(8);
+        expect(legend.querySelectorAll("li").length).toBe(14);
     });
 
     it("keeps the total in the header while shut, where it is the only figure there is", () => {

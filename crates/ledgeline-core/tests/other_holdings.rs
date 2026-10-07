@@ -19,6 +19,7 @@
 
 mod common;
 
+use ledgeline_core::holdings::SeriesWindow;
 use ledgeline_core::holdings::{
     HoldingsScope, OtherWarningKind, ScopeMode, compute_holdings, other_holdings,
     other_holdings_series,
@@ -960,8 +961,7 @@ fn the_series_tracks_total_value_at_each_boundary() {
         &journal.prices,
         &journal.accounts,
         &scope(AS_OF, None),
-        Interval::Monthly,
-        5,
+        &SeriesWindow::counted(Interval::Monthly, 5),
     )
     .expect("series computes");
 
@@ -1012,8 +1012,7 @@ fn the_final_point_is_clamped_to_as_of() {
         &journal.prices,
         &journal.accounts,
         &scope("2026-06-15", None),
-        Interval::Monthly,
-        2,
+        &SeriesWindow::counted(Interval::Monthly, 2),
     )
     .expect("series computes");
 
@@ -1025,4 +1024,32 @@ fn the_final_point_is_clamped_to_as_of() {
         usd("537000.00"),
         "house $430,000 + van $32,000 + acme $75,000"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Where an all-time chart starts
+// ---------------------------------------------------------------------------
+
+/// The Other tab's "all time" chart begins at its own first row's activity —
+/// the house, 2026-01-15 — not at the journal's opening balances (cash, which
+/// this tab never shows) and not at the VTI buy (the Stocks tab's).
+#[test]
+fn an_all_time_chart_starts_at_the_first_other_holding_activity() {
+    let journal = fixture();
+    let first = |scope: &HoldingsScope| {
+        ledgeline_core::holdings::first_other_holding_date(
+            &journal.transactions,
+            &journal.prices,
+            &journal.accounts,
+            scope,
+        )
+        .expect("first date computes")
+    };
+    assert_eq!(first(&scope(AS_OF, None)).as_deref(), Some("2026-01-15"));
+    let vehicles = HoldingsScope {
+        accounts: BTreeSet::from(["assets:vehicles".to_string()]),
+        ..scope(AS_OF, None)
+    };
+    assert_eq!(first(&vehicles).as_deref(), Some("2026-02-01"));
+    assert_eq!(first(&scope("2026-01-10", None)), None);
 }

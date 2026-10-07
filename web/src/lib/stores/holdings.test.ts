@@ -1,6 +1,7 @@
-import {beforeEach, describe, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
+import type {GainPeriod, HoldingsScope} from "$lib/holdings/types";
 import {localToday} from "./filters.svelte";
-import {defaultScope, holdingsScope} from "./holdings.svelte";
+import {defaultScope, holdingsData, holdingsScope, otherHoldingsData, trendQuery} from "./holdings.svelte";
 
 describe("UNIT holdings scope store (module state, reset between tests)", () => {
     beforeEach(() => {
@@ -66,5 +67,43 @@ describe("UNIT holdings scope store (module state, reset between tests)", () => 
         expect(holdingsScope.value.mode).toBe("exclude");
         expect(holdingsScope.value.asOf).toBe("2024-12-31");
         expect(holdingsScope.value.gainPeriod).toBe("ytd");
+    });
+});
+
+describe("UNIT holdings trend window follows the gain period", () => {
+    const at = (gainPeriod: GainPeriod): HoldingsScope => ({accounts: new Set(["assets:broker"]), mode: "exclude", asOf: "2026-09-28", gainPeriod});
+
+    it("starts the twelve-month chart at the twelve-month gain's own reference date", () => {
+        expect(trendQuery(at("12mo"))).toEqual({asOf: "2026-09-28", accounts: "assets:broker", mode: "exclude", interval: "monthly", since: "2025-09-28"});
+    });
+
+    it("sends a since for every window, inception for all time", () => {
+        expect(trendQuery(at("1wk"))).toMatchObject({interval: "daily", since: "2026-09-21"});
+        expect(trendQuery(at("ytd"))).toMatchObject({interval: "auto", since: "2025-12-31"});
+        expect(trendQuery(at("all"))).toMatchObject({interval: "auto", since: "inception"});
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("asks both tabs' series endpoints for the same window", async () => {
+        const urls: string[] = [];
+        vi.stubGlobal("fetch", (input: unknown) => {
+            urls.push(String(input));
+            return Promise.resolve(new Response("not wired", {status: 404}));
+        });
+        await holdingsData.load("http://engine.test", at("5yr"));
+        await otherHoldingsData.load("http://engine.test", at("5yr"));
+        const series = urls.filter((url) => url.includes("/series"));
+
+        expect(series).toHaveLength(2);
+        for (const url of series) {
+            const params = new URL(url).searchParams;
+            expect(params.get("interval")).toBe("monthly");
+            expect(params.get("since")).toBe("2021-09-28");
+            expect(params.get("count")).toBeNull();
+        }
+        expect(urls.some((url) => url.includes("/api/holdings?") && url.includes("gainSince=2021-09-28"))).toBe(true);
     });
 });

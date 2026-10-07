@@ -98,7 +98,8 @@ export function bucketKey(date: ISODate, interval: Interval): string {
     }
 }
 
-const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** Short English month names, January first — the bucket labels' and the charts'. */
+export const MONTH_NAMES: readonly string[] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** Human label for a bucket key: "2026-07" → "Jul 2026", "2026-Q3" → "Q3 2026", "2026-W28" → "W28 2026". */
 export function bucketLabel(key: string): string {
@@ -207,6 +208,31 @@ export function daysBetween(a: ISODate, b: ISODate): number {
     const [ay, am, ad] = parts(a);
     const [by, bm, bd] = parts(b);
     return daysFromCivil(by, bm, bd) - daysFromCivil(ay, am, ad);
+}
+
+/**
+ * The ISO date `delta` days after `date` (negative moves earlier).
+ *
+ * The exact twin of `reports::periods::add_days` in the Rust engine.
+ */
+export function addDays(date: ISODate, delta: number): ISODate {
+    const [y, m, d] = parts(date);
+    return toISO(...civilFromDays(daysFromCivil(y, m, d) + delta));
+}
+
+/**
+ * The ISO date `months` calendar months after `date` (negative moves earlier),
+ * the day clamped to the target month's length (`2026-03-31 − 1 month` →
+ * `2026-02-28`).
+ *
+ * The exact twin of `reports::periods::add_months` in the Rust engine.
+ */
+export function addMonths(date: ISODate, months: number): ISODate {
+    const [y, m, d] = parts(date);
+    const index = y * 12 + (m - 1) + months;
+    const year = Math.floor(index / 12);
+    const month = index - year * 12 + 1;
+    return toISO(year, month, Math.min(d, daysInMonth(year, month)));
 }
 
 /** Number of monthly buckets spanning `from`…`to` inclusive (min 1). "2026-01"→"2026-07" = 7. */

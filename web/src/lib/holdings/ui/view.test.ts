@@ -1,6 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {dec, formatDec, type Dec, type MixedAmount} from "$lib/domain/money";
 import type {AmountStyle} from "$lib/domain/types";
+import {DEFAULT_PALETTE} from "$lib/format/palette";
 import type {Holding, OtherHolding} from "$lib/holdings/types";
 import {
     EM_DASH,
@@ -39,17 +40,19 @@ function holding(symbol: string, marketValueDollars: number | null, overrides: P
 
 const fmt = (v: Dec): string => `$${formatDec(v, {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: null})}`;
 
+const SLOTS = DEFAULT_PALETTE.categorical.length;
+
 describe("UNIT holdings view helpers", () => {
     describe("pieSlices", () => {
         it("keeps one named slice per priced holding with % shares summing to 100", () => {
-            const slices = pieSlices([holding("AAPL", 75), holding("VTI", 25)], fmt);
+            const slices = pieSlices([holding("AAPL", 75), holding("VTI", 25)], fmt, SLOTS);
             expect(slices.map((s) => s.symbol)).toEqual(["AAPL", "VTI"]);
             expect(slices.map((s) => s.share)).toEqual([75, 25]);
             expect(slices[0].formatted).toBe("$75.00");
         });
 
         it("excludes unpriced holdings entirely", () => {
-            const slices = pieSlices([holding("AAPL", 100), holding("GLD", null)], fmt);
+            const slices = pieSlices([holding("AAPL", 100), holding("GLD", null)], fmt, SLOTS);
             expect(slices.map((s) => s.symbol)).toEqual(["AAPL"]);
             expect(slices[0].share).toBe(100);
         });
@@ -63,8 +66,16 @@ describe("UNIT holdings view helpers", () => {
             expect(slices.reduce((acc, s) => acc + s.share, 0)).toBeCloseTo(100);
         });
 
+        it("names every holding up to the palette's slot count before folding any", () => {
+            const holdings = Array.from({length: SLOTS + 1}, (_, i) => holding(`S${i}`, 100 - i));
+            const slices = pieSlices(holdings, fmt, SLOTS);
+            expect(slices.slice(0, SLOTS).map((s) => s.symbol)).toEqual(holdings.slice(0, SLOTS).map((h) => h.symbol));
+            expect(slices.map((s) => s.symbol)).toEqual([...holdings.slice(0, SLOTS).map((h) => h.symbol), PIE_OTHER]);
+            expect(pieSlices(holdings.slice(0, SLOTS), fmt, SLOTS).some((s) => s.symbol === PIE_OTHER)).toBe(false);
+        });
+
         it("returns no slices when nothing is priced", () => {
-            expect(pieSlices([holding("GLD", null)], fmt)).toEqual([]);
+            expect(pieSlices([holding("GLD", null)], fmt, SLOTS)).toEqual([]);
         });
     });
 

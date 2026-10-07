@@ -3276,7 +3276,7 @@ fn init_repo(dir: &Path) {
 
 /// Run git in `dir` and return its combined output.
 fn git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = common::git_command()
         .current_dir(dir)
         .args(args)
         .output()
