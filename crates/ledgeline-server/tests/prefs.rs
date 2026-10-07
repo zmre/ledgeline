@@ -145,15 +145,38 @@ fn run_child_beside(test_name: &str, dir: &Path, env: &[(&str, &Path)]) {
     for (key, value) in env {
         command.env(key, value);
     }
-    let output = command
-        .output()
-        .expect("re-run the copied test binary as a child");
+    let output =
+        output_retrying_while_busy(&mut command).expect("re-run the copied test binary as a child");
     assert!(
         output.status.success(),
         "child test `{test_name}` failed\n--- stdout ---\n{}\n--- stderr ---\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+/// Run `command` to completion, waiting out a program the kernel reports as
+/// **busy** (`ETXTBSY`).
+///
+/// [`run_child_beside`] writes a copy of this binary and runs it at once, from a
+/// process whose other test threads are forking children of their own. A fork
+/// that lands while the copy's write descriptor is open carries it into that
+/// child until the child `exec`s, and Linux refuses to run a file anyone holds
+/// open for writing. The same race `hledger::spawn_retrying_while_busy` closes
+/// for the stubs; the window is microseconds, so a short poll covers it.
+fn output_retrying_while_busy(command: &mut Command) -> std::io::Result<std::process::Output> {
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match command.output() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && std::time::Instant::now() < give_up =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            settled => return settled,
+        }
+    }
 }
 
 /// The scratch directory a child was given, or `None` when this test was invoked
