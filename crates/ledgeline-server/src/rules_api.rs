@@ -118,8 +118,7 @@
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use ledgeline_core::Fingerprint;
 use ledgeline_core::convert::{self, SourceFormat, Tabular};
 use ledgeline_core::rules::{
@@ -136,6 +135,7 @@ use crate::AppState;
 use crate::edit_api::json_body;
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::compute;
+use crate::security::no_store_json as no_store;
 use crate::stage::{Stage, StageId};
 
 // ===========================================================================
@@ -1331,14 +1331,6 @@ fn parse_document(text: &str, id: &str) -> Result<RulesDoc, AppError> {
 /// makes a discovery set exist at all.
 fn main_journal_file(state: &AppState) -> Option<PathBuf> {
     state.source_files().into_iter().next()
-}
-
-/// `Cache-Control: no-store`, no `ETag`. See the module docs for why these three
-/// reads sit outside the snapshot's cache validator entirely.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
 }
 
 // ===========================================================================

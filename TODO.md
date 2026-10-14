@@ -39,9 +39,6 @@
   time (a render clamp present in `edit.rs` but missing from `ofx.rs` and `import_api.rs`, a parse
   scale cap that failed open, a row cap that ran after materialization). Worth looking for the rest
   deliberately rather than waiting for the next review.
-- chore: **one `no_store` definition, not five.** The canonical `HeaderValue` is in
-  `security::no_store()`, but `import_api`, `rules_api`, `alias_api` and `budget_api` each still
-  have a module-private `fn no_store<T: Serialize>(body: T) -> Response`. Rebase them onto it.
 - chore: **one path redactor, not two.** `import_api::Redactor` is private to that module, so
   `edit_api::PathRedaction` duplicates its longest-first and both-spellings-of-`/tmp` rules. Promote
   `Redactor` to a shared module and delete the duplicate.

@@ -411,19 +411,23 @@ fn bearer_token(value: &str) -> Option<&str> {
 
 /// `Cache-Control: no-store` — "do not write this anywhere".
 ///
-/// The canonical spelling for this crate. `import_api`, `rules_api`,
-/// `alias_api` and `budget_api` each carry a private `no_store(body)` helper
-/// that builds a JSON response around this same literal; those are for JSON
-/// bodies and cannot serve the HTML shell, so [`spa`](crate::spa) reaches for
-/// the value itself. Anything that needs the header and is not returning
-/// `Json` should use THIS, not a fifth copy of the literal.
+/// The canonical spelling for this crate. JSON routes go through
+/// [`no_store_json`]; anything that needs the header and is not returning
+/// `Json` (e.g. the HTML shell in [`spa`](crate::spa)) uses this value
+/// directly rather than a fresh copy of the literal.
 pub(crate) fn no_store() -> HeaderValue {
     HeaderValue::from_static("no-store")
 }
 
-/// A JSON response marked [`no_store`] — the canonical form of the private
-/// `no_store(body)` helpers several `*_api` modules still carry (tracked for
-/// consolidation); new code uses this one.
+/// A JSON response marked [`no_store`], with no `ETag` — the one helper every
+/// `*_api` module uses for reads that are not derived from the journal
+/// snapshot (import, rules, aliases, budget, prices, projections, accounts,
+/// QB-journal, profiles, benchmarks).
+///
+/// The `ETag` is a single per-journal generation counter shared by every read
+/// route, so there is no third option for these: tagging them would either
+/// invalidate the SPA's cached `/transactions` body for a change that affects
+/// no transaction, or hand out a stale document under a fresh tag.
 pub(crate) fn no_store_json<T: serde::Serialize>(body: T) -> Response {
     ([(header::CACHE_CONTROL, no_store())], axum::Json(body)).into_response()
 }

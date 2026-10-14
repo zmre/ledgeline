@@ -105,8 +105,8 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, HeaderName};
+use axum::response::Response;
 use ledgeline_core::aliases;
 use ledgeline_core::convert::{
     self, ConvertError, ConvertNote, SourceFormat, StatementMeta, Tabular,
@@ -133,6 +133,7 @@ use crate::git::{GitStatus, Repo};
 use crate::hledger::{Hledger, HledgerError, Invocation, Output};
 use crate::prefs::{self, Prefs};
 use crate::reports_api::compute;
+use crate::security::no_store_json as no_store;
 use crate::stage::{self, RUN_BARE, RUN_WITH_LATEST, Stage, StageId};
 
 // ===========================================================================
@@ -2375,17 +2376,6 @@ pub(crate) fn commit_targets(
 // ===========================================================================
 // Handlers
 // ===========================================================================
-
-/// `Cache-Control: no-store`, no `ETag` — the same posture as the rules routes.
-/// None of this is derived from the journal snapshot, and the `ETag` is one
-/// per-journal generation counter shared by every read endpoint, so there is no
-/// third option: tagging these would either invalidate the SPA's cached
-/// `/transactions` body or hand out a stale one under a fresh tag.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
-}
 
 /// `GET /api/import/capabilities` — hledger, formats, target journals, git.
 pub(crate) async fn capabilities(State(state): State<AppState>) -> Result<Response, AppError> {
@@ -5686,7 +5676,7 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert(
                 HeaderName::from_static(FILENAME_HEADER),
-                HeaderValue::from_str(value).expect("test header"),
+                axum::http::HeaderValue::from_str(value).expect("test header"),
             );
             headers
         };

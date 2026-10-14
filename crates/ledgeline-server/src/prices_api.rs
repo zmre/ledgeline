@@ -58,8 +58,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use futures::stream::{self, StreamExt};
 use ledgeline_core::edit::{Fingerprint, atomic_write, render_amount};
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings};
@@ -74,6 +73,7 @@ use crate::AppState;
 use crate::edit_api::{infer_style, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{WireDec, compute, today_utc};
+use crate::security::no_store_json as no_store;
 use crate::yahoo::{FetchedPrice, YahooError};
 
 /// The file a first price update is offered a home in, and the `include` line
@@ -233,15 +233,6 @@ pub(crate) enum Outcome {
 // ===========================================================================
 // Handlers
 // ===========================================================================
-
-/// `Cache-Control: no-store`, no `ETag` — same posture as `budget_api`/
-/// `alias_api`/`import_api`/`rules_api`: none of this is derived from the
-/// journal snapshot's generation counter.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
-}
 
 /// `GET /api/prices/status`.
 pub(crate) async fn status(State(state): State<AppState>) -> Result<Response, AppError> {
