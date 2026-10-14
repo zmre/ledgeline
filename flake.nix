@@ -92,16 +92,17 @@
           || (builtins.match ".*/fixtures(/.*)?" path != null);
       };
 
-      # `crates/ledgeline-server/src/spa.rs` embeds the built SvelteKit SPA from
-      # `web/build` via `#[derive(RustEmbed)]`. That folder is a git-ignored build
-      # artifact and is ABSENT in the Nix sandbox (we do NOT build the SPA in Nix —
-      # out of scope). rust-embed fails to COMPILE when the folder is missing, so
-      # before every cargo phase we drop in a placeholder `index.html`. Nix/CI
-      # binaries therefore embed a placeholder SPA — that is fine: CI proves the
-      # Rust compiles/links + tests pass. The real single binary is produced
-      # locally with `cd web && bun run build` then `cargo build --release`
-      # (see docs/development.md). This mirrors what `build.rs` does on a bare
-      # checkout, but does it here too so the crane sandbox never depends on it.
+      # `crates/ledgeline-server/src/spa.rs` embeds `crates/ledgeline-server/spa/`
+      # via `#[derive(RustEmbed)]`, and `build.rs` fills that folder by mirroring
+      # `web/build` (or writes its own placeholder when there is none). Both are
+      # git-ignored build artifacts, so neither is in `src`. Before every cargo
+      # phase we drop a placeholder `index.html` into `web/build` for build.rs to
+      # mirror, so `.#ledgeline`, `.#tests` and `.#clippy` embed a SCRIPT-LESS
+      # placeholder SPA — fine for proving the Rust compiles, links and passes,
+      # and useless for anything about the real UI. The outputs that need the
+      # real SvelteKit shell (`ledgelineWithSpa`, and the `spaShellCsp` check
+      # that tests its CSP) override `preBuild` to copy `spaBuild` there instead.
+      # Locally, `cd web && bun run build` before `cargo build` does the same.
       spaPlaceholder = ''
         mkdir -p web/build
         [ -e web/build/index.html ] || printf '%s\n' \
@@ -247,7 +248,8 @@
       # `.#ledgeline` embeds the CI PLACEHOLDER SPA (web/build is absent in the
       # sandbox). A real distributable must embed the ACTUAL SvelteKit UI, so we
       # build the SPA in Nix (bun) and feed it into a dedicated crane build.
-      # This whole block is only ever forced on macOS (see `packages` below).
+      # This whole block is only ever forced on systems with a pinned
+      # `spaNodeModulesHashes` entry (see `packages` and `realSpaChecks` below).
 
       # 1. node_modules for the SPA. `bun install` needs the network, so this is
       #    a fixed-output derivation: the recursive `outputHash` pins the exact
@@ -363,16 +365,36 @@
       # 3. The `ledgeline` binary with the REAL SPA baked in (rust-embed reads
       #    web/build at compile time). Reuses the cached dependency layer, so
       #    only the workspace crates recompile — now against the real UI.
+      embedRealSpa = ''
+        mkdir -p web/build
+        cp -R ${spaBuild}/. web/build/
+      '';
       ledgelineWithSpa = craneLib.buildPackage (commonArgs
         // hledgerEnv
         // {
           inherit cargoArtifacts;
           doCheck = false;
-          preBuild = ''
-            mkdir -p web/build
-            cp -R ${spaBuild}/. web/build/
-          '';
+          preBuild = embedRealSpa;
           meta = ledgeline.meta;
+        });
+
+      # 3b. The shell CSP against the REAL SvelteKit shell. `security::shell_csp`
+      #     hashes the inline scripts of whatever is embedded, and every other
+      #     cargo test embeds the script-less placeholder, so without this a
+      #     SvelteKit upgrade could ship a shell the policy refuses (a blank
+      #     window) with every check green. Embeds `spaBuild` exactly as
+      #     `ledgelineWithSpa` does and runs ONE integration test, which
+      #     `LEDGELINE_REQUIRE_REAL_SPA` turns from "placeholder is fine" into
+      #     "placeholder is a failure". Same `cargoArtifacts`, so only the
+      #     workspace crates compile. The browser-level twin is
+      #     web/e2e/csp.same-origin.e2e.ts.
+      spaShellCsp = craneLib.cargoTest (commonArgs
+        // {
+          inherit cargoArtifacts;
+          pname = "ledgeline-spa-shell-csp";
+          preBuild = embedRealSpa;
+          LEDGELINE_REQUIRE_REAL_SPA = "1";
+          cargoTestExtraArgs = "-p ledgeline --test spa_shell_csp";
         });
 
       # 4. Icon: assets/ledgeline.png (2048²) → a multi-resolution
@@ -839,6 +861,14 @@
           };
         };
       };
+
+      # Checks that embed the real SPA, so they need `spaNodeModules`, whose
+      # outputHash exists only for the systems pinned in
+      # `spaNodeModulesHashes`. Elsewhere (aarch64-linux) forcing it throws, so
+      # the check is simply absent there rather than breaking evaluation.
+      realSpaChecks = lib.optionalAttrs (spaNodeModulesHashes ? ${system}) {
+        inherit spaShellCsp;
+      };
     in {
       # Buildable outputs. `nix build .#ledgeline` proves the GUI deps resolve
       # (webkitgtk on Linux, system WebKit on macOS); the checks reuse the
@@ -871,14 +901,17 @@
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           inherit macApp macDist spaNodeModules spaBuild ledgelineWithSpa ledgelineIcns bundledHledger;
           default = macDist;
-        };
+        }
+        // realSpaChecks;
 
       # `nix flake check` runs all of these; CI invokes them individually
-      # (`nix build .#{fmt,clippy,tests,ledgeline}`) — the bare attr resolves to
-      # the current system automatically.
-      checks = {
-        inherit ledgeline clippy fmt tests;
-      };
+      # (`nix build .#{fmt,clippy,tests,ledgeline,spaShellCsp}`) — the bare attr
+      # resolves to the current system automatically.
+      checks =
+        {
+          inherit ledgeline clippy fmt tests;
+        }
+        // realSpaChecks;
 
       # `nix run .` → the REAL app on BOTH platforms, so
       # `nix run github:zmre/ledgeline -- ~/finance/2026.journal` opens the real
