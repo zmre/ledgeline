@@ -69,8 +69,7 @@
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::model::{
     Amount, Commodity, Journal, PeriodExpr, PeriodicTransaction, PostingType,
@@ -92,6 +91,7 @@ use crate::AppState;
 use crate::edit_api::{WireDecIn, dec_from_wire, infer_style, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{WireDec, WireMixed, compute, today_utc, wire_mixed};
+use crate::security::no_store_json as no_store;
 
 /// The declared account-type table `resolve_account_type` reads. Named here
 /// because it is threaded through every listing and an unnamed
@@ -401,15 +401,6 @@ pub(crate) struct WirePeriod {
 // ===========================================================================
 // Handlers
 // ===========================================================================
-
-/// `Cache-Control: no-store`, no `ETag` — the same posture, and the same
-/// reasoning, as the rules, import and alias routes: none of this is derived
-/// from the journal snapshot's generation counter.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
-}
 
 /// `GET /api/budget/lines` — every budget goal the open journal declares.
 pub(crate) async fn index(State(state): State<AppState>) -> Result<Response, AppError> {

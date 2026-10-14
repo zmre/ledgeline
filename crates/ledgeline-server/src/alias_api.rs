@@ -50,8 +50,7 @@
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use ledgeline_core::aliases::{
     AliasDoc, AliasEdit, AliasError, AliasLine, AliasLock, AliasPlan, AliasRefusal, Forwarded,
 };
@@ -68,6 +67,7 @@ use crate::AppState;
 use crate::edit_api::json_body;
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::compute;
+use crate::security::no_store_json as no_store;
 
 /// How many changes one `PUT` may name.
 ///
@@ -209,15 +209,6 @@ pub(crate) enum WireAliasEdit {
 // ===========================================================================
 // Handlers
 // ===========================================================================
-
-/// `Cache-Control: no-store`, no `ETag` — the same posture, and the same
-/// reasoning, as the rules and import routes: none of this is derived from the
-/// journal snapshot's generation counter.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
-}
 
 /// `GET /api/aliases` — every alias the open journal declares.
 pub(crate) async fn index(State(state): State<AppState>) -> Result<Response, AppError> {

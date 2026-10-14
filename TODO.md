@@ -15,21 +15,15 @@
   (`-f <journal>`) still open by path. A link swapped in mid-request can make a preview or a
   revision describe the link's target — a disclosure into the UI, never a write. Wants
   `pinned::read_pinned` at those reads and, for hledger, a check of the pin after each run.
-- security: `wire.rs`'s `/accounts` attributes an `include`d file's line number to the main journal
-  (`adisourcepos` is built with the main journal's name regardless of which file the directive came
-  from). `AccountDeclaration` carries a `SourcePos` but no `source_file`, unlike `Transaction` and
-  `AliasDirective`, which carry both. Blocks file+line anchoring for directive diagnostics.
 - chore: **cap-sweep residue.** The import preview's `additions` (`import_api::cli_parity`) are
   still diffed against the config's *forwarded* aliases, capped at `MAX_CONF_ALIASES`, so past 200
   it can list a line the write then (correctly) does not add; the write path uses the full list.
   And "no ASCII control character" now has five private spellings (`accounts`, `periodic`,
   `aliases` `has_control`; `rules::check_text`; `edit_api::check_text`) — one shared helper.
-- chore: **one `no_store` definition, not five.** The canonical `HeaderValue` is in
-  `security::no_store()`, but `import_api`, `rules_api`, `alias_api` and `budget_api` each still
-  have a module-private `fn no_store<T: Serialize>(body: T) -> Response`. Rebase them onto it.
-- chore: **one path redactor, not two.** `import_api::Redactor` is private to that module, so
-  `edit_api::PathRedaction` duplicates its longest-first and both-spellings-of-`/tmp` rules. Promote
-  `Redactor` to a shared module and delete the duplicate.
+- chore: `git.rs`'s `Repo::scrub` still swaps the repo toplevel without a path-boundary check
+  (hiding `/u/fin` rewrites `/u/finances2/x`). The shared `redact::Redactor` fixed this everywhere
+  else, but `tests/git_commit.rs` compiles `git.rs` standalone via `#[path]`, so it cannot use
+  `crate::redact` as-is; lift the boundary check into a dependency-free helper both can share.
 
 ## Misc
 - chore: Add screenshots and better descriptions to the readme

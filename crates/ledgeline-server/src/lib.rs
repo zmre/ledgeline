@@ -51,6 +51,7 @@ mod prices_api;
 mod profiles_api;
 mod projections_api;
 mod qb_journal_api;
+mod redact;
 mod reports_api;
 mod rules_api;
 mod security;

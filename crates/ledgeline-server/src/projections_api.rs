@@ -38,8 +38,7 @@ use std::path::{Path as FsPath, PathBuf};
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use ledgeline_core::Fingerprint;
 use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::model::{
@@ -68,6 +67,7 @@ use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
     Window, WireDec, WireMixed, WirePeriodReport, checked_date, compute, today_utc, wire_mixed,
 };
+use crate::security::no_store_json as no_store;
 
 // ===========================================================================
 // Limits
@@ -1250,19 +1250,6 @@ fn open_file(
         writable,
         scenario: WireScenario::from(&scenario),
     })
-}
-
-/// `Cache-Control: no-store`, no `ETag`.
-///
-/// The same decision `rules_api` documents at length: the `ETag` is one
-/// per-journal generation counter shared by every read route, so bumping it for
-/// a projection-file change would invalidate the SPA's cached `/transactions`
-/// body for a change that affects no transaction — and not bumping it while
-/// serving from the snapshot would hand out a stale document under a fresh tag.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
 }
 
 /// The journal's main file — the scan root's parent, and the only thing that
