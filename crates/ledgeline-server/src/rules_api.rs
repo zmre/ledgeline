@@ -122,6 +122,7 @@ use axum::http::{HeaderName, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use ledgeline_core::Fingerprint;
 use ledgeline_core::convert::{self, SourceFormat, Tabular};
+use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::rules::{
     self, ControlField, CreateRefusal, DirectiveValue, DiscoveredRules, Discovery, EditPlan,
     HledgerField, IfLayout, Item, ItemBody, ItemId, ItemKind, MatchScope, MatcherGroupSpec,
@@ -1241,11 +1242,11 @@ fn read_failed(id: &str, error: &std::io::Error) -> AppError {
 /// A `500` for an I/O failure while WRITING a rules file — and deliberately
 /// **not** [`read_failed`].
 ///
-/// The read path's argument does not transfer, because
-/// [`ledgeline_core::edit::atomic_write`] can fail with an error *we* built:
-/// `create_temp_file` gives up after several collisions with
-/// `could not create a temp file in {dir}` — the absolute journal directory,
-/// which is precisely the disclosure layer 5 exists to prevent. Reaching it
+/// The read path's argument does not transfer, because a write can fail with an
+/// error *we* built: the temp-file step gives up after several collisions with
+/// an error of our own wording, and a future wording could name the absolute
+/// journal directory, which is precisely the disclosure layer 5 exists to
+/// prevent. Reaching it
 /// needs several consecutive `AlreadyExists` on a pid-and-nanosecond-keyed temp
 /// name, so it is vanishingly unlikely; an invariant that holds by luck is not
 /// one worth asserting.
@@ -1738,30 +1739,24 @@ fn save_document(
         return Ok(wire_doc(found, &doc, fingerprint.token(), true));
     }
 
-    // Narrow the TOCTOU window from "the whole request" to "hash → rename". It
-    // cannot be closed — there is no compare-and-swap for a file — but the read
-    // above happened before parsing, planning, rendering and verifying, all of
-    // which take time.
-    let (_, before_write) = read_document(found, id)?;
-    if !before_write.content_matches(&fingerprint) {
-        return Err(stale(id));
-    }
-    // `(dev, ino)` plus a regular-file re-check, immediately before the write.
+    // Pinned to the scan's `(dev, ino)` and to the revision the client edited.
     // The scan proved this name was a regular file inside the root; that proof
     // expired the moment the scan ended, and a name can become a symlink, a FIFO
-    // or a different file entirely in between. Identity is what says "the same
-    // file" rather than "a file with the same name".
-    if !found.identity_unchanged() {
-        return Err(stale(id));
-    }
-
-    // Reused verbatim, because every property it documents is wanted unchanged
-    // here: a same-directory temp file via `create_new`, mode carry-forward (a
-    // rules file's matchers carry account numbers and payee names, so `0600`
-    // staying `0600` is not hypothetical), symlink-following so a shared
-    // `common.rules` survives as a link, and `fsync` before `rename`.
-    ledgeline_core::edit::atomic_write(found.path().as_path(), new_text.as_bytes())
-        .map_err(|error| write_failed(id, &error))?;
+    // or a different file entirely in between. `pinned::replace` re-checks both
+    // through the descriptor it replaces, right up to the rename, never follows
+    // a link, and carries the mode forward (a rules file's matchers carry
+    // account numbers and payee names, so `0600` staying `0600` is not
+    // hypothetical). The scan already skips symlinks, so nothing here is one.
+    let pin = Pin {
+        identity: found.identity(),
+        fingerprint: Some(fingerprint),
+    };
+    pinned::replace(found.path().as_path(), new_text.as_bytes(), &pin).map_err(
+        |error| match error {
+            WriteError::Changed => stale(id),
+            WriteError::Io(error) => write_failed(id, &error),
+        },
+    )?;
 
     // The new revision comes from what we WROTE, never from a re-read: a re-read
     // could pick up somebody else's write and hand this client a token for bytes

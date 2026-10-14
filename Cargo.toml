@@ -71,6 +71,12 @@ encoding_rs = "0.8"
 encoding_rs_io = "0.1"
 chardetng = "1"
 
+# Descriptor-relative file writes (`openat`/`renameat` with `O_NOFOLLOW`) for
+# `ledgeline_core::pinned`, which closes the symlink-swap TOCTOU on every write
+# to a user's books. Already in the lock via `tempfile`; std exposes none of the
+# `*at` calls, and rustix wraps them without any `unsafe` on our side.
+rustix = { version = "1", features = ["fs"] }
+
 proptest = "1"
 proptest-derive = "0.8"
 

@@ -38,15 +38,18 @@
 //! - **External-change guard.** [`JournalEditor::save`] re-reads each file it is
 //!   about to write and compares its content hash to that file's load-time
 //!   fingerprint, refusing (with [`EditError::ExternalChange`]) — and writing
-//!   nothing — rather than clobbering a file that changed underneath it. The
-//!   content hash is the only evidence consulted: an unchanged mtime proves
-//!   nothing (DL-3).
+//!   nothing — rather than clobbering a file that changed underneath it. An
+//!   unchanged mtime proves nothing (DL-3); what is consulted is the content
+//!   hash and the file's `(dev, ino)`, both pinned at load.
+//! - **Resolve once, pin.** A symlinked journal is resolved to its real path at
+//!   load and edited there; nothing is followed at write time, and a symlink
+//!   swapped in since load is refused. See [`crate::pinned`].
 //! - **Atomic write.** `save` writes each changed file to a temp file in the
 //!   same directory, `fsync`s it, and `rename`s it over the target. The temp
 //!   file is created exclusively (so a planted symlink cannot capture the write)
 //!   and inherits the target's mode and ownership, so saving never widens the
-//!   permissions on the user's books. See [`atomic_write`] for exactly what does
-//!   and does not survive the rename.
+//!   permissions on the user's books. See [`crate::pinned::replace`] for exactly
+//!   what does and does not survive the rename.
 //! - **Single writer.** Mutations take `&mut self`; the server will wrap the
 //!   editor in a `Mutex` in the next increment (no OS-level lock yet).
 
@@ -59,13 +62,12 @@ use crate::parse::{
     ParseError, check_transaction_balances, parse_journal, parse_journal_with_overrides,
     resolve_source_file,
 };
+use crate::pinned::{self, FileIdentity, Pin, WriteError};
 use ropey::Rope;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 use thiserror::Error;
 
 /// Errors produced by the write path.
@@ -235,8 +237,13 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 /// as an unexplained failure to open the user's books. This fails CLOSED — a
 /// lossy decode would write mojibake back over the original — so the fix is to
 /// say which file and what to do about it, not to guess the charset.
-fn read_journal_text(path: &Path) -> Result<String, EditError> {
-    std::fs::read_to_string(path).map_err(|err| {
+///
+/// Read through [`pinned::read_pinned_string`]: `path` is a resolved real path,
+/// so a symlink at it now means it was swapped in after resolution and is
+/// refused, and the returned [`Pin`] — identity and fingerprint from one open
+/// descriptor — is what [`JournalEditor::save`] later insists on finding.
+fn read_journal_text(path: &Path) -> Result<(String, Pin), EditError> {
+    pinned::read_pinned_string(path).map_err(|err| {
         if err.kind() == std::io::ErrorKind::InvalidData {
             EditError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -258,20 +265,34 @@ fn read_journal_text(path: &Path) -> Result<String, EditError> {
 /// (so [`JournalEditor::save`] writes only the files that actually changed).
 struct FileBuf {
     /// Absolute path to read/write — identical to this buffer's key in
-    /// [`JournalEditor::files`].
+    /// [`JournalEditor::files`]. Resolved ONCE, at load: a symlinked journal is
+    /// edited through its real path, and nothing is followed at write time.
     path: PathBuf,
     rope: Rope,
     fingerprint: Fingerprint,
+    /// The `(dev, ino)` the file was loaded as, when known. [`JournalEditor::save`]
+    /// refuses to write to a name that now holds a different inode — a swapped-in
+    /// symlink above all — even when the bytes match.
+    identity: Option<FileIdentity>,
     dirty: bool,
 }
 
 impl FileBuf {
-    fn new(path: PathBuf, text: &str) -> Self {
+    fn new(path: PathBuf, text: &str, identity: Option<FileIdentity>) -> Self {
         Self {
             fingerprint: Fingerprint::of_bytes(text.as_bytes()),
             rope: Rope::from_str(text),
             path,
+            identity,
             dirty: false,
+        }
+    }
+
+    /// What the on-disk file must still be for a save to overwrite it.
+    fn pin(&self) -> Pin {
+        Pin {
+            identity: self.identity,
+            fingerprint: Some(self.fingerprint.clone()),
         }
     }
 }
@@ -307,10 +328,42 @@ impl JournalEditor {
     /// the journal does not parse.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, EditError> {
         let path = path.into();
-        let text = read_journal_text(&path)?;
+        // Resolve once: the main file is read — and later written — through its
+        // real path, so a symlinked journal keeps working without the write
+        // ever following a link.
+        let (text, pin) = read_journal_text(&resolve_source_file(&path))?;
         let source_name = path.to_string_lossy().into_owned();
         let journal = parse_journal(&text, &source_name)?;
-        Self::load(source_name, journal, &text)
+        Self::load(source_name, journal, &text, pin.identity)
+    }
+
+    /// Re-open this editor's journal from disk **without resolving it again**.
+    ///
+    /// [`open`](Self::open) resolves a symlinked journal to its real path once;
+    /// this re-reads that real path and refuses — rather than follows — a
+    /// symlink swapped in at it or at any directory above it since. Following
+    /// it would re-pin the editor to wherever the link now points, and every
+    /// later save would write there. Binding to a different file is `open`'s
+    /// job, on a path the user chose.
+    ///
+    /// # Errors
+    /// [`EditError::ExternalChange`] if the real path no longer resolves to
+    /// itself; [`EditError::Io`] if it cannot be read (a symlink at it is
+    /// refused as `InvalidInput`); [`EditError::Parse`] if it does not parse.
+    pub fn reopen(&self) -> Result<Self, EditError> {
+        let path = self.main_key.clone();
+        let (text, pin) = read_journal_text(&path)?;
+        if resolve_source_file(&path) != path {
+            return Err(EditError::ExternalChange);
+        }
+        let source_name = path.to_string_lossy().into_owned();
+        let journal = parse_journal(&text, &source_name)?;
+        let reopened = Self::load(source_name, journal, &text, pin.identity)?;
+        // `load` resolves the name once more; a swap in between shows up here.
+        if reopened.main_key != path {
+            return Err(EditError::ExternalChange);
+        }
+        Ok(reopened)
     }
 
     /// Build an editor over in-memory `text` associated with `path`, without
@@ -328,21 +381,35 @@ impl JournalEditor {
         let path = path.into();
         let source_name = path.to_string_lossy().into_owned();
         let journal = parse_journal(text, &source_name)?;
-        Self::load(source_name, journal, text)
+        // Best effort: the caller's text was not read here, so the identity is
+        // whatever the resolved path holds now. `save` still checks the bytes.
+        let identity = std::fs::symlink_metadata(resolve_source_file(&source_name))
+            .ok()
+            .filter(|meta| meta.file_type().is_file())
+            .and_then(|meta| FileIdentity::of(&meta));
+        Self::load(source_name, journal, text, identity)
     }
 
     /// Build an editor from a freshly-parsed `journal`. The main file's text is
     /// `main_text` (already in hand); every other file a transaction came from
     /// is read from disk.
-    fn load(source_name: String, journal: Journal, main_text: &str) -> Result<Self, EditError> {
+    fn load(
+        source_name: String,
+        journal: Journal,
+        main_text: &str,
+        main_identity: Option<FileIdentity>,
+    ) -> Result<Self, EditError> {
         let main_key = resolve_source_file(&source_name);
         let mut files: HashMap<PathBuf, FileBuf> = HashMap::new();
-        files.insert(main_key.clone(), FileBuf::new(main_key.clone(), main_text));
+        files.insert(
+            main_key.clone(),
+            FileBuf::new(main_key.clone(), main_text, main_identity),
+        );
         for txn in &journal.transactions {
             if !files.contains_key(&txn.source_file) {
                 let key = txn.source_file.clone();
-                let file_text = read_journal_text(&key)?;
-                files.insert(key.clone(), FileBuf::new(key, &file_text));
+                let (file_text, pin) = read_journal_text(&key)?;
+                files.insert(key.clone(), FileBuf::new(key, &file_text, pin.identity));
             }
         }
         Ok(Self {
@@ -1531,36 +1598,38 @@ impl JournalEditor {
                     key.display()
                 ))
             })?;
-            if file_changed_externally(&file.path, &file.fingerprint)? {
+            if file_changed_externally(file)? {
                 return Err(EditError::ExternalChange);
             }
         }
 
-        // Pass 2: atomically write each dirty file and refresh its fingerprint,
-        // re-checking each one immediately before its own write so the TOCTOU
-        // window is a single file's hash-to-rename rather than the whole pass.
+        // Pass 2: atomically write each dirty file and refresh its pin. The
+        // write itself re-checks identity and content through the descriptor it
+        // replaces (see `pinned::replace`), so the TOCTOU window is a single
+        // file's last look to its rename rather than the whole pass.
         for key in &dirty {
-            let (path, new_text) = {
+            let (path, new_text, pin) = {
                 let file = self.files.get(key).ok_or_else(|| {
                     EditError::Internal(format!(
                         "no loaded buffer for source file {}",
                         key.display()
                     ))
                 })?;
-                if file_changed_externally(&file.path, &file.fingerprint)? {
-                    return Err(EditError::ExternalChange);
-                }
-                (file.path.clone(), file.rope.to_string())
+                (file.path.clone(), file.rope.to_string(), file.pin())
             };
-            atomic_write(&path, new_text.as_bytes())?;
-            let fingerprint = Fingerprint::of_bytes(new_text.as_bytes());
+            let written =
+                pinned::replace(&path, new_text.as_bytes(), &pin).map_err(|error| match error {
+                    WriteError::Changed => EditError::ExternalChange,
+                    WriteError::Io(error) => EditError::Io(error),
+                })?;
             let file = self.files.get_mut(key).ok_or_else(|| {
                 EditError::Internal(format!(
                     "no loaded buffer for source file {}",
                     key.display()
                 ))
             })?;
-            file.fingerprint = fingerprint;
+            file.fingerprint = Fingerprint::of_bytes(new_text.as_bytes());
+            file.identity = written.identity;
             file.dirty = false;
         }
         Ok(())
@@ -1579,9 +1648,21 @@ impl JournalEditor {
 /// Journals are small and a save is already dominated by a full reparse, so the
 /// read costs nothing worth having a guess for. `mtime` is still carried on the
 /// [`Fingerprint`], but only as a record — never as a verdict.
-fn file_changed_externally(path: &Path, fingerprint: &Fingerprint) -> Result<bool, EditError> {
-    let current = std::fs::read(path)?;
-    Ok(!Fingerprint::of_bytes(&current).content_matches(fingerprint))
+///
+/// Read without following a link, and judged on identity as well as content: a
+/// name that became a symlink or a non-regular file, or now holds a different
+/// inode than the one loaded, has changed whatever its bytes say.
+fn file_changed_externally(file: &FileBuf) -> Result<bool, EditError> {
+    let current = match pinned::read_pinned(&file.path) {
+        Ok((_, current)) => current,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => return Ok(true),
+        Err(error) => return Err(EditError::Io(error)),
+    };
+    let same_inode = file.identity.is_none() || current.identity == file.identity;
+    let same_bytes = current
+        .fingerprint
+        .is_some_and(|now| now.content_matches(&file.fingerprint));
+    Ok(!(same_inode && same_bytes))
 }
 
 // ---------------------------------------------------------------------------
@@ -2675,197 +2756,23 @@ fn costs_equivalent(input: &Amount, parsed: &Amount) -> bool {
 // Atomic write
 // ---------------------------------------------------------------------------
 
-/// Mode for a temp file at creation, and for a target that does not yet exist:
-/// owner-only. A financial record defaults closed rather than umask-derived.
-#[cfg(unix)]
-const NEW_FILE_MODE: u32 = 0o600;
-
-/// Distinct temp names tried before giving up. `create_new` refuses to open an
-/// existing path, so a collision — accidental or hostile — costs a retry.
-const TEMP_NAME_ATTEMPTS: usize = 8;
-
-/// Symlink hops followed when resolving the write target, bounding a link loop.
-const MAX_SYMLINK_HOPS: usize = 32;
-
-/// Write `bytes` to `path` atomically: temp file in the same directory, `fsync`,
-/// then `rename` over the target (best-effort directory `fsync`).
+/// Write `bytes` to `path` atomically — temp file in the same directory,
+/// `fsync`, `rename` — expecting nothing about what is there now beyond "a
+/// regular file, or nothing". For files the app owns outright (prefs, recents,
+/// sidecars) and for a CSV destination the caller has just vetted.
 ///
-/// # What is carried forward
-/// The rename installs a brand-new inode, so nothing about the old file survives
-/// unless it is copied forward explicitly. This function copies:
+/// **A symlink at `path` is refused, never followed.** Writes to a user's books
+/// go through [`crate::pinned::replace`] with a [`crate::pinned::Pin`] instead,
+/// which also refuses a file that is no longer the one that was read; see
+/// [`crate::pinned`] for the whole argument, including what the rename does and
+/// does not carry forward. A target that does not exist yet is created `0600`.
 ///
-/// - **Permission bits** (Unix). The target's mode is applied to the temp file
-///   before the rename, so a journal kept at `0600` stays at `0600` instead of
-///   being silently recreated at `0666 & ~umask` — world-readable under the
-///   common `umask 022`. A target that does not exist yet is created `0600`,
-///   deliberately ignoring a permissive umask.
-/// - **Owner and group** (Unix, best effort). `fchown` is attempted and its
-///   failure ignored, since an unprivileged process cannot give a file away.
-///   This matters only when a privileged process edits another user's journal;
-///   in the ordinary case the temp file is already owned by the right user.
-/// - **The symlink at `path`, if any.** The write is redirected to the file the
-///   link resolves to, so the link itself survives. A plain rename over `path`
-///   would have replaced the link with a regular file.
-///
-/// # What is NOT carried forward
-/// - **ACLs and extended attributes.** The new inode gets none. A journal
-///   protected by a POSIX ACL, or carrying xattrs (macOS quarantine/Finder
-///   metadata, SELinux labels), loses them on the first save. Preserving these
-///   needs platform-specific APIs this crate does not link.
-/// - **Hard links.** `rename` rebinds only this name; a second hard link to the
-///   journal keeps pointing at the OLD inode and silently retains the pre-edit
-///   content. This is inherent to rename-based atomic writes. The alternative —
-///   truncating and rewriting in place — would preserve links, ACLs and xattrs
-///   but opens a window in which a crash leaves a half-written journal, which is
-///   the worse failure for an irreplaceable primary record.
-/// - **Inode number, birth time, and open file descriptors** on the old inode,
-///   which continue to observe the pre-edit content.
+/// # Errors
+/// Any I/O error; the original file is untouched and no temp file is left.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let target = resolve_symlinks(path);
-    let dir = target
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let file_name = target.file_name().map_or_else(
-        || "journal".to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-
-    let (tmp_path, file) = create_temp_file(dir, &file_name)?;
-    if let Err(err) = fill_temp_file(file, bytes, &target) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(err);
-    }
-
-    if let Err(err) = std::fs::rename(&tmp_path, &target) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(err);
-    }
-
-    // Best-effort: durably record the rename in the directory.
-    if let Ok(dir_file) = std::fs::File::open(dir) {
-        let _ = dir_file.sync_all();
-    }
-    Ok(())
-}
-
-/// Write `bytes` into the open temp `file`, give it `target`'s ownership and
-/// mode, and only then flush both to stable storage — so a crash between the
-/// `fsync` and the `rename` cannot leave a file whose contents are durable but
-/// whose permissions are not. Consumes `file` so the handle is closed before the
-/// caller renames it (required on Windows, harmless elsewhere).
-fn fill_temp_file(mut file: std::fs::File, bytes: &[u8], target: &Path) -> std::io::Result<()> {
-    file.write_all(bytes)?;
-    carry_forward_metadata(&file, target);
-    file.sync_all()
-}
-
-/// Follow `path` through up to [`MAX_SYMLINK_HOPS`] symlinks and return the path
-/// whose contents the rename should replace.
-///
-/// Renaming straight over a symlink replaces the *link* with a regular file,
-/// silently detaching the journal from wherever the user pointed it. Renaming
-/// over its resolved target leaves the link intact. A dangling link resolves to
-/// its (non-existent) target, so the write creates the file the link already
-/// names.
-///
-/// The hop limit exists purely to guarantee termination on a link *loop*. A loop
-/// names no real file, so resolution stops on one of the links and the rename
-/// replaces it with a regular file — the same outcome as before this function
-/// existed, and the only one available.
-fn resolve_symlinks(path: &Path) -> PathBuf {
-    std::iter::successors(Some(path.to_path_buf()), |current| {
-        let link = std::fs::symlink_metadata(current)
-            .ok()
-            .filter(|meta| meta.file_type().is_symlink())
-            .and_then(|_| std::fs::read_link(current).ok())?;
-        Some(match current.parent() {
-            Some(dir) if link.is_relative() => dir.join(link),
-            _ => link,
-        })
-    })
-    .take(MAX_SYMLINK_HOPS)
-    .last()
-    .unwrap_or_else(|| path.to_path_buf())
-}
-
-/// Create a fresh temp file next to the target, returning its path and an open
-/// handle, retrying on a name collision.
-///
-/// Uses `create_new` (`O_CREAT | O_EXCL`), which fails rather than opening an
-/// existing path and — the point — refuses to follow a symlink planted at that
-/// name. A local attacker who guesses the temp name therefore cannot redirect
-/// the journal's contents into a file of their choosing; they can only force a
-/// retry.
-fn create_temp_file(dir: &Path, file_name: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
-    (0..TEMP_NAME_ATTEMPTS)
-        .find_map(|_| {
-            let tmp_path = dir.join(format!(".{file_name}.ledgeline-{}.tmp", unique_suffix()));
-            match open_new_exclusive(&tmp_path) {
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => None,
-                result => Some(result.map(|file| (tmp_path, file))),
-            }
-        })
-        .unwrap_or_else(|| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!(
-                    "could not create a temp file in {} after {TEMP_NAME_ATTEMPTS} attempts",
-                    dir.display()
-                ),
-            ))
-        })
-}
-
-/// Open `path` for writing, failing if anything — file, directory or symlink —
-/// already exists there.
-fn open_new_exclusive(path: &Path) -> std::io::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // Never wider than owner-only while the journal's contents are in
-        // flight; the target's real mode is applied just before the rename.
-        options.mode(NEW_FILE_MODE);
-    }
-    options.open(path)
-}
-
-/// Give the temp file `target`'s ownership and permission bits so the rename
-/// does not relax them.
-///
-/// Best effort by design: on failure the temp file keeps [`NEW_FILE_MODE`],
-/// which is *narrower* than any target it might replace, and failing the save
-/// outright would cost the user an edit to their books to avoid a strictly safe
-/// outcome. Ownership is set before the mode because `chown` clears the
-/// set-user-ID and set-group-ID bits.
-#[cfg(unix)]
-fn carry_forward_metadata(file: &std::fs::File, target: &Path) {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-    // No target yet: keep the owner-only default rather than a umask-derived one.
-    let Ok(existing) = std::fs::metadata(target) else {
-        return;
-    };
-    let _ = std::os::unix::fs::fchown(file, Some(existing.uid()), Some(existing.gid()));
-    let _ = file.set_permissions(std::fs::Permissions::from_mode(existing.mode() & 0o7777));
-}
-
-/// Non-Unix platforms expose no portable mode/ownership model here; the temp
-/// file keeps whatever the OS gave it, as before.
-#[cfg(not(unix))]
-fn carry_forward_metadata(_file: &std::fs::File, _target: &Path) {}
-
-/// A per-process-unique suffix for the temp file name.
-fn unique_suffix() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    format!("{}-{nanos}-{seq}", std::process::id())
+    crate::pinned::replace(path, bytes, &crate::pinned::Pin::none())
+        .map(|_| ())
+        .map_err(std::io::Error::from)
 }
 
 #[cfg(test)]
@@ -2991,45 +2898,6 @@ mod tests {
         // sign + leading zero + mark + MAX_RENDER_PLACES fractional digits.
         assert_eq!(rendered.len(), MAX_RENDER_PLACES as usize + 3);
         assert!(rendered.ends_with(&i128::MIN.unsigned_abs().to_string()));
-    }
-
-    /// SEC-8: the temp file is opened with `create_new`, so a symlink planted at
-    /// the temp path cannot capture the journal's contents. `O_CREAT | O_EXCL`
-    /// refuses to follow a final symlink, which is what makes this safe.
-    #[cfg(unix)]
-    #[test]
-    fn temp_file_creation_refuses_a_planted_symlink() {
-        let dir = std::env::temp_dir().join(format!("ledgeline-sec8-unit-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-
-        let decoy = dir.join("decoy.txt");
-        std::fs::write(&decoy, "untouched").expect("write decoy");
-        let planted = dir.join("planted.tmp");
-        std::os::unix::fs::symlink(&decoy, &planted).expect("plant symlink");
-
-        let err = open_new_exclusive(&planted).expect_err("must refuse a planted symlink");
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(
-            std::fs::read_to_string(&decoy).expect("read decoy"),
-            "untouched",
-            "the symlink target must not have been opened or truncated"
-        );
-
-        // A fresh name succeeds, and is never wider than owner-only from birth.
-        // Asserting a SUBSET of NEW_FILE_MODE rather than equality keeps this
-        // independent of the runner's umask, which can only narrow it further.
-        let fresh = dir.join("fresh.tmp");
-        let file = open_new_exclusive(&fresh).expect("a fresh name opens");
-        use std::os::unix::fs::PermissionsExt;
-        let mode = file.metadata().expect("stat").permissions().mode() & 0o777;
-        assert_eq!(
-            mode & !NEW_FILE_MODE,
-            0,
-            "temp file mode {mode:o} is wider than {NEW_FILE_MODE:o}"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

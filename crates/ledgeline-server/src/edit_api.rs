@@ -957,12 +957,14 @@ pub(crate) fn resync_from_disk(
     state: &AppState,
     slot: &mut Option<JournalEditor>,
 ) -> Result<(), AppError> {
-    let Some(path) = slot.as_ref().map(|editor| editor.path().to_path_buf()) else {
+    // `reopen`, not `open`: the real path stays pinned, so a symlink swapped in
+    // since load is refused rather than followed.
+    let Some(reopened) = slot.as_ref().map(JournalEditor::reopen) else {
         // Nothing bound, so there is no un-saved edit to discard and nothing new
         // to publish; the caller's own error stands.
         return Ok(());
     };
-    match JournalEditor::open(path) {
+    match reopened {
         Ok(reopened) => {
             state.replace_journal(reopened.journal());
             *slot = Some(reopened);
@@ -1014,9 +1016,7 @@ pub(crate) fn lock_editor(
         Ok(guard) => return Ok(guard),
         Err(poisoned) => poisoned.into_inner(),
     };
-    let reopened = guard
-        .as_ref()
-        .map(|editor| JournalEditor::open(editor.path().to_path_buf()));
+    let reopened = guard.as_ref().map(JournalEditor::reopen);
     match reopened {
         // No editor was bound, so there is nothing half-mutated to discard; the
         // caller's own `editing_disabled` 501 remains the right answer.

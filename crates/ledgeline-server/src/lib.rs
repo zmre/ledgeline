@@ -444,7 +444,9 @@ impl AppState {
     pub fn reopen_editor(&self) -> Option<Result<(), EditError>> {
         let mut guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
         let editor = guard.as_mut()?;
-        match JournalEditor::open(editor.path().to_path_buf()) {
+        // `reopen`, not `open`: the real path stays pinned, so a symlink swapped
+        // in since load is refused rather than followed.
+        match editor.reopen() {
             Ok(reopened) => {
                 self.inner.store(Arc::new(Snapshot::from_journal(Arc::clone(
                     reopened.journal(),

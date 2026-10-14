@@ -23,10 +23,12 @@
   `MAX_INPUT_BYTES` bounds the *compressed* zip and `MAX_ROWS` truncates only *after*
   materialization, so neither helps. An allocator abort is not something `CatchPanicLayer` can
   catch. Needs a streaming/bounds-checked read rather than a cap.
-- security: **TOCTOU between the symlink refusal and the write.** The refusal uses
-  `symlink_metadata` but the write follows symlinks, and the window spans up to three 120-second
-  `hledger` runs. Worse on the edit path, where `carry_forward_metadata` copies the victim file's
-  uid/gid/mode onto the new inode and erases the trace. Wants open-once-and-write-through-fd.
+- security: **some READS still follow a swapped-in symlink.** Writes are closed (`pinned`:
+  resolve once, `O_NOFOLLOW`, `(dev, ino)` + fingerprint checked through the fd up to `renameat`),
+  but `rules_api::read_document`, `projections_api::read_file` and every `hledger` invocation
+  (`-f <journal>`) still open by path. A link swapped in mid-request can make a preview or a
+  revision describe the link's target — a disclosure into the UI, never a write. Wants
+  `pinned::read_pinned` at those reads and, for hledger, a check of the pin after each run.
 - security: **the CSP inline-script hashes are never tested against a real SvelteKit shell.**
   `flake.nix` injects a script-less placeholder for every CI test and Playwright runs cross-origin
   with no CSP, so a SvelteKit upgrade can break the app to a blank window with nothing failing —

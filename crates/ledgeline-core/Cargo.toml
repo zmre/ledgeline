@@ -33,6 +33,9 @@ encoding_rs = { workspace = true }
 encoding_rs_io = { workspace = true }
 chardetng = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 proptest-derive = { workspace = true }

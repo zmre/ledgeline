@@ -9,7 +9,9 @@
 //!   the target, so a journal correctly kept at `0600` came back `0644` under the
 //!   common `umask 022`.
 //! - **SEC-8** — the temp file must be created exclusively, and a symlinked
-//!   journal must survive the rename as a symlink.
+//!   journal must survive the rename as a symlink. Since the TOCTOU fix the
+//!   link is resolved once, at load, and never followed at write time: a link
+//!   swapped in after load is refused (see `ledgeline_core::pinned`).
 //! - **SEC-2 item 4** — an absurd `places` must not panic or be written.
 //!
 //! Every test is Unix-only (it asserts on `st_mode`) and cleans its scratch
@@ -226,108 +228,154 @@ fn atomic_write_leaves_no_temp_files_behind() {
 }
 
 // ---------------------------------------------------------------------------
-// SEC-8 — symlink handling
+// SEC-8 — symlink handling: resolve once, pin, never follow at write time
 // ---------------------------------------------------------------------------
 
 #[test]
-fn atomic_write_follows_a_symlink_instead_of_replacing_it() {
+fn atomic_write_refuses_a_symlink_instead_of_following_it() {
     let scratch = Scratch::new("sec8-link");
     let real = scratch.path().join("real.journal");
     let link = scratch.path().join("link.journal");
     write_journal(&real, 0o640);
     std::os::unix::fs::symlink(&real, &link).expect("create symlink");
 
-    atomic_write(&link, b"rewritten\n").expect("write through the symlink");
+    atomic_write(&link, b"rewritten\n").expect_err("a write never follows a link");
 
     assert!(
         std::fs::symlink_metadata(&link)
             .expect("lstat link")
             .file_type()
             .is_symlink(),
-        "the rename must not replace the symlink with a regular file"
+        "the link is not replaced either"
     );
     assert_eq!(
         std::fs::read_to_string(&real).expect("read real"),
-        "rewritten\n",
-        "the write must land on the file the link points at"
-    );
-    assert_eq!(
-        mode_of(&real),
-        0o640,
-        "the link target's mode is preserved too"
+        JOURNAL,
+        "the link's target is untouched"
     );
 }
 
 #[test]
-fn atomic_write_through_a_relative_symlink_resolves_against_the_link_dir() {
-    let scratch = Scratch::new("sec8-rel");
-    let real = scratch.path().join("real.journal");
-    let link = scratch.path().join("link.journal");
-    write_journal(&real, 0o600);
-    // A RELATIVE target must be resolved against the link's own directory, not
-    // the process working directory.
-    std::os::unix::fs::symlink("real.journal", &link).expect("create relative symlink");
-
-    atomic_write(&link, b"rewritten\n").expect("write through the relative symlink");
-
-    assert!(
-        std::fs::symlink_metadata(&link)
-            .expect("lstat link")
-            .file_type()
-            .is_symlink()
-    );
-    assert_eq!(
-        std::fs::read_to_string(&real).expect("read real"),
-        "rewritten\n"
-    );
-}
-
-#[test]
-fn atomic_write_through_a_dangling_symlink_creates_the_named_target() {
+fn atomic_write_through_a_dangling_symlink_creates_nothing() {
     let scratch = Scratch::new("sec8-dangling");
     let target = scratch.path().join("not-yet.journal");
     let link = scratch.path().join("link.journal");
     std::os::unix::fs::symlink(&target, &link).expect("create dangling symlink");
 
-    atomic_write(&link, b"created\n").expect("write through the dangling symlink");
+    atomic_write(&link, b"created\n").expect_err("a dangling link is refused, not resolved");
 
-    assert!(
-        std::fs::symlink_metadata(&link)
-            .expect("lstat link")
-            .file_type()
-            .is_symlink(),
-        "a dangling link is resolved, not overwritten"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&target).expect("read target"),
-        "created\n"
-    );
-    assert_eq!(
-        mode_of(&target),
-        0o600,
-        "a newly created target is owner-only"
-    );
+    assert!(!target.exists(), "the link's target is not created");
 }
 
 #[test]
-fn atomic_write_terminates_on_a_symlink_loop() {
+fn atomic_write_on_a_symlink_loop_fails_promptly() {
     let scratch = Scratch::new("sec8-loop");
     let a = scratch.path().join("a.journal");
     let b = scratch.path().join("b.journal");
     std::os::unix::fs::symlink(&b, &a).expect("link a -> b");
     std::os::unix::fs::symlink(&a, &b).expect("link b -> a");
 
-    // The property under test is TERMINATION: symlink resolution is capped, so
-    // this returns instead of spinning forever. A loop names no real file, so
-    // the write necessarily breaks it by landing on the last hop — the same
-    // outcome the unhardened code produced, and the only one available.
-    atomic_write(&a, b"looped\n").expect("a capped resolution still writes");
+    // Nothing is resolved, so there is no loop to spin on: the link is refused.
+    atomic_write(&a, b"looped\n").expect_err("a link is refused");
+}
 
-    assert_eq!(
-        std::fs::read_to_string(&a).expect("read through a"),
-        "looped\n",
-        "the loop is broken by a real file, reachable through the original path"
+/// A journal opened THROUGH a symlink is resolved once, at load, and edited
+/// through its real path: the edit lands on the real file and the link survives.
+#[test]
+fn a_symlinked_journal_is_edited_through_its_pinned_real_path() {
+    let scratch = Scratch::new("sec8-pinned");
+    let real = scratch.path().join("real.journal");
+    let link = scratch.path().join("link.journal");
+    write_journal(&real, 0o640);
+    std::os::unix::fs::symlink(&real, &link).expect("create symlink");
+
+    add_one_and_save(&link);
+
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("lstat link")
+            .file_type()
+            .is_symlink(),
+        "the link survives the save"
     );
+    let text = std::fs::read_to_string(&real).expect("read real");
+    assert!(
+        text.contains("Coffee"),
+        "the edit lands on the real file: {text}"
+    );
+    assert_eq!(mode_of(&real), 0o640, "the real file's mode is preserved");
+}
+
+/// The TOCTOU this whole design closes: the journal is loaded, then its real
+/// path is swapped for a symlink to another file — one with IDENTICAL bytes, so
+/// the content check alone cannot tell. The save must refuse and leave the
+/// victim untouched.
+#[test]
+fn a_symlink_swapped_in_after_load_is_refused_on_save() {
+    let scratch = Scratch::new("sec8-swap");
+    let journal = scratch.path().join("books.journal");
+    let victim = scratch.path().join("victim.rc");
+    write_journal(&journal, 0o600);
+    write_journal(&victim, 0o644);
+
+    let mut editor = JournalEditor::open(journal.clone()).expect("open journal");
+    editor
+        .add_transaction(&txn_with(dollars(500, 2)), InsertPosition::Append)
+        .expect("add transaction");
+
+    std::fs::rename(&journal, scratch.path().join("moved.journal")).expect("move aside");
+    std::os::unix::fs::symlink(&victim, &journal).expect("swap in a link");
+
+    let result = editor.save();
+    assert!(
+        matches!(result, Err(EditError::ExternalChange)),
+        "expected a refusal, got {result:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&victim).expect("read victim"),
+        JOURNAL,
+        "the link's target is untouched"
+    );
+    assert_eq!(mode_of(&victim), 0o644, "and so is its mode");
+}
+
+/// Same-name, same-bytes, different inode: only the pinned identity refuses it.
+#[test]
+fn a_different_file_under_the_same_name_is_refused_on_save() {
+    let scratch = Scratch::new("sec8-inode");
+    let journal = scratch.path().join("books.journal");
+    write_journal(&journal, 0o600);
+
+    let mut editor = JournalEditor::open(journal.clone()).expect("open journal");
+    editor
+        .add_transaction(&txn_with(dollars(500, 2)), InsertPosition::Append)
+        .expect("add transaction");
+
+    // Held, so the old inode number cannot be handed straight back.
+    std::fs::rename(&journal, scratch.path().join("held.journal")).expect("move aside");
+    write_journal(&journal, 0o600);
+
+    assert!(matches!(editor.save(), Err(EditError::ExternalChange)));
+    assert_eq!(std::fs::read_to_string(&journal).expect("read"), JOURNAL);
+}
+
+/// After a save the editor re-pins to the inode it just wrote, so a second save
+/// from the same editor is not refused by its own first one.
+#[test]
+fn consecutive_saves_from_one_editor_re_pin() {
+    let scratch = Scratch::new("sec8-repin");
+    let journal = scratch.path().join("books.journal");
+    write_journal(&journal, 0o600);
+
+    let mut editor = JournalEditor::open(journal.clone()).expect("open journal");
+    for _ in 0..2 {
+        editor
+            .add_transaction(&txn_with(dollars(500, 2)), InsertPosition::Append)
+            .expect("add transaction");
+        editor.save().expect("save");
+    }
+    let text = std::fs::read_to_string(&journal).expect("read");
+    assert_eq!(text.matches("Coffee").count(), 2);
 }
 
 // ---------------------------------------------------------------------------
