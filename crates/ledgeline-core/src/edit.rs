@@ -2134,11 +2134,13 @@ pub fn format_transaction(txn: &Transaction) -> String {
         .map(|p| account_field(p).chars().count())
         .max()
         .unwrap_or(0);
+    push_continuation_lines(&mut out, &txn.comment);
     for posting in &txn.postings {
         for line in format_posting_lines(posting, amount_col) {
             out.push_str(&line);
             out.push('\n');
         }
+        push_continuation_lines(&mut out, &posting.comment);
     }
     out
 }
@@ -2200,11 +2202,7 @@ fn format_header(txn: &Transaction) -> String {
         header.push(' ');
         header.push_str(&txn.description);
     }
-    let comment = txn.comment.trim();
-    if !comment.is_empty() {
-        header.push_str("  ; ");
-        header.push_str(comment);
-    }
+    push_comment(&mut header, same_line_comment(&txn.comment));
     header
 }
 
@@ -2225,7 +2223,7 @@ fn account_field(posting: &Posting) -> String {
 
 fn format_posting_lines(posting: &Posting, amount_col: usize) -> Vec<String> {
     let field = account_field(posting);
-    let comment = posting.comment.trim();
+    let comment = same_line_comment(&posting.comment);
     if posting.amounts.is_empty() {
         let mut line = format!("    {field}");
         // hledger accepts an assertion on an amount-less posting
@@ -2266,6 +2264,46 @@ fn push_comment(line: &mut String, comment: &str) {
     if !comment.is_empty() {
         line.push_str("  ; ");
         line.push_str(comment);
+    }
+}
+
+/// The lines of a stored comment, without the one trailing `\n` the model ends
+/// every comment with.
+///
+/// The model keeps a comment the way hledger does: its lines joined by `\n`,
+/// the FIRST being the same-line comment (empty when there was none), the rest
+/// one indented `; …` line each. Writing the whole string after a single `  ; `
+/// put every line past the first at column 0, where it re-reads as top-level
+/// journal syntax — a comment of `x\nalias /.*/=expenses:junk` landed a live
+/// `alias` directive, and the round-trip guard does not compare comments.
+fn comment_lines(comment: &str) -> impl Iterator<Item = &str> {
+    comment
+        .strip_suffix('\n')
+        .unwrap_or(comment)
+        .split('\n')
+        .map(str::trim)
+}
+
+/// The part of a stored comment that rides its owner's own line.
+fn same_line_comment(comment: &str) -> &str {
+    comment_lines(comment).next().unwrap_or_default()
+}
+
+/// Append every line of `comment` after its first to `out`, each as its own
+/// indented `; …` line, which the parser attaches back to the same owner (the
+/// header before any posting, else the posting just written). No line of a
+/// comment can reach column 0 this way, so none can become a directive.
+///
+/// A header-only rewrite ([`rebuild_header`]) deliberately does not call this:
+/// the continuation lines are already in the file below the line it replaces.
+fn push_continuation_lines(out: &mut String, comment: &str) {
+    for line in comment_lines(comment).skip(1) {
+        out.push_str("    ;");
+        if !line.is_empty() {
+            out.push(' ');
+            out.push_str(line);
+        }
+        out.push('\n');
     }
 }
 

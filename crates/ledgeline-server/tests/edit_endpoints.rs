@@ -444,6 +444,177 @@ async fn patch_invalid_description_is_400_and_file_unchanged() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// Every line of `text` that starts at column 0 and is not a transaction header
+/// (a date) or blank — i.e. a top-level directive.
+fn top_level_directives(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|line| !line.is_empty() && !line.starts_with([' ', '\t']))
+        .filter(|line| !line.starts_with(|c: char| c.is_ascii_digit()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_multi_line_comment_cannot_inject_a_directive() {
+    let (state, path) = state_for(THREE_TXNS);
+    let body = json!({
+        "date": "2024-01-04",
+        "description": "D",
+        "comment": "x\nalias /.*/=expenses:junk",
+        "position": "append",
+        "postings": [
+            { "account": "expenses:d",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "100", "places": 2 } },
+              "comment": "y\nP 2026-01-01 USD 1000 EUR" },
+            { "account": "assets:bank" }
+        ]
+    });
+    let (status, response) = request(&state, "POST", "/api/transactions", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "add should be 201: {response}");
+
+    // Each comment line became its own indented `;` line, so nothing new sits at
+    // column 0 where hledger would read it as a directive.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        top_level_directives(&on_disk).is_empty(),
+        "a comment line reached column 0:\n{on_disk}"
+    );
+    assert!(
+        on_disk.ends_with(
+            "2024-01-04 D  ; x\n    ; alias /.*/=expenses:junk\n    expenses:d  $1.00  ; y\n    \
+             ; P 2026-01-01 USD 1000 EUR\n    assets:bank\n"
+        ),
+        "{on_disk}"
+    );
+    // And it reads back as a comment, not as a rename of every account.
+    let (_, txns) = request(&state, "GET", "/transactions", None).await;
+    let served = txns.to_string();
+    assert!(
+        served.contains(r#""x\nalias /.*/=expenses:junk\n""#),
+        "the comment did not read back intact: {served}"
+    );
+    assert!(
+        !served.contains("\"expenses:junk\""),
+        "the alias took effect: {served}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn put_round_trips_a_multi_line_comment_it_read() {
+    const MULTI: &str = "\
+2024-01-01 * A  ; first
+    ; second: tag
+    expenses:a  $1.00  ; posting
+    ; note
+    assets:bank
+";
+    let (state, path) = state_for(MULTI);
+    // The comments as the read side models them (lines joined by `\n`), which is
+    // what the edit popup echoes back.
+    let body = json!({
+        "date": "2024-01-01",
+        "status": "cleared",
+        "description": "A edited",
+        "comment": "first\nsecond: tag\n",
+        "postings": [
+            { "account": "expenses:a",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "100", "places": 2 } },
+              "comment": "posting\nnote\n" },
+            { "account": "assets:bank" }
+        ]
+    });
+    let (status, response) = request(&state, "PUT", "/api/transactions/1", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "put should be 200: {response}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        MULTI.replace("* A ", "* A edited ")
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn control_characters_and_oversized_text_are_400_and_write_nothing() {
+    let (state, path) = state_for(WITH_COMMENTS);
+    let before = std::fs::read_to_string(&path).unwrap();
+    let posting = |account: &str, commodity: &str, comment: &str| {
+        json!([
+            { "account": account,
+              "amount": { "commodity": commodity, "quantity": { "mantissa": "100", "places": 2 } },
+              "comment": comment },
+            { "account": "assets:bank" }
+        ])
+    };
+    let cases = [
+        (
+            "description",
+            json!("x\nalias /.*/=expenses:junk"),
+            posting("expenses:a", "$", ""),
+        ),
+        (
+            "description",
+            json!("x\rP 2026-01-01 USD 1000 EUR"),
+            posting("expenses:a", "$", ""),
+        ),
+        ("code", json!("1\n2"), posting("expenses:a", "$", "")),
+        (
+            "date2",
+            json!("2024-01-02\n"),
+            posting("expenses:a", "$", ""),
+        ),
+        (
+            "description",
+            json!("A"),
+            posting("expenses:a\nalias a=b", "$", ""),
+        ),
+        ("description", json!("A"), posting("expenses:a", "$\n", "")),
+        (
+            "description",
+            json!("A"),
+            posting("expenses:a", "$", "a\rb"),
+        ),
+        ("comment", json!("nul\u{0}"), posting("expenses:a", "$", "")),
+        (
+            "description",
+            json!("x".repeat(1025)),
+            posting("expenses:a", "$", ""),
+        ),
+        (
+            "comment",
+            json!("x".repeat(4097)),
+            posting("expenses:a", "$", ""),
+        ),
+        (
+            "description",
+            json!("A"),
+            posting(&"a".repeat(513), "$", ""),
+        ),
+    ];
+    for (field, value, postings) in cases {
+        let mut body = json!({ "date": "2024-01-05", "description": "A", "postings": postings });
+        body[field] = value;
+        for (method, uri) in [
+            ("POST", "/api/transactions"),
+            ("PUT", "/api/transactions/1"),
+        ] {
+            let (status, response) = request(&state, method, uri, Some(body.clone())).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "{method} {body}: {response}"
+            );
+        }
+    }
+    for body in [
+        json!({ "description": "A\nalias /.*/=expenses:junk" }),
+        json!({ "postings": [ { "index": 0, "account": "expenses:a\tb" } ] }),
+    ] {
+        let (status, response) = request(&state, "PATCH", "/api/transactions/1", Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    }
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[tokio::test]
 async fn patch_out_of_range_posting_is_404_and_file_unchanged() {
     let (state, path) = state_for(WITH_COMMENTS);
