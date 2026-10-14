@@ -31,10 +31,6 @@
   `flake.nix` injects a script-less placeholder for every CI test and Playwright runs cross-origin
   with no CSP, so a SvelteKit upgrade can break the app to a blank window with nothing failing —
   and the obvious pressure fix would be `unsafe-inline`. Wants a fixture built from a real shell.
-- security: `wire.rs`'s `/accounts` attributes an `include`d file's line number to the main journal
-  (`adisourcepos` is built with the main journal's name regardless of which file the directive came
-  from). `AccountDeclaration` carries a `SourcePos` but no `source_file`, unlike `Transaction` and
-  `AliasDirective`, which carry both. Blocks file+line anchoring for directive diagnostics.
 - chore: **sweep for caps that exist but are applied inconsistently.** Three were found one at a
   time (a render clamp present in `edit.rs` but missing from `ofx.rs` and `import_api.rs`, a parse
   scale cap that failed open, a row cap that ran after materialization). Worth looking for the rest
