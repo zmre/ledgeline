@@ -41,6 +41,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderName, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use ledgeline_core::Fingerprint;
+use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PeriodSpec, Posting,
 };
@@ -72,12 +73,13 @@ use crate::reports_api::{
 // Limits
 // ===========================================================================
 
-/// The largest `POST /api/projections/run` body this server will read.
+/// The largest `POST /api/projections/run` or `PUT /api/projections/{*id}` body
+/// this server will read.
 ///
 /// 256 KiB is roughly a thousand lines with generous account names and notes —
 /// far past any scenario a human edits, and far short of what it costs to hold
 /// while a `compute` slot is claimed. Enforced by axum's `DefaultBodyLimit` on
-/// this route alone, the way `/api/import/stage` raises its own rather than
+/// those two routes alone, the way `/api/import/stage` sets its own rather than
 /// moving the global one; an over-limit body arrives as a `JsonRejection` and
 /// [`json_body`] renders it as a `400`.
 pub(crate) const MAX_BODY_BYTES: usize = 256 * 1024;
@@ -575,6 +577,14 @@ fn amount_from_wire(amount: &AmountIn) -> Result<Amount, AppError> {
     }
     let quantity = dec_from_wire(&amount.quantity)?;
     let precision = amount.precision.unwrap_or(quantity.places);
+    // The same bound `dec_from_wire` puts on `places` (SEC-5), for the same
+    // reason: the engine rounds to this at every step and the writer pads to it,
+    // so it is a scale the client chooses, and no journal amount re-reads wider.
+    if precision > MAX_PARSE_PLACES {
+        return Err(AppError::BadRequest(format!(
+            "amount precision {precision} is out of range (expected 0..={MAX_PARSE_PLACES})"
+        )));
+    }
     Ok(Amount {
         commodity: Commodity(commodity.to_string()),
         quantity,

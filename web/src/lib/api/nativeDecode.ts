@@ -921,6 +921,7 @@ interface RawCliParity {
     confPath?: string | null;
     confOutside?: boolean;
     confHijackedBy?: string | null;
+    confUnforwarded?: number;
     additions?: unknown[];
     refusals?: RawConfRefusal[];
     revision?: string;
@@ -2974,6 +2975,7 @@ function decodeCliParity(raw: RawCliParity | null | undefined, context: string):
             confPath: null,
             confOutside: false,
             confHijackedBy: null,
+            confUnforwarded: 0,
             additions: frozen([]),
             refusals: frozen([]),
             revision: "",
@@ -2986,6 +2988,8 @@ function decodeCliParity(raw: RawCliParity | null | undefined, context: string):
         confPath: raw.confPath ?? null,
         confOutside: raw.confOutside === true,
         confHijackedBy: raw.confHijackedBy ?? null,
+        // Absent (an older engine) reads as 0, the quiet reading, for the reason above.
+        confUnforwarded: raw.confUnforwarded === undefined ? 0 : num(raw.confUnforwarded, `${context} confUnforwarded`),
         additions: frozen(decodeStrings(raw.additions, `${context} additions`)),
         refusals: frozen(
             (raw.refusals ?? []).map((refusal, i) =>

@@ -65,7 +65,7 @@
 //! make a journal hledger loads refuse to open — see the parity test in
 //! `tests/parse_fixes.rs`.
 
-use crate::decimal::{Dec, DecError};
+use crate::decimal::{Dec, DecError, MAX_PARSE_PLACES};
 use crate::model::{
     AccountDeclaration, AccountName, AliasDirective, Amount, AmountStyle, Anchor, BalanceAssertion,
     Commodity, CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr, PeriodKind,
@@ -831,7 +831,11 @@ fn parse_commodity_style_spec(spec: &str) -> Result<(Commodity, AmountStyle), Pa
         spaced,
         decimal_mark,
         digit_groups,
-        precision,
+        // The same cap an amount's precision gets, which is its parsed
+        // `places`. A directive is nothing BUT a style, so this is the one
+        // precision that never went through `Dec::parse`: one long run of
+        // zeros here set the width every amount in the commodity laid out to.
+        precision: precision.min(MAX_PARSE_PLACES),
     };
     Ok((Commodity(commodity), style))
 }

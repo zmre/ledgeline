@@ -701,6 +701,16 @@ async fn malformed_scenario_fields_are_named_in_the_400() {
             },
             "commodity",
         ),
+        // A display precision past the parser's own scale cap (SEC-5): the
+        // engine rounds to it every step and the writer pads to it.
+        (
+            {
+                let mut line = rent_line();
+                line["amount"]["precision"] = json!(65_535);
+                scenario_with(vec![line], vec![])
+            },
+            "precision",
+        ),
         // RPT-4: an event date reaches the same bucket math a `?end=` param
         // does, so it gets the same validation. A day that does not exist, and
         // a string that is not a date at all, are both refused — the second
@@ -1242,6 +1252,36 @@ async fn a_save_rewrites_only_the_rule_it_changed() {
         after.contains("    (revenues:salary)  $-12000.00\n"),
         "{after}"
     );
+}
+
+/// A save takes the same scenario `run` does, so it gets the same 256 KiB body
+/// limit rather than axum's 2 MiB default. The body is the valid save the test
+/// above makes, padded with insignificant JSON whitespace, so the byte limit is
+/// the only thing that can refuse it.
+#[tokio::test]
+async fn a_save_body_past_the_route_limit_is_refused() {
+    let tree = Tree::standard();
+    let before = tree.read("plans/projection-plan.journal");
+    let (revision, mut scenario) = open_plan(&tree.state).await;
+    scenario["lines"][0]["amount"]["quantity"]["mantissa"] = json!("450000");
+    let save = json!({"revision": revision, "scenario": scenario}).to_string();
+    let padded = format!("{save}{}", " ".repeat(400 * 1024));
+
+    let put = |body: String| {
+        Request::builder()
+            .method("PUT")
+            .uri(PLAN_URI)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .expect("request builds")
+    };
+    let status = |request: Request<Body>| router_with_state(tree.state.clone()).oneshot(request);
+    let refused = status(put(padded)).await.expect("router responds");
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(tree.read("plans/projection-plan.journal"), before);
+    // The same save, unpadded, goes through.
+    let saved = status(put(save)).await.expect("router responds");
+    assert_eq!(saved.status(), StatusCode::OK);
 }
 
 #[tokio::test]

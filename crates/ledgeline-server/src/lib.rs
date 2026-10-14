@@ -746,10 +746,10 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // of the user's finances with no bearer token at all.
         // `projection_endpoints.rs` pins the 401 for both.
         //
-        // The body limit is raised on THIS route alone, exactly as
-        // `/api/import/stage` raises its own: every other endpoint here takes a
-        // small JSON body, and a global limit would lift the ceiling on all of
-        // them for the sake of one.
+        // The body limit is set on THIS route alone, exactly as
+        // `/api/import/stage` sets its own — here it is LOWERED from axum's
+        // 2 MiB default to what a scenario can plausibly need, because the body
+        // is held while a `compute` slot is claimed.
         .route(
             "/api/projections/run",
             post(projections_api::run).route_layer(axum::extract::DefaultBodyLimit::max(
@@ -770,10 +770,19 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // order is not what disambiguates them — but keeping them adjacent and
         // in this order is what makes that readable. An id always ends in
         // `.journal`, so neither literal is a reachable id anyway.
+        //
+        // A save's body is `{revision, scenario}`: the same scenario `run`
+        // takes plus one fingerprint string, so `run`'s limit fits it too and
+        // the two cannot disagree about how big a scenario may be. (The GET
+        // carries no body, so the limit costs it nothing.)
         .route("/api/projections", get(projections_api::index))
         .route(
             "/api/projections/{*id}",
-            get(projections_api::document).put(projections_api::save),
+            get(projections_api::document)
+                .put(projections_api::save)
+                .route_layer(axum::extract::DefaultBodyLimit::max(
+                    projections_api::MAX_BODY_BYTES,
+                )),
         )
         .route("/api/holdings", get(reports_api::holdings))
         .route("/api/holdings/profiles", get(profiles_api::profiles))
@@ -844,11 +853,12 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/import/capabilities", get(import_api::capabilities))
         .route(
             "/api/import/stage",
-            // The ONLY route with a raised body limit, and it is raised on this
-            // route alone rather than globally: every other endpoint takes a
-            // small JSON body, and a global limit would lift the ceiling on all
-            // of them for the sake of one. `route_layer` here applies to just
-            // this route's method handler.
+            // The ONLY route with a RAISED body limit (the projection routes
+            // above set a lower one), and it is raised on this route alone
+            // rather than globally: every other endpoint takes a small JSON
+            // body, and a global limit would lift the ceiling on all of them for
+            // the sake of one. `route_layer` here applies to just this route's
+            // method handler.
             post(import_api::stage).route_layer(axum::extract::DefaultBodyLimit::max(
                 stage::MAX_UPLOAD_BYTES,
             )),

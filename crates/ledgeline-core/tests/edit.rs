@@ -576,6 +576,54 @@ fn set_description_rejects_semicolon_and_leaves_state() {
     assert_eq!(editor.text(), before);
 }
 
+/// A transaction whose header and posting comments both continue onto their
+/// own indented lines — the model joins those lines with `\n`.
+const MULTI_LINE_COMMENTS: &str = "\
+2024-01-01 * A  ; first
+    ; second: tag
+    expenses:a  $1.00
+    ; posting note
+    assets:bank
+";
+
+#[test]
+fn header_rewrite_keeps_a_multi_line_comment_on_its_own_lines() {
+    let mut editor = JournalEditor::from_text("mem.journal", MULTI_LINE_COMMENTS).unwrap();
+    editor.set_description(Tindex(1), "A renamed").unwrap();
+    // Only the same-line part rides the rebuilt header; the continuation line is
+    // already in the file below it and must not be pulled up or duplicated.
+    assert_eq!(
+        editor.text(),
+        MULTI_LINE_COMMENTS.replace("* A ", "* A renamed ")
+    );
+}
+
+#[test]
+fn replace_writes_every_comment_line_as_an_indented_comment() {
+    let mut editor = JournalEditor::from_text("mem.journal", MULTI_LINE_COMMENTS).unwrap();
+    let txn = editor.journal().transactions[0].clone();
+    editor.replace_transaction(Tindex(1), &txn).unwrap();
+    assert_eq!(editor.text(), MULTI_LINE_COMMENTS);
+
+    // A comment carrying a directive stays a comment: no line reaches column 0.
+    let mut hostile = txn;
+    hostile.comment = "x\nalias /.*/=expenses:junk\n".to_string();
+    hostile.postings[0].comment = "y\nP 2026-01-01 USD 1000 EUR\n".to_string();
+    editor.replace_transaction(Tindex(1), &hostile).unwrap();
+    assert_eq!(
+        editor.text(),
+        "\
+2024-01-01 * A  ; x
+    ; alias /.*/=expenses:junk
+    expenses:a  $1.00  ; y
+    ; P 2026-01-01 USD 1000 EUR
+    assets:bank
+"
+    );
+    assert!(editor.journal().aliases.is_empty());
+    assert!(editor.journal().prices.is_empty());
+}
+
 #[test]
 fn set_status_rewrites_only_the_header_marker_and_preserves_the_rest() {
     let mut editor = JournalEditor::from_text("mem.journal", WITH_COMMENTS).unwrap();

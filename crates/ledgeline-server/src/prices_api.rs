@@ -789,7 +789,13 @@ fn round_to_places(value: Dec, places: u32) -> Dec {
     if value.places <= places {
         return value;
     }
-    let divisor = 10i128.pow(value.places - places);
+    // Checked, not `pow`: from 39 dropped places up there is no `i128` divisor,
+    // and an unchecked one panics. Such a value is under 10^38 / 10^39 in
+    // magnitude, which is below half a unit of the target scale — zero.
+    // (`Dec::rounded` is not a substitute: it rounds half away from zero.)
+    let Some(divisor) = 10i128.checked_pow(value.places - places) else {
+        return Dec::new(0, places);
+    };
     let quotient = value.mantissa / divisor;
     let remainder = (value.mantissa % divisor).abs();
     let half = divisor / 2;
@@ -1049,6 +1055,16 @@ mod tests {
     #[test]
     fn round_to_places_rounds_up_past_the_midpoint() {
         assert_eq!(round_to_places(Dec::new(2287, 3), 2), Dec::new(229, 2));
+    }
+
+    #[test]
+    fn round_to_places_is_total_past_the_i128_divisor() {
+        // 10^39 has no `i128`; the unchecked `pow` panicked here.
+        assert_eq!(round_to_places(Dec::new(i128::MAX, 41), 2), Dec::new(0, 2));
+        assert_eq!(
+            round_to_places(Dec::new(i128::MIN, u32::MAX), 0),
+            Dec::new(0, 0)
+        );
     }
 
     #[test]

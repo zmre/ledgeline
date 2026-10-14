@@ -46,6 +46,29 @@ fn a_hostile_exponent_cannot_poison_the_display_precision() {
     }
 }
 
+#[test]
+fn a_directive_cannot_declare_an_unbounded_display_precision() {
+    use ledgeline_core::decimal::MAX_PARSE_PLACES;
+
+    // A `commodity`/`D` directive is nothing but a style, and its precision is
+    // the digits as WRITTEN — the parse cap on an amount's value, which is what
+    // bounds an amount's own precision, never touched it.
+    let zeros = "0".repeat(100_000);
+    let text = format!(
+        "commodity 1.{zeros} USD\nD 1.{zeros} EUR\n\
+         2026-01-01 t\n    a  1 USD\n    b  -1 USD\n\
+         2026-01-02 t\n    a  1\n    b\n"
+    );
+    let journal = parse_journal(&text, "wide.journal").expect("well-formed");
+    assert_eq!(journal.commodity_styles.len(), 2);
+    for (commodity, style) in &journal.commodity_styles {
+        assert_eq!(style.precision, MAX_PARSE_PLACES, "{commodity:?}");
+    }
+    for amount in amounts(&journal) {
+        assert!(amount.style.precision <= MAX_PARSE_PLACES);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FINDING 3: a declared digit grouping is cloned into every amount
 // ---------------------------------------------------------------------------

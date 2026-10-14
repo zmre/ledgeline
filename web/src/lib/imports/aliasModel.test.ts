@@ -59,6 +59,7 @@ function parity(over: Partial<CliParity> = {}): CliParity {
         confPath: null,
         confOutside: false,
         confHijackedBy: null,
+        confUnforwarded: 0,
         additions: [],
         refusals: [],
         revision: "",
@@ -380,6 +381,16 @@ describe("UNIT aliasModel — command-line parity", () => {
         const warning = parityWarning(parity({confPath: "hledger.conf", confHijackedBy: "balance"}));
         expect(warning).toContain("`balance`");
         expect(warning).toContain("--no-conf");
+    });
+
+    // Past the engine's per-import cap, a config alias is in neither measured
+    // run, so the runs agree — and a terminal still applies it. Silent
+    // truncation is exactly what this has to say out loud.
+    it("says so when the config declares more aliases than one import is given", () => {
+        const warning = parityWarning(parity({confPath: "hledger.conf", confUnforwarded: 3}));
+        expect(warning).toContain("3 more aliases");
+        expect(parityNotice(effect({cli: parity({confPath: "hledger.conf", confUnforwarded: 1})}))).toContain("would apply aliases");
+        expect(parityNotice(effect({cli: parity({confPath: "hledger.conf"})}))).toBeNull();
     });
 
     it("says so when the journal's directory holds something that is not a file", () => {

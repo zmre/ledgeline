@@ -123,6 +123,7 @@ use ledgeline_core::rules::{self, Discovery, RulesDoc};
 use ledgeline_core::sort;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -627,6 +628,10 @@ struct WireCliParity {
     /// A command word the config forces on every hledger invocation, which makes
     /// it break every command the user runs. `null` in the ordinary case.
     conf_hijacked_by: Option<String>,
+    /// How many of the config's `--alias` options were NOT forwarded to this
+    /// import, past `hledger_conf::MAX_CONF_ALIASES`. A terminal applies them,
+    /// so a non-zero count is a divergence of its own. `0` in every real case.
+    conf_unforwarded: usize,
     /// The `--alias` lines the one-click fix would add, shown before it is
     /// pressed because the conversion widens what the pattern matches.
     additions: Vec<String>,
@@ -1344,10 +1349,10 @@ fn resolve_rules(discovery: &Discovery, id: &str) -> Result<PathBuf, AppError> {
 ///
 /// An unreadable file answers `0`, which means no padding, which is exactly
 /// today's behaviour — and the import is about to fail on its own terms anyway,
-/// with hledger's message rather than a guess of ours.
-fn rules_skip(rules: &Path) -> u32 {
-    std::fs::read_to_string(rules)
-        .ok()
+/// with hledger's message rather than a guess of ours. So does one past the
+/// discovery scan's size cap, which [`rules::read_text`] re-applies here.
+fn rules_skip(path: &Path) -> u32 {
+    rules::read_text(path)
         .and_then(|text| RulesDoc::parse(&text).settings().skip)
         .map_or(0, |setting| setting.value)
 }
@@ -1384,8 +1389,12 @@ struct ConfInForce {
     /// It is above the journal's own directory, so Ledgeline reads it and will
     /// not write it.
     outside: bool,
-    /// The `--alias` values it gives an import, general section then `[import]`.
+    /// The `--alias` values it gives an import, general section then `[import]`,
+    /// up to [`hledger_conf::MAX_CONF_ALIASES`].
     aliases: Vec<String>,
+    /// How many more it declares past that cap, which a terminal applies and
+    /// this import does not.
+    unforwarded: usize,
     /// A command word it forces on every hledger invocation, if it forces one.
     hijacked_by: Option<String>,
 }
@@ -1397,10 +1406,15 @@ fn conf_in_force(root: &Path) -> Option<ConfInForce> {
     let text = hledger_conf::read(&path).ok()?;
     let directory = path.parent()?;
     let outside = directory != root;
+    let (aliases, unforwarded) = hledger_conf::forwarded(hledger_conf::alias_arguments(
+        &text,
+        hledger_conf::IMPORT_COMMAND,
+    ));
     Some(ConfInForce {
         id: conf_id(root, directory),
         outside,
-        aliases: hledger_conf::alias_arguments(&text, hledger_conf::IMPORT_COMMAND),
+        aliases,
+        unforwarded,
         hijacked_by: hledger_conf::hijacks_command(&text),
     })
 }
@@ -1480,7 +1494,7 @@ fn resolve_conf(root: &Path) -> ConfTarget {
     let path = directory.join(hledger_conf::CONF_NAME);
     // Guard 3. Lossy, as `hledger_conf::read` is: the revision stays a hash of
     // the text, and the pin holds the raw bytes' fingerprint for the write.
-    match pinned::read_pinned(&path) {
+    match pinned::read_pinned_capped(&path, hledger_conf::MAX_CONF_BYTES) {
         Ok((bytes, pin)) => {
             let text = String::from_utf8_lossy(&bytes).into_owned();
             ConfTarget {
@@ -1494,6 +1508,13 @@ fn resolve_conf(root: &Path) -> ConfTarget {
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => absent(true),
+        // Past `hledger_conf::MAX_CONF_BYTES`: there is a file here, so a write
+        // must not treat it as absent and replace it.
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => ConfTarget {
+            writable: false,
+            exists: true,
+            ..absent(false)
+        },
         // A symlink, a directory, a FIFO: present, and not something to write.
         Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => ConfTarget {
             writable: false,
@@ -2654,7 +2675,7 @@ fn rank_candidates(
         .enumerate()
         .filter(|(_, found)| found.parsed)
         .filter_map(|(at, found)| {
-            let text = std::fs::read_to_string(found.path().as_path()).ok()?;
+            let text = rules::read_text(found.path().as_path())?;
             let doc = RulesDoc::parse(&text);
             let skip = doc.settings().skip.map_or(0, |setting| setting.value);
             let pass = matching::prefilter(&doc, data)?;
@@ -3645,6 +3666,7 @@ fn cli_parity(plan: &Plan, differences: Vec<WireRename>) -> WireCliParity {
         conf_path: plan.conf.as_ref().map(|conf| conf.id.clone()),
         conf_outside: outside,
         conf_hijacked_by: plan.conf.as_ref().and_then(|conf| conf.hijacked_by.clone()),
+        conf_unforwarded: plan.conf.as_ref().map_or(0, |conf| conf.unforwarded),
         additions,
         refusals,
         revision: target.revision,
@@ -5019,13 +5041,23 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppErr
     // branch is chosen, because which one applies is a question about these
     // bytes (see this function's own docs on detection).
     let name = cli_upload_name(&args.input)?;
-    let bytes = std::fs::read(&args.input).map_err(|error| {
+    let unreadable = |error: std::io::Error| {
         AppError::BadRequest(format!(
             "{} could not be read: {}",
             quoted(&args.input.display().to_string()),
             error.kind()
         ))
-    })?;
+    };
+    // Bounded at the read, as the route's body limit bounds the upload: one byte
+    // past the cap is enough to refuse it, and a multi-gigabyte file is never
+    // pulled into memory just to be told it is too big.
+    let cap = u64::try_from(stage::MAX_UPLOAD_BYTES).unwrap_or(u64::MAX);
+    let mut bytes = Vec::new();
+    std::fs::File::open(&args.input)
+        .map_err(unreadable)?
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
     if bytes.len() > stage::MAX_UPLOAD_BYTES {
         return Err(AppError::BadRequest(format!(
             "this file is larger than the {} MiB import limit",
@@ -5587,9 +5619,10 @@ fn run_write_conf(
     let target = resolve_conf(&root);
     if !target.writable {
         return Err(AppError::BadRequest(format!(
-            "{} cannot be written: a config file must be a regular file in your journal's own \
-             directory, not a symlink or a directory",
-            quoted(&target.id)
+            "{} cannot be written: a config file must be a readable regular file in your \
+             journal's own directory, not a symlink or a directory, and no larger than {} KiB",
+            quoted(&target.id),
+            hledger_conf::MAX_CONF_BYTES / 1024
         )));
     }
     if target.revision != request.revision {

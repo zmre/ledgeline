@@ -93,6 +93,7 @@ use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, BalanceAssertion, Commodity, CommoditySide, Cost, CostKind,
     Journal, Posting, PostingType, SourcePos, Status, Tindex, Transaction,
 };
+use ledgeline_core::periodic::MAX_ACCOUNT_BYTES;
 use ledgeline_core::{Dec, EditError, JournalEditor};
 use serde::{Deserialize, Serialize};
 
@@ -680,6 +681,12 @@ fn patch_transaction_locked(
 ) -> Result<AddResponse, AppError> {
     let mut guard = lock_editor(state)?;
     let editor = bound(&mut guard)?;
+    if let Some(description) = &request.description {
+        check_text("a description", description, MAX_DESCRIPTION_BYTES, TAB)?;
+    }
+    for posting in &request.postings {
+        check_text("an account name", &posting.account, MAX_ACCOUNT_BYTES, NONE)?;
+    }
 
     let changed =
         request.description.is_some() || request.status.is_some() || !request.postings.is_empty();
@@ -1075,6 +1082,57 @@ fn insertion_index(journal: &Journal, txn: &Transaction, position: InsertPositio
 }
 
 // ===========================================================================
+// Free-text caps
+// ===========================================================================
+
+// Byte caps on the transaction fields a client writes as text. Far above
+// anything a person types or a bank exports, so a transaction read from the
+// journal and echoed back by the edit popup always fits; small enough that a
+// hostile body cannot turn one header into megabytes of journal. The account
+// cap is the one the budget rules' posting lines already use.
+const MAX_DATE_BYTES: usize = 32;
+const MAX_CODE_BYTES: usize = 256;
+const MAX_DESCRIPTION_BYTES: usize = 1024;
+const MAX_COMMENT_BYTES: usize = 4096;
+const MAX_COMMODITY_BYTES: usize = 128;
+
+/// The ASCII control characters a field may carry, beyond none at all.
+const NONE: &[char] = &[];
+/// A tab is inert inside a description or code: it cannot end the line.
+const TAB: &[char] = &['\t'];
+/// A comment may also span lines: the model joins a multi-line comment's lines
+/// with `\n` (the read API hands that back, and the edit popup echoes it), and
+/// the writer renders each line as its own indented `; …` line.
+const COMMENT: &[char] = &['\t', '\n'];
+
+/// No ASCII control character outside `allowed`, and no more than `cap` bytes.
+///
+/// Every other write path (account directives, budget rules, aliases, rules
+/// files) refuses control characters in what it writes; the transaction routes
+/// did not. A `\n` in a field that renders onto one journal line is how a
+/// second, top-level line gets smuggled in — `alias /.*/=expenses:junk` or a
+/// `P` price directive — and the post-edit guards compare the transaction, not
+/// the lines around it. `\r` goes with it (a lone one is invisible damage), as
+/// does the rest of the control range, which has no meaning in a journal.
+fn check_text(what: &str, value: &str, cap: usize, allowed: &[char]) -> Result<(), AppError> {
+    if let Some(control) = value
+        .chars()
+        .find(|c| c.is_ascii_control() && !allowed.contains(c))
+    {
+        return Err(AppError::BadRequest(format!(
+            "{what} may not contain the control character {control:?}"
+        )));
+    }
+    if value.len() > cap {
+        return Err(AppError::BadRequest(format!(
+            "{what} is {} bytes; the limit is {cap}",
+            value.len()
+        )));
+    }
+    Ok(())
+}
+
+// ===========================================================================
 // Build a `core::Transaction` from the request (with inferred styles)
 // ===========================================================================
 
@@ -1083,6 +1141,19 @@ fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transact
         return Err(AppError::BadRequest(
             "a transaction needs a date".to_string(),
         ));
+    }
+    check_text("a date", &request.date, MAX_DATE_BYTES, NONE)?;
+    if let Some(date2) = &request.date2 {
+        check_text("a secondary date", date2, MAX_DATE_BYTES, NONE)?;
+    }
+    if let Some(code) = &request.code {
+        check_text("a code", code, MAX_CODE_BYTES, TAB)?;
+    }
+    if let Some(description) = &request.description {
+        check_text("a description", description, MAX_DESCRIPTION_BYTES, TAB)?;
+    }
+    if let Some(comment) = &request.comment {
+        check_text("a comment", comment, MAX_COMMENT_BYTES, COMMENT)?;
     }
     if request.postings.is_empty() {
         return Err(AppError::BadRequest(
@@ -1128,6 +1199,10 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppErr
         return Err(AppError::BadRequest(
             "a posting needs an account".to_string(),
         ));
+    }
+    check_text("an account name", &input.account, MAX_ACCOUNT_BYTES, NONE)?;
+    if let Some(comment) = &input.comment {
+        check_text("a comment", comment, MAX_COMMENT_BYTES, COMMENT)?;
     }
     let amounts = match &input.amount {
         Some(amount) => vec![build_amount(journal, amount)?],
@@ -1204,6 +1279,7 @@ fn comment_string(raw: Option<&str>) -> String {
 }
 
 fn build_amount(journal: &Journal, input: &AmountIn) -> Result<Amount, AppError> {
+    check_text("a commodity", &input.commodity, MAX_COMMODITY_BYTES, NONE)?;
     let commodity = Commodity(input.commodity.clone());
     let quantity = dec_from_wire(&input.quantity)?;
     let style = infer_style(journal, &commodity, quantity.places);
@@ -1230,6 +1306,7 @@ fn build_cost(journal: &Journal, input: &CostIn) -> Result<Cost, AppError> {
 /// journal. Shared by the cost annotation and the balance assertion, which are
 /// the two places an amount can appear without a nested cost of its own.
 fn build_priced_amount(journal: &Journal, input: &PricedAmountIn) -> Result<Amount, AppError> {
+    check_text("a commodity", &input.commodity, MAX_COMMODITY_BYTES, NONE)?;
     let commodity = Commodity(input.commodity.clone());
     let quantity = dec_from_wire(&input.quantity)?;
     let style = infer_style(journal, &commodity, quantity.places);

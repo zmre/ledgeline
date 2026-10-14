@@ -147,11 +147,26 @@ impl From<WriteError> for std::io::Error {
 /// Any I/O error opening, `fstat`ing or reading the file; a non-regular file is
 /// [`std::io::ErrorKind::InvalidInput`].
 pub fn read_pinned(path: &Path) -> std::io::Result<(Vec<u8>, Pin)> {
-    let (mut file, meta) = imp::open_existing(path)?.ok_or_else(|| {
+    read_pinned_capped(path, u64::MAX)
+}
+
+/// [`read_pinned`], refusing a file longer than `cap` bytes without reading
+/// more than `cap + 1` of it.
+///
+/// # Errors
+/// As [`read_pinned`], plus [`std::io::ErrorKind::FileTooLarge`] past `cap`.
+pub fn read_pinned_capped(path: &Path, cap: u64) -> std::io::Result<(Vec<u8>, Pin)> {
+    let (file, meta) = imp::open_existing(path)?.ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "the file does not exist")
     })?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    file.take(cap.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > cap {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            "the file is larger than this read allows",
+        ));
+    }
     let pin = Pin {
         identity: FileIdentity::of(&meta),
         fingerprint: Some(Fingerprint::of_bytes(&bytes)),
@@ -849,5 +864,20 @@ mod tests {
         create_new(&fresh, b"hello\n").expect("create");
         assert_eq!(std::fs::read_to_string(&fresh).expect("read"), "hello\n");
         assert_eq!(mode_of(&fresh), 0o600);
+    }
+
+    #[test]
+    fn a_capped_read_refuses_past_the_cap_and_accepts_at_it() {
+        let scratch = Scratch::new("capped");
+        let path = scratch.join("hledger.conf");
+        write(&path, "12345", 0o600);
+
+        let (bytes, pin) = read_pinned_capped(&path, 5).expect("exactly at the cap");
+        assert_eq!(bytes, b"12345");
+        let uncapped = read_pinned(&path).expect("uncapped").1;
+        assert_eq!(format!("{pin:?}"), format!("{uncapped:?}"));
+
+        let error = read_pinned_capped(&path, 4).expect_err("one past the cap");
+        assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
     }
 }

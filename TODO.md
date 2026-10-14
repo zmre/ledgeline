@@ -32,10 +32,11 @@
   (`adisourcepos` is built with the main journal's name regardless of which file the directive came
   from). `AccountDeclaration` carries a `SourcePos` but no `source_file`, unlike `Transaction` and
   `AliasDirective`, which carry both. Blocks file+line anchoring for directive diagnostics.
-- chore: **sweep for caps that exist but are applied inconsistently.** Three were found one at a
-  time (a render clamp present in `edit.rs` but missing from `ofx.rs` and `import_api.rs`, a parse
-  scale cap that failed open, a row cap that ran after materialization). Worth looking for the rest
-  deliberately rather than waiting for the next review.
+- chore: **cap-sweep residue.** The import preview's `additions` (`import_api::cli_parity`) are
+  still diffed against the config's *forwarded* aliases, capped at `MAX_CONF_ALIASES`, so past 200
+  it can list a line the write then (correctly) does not add; the write path uses the full list.
+  And "no ASCII control character" now has five private spellings (`accounts`, `periodic`,
+  `aliases` `has_control`; `rules::check_text`; `edit_api::check_text`) — one shared helper.
 - chore: **one `no_store` definition, not five.** The canonical `HeaderValue` is in
   `security::no_store()`, but `import_api`, `rules_api`, `alias_api` and `budget_api` each still
   have a module-private `fn no_store<T: Serialize>(body: T) -> Response`. Rebase them onto it.

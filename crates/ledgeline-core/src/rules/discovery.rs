@@ -929,6 +929,19 @@ enum ReadStop {
     Unreadable,
 }
 
+/// A rules file's text, read under the same cap the scan applies, or `None`
+/// when it is past [`MAX_RULES_BYTES`], unreadable, or not UTF-8.
+///
+/// For a caller that re-reads a file the scan already listed: the scan's own
+/// cap is a statement about the file *then*, and a file can grow — or be
+/// swapped for an enormous one — between the scan and a second read.
+#[must_use]
+pub fn read_text(path: &Path) -> Option<String> {
+    read_capped(path)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
 /// Read a file, refusing anything past [`MAX_RULES_BYTES`].
 ///
 /// The size is re-checked against the **open handle's** metadata rather than the
@@ -1339,6 +1352,21 @@ fn file_warning(message: String) -> Warning {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_re_read_gets_the_scans_size_cap() {
+        let dir = std::env::temp_dir().join(format!("ledgeline-read-text-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.csv.rules");
+        let cap = usize::try_from(MAX_RULES_BYTES).unwrap();
+        std::fs::write(&path, "x".repeat(cap)).unwrap();
+        assert_eq!(read_text(&path).map(|text| text.len()), Some(cap));
+        std::fs::write(&path, "x".repeat(cap + 1)).unwrap();
+        assert_eq!(read_text(&path), None);
+        std::fs::write(&path, [0xff]).unwrap();
+        assert_eq!(read_text(&path), None, "not UTF-8");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn rules_names_are_matched_case_insensitively_and_never_bare() {
