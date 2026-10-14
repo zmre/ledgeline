@@ -59,7 +59,7 @@
 //! client-supplied path at all (there is no `journalId`/`csvPath` to resolve);
 //! the only paths in play are the journal's own `source_files`, and every one
 //! that could reach a response goes through [`journal_handle`] (a relative,
-//! forward-slash handle) or [`import_api::Redactor`] first.
+//! forward-slash handle) or [`Redactor`] first.
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -81,7 +81,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::AppState;
 use crate::edit_api::{self, infer_style, json_body};
 use crate::error::{AppError, editing_disabled};
-use crate::import_api::{self, GitPolicy, Redactor, WireGitResult, WireMove};
+use crate::import_api::{self, GitPolicy, WireGitResult, WireMove};
+use crate::redact::Redactor;
 use crate::security::no_store_json as no_store;
 use crate::stage::StageId;
 

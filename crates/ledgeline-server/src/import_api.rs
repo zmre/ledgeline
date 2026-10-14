@@ -132,6 +132,7 @@ use crate::error::AppError;
 use crate::git::{GitStatus, Repo};
 use crate::hledger::{Hledger, HledgerError, Invocation, Output};
 use crate::prefs::{self, Prefs};
+use crate::redact::Redactor;
 use crate::reports_api::compute;
 use crate::security::no_store_json as no_store;
 use crate::stage::{self, RUN_BARE, RUN_WITH_LATEST, Stage, StageId};
@@ -1544,72 +1545,8 @@ impl AliasArguments {
 // Security layer 5: no absolute path is ever echoed
 // ===========================================================================
 
-/// Rewrites the absolute paths *we* handed a subprocess back into the relative
-/// handles the client already has.
-///
-/// hledger and git both name files in their diagnostics — `imported 3 new
-/// transactions from bank.csv to /Users/me/finances/main.journal` is verbatim
-/// real output — and those diagnostics are the single most useful thing on the
-/// screen when something goes wrong, so withholding them is not an option. The
-/// same trade `git.rs` makes with its `scrub`: pass the words through, redact the
-/// prefixes we know.
-///
-/// Longest-first, so `/root/import/bank.csv` becomes `import/bank.csv` rather
-/// than being half-rewritten by the root's own entry.
-///
-/// `pub(crate)`: `qb_journal_api` builds its own and redacts its git errors the
-/// same way, rather than growing a second redaction scheme for one more write
-/// path.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct Redactor {
-    swaps: Vec<(String, String)>,
-}
-
-impl Redactor {
-    /// Replace every occurrence of `path` with `handle`.
-    ///
-    /// Both the path as given and its canonical spelling are registered, because
-    /// they differ routinely — on macOS `/tmp` is a symlink to `/private/tmp`,
-    /// and a subprocess may report either.
-    pub(crate) fn hide(mut self, path: &Path, handle: &str) -> Self {
-        let mut spellings = vec![path.to_string_lossy().into_owned()];
-        if let Ok(canonical) = std::fs::canonicalize(path) {
-            spellings.push(canonical.to_string_lossy().into_owned());
-        }
-        for spelling in spellings {
-            if !spelling.is_empty() && !self.swaps.iter().any(|(from, _)| *from == spelling) {
-                self.swaps.push((spelling, handle.to_string()));
-            }
-        }
-        self
-    }
-
-    /// Replace a DIRECTORY prefix: `dir/x` becomes `x`, and a bare mention of the
-    /// directory becomes `.`. Same two substitutions `git.rs::scrub` makes.
-    pub(crate) fn hide_prefix(mut self, dir: &Path) -> Self {
-        let spelling = dir.to_string_lossy().into_owned();
-        let canonical = std::fs::canonicalize(dir)
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| spelling.clone());
-        for prefix in [spelling, canonical] {
-            if prefix.is_empty() {
-                continue;
-            }
-            self.swaps.push((format!("{prefix}/"), String::new()));
-            self.swaps.push((prefix, ".".to_string()));
-        }
-        self
-    }
-
-    /// `text` with every known path rewritten.
-    pub(crate) fn apply(&self, text: &str) -> String {
-        let mut swaps: Vec<&(String, String)> = self.swaps.iter().collect();
-        swaps.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
-        swaps.iter().fold(text.to_string(), |redacted, (from, to)| {
-            redacted.replace(from.as_str(), to.as_str())
-        })
-    }
-}
+// Done by `crate::redact::Redactor`, the one redactor shared with the edit,
+// QuickBooks-journal and git paths.
 
 // ===========================================================================
 // hledger invocations
@@ -5706,24 +5643,6 @@ mod tests {
         }
         // No header at all is its own refusal, not a default.
         assert!(bare_filename(&HeaderMap::new()).is_err());
-    }
-
-    /// Redaction is longest-first, so a file inside the root is rewritten to its
-    /// own handle rather than being half-rewritten by the root's entry.
-    #[test]
-    fn redaction_prefers_the_most_specific_path() {
-        let redactor = Redactor::default()
-            .hide(Path::new("/books/2026/2026.journal"), "2026/2026.journal")
-            .hide_prefix(Path::new("/books"));
-        assert_eq!(
-            redactor.apply("imported 3 transactions to /books/2026/2026.journal"),
-            "imported 3 transactions to 2026/2026.journal"
-        );
-        assert_eq!(
-            redactor.apply("could not read /books/other.csv"),
-            "could not read other.csv"
-        );
-        assert_eq!(redactor.apply("in /books"), "in .");
     }
 
     /// The count comes from OUR parse of hledger's stdout, and only falls back

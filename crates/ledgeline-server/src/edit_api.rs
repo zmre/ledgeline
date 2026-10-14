@@ -78,7 +78,7 @@
 //! Every one of those bodies goes out through [`redacted`] first, which rewrites
 //! the journal's own absolute paths down to bare file names (SEC-15). A parse
 //! failure renders as `{source_name}:{line}: …`, and `source_name` is the
-//! absolute path the editor was opened with — see [`PathRedaction`] for what is
+//! absolute path the editor was opened with — see [`redacted`] for what is
 //! redacted, what deliberately is not, and why.
 
 use std::sync::MutexGuard;
@@ -100,6 +100,7 @@ use crate::AppState;
 // `editing_disabled` lives in `error` rather than here because the rules-file
 // `PUT` answers with the identical sentence, and the SPA matches on the words.
 use crate::error::{AppError, editing_disabled};
+use crate::redact::Redactor;
 use crate::reports_api::WireDec;
 
 // ===========================================================================
@@ -490,7 +491,8 @@ pub(crate) fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEdit
 // Path redaction (SEC-15)
 // ===========================================================================
 
-/// Rewrite the journal's own absolute paths out of an error body.
+/// Run one edit and redact the journal's own absolute paths out of whatever it
+/// failed with.
 ///
 /// SEC-15. `EditError` renders through [`ParseError`]'s `Located` variant as
 /// `{source_name}:{line}: {message}` — and `source_name` is the ABSOLUTE path
@@ -513,102 +515,13 @@ pub(crate) fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEdit
 /// of it. The absolute path is different in kind. It is not journal data at all;
 /// it is a fact about the host that this API otherwise never states.
 ///
-/// # Why this is not `import_api`'s `Redactor`
-///
-/// It should be. That type does the same job, with the same longest-first and
-/// two-spellings rules, and having two is a duplication worth removing — but it
-/// is private to `import_api`, and that file belongs to another lane right now.
-/// Promoting it to a shared module is the follow-up.
-struct PathRedaction {
-    /// `(absolute spelling, replacement)`, applied longest-first.
-    swaps: Vec<(String, String)>,
-}
-
-impl PathRedaction {
-    /// The redaction for the journal `state` currently serves: every source file
-    /// (main plus every `include`) mapped to its bare file name, and the main
-    /// file's directory mapped away entirely.
-    ///
-    /// Both the path as recorded and its canonical spelling are registered,
-    /// because they differ routinely — on macOS `/tmp` is a symlink to
-    /// `/private/tmp`, and the editor and the parser can report either.
-    fn for_journal(state: &AppState) -> Self {
-        let sources = state.source_files();
-        let files = sources.iter().flat_map(|path| {
-            let handle = path.file_name().map_or_else(
-                || "the journal".to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            spellings(path).map(move |spelling| (spelling, handle.clone()))
-        });
-        // The directory too: a *newly* added `include` naming a file that does
-        // not exist is not in `source_files` (that parse never succeeded), and
-        // `ParseError::Include` renders its absolute path.
-        let dirs = sources
-            .iter()
-            .take(1)
-            .filter_map(|path| path.parent())
-            .flat_map(|dir| {
-                spellings(dir).flat_map(|spelling| {
-                    [
-                        (format!("{spelling}/"), String::new()),
-                        (spelling, ".".to_string()),
-                    ]
-                })
-            });
-        Self {
-            swaps: files
-                .chain(dirs)
-                .filter(|(from, _)| !from.is_empty())
-                .collect(),
-        }
-    }
-
-    /// `text` with every known path rewritten. Longest-first, so a file's own
-    /// entry wins over the directory prefix that also matches it.
-    fn apply(&self, text: &str) -> String {
-        let mut swaps: Vec<&(String, String)> = self.swaps.iter().collect();
-        swaps.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
-        swaps.iter().fold(text.to_string(), |redacted, (from, to)| {
-            redacted.replace(from.as_str(), to.as_str())
-        })
-    }
-
-    /// `error` with its message redacted, keeping the variant — and therefore
-    /// the status the SPA switches on — exactly as it was.
-    ///
-    /// The match is deliberately exhaustive rather than a catch-all: a new
-    /// [`AppError`] variant must fail to compile here so somebody decides
-    /// whether it can carry a path, instead of silently leaking one.
-    fn redact(&self, error: AppError) -> AppError {
-        match error {
-            AppError::BadRequest(message) => AppError::BadRequest(self.apply(&message)),
-            AppError::NotFound(message) => AppError::NotFound(self.apply(&message)),
-            AppError::Conflict(message) => AppError::Conflict(self.apply(&message)),
-            AppError::EditingDisabled(message) => AppError::EditingDisabled(self.apply(&message)),
-            AppError::Unavailable(message) => AppError::Unavailable(self.apply(&message)),
-            AppError::Internal(message) => AppError::Internal(self.apply(&message)),
-        }
-    }
-}
-
-/// A path as written and, when it differs, as canonicalized.
-fn spellings(path: &std::path::Path) -> impl Iterator<Item = String> {
-    let written = path.to_string_lossy().into_owned();
-    let canonical = std::fs::canonicalize(path)
-        .map(|resolved| resolved.to_string_lossy().into_owned())
-        .ok()
-        .filter(|resolved| *resolved != written);
-    std::iter::once(written).chain(canonical)
-}
-
-/// Run one edit and redact the journal's paths out of whatever it failed with.
-///
-/// Applied at the four handler boundaries rather than at each `?`, so no future
-/// failure inside the locked operations can bypass it (SEC-15). The redaction is
-/// built only on the error path, so a successful edit pays nothing for it.
+/// The mechanism is [`Redactor::for_journal`]: every source file down to its
+/// bare name, the main file's directory away entirely. It is applied at the four
+/// handler boundaries rather than at each `?`, so no future failure inside the
+/// locked operations can bypass it (SEC-15). The redaction is built only on the
+/// error path, so a successful edit pays nothing for it.
 fn redacted<T>(state: &AppState, outcome: Result<T, AppError>) -> Result<T, AppError> {
-    outcome.map_err(|error| PathRedaction::for_journal(state).redact(error))
+    outcome.map_err(|error| Redactor::for_journal(state).redact_error(error))
 }
 
 fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddResponse, AppError> {
