@@ -545,7 +545,10 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// A stand-in worker: a shell script that ignores its arguments.
+    /// A stand-in worker: a shell script that ignores its arguments. Bodies use
+    /// shell BUILTINS only — the worker runs with an empty environment, so with
+    /// no `PATH` a Linux `sh` (the nix sandbox has no `/usr/bin` to fall back
+    /// on) cannot find `sleep` or `yes`, and exits 127 instead.
     fn script(dir: &tempfile::TempDir, body: &str) -> PathBuf {
         let path = dir.path().join("worker.sh");
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("the script writes");
@@ -575,7 +578,7 @@ mod tests {
     #[test]
     fn a_worker_that_hangs_is_killed_at_the_deadline() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let worker = script(&dir, "exec sleep 30");
+        let worker = script(&dir, "while :; do :; done");
         let started = Instant::now();
         assert_eq!(
             run_worker(&worker, Job::QbDetect, b"bytes", SHORT),
@@ -587,7 +590,7 @@ mod tests {
     #[test]
     fn a_worker_that_will_not_stop_talking_is_cut_off() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let worker = script(&dir, "exec yes");
+        let worker = script(&dir, "while :; do echo y; done");
         assert_eq!(
             run_worker(&worker, Job::QbDetect, b"bytes", SHORT),
             Err(WorkerFailure::OutputTooLarge)
