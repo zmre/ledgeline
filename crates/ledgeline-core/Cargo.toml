@@ -40,7 +40,7 @@ proptest-derive = { workspace = true }
 # workspace table because `ledgeline-core` is the only crate that benches. The
 # skill's `async_tokio` feature is deliberately NOT enabled: the engine is
 # entirely synchronous and has no runtime to drive.
-criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 # Bench layout: criterion supplies its own harness,
 # and the libtest harness must not also claim `--bench` (it would shadow

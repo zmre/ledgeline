@@ -19,7 +19,7 @@ repository = "https://github.com/zmre/ledgeline"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-itertools = "0.14"
+itertools = "0.15"
 # `version` alongside `path` is what makes `ledgeline-server` PUBLISHABLE:
 # `cargo publish` rejects a path dependency with no version, because a consumer
 # downloading the .crate has no `crates/ledgeline-core` to point at. Inside the
@@ -72,7 +72,7 @@ encoding_rs_io = "0.1"
 chardetng = "1"
 
 proptest = "1"
-proptest-derive = "0.8"
+proptest-derive = "0.9"
 
 # Aggressive release optimization. `panic` is left
 # at the default "unwind" so the future axum server can catch per-request panics
