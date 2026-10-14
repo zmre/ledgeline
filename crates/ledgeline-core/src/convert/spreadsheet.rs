@@ -100,10 +100,32 @@
 //! reason and with the same guarantee that a real row cannot be caught by it: a
 //! transaction has a date in it, and a row with no populated cell at all has
 //! nothing.
+//!
+//! # A sheet is read sparse and bounded before it is made dense
+//!
+//! `calamine`'s `worksheet_range` turns a sheet into a dense grid spanning the
+//! bounding box of its cells, so an xlsx holding only `A1` and `XFD1048576`
+//! asks for ~17 billion cells — hundreds of gigabytes from a file of a few
+//! hundred bytes, and an allocation failure aborts the process rather than
+//! returning an error. [`MAX_INPUT_BYTES`] cannot help: it bounds the compressed
+//! zip. So xlsx/xlsm/xlsb sheets are read cell by cell ([`SheetSource`]) and
+//! refused when they hold more than [`MAX_SHEET_CELLS`] populated cells or span
+//! more than [`MAX_SHEET_GRID`] grid cells, *before* anything dense exists. A
+//! refused sheet is skipped like any other unreadable sheet.
+//!
+//! That is defense in depth and not the whole answer: xls and ods have no
+//! streaming reader, and `calamine` also sizes some allocations from header
+//! fields while merely *opening* a workbook. The server therefore runs this
+//! whole module in a resource-limited child process (see `workbook_sandbox` in
+//! `ledgeline-server`); these caps keep an ordinary oversized sheet from
+//! spending that budget at all.
 
 use super::delimited::{MAX_ROWS, Margins, RowShape, margins};
 use super::{ConvertError, ConvertNote, MAX_INPUT_BYTES, SourceFormat, Tabular};
-use calamine::{Data, ExcelDateTime, Ods, Range, Reader, Xls, Xlsb, Xlsx, open_workbook_from_rs};
+use calamine::{
+    Cell, Data, DataRef, ExcelDateTime, Ods, Range, Reader, Xls, Xlsb, Xlsx, open_workbook_from_rs,
+};
+use itertools::Itertools;
 use std::io::{Cursor, Read, Seek};
 
 // ---------------------------------------------------------------------------
@@ -128,6 +150,21 @@ const MIN_TABLE_COLUMNS: usize = 2;
 /// this string reaches a dialog. Same stance, and the same reason, as
 /// `rules::discovery`'s refusal to quote an `io::Error`.
 const UNREADABLE_WORKBOOK: &str = "the workbook could not be read";
+
+/// The most populated cells one sheet may hold before it is refused.
+///
+/// A 100,000-row statement ([`MAX_ROWS`]) at twenty columns is two million
+/// cells, so no statement this module would render in full is caught by it.
+pub const MAX_SHEET_CELLS: usize = 2_000_000;
+
+/// The most cells the dense grid over one sheet's populated cells may span —
+/// rows times columns of their bounding box — before the sheet is refused.
+///
+/// Each grid cell is a 32-byte [`Data`], and the grid is copied at least once
+/// on its way to a [`Table`], so this keeps a sheet under roughly 700 MB however
+/// far apart its cells are. A real statement is a few thousand rows by a few
+/// dozen columns.
+pub const MAX_SHEET_GRID: u64 = 10_000_000;
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -178,7 +215,7 @@ type Chosen = Option<(String, Table)>;
 /// and render it.
 fn tabulate<R, RS>(source: RS, format: SourceFormat) -> Result<Tabular, ConvertError>
 where
-    R: Reader<RS>,
+    R: Reader<RS> + SheetSource,
     RS: Read + Seek,
 {
     let mut book: R = open_workbook_from_rs(source).map_err(|_| malformed(format))?;
@@ -192,8 +229,9 @@ where
         |(chosen, candidates): (Chosen, usize), name| {
             // A sheet that fails to read is skipped rather than fatal: one
             // corrupt "Disclaimer" tab is no reason to refuse a statement
-            // that parsed perfectly on the sheet beside it.
-            match book.worksheet_range(name).ok().as_ref().and_then(table_of) {
+            // that parsed perfectly on the sheet beside it. A sheet over the
+            // size caps is skipped the same way.
+            match book.sheet(name).as_ref().and_then(table_of) {
                 Some(table) => (
                     chosen.or_else(|| Some((name.clone(), table))),
                     candidates + 1,
@@ -271,6 +309,89 @@ fn notes(
         .into_iter()
         .flatten()
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Reading one sheet, bounded
+// ---------------------------------------------------------------------------
+
+/// A workbook reader that can hand over one sheet as a [`Range`], or `None` when
+/// the sheet cannot be read or is over the size caps.
+///
+/// Shared with `qb_journal`, which reads the same workbooks and so has the same
+/// exposure. See the module docs on why xls and ods are not bounded here.
+pub(crate) trait SheetSource {
+    fn sheet(&mut self, name: &str) -> Option<Range<Data>>;
+}
+
+impl<RS: Read + Seek> SheetSource for Xlsx<RS> {
+    fn sheet(&mut self, name: &str) -> Option<Range<Data>> {
+        let mut cells = self.worksheet_cells_reader(name).ok()?;
+        bounded(std::iter::from_fn(|| cells.next_cell().transpose()))
+    }
+}
+
+impl<RS: Read + Seek> SheetSource for Xlsb<RS> {
+    fn sheet(&mut self, name: &str) -> Option<Range<Data>> {
+        let mut cells = self.worksheet_cells_reader(name).ok()?;
+        bounded(std::iter::from_fn(|| cells.next_cell().transpose()))
+    }
+}
+
+impl<RS: Read + Seek> SheetSource for Xls<RS> {
+    fn sheet(&mut self, name: &str) -> Option<Range<Data>> {
+        self.worksheet_range(name).ok()
+    }
+}
+
+impl<RS: Read + Seek> SheetSource for Ods<RS> {
+    fn sheet(&mut self, name: &str) -> Option<Range<Data>> {
+        self.worksheet_range(name).ok()
+    }
+}
+
+/// A sheet's cells, as a streaming reader yields them, made into a [`Range`] —
+/// or `None` if the reader fails or the sheet is over [`MAX_SHEET_CELLS`] or
+/// [`MAX_SHEET_GRID`].
+///
+/// Empty cells are dropped as they arrive, exactly as `worksheet_range` drops
+/// them, so a styled-but-blank `XFD1048576` neither counts nor stretches the
+/// grid. `Data::from` is the conversion `worksheet_range` itself applies, so
+/// dates, the 1904 epoch and shared strings read identically either way.
+pub(crate) fn bounded<'a, E>(
+    cells: impl Iterator<Item = Result<Cell<DataRef<'a>>, E>>,
+) -> Option<Range<Data>> {
+    let cells: Vec<Cell<Data>> = cells
+        .filter(|cell| {
+            !cell
+                .as_ref()
+                .is_ok_and(|cell| matches!(cell.get_value(), DataRef::Empty))
+        })
+        .take(MAX_SHEET_CELLS + 1)
+        .map(|cell| {
+            cell.map(|cell| Cell::new(cell.get_position(), Data::from(cell.get_value().clone())))
+        })
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if cells.len() > MAX_SHEET_CELLS || grid_of(&cells) > MAX_SHEET_GRID {
+        return None;
+    }
+    Some(Range::from_sparse(cells))
+}
+
+/// How many cells the dense grid over `cells` would hold: rows times columns of
+/// their bounding box, computed the way [`Range::from_sparse`] computes it, but
+/// in `u64` so a sheet-spanning box cannot wrap.
+fn grid_of(cells: &[Cell<Data>]) -> u64 {
+    let span = |axis: fn(&Cell<Data>) -> u32| {
+        cells
+            .iter()
+            .map(axis)
+            .minmax()
+            .into_option()
+            .map_or(0, |(low, high)| u64::from(high - low) + 1)
+    };
+    span(|cell| cell.get_position().0) * span(|cell| cell.get_position().1)
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +781,64 @@ mod tests {
             "2026-01-06 | PENDING CHARGE | seen | .",
         ]);
         assert_eq!(margins_of(&rows), Margins::default());
+    }
+
+    /// `bounded` over cells as a streaming reader would yield them.
+    fn bounded_over(cells: Vec<((u32, u32), DataRef<'static>)>) -> Option<Range<Data>> {
+        bounded(
+            cells
+                .into_iter()
+                .map(|(at, value)| Ok::<_, ()>(Cell::new(at, value))),
+        )
+    }
+
+    #[test]
+    fn a_sheet_spanning_more_than_the_grid_cap_is_refused() {
+        // Two cells, ~17 billion grid cells between them.
+        let corners = vec![
+            ((0, 0), DataRef::Int(1)),
+            ((1_048_575, 16_383), DataRef::Int(1)),
+        ];
+        assert!(bounded_over(corners).is_none());
+
+        // Exactly at the cap is still a sheet.
+        let side = MAX_SHEET_GRID.isqrt() as u32;
+        let square = vec![
+            ((0, 0), DataRef::Int(1)),
+            ((side - 1, side - 1), DataRef::Int(1)),
+        ];
+        let range = bounded_over(square).expect("at the cap is allowed");
+        assert_eq!(range.get_size(), (side as usize, side as usize));
+    }
+
+    #[test]
+    fn a_sheet_with_more_than_the_cell_cap_is_refused() {
+        // One column, so the grid cap is never what refuses it.
+        let column = |rows: usize| {
+            (0..rows as u32)
+                .map(|row| ((row, 0), DataRef::Int(1)))
+                .collect::<Vec<_>>()
+        };
+        assert!(bounded_over(column(MAX_SHEET_CELLS + 1)).is_none());
+        assert!(bounded_over(column(MAX_SHEET_CELLS)).is_some());
+    }
+
+    #[test]
+    fn empty_cells_neither_count_nor_stretch_the_sheet() {
+        let cells = vec![
+            ((2, 1), DataRef::String("Date".to_string())),
+            ((2, 2), DataRef::Float(-54.2)),
+            ((1_048_575, 16_383), DataRef::Empty),
+        ];
+        let range = bounded_over(cells).expect("the sheet reads");
+        assert_eq!(range.start(), Some((2, 1)));
+        assert_eq!(range.end(), Some((2, 2)));
+    }
+
+    #[test]
+    fn a_reader_error_refuses_the_sheet() {
+        let cells = vec![Ok(Cell::new((0, 0), DataRef::Int(1))), Err("truncated xml")];
+        assert!(bounded(cells.into_iter()).is_none());
     }
 
     #[test]

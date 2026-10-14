@@ -1055,3 +1055,45 @@ fn the_cli_gets_the_same_id_matching_the_screen_does() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Workbooks are parsed in a sandboxed worker
+// ---------------------------------------------------------------------------
+
+/// The original report's two-cell xlsx, and a workbook that blows the worker's
+/// memory budget while merely being opened, through the real binary end to end:
+/// `ledgeline import` is the parent and the same binary, re-executed, is the
+/// worker. Each must be an ordinary refusal — exit 1 and a sentence — where
+/// before the first asked for ~550 GB and aborted the process.
+#[test]
+fn allocation_bomb_workbooks_are_refused_rather_than_fatal() {
+    let cases = [
+        (
+            common::sparse_bomb_xlsx(),
+            "no worksheet contained tabular data",
+        ),
+        (
+            common::shared_strings_bomb_xlsx(),
+            "could not be read within the memory and time",
+        ),
+    ];
+    for (workbook, expected) in cases {
+        let tree = Tree::split_year();
+        std::fs::write(tree.path("bomb.xlsx"), workbook).expect("write the workbook");
+        let before = tree.snapshot();
+        let mut args = tree.standard_args();
+        args[1] = "bomb.xlsx";
+        let output = tree.import(&args);
+        assert_eq!(output.status.code(), Some(1), "{}", transcript(&output));
+        assert!(
+            stderr(&output).contains(expected),
+            "{}",
+            transcript(&output)
+        );
+        assert_eq!(
+            changed(&before, &tree.snapshot()),
+            Vec::<String>::new(),
+            "a refused run writes nothing"
+        );
+    }
+}

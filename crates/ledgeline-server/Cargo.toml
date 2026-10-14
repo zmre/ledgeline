@@ -125,8 +125,18 @@ gtk = { version = "0.18", optional = true }
 # unifies it and this adds no crate to the graph.
 webkit2gtk = { version = "2.0", optional = true }
 
+# `setrlimit` for the workbook worker (`workbook_sandbox`): safe, where `libc`'s
+# is `unsafe`. Already in the tree (via tempfile, and wayland on Linux), so this
+# adds no crate to Cargo.lock — only the `process` feature.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Builds the allocation-bomb workbooks the spreadsheet tests feed the reader.
+# Already in the tree via calamine (same major, same feature), so this adds no
+# crate to Cargo.lock.
+zip = { version = "8", default-features = false, features = ["deflate"] }
 # Isolated temp dirs for the recents-store unit tests.
 tempfile = "3"

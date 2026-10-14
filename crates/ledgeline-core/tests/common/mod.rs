@@ -130,3 +130,62 @@ pub fn compare_with(
         }
     }
 }
+
+/// A minimal xlsx built in memory: one sheet, `Statement`, whose
+/// `<sheetData>` is `sheet_data`, plus `xl/sharedStrings.xml` when given.
+///
+/// For the allocation-bomb tests, whose whole point is a workbook no exporter
+/// would write — a committed fixture holding one would look like a mistake.
+/// Cells are written by hand: `<c r="A1" t="inlineStr"><is><t>Date</t></is></c>`
+/// or `<c r="B2"><v>-54.2</v></c>`.
+pub fn xlsx(sheet_data: &str, shared_strings: Option<&str>) -> Vec<u8> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    const MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    const RELATIONSHIPS: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let workbook = format!(
+        r#"<workbook xmlns="{MAIN}" xmlns:r="{RELATIONSHIPS}"><sheets><sheet name="Statement" sheetId="1" r:id="rId1"/></sheets></workbook>"#
+    );
+    let package = format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{RELATIONSHIPS}/officeDocument" Target="xl/workbook.xml"/></Relationships>"#
+    );
+    let rels = format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{RELATIONSHIPS}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#
+    );
+    let sheet =
+        format!(r#"<worksheet xmlns="{MAIN}"><sheetData>{sheet_data}</sheetData></worksheet>"#);
+    let parts = [
+        Some(("_rels/.rels", package.as_str())),
+        Some(("xl/workbook.xml", workbook.as_str())),
+        Some(("xl/_rels/workbook.xml.rels", rels.as_str())),
+        Some(("xl/worksheets/sheet1.xml", sheet.as_str())),
+        shared_strings.map(|strings| ("xl/sharedStrings.xml", strings)),
+    ];
+
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, body) in parts.into_iter().flatten() {
+        zip.start_file(name, SimpleFileOptions::default())
+            .expect("a zip entry starts");
+        zip.write_all(body.as_bytes()).expect("a zip entry writes");
+    }
+    zip.finish().expect("the zip finishes").into_inner()
+}
+
+/// The two-cell workbook from the original report: a real two-row table in
+/// `A1:B2`, and one number at `XFD1048576` — the last cell a sheet can have.
+/// Made dense, the bounding box is 16,384 columns by 1,048,576 rows: ~17 billion
+/// cells, ~550 GB.
+pub fn sparse_bomb_xlsx() -> Vec<u8> {
+    xlsx(
+        concat!(
+            r#"<row r="1"><c r="A1" t="inlineStr"><is><t>Date</t></is></c>"#,
+            r#"<c r="B1" t="inlineStr"><is><t>Amount</t></is></c></row>"#,
+            r#"<row r="2"><c r="A2" t="inlineStr"><is><t>2026-01-05</t></is></c>"#,
+            r#"<c r="B2"><v>-54.2</v></c></row>"#,
+            r#"<row r="1048576"><c r="XFD1048576"><v>1</v></c></row>"#,
+        ),
+        None,
+    )
+}

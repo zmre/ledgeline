@@ -145,7 +145,19 @@ pub(crate) enum AppError {
     Import(String),
 }
 
+/// Counts nothing in this process; enforces the memory budget in a workbook
+/// worker. See `ledgeline::run_worker_if_requested`.
+#[global_allocator]
+static ALLOCATOR: ledgeline::WorkerAllocator = ledgeline::WorkerAllocator;
+
 fn main() -> ExitCode {
+    // A re-execution of this binary to parse one workbook in isolation. First,
+    // before `clap` (the argument is hidden from it) and before any window or
+    // event loop, so a worker launched from a macOS `.app` never becomes a
+    // second app.
+    if let Some(code) = ledgeline::run_worker_if_requested() {
+        return code;
+    }
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,

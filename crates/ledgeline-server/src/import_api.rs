@@ -134,6 +134,7 @@ use crate::hledger::{Hledger, HledgerError, Invocation, Output};
 use crate::prefs::{self, Prefs};
 use crate::reports_api::compute;
 use crate::stage::{self, RUN_BARE, RUN_WITH_LATEST, Stage, StageId};
+use crate::workbook_sandbox;
 
 // ===========================================================================
 // Budgets
@@ -2460,11 +2461,11 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
     // `qb_journal::detect` says yes on a damaged export as well as a good one
     // — see its own docs on why — so a truncated file is refused BY NAME here
     // rather than falling through to the CSV rules screen.
-    if ledgeline_core::qb_journal::detect(bytes) {
+    if workbook_sandbox::qb_detect(bytes) {
         return stage_qb_journal(state, name, bytes);
     }
     let format = convert::detect(name, bytes).map_err(convert_error)?;
-    let tabular = convert::convert(format, bytes).map_err(convert_error)?;
+    let tabular = workbook_sandbox::convert(format, bytes).map_err(convert_error)?;
     let csv = convert::to_csv(&tabular);
 
     let (id, staged) = state.stages().put(&csv, format, name).map_err(|error| {
@@ -2546,7 +2547,7 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
 /// aliases on every call, which a value cached here at upload time could not
 /// be.
 fn stage_qb_journal(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage, AppError> {
-    let parsed = ledgeline_core::qb_journal::parse(bytes)
+    let parsed = workbook_sandbox::qb_parse(bytes)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let (id, _staged) = state.qb_stages().put(parsed).ok_or_else(|| {
         AppError::Internal("the operating system's random source is unavailable".to_string())
@@ -4978,7 +4979,7 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppErr
         )));
     }
 
-    if ledgeline_core::qb_journal::detect(&bytes) {
+    if workbook_sandbox::qb_detect(&bytes) {
         return cli_import_qb_journal(state, args, &bytes, &name, &journal_id, &root_id)
             .map(CliRunReport::QbJournal);
     }
@@ -5221,7 +5222,7 @@ fn cli_import_qb_journal(
         )));
     }
 
-    let parsed = ledgeline_core::qb_journal::parse(bytes)
+    let parsed = workbook_sandbox::qb_parse(bytes)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
 
     let git = if args.no_git {
