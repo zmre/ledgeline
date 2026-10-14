@@ -34,8 +34,8 @@
 //!   and `CCSTMTRS` are read wherever they appear. `INVSTMTRS` is refused by
 //!   name rather than mis-parsed.
 
-use super::encoding::{self, Decoded, Guess};
 use super::delimited::MAX_ROWS;
+use super::encoding::{self, Decoded, Guess};
 use super::{ConvertError, ConvertNote, MAX_INPUT_BYTES, SourceFormat, StatementMeta, Tabular};
 use crate::decimal::{Dec, MAX_RENDER_PLACES};
 use encoding_rs::{Encoding, UTF_8, WINDOWS_1252};

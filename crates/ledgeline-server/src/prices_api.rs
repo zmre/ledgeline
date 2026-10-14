@@ -1032,7 +1032,10 @@ mod tests {
     fn round_to_places_is_total_past_the_i128_divisor() {
         // 10^39 has no `i128`; the unchecked `pow` panicked here.
         assert_eq!(round_to_places(Dec::new(i128::MAX, 41), 2), Dec::new(0, 2));
-        assert_eq!(round_to_places(Dec::new(i128::MIN, u32::MAX), 0), Dec::new(0, 0));
+        assert_eq!(
+            round_to_places(Dec::new(i128::MIN, u32::MAX), 0),
+            Dec::new(0, 0)
+        );
     }
 
     #[test]

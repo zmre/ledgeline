@@ -423,8 +423,8 @@ fn an_opening_and_closing_pair_that_does_not_reconcile_is_noted() {
 /// A statement of `count` one-cent debits, opening at 0 and declaring the
 /// closing balance those rows really sum to.
 fn statement_of(count: usize) -> Vec<u8> {
-    let rows = "<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260101<TRNAMT>-0.01<FITID>X</STMTTRN>\n"
-        .repeat(count);
+    let rows =
+        "<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260101<TRNAMT>-0.01<FITID>X</STMTTRN>\n".repeat(count);
     let closing = format!("-{}.{:02}", count / 100, count % 100);
     format!(
         "<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>\n<CURDEF>USD\n<BANKTRANLIST>\n{rows}\

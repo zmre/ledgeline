@@ -1275,9 +1275,7 @@ async fn a_save_body_past_the_route_limit_is_refused() {
             .body(Body::from(body))
             .expect("request builds")
     };
-    let status = |request: Request<Body>| {
-        router_with_state(tree.state.clone()).oneshot(request)
-    };
+    let status = |request: Request<Body>| router_with_state(tree.state.clone()).oneshot(request);
     let refused = status(put(padded)).await.expect("router responds");
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
     assert_eq!(tree.read("plans/projection-plan.journal"), before);

@@ -1614,17 +1614,6 @@ fn create_exclusive(path: &FsPath, bytes: &[u8]) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// The whole of a CREATE, synchronously, on the blocking pool.
-///
-/// Reached from [`save`] when the request carries [`NEW_FILE_REVISION`]. It
-/// shares the renderer, the edit policy and [`RulesDoc::verify`] with the edit
-/// path below — the document is rendered by applying the plan to an **empty**
-/// one — and differs in exactly three ways, each of which is the point:
-///
-/// 1. resolution is [`Discovery::resolve_new`], since no scan can have found a
-///    file that is not there;
-/// 2. every slot must be an insert, because there are no bytes to keep;
-/// 3. the write is exclusive, so creating can never become overwriting.
 /// Refuse to write a document [`read_document`] would refuse to open.
 ///
 /// [`MAX_ITEMS`] bounds how many items a save names, not how many bytes they
@@ -1643,6 +1632,17 @@ fn check_rendered_size(id: &str, new_text: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// The whole of a CREATE, synchronously, on the blocking pool.
+///
+/// Reached from [`save`] when the request carries [`NEW_FILE_REVISION`]. It
+/// shares the renderer, the edit policy and [`RulesDoc::verify`] with the edit
+/// path below — the document is rendered by applying the plan to an **empty**
+/// one — and differs in exactly three ways, each of which is the point:
+///
+/// 1. resolution is [`Discovery::resolve_new`], since no scan can have found a
+///    file that is not there;
+/// 2. every slot must be an insert, because there are no bytes to keep;
+/// 3. the write is exclusive, so creating can never become overwriting.
 fn create_document(
     main: &FsPath,
     id: &str,

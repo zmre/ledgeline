@@ -1033,7 +1033,11 @@ mod tests {
         let sample = wire_sample(&txn);
         assert_eq!(sample.postings[0], "1000 Checking  -12.50");
         // `"0".repeat(places)` unclamped asked for four gigabytes here.
-        assert!(sample.postings[1].len() < 300, "{}", sample.postings[1].len());
+        assert!(
+            sample.postings[1].len() < 300,
+            "{}",
+            sample.postings[1].len()
+        );
     }
 
     /// The scratch journal `qb_journal_endpoints.rs` tests against, and the
