@@ -420,6 +420,37 @@ fn an_opening_and_closing_pair_that_does_not_reconcile_is_noted() {
     assert_eq!(tabular.rows.len(), 3);
 }
 
+/// A statement of `count` one-cent debits, opening at 0 and declaring the
+/// closing balance those rows really sum to.
+fn statement_of(count: usize) -> Vec<u8> {
+    let rows = "<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260101<TRNAMT>-0.01<FITID>X</STMTTRN>\n"
+        .repeat(count);
+    let closing = format!("-{}.{:02}", count / 100, count % 100);
+    format!(
+        "<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>\n<CURDEF>USD\n<BANKTRANLIST>\n{rows}\
+         </BANKTRANLIST>\n<LEDGERBAL><BALAMT>{closing}<DTASOF>20260101</LEDGERBAL>\n\
+         <BALLIST><BAL><NAME>Opening<BALTYPE>DOLLAR<VALUE>0</BAL></BALLIST>\n\
+         </STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>\n"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn the_row_cap_applies_to_ofx_too() {
+    use ledgeline_core::convert::delimited::MAX_ROWS;
+
+    let at_cap = ofx::parse(&statement_of(MAX_ROWS)).expect("parses");
+    assert_eq!(at_cap.rows.len(), MAX_ROWS);
+    assert!(!at_cap.truncated);
+    assert_eq!(at_cap.notes, Vec::new(), "the full statement reconciles");
+
+    let over = ofx::parse(&statement_of(MAX_ROWS + 1)).expect("parses");
+    assert_eq!(over.rows.len(), MAX_ROWS);
+    assert!(over.truncated, "a capped read says so");
+    // A partial sum cannot be checked against the statement's closing balance.
+    assert_eq!(over.notes, Vec::new());
+}
+
 #[test]
 fn a_percentage_in_the_balance_list_is_not_an_opening_balance() {
     // `balances.ofx` carries a BALTYPE=PERCENT interest rate beside the opening

@@ -35,6 +35,7 @@
 //!   name rather than mis-parsed.
 
 use super::encoding::{self, Decoded, Guess};
+use super::delimited::MAX_ROWS;
 use super::{ConvertError, ConvertNote, MAX_INPUT_BYTES, SourceFormat, StatementMeta, Tabular};
 use crate::decimal::{Dec, MAX_RENDER_PLACES};
 use encoding_rs::{Encoding, UTF_8, WINDOWS_1252};
@@ -125,10 +126,14 @@ pub fn parse(bytes: &[u8]) -> Result<Tabular, ConvertError> {
         }
     };
 
-    let rows: Vec<Vec<String>> = collect_aggregates(statement, "STMTTRN")
+    // Capped while collecting, the same `MAX_ROWS + 1` probe the delimited lane
+    // uses: one past the cap is how "exactly at the cap" and "over it" differ.
+    let mut rows: Vec<Vec<String>> = collect_aggregates(statement, "STMTTRN", MAX_ROWS + 1)
         .into_iter()
         .map(row)
         .collect();
+    let truncated = rows.len() > MAX_ROWS;
+    rows.truncate(MAX_ROWS);
 
     // Counted over the whole document rather than from the chosen statement, so
     // a `CCSTMTRS` sitting beside a `STMTRS` counts too — "one of each" is what a
@@ -139,13 +144,19 @@ pub fn parse(bytes: &[u8]) -> Result<Tabular, ConvertError> {
         .map(|label| ConvertNote::EncodingGuessed { label })
         .into_iter()
         .chain((statements > 1).then_some(ConvertNote::StatementChosen { of: statements }))
-        .chain(balance_note(statement, &rows))
+        // A truncated read sums only some of the statement's rows, so checking it
+        // against the closing balance would report a mismatch that is ours.
+        .chain(
+            (!truncated)
+                .then(|| balance_note(statement, &rows))
+                .flatten(),
+        )
         .collect();
 
     Ok(Tabular {
         header: Some(COLUMNS.iter().map(|c| (*c).to_string()).collect()),
         rows,
-        truncated: false,
+        truncated,
         statement: statement_meta(statement),
         notes,
     })
@@ -570,18 +581,31 @@ fn child_leaf<'a>(parent: &'a Aggregate, tag: &str) -> Option<&'a str> {
     })
 }
 
-/// Every aggregate named `tag` below `parent`, in document order, without
-/// descending into one already matched.
-fn collect_aggregates<'a>(parent: &'a Aggregate, tag: &str) -> Vec<&'a Aggregate> {
-    parent
-        .children
-        .iter()
-        .flat_map(|child| match child {
-            Node::Aggregate(node) if node.tag == tag => vec![node],
-            Node::Aggregate(node) => collect_aggregates(node, tag),
-            Node::Leaf { .. } => Vec::new(),
-        })
-        .collect()
+/// The first `limit` aggregates named `tag` below `parent`, in document order,
+/// without descending into one already matched.
+fn collect_aggregates<'a>(parent: &'a Aggregate, tag: &str, limit: usize) -> Vec<&'a Aggregate> {
+    let mut found = Vec::new();
+    gather_aggregates(parent, tag, limit, &mut found);
+    found
+}
+
+/// [`collect_aggregates`]' walk, which stops as soon as `found` holds `limit`.
+fn gather_aggregates<'a>(
+    parent: &'a Aggregate,
+    tag: &str,
+    limit: usize,
+    found: &mut Vec<&'a Aggregate>,
+) {
+    for child in &parent.children {
+        if found.len() >= limit {
+            return;
+        }
+        match child {
+            Node::Aggregate(node) if node.tag == tag => found.push(node),
+            Node::Aggregate(node) => gather_aggregates(node, tag, limit, found),
+            Node::Leaf { .. } => {}
+        }
+    }
 }
 
 /// How many statements the document holds.
@@ -594,7 +618,7 @@ fn collect_aggregates<'a>(parent: &'a Aggregate, tag: &str) -> Vec<&'a Aggregate
 fn statement_count(root: &Aggregate) -> usize {
     ["STMTRS", "CCSTMTRS"]
         .iter()
-        .map(|tag| collect_aggregates(root, tag).len())
+        .map(|tag| collect_aggregates(root, tag, usize::MAX).len())
         .sum()
 }
 
@@ -721,7 +745,7 @@ fn balance_note(statement: &Aggregate, rows: &[Vec<String>]) -> Option<ConvertNo
 /// loosely and its `VALUE` read.
 fn opening_balance(statement: &Aggregate) -> Option<&str> {
     let list = child_aggregate(statement, &["BALLIST"])?;
-    collect_aggregates(list, "BAL")
+    collect_aggregates(list, "BAL", usize::MAX)
         .into_iter()
         .find(|entry| {
             ["NAME", "DESC"]
