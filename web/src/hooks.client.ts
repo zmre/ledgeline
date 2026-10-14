@@ -1,5 +1,5 @@
 import type {ClientInit} from "@sveltejs/kit";
-import {adoptLaunchToken} from "$lib/api/client";
+import {adoptLaunchToken} from "#lib/api/client.js";
 
 // Runs once, before SvelteKit's router reads the URL or writes its first
 // history entry: a headless engine's `#token=…` launch fragment is moved into
