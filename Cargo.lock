@@ -1891,6 +1891,7 @@ dependencies = [
  "reqwest",
  "rfd",
  "rust-embed",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1903,6 +1904,7 @@ dependencies = [
  "url",
  "webkit2gtk",
  "wry",
+ "zip",
 ]
 
 [[package]]
@@ -1922,6 +1924,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]

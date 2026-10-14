@@ -57,6 +57,7 @@ mod security;
 mod sidecar;
 mod spa;
 mod stage;
+mod workbook_sandbox;
 mod yahoo;
 mod yahoo_history;
 mod yahoo_profile;
@@ -98,6 +99,11 @@ pub use import_api::{
     CliImport, CliImportReport, CliImportWritten, CliQbReport, CliQbWritten, CliRunReport,
     run_cli_import,
 };
+// Spreadsheet parsing runs in a resource-limited child process (see
+// `workbook_sandbox`). The binary needs the worker entry point and the
+// allocator that enforces its memory budget; the in-process integration suites
+// need `set_worker_executable` to point the import routes at the real binary.
+pub use workbook_sandbox::{WorkerAllocator, run_worker_if_requested, set_worker_executable};
 // `PriceFeed` (+ `FetchedPrice`/`YahooError`, reachable through its method
 // signature) is re-exported so the integration tests can build a fake and hand
 // it to `AppState::with_price_source` — the only way `/api/prices/update` is

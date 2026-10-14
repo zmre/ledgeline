@@ -846,6 +846,57 @@ fn a_newline_inside_a_cell_survives_the_whole_pipeline() {
 }
 
 // ---------------------------------------------------------------------------
+// Spreadsheets: allocation bombs
+// ---------------------------------------------------------------------------
+
+/// The original report: a valid table in `A1:B2` and one more number at
+/// `XFD1048576`. `worksheet_range` made that a ~550 GB dense grid and the
+/// allocation failure aborted the process. Read sparse and bounded, the sheet
+/// is refused before anything dense exists — and refused *whole*, because a
+/// sheet past the caps is skipped like any other unreadable sheet.
+#[test]
+fn the_two_cell_bomb_is_refused_without_being_materialized() {
+    assert_eq!(
+        spreadsheet::parse(&common::sparse_bomb_xlsx(), SourceFormat::Xlsx),
+        Err(ConvertError::NoTable)
+    );
+}
+
+/// The same far corner as a *styled but empty* cell, which is how a real
+/// workbook usually ends up claiming it: someone formatted a whole column. Empty
+/// cells are dropped as they stream in, so it neither counts nor stretches the
+/// grid, and the table reads as if it were not there.
+#[test]
+fn a_styled_empty_far_corner_does_not_stretch_the_sheet() {
+    let workbook = common::xlsx(
+        concat!(
+            r#"<row r="1"><c r="A1" t="inlineStr"><is><t>Date</t></is></c>"#,
+            r#"<c r="B1" t="inlineStr"><is><t>Amount</t></is></c></row>"#,
+            r#"<row r="2"><c r="A2" t="inlineStr"><is><t>2026-01-05</t></is></c>"#,
+            r#"<c r="B2"><v>-54.2</v></c></row>"#,
+            r#"<row r="1048576"><c r="XFD1048576" s="1"/></row>"#,
+        ),
+        None,
+    );
+    let table = spreadsheet::parse(&workbook, SourceFormat::Xlsx).expect("the table reads");
+    assert_eq!(header(&table), ["Date", "Amount"]);
+    assert_eq!(rows(&table), [["2026-01-05", "-54.2"]]);
+}
+
+/// QuickBooks detection opens every uploaded workbook *before* the spreadsheet
+/// lane sees it, through its own reader — so it has the same exposure and must
+/// have the same caps.
+#[test]
+fn quickbooks_detection_refuses_the_two_cell_bomb_too() {
+    let bomb = common::sparse_bomb_xlsx();
+    assert!(!ledgeline_core::qb_journal::detect(&bomb));
+    assert_eq!(
+        ledgeline_core::qb_journal::parse(&bomb),
+        Err(ledgeline_core::qb_journal::QbJournalError::Unreadable)
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The whole point, through real hledger
 // ---------------------------------------------------------------------------
 

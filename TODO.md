@@ -18,11 +18,6 @@
     `exec`, so a caller can still run an arbitrary binary by repeating `PUT /api/prefs` — measured
     running the candidate **twice** per request, which is worth fixing on its own since one would do.
     (Permissions are checked before the probe, so a group/world-writable binary is never run.)
-- security: **an xlsx with two cells can ask for a ~550 GB allocation.** `convert/spreadsheet.rs`
-  lets calamine materialize a dense grid from sparse bounds (`A1` + `XFD1048576` is enough).
-  `MAX_INPUT_BYTES` bounds the *compressed* zip and `MAX_ROWS` truncates only *after*
-  materialization, so neither helps. An allocator abort is not something `CatchPanicLayer` can
-  catch. Needs a streaming/bounds-checked read rather than a cap.
 - security: **TOCTOU between the symlink refusal and the write.** The refusal uses
   `symlink_metadata` but the write follows symlinks, and the window spans up to three 120-second
   `hledger` runs. Worse on the edit path, where `carry_forward_metadata` copies the victim file's

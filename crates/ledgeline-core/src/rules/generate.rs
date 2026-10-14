@@ -134,7 +134,7 @@ pub struct ColumnGuess {
 }
 
 /// A `date-format` value, and how sure we are of it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DateFormatGuess {
     /// The directive's value, e.g. `%-m/%-d/%Y`. Never carries trailing
     /// whitespace: hledger does not trim the format string, so a trailing space
