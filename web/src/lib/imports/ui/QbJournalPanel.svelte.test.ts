@@ -16,8 +16,8 @@
 // across tests would have the second test silently reading the first test's
 // cached preview instead of the response its own fetch stub describes.
 
-import {settings} from "$lib/stores/settings.svelte";
-import {connectFakeEngine, FAKE_ENGINE} from "$lib/testing/fakeEngine";
+import {settings} from "#lib/stores/settings.svelte.js";
+import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import QbJournalPanel from "./QbJournalPanel.svelte";

@@ -24,30 +24,30 @@
         searchToBudgetParams,
         type BudgetParams,
         type BudgetPreset,
-    } from "$lib/budget/params";
-    import {budgetStore, REFERENCE_PERIODS, type BudgetReportQuery} from "$lib/budget/budgetStore.svelte";
-    import {BUDGET_SORT_KEYS, SORT_DIRS, type BudgetSortKey, type SortDir} from "$lib/budget/sort";
-    import {alreadyBudgeted, goalChange} from "$lib/budget/target";
-    import type {BudgetChange} from "$lib/api/native";
-    import type {BudgetGoal, BudgetPeriod, BudgetRule, GoalDraft, GoalSubmission} from "$lib/budget/types";
-    import BudgetEditor from "$lib/budget/ui/BudgetEditor.svelte";
-    import BudgetGaps from "$lib/budget/ui/BudgetGaps.svelte";
-    import GoalModal from "$lib/budget/ui/GoalModal.svelte";
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import ErrorToast from "$lib/components/ErrorToast.svelte";
-    import DepthSlider from "$lib/insights/DepthSlider.svelte";
-    import {declaredTypes} from "$lib/domain/accountTypes";
-    import {decToInput} from "$lib/api/editMapping";
-    import {exportBudgetXlsx} from "$lib/export/xlsx";
-    import BudgetSummary from "$lib/reports/ui/BudgetSummary.svelte";
-    import ExportButton from "$lib/reports/ui/ExportButton.svelte";
-    import {today} from "$lib/reports/periods";
-    import {reportStyles} from "$lib/reports/ui/styles";
-    import {dataView} from "$lib/stores/loadState";
-    import {journal} from "$lib/stores/journal.svelte";
-    import {loadJournalWhenReady, onServerReady} from "$lib/stores/serverWatch.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
-    import {searchMirror} from "$lib/url/searchSync";
+    } from "#lib/budget/params.js";
+    import {budgetStore, REFERENCE_PERIODS, type BudgetReportQuery} from "#lib/budget/budgetStore.svelte.js";
+    import {BUDGET_SORT_KEYS, SORT_DIRS, type BudgetSortKey, type SortDir} from "#lib/budget/sort.js";
+    import {alreadyBudgeted, goalChange} from "#lib/budget/target.js";
+    import type {BudgetChange} from "#lib/api/native.js";
+    import type {BudgetGoal, BudgetPeriod, BudgetRule, GoalDraft, GoalSubmission} from "#lib/budget/types.js";
+    import BudgetEditor from "#lib/budget/ui/BudgetEditor.svelte";
+    import BudgetGaps from "#lib/budget/ui/BudgetGaps.svelte";
+    import GoalModal from "#lib/budget/ui/GoalModal.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import DepthSlider from "#lib/insights/DepthSlider.svelte";
+    import {declaredTypes} from "#lib/domain/accountTypes.js";
+    import {decToInput} from "#lib/api/editMapping.js";
+    import {exportBudgetXlsx} from "#lib/export/xlsx.js";
+    import BudgetSummary from "#lib/reports/ui/BudgetSummary.svelte";
+    import ExportButton from "#lib/reports/ui/ExportButton.svelte";
+    import {today} from "#lib/reports/periods.js";
+    import {reportStyles} from "#lib/reports/ui/styles.js";
+    import {dataView} from "#lib/stores/loadState.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {loadJournalWhenReady, onServerReady} from "#lib/stores/serverWatch.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
+    import {searchMirror} from "#lib/url/searchSync.js";
 
     let params = $state<BudgetParams>(defaultBudgetParams());
     let restored = $state(false);

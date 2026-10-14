@@ -12,7 +12,7 @@
 // prompted this panel's rewrite, and a fixture of `a → b` would render happily
 // in any layout, including the broken one.
 
-import type {AliasEffect, AliasEntry, DryRunResult} from "$lib/imports/importTypes";
+import type {AliasEffect, AliasEntry, DryRunResult} from "#lib/imports/importTypes.js";
 
 /** The plain alias in the user's journal that does the rewriting below. */
 export const ROTH_ALIAS: AliasEntry = {

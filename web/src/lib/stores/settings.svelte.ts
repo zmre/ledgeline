@@ -1,9 +1,9 @@
 // Settings store (WP-02): Svelte 5 runes state persisted to localStorage
 // under a versioned key. `setServerUrl` verifies GET /version before persisting.
 
-import {HledgerApi, SETTINGS_STORAGE_KEY} from "$lib/api/client";
-import {PIE_DIMENSIONS, type PieDimension} from "$lib/holdings/profileTypes";
-import {BENCHMARKS, isBenchmarkSymbol} from "$lib/holdings/benchmarks";
+import {HledgerApi, SETTINGS_STORAGE_KEY} from "#lib/api/client.js";
+import {PIE_DIMENSIONS, type PieDimension} from "#lib/holdings/profileTypes.js";
+import {BENCHMARKS, isBenchmarkSymbol} from "#lib/holdings/benchmarks.js";
 
 /** Journal table column toggles (defaults per WP-03: Date, Status, Description, Accounts, Amount). */
 export interface ColumnConfig {
@@ -61,7 +61,7 @@ interface PersistedSettings {
     /**
      * What the Holdings pie is divided by: one slice per holding (the
      * default), or one per asset class / sector / … (see
-     * `$lib/holdings/profileTypes`). Per-browser view state, like
+     * `#lib/holdings/profileTypes.js`). Per-browser view state, like
      * `insightsTab`.
      */
     holdingsPieDimension: PieDimension;

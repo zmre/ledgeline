@@ -6,8 +6,8 @@
 
 import {fireEvent, render} from "@testing-library/svelte";
 import {afterEach, describe, expect, it} from "vitest";
-import {dec, type MixedAmount} from "$lib/domain/money";
-import {settings} from "$lib/stores/settings.svelte";
+import {dec, type MixedAmount} from "#lib/domain/money.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
 import CashFlowChart from "./CashFlowChart.svelte";
 import {compressPeriodRows} from "./displayRows";

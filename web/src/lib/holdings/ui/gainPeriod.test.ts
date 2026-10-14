@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {localToday} from "$lib/stores/filters.svelte";
+import {localToday} from "#lib/stores/filters.svelte.js";
 import {GAIN_PERIODS, gainSinceFor, gainWindowSuffix, isGainPeriod, trendWindowFor, trendWindowNote} from "./gainPeriod";
 
 describe("UNIT holdings gainPeriod", () => {

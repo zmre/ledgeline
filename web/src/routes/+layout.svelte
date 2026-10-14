@@ -1,22 +1,22 @@
 <script lang="ts">
     import "../app.css";
-    import favicon from "$lib/assets/favicon.svg";
+    import favicon from "#lib/assets/favicon.svg";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
-    import ProblemsBadge from "$lib/checks/ProblemsBadge.svelte";
-    import ProblemsDrawer from "$lib/checks/ProblemsDrawer.svelte";
-    import ServerSetupModal from "$lib/components/ServerSetupModal.svelte";
-    import {rulesStore} from "$lib/imports/rulesStore.svelte";
-    import ChordIndicator from "$lib/keys/ChordIndicator.svelte";
-    import KeyHelp from "$lib/keys/KeyHelp.svelte";
-    import {keymap, registerKeys} from "$lib/keys/keymap.svelte";
-    import {globalLayer} from "$lib/keys/navBindings";
-    import {journal} from "$lib/stores/journal.svelte";
-    import {problems} from "$lib/stores/problems.svelte";
-    import {refreshEverything} from "$lib/stores/refreshAll";
-    import {onServerReady} from "$lib/stores/serverWatch.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
-    import {connectionLabel, connectionTooltip, type ConnState} from "$lib/ui/connectionLabel";
+    import ProblemsBadge from "#lib/checks/ProblemsBadge.svelte";
+    import ProblemsDrawer from "#lib/checks/ProblemsDrawer.svelte";
+    import ServerSetupModal from "#lib/components/ServerSetupModal.svelte";
+    import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
+    import ChordIndicator from "#lib/keys/ChordIndicator.svelte";
+    import KeyHelp from "#lib/keys/KeyHelp.svelte";
+    import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {globalLayer} from "#lib/keys/navBindings.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {problems} from "#lib/stores/problems.svelte.js";
+    import {refreshEverything} from "#lib/stores/refreshAll.js";
+    import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
+    import {connectionLabel, connectionTooltip, type ConnState} from "#lib/ui/connectionLabel.js";
 
     let {children} = $props();
 
@@ -89,27 +89,27 @@
                             <a href={resolve("/")} class={page.url.pathname === "/" ? "menu-active" : ""}>Journal</a>
                         </li>
                         <li>
-                            <a href={resolve("/holdings")} class={page.url.pathname.startsWith("/holdings") ? "menu-active" : ""}>Holdings</a>
+                            <a href={resolve("holdings")} class={page.url.pathname.startsWith("/holdings") ? "menu-active" : ""}>Holdings</a>
                         </li>
                         <li>
-                            <a href={resolve("/budget")} class={page.url.pathname.startsWith("/budget") ? "menu-active" : ""}>Budget</a>
+                            <a href={resolve("budget")} class={page.url.pathname.startsWith("/budget") ? "menu-active" : ""}>Budget</a>
                         </li>
                         <li>
-                            <a href={resolve("/projections")} class={page.url.pathname.startsWith("/projections") ? "menu-active" : ""}>Projections</a>
+                            <a href={resolve("projections")} class={page.url.pathname.startsWith("/projections") ? "menu-active" : ""}>Projections</a>
                         </li>
                         <li>
-                            <a href={resolve("/reports")} class={page.url.pathname.startsWith("/reports") ? "menu-active" : ""}>Reports</a>
+                            <a href={resolve("reports")} class={page.url.pathname.startsWith("/reports") ? "menu-active" : ""}>Reports</a>
                         </li>
                         {#if rulesStore.available}
                             <li>
-                                <a href={resolve("/imports")} class={page.url.pathname.startsWith("/imports") ? "menu-active" : ""}>Imports</a>
+                                <a href={resolve("imports")} class={page.url.pathname.startsWith("/imports") ? "menu-active" : ""}>Imports</a>
                             </li>
                         {/if}
                     </ul>
                 </nav>
                 <div class="navbar-end gap-1 pr-2">
                     <a
-                        href={resolve("/settings")}
+                        href={resolve("settings")}
                         class="btn btn-circle btn-ghost btn-xs {page.url.pathname.startsWith('/settings') ? 'btn-active' : ''}"
                         title="Settings"
                         aria-label="Settings"

@@ -7,8 +7,8 @@
 
 import {render, screen} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import type {AccountReference} from "$lib/budget/types";
-import {dec} from "$lib/domain/money";
+import type {AccountReference} from "#lib/budget/types.js";
+import {dec} from "#lib/domain/money.js";
 import ReferenceStrip from "./ReferenceStrip.svelte";
 
 const STYLES = new Map([["$", {side: "L" as const, spaced: false, precision: 2, decimalPoint: ".", digitGroups: null}]]);

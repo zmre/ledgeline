@@ -18,10 +18,10 @@
 // the old values drawn over the new ones would be a confident wrong comparison.
 /* eslint-disable svelte/prefer-svelte-reactivity -- `entries` is replaced
    wholesale on every change (an immutable snapshot), so a plain Map is correct. */
-import {LedgelineApi} from "$lib/api/native";
-import {decodeBenchmarks} from "$lib/api/nativeDecode";
-import type {BenchmarkLine} from "$lib/holdings/benchmarks";
-import type {HoldingsScope} from "$lib/holdings/types";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeBenchmarks} from "#lib/api/nativeDecode.js";
+import type {BenchmarkLine} from "#lib/holdings/benchmarks.js";
+import type {HoldingsScope} from "#lib/holdings/types.js";
 import {trendQuery} from "./holdings.svelte";
 
 /** One benchmark's overlay state. */

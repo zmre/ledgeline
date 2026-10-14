@@ -7,14 +7,14 @@
     // uses — `searchToParams` once on mount behind a `restored` latch, a
     // debounced `replaceState` mirror the other way.
     import {onMount} from "svelte";
-    import ErrorToast from "$lib/components/ErrorToast.svelte";
-    import AccountsPanel from "$lib/accounts/ui/AccountsPanel.svelte";
-    import AliasPanel from "$lib/imports/ui/AliasPanel.svelte";
-    import {defaultSettingsParams, paramsToSearch, searchToParams, type SettingsParams} from "$lib/settings/params";
-    import SettingsTabs from "$lib/settings/ui/SettingsTabs.svelte";
-    import {journal} from "$lib/stores/journal.svelte";
-    import {loadJournalWhenReady} from "$lib/stores/serverWatch.svelte";
-    import {searchMirror} from "$lib/url/searchSync";
+    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import AccountsPanel from "#lib/accounts/ui/AccountsPanel.svelte";
+    import AliasPanel from "#lib/imports/ui/AliasPanel.svelte";
+    import {defaultSettingsParams, paramsToSearch, searchToParams, type SettingsParams} from "#lib/settings/params.js";
+    import SettingsTabs from "#lib/settings/ui/SettingsTabs.svelte";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {loadJournalWhenReady} from "#lib/stores/serverWatch.svelte.js";
+    import {searchMirror} from "#lib/url/searchSync.js";
 
     // The account tree's autocomplete data — the same feed
     // `AccountInput`/`AccountTreeSelect` read — is the only thing the

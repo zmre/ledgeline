@@ -4,9 +4,9 @@
 // the whole app (see `routes/effectLatch.test.ts`). A pure-function test cannot make
 // that claim; mounting the component can.
 
-import {accountsStore} from "$lib/accounts/accountsStore.svelte";
-import {settings} from "$lib/stores/settings.svelte";
-import {connectFakeEngine, FAKE_ENGINE} from "$lib/testing/fakeEngine";
+import {accountsStore} from "#lib/accounts/accountsStore.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
+import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {flushSync} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";

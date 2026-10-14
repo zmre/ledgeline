@@ -16,7 +16,7 @@
 
 import {render, screen} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
-import {decodeRulesDraft} from "$lib/api/nativeDecode";
+import {decodeRulesDraft} from "#lib/api/nativeDecode.js";
 import type {RulesDraft} from "../types";
 import {draftForm} from "../createModel";
 import {withFieldNames, withSetting, type FormItem, type RulesForm} from "../model";

@@ -7,7 +7,7 @@
 // about any value the store computes.
 
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {REQUEST_TIMEOUT_MS} from "$lib/api/client";
+import {REQUEST_TIMEOUT_MS} from "#lib/api/client.js";
 import {journal} from "./journal.svelte";
 import {settings} from "./settings.svelte";
 

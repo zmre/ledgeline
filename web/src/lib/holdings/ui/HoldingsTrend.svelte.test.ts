@@ -1,5 +1,5 @@
 // The holdings trend, mounted — a regression net around its port onto
-// `$lib/components/PeriodLineChart`.
+// `#lib/components/PeriodLineChart`.
 //
 // The chart it used to draw itself is now drawn by a shared component, and the
 // only other thing that watches this file is `e2e/holdings.e2e.ts` /
@@ -13,8 +13,8 @@
 
 import {render} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import {dec} from "$lib/domain/money";
-import type {HoldingsPoint, HoldingsSeries} from "$lib/holdings/types";
+import {dec} from "#lib/domain/money.js";
+import type {HoldingsPoint, HoldingsSeries} from "#lib/holdings/types.js";
 import HoldingsTrend from "./HoldingsTrend.svelte";
 
 const MONTHS = ["Aug 2025", "Sep 2025", "Oct 2025", "Nov 2025", "Dec 2025", "Jan 2026", "Feb 2026", "Mar 2026", "Apr 2026", "May 2026", "Jun 2026", "Jul 2026"];

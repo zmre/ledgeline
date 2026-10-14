@@ -1,9 +1,9 @@
 // Filters ⇄ URL sync (WP-04). The store is the source of truth; the URL is a
 // debounced projection written with replaceState (no history entries, no
 // loops — the URL is parsed into the store exactly once, at startup).
-import {browser} from "$app/environment";
-import {defaultFilter, filters, subscribeFilters} from "$lib/stores/filters.svelte";
-import {startSearchSync} from "$lib/url/searchSync";
+import {browser} from "$app/env";
+import {defaultFilter, filters, subscribeFilters} from "#lib/stores/filters.svelte.js";
+import {startSearchSync} from "#lib/url/searchSync.js";
 import {filterToSearch, searchToFilter} from "./urlCodec";
 
 export {filterToSearch, searchToFilter} from "./urlCodec";

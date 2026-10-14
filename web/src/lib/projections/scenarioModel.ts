@@ -20,13 +20,13 @@
 // wrote `line.account = …` directly would leave a positive number under a
 // revenue account, which the engine would then project as negative revenue.
 
-import {encodeDec} from "$lib/api/editMapping";
-import type {RunProjectionBody, WireScenarioIn} from "$lib/api/native";
-import {absDec} from "$lib/format/amounts";
-import {neg, type Dec} from "$lib/domain/money";
-import {isAccountType, type AccountType} from "$lib/domain/accountTypes";
-import type {ISODate} from "$lib/domain/types";
-import {isIsoDate as isIsoDateExact} from "$lib/url/params";
+import {encodeDec} from "#lib/api/editMapping.js";
+import type {RunProjectionBody, WireScenarioIn} from "#lib/api/native.js";
+import {absDec} from "#lib/format/amounts.js";
+import {neg, type Dec} from "#lib/domain/money.js";
+import {isAccountType, type AccountType} from "#lib/domain/accountTypes.js";
+import type {ISODate} from "#lib/domain/types.js";
+import {isIsoDate as isIsoDateExact} from "#lib/url/params.js";
 import type {
     AddSection,
     Growth,

@@ -12,7 +12,7 @@
 
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
-import {dryRun, RENAMES_AND_PARITY, RENAMES_ONLY, ROTH_ALIAS} from "$lib/testing/aliasFixtures";
+import {dryRun, RENAMES_AND_PARITY, RENAMES_ONLY, ROTH_ALIAS} from "#lib/testing/aliasFixtures.js";
 import type {DryRunResult} from "../importTypes";
 import DryRunPanel from "./DryRunPanel.svelte";
 

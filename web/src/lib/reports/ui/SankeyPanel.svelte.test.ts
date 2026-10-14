@@ -19,11 +19,11 @@
 
 import {render, screen} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
-import {decodeFlowReport} from "$lib/api/nativeDecode";
-import type {AmountStyle} from "$lib/domain/types";
-import {OTHER_LABEL} from "$lib/format/palette";
-import type {FlowReport} from "$lib/reports/types";
-import {EMPTY_FLOW_REPORT, FLOW_REPORT, UNPRICEABLE_FLOW_REPORT} from "$lib/testing/flowsFixture";
+import {decodeFlowReport} from "#lib/api/nativeDecode.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import {OTHER_LABEL} from "#lib/format/palette.js";
+import type {FlowReport} from "#lib/reports/types.js";
+import {EMPTY_FLOW_REPORT, FLOW_REPORT, UNPRICEABLE_FLOW_REPORT} from "#lib/testing/flowsFixture.js";
 import SankeyPanel from "./SankeyPanel.svelte";
 import type {FlowsPanel} from "./sankeyModel";
 

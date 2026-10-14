@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
-import {TAB_ORDER} from "$lib/holdings/params";
-import type {HoldingsScope} from "$lib/holdings/types";
+import {TAB_ORDER} from "#lib/holdings/params.js";
+import type {HoldingsScope} from "#lib/holdings/types.js";
 import {scopeToSearch, searchToScope, searchToState, stateToSearch} from "./urlCodec";
 
 const TODAY = "2026-07-08";

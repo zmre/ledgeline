@@ -16,19 +16,19 @@
         `height: calc(100dvh - 7rem)` with only the transaction table scrolling,
         so every pixel this box takes comes straight out of the table.
 
-     Balance maths lives in $lib/reports/cashBalances (pure, ported to Rust
+     Balance maths lives in #lib/reports/cashBalances (pure, ported to Rust
      later); this file is display only. -->
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
-    import type {AccountDecl} from "$lib/domain/accountTypes";
-    import {formatAmount, toNumber, type Dec} from "$lib/domain/money";
-    import type {Transaction} from "$lib/domain/types";
-    import {chartColors} from "$lib/format/chartColors.svelte";
-    import {OTHER_LABEL} from "$lib/format/palette";
-    import {signClass} from "$lib/format/sign";
-    import {accountBalances, balanceCommodities, guessedLongTerm, summarize, visibleRows, type BalanceRow} from "$lib/reports/cashBalances";
-    import {today} from "$lib/reports/periods";
-    import {settings} from "$lib/stores/settings.svelte";
+    import type {AccountDecl} from "#lib/domain/accountTypes.js";
+    import {formatAmount, toNumber, type Dec} from "#lib/domain/money.js";
+    import type {Transaction} from "#lib/domain/types.js";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
+    import {OTHER_LABEL} from "#lib/format/palette.js";
+    import {signClass} from "#lib/format/sign.js";
+    import {accountBalances, balanceCommodities, guessedLongTerm, summarize, visibleRows, type BalanceRow} from "#lib/reports/cashBalances.js";
+    import {today} from "#lib/reports/periods.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
     import AccountBalanceRow from "./AccountBalanceRow.svelte";
     import {styleFor} from "./series";
 

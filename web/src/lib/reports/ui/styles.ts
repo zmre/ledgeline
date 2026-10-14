@@ -9,8 +9,8 @@
 // carry inflated asprecision values on the wire (e.g. 4 for a plain $ amount)
 // that hledger's own display does not use.
 
-import type {AmountStyle, Transaction} from "$lib/domain/types";
-import {commodityStyles} from "$lib/journal/rowModel";
+import type {AmountStyle, Transaction} from "#lib/domain/types.js";
+import {commodityStyles} from "#lib/journal/rowModel.js";
 
 /** First-seen style per commodity, precision raised to the max actual decimal places seen (never lowered). */
 export function reportStyles(txns: readonly Transaction[]): Map<string, AmountStyle> {

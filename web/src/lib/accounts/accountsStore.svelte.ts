@@ -8,11 +8,11 @@
 // has parsed and every other file's ranking (which is "worth listing") can
 // move too.
 
-import {classify, type EditFailure} from "$lib/api/editFailure";
-import {LedgelineApi, NativeApiUnavailableError, type SaveAccountsBody} from "$lib/api/native";
-import {decodeAccountFileResponse, decodeAccountListing, decodeCreatedAccountsFile} from "$lib/api/nativeDecode";
-import {createResource} from "$lib/stores/resource.svelte";
-import {settings} from "$lib/stores/settings.svelte";
+import {classify, type EditFailure} from "#lib/api/editFailure.js";
+import {LedgelineApi, NativeApiUnavailableError, type SaveAccountsBody} from "#lib/api/native.js";
+import {decodeAccountFileResponse, decodeAccountListing, decodeCreatedAccountsFile} from "#lib/api/nativeDecode.js";
+import {createResource} from "#lib/stores/resource.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 import type {AccountFile, AccountListing, CreatedAccountsFile} from "./types";
 
 export const accountListing = createResource<string, AccountListing>(async (serverUrl) =>

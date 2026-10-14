@@ -16,11 +16,11 @@
 // the tab travels with the scope through `stateToSearch`, while staying OUT of
 // `HoldingsScope` itself — scope is the report resource's refetch key, and a tab
 // in it would refetch the stock report on every tab click.
-import type {ISODate} from "$lib/domain/types";
-import {isTab, TAB_ORDER, type HoldingsTab} from "$lib/holdings/params";
-import type {GainPeriod, HoldingsScope} from "$lib/holdings/types";
+import type {ISODate} from "#lib/domain/types.js";
+import {isTab, TAB_ORDER, type HoldingsTab} from "#lib/holdings/params.js";
+import type {GainPeriod, HoldingsScope} from "#lib/holdings/types.js";
 import {isGainPeriod} from "./gainPeriod";
-import {safeDecode} from "$lib/url/safeDecode";
+import {safeDecode} from "#lib/url/safeDecode.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 

@@ -18,8 +18,8 @@
 // that promise is kept — and it is kept by an explicit early return, not by an
 // accident of the walk.
 
-import {maAdd, type MixedAmount} from "$lib/domain/money";
-import type {BalanceSheetReport, BsGroup, BsSection, BsSectionKind, BsSubsection, BsTerm} from "$lib/reports/types";
+import {maAdd, type MixedAmount} from "#lib/domain/money.js";
+import type {BalanceSheetReport, BsGroup, BsSection, BsSectionKind, BsSubsection, BsTerm} from "#lib/reports/types.js";
 import {compressSectionRows} from "./displayRows";
 
 // `amountCell` lives in its own module now that the income statement renders

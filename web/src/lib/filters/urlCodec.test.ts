@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import type {JournalFilter} from "$lib/stores/filters.svelte";
+import type {JournalFilter} from "#lib/stores/filters.svelte.js";
 import {filterToSearch, searchToFilter} from "./urlCodec";
 
 const dflt: JournalFilter = {from: "2026-07-01", to: "2026-07-31", accounts: new Set<string>(), query: ""};

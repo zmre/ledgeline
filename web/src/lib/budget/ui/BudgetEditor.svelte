@@ -14,12 +14,12 @@
      rule the user has, and hiding it would be a worse lie than showing it
      read-only. -->
 <script lang="ts">
-    import {periodOf, sortBudgetLines, type BudgetSortKey, type SortDir} from "$lib/budget/sort";
-    import {joinableRule} from "$lib/budget/target";
-    import {BUDGET_PERIODS, type BudgetFile, type BudgetGoal, type BudgetListing, type BudgetRule} from "$lib/budget/types";
-    import type {MixedAmount} from "$lib/domain/money";
-    import type {AmountStyle} from "$lib/domain/types";
-    import {formatTotals} from "$lib/journal/rowModel";
+    import {periodOf, sortBudgetLines, type BudgetSortKey, type SortDir} from "#lib/budget/sort.js";
+    import {joinableRule} from "#lib/budget/target.js";
+    import {BUDGET_PERIODS, type BudgetFile, type BudgetGoal, type BudgetListing, type BudgetRule} from "#lib/budget/types.js";
+    import type {MixedAmount} from "#lib/domain/money.js";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {formatTotals} from "#lib/journal/rowModel.js";
 
     let {
         listing,

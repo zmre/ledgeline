@@ -13,7 +13,7 @@
     // The sort itself is a PRESSED action with a one-line outcome, so it reports
     // inline rather than replacing this panel with a spinner. The commit it sits
     // inside is the async surface.
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
     import {gitCommitFailure, reorderOffer, writtenLines} from "../importModel";
     import type {CommitResult} from "../importTypes";
 
@@ -27,7 +27,7 @@
         onRetry,
         onSort,
     }: {
-        view: import("$lib/stores/loadState").DataView;
+        view: import("#lib/stores/loadState.js").DataView;
         result: CommitResult | null;
         error: Error | null;
         sorting: boolean;

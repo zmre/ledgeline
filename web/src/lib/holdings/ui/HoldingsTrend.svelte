@@ -3,7 +3,7 @@
      ends, all time at whatever interval the engine picked), from the native
      /api/holdings[/other]/series endpoints (decoded into HoldingsSeries).
 
-     This is a thin adapter over `$lib/components/PeriodLineChart`, which is
+     This is a thin adapter over `#lib/components/PeriodLineChart`, which is
      where the chart conventions live and are documented — x is the bucket
      index, explicit integer ticks, points only at ≤31 buckets, one series so no
      legend box, colours from the shared palette. Everything below the props is
@@ -22,10 +22,10 @@
      real portfolios. -->
 <script lang="ts">
     import type {Snippet} from "svelte";
-    import PeriodLineChart, {type PeriodSeries} from "$lib/components/PeriodLineChart.svelte";
-    import {toNumber} from "$lib/domain/money";
-    import {chartColors} from "$lib/format/chartColors.svelte";
-    import type {GainPeriod, HoldingsSeries} from "$lib/holdings/types";
+    import PeriodLineChart, {type PeriodSeries} from "#lib/components/PeriodLineChart.svelte";
+    import {toNumber} from "#lib/domain/money.js";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
+    import type {GainPeriod, HoldingsSeries} from "#lib/holdings/types.js";
     import {trendWindowNote} from "./gainPeriod";
     import {trendLabels} from "./trendView";
 

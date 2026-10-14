@@ -16,10 +16,10 @@
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {resetChipMeasurer} from "$lib/components/textWidth";
-import {dec} from "$lib/domain/money";
-import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "$lib/domain/types";
-import {settings} from "$lib/stores/settings.svelte";
+import {resetChipMeasurer} from "#lib/components/textWidth.js";
+import {dec} from "#lib/domain/money.js";
+import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "#lib/domain/types.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 import {accountColumn} from "./accountColumn.svelte";
 import TransactionTable from "./TransactionTable.svelte";
 

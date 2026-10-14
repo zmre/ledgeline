@@ -12,11 +12,11 @@
      are already oriented — an income account's actuals arrive positive, exactly
      as its goal is typed — so nothing here negates anything. -->
 <script lang="ts">
-    import type {AccountReference} from "$lib/budget/types";
-    import type {MixedAmount} from "$lib/domain/money";
-    import type {AmountStyle} from "$lib/domain/types";
-    import {formatTotals} from "$lib/journal/rowModel";
-    import type {DataView} from "$lib/stores/loadState";
+    import type {AccountReference} from "#lib/budget/types.js";
+    import type {MixedAmount} from "#lib/domain/money.js";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {formatTotals} from "#lib/journal/rowModel.js";
+    import type {DataView} from "#lib/stores/loadState.js";
 
     let {
         view,

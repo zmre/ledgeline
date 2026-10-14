@@ -11,7 +11,7 @@
     // the latter was not possible at all — see `importModel.ts`. It is now, in
     // the `components` vitest project, and `NewTransactionsPanel.staged.svelte.test.ts`
     // uses it to check that the values this panel is HANDED are the right ones.)
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
     import {actionBlocker, actionLabel, importAction, shows, validateCsvPath, type ImportSection} from "../importModel";
     import type {JournalTarget, StagedFile} from "../importTypes";
     import BalanceField from "./BalanceField.svelte";
@@ -60,7 +60,7 @@
         onSubmit,
     }: {
         sections: readonly ImportSection[];
-        view: import("$lib/stores/loadState").DataView;
+        view: import("#lib/stores/loadState.js").DataView;
         staged: StagedFile | null;
         error: Error | null;
         journals: readonly JournalTarget[];

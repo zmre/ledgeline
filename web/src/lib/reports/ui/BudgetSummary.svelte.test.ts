@@ -18,10 +18,10 @@
 
 import {render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import type {AccountType} from "$lib/domain/accountTypes";
-import {dec} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import type {BudgetReport} from "$lib/reports/types";
+import type {AccountType} from "#lib/domain/accountTypes.js";
+import {dec} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import type {BudgetReport} from "#lib/reports/types.js";
 import BudgetSummary from "./BudgetSummary.svelte";
 
 const STYLE: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};

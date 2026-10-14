@@ -16,17 +16,17 @@
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {decodeOtherHoldingsReport} from "$lib/api/nativeDecode";
-import {formatDec, type Dec} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import {keymap} from "$lib/keys/keymap.svelte";
+import {decodeOtherHoldingsReport} from "#lib/api/nativeDecode.js";
+import {formatDec, type Dec} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import {keymap} from "#lib/keys/keymap.svelte.js";
 import {formatUnitsWith} from "./view";
 import OtherHoldingsTable from "./OtherHoldingsTable.svelte";
 
 // The drill-down navigates, and a router is neither available nor the subject
 // here — what matters is that Enter asks for THAT account.
 const openJournal = vi.hoisted(() => vi.fn(() => Promise.resolve()));
-vi.mock("$lib/journal/openJournal", () => ({openJournal}));
+vi.mock("#lib/journal/openJournal.js", () => ({openJournal}));
 
 const MONEY: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
 const UNITS: AmountStyle = {side: "R", spaced: true, precision: 0, decimalPoint: ".", digitGroups: null};

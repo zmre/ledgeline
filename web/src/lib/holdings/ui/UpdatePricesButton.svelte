@@ -9,9 +9,9 @@
      status afterward; the Holdings report itself is reloaded by `+page.svelte`
      so the newly-priced positions' market values update on screen. -->
 <script lang="ts">
-    import type {Dec} from "$lib/domain/money";
-    import type {PriceResult} from "$lib/holdings/pricesTypes";
-    import {pricesStore} from "$lib/stores/prices.svelte";
+    import type {Dec} from "#lib/domain/money.js";
+    import type {PriceResult} from "#lib/holdings/pricesTypes.js";
+    import {pricesStore} from "#lib/stores/prices.svelte.js";
 
     let {format}: {format: (qty: Dec) => string} = $props();
 

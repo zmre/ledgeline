@@ -1,7 +1,7 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {defaultReportParams} from "$lib/reports/ui/params";
-import {GROUPED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
-import {GROUPED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
+import {defaultReportParams} from "#lib/reports/ui/params.js";
+import {GROUPED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
+import {GROUPED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
 import {buildReportQuery, reports, sameReportQuery, type ReportQuery} from "./reports.svelte";
 
 /** A minimal engine response for a period (cf/nw) report. */

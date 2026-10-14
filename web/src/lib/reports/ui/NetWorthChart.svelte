@@ -12,8 +12,8 @@
      its sign puts it: an overdrawn asset is a short asset-coloured segment below
      zero, a liability carrying a refund one above it. -->
 <script lang="ts">
-    import type {AmountStyle} from "$lib/domain/types";
-    import {settings} from "$lib/stores/settings.svelte";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
     import type {PeriodReport} from "../types";
     import ChartPanel from "./ChartPanel.svelte";
     import PeriodStackView from "./PeriodStackView.svelte";

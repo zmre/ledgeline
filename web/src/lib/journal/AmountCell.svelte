@@ -1,7 +1,7 @@
 <script lang="ts">
     // Right-aligned amounts (WP-03): one line per commodity, negatives in text-error.
-    import {formatAmount} from "$lib/domain/money";
-    import type {Amount} from "$lib/domain/types";
+    import {formatAmount} from "#lib/domain/money.js";
+    import type {Amount} from "#lib/domain/types.js";
 
     let {amounts}: {amounts: Amount[]} = $props();
 </script>

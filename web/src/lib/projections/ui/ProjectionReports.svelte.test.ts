@@ -21,10 +21,10 @@
 
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import {dec, type MixedAmount} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import {DEFAULT_AMOUNT_STYLE} from "$lib/format/amounts";
-import type {PeriodReport} from "$lib/reports/types";
+import {dec, type MixedAmount} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import {DEFAULT_AMOUNT_STYLE} from "#lib/format/amounts.js";
+import type {PeriodReport} from "#lib/reports/types.js";
 import type {Projection} from "../types";
 import ProjectionReports from "./ProjectionReports.svelte";
 

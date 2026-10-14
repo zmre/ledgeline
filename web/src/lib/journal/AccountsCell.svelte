@@ -8,12 +8,12 @@
     // is a button; clicking it swaps the cell for an autocomplete input that
     // recategorizes EVERY posting on that account (usually one) via a surgical
     // PATCH {postings:[{index, account}]}. Enter/blur commits, Escape cancels.
-    import {accountPatch} from "$lib/api/editMapping";
-    import AccountLabel from "$lib/components/AccountLabel.svelte";
-    import {chipMeasurer} from "$lib/components/textWidth";
-    import type {Transaction} from "$lib/domain/types";
-    import {editing} from "$lib/stores/editing.svelte";
-    import {journal} from "$lib/stores/journal.svelte";
+    import {accountPatch} from "#lib/api/editMapping.js";
+    import AccountLabel from "#lib/components/AccountLabel.svelte";
+    import {chipMeasurer} from "#lib/components/textWidth.js";
+    import type {Transaction} from "#lib/domain/types.js";
+    import {editing} from "#lib/stores/editing.svelte.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
     import {accountColumn} from "./accountColumn.svelte";
     import {flowChipRooms, splitChipRooms} from "./chipGeometry";
     import AccountInput from "./edit/AccountInput.svelte";

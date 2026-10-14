@@ -7,8 +7,8 @@
      how many are ticked, so a closed dropdown still says the chart has more on
      it than the portfolio; the legend under the chart names them. -->
 <script lang="ts">
-    import {BENCHMARKS} from "$lib/holdings/benchmarks";
-    import type {BenchmarkState} from "$lib/stores/benchmarks.svelte";
+    import {BENCHMARKS} from "#lib/holdings/benchmarks.js";
+    import type {BenchmarkState} from "#lib/stores/benchmarks.svelte.js";
 
     let {
         picked,

@@ -10,7 +10,7 @@
 import {goto} from "$app/navigation";
 import {resolve} from "$app/paths";
 import {page} from "$app/state";
-import {rulesStore} from "$lib/imports/rulesStore.svelte";
+import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
 import {keymap} from "./keymap.svelte";
 import {PRIORITY, type Layer} from "./types";
 

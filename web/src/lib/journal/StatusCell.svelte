@@ -7,9 +7,9 @@
     // StatusBadge otherwise) and reporting non-conflict failures as a toast.
     // A cycle button has no text draft, so there is no Esc/blur state to manage —
     // Enter/Space activate it natively; the store's 409/refetch handling is unchanged.
-    import {statusPatch} from "$lib/api/editMapping";
-    import type {Transaction} from "$lib/domain/types";
-    import {editing} from "$lib/stores/editing.svelte";
+    import {statusPatch} from "#lib/api/editMapping.js";
+    import type {Transaction} from "#lib/domain/types.js";
+    import {editing} from "#lib/stores/editing.svelte.js";
     import StatusBadge from "./StatusBadge.svelte";
     // Shared with the table's `s` keybinding, so the click and the keystroke
     // cannot drift into cycling in different orders.

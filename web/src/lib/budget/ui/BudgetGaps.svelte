@@ -19,14 +19,14 @@
      that says nothing is a row you have to open to learn whether it was worth
      opening. Each row links into the journal for the same span a bar does. -->
 <script lang="ts">
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {maAdd, type MixedAmount} from "$lib/domain/money";
-    import type {AmountStyle, ISODate} from "$lib/domain/types";
-    import {openJournal} from "$lib/journal/openJournal";
-    import {formatTotals} from "$lib/journal/rowModel";
-    import {magnitudeAmount} from "$lib/reports/budgetSummary";
-    import type {BudgetGaps, GapRow} from "$lib/reports/types";
-    import type {DataView} from "$lib/stores/loadState";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import {maAdd, type MixedAmount} from "#lib/domain/money.js";
+    import type {AmountStyle, ISODate} from "#lib/domain/types.js";
+    import {openJournal} from "#lib/journal/openJournal.js";
+    import {formatTotals} from "#lib/journal/rowModel.js";
+    import {magnitudeAmount} from "#lib/reports/budgetSummary.js";
+    import type {BudgetGaps, GapRow} from "#lib/reports/types.js";
+    import type {DataView} from "#lib/stores/loadState.js";
 
     let {
         gaps,

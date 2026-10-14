@@ -56,8 +56,8 @@ rust_audit() {
 }
 
 spa_audit() {
-  # Both are in code paths Vite's browser build drops. None reaches a user. Ledgeline ships ONE artifact out of
-  # web/: the static bundle in web/build, embedded into the Rust binary by
+  # The one ignored advisory does not reach a user. Ledgeline ships ONE
+  # artifact out of web/: the static bundle in web/build, embedded into the Rust binary by
   # rust-embed and served by our own axum server. There is no Node runtime
   # and no SvelteKit server — adapter-static emits only _app/, index.html,
   # robots.txt and an icon.
@@ -71,15 +71,11 @@ spa_audit() {
   #     constants ("DNS:") and the v4 bit-twiddling are both absent from
   #     the bundle, so the vulnerable entry points are not in it.
   #
-  #   cookie  GHSA-pxg6-pf52-xh8x (low)
-  #     SERVER-side: kit's cookie handling. There is no server here —
-  #     adapter-static emits no server bundle, and "sameSite", "Max-Age"
-  #     and "httpOnly" appear in ZERO bundle files.
-  #
-  #   WHAT WOULD MAKE THESE ACTIONABLE: an exceljs release off uuid 8, or a
-  #   kit release off cookie 0.6. Re-check whenever this list is touched, and
-  #   drop any --ignore whose package has since been bumped past the advisory
-  #   (the postcss and nanoid ignores went that way on 2026-10-14).
+  #   WHAT WOULD MAKE THIS ACTIONABLE: an exceljs release off uuid 8.
+  #   Re-check whenever this list is touched, and drop any --ignore whose
+  #   package has since been bumped past the advisory (the postcss and nanoid
+  #   ignores went that way on 2026-10-14, and cookie GHSA-pxg6-pf52-xh8x with
+  #   the SvelteKit 3 upgrade, which moved kit onto cookie 2).
   #
   #   NEW ADVISORY WITH A PATCH RELEASE: fix the lockfile, don't add an
   #   --ignore. `bun update` re-resolves the whole tree (and rewrites
@@ -88,8 +84,7 @@ spa_audit() {
   #   registry.npmjs.org/<pkg>/<ver> — then `bun install --frozen-lockfile`
   #   to prove bun accepts it, then `just audit`.
   nix develop -L .#spaAudit -c bash -c 'cd web && bun audit \
-    --ignore=GHSA-w5hq-g745-h8pq \
-    --ignore=GHSA-pxg6-pf52-xh8x'
+    --ignore=GHSA-w5hq-g745-h8pq'
 }
 
 case "${1:-all}" in

@@ -13,14 +13,14 @@
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {dec, formatDec, type Dec} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import type {Holding, HoldingsReport} from "$lib/holdings/types";
-import {keymap} from "$lib/keys/keymap.svelte";
+import {dec, formatDec, type Dec} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
+import {keymap} from "#lib/keys/keymap.svelte.js";
 import HoldingsTable from "./HoldingsTable.svelte";
 
 // Enter drills into the journal; a router is neither available nor the subject.
-vi.mock("$lib/journal/openJournal", () => ({openJournal: vi.fn(() => Promise.resolve())}));
+vi.mock("#lib/journal/openJournal.js", () => ({openJournal: vi.fn(() => Promise.resolve())}));
 
 const MONEY: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
 const format = (v: Dec): string => `$${formatDec(v, MONEY)}`;

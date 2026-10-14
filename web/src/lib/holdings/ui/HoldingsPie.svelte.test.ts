@@ -9,10 +9,10 @@
 
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {dec, type Dec} from "$lib/domain/money";
-import type {Holding} from "$lib/holdings/types";
-import {settings} from "$lib/stores/settings.svelte";
-import {connectFakeEngine, FAKE_ENGINE} from "$lib/testing/fakeEngine";
+import {dec, type Dec} from "#lib/domain/money.js";
+import type {Holding} from "#lib/holdings/types.js";
+import {settings} from "#lib/stores/settings.svelte.js";
+import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import HoldingsPie from "./HoldingsPie.svelte";
 
 const format = (qty: Dec): string => `$${(Number(qty.m) / 10 ** qty.p).toFixed(2)}`;

@@ -11,8 +11,8 @@
     // again" is exactly `registerKeys`'s documented contract — so saying so with
     // `untrack` is more honest than suppressing the warning would be.
     import {untrack} from "svelte";
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import type {Layer} from "$lib/keys/types";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import type {Layer} from "#lib/keys/types.js";
 
     let {layerOf}: {layerOf: () => Layer} = $props();
 

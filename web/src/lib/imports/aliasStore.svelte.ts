@@ -15,11 +15,11 @@
 // so the screen's revisions and scope verdicts describe the file that now
 // exists.
 
-import {classify, type EditFailure} from "$lib/api/editFailure";
-import {LedgelineApi, NativeApiUnavailableError, type SaveAliasesBody} from "$lib/api/native";
-import {decodeAliasFileResponse, decodeAliasListing} from "$lib/api/nativeDecode";
-import {createResource} from "$lib/stores/resource.svelte";
-import {settings} from "$lib/stores/settings.svelte";
+import {classify, type EditFailure} from "#lib/api/editFailure.js";
+import {LedgelineApi, NativeApiUnavailableError, type SaveAliasesBody} from "#lib/api/native.js";
+import {decodeAliasFileResponse, decodeAliasListing} from "#lib/api/nativeDecode.js";
+import {createResource} from "#lib/stores/resource.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 import type {AliasFile, AliasListing} from "./importTypes";
 
 export const aliasListing = createResource<string, AliasListing>(async (serverUrl) => decodeAliasListing(await new LedgelineApi(serverUrl).listAliases()));

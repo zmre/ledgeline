@@ -29,9 +29,9 @@
 // handed — and the panel renders what it is handed perfectly well. What broke
 // was what it did with it.
 
-import {aliasStore} from "$lib/imports/aliasStore.svelte";
-import {settings} from "$lib/stores/settings.svelte";
-import {connectFakeEngine, FAKE_ENGINE} from "$lib/testing/fakeEngine";
+import {aliasStore} from "#lib/imports/aliasStore.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
+import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {flushSync} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";

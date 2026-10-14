@@ -1,7 +1,7 @@
 <!-- Report tab strip (WP-07): daisyUI tabs, one per report. -->
 <script lang="ts">
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import {PRIORITY} from "$lib/keys/types";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
     import {TAB_LABELS, TAB_ORDER, type ReportTab} from "./params";
 
     let {tab = $bindable()}: {tab: ReportTab} = $props();

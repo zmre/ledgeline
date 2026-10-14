@@ -1,7 +1,7 @@
 // The budget EDITOR's domain types — the `~` periodic rules the budget report
 // measures against, as the Budget tab lists and rewrites them.
 //
-// Distinct from `$lib/reports/types.ts`'s `BudgetReport`, which is the computed
+// Distinct from `#lib/reports/types.ts`'s `BudgetReport`, which is the computed
 // actual-vs-goal report. That one answers "how am I doing"; these answer "what
 // did I say I would do, and where is it written down". The tab shows both.
 //
@@ -17,8 +17,8 @@
 // — and nothing in a component — ever negates a number itself. See the "Signs"
 // section of `budget_api.rs` for why that rule has exactly one home.
 
-import type {Dec, MixedAmount} from "$lib/domain/money";
-import type {ISODate} from "$lib/domain/types";
+import type {Dec, MixedAmount} from "#lib/domain/money.js";
+import type {ISODate} from "#lib/domain/types.js";
 
 /** The five recurrence intervals hledger's `~` rules (and Ledgeline) model. */
 export type BudgetPeriod = "daily" | "weekly" | "monthly" | "quarterly" | "yearly";

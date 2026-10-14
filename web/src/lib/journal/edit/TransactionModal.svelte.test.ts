@@ -7,8 +7,8 @@
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {connectFakeEngine} from "$lib/testing/fakeEngine";
-import {journal} from "$lib/stores/journal.svelte";
+import {connectFakeEngine} from "#lib/testing/fakeEngine.js";
+import {journal} from "#lib/stores/journal.svelte.js";
 import TransactionModal from "./TransactionModal.svelte";
 import {txnModal} from "./modalState.svelte";
 

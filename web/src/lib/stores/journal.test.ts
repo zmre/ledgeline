@@ -1,6 +1,6 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import type {Dec} from "$lib/domain/money";
-import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "$lib/domain/types";
+import type {Dec} from "#lib/domain/money.js";
+import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "#lib/domain/types.js";
 import {contentFingerprint, journal} from "./journal.svelte";
 import {settings} from "./settings.svelte";
 

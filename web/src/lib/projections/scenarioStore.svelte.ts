@@ -29,10 +29,10 @@
 // [`markSaved`] clears `dirty` without touching the scenario (a save). Nothing
 // else writes `dirty`, so "is there unsaved work" has exactly one answer.
 
-import {LedgelineApi} from "$lib/api/native";
-import {decodeProjection, decodeScenario} from "$lib/api/nativeDecode";
-import type {ReportInterval} from "$lib/reports/ui/params";
-import {createResource} from "$lib/stores/resource.svelte";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeProjection, decodeScenario} from "#lib/api/nativeDecode.js";
+import type {ReportInterval} from "#lib/reports/ui/params.js";
+import {createResource} from "#lib/stores/resource.svelte.js";
 import {cloneScenario, emptyScenario, runBody} from "./scenarioModel";
 import type {Projection, Scenario} from "./types";
 

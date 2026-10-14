@@ -7,7 +7,7 @@
      the panel loses nothing. -->
 <script lang="ts">
     import type {Snippet} from "svelte";
-    import ChartHeading from "$lib/components/ChartHeading.svelte";
+    import ChartHeading from "#lib/components/ChartHeading.svelte";
 
     let {
         heading,

@@ -15,21 +15,21 @@
     // The panel owns three pieces of state and nothing else: which file is
     // selected, the loaded document (`baseDoc`), and the live edit (`form`).
     // Everything structural — what is dirty, what to send, where a new setting
-    // goes, what a reorder means — is a pure function in `$lib/imports/model`,
+    // goes, what a reorder means — is a pure function in `#lib/imports/model.js`,
     // because components here are not unit-tested and that is exactly why the
     // logic does not live in them.
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {fieldNames, isDirty, settingText, toForm, toSaveRequest, validateForm, type FormItem, type RulesForm} from "$lib/imports/model";
-    import {openRules, rulesIndex, rulesStore} from "$lib/imports/rulesStore.svelte";
-    import type {RulesDocument, RulesPreview} from "$lib/imports/types";
-    import AccountsPanel from "$lib/imports/ui/AccountsPanel.svelte";
-    import PreferencesPanel from "$lib/imports/ui/PreferencesPanel.svelte";
-    import RowMappingPanel from "$lib/imports/ui/RowMappingPanel.svelte";
-    import RulesFileList from "$lib/imports/ui/RulesFileList.svelte";
-    import RulesList from "$lib/imports/ui/RulesList.svelte";
-    import {journal} from "$lib/stores/journal.svelte";
-    import {holdUnsavedEdits} from "$lib/stores/refreshAll";
-    import {settings} from "$lib/stores/settings.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import {fieldNames, isDirty, settingText, toForm, toSaveRequest, validateForm, type FormItem, type RulesForm} from "#lib/imports/model.js";
+    import {openRules, rulesIndex, rulesStore} from "#lib/imports/rulesStore.svelte.js";
+    import type {RulesDocument, RulesPreview} from "#lib/imports/types.js";
+    import AccountsPanel from "#lib/imports/ui/AccountsPanel.svelte";
+    import PreferencesPanel from "#lib/imports/ui/PreferencesPanel.svelte";
+    import RowMappingPanel from "#lib/imports/ui/RowMappingPanel.svelte";
+    import RulesFileList from "#lib/imports/ui/RulesFileList.svelte";
+    import RulesList from "#lib/imports/ui/RulesList.svelte";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {holdUnsavedEdits} from "#lib/stores/refreshAll.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
 
     type Tab = "prefs" | "mapping" | "accounts";
     const TABS: {id: Tab; label: string}[] = [

@@ -18,9 +18,9 @@
 //   12mo → asOf minus one year (Feb-29 normalizes forward, e.g. 2024-02-29 → 2023-03-01)
 //   5yr  → asOf minus five years, normalized the same way
 //   all  → undefined (send nothing ⇒ all-time gain = marketValue − basis)
-import type {ISODate} from "$lib/domain/types";
-import type {GainPeriod} from "$lib/holdings/types";
-import {addDays, addMonths} from "$lib/reports/periods";
+import type {ISODate} from "#lib/domain/types.js";
+import type {GainPeriod} from "#lib/holdings/types.js";
+import {addDays, addMonths} from "#lib/reports/periods.js";
 
 /**
  * The value-over-time series window for a period: what `/api/holdings/series`

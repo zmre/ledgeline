@@ -51,10 +51,10 @@
 // prove the panel renders what it is handed — and it renders what it is handed
 // perfectly well. What broke was WHICH value it reached for.
 
-import type {SaveRulesBody} from "$lib/api/native";
-import {rulesStore} from "$lib/imports/rulesStore.svelte";
-import {settings} from "$lib/stores/settings.svelte";
-import {FAKE_ENGINE} from "$lib/testing/fakeEngine";
+import type {SaveRulesBody} from "#lib/api/native.js";
+import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
+import {FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {readFileSync} from "node:fs";
 import {resolve} from "node:path";

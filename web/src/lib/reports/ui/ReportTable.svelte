@@ -10,15 +10,15 @@
      X" and "Net" are not in the flattened list, so they are skipped for free)
      and Enter drills into the journal filtered to that account. -->
 <script lang="ts">
-    import type {MixedAmount} from "$lib/domain/money";
-    import type {AmountStyle} from "$lib/domain/types";
-    import {formatTotals} from "$lib/journal/rowModel";
-    import {openJournal} from "$lib/journal/openJournal";
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import {PRIORITY} from "$lib/keys/types";
-    import {bucketLabel} from "$lib/reports/periods";
-    import type {PeriodReport, SectionedReport} from "$lib/reports/types";
-    import {listCursor} from "$lib/ui/listCursor.svelte";
+    import type {MixedAmount} from "#lib/domain/money.js";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {formatTotals} from "#lib/journal/rowModel.js";
+    import {openJournal} from "#lib/journal/openJournal.js";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
+    import {bucketLabel} from "#lib/reports/periods.js";
+    import type {PeriodReport, SectionedReport} from "#lib/reports/types.js";
+    import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {compressPeriodRows, compressSectionRows} from "./displayRows";
 
     let {report, styles}: {report: SectionedReport | PeriodReport; styles: ReadonlyMap<string, AmountStyle>} = $props();

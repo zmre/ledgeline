@@ -18,7 +18,7 @@
     // reason: it is what says whether hledger can be run, and with no usable
     // hledger every affordance below it is an invitation to press a button that
     // cannot work. That is the state a new user hits.
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
     import {actionRunsDryRun, importAction, shows, visibleSections} from "../importModel";
     import {importStore} from "../importStore.svelte";
     import {isQuickbooksJournalStage} from "../qbJournalModel";
@@ -28,8 +28,8 @@
     import QbJournalPanel from "./QbJournalPanel.svelte";
     import ResultPanel from "./ResultPanel.svelte";
     import StagedPanel from "./StagedPanel.svelte";
-    import {journal} from "$lib/stores/journal.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
 
     const sections = $derived(
         visibleSections({

@@ -24,14 +24,14 @@
      price for a future date to value a mixed amount with. What that leaves out
      is named under the chart rather than silently dropped. -->
 <script lang="ts">
-    import PeriodFlowChart from "$lib/components/PeriodFlowChart.svelte";
-    import PeriodLineChart from "$lib/components/PeriodLineChart.svelte";
-    import type {AmountStyle} from "$lib/domain/types";
-    import {styleOf} from "$lib/format/amounts";
-    import {formatChartValue, formatCompactChartValue} from "$lib/insights/series";
-    import {bucketLabel} from "$lib/reports/periods";
-    import ReportTable from "$lib/reports/ui/ReportTable.svelte";
-    import type {ReportInterval} from "$lib/reports/ui/params";
+    import PeriodFlowChart from "#lib/components/PeriodFlowChart.svelte";
+    import PeriodLineChart from "#lib/components/PeriodLineChart.svelte";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {styleOf} from "#lib/format/amounts.js";
+    import {formatChartValue, formatCompactChartValue} from "#lib/insights/series.js";
+    import {bucketLabel} from "#lib/reports/periods.js";
+    import ReportTable from "#lib/reports/ui/ReportTable.svelte";
+    import type {ReportInterval} from "#lib/reports/ui/params.js";
     import {PROJECTION_TABS, PROJECTION_TAB_LABELS, type ProjectionTab} from "../params";
     import {assetContributions, balanceNumbers, chartCommodity, flowSeries, otherCommodities, runwayStatement} from "../projectionView";
     import type {Projection} from "../types";

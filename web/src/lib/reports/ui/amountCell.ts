@@ -13,9 +13,9 @@
 // commodities are surfaced, never silently dropped" is the rule the whole
 // redesign rests on.
 
-import type {MixedAmount} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import {fmt} from "$lib/format/amounts";
+import type {MixedAmount} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import {fmt} from "#lib/format/amounts.js";
 import {extras as nonBaseLines, fmtBase} from "./insights/format";
 
 export interface AmountCell {

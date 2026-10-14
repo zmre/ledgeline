@@ -22,13 +22,13 @@
      render as a red overspend on an income line. The goal marker stays as the
      high-contrast line; the pace mark is a second, quieter tick. -->
 <script lang="ts">
-    import {isAccountType, type AccountType} from "$lib/domain/accountTypes";
-    import {openJournal} from "$lib/journal/openJournal";
-    import {maAdd, maNeg, type MixedAmount} from "$lib/domain/money";
-    import type {AmountStyle, ISODate} from "$lib/domain/types";
-    import {sortBudgetLines, type BudgetSortKey, type SortDir} from "$lib/budget/sort";
-    import {formatTotals} from "$lib/journal/rowModel";
-    import {bucketLabel} from "$lib/reports/periods";
+    import {isAccountType, type AccountType} from "#lib/domain/accountTypes.js";
+    import {openJournal} from "#lib/journal/openJournal.js";
+    import {maAdd, maNeg, type MixedAmount} from "#lib/domain/money.js";
+    import type {AmountStyle, ISODate} from "#lib/domain/types.js";
+    import {sortBudgetLines, type BudgetSortKey, type SortDir} from "#lib/budget/sort.js";
+    import {formatTotals} from "#lib/journal/rowModel.js";
+    import {bucketLabel} from "#lib/reports/periods.js";
     import {
         barGeometry,
         budgetHealth,
@@ -42,8 +42,8 @@
         type BarGeometry,
         type BudgetHealth,
         type BudgetLine,
-    } from "$lib/reports/budgetSummary";
-    import type {BudgetReport} from "$lib/reports/types";
+    } from "#lib/reports/budgetSummary.js";
+    import type {BudgetReport} from "#lib/reports/types.js";
 
     let {
         report,

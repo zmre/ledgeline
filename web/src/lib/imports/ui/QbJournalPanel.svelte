@@ -14,8 +14,8 @@
     // the date-format notice says, which files need a re-sort offer — is a
     // tested function in `qbJournalModel.ts`; this file reads the store and
     // places values on the screen.
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import {settings} from "#lib/stores/settings.svelte.js";
     import {canCommitQbJournal, dateFormatNotice, filesNeedingSort, qbIdMatchesSummary, qbReorderOffer} from "../qbJournalModel";
     import {qbJournalStore} from "../qbJournalStore.svelte";
     import QbUnmappedAccounts from "./QbUnmappedAccounts.svelte";

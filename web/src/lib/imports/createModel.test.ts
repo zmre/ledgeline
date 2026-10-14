@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {decodeRulesDoc, decodeRulesDraft} from "$lib/api/nativeDecode";
+import {decodeRulesDoc, decodeRulesDraft} from "#lib/api/nativeDecode.js";
 import {checkRulesId, createBlocker, createSaveRequest, defaultRulesId, draftForm, draftLines, NEW_FILE_REVISION} from "./createModel";
 import {fieldNames, toForm, withFieldNames, withSetting} from "./model";
 import type {RulesDocument} from "./types";

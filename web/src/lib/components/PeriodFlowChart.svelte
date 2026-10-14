@@ -17,14 +17,14 @@
      - RED/GREEN IS A DIVERGING PAIR, NOT TWO CATEGORICAL SLOTS: the theme's
        `--chart-in` / `--chart-out` tokens via `chartColors`. `in` is daisy
        success; `out` is a deeper rose than daisy error, which collapses into
-       success under deuteranopia — $lib/format/palette carries the numbers.
+       success under deuteranopia — #lib/format/palette carries the numbers.
        Colour is reinforcement here, never the channel: which side of the zero
        rule a bar is on already says the direction.
 
      The bar cap, zero rule, rounded data-ends, stroke-less bars, the net's halo
      and the legend are specified in `PeriodStackChart`'s header. -->
 <script lang="ts">
-    import {chartColors} from "$lib/format/chartColors.svelte";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
     import PeriodStackChart from "./PeriodStackChart.svelte";
 
     let {

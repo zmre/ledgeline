@@ -39,9 +39,9 @@
     // for itself, so it is passed `savedAt` and closes the card when it moves —
     // the edit has landed, and leaving the editor open over it invites a second,
     // accidental edit of a rule the user is finished with.
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import {PRIORITY} from "$lib/keys/types";
-    import {listCursor} from "$lib/ui/listCursor.svelte";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
+    import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {tick} from "svelte";
     import {appendRule, blankRule, describeIfBlock, describeItem, moveRule, ruleIndices, type FormItem} from "../model";
     import IfBlockCard from "./IfBlockCard.svelte";

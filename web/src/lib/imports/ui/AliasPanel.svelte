@@ -24,11 +24,11 @@
     //   a semantic change wearing a cosmetic's clothes.
     //
     // Every decision here is a call into `aliasModel.ts`. This file is markup.
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {dataView} from "$lib/stores/loadState";
-    import {holdUnsavedEdits} from "$lib/stores/refreshAll";
-    import {onServerReady} from "$lib/stores/serverWatch.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import {dataView} from "#lib/stores/loadState.js";
+    import {holdUnsavedEdits} from "#lib/stores/refreshAll.js";
+    import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
     import {ALIAS_EXPLAINER, aliasBadges, aliasText, blankRow, isDirty, toForm, toSaveRequest, validateForm} from "../aliasModel";
     import type {AliasDraft, AliasForm} from "../aliasModel";
     import {aliasListing, aliasStore} from "../aliasStore.svelte";

@@ -13,10 +13,10 @@
 // destination moved.
 
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {settings} from "$lib/stores/settings.svelte";
+import {settings} from "#lib/stores/settings.svelte.js";
 // The wire fixtures are shared with the component tests that mount this screen
 // — one copy of the engine's contract, asserted on from both projects.
-import {CAPABILITIES, STAGE, upload} from "$lib/testing/importFixtures";
+import {CAPABILITIES, STAGE, upload} from "#lib/testing/importFixtures.js";
 import {actionBlocker, importAction} from "./importModel";
 import {importStore} from "./importStore.svelte";
 
@@ -341,7 +341,7 @@ describe("UNIT importStore — a first upload that fails", () => {
         // it is precisely their absence that used to make this failure silent.
         vi.resetModules();
         vi.stubGlobal("fetch", routes({...BASE_ROUTES, "/api/import/stage": new Response("boom", {status: 500})}));
-        const [{importStore: fresh}, {settings: freshSettings}] = await Promise.all([import("./importStore.svelte"), import("$lib/stores/settings.svelte")]);
+        const [{importStore: fresh}, {settings: freshSettings}] = await Promise.all([import("./importStore.svelte"), import("#lib/stores/settings.svelte.js")]);
         await freshSettings.setServerUrl("http://engine.test");
         await fresh.reloadCapabilities("http://engine.test");
 

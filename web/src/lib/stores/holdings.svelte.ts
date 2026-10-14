@@ -8,14 +8,14 @@
 /* eslint-disable svelte/prefer-svelte-reactivity -- the account Sets are
    immutable snapshots: every change replaces `value` wholesale, so plain Set
    is correct (and the contract exposes ReadonlySet). */
-import {LedgelineApi} from "$lib/api/native";
-import {decodeHoldingsReport, decodeHoldingsSeries, decodeOtherHoldingsReport} from "$lib/api/nativeDecode";
-import type {ISODate} from "$lib/domain/types";
-import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
-import {TAB_ORDER, type HoldingsTab} from "$lib/holdings/params";
-import type {GainPeriod, HoldingsReport, HoldingsScope, HoldingsSeries, OtherHoldingsReport} from "$lib/holdings/types";
-import {gainSinceFor, trendWindowFor} from "$lib/holdings/ui/gainPeriod";
-import type {HoldingsUrlState} from "$lib/holdings/ui/urlCodec";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeHoldingsReport, decodeHoldingsSeries, decodeOtherHoldingsReport} from "#lib/api/nativeDecode.js";
+import type {ISODate} from "#lib/domain/types.js";
+import {toggleSubtreeRoot} from "#lib/filters/treeSelect.js";
+import {TAB_ORDER, type HoldingsTab} from "#lib/holdings/params.js";
+import type {GainPeriod, HoldingsReport, HoldingsScope, HoldingsSeries, OtherHoldingsReport} from "#lib/holdings/types.js";
+import {gainSinceFor, trendWindowFor} from "#lib/holdings/ui/gainPeriod.js";
+import type {HoldingsUrlState} from "#lib/holdings/ui/urlCodec.js";
 import {localToday} from "./filters.svelte";
 import type {DataView, LoadStatus} from "./loadState";
 import {createResource} from "./resource.svelte";

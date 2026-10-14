@@ -3,7 +3,7 @@
 // edit affordance deep inside the virtualized table can both drive the single
 // <TransactionModal> mounted at the page level.
 
-import type {Transaction} from "$lib/domain/types";
+import type {Transaction} from "#lib/domain/types.js";
 
 export type TxnModalMode = "add" | "edit";
 

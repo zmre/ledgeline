@@ -14,7 +14,7 @@
 
 import {flushSync} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {defaultScope, holdingsScope, holdingsTab} from "$lib/stores/holdings.svelte";
+import {defaultScope, holdingsScope, holdingsTab} from "#lib/stores/holdings.svelte.js";
 import {startHoldingsUrlSync} from "./urlSync";
 
 const mocks = vi.hoisted(() => ({
@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
     replaceStateCalls: [] as string[],
 }));
 
-vi.mock("$app/environment", () => ({browser: true}));
+vi.mock("$app/env", () => ({browser: true}));
 vi.mock("$app/navigation", () => ({
     afterNavigate: (cb: () => void): void => {
         mocks.navigations.push(cb);

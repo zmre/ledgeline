@@ -9,11 +9,11 @@
 
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
-import {decodeIncomeStatementReport} from "$lib/api/nativeDecode";
-import {dec, type MixedAmount} from "$lib/domain/money";
-import {fmt} from "$lib/format/amounts";
-import type {IncomeStatementReport, IsSection} from "$lib/reports/types";
-import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
+import {decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
+import {dec, type MixedAmount} from "#lib/domain/money.js";
+import {fmt} from "#lib/format/amounts.js";
+import type {IncomeStatementReport, IsSection} from "#lib/reports/types.js";
+import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
 import {fmtPct, isCursorRows, isDisplayModel, isGroupKey, isSummary, pctOfRevenue, revenueTotal, sectionDisplayRows} from "./incomeStatementRows";
 
 const REPORT = decodeIncomeStatementReport(GROUPED_INCOME_STATEMENT);

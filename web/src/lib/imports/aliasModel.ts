@@ -10,8 +10,8 @@
 // The English here is the English the user reads. It is in this file rather than
 // in a template for the same reason the logic is.
 
-import type {AliasEffect, AliasEntry, AliasFile, AliasRename, CliParity} from "$lib/imports/importTypes";
-import type {SaveAliasEdit, SaveAliasesBody} from "$lib/api/native";
+import type {AliasEffect, AliasEntry, AliasFile, AliasRename, CliParity} from "#lib/imports/importTypes.js";
+import type {SaveAliasEdit, SaveAliasesBody} from "#lib/api/native.js";
 
 // ---------------------------------------------------------------------------
 // Which aliases are relevant to the staged data

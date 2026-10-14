@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import type {HoldingsScope} from "$lib/holdings/types";
+import type {HoldingsScope} from "#lib/holdings/types.js";
 import {benchmarkLines} from "./benchmarks.svelte";
 import {settings} from "./settings.svelte";
 

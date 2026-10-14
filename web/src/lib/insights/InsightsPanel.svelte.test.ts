@@ -13,10 +13,10 @@
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {beforeEach, describe, expect, it} from "vitest";
-import type {AccountDecl} from "$lib/domain/accountTypes";
-import {dec} from "$lib/domain/money";
-import type {Amount, AmountStyle, Posting, Transaction} from "$lib/domain/types";
-import {settings} from "$lib/stores/settings.svelte";
+import type {AccountDecl} from "#lib/domain/accountTypes.js";
+import {dec} from "#lib/domain/money.js";
+import type {Amount, AmountStyle, Posting, Transaction} from "#lib/domain/types.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 import InsightsPanel from "./InsightsPanel.svelte";
 
 const STYLE: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};

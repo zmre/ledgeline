@@ -5,9 +5,9 @@
      many shown holdings were left out; a tile shows an em-dash only when its total
      is genuinely null (every shown holding excluded). -->
 <script lang="ts">
-    import {toNumber, type Dec} from "$lib/domain/money";
-    import {signClass} from "$lib/format/sign";
-    import type {GainPeriod, HoldingsReport} from "$lib/holdings/types";
+    import {toNumber, type Dec} from "#lib/domain/money.js";
+    import {signClass} from "#lib/format/sign.js";
+    import type {GainPeriod, HoldingsReport} from "#lib/holdings/types.js";
     import {gainWindowSuffix} from "./gainPeriod";
     import {EM_DASH, formatGainPct, untotaledBasisCount} from "./view";
 

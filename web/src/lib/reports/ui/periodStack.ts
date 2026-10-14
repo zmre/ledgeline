@@ -57,9 +57,9 @@
 //      on it is a positive segment above it.
 //   7. THE NET is the table's Net row (`report.totals`) in the charted commodity.
 
-import {maAdd, maIsZero, maNeg, rankCommodities, type MixedAmount} from "$lib/domain/money";
-import {colorAt, type ChartPalette} from "$lib/format/palette";
-import {amountIn} from "$lib/projections/projectionView";
+import {maAdd, maIsZero, maNeg, rankCommodities, type MixedAmount} from "#lib/domain/money.js";
+import {colorAt, type ChartPalette} from "#lib/format/palette.js";
+import {amountIn} from "#lib/projections/projectionView.js";
 import {bucketLabel} from "../periods";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
 import {compressPeriodRows, type DisplayRow} from "./displayRows";

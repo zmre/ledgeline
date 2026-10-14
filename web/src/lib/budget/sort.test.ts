@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {dec, toNumber, type MixedAmount} from "$lib/domain/money";
+import {dec, toNumber, type MixedAmount} from "#lib/domain/money.js";
 import {annualised, sortBudgetLines, type BudgetSortKey, type SortDir, type SortFields} from "./sort";
 
 /** A single-commodity `$` amount at places 0. */

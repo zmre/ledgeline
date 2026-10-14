@@ -27,7 +27,7 @@
 
 import {render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
-import {ALIASES_QUIET, PARITY_BEYOND_RENAMES, RENAMES_AND_PARITY, RENAMES_ONLY, ROTH_ALIAS} from "$lib/testing/aliasFixtures";
+import {ALIASES_QUIET, PARITY_BEYOND_RENAMES, RENAMES_AND_PARITY, RENAMES_ONLY, ROTH_ALIAS} from "#lib/testing/aliasFixtures.js";
 import type {AliasEffect} from "../importTypes";
 import AliasEffectPanel from "./AliasEffectPanel.svelte";
 

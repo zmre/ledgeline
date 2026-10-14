@@ -10,7 +10,7 @@
 // 1005/1e3 is stored as 1.00499999999999989…, which Excel prints as 1.00 while
 // the screen prints 1.01.
 
-import {isAccountType, type AccountType} from "$lib/domain/accountTypes";
+import {isAccountType, type AccountType} from "#lib/domain/accountTypes.js";
 import {
     dec,
     displayPlaces,
@@ -23,11 +23,11 @@ import {
     toNumber,
     type Dec,
     type MixedAmount,
-} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import type {HoldingsReport} from "$lib/holdings/types";
-import {budgetLeaves, budgetTotals, magnitudeAmount, primaryValue, summarizeBudget, type BudgetLine} from "$lib/reports/budgetSummary";
-import {bucketLabel} from "$lib/reports/periods";
+} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import type {HoldingsReport} from "#lib/holdings/types.js";
+import {budgetLeaves, budgetTotals, magnitudeAmount, primaryValue, summarizeBudget, type BudgetLine} from "#lib/reports/budgetSummary.js";
+import {bucketLabel} from "#lib/reports/periods.js";
 import type {
     Amounts,
     BalanceSheetReport,
@@ -37,10 +37,10 @@ import type {
     IsSectionKind,
     PeriodReport,
     SectionedReport,
-} from "$lib/reports/types";
-import {bsSectionBlocks, bsSummary} from "$lib/reports/ui/balanceSheetRows";
-import {compressIsRows, compressPeriodRows, compressSectionRows} from "$lib/reports/ui/displayRows";
-import {isSummary, pctOfRevenue, revenueTotal} from "$lib/reports/ui/incomeStatementRows";
+} from "#lib/reports/types.js";
+import {bsSectionBlocks, bsSummary} from "#lib/reports/ui/balanceSheetRows.js";
+import {compressIsRows, compressPeriodRows, compressSectionRows} from "#lib/reports/ui/displayRows.js";
+import {isSummary, pctOfRevenue, revenueTotal} from "#lib/reports/ui/incomeStatementRows.js";
 import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build time
 
 const HEADER_ARGB = "FF1E293B";

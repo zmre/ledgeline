@@ -9,13 +9,13 @@
 // the engine answers from its own cache (`commodity-profiles.json`) and only
 // goes to Yahoo for what that cache lacks.
 //
-// Lives in `$lib/stores/`, not `$lib/holdings/`, for the reason `prices.svelte.ts`
+// Lives in `#lib/stores/`, not `#lib/holdings/`, for the reason `prices.svelte.ts`
 // gives: it calls the API and holds runes state, and `lib/holdings/` is pure.
 
-import {LedgelineApi} from "$lib/api/native";
-import {decodeHoldingsProfiles} from "$lib/api/nativeDecode";
-import type {HoldingsProfiles} from "$lib/holdings/profileTypes";
-import type {Holding} from "$lib/holdings/types";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeHoldingsProfiles} from "#lib/api/nativeDecode.js";
+import type {HoldingsProfiles} from "#lib/holdings/profileTypes.js";
+import type {Holding} from "#lib/holdings/types.js";
 import {createResource} from "./resource.svelte";
 
 const resource = createResource<readonly string[], HoldingsProfiles>(async (serverUrl, symbols) =>

@@ -22,8 +22,8 @@
 // two characters — money via the domain formatter, explicitly-signed display
 // figures via this module. Unifying that is a change to the domain layer.
 
-import {dec, formatAmount, neg, type Dec} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
+import {dec, formatAmount, neg, type Dec} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
 
 /** Null / absent cells render as an em-dash everywhere. */
 export const EM_DASH = "—";

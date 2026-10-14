@@ -30,8 +30,8 @@
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {beforeEach, describe, expect, it} from "vitest";
-import {decodeScenario} from "$lib/api/nativeDecode";
-import type {AccountType} from "$lib/domain/accountTypes";
+import {decodeScenario} from "#lib/api/nativeDecode.js";
+import type {AccountType} from "#lib/domain/accountTypes.js";
 import {scenarioStore} from "../scenarioStore.svelte";
 import type {AssetRow, Scenario} from "../types";
 import ProjectionsTable from "./ProjectionsTable.svelte";

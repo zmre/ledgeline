@@ -6,8 +6,8 @@
 
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {connectFakeEngine, FAKE_ENGINE} from "$lib/testing/fakeEngine";
-import {pricesStore} from "$lib/stores/prices.svelte";
+import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
+import {pricesStore} from "#lib/stores/prices.svelte.js";
 import UpdatePricesButton from "./UpdatePricesButton.svelte";
 
 const format = (qty: {m: bigint; p: number}): string => `$${(Number(qty.m) / 10 ** qty.p).toFixed(2)}`;
