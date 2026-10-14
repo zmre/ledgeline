@@ -4,7 +4,7 @@
 //
 // Every field mirrors `ledgeline-server/src/prices_api.rs`'s wire types.
 //
-// A relative import, not the `$lib/domain/money` alias: this file lives in
+// A relative import, not the `#lib/domain/money.js` alias: this file lives in
 // `lib/holdings/`, whose purity test (`purity.test.ts`) requires engine
 // sources to use only relative imports.
 

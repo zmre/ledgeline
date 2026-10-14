@@ -7,9 +7,9 @@
 // reloaded URL reproduces the exact report even when the defaults (today-based)
 // have moved on. Params for inactive tabs are never written.
 
-import type {ISODate} from "$lib/domain/types";
-import {bucketEnd, bucketStart, lastNBuckets, today} from "$lib/reports/periods";
-import {clampedInt, isIsoDate} from "$lib/url/params";
+import type {ISODate} from "#lib/domain/types.js";
+import {bucketEnd, bucketStart, lastNBuckets, today} from "#lib/reports/periods.js";
+import {clampedInt, isIsoDate} from "#lib/url/params.js";
 
 export type ReportTab = "insights" | "bs" | "is" | "cf" | "nw" | "subs";
 export type ReportInterval = "monthly" | "quarterly" | "yearly";

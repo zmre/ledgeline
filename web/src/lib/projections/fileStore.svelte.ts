@@ -25,11 +25,11 @@
 // Phases 1 and 2 — and simply offers no file controls, rather than showing a
 // picker that cannot be used.
 
-import {classify, type EditFailure} from "$lib/api/editFailure";
-import {LedgelineApi, NativeApiUnavailableError, type SaveScenarioBody} from "$lib/api/native";
-import {decodeProjectionIndex, decodeScenarioFile} from "$lib/api/nativeDecode";
-import {createResource} from "$lib/stores/resource.svelte";
-import {settings} from "$lib/stores/settings.svelte";
+import {classify, type EditFailure} from "#lib/api/editFailure.js";
+import {LedgelineApi, NativeApiUnavailableError, type SaveScenarioBody} from "#lib/api/native.js";
+import {decodeProjectionIndex, decodeScenarioFile} from "#lib/api/nativeDecode.js";
+import {createResource} from "#lib/stores/resource.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 import {scenarioToWire} from "./scenarioModel";
 import type {ProjectionIndex, Scenario, ScenarioFile} from "./types";
 

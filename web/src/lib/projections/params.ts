@@ -1,6 +1,6 @@
 // The Projections tab's params ⇄ URL-query codec.
 //
-// Modelled on `$lib/budget/params.ts`, which is the worked example of a
+// Modelled on `#lib/budget/params.ts`, which is the worked example of a
 // standalone feature route owning its own codec. Pure module (no Svelte/DOM
 // imports) so the round trip is unit-testable under node.
 //
@@ -13,8 +13,8 @@
 // into chat windows and server logs, and Phase 3's file save is the durable home
 // the ask actually asked for.
 
-import {MAX_COUNT, type ReportInterval} from "$lib/reports/ui/params";
-import {clampedInt, oneOf} from "$lib/url/params";
+import {MAX_COUNT, type ReportInterval} from "#lib/reports/ui/params.js";
+import {clampedInt, oneOf} from "#lib/url/params.js";
 
 /** Which of the three report tabs the bottom half is showing. */
 export type ProjectionTab = "net" | "cash" | "worth";

@@ -17,7 +17,7 @@
 // the engine enforces, and `validateRow` already knows them.
 
 import {validateRow, type AliasDraft} from "./aliasModel";
-import type {SaveAliasEdit} from "$lib/api/native";
+import type {SaveAliasEdit} from "#lib/api/native.js";
 import type {AliasFile, QbDateFormat, QbFileOrdering, QbIdMatches, QbOrdering, QbPreview, StagedFile} from "./importTypes";
 
 // ---------------------------------------------------------------------------

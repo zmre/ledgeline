@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {MAX_COUNT} from "$lib/reports/ui/params";
+import {MAX_COUNT} from "#lib/reports/ui/params.js";
 import {
     DEFAULT_PROJECTION_COUNT,
     defaultProjectionParams,

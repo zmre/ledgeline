@@ -12,7 +12,7 @@
 // a wrong number would be worse than none: callers fall back to the character
 // budget in `accounts.ts`, which is imprecise but never claims otherwise.
 
-import type {MeasureText} from "$lib/domain/accounts";
+import type {MeasureText} from "#lib/domain/accounts.js";
 
 // The journal's account chips are daisyUI `badge-sm`, whose `font-size` is
 // 0.75rem. There is no chip in the document at the time the first measurement is

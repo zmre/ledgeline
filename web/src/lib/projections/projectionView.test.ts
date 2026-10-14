@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
-import {dec, type MixedAmount} from "$lib/domain/money";
-import type {PeriodReport} from "$lib/reports/types";
+import {dec, type MixedAmount} from "#lib/domain/money.js";
+import type {PeriodReport} from "#lib/reports/types.js";
 import {
     amountIn,
     assetContributions,

@@ -4,7 +4,7 @@
 // reset the neighbouring flags, and is not written back on the next save.
 
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {SETTINGS_STORAGE_KEY} from "$lib/api/client";
+import {SETTINGS_STORAGE_KEY} from "#lib/api/client.js";
 
 async function loadWith(saved: Record<string, unknown>) {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(saved));

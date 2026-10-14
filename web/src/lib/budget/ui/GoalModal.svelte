@@ -12,11 +12,11 @@
      than surprising. -->
 <script lang="ts">
     import {untrack} from "svelte";
-    import {parseAmountInput} from "$lib/api/editMapping";
-    import {BUDGET_PERIODS, type AccountReference, type BudgetPeriod, type GoalDraft, type GoalSubmission} from "$lib/budget/types";
-    import type {AmountStyle} from "$lib/domain/types";
-    import AccountInput from "$lib/journal/edit/AccountInput.svelte";
-    import type {DataView} from "$lib/stores/loadState";
+    import {parseAmountInput} from "#lib/api/editMapping.js";
+    import {BUDGET_PERIODS, type AccountReference, type BudgetPeriod, type GoalDraft, type GoalSubmission} from "#lib/budget/types.js";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
+    import type {DataView} from "#lib/stores/loadState.js";
     import ReferenceStrip from "./ReferenceStrip.svelte";
 
     let {

@@ -4,8 +4,8 @@
     // per-commodity net (income − expenses) of the filtered view (see visibleNet
     // in insights/series.ts). Expenses read negative, revenue positive, and equal
     // refunds offset, so filtering by e.g. a store shows the net spent there.
-    import {formatAmount} from "$lib/domain/money";
-    import type {Amount} from "$lib/domain/types";
+    import {formatAmount} from "#lib/domain/money.js";
+    import type {Amount} from "#lib/domain/types.js";
 
     let {
         count,

@@ -7,11 +7,11 @@
 // One `startSearchSync` covers BOTH the scope and the tab. That is the point:
 // two writers over one query string would race on their debounces, and the later
 // one would drop the other's keys.
-import {browser} from "$app/environment";
+import {browser} from "$app/env";
 import {afterNavigate} from "$app/navigation";
-import {localToday} from "$lib/stores/filters.svelte";
-import {holdingsScope, holdingsTab, subscribeHoldingsUrlState} from "$lib/stores/holdings.svelte";
-import {startSearchSync} from "$lib/url/searchSync";
+import {localToday} from "#lib/stores/filters.svelte.js";
+import {holdingsScope, holdingsTab, subscribeHoldingsUrlState} from "#lib/stores/holdings.svelte.js";
+import {startSearchSync} from "#lib/url/searchSync.js";
 import {searchToState, stateToSearch} from "./urlCodec";
 
 /**

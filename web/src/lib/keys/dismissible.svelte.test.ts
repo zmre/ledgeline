@@ -9,7 +9,7 @@
 
 import {render, screen} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import DismissibleProbe from "$lib/testing/fixtures/DismissibleProbe.svelte";
+import DismissibleProbe from "#lib/testing/fixtures/DismissibleProbe.svelte";
 
 function escape(): void {
     document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape"}));

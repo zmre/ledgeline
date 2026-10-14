@@ -10,19 +10,19 @@
     import {onMount} from "svelte";
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import ErrorToast from "$lib/components/ErrorToast.svelte";
-    import {exportBalanceSheetXlsx, exportIncomeStatementXlsx, exportXlsx} from "$lib/export/xlsx";
-    import InsightsDashboard from "$lib/reports/ui/insights/InsightsDashboard.svelte";
-    import BalanceSheetView from "$lib/reports/ui/BalanceSheetView.svelte";
-    import CashFlowChart from "$lib/reports/ui/CashFlowChart.svelte";
-    import ExportButton from "$lib/reports/ui/ExportButton.svelte";
-    import IncomeStatementView from "$lib/reports/ui/IncomeStatementView.svelte";
-    import NetWorthChart from "$lib/reports/ui/NetWorthChart.svelte";
-    import ReportControls from "$lib/reports/ui/ReportControls.svelte";
-    import ReportTable from "$lib/reports/ui/ReportTable.svelte";
-    import ReportTabs from "$lib/reports/ui/ReportTabs.svelte";
-    import SubscriptionsPanel from "$lib/reports/ui/subscriptions/SubscriptionsPanel.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import {exportBalanceSheetXlsx, exportIncomeStatementXlsx, exportXlsx} from "#lib/export/xlsx.js";
+    import InsightsDashboard from "#lib/reports/ui/insights/InsightsDashboard.svelte";
+    import BalanceSheetView from "#lib/reports/ui/BalanceSheetView.svelte";
+    import CashFlowChart from "#lib/reports/ui/CashFlowChart.svelte";
+    import ExportButton from "#lib/reports/ui/ExportButton.svelte";
+    import IncomeStatementView from "#lib/reports/ui/IncomeStatementView.svelte";
+    import NetWorthChart from "#lib/reports/ui/NetWorthChart.svelte";
+    import ReportControls from "#lib/reports/ui/ReportControls.svelte";
+    import ReportTable from "#lib/reports/ui/ReportTable.svelte";
+    import ReportTabs from "#lib/reports/ui/ReportTabs.svelte";
+    import SubscriptionsPanel from "#lib/reports/ui/subscriptions/SubscriptionsPanel.svelte";
     import {
         budgetRedirect,
         defaultReportParams,
@@ -32,16 +32,16 @@
         TAB_LABELS,
         type ReportParams,
         type ReportTab,
-    } from "$lib/reports/ui/params";
-    import type {FlowsPanel} from "$lib/reports/ui/sankeyModel";
-    import {reportStyles} from "$lib/reports/ui/styles";
-    import {flows, loadFlowsWhenWatched} from "$lib/stores/flows.svelte";
-    import {dataView} from "$lib/stores/loadState";
-    import {buildReportQuery, reports, sameReportQuery, type AnyReport} from "$lib/stores/reports.svelte";
-    import {journal} from "$lib/stores/journal.svelte";
-    import {loadJournalWhenReady} from "$lib/stores/serverWatch.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
-    import {searchMirror} from "$lib/url/searchSync";
+    } from "#lib/reports/ui/params.js";
+    import type {FlowsPanel} from "#lib/reports/ui/sankeyModel.js";
+    import {reportStyles} from "#lib/reports/ui/styles.js";
+    import {flows, loadFlowsWhenWatched} from "#lib/stores/flows.svelte.js";
+    import {dataView} from "#lib/stores/loadState.js";
+    import {buildReportQuery, reports, sameReportQuery, type AnyReport} from "#lib/stores/reports.svelte.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {loadJournalWhenReady} from "#lib/stores/serverWatch.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
+    import {searchMirror} from "#lib/url/searchSync.js";
 
     let params = $state<ReportParams>(defaultReportParams());
     let restored = $state(false);
@@ -56,7 +56,7 @@
         const forward = budgetRedirect(search);
         if (forward !== null) {
             // eslint-disable-next-line svelte/no-navigation-without-resolve -- resolve("/budget") IS the route id; the query string is appended
-            void goto(`${resolve("/budget")}${forward}`, {replaceState: true});
+            void goto(`${resolve("budget")}${forward}`, {replace: true});
             return;
         }
         if (search !== "") Object.assign(params, searchToParams(search, defaultReportParams()));

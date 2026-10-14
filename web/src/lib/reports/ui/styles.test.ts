@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
-import {dec} from "$lib/domain/money";
-import type {AmountStyle, Transaction} from "$lib/domain/types";
+import {dec} from "#lib/domain/money.js";
+import type {AmountStyle, Transaction} from "#lib/domain/types.js";
 import {reportStyles} from "./styles";
 
 const style = (precision: number): AmountStyle => ({side: "R", spaced: true, precision, decimalPoint: ".", digitGroups: null});

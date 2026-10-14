@@ -7,8 +7,8 @@
      all-time gain since purchase — those rows are marked `startEstimated` and
      flagged here rather than silently passed off as a period return. -->
 <script lang="ts">
-    import type {AmountStyle} from "$lib/domain/types";
-    import type {MoverRow} from "$lib/reports/insightsTypes";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import type {MoverRow} from "#lib/reports/insightsTypes.js";
     import {fmtSignedAmount, fmtSignedPct, signClass} from "./format";
 
     let {

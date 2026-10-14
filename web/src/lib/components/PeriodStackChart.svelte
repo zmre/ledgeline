@@ -6,7 +6,7 @@
 
      Props are plain index-aligned number arrays plus labels, and nothing about
      reports, projections or `PeriodReport`: a caller that can produce signed
-     columns of numbers can render this. `$lib/reports/ui/periodStack` is the
+     columns of numbers can render this. `#lib/reports/ui/periodStack.js` is the
      model that turns a report into them.
 
      The specs (the dataviz skill's, first set down in `PeriodFlowChart`):
@@ -47,7 +47,7 @@
        dashed line key: identity is never colour alone. -->
 <script lang="ts">
     import {Area, AreaChart, BarChart, Spline, Tooltip} from "layerchart";
-    import {chartColors} from "$lib/format/chartColors.svelte";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
     import ChartHeading from "./ChartHeading.svelte";
     import ChartLegend, {type LegendEntry} from "./ChartLegend.svelte";
     import {fittedTicks, labelFormatter, tickIndices} from "./periodAxis";

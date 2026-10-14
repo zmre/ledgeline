@@ -4,10 +4,10 @@
     // mutators are props so any store can drive it (journal filters, WP-10
     // holdings scope); `accountNames` is a prop for the same reason.
     import {untrack} from "svelte";
-    import {buildAccountTree, type AccountNode} from "$lib/domain/accounts";
-    import {dismissible} from "$lib/keys/dismissible";
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import {PRIORITY} from "$lib/keys/types";
+    import {buildAccountTree, type AccountNode} from "#lib/domain/accounts.js";
+    import {dismissible} from "#lib/keys/dismissible.js";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
     import {filterTree, selectionState} from "./treeSelect";
 
     let {

@@ -55,7 +55,7 @@ in practice means one of two things:
    to call that reproduces it.
 
 Name the file `Thing.svelte.test.ts` beside its component and the include globs
-route it to the right project automatically. `$lib/testing/` holds the shared
+route it to the right project automatically. `#lib/testing/` holds the shared
 setup, the fake-engine `fetch` stub and the wire fixtures; component tests drive
 the REAL stores through that stub rather than mocking them, because a mocked
 store proves the component renders what it is given, and what it is given is the

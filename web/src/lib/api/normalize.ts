@@ -6,13 +6,13 @@
 // Emits frozen domain objects; Dec is built from decimalMantissa/decimalPlaces
 // with a Number.isSafeInteger guard (never a silent float fallback).
 
-import type {Problem, Severity} from "$lib/checks/engine";
-import {parseBsTermTag} from "$lib/domain/accountTerms";
-import type {AccountDecl} from "$lib/domain/accountTypes";
-import {parseAccountTypeTag} from "$lib/domain/accountTypes";
-import type {Dec} from "$lib/domain/money";
-import {formatAmount} from "$lib/domain/money";
-import type {Amount, AmountStyle, BalanceAssertion, Posting, PostingType, PriceDirective, Transaction, TxnStatus} from "$lib/domain/types";
+import type {Problem, Severity} from "#lib/checks/engine.js";
+import {parseBsTermTag} from "#lib/domain/accountTerms.js";
+import type {AccountDecl} from "#lib/domain/accountTypes.js";
+import {parseAccountTypeTag} from "#lib/domain/accountTypes.js";
+import type {Dec} from "#lib/domain/money.js";
+import {formatAmount} from "#lib/domain/money.js";
+import type {Amount, AmountStyle, BalanceAssertion, Posting, PostingType, PriceDirective, Transaction, TxnStatus} from "#lib/domain/types.js";
 import {ApiShapeError} from "./client";
 import type {
     RawAccount,

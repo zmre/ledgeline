@@ -2,7 +2,7 @@
     // A minimal overlay for exercising the `dismissible` action: two focusable
     // children so Tab wrapping has something to wrap between.
     import {untrack} from "svelte";
-    import {dismissible, type DismissibleOptions} from "$lib/keys/dismissible";
+    import {dismissible, type DismissibleOptions} from "#lib/keys/dismissible.js";
 
     let {optionsOf}: {optionsOf: () => DismissibleOptions} = $props();
 

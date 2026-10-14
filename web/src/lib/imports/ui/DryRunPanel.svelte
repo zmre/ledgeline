@@ -44,7 +44,7 @@
     // `.alert` is `display:grid; grid-auto-flow:column` and lays its children out
     // as narrow side-by-side columns without it. `routes/alertStacking.test.ts`
     // enforces that across every component.
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
     import {balanceVerdict, canWrite, conflictDetail, gitBlockMessage, idMatchesSummary, skippedWarning} from "../importModel";
     import type {AliasEntry, ConfWritten, DryRunResult} from "../importTypes";
     import AliasEffectPanel from "./AliasEffectPanel.svelte";
@@ -63,7 +63,7 @@
         onWrite,
         onInstallConf,
     }: {
-        view: import("$lib/stores/loadState").DataView;
+        view: import("#lib/stores/loadState.js").DataView;
         result: DryRunResult | null;
         error: Error | null;
         /** The journal's aliases, so a rename can be shown beside the line that caused it. */

@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {buildAccountTree} from "$lib/domain/accounts";
+import {buildAccountTree} from "#lib/domain/accounts.js";
 import {filterTree, selectionState, toggleSubtreeRoot} from "./treeSelect";
 
 const names = ["assets:bank:checking", "assets:bank:savings", "assets:broker", "expenses:food:groceries", "expenses:rent"];

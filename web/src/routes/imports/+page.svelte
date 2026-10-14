@@ -16,17 +16,17 @@
     import {onMount} from "svelte";
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
-    import ErrorToast from "$lib/components/ErrorToast.svelte";
-    import {importStore} from "$lib/imports/importStore.svelte";
-    import {aliasesRedirect, defaultImportParams, paramsToSearch, searchToParams, type ImportParams} from "$lib/imports/params";
-    import {rulesStore} from "$lib/imports/rulesStore.svelte";
-    import EditRulesPanel from "$lib/imports/ui/EditRulesPanel.svelte";
-    import ImportTabs from "$lib/imports/ui/ImportTabs.svelte";
-    import NewTransactionsPanel from "$lib/imports/ui/NewTransactionsPanel.svelte";
-    import {journal} from "$lib/stores/journal.svelte";
-    import {loadJournalWhenReady, onServerReady} from "$lib/stores/serverWatch.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
-    import {searchMirror} from "$lib/url/searchSync";
+    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import {importStore} from "#lib/imports/importStore.svelte.js";
+    import {aliasesRedirect, defaultImportParams, paramsToSearch, searchToParams, type ImportParams} from "#lib/imports/params.js";
+    import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
+    import EditRulesPanel from "#lib/imports/ui/EditRulesPanel.svelte";
+    import ImportTabs from "#lib/imports/ui/ImportTabs.svelte";
+    import NewTransactionsPanel from "#lib/imports/ui/NewTransactionsPanel.svelte";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {loadJournalWhenReady, onServerReady} from "#lib/stores/serverWatch.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
+    import {searchMirror} from "#lib/url/searchSync.js";
 
     // The account autocomplete is the only thing this screen wants from the
     // journal feed, and `AccountInput` already copes with an empty list. Both
@@ -60,7 +60,7 @@
         const forward = aliasesRedirect(window.location.search);
         if (forward !== null) {
             // eslint-disable-next-line svelte/no-navigation-without-resolve -- resolve("/settings") IS the route id; the query string is appended
-            void goto(`${resolve("/settings")}${forward}`, {replaceState: true});
+            void goto(`${resolve("settings")}${forward}`, {replace: true});
             return;
         }
         if (window.location.search !== "") Object.assign(params, searchToParams(window.location.search, defaultImportParams()));

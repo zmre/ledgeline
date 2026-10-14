@@ -95,12 +95,12 @@
      cannot address is not a delete. -->
 <script lang="ts">
     import {onDestroy} from "svelte";
-    import AccountInput from "$lib/journal/edit/AccountInput.svelte";
-    import {decToInput, parseAmountInput} from "$lib/api/editMapping";
-    import type {AccountType} from "$lib/domain/accountTypes";
-    import type {Dec} from "$lib/domain/money";
-    import type {AmountStyle, ISODate} from "$lib/domain/types";
-    import {EM_DASH, fmt} from "$lib/format/amounts";
+    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
+    import {decToInput, parseAmountInput} from "#lib/api/editMapping.js";
+    import type {AccountType} from "#lib/domain/accountTypes.js";
+    import type {Dec} from "#lib/domain/money.js";
+    import type {AmountStyle, ISODate} from "#lib/domain/types.js";
+    import {EM_DASH, fmt} from "#lib/format/amounts.js";
     import {journalBalanceFor} from "../projectionView";
     import {
         amountFor,

@@ -15,7 +15,7 @@
     // rules (`qbJournalModel.mappingProblems`, which is `aliasModel.validateRow`
     // under the QuickBooks account name as a fixed pattern) so a value this
     // component would accept and the engine would refuse can never diverge.
-    import AccountInput from "$lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
     import {hasMappingsToSave, mappingProblems} from "../qbJournalModel";
 
     let {

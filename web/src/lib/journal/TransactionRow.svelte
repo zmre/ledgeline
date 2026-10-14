@@ -8,11 +8,11 @@
     // Editing (native engine only): clicking the description edits it inline
     // (PATCH {description}); a hover pencil opens the whole-transaction popup
     // (edit-all → PUT). Account/category inline editing lives in AccountsCell.
-    import {descriptionPatch} from "$lib/api/editMapping";
-    import {maxSeverity, type Problem} from "$lib/checks/engine";
-    import type {Transaction} from "$lib/domain/types";
-    import {editing} from "$lib/stores/editing.svelte";
-    import type {ColumnConfig} from "$lib/stores/settings.svelte";
+    import {descriptionPatch} from "#lib/api/editMapping.js";
+    import {maxSeverity, type Problem} from "#lib/checks/engine.js";
+    import type {Transaction} from "#lib/domain/types.js";
+    import {editing} from "#lib/stores/editing.svelte.js";
+    import type {ColumnConfig} from "#lib/stores/settings.svelte.js";
     import AccountsCell from "./AccountsCell.svelte";
     import AmountCell from "./AmountCell.svelte";
     import CommentIndicator from "./CommentIndicator.svelte";

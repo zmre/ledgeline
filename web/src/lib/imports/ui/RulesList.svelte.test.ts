@@ -21,7 +21,7 @@
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
-import {keymap} from "$lib/keys/keymap.svelte";
+import {keymap} from "#lib/keys/keymap.svelte.js";
 import type {FormItem} from "../model";
 import RulesList from "./RulesList.svelte";
 

@@ -2,7 +2,7 @@
      Mutates fields of the bound params object; date edits are ignored until
      the input holds a full valid ISO date (type=date emits "" while clearing). -->
 <script lang="ts">
-    import DepthSlider from "$lib/insights/DepthSlider.svelte";
+    import DepthSlider from "#lib/insights/DepthSlider.svelte";
     import {MAX_COUNT, TAB_CONTROLS, type ReportParams} from "./params";
 
     let {params = $bindable(), maxDepth}: {params: ReportParams; maxDepth: number} = $props();

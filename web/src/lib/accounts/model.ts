@@ -4,7 +4,7 @@
 // excludes `*.svelte.test.ts`, so a decision living inside a component is
 // untested by construction.
 
-import type {SaveAccountEdit, SaveAccountsBody, SaveAccountTag} from "$lib/api/native";
+import type {SaveAccountEdit, SaveAccountsBody, SaveAccountTag} from "#lib/api/native.js";
 import type {AccountEntry, AccountFile, AccountTag} from "./types";
 
 /** One option a closed special tag accepts. */

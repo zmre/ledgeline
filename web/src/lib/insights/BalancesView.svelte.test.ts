@@ -11,16 +11,16 @@
 
 import {render, screen, within} from "@testing-library/svelte";
 import {beforeEach, describe, expect, it, vi} from "vitest";
-import type {AccountDecl} from "$lib/domain/accountTypes";
-import {dec} from "$lib/domain/money";
-import type {Amount, AmountStyle, Posting, Transaction} from "$lib/domain/types";
+import type {AccountDecl} from "#lib/domain/accountTypes.js";
+import {dec} from "#lib/domain/money.js";
+import type {Amount, AmountStyle, Posting, Transaction} from "#lib/domain/types.js";
 import BalancesView from "./BalancesView.svelte";
 
 // The view is "as of today" by construction, so the fixture's dates have to sit
 // in the past relative to whatever day the suite runs on. Freezing the clock is
 // cheaper and clearer than dating the fixture relative to now.
-vi.mock("$lib/reports/periods", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("$lib/reports/periods")>()),
+vi.mock("#lib/reports/periods.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("#lib/reports/periods.js")>()),
     today: () => "2026-09-13",
 }));
 

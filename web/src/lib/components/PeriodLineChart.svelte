@@ -17,7 +17,7 @@
        swatch only restates the heading (dataviz single-series rule). Two or
        more always get one: identity is never colour-alone.
      - COLOURS ARE `chartColors.colorAt(i)`, THE THEME'S `--chart-N` TOKENS
-       ($lib/format/palette documents the validator run). Slots are taken in series order and
+       (#lib/format/palette documents the validator run). Slots are taken in series order and
        never cycled — unless a series names its own `slot`, which is how an
        optional line (a benchmark the reader can tick on and off) keeps ONE
        colour whatever else is shown: colour follows the entity, not its row.
@@ -47,7 +47,7 @@
 <script lang="ts">
     import type {Snippet} from "svelte";
     import {LineChart, Rule} from "layerchart";
-    import {chartColors} from "$lib/format/chartColors.svelte";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
     import ChartHeading from "./ChartHeading.svelte";
     import ChartLegend from "./ChartLegend.svelte";
     import {fittedTicks, labelFormatter} from "./periodAxis";

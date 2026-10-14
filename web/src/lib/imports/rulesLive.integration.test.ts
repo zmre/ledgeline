@@ -23,8 +23,8 @@
 
 import {mkdirSync, rmSync, writeFileSync, readFileSync} from "node:fs";
 import {afterAll, beforeAll, describe, expect, it} from "vitest";
-import {LedgelineApi} from "$lib/api/native";
-import {decodeRulesDoc, decodeRulesIndex, decodeRulesPreview} from "$lib/api/nativeDecode";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeRulesDoc, decodeRulesIndex, decodeRulesPreview} from "#lib/api/nativeDecode.js";
 import {appendRule, fieldNames, isDirty, itemId, moveRule, ruleIndices, settingText, toForm, toSaveRequest, validateForm, withSetting} from "./model";
 import type {IfBlockItem, RulesForm} from "./model";
 

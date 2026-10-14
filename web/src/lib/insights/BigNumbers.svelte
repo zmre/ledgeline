@@ -2,9 +2,9 @@
      Primary (most-used) commodity prominent; other commodities listed small.
      Values are exact Dec strings via formatAmount — no float accumulation. -->
 <script lang="ts">
-    import {formatAmount, toNumber, type Dec} from "$lib/domain/money";
-    import type {Transaction} from "$lib/domain/types";
-    import {signClass} from "$lib/format/sign";
+    import {formatAmount, toNumber, type Dec} from "#lib/domain/money.js";
+    import type {Transaction} from "#lib/domain/types.js";
+    import {signClass} from "#lib/format/sign.js";
     import {bigNumbers, commoditiesInUse, styleFor, type AccountSelection, type DeclaredTypes} from "./series";
 
     let {txns, accounts, allTxns, declared}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();

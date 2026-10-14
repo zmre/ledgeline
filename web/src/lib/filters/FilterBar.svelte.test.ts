@@ -12,7 +12,7 @@ import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import FilterBar from "./FilterBar.svelte";
-import {filters} from "$lib/stores/filters.svelte";
+import {filters} from "#lib/stores/filters.svelte.js";
 
 const ACCOUNTS = ["assets:bank:checking", "expenses:food", "expenses:rent"];
 

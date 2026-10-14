@@ -6,15 +6,15 @@
 // conflict banner (409 ⇒ the file changed on disk) and a transient toast for
 // inline-edit failures.
 
-import {LedgelineApi, type AddTransactionBody, type PatchTransactionBody, type ReplaceTransactionBody} from "$lib/api/native";
-import {classify, type EditFailure, type EditResult} from "$lib/api/editFailure";
+import {LedgelineApi, type AddTransactionBody, type PatchTransactionBody, type ReplaceTransactionBody} from "#lib/api/native.js";
+import {classify, type EditFailure, type EditResult} from "#lib/api/editFailure.js";
 import {journal} from "./journal.svelte";
 import {settings} from "./settings.svelte";
 
 // The taxonomy itself lives in `api/editFailure.ts` so the rules editor can
 // share it without dragging the journal feed in behind it; re-exported here
 // because this store is where every caller already looks for it.
-export type {EditFailure, EditFailureKind, EditResult} from "$lib/api/editFailure";
+export type {EditFailure, EditFailureKind, EditResult} from "#lib/api/editFailure.js";
 
 const OK: EditResult = {ok: true};
 

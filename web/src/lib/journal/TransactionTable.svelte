@@ -5,15 +5,15 @@
     // which keeps 50k+ rows smooth. Desktop renders a daisyUI table with a
     // sticky header + spacer rows; narrow widths (<640px) render card-per-txn.
     import {untrack} from "svelte";
-    import {statusPatch} from "$lib/api/editMapping";
-    import type {Transaction} from "$lib/domain/types";
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import {PRIORITY} from "$lib/keys/types";
-    import {editing} from "$lib/stores/editing.svelte";
-    import {filters} from "$lib/stores/filters.svelte";
-    import {problems} from "$lib/stores/problems.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
-    import {listCursor} from "$lib/ui/listCursor.svelte";
+    import {statusPatch} from "#lib/api/editMapping.js";
+    import type {Transaction} from "#lib/domain/types.js";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
+    import {editing} from "#lib/stores/editing.svelte.js";
+    import {filters} from "#lib/stores/filters.svelte.js";
+    import {problems} from "#lib/stores/problems.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
+    import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import ColumnMenu from "./ColumnMenu.svelte";
     import TransactionRow from "./TransactionRow.svelte";
     import {measureAccountColumn} from "./accountColumn.svelte";

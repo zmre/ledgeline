@@ -16,9 +16,9 @@
      a scope change can never be drawn against the wrong dates. -->
 <script lang="ts">
     import {untrack} from "svelte";
-    import type {HoldingsScope, HoldingsSeries} from "$lib/holdings/types";
-    import {benchmarkLines} from "$lib/stores/benchmarks.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
+    import type {HoldingsScope, HoldingsSeries} from "#lib/holdings/types.js";
+    import {benchmarkLines} from "#lib/stores/benchmarks.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
     import BenchmarkPicker from "./BenchmarkPicker.svelte";
     import HoldingsTrend from "./HoldingsTrend.svelte";
     import {benchmarkOverlays} from "./trendView";

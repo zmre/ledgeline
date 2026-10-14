@@ -16,31 +16,31 @@
     // pattern, through ONE writer — see holdings/ui/urlCodec.ts. Display styles
     // for the base commodity come from the journal wire feed (styleFor).
     import {onMount} from "svelte";
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import ErrorToast from "$lib/components/ErrorToast.svelte";
-    import {formatAmount, type Dec} from "$lib/domain/money";
-    import type {AmountStyle} from "$lib/domain/types";
-    import {exportHoldingsXlsx} from "$lib/export/xlsx";
-    import {styleOf} from "$lib/format/amounts";
-    import GainersLosers from "$lib/holdings/ui/GainersLosers.svelte";
-    import HoldingsPie from "$lib/holdings/ui/HoldingsPie.svelte";
-    import HoldingsStats from "$lib/holdings/ui/HoldingsStats.svelte";
-    import HoldingsTable from "$lib/holdings/ui/HoldingsTable.svelte";
-    import HoldingsTabs from "$lib/holdings/ui/HoldingsTabs.svelte";
-    import HoldingsTrend from "$lib/holdings/ui/HoldingsTrend.svelte";
-    import StocksTrend from "$lib/holdings/ui/StocksTrend.svelte";
-    import OtherHoldingsTable from "$lib/holdings/ui/OtherHoldingsTable.svelte";
-    import ScopeBar from "$lib/holdings/ui/ScopeBar.svelte";
-    import UpdatePricesButton from "$lib/holdings/ui/UpdatePricesButton.svelte";
-    import {startHoldingsUrlSync} from "$lib/holdings/ui/urlSync";
-    import {formatUnitsWith, partitionShortPositions, shortPositionNote} from "$lib/holdings/ui/view";
-    import {formatChartValue, formatCompactChartValue, styleFor} from "$lib/insights/series";
-    import ExportButton from "$lib/reports/ui/ExportButton.svelte";
-    import {holdingsData, holdingsScope, holdingsTab, otherHoldingsData} from "$lib/stores/holdings.svelte";
-    import {journal} from "$lib/stores/journal.svelte";
-    import {pricesStore} from "$lib/stores/prices.svelte";
-    import {loadJournalWhenReady} from "$lib/stores/serverWatch.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import {formatAmount, type Dec} from "#lib/domain/money.js";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {exportHoldingsXlsx} from "#lib/export/xlsx.js";
+    import {styleOf} from "#lib/format/amounts.js";
+    import GainersLosers from "#lib/holdings/ui/GainersLosers.svelte";
+    import HoldingsPie from "#lib/holdings/ui/HoldingsPie.svelte";
+    import HoldingsStats from "#lib/holdings/ui/HoldingsStats.svelte";
+    import HoldingsTable from "#lib/holdings/ui/HoldingsTable.svelte";
+    import HoldingsTabs from "#lib/holdings/ui/HoldingsTabs.svelte";
+    import HoldingsTrend from "#lib/holdings/ui/HoldingsTrend.svelte";
+    import StocksTrend from "#lib/holdings/ui/StocksTrend.svelte";
+    import OtherHoldingsTable from "#lib/holdings/ui/OtherHoldingsTable.svelte";
+    import ScopeBar from "#lib/holdings/ui/ScopeBar.svelte";
+    import UpdatePricesButton from "#lib/holdings/ui/UpdatePricesButton.svelte";
+    import {startHoldingsUrlSync} from "#lib/holdings/ui/urlSync.js";
+    import {formatUnitsWith, partitionShortPositions, shortPositionNote} from "#lib/holdings/ui/view.js";
+    import {formatChartValue, formatCompactChartValue, styleFor} from "#lib/insights/series.js";
+    import ExportButton from "#lib/reports/ui/ExportButton.svelte";
+    import {holdingsData, holdingsScope, holdingsTab, otherHoldingsData} from "#lib/stores/holdings.svelte.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {pricesStore} from "#lib/stores/prices.svelte.js";
+    import {loadJournalWhenReady} from "#lib/stores/serverWatch.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
 
     // Reset the scope and tab from the URL (fresh visits open at today, on
     // Stocks), then mirror changes back (debounced replaceState). The reset

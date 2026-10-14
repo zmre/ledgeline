@@ -12,12 +12,12 @@
 //   * every drawn column adds up to the graph's total
 
 import {describe, expect, it} from "vitest";
-import {decodeFlowReport} from "$lib/api/nativeDecode";
-import type {AmountStyle} from "$lib/domain/types";
-import {DEFAULT_PALETTE, OTHER_LABEL} from "$lib/format/palette";
+import {decodeFlowReport} from "#lib/api/nativeDecode.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import {DEFAULT_PALETTE, OTHER_LABEL} from "#lib/format/palette.js";
 
 const SLOTS = DEFAULT_PALETTE.categorical.length;
-import {FLOW_REPORT} from "$lib/testing/flowsFixture";
+import {FLOW_REPORT} from "#lib/testing/flowsFixture.js";
 import {flowPalette, OTHER_KEY, sankeyView} from "./sankeyModel";
 
 const STYLES: ReadonlyMap<string, AmountStyle> = new Map<string, AmountStyle>([

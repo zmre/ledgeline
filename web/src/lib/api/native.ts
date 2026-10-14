@@ -3,7 +3,7 @@
 // HledgerApi (the wire client) but distinguishes a server that simply lacks the
 // native routes (a plain hledger-web) from one that is unreachable.
 
-import type {BudgetPeriod} from "$lib/budget/types";
+import type {BudgetPeriod} from "#lib/budget/types.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
 /** The configured server answered, but has no /api/* routes (e.g. plain hledger-web). */
@@ -408,7 +408,7 @@ export interface SaveAccountsBody {
  * string-encoded mantissa so a large exact value never loses precision through a
  * JS number, and `encodeDec` is the one conversion.
  *
- * Here rather than in `$lib/budget/types.ts` for the reason `SaveAliasesBody` is
+ * Here rather than in `#lib/budget/types.ts` for the reason `SaveAliasesBody` is
  * here: request bodies are this module's vocabulary, and putting it beside the
  * domain types would make `budget/types.ts` import `WireDec` back out of this
  * file for a cycle that buys nothing.

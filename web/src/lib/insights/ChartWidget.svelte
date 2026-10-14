@@ -10,11 +10,11 @@
        only the active mode is computed; capped at 6 groups incl. "(other)". -->
 <script lang="ts">
     import {LineChart, PieChart, Tooltip} from "layerchart";
-    import ChartLegend from "$lib/components/ChartLegend.svelte";
-    import {fittedTicks, labelFormatter} from "$lib/components/periodAxis";
-    import type {RootCategory} from "$lib/domain/accounts";
-    import type {Transaction} from "$lib/domain/types";
-    import {chartColors} from "$lib/format/chartColors.svelte";
+    import ChartLegend from "#lib/components/ChartLegend.svelte";
+    import {fittedTicks, labelFormatter} from "#lib/components/periodAxis.js";
+    import type {RootCategory} from "#lib/domain/accounts.js";
+    import type {Transaction} from "#lib/domain/types.js";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
     import {
         categoriesInUse,
         commoditiesInUse,

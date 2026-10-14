@@ -10,7 +10,7 @@
 // is the reason a third copy is a real cost rather than an aesthetic one — it
 // is load-bearing and easy to omit.
 
-import {browser} from "$app/environment";
+import {browser} from "$app/env";
 import {replaceState} from "$app/navigation";
 
 const DEBOUNCE_MS = 250;
@@ -21,6 +21,14 @@ const DEBOUNCE_MS = 250;
  * Uses SvelteKit's `replaceState` so the router's own notion of the URL stays
  * in step, and falls back to the raw History API when the router is not
  * initialized (unit tests, embedding) — where `replaceState` throws.
+ *
+ * `replaceState` is deprecated in SvelteKit 3 in favour of
+ * `goto(url, {shallow: true, replace: true})`, and `sv migrate sveltekit-3`
+ * rewrites it to that. Do NOT take the rewrite: shallow `goto` is async (so
+ * the catch below would never see its rejection) and, unlike `replaceState`,
+ * runs the navigation callbacks — `afterNavigate` would then fire for the
+ * mirror's own writes, which is exactly what `holdings/ui/urlSync.ts` relies
+ * on never happening.
  */
 function writeSearch(search: string): void {
     if (window.location.search.replace(/^\?/, "") === search) return;

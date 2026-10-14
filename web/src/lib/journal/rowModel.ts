@@ -3,10 +3,10 @@
 // the fixed-pitch windowing math for the virtualized table. No runtime Svelte
 // imports (the filter shape is a type-only import) so vitest runs these in node.
 
-import {accountMatches} from "$lib/domain/accounts";
-import {add, formatAmount, isZero, neg, type Dec, type MixedAmount} from "$lib/domain/money";
-import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from "$lib/domain/types";
-import type {JournalFilter} from "$lib/stores/filters.svelte";
+import {accountMatches} from "#lib/domain/accounts.js";
+import {add, formatAmount, isZero, neg, type Dec, type MixedAmount} from "#lib/domain/money.js";
+import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
+import type {JournalFilter} from "#lib/stores/filters.svelte.js";
 
 /** Display order: date descending, then hledger index descending. Returns a new array. */
 export function sortTxnsDesc(txns: readonly Transaction[]): Transaction[] {

@@ -6,11 +6,11 @@
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
-    import type {Problem, Severity} from "$lib/checks/engine";
-    import type {Transaction} from "$lib/domain/types";
-    import {filters} from "$lib/stores/filters.svelte";
-    import {journal} from "$lib/stores/journal.svelte";
-    import {problems} from "$lib/stores/problems.svelte";
+    import type {Problem, Severity} from "#lib/checks/engine.js";
+    import type {Transaction} from "#lib/domain/types.js";
+    import {filters} from "#lib/stores/filters.svelte.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {problems} from "#lib/stores/problems.svelte.js";
 
     const RULE_LABELS: Record<string, string> = {
         unbalanced: "Unbalanced",

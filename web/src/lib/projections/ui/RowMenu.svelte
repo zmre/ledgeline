@@ -27,8 +27,8 @@
      Items are real `<button>`s so a test can find them by role and name without
      asserting on geometry, and so the keyboard reaches them at all. -->
 <script lang="ts">
-    import {dismissible} from "$lib/keys/dismissible";
-    import {menuPosition, portal} from "$lib/ui/anchoredPopup";
+    import {dismissible} from "#lib/keys/dismissible.js";
+    import {menuPosition, portal} from "#lib/ui/anchoredPopup.js";
 
     interface Item {
         /** Also the `{#each}` key, so two items of one menu must not share one. */

@@ -15,8 +15,8 @@
 // What is NOT cheap is rendering these 21k findings, which is why
 // ProblemsDrawer only builds its rows when the drawer is actually open.
 
-import {groupByTxn, maxSeverity, runChecks, type Problem, type Severity} from "$lib/checks/engine";
-import {journal} from "$lib/stores/journal.svelte";
+import {groupByTxn, maxSeverity, runChecks, type Problem, type Severity} from "#lib/checks/engine.js";
+import {journal} from "#lib/stores/journal.svelte.js";
 
 const all = $derived.by(() =>
     runChecks(journal.txns, {

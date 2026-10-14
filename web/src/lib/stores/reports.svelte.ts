@@ -5,10 +5,10 @@
 // network answers; the last good report stays visible across a refetch (only
 // the very first load shows a spinner).
 
-import {LedgelineApi} from "$lib/api/native";
-import {decodeBalanceSheetReport, decodeIncomeStatementReport, decodePeriodReport} from "$lib/api/nativeDecode";
-import type {BalanceSheetReport, IncomeStatementReport, PeriodReport, SectionedReport} from "$lib/reports/types";
-import type {ReportInterval, ReportParams} from "$lib/reports/ui/params";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeBalanceSheetReport, decodeIncomeStatementReport, decodePeriodReport} from "#lib/api/nativeDecode.js";
+import type {BalanceSheetReport, IncomeStatementReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
+import type {ReportInterval, ReportParams} from "#lib/reports/ui/params.js";
 import type {LoadStatus} from "./loadState";
 import {createResource} from "./resource.svelte";
 

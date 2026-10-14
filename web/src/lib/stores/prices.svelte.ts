@@ -8,16 +8,16 @@
 // everything the write invalidated. See that method for why the Holdings
 // report cannot refresh itself here.
 //
-// Lives in `$lib/stores/`, not `$lib/holdings/`: that directory's purity test
+// Lives in `#lib/stores/`, not `#lib/holdings/`: that directory's purity test
 // (`holdings/purity.test.ts`) forbids anything but relative imports, because it
 // is the pure engine WP-10 ported to Rust — a store that calls the API and
 // holds Svelte runes state belongs beside `stores/holdings.svelte.ts`, the
 // scope store for the same tab, not inside the engine it drives.
 
-import {classify, type EditFailure} from "$lib/api/editFailure";
-import {LedgelineApi} from "$lib/api/native";
-import {decodeCreatedPricesFile, decodePricesStatus, decodePricesUpdateResponse} from "$lib/api/nativeDecode";
-import type {CreatedPricesFile, PricesStatus, PricesUpdateResponse} from "$lib/holdings/pricesTypes";
+import {classify, type EditFailure} from "#lib/api/editFailure.js";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeCreatedPricesFile, decodePricesStatus, decodePricesUpdateResponse} from "#lib/api/nativeDecode.js";
+import type {CreatedPricesFile, PricesStatus, PricesUpdateResponse} from "#lib/holdings/pricesTypes.js";
 import {holdingsData, holdingsScope, otherHoldingsData} from "./holdings.svelte";
 import {createResource} from "./resource.svelte";
 import {settings} from "./settings.svelte";

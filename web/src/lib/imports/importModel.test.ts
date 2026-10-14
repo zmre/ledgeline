@@ -15,7 +15,7 @@
 // would prove nothing. If the contract changes, these fail.
 
 import {describe, expect, it} from "vitest";
-import {ApiShapeError} from "$lib/api/client";
+import {ApiShapeError} from "#lib/api/client.js";
 import {
     decodeCommitResult,
     decodeConfWritten,
@@ -24,8 +24,8 @@ import {
     decodePrefs,
     decodeSortResult,
     decodeStagedFile,
-} from "$lib/api/nativeDecode";
-import {dataView} from "$lib/stores/loadState";
+} from "#lib/api/nativeDecode.js";
+import {dataView} from "#lib/stores/loadState.js";
 import {
     acceptAttribute,
     actionBlocker,

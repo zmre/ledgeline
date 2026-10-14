@@ -16,8 +16,8 @@
     // `onCancel`, so Escape did nothing locally and bubbled to the modal wrapper,
     // discarding the whole half-typed transaction.
     import {tick} from "svelte";
-    import {TYPING_ATTRIBUTE} from "$lib/keys/target";
-    import {popupPosition, portal} from "$lib/ui/anchoredPopup";
+    import {TYPING_ATTRIBUTE} from "#lib/keys/target.js";
+    import {popupPosition, portal} from "#lib/ui/anchoredPopup.js";
     import {matchAccounts, tabCompletion} from "./accountMatch";
 
     let {

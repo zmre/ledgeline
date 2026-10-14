@@ -23,9 +23,9 @@
 // So both paths ask this module, and a new rule is opened only when no rule
 // states that period at all.
 
-import {encodeDec} from "$lib/api/editMapping";
-import type {BudgetChange} from "$lib/api/native";
-import type {BudgetFile, BudgetListing, BudgetPeriod, BudgetRule, GoalDraft, GoalSubmission} from "$lib/budget/types";
+import {encodeDec} from "#lib/api/editMapping.js";
+import type {BudgetChange} from "#lib/api/native.js";
+import type {BudgetFile, BudgetListing, BudgetPeriod, BudgetRule, GoalDraft, GoalSubmission} from "#lib/budget/types.js";
 
 /**
  * The rule a new goal of `period` joins, and the file it is written in: the

@@ -3,9 +3,9 @@
 // stale-response and payload-tagging behaviour is `createResource`'s — see
 // resource.svelte.ts for why both matter.
 
-import {LedgelineApi} from "$lib/api/native";
-import {decodeInsightsReport} from "$lib/api/nativeDecode";
-import type {InsightsReport} from "$lib/reports/insightsTypes";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeInsightsReport} from "#lib/api/nativeDecode.js";
+import type {InsightsReport} from "#lib/reports/insightsTypes.js";
 import {createResource} from "./resource.svelte";
 
 /** The exact query the /api/insights endpoint honors. */

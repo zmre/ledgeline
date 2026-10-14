@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import type {GainPeriod, HoldingsScope} from "$lib/holdings/types";
+import type {GainPeriod, HoldingsScope} from "#lib/holdings/types.js";
 import {localToday} from "./filters.svelte";
 import {defaultScope, holdingsData, holdingsScope, otherHoldingsData, trendQuery} from "./holdings.svelte";
 

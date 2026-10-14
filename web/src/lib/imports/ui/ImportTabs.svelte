@@ -2,9 +2,9 @@
      ReportTabs — same markup, same $bindable contract, so the two subnavs stay
      the same thing to look at and to operate. -->
 <script lang="ts">
-    import {TAB_LABELS, TAB_ORDER, type ImportTab} from "$lib/imports/params";
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import {PRIORITY} from "$lib/keys/types";
+    import {TAB_LABELS, TAB_ORDER, type ImportTab} from "#lib/imports/params.js";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
 
     let {tab = $bindable()}: {tab: ImportTab} = $props();
 

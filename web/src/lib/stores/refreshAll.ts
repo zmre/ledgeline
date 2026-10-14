@@ -44,10 +44,10 @@
 // pressing refresh reconnects to nothing. Routing an explicit refresh through
 // one of those is how you write a button that does nothing.
 
-import {accountsStore} from "$lib/accounts/accountsStore.svelte";
-import {aliasStore} from "$lib/imports/aliasStore.svelte";
-import {importStore} from "$lib/imports/importStore.svelte";
-import {openRules, rulesStore} from "$lib/imports/rulesStore.svelte";
+import {accountsStore} from "#lib/accounts/accountsStore.svelte.js";
+import {aliasStore} from "#lib/imports/aliasStore.svelte.js";
+import {importStore} from "#lib/imports/importStore.svelte.js";
+import {openRules, rulesStore} from "#lib/imports/rulesStore.svelte.js";
 import {holdingsData, holdingsScope, otherHoldingsData} from "./holdings.svelte";
 import {journal} from "./journal.svelte";
 import {pricesStore} from "./prices.svelte";

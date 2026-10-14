@@ -18,7 +18,7 @@
     // also the only variant whose open state is REAL DOM rather than a CSS
     // pseudo-class, which is what lets ColumnMenu.svelte.test.ts assert that the
     // menu opens — jsdom has no CSS engine and could never have caught this.
-    import {settings, type ColumnConfig} from "$lib/stores/settings.svelte";
+    import {settings, type ColumnConfig} from "#lib/stores/settings.svelte.js";
 
     const defs: {key: keyof ColumnConfig; label: string}[] = [
         {key: "date", label: "Date"},

@@ -15,15 +15,15 @@
 // made from the Account Aliases tab are the exact same request, sharing the
 // exact same conflict/revision handling.
 
-import {classify, type EditFailure} from "$lib/api/editFailure";
-import {LedgelineApi} from "$lib/api/native";
-import {decodeQbCommitResult, decodeQbPreview, decodeSortResult} from "$lib/api/nativeDecode";
+import {classify, type EditFailure} from "#lib/api/editFailure.js";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeQbCommitResult, decodeQbPreview, decodeSortResult} from "#lib/api/nativeDecode.js";
 import {aliasListing, aliasStore} from "./aliasStore.svelte";
 import {isInFlight} from "./importModel";
 import type {QbCommitResult, QbPreview} from "./importTypes";
 import {defaultAliasTargetFile, mappingEdits} from "./qbJournalModel";
-import {createResource} from "$lib/stores/resource.svelte";
-import {settings} from "$lib/stores/settings.svelte";
+import {createResource} from "#lib/stores/resource.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 
 /**
  * How long a QuickBooks Journal COMMIT may run before the client gives up on
@@ -92,7 +92,7 @@ export const qbJournalStore = {
     get preview(): QbPreview | null {
         return preview.value;
     },
-    get previewView(): import("$lib/stores/loadState").DataView {
+    get previewView(): import("#lib/stores/loadState.js").DataView {
         return preview.view;
     },
     get previewError(): Error | null {
@@ -174,7 +174,7 @@ export const qbJournalStore = {
     get commitResult(): QbCommitResult | null {
         return commit.value;
     },
-    get commitView(): import("$lib/stores/loadState").DataView {
+    get commitView(): import("#lib/stores/loadState.js").DataView {
         return commit.view;
     },
     get commitError(): Error | null {

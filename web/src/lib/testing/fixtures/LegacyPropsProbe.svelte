@@ -3,7 +3,7 @@
     // declared a prop, and runes mode refuses to compile it. Nothing renders
     // this — it exists so `compileMode.svelte.test.ts` can hand it to the test
     // pipeline and check that it is REFUSED, which is the only black-box proof
-    // that `dynamicCompileOptions` in `svelte.config.js` reaches the components
+    // that `dynamicCompileOptions` (the `sveltekit()` options in `vite.config.ts`) reaches the components
     // project rather than only the app build.
     //
     // `svelte-check` and the editor's language server compile this in

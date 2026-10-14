@@ -12,13 +12,13 @@
 // Monday date is indistinguishable from a daily bucket, and it keeps this file
 // agreeing with the Rust engine's `reports::periods`.
 
-import {accountMatches, categorize, clampAccount, type RootCategory} from "$lib/domain/accounts";
-import {resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
-import {add, cmp, dec, formatAmount, neg, sub, toNumber, type Dec} from "$lib/domain/money";
-import type {Amount, AmountStyle, Transaction} from "$lib/domain/types";
-import {absDec, DEFAULT_AMOUNT_STYLE, ZERO} from "$lib/format/amounts";
-import {OTHER_LABEL} from "$lib/format/palette";
-import {bucketKey, nextBucket, type Interval as PeriodsInterval} from "$lib/reports/periods";
+import {accountMatches, categorize, clampAccount, type RootCategory} from "#lib/domain/accounts.js";
+import {resolveAccountType, type AccountType} from "#lib/domain/accountTypes.js";
+import {add, cmp, dec, formatAmount, neg, sub, toNumber, type Dec} from "#lib/domain/money.js";
+import type {Amount, AmountStyle, Transaction} from "#lib/domain/types.js";
+import {absDec, DEFAULT_AMOUNT_STYLE, ZERO} from "#lib/format/amounts.js";
+import {OTHER_LABEL} from "#lib/format/palette.js";
+import {bucketKey, nextBucket, type Interval as PeriodsInterval} from "#lib/reports/periods.js";
 
 export interface PieDatum {
     account: string;
@@ -45,7 +45,7 @@ export type Interval = Extract<PeriodsInterval, "daily" | "weekly" | "monthly">;
 /**
  * Label used for the folded tail of small accounts (parens: not a legal hledger
  * segment clash risk). One literal, shared with the holdings pie — see
- * `$lib/format/palette`, which also owns the muted colour it is drawn in.
+ * `#lib/format/palette.js`, which also owns the muted colour it is drawn in.
  */
 export const OTHER = OTHER_LABEL;
 

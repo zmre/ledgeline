@@ -1,8 +1,8 @@
 <script lang="ts">
     // Date range with quick presets (WP-04). Native date inputs for good
     // mobile UX; all range math goes through presetRange (pure, tested).
-    import type {ISODate} from "$lib/domain/types";
-    import {filters, type DatePreset} from "$lib/stores/filters.svelte";
+    import type {ISODate} from "#lib/domain/types.js";
+    import {filters, type DatePreset} from "#lib/stores/filters.svelte.js";
 
     const presets: ReadonlyArray<{id: DatePreset; label: string}> = [
         {id: "thisMonth", label: "This month"},

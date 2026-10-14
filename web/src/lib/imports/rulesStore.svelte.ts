@@ -26,11 +26,11 @@
 // `source_files`, the snapshot and the watcher. Refetching the journal after
 // saving one would buy a full reparse and republish for nothing.
 
-import {classify, type EditFailure} from "$lib/api/editFailure";
-import {LedgelineApi, NativeApiUnavailableError, type SaveRulesBody} from "$lib/api/native";
-import {decodeRulesDoc, decodeRulesIndex, decodeRulesPreview} from "$lib/api/nativeDecode";
-import {createResource} from "$lib/stores/resource.svelte";
-import {settings} from "$lib/stores/settings.svelte";
+import {classify, type EditFailure} from "#lib/api/editFailure.js";
+import {LedgelineApi, NativeApiUnavailableError, type SaveRulesBody} from "#lib/api/native.js";
+import {decodeRulesDoc, decodeRulesIndex, decodeRulesPreview} from "#lib/api/nativeDecode.js";
+import {createResource} from "#lib/stores/resource.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 import type {RulesDocument, RulesIndex, RulesPreview} from "./types";
 
 /** An open document plus the preview of the data file it describes. */

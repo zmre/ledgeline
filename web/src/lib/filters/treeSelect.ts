@@ -2,7 +2,7 @@
 // subtree-root selection set, the toggle that maintains the subtree-root
 // invariant (shared by the filters and holdings stores), and search filtering
 // that keeps ancestors visible. No Svelte/DOM imports — unit-tested under node.
-import {accountMatches, type AccountNode} from "$lib/domain/accounts";
+import {accountMatches, type AccountNode} from "#lib/domain/accounts.js";
 
 export type SelectionState = "checked" | "indeterminate" | "unchecked";
 

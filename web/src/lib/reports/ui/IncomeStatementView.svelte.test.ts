@@ -13,16 +13,16 @@
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {decodeIncomeStatementReport} from "$lib/api/nativeDecode";
-import type {AmountStyle} from "$lib/domain/types";
-import {keymap} from "$lib/keys/keymap.svelte";
-import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
+import {decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import {keymap} from "#lib/keys/keymap.svelte.js";
+import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
 import IncomeStatementView from "./IncomeStatementView.svelte";
 
 // The drill-down navigates, and a router is neither available nor the subject
 // here — what matters is that Enter on an account row asks for THAT account.
 const openJournal = vi.hoisted(() => vi.fn(() => Promise.resolve()));
-vi.mock("$lib/journal/openJournal", () => ({openJournal}));
+vi.mock("#lib/journal/openJournal.js", () => ({openJournal}));
 
 const STYLES: ReadonlyMap<string, AmountStyle> = new Map<string, AmountStyle>([
     ["$", {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]}],

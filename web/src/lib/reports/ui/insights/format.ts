@@ -4,18 +4,18 @@
 // base commodity gets the headline figure, any others are secondary lines.
 //
 // The genuinely shared primitives (the fallback style, `fmt`, signed amount and
-// percent, the sign→colour mapping) moved to `$lib/format` when it turned out
+// percent, the sign→colour mapping) moved to `#lib/format` when it turned out
 // the holdings UI carried its own drifted copies of each. They are re-exported
 // here so this stays the dashboard's one import.
 
-import {isZero, type Dec, type MixedAmount} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import {absDec, fmt, ZERO} from "$lib/format/amounts";
-import {sentimentClass} from "$lib/format/sign";
-import type {MetricDelta} from "$lib/reports/insightsTypes";
+import {isZero, type Dec, type MixedAmount} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import {absDec, fmt, ZERO} from "#lib/format/amounts.js";
+import {sentimentClass} from "#lib/format/sign.js";
+import type {MetricDelta} from "#lib/reports/insightsTypes.js";
 
-export {fmt, fmtSignedAmount, fmtSignedPct} from "$lib/format/amounts";
-export {signClass} from "$lib/format/sign";
+export {fmt, fmtSignedAmount, fmtSignedPct} from "#lib/format/amounts.js";
+export {signClass} from "#lib/format/sign.js";
 
 /** The base-commodity part of a MixedAmount, formatted (a real "0" when absent). */
 export function fmtBase(ma: MixedAmount, base: string, styles: ReadonlyMap<string, AmountStyle>): string {

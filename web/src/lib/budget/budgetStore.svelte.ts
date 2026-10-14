@@ -16,8 +16,8 @@
 // just moved). Reloading one and not the other leaves a screen whose top half
 // disagrees with its bottom half about what the budget is.
 
-import {classify, type EditFailure} from "$lib/api/editFailure";
-import {LedgelineApi, NativeApiUnavailableError, type BudgetChange, type SaveBudgetLinesBody} from "$lib/api/native";
+import {classify, type EditFailure} from "#lib/api/editFailure.js";
+import {LedgelineApi, NativeApiUnavailableError, type BudgetChange, type SaveBudgetLinesBody} from "#lib/api/native.js";
 import {
     decodeAccountReference,
     decodeBudgetFileResponse,
@@ -25,10 +25,10 @@ import {
     decodeBudgetListing,
     decodeBudgetReport,
     decodeCreatedBudgetFile,
-} from "$lib/api/nativeDecode";
-import type {BudgetGaps, BudgetReport} from "$lib/reports/types";
-import {createResource} from "$lib/stores/resource.svelte";
-import {settings} from "$lib/stores/settings.svelte";
+} from "#lib/api/nativeDecode.js";
+import type {BudgetGaps, BudgetReport} from "#lib/reports/types.js";
+import {createResource} from "#lib/stores/resource.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 import type {AccountReference, BudgetFile, BudgetListing, BudgetPeriod, CreatedBudgetFile} from "./types";
 
 /** The exact query the budget report is fetched for — always monthly buckets. */

@@ -7,12 +7,12 @@
     // real balancing and its 400 message is shown inline. A 409 closes the popup
     // and lets the page's "changed on disk" banner take over.
     import {tick} from "svelte";
-    import {decToInput, dominantCommodity, formToBody, txnToForm, validateForm, blankForm, emptyPosting, type TxnForm} from "$lib/api/editMapping";
-    import type {WireBalanceAssertion, WirePostingType} from "$lib/api/native";
-    import {dismissible} from "$lib/keys/dismissible";
-    import {localToday} from "$lib/stores/filters.svelte";
-    import {editing} from "$lib/stores/editing.svelte";
-    import {journal} from "$lib/stores/journal.svelte";
+    import {decToInput, dominantCommodity, formToBody, txnToForm, validateForm, blankForm, emptyPosting, type TxnForm} from "#lib/api/editMapping.js";
+    import type {WireBalanceAssertion, WirePostingType} from "#lib/api/native.js";
+    import {dismissible} from "#lib/keys/dismissible.js";
+    import {localToday} from "#lib/stores/filters.svelte.js";
+    import {editing} from "#lib/stores/editing.svelte.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
     import {txnModal} from "./modalState.svelte";
     import AccountInput from "./AccountInput.svelte";
 

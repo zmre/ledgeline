@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
-import {dec} from "$lib/domain/money";
-import {normalizeAccounts} from "$lib/api/normalize";
-import {declaredTypes, resolveAccountType, type AccountType} from "$lib/domain/accountTypes";
+import {dec} from "#lib/domain/money.js";
+import {normalizeAccounts} from "#lib/api/normalize.js";
+import {declaredTypes, resolveAccountType, type AccountType} from "#lib/domain/accountTypes.js";
 import {
     amountFor,
     blankAssetLine,

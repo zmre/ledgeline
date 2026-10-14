@@ -13,7 +13,7 @@
 // look at.
 
 import {describe, expect, it} from "vitest";
-import {accountRenderings, fitAccount} from "$lib/domain/accounts";
+import {accountRenderings, fitAccount} from "#lib/domain/accounts.js";
 import {CHIP_CHROME_PX, FLOW_ARROW_PX, FLOW_GAP_PX, flowChipRooms, splitChipRooms} from "./chipGeometry";
 
 // A uniform 6px glyph. The lumpy-font case is exercised in accounts.test.ts;

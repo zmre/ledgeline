@@ -1,7 +1,7 @@
 // The two money-flow diagrams, as plain data.
 //
 // `reports/ui/` is exempt from the WP-06 purity rule, so this may reach into
-// `$lib/stores/loadState` for the panel's tri-state. It still imports no
+// `#lib/stores/loadState` for the panel's tri-state. It still imports no
 // Svelte and touches no DOM: everything here is a pure function of a decoded
 // `FlowReport`, which is what lets the folding and colour rules be tested
 // without mounting anything.
@@ -18,12 +18,12 @@
 //      account side has a tail, and it is the side whose identity a reader can
 //      recover from the legend.
 
-import {add, cmp, toNumber, type Dec} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import {fmt} from "$lib/format/amounts";
-import {colorAt, OTHER_LABEL, type ChartPalette} from "$lib/format/palette";
-import type {FlowGraph, FlowReport, FlowSide} from "$lib/reports/types";
-import type {DataView} from "$lib/stores/loadState";
+import {add, cmp, toNumber, type Dec} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import {fmt} from "#lib/format/amounts.js";
+import {colorAt, OTHER_LABEL, type ChartPalette} from "#lib/format/palette.js";
+import type {FlowGraph, FlowReport, FlowSide} from "#lib/reports/types.js";
+import type {DataView} from "#lib/stores/loadState.js";
 
 /**
  * The key the folded tail is drawn under. Namespaced apart from the engine's
@@ -53,7 +53,7 @@ export interface FlowPalette {
  * first.
  *
  * The tail past the last slot is `folded`, never cycled back onto slot 1 (see
- * `$lib/format/palette`): `sankeyView` is the caller that has to fold it into
+ * `#lib/format/palette`): `sankeyView` is the caller that has to fold it into
  * an `OTHER_LABEL` bucket, and `colorAt` is only the backstop.
  *
  * `colors` is the resolved theme palette (`chartColors.current` in a

@@ -34,7 +34,7 @@
     // rebuild an array on every keystroke; add/remove replace the whole
     // `groups`/`assignments` array, exactly as `TransactionModal` does for
     // posting rows.
-    import AccountInput from "$lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
     import {ASSIGNABLE_FIELDS, CONTROL_SUMMARY, describeIfBlock, type IfBlockItem} from "../model";
     import type {RulesControl} from "../types";
 

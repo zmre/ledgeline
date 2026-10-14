@@ -7,9 +7,9 @@
      hidden individually; the whole component is hidden when fewer than two
      holdings are priced (a single-entry "top 5" is noise, per plans/10). -->
 <script lang="ts">
-    import {toNumber, type Dec} from "$lib/domain/money";
-    import {signClass} from "$lib/format/sign";
-    import type {Holding, HoldingsReport} from "$lib/holdings/types";
+    import {toNumber, type Dec} from "#lib/domain/money.js";
+    import {signClass} from "#lib/format/sign.js";
+    import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
     import {formatGainPct} from "./view";
 
     let {report, format}: {report: HoldingsReport; format: (v: Dec) => string} = $props();

@@ -1,8 +1,8 @@
 import {describe, expect, it} from "vitest";
-import {dec, formatDec, type Dec, type MixedAmount} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import {DEFAULT_PALETTE} from "$lib/format/palette";
-import type {Holding, OtherHolding} from "$lib/holdings/types";
+import {dec, formatDec, type Dec, type MixedAmount} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import {DEFAULT_PALETTE} from "#lib/format/palette.js";
+import type {Holding, OtherHolding} from "#lib/holdings/types.js";
 import {
     EM_DASH,
     formatGainPct,

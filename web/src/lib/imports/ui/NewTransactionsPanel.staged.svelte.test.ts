@@ -23,9 +23,9 @@
 // gives each test FILE its own module registry, which is the cheapest honest way
 // to have both a pristine store and a staged one in the same suite.
 
-import {importStore} from "$lib/imports/importStore.svelte";
-import {connectFakeEngine, FAKE_ENGINE} from "$lib/testing/fakeEngine";
-import {CAPABILITIES, STAGE, upload} from "$lib/testing/importFixtures";
+import {importStore} from "#lib/imports/importStore.svelte.js";
+import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
+import {CAPABILITIES, STAGE, upload} from "#lib/testing/importFixtures.js";
 import {render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import NewTransactionsPanel from "./NewTransactionsPanel.svelte";

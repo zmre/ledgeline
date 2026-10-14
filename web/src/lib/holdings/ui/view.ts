@@ -1,13 +1,13 @@
 // Pure display helpers for the holdings UI (WP-10). No Svelte/DOM imports —
 // unit-tested under node; the .svelte components stay thin.
-import {add, cmp, dec, formatAmount, formatDec, MAX_QUANTITY_DECIMALS, toNumber, type Dec, type MixedAmount} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import {DEFAULT_AMOUNT_STYLE, fmtSignedPct} from "$lib/format/amounts";
-import {OTHER_LABEL} from "$lib/format/palette";
-import type {Holding, OtherHolding} from "$lib/holdings/types";
+import {add, cmp, dec, formatAmount, formatDec, MAX_QUANTITY_DECIMALS, toNumber, type Dec, type MixedAmount} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import {DEFAULT_AMOUNT_STYLE, fmtSignedPct} from "#lib/format/amounts.js";
+import {OTHER_LABEL} from "#lib/format/palette.js";
+import type {Holding, OtherHolding} from "#lib/holdings/types.js";
 
 /** Null cells render as an em-dash everywhere on the holdings page. */
-export {EM_DASH} from "$lib/format/amounts";
+export {EM_DASH} from "#lib/format/amounts.js";
 
 /** The folded pie tail's label — context, not a series identity (muted gray, like the insights chart). */
 export const PIE_OTHER = OTHER_LABEL;

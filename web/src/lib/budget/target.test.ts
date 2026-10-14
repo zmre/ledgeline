@@ -9,8 +9,8 @@
 // case, and it is the half of the fix the engine cannot make on its own.
 
 import {describe, expect, test} from "vitest";
-import {alreadyBudgeted, defaultRuleName, goalChange, joinableRule} from "$lib/budget/target";
-import type {BudgetFile, BudgetGoal, BudgetListing, BudgetPeriod, BudgetRule, GoalDraft, GoalSubmission} from "$lib/budget/types";
+import {alreadyBudgeted, defaultRuleName, goalChange, joinableRule} from "#lib/budget/target.js";
+import type {BudgetFile, BudgetGoal, BudgetListing, BudgetPeriod, BudgetRule, GoalDraft, GoalSubmission} from "#lib/budget/types.js";
 
 function goal(index: number, account: string): BudgetGoal {
     return {index, line: index + 2, account, unbalanced: true, amount: null, entry: null, inverted: false, locked: null};

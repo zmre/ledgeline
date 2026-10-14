@@ -6,7 +6,7 @@
 import {render} from "@testing-library/svelte";
 import {flushSync} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
-import KeysProbe from "$lib/testing/fixtures/KeysProbe.svelte";
+import KeysProbe from "#lib/testing/fixtures/KeysProbe.svelte";
 import {keymap} from "./keymap.svelte";
 import {PRIORITY, type Layer} from "./types";
 

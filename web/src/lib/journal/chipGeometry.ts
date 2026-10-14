@@ -7,7 +7,7 @@
 // layout. Anything that moves the classes in AccountsCell should move these
 // with them; chipGeometry.test.ts pins each one to the class it came from.
 
-import {fitAccount, shareWidths, type MeasureText} from "$lib/domain/accounts";
+import {fitAccount, shareWidths, type MeasureText} from "#lib/domain/accounts.js";
 
 /**
  * Everything a chip spends before its text starts, per chip.

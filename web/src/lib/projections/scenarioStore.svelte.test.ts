@@ -1,5 +1,5 @@
 // The scenario store, driven through the REAL `LedgelineApi` against a stubbed
-// `fetch` (`$lib/testing/fakeEngine`) — the seam `web/README.md` names: a test
+// `fetch` (`#lib/testing/fakeEngine`) — the seam `web/README.md` names: a test
 // that mocked the store would prove the page renders what it is handed, and what
 // it is handed is the thing worth checking.
 //
@@ -18,7 +18,7 @@
 // engine needs `localStorage`, both of which want the jsdom project.
 
 import {beforeEach, afterEach, describe, expect, it, vi} from "vitest";
-import {connectFakeEngine, FAKE_ENGINE} from "$lib/testing/fakeEngine";
+import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {scenarioStore, sameProjectionQuery, type ProjectionWindow} from "./scenarioStore.svelte";
 
 const SEED_ROUTE = "/api/projections/seed?count=12&depth=2";

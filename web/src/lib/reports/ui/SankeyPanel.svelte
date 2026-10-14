@@ -20,7 +20,7 @@
      Identity is never colour-alone: an always-visible legend names every
      account, each bar carries its own label and figure, and every ribbon has a
      `<title>`. That is the secondary encoding the categorical palette requires
-     at its CVD separation (see $lib/format/palette).
+     at its CVD separation (see #lib/format/palette).
 
      GEOMETRY IS MEASURED, NEVER ASSUMED. The label gutters are derived from the
      container's own width and the labels truncated to a budget derived from the
@@ -31,12 +31,12 @@
 <script lang="ts">
     import {Chart, Link, Svg, Text} from "layerchart";
     import {Sankey} from "layerchart/graph";
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import ChartLegend from "$lib/components/ChartLegend.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import ChartLegend from "#lib/components/ChartLegend.svelte";
     import ChartPanel from "./ChartPanel.svelte";
-    import type {AmountStyle} from "$lib/domain/types";
-    import {chartColors} from "$lib/format/chartColors.svelte";
-    import type {FlowReport} from "$lib/reports/types";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
+    import type {FlowReport} from "#lib/reports/types.js";
     import {flowPalette, sankeyView, type FlowsPanel} from "./sankeyModel";
 
     let {

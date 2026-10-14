@@ -24,9 +24,9 @@
 // of the same bug lives in `NewTransactionsPanel.staged.svelte.test.ts`, which
 // vitest runs in its own module registry.
 
-import {importStore} from "$lib/imports/importStore.svelte";
-import {connectFakeEngine, FAKE_ENGINE} from "$lib/testing/fakeEngine";
-import {CAPABILITIES} from "$lib/testing/importFixtures";
+import {importStore} from "#lib/imports/importStore.svelte.js";
+import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
+import {CAPABILITIES} from "#lib/testing/importFixtures.js";
 import {render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import NewTransactionsPanel from "./NewTransactionsPanel.svelte";

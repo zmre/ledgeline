@@ -2,10 +2,10 @@
 // buckets, and the benchmark overlay lines aligned to the portfolio's points.
 // No Svelte runtime — node-testable.
 
-import type {PeriodSeries} from "$lib/components/periodSeries";
-import {benchmarkLabel, benchmarkSlot, type BenchmarkLine} from "$lib/holdings/benchmarks";
-import type {HoldingsPoint, HoldingsSeries} from "$lib/holdings/types";
-import {MONTH_NAMES} from "$lib/reports/periods";
+import type {PeriodSeries} from "#lib/components/periodSeries.js";
+import {benchmarkLabel, benchmarkSlot, type BenchmarkLine} from "#lib/holdings/benchmarks.js";
+import type {HoldingsPoint, HoldingsSeries} from "#lib/holdings/types.js";
+import {MONTH_NAMES} from "#lib/reports/periods.js";
 
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 const WEEK_KEY = /^\d{4}-W\d{2}$/;

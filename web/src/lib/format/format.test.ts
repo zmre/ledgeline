@@ -2,7 +2,7 @@
 // drifted copies, so the tests pin the ONE behaviour that won.
 
 import {describe, expect, it} from "vitest";
-import {dec} from "$lib/domain/money";
+import {dec} from "#lib/domain/money.js";
 import {absDec, DEFAULT_AMOUNT_STYLE, EM_DASH, fmt, fmtSignedAmount, fmtSignedPct, ZERO} from "./amounts";
 import {colorAt, DEFAULT_PALETTE, OTHER_LABEL} from "./palette";
 import {NEUTRAL_CLASS, sentimentClass, signClass} from "./sign";

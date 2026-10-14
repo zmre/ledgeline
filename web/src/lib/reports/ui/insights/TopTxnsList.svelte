@@ -1,8 +1,8 @@
 <!-- Top Transactions (Box 10): the largest transactions in the current period by
      base-commodity money moved. -->
 <script lang="ts">
-    import type {AmountStyle} from "$lib/domain/types";
-    import type {TopTxn} from "$lib/reports/insightsTypes";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import type {TopTxn} from "#lib/reports/insightsTypes.js";
     import {fmt} from "./format";
 
     let {rows, base, styles, testid}: {rows: TopTxn[]; base: string; styles: ReadonlyMap<string, AmountStyle>; testid?: string} = $props();

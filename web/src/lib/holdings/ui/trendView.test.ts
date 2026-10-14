@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
-import {dec} from "$lib/domain/money";
-import type {BenchmarkLine} from "$lib/holdings/benchmarks";
-import type {HoldingsPoint, HoldingsSeries} from "$lib/holdings/types";
+import {dec} from "#lib/domain/money.js";
+import type {BenchmarkLine} from "#lib/holdings/benchmarks.js";
+import type {HoldingsPoint, HoldingsSeries} from "#lib/holdings/types.js";
 import {benchmarkOverlays, trendLabels} from "./trendView";
 
 const point = (bucket: string, date: string, label = bucket): HoldingsPoint => ({date, bucket, label, marketValue: dec(100, 0), basis: null});

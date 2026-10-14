@@ -12,7 +12,7 @@
 
 import {flushSync} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {FLOW_REPORT} from "$lib/testing/flowsFixture";
+import {FLOW_REPORT} from "#lib/testing/flowsFixture.js";
 import {loadFlowsWhenWatched} from "./flows.svelte";
 import {settings} from "./settings.svelte";
 
