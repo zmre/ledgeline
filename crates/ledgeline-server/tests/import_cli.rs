@@ -578,6 +578,25 @@ fn a_missing_input_file_is_refused() {
     );
 }
 
+/// An input past the upload cap is refused, as the route refuses the same
+/// upload — read only one byte past the cap, never whole. Sparse, so the test
+/// costs no disk.
+#[test]
+fn an_input_past_the_upload_cap_is_refused() {
+    let tree = Tree::split_year();
+    let file = std::fs::File::create(tree.path("huge.csv")).expect("create input");
+    file.set_len(16 * 1024 * 1024 + 1).expect("size input");
+    let mut args = tree.standard_args();
+    args[1] = "huge.csv";
+    let output = tree.import(&args);
+    assert!(!output.status.success(), "{}", transcript(&output));
+    assert!(
+        stderr(&output).contains("MiB import limit"),
+        "{}",
+        stderr(&output)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // hledger-backed: what a run actually does
 // ---------------------------------------------------------------------------

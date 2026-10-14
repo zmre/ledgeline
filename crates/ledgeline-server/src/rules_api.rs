@@ -1625,6 +1625,24 @@ fn create_exclusive(path: &FsPath, bytes: &[u8]) -> std::io::Result<()> {
 ///    file that is not there;
 /// 2. every slot must be an insert, because there are no bytes to keep;
 /// 3. the write is exclusive, so creating can never become overwriting.
+/// Refuse to write a document [`read_document`] would refuse to open.
+///
+/// [`MAX_ITEMS`] bounds how many items a save names, not how many bytes they
+/// render to — two thousand values at their own cap is past a megabyte — so a
+/// save could otherwise write a file the very next `GET` answers with "too
+/// large to open for editing", leaving the user's own edit stranded.
+fn check_rendered_size(id: &str, new_text: &str) -> Result<(), AppError> {
+    if new_text.len() > MAX_DOCUMENT_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "{} would be {} bytes, larger than the {MAX_DOCUMENT_BYTES} this editor can open \
+             again, so nothing was written",
+            quoted(id),
+            new_text.len()
+        )));
+    }
+    Ok(())
+}
+
 fn create_document(
     main: &FsPath,
     id: &str,
@@ -1659,6 +1677,7 @@ fn create_document(
     // re-parses and requires every slot to reappear as the shape the plan said,
     // which is what catches a rendered line that reads back as something else.
     empty.verify(&plan, &new_text)?;
+    check_rendered_size(id, &new_text)?;
 
     create_exclusive(path.as_path(), new_text.as_bytes()).map_err(|error| {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
@@ -1728,6 +1747,7 @@ fn save_document(
     // swallows the construct below it. `verify` re-parses and requires every
     // item to reappear as the same shape at the offset the plan implies.
     doc.verify(&plan, &new_text)?;
+    check_rendered_size(id, &new_text)?;
 
     if new_text == text {
         // NO-OP: write NOTHING. Writing byte-identical content still bumps

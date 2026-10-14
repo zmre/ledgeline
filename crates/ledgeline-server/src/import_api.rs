@@ -122,6 +122,7 @@ use ledgeline_core::rules::{self, Discovery, RulesDoc};
 use ledgeline_core::sort;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1346,10 +1347,10 @@ fn resolve_rules(discovery: &Discovery, id: &str) -> Result<PathBuf, AppError> {
 ///
 /// An unreadable file answers `0`, which means no padding, which is exactly
 /// today's behaviour — and the import is about to fail on its own terms anyway,
-/// with hledger's message rather than a guess of ours.
-fn rules_skip(rules: &Path) -> u32 {
-    std::fs::read_to_string(rules)
-        .ok()
+/// with hledger's message rather than a guess of ours. So does one past the
+/// discovery scan's size cap, which [`rules::read_text`] re-applies here.
+fn rules_skip(path: &Path) -> u32 {
+    rules::read_text(path)
         .and_then(|text| RulesDoc::parse(&text).settings().skip)
         .map_or(0, |setting| setting.value)
 }
@@ -2664,7 +2665,7 @@ fn rank_candidates(
         .enumerate()
         .filter(|(_, found)| found.parsed)
         .filter_map(|(at, found)| {
-            let text = std::fs::read_to_string(found.path().as_path()).ok()?;
+            let text = rules::read_text(found.path().as_path())?;
             let doc = RulesDoc::parse(&text);
             let skip = doc.settings().skip.map_or(0, |setting| setting.value);
             let pass = matching::prefilter(&doc, data)?;
@@ -4984,13 +4985,23 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppErr
     // branch is chosen, because which one applies is a question about these
     // bytes (see this function's own docs on detection).
     let name = cli_upload_name(&args.input)?;
-    let bytes = std::fs::read(&args.input).map_err(|error| {
+    let unreadable = |error: std::io::Error| {
         AppError::BadRequest(format!(
             "{} could not be read: {}",
             quoted(&args.input.display().to_string()),
             error.kind()
         ))
-    })?;
+    };
+    // Bounded at the read, as the route's body limit bounds the upload: one byte
+    // past the cap is enough to refuse it, and a multi-gigabyte file is never
+    // pulled into memory just to be told it is too big.
+    let cap = u64::try_from(stage::MAX_UPLOAD_BYTES).unwrap_or(u64::MAX);
+    let mut bytes = Vec::new();
+    std::fs::File::open(&args.input)
+        .map_err(unreadable)?
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
     if bytes.len() > stage::MAX_UPLOAD_BYTES {
         return Err(AppError::BadRequest(format!(
             "this file is larger than the {} MiB import limit",
