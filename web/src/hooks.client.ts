@@ -1,4 +1,4 @@
-import type {ClientInit} from "@sveltejs/kit";
+import type {ClientInit} from "@sveltejs/kit/hooks";
 import {adoptLaunchToken} from "#lib/api/client.js";
 
 // Runs once, before SvelteKit's router reads the URL or writes its first
