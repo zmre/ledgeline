@@ -2029,6 +2029,7 @@ dependencies = [
  "tower-http 0.7.1",
  "url",
  "webkit2gtk",
+ "webpki-root-certs",
  "wry",
  "zip",
 ]

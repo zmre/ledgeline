@@ -68,6 +68,10 @@ reqwest = { version = "0.13", default-features = false, features = [
     "rustls",
     "query",
 ] }
+# Fallback trust roots for `yahoo::http_client` when the OS has no certificate
+# store reqwest's platform verifier can load. Already in the graph via
+# rustls-platform-verifier, so this adds no crate.
+webpki-root-certs = "1"
 # `PriceFeed` (`yahoo.rs`) needs to be a `dyn` trait object on `AppState` so the
 # integration tests can substitute a fake with no network — native
 # async-fn-in-trait is not `dyn`-safe on stable, hence this.
