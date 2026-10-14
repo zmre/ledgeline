@@ -66,7 +66,7 @@ use axum::{
     Router,
     body::{Body, Bytes},
     extract::State,
-    http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -633,7 +633,7 @@ pub fn router_with_state(state: AppState) -> Router {
 /// * `CatchPanicLayer` sits just inside them, so a panic anywhere below — the
 ///   guards included — becomes a `500` rather than a dropped connection (SEC-2).
 /// * The `Host` guard wraps routing and the SPA fallback both, so a rebound host
-///   cannot fetch the shell that carries the token.
+///   cannot even fetch the shell.
 /// * CORS (installed only when [`Security::allow_origins`] was given exact
 ///   origins) is a `route_layer`, so it covers exactly the wire and `/api`
 ///   routes and NEVER the SPA fallback. It still sits inside the `Host` guard,
@@ -649,13 +649,14 @@ pub fn router_with_state(state: AppState) -> Router {
 ///
 /// It used to be `.layer(...)`, applied after `.fallback(...)`, and so it
 /// covered the fallback as well. The fallback is the SPA shell, and the shell
-/// carries the access token in its body. That combination meant a single
+/// then carried the access token in its body. That combination meant a single
 /// `fetch("http://127.0.0.1:<port>/")` from any page on an allowlisted dev
 /// origin — another Vite project, a malicious dev dependency — was answered
 /// with `Access-Control-Allow-Origin`, so the browser handed that page the
 /// token, and with it full read/write on the user's journal. `--allow-origin`
 /// is meant to open the API to a dev SPA; it must not also publish the
-/// credential.
+/// credential. (The shell no longer carries the token at all — see
+/// `spa.rs` — but CORS stays off it regardless.)
 ///
 /// The documented cross-origin flows do not need the shell: `just dev` and
 /// `web/playwright.config.ts` both serve the SPA from vite/`preview` and pin the
@@ -667,7 +668,6 @@ pub fn router_with_state(state: AppState) -> Router {
 /// refused. It is opt-in per request — a client that sends no `Accept-Encoding`
 /// still gets the identity bytes straight out of the snapshot.
 pub fn router_with_security(state: AppState, security: Security) -> Router {
-    let spa_token = security.token();
     let router = Router::new()
         .route("/version", get(version))
         .route("/accountnames", get(accountnames))
@@ -939,8 +939,8 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/prices/file", post(prices_api::create_file))
         .route("/api/prices/update", post(prices_api::update))
         // Token-gate exactly the routes registered above. `route_layer` skips
-        // the fallback, which is what lets the browser fetch the shell (and the
-        // token inside it) before it has any credential to present.
+        // the fallback, which is what lets the browser fetch the shell before it
+        // has any credential to present.
         .route_layer(middleware::from_fn_with_state(
             security.clone(),
             security::token_guard,
@@ -962,10 +962,7 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
     // Everything else (the SPA shell, its embedded assets, and client-side deep
     // links) is served same-origin ONLY; the explicit routes above win, and
     // neither `route_layer` above reaches this.
-    let router = router.fallback(move |uri: Uri| {
-        let token = spa_token.clone();
-        async move { spa::fallback(uri, token).await }
-    });
+    let router = router.fallback(spa::fallback);
 
     // `Fastest` (gzip level 1), not the default level 6: the /transactions body
     // is hundreds of megabytes and this server's usual peer is the SPA on the

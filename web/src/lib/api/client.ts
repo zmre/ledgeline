@@ -12,31 +12,94 @@
  * into the plain-TS clients — settings.svelte.ts imports it back from here. */
 export const SETTINGS_STORAGE_KEY = "ledgeline.settings.v1";
 
+/** sessionStorage key for the token a headless (`--server`) engine handed this
+ * tab in its launch URL's `#token=` fragment. See [`adoptLaunchToken`]. */
+export const LAUNCH_TOKEN_STORAGE_KEY = "ledgeline.launchToken";
+
+/**
+ * Move a `#token=…` launch fragment into `sessionStorage` and strip it from the
+ * address bar. Idempotent and cheap, so it is safe to call on every lookup.
+ *
+ * `ledgeline --server` prints `http://127.0.0.1:PORT/#token=…` rather than
+ * putting the token in the served page, because the page is served to anyone
+ * who asks and HTTP cannot tell the user's browser from another local process.
+ * A fragment never goes over the wire. `sessionStorage` keeps it per tab and
+ * gone with the tab, which matches the token's own lifetime (one engine run)
+ * better than `localStorage` would. Stripping it keeps the token out of the
+ * address bar, bookmarks and anything copied from there.
+ *
+ * Other fragment parameters, should there ever be any, are left alone.
+ */
+export function adoptLaunchToken(): void {
+    if (typeof window === "undefined") return;
+    const {location, history} = window;
+    const hash = location?.hash;
+    if (typeof hash !== "string" || !hash.startsWith("#")) return;
+    const params = new URLSearchParams(hash.slice(1));
+    const token = params.get("token");
+    if (token === null) return;
+    if (token !== "") {
+        try {
+            sessionStorage.setItem(LAUNCH_TOKEN_STORAGE_KEY, token);
+        } catch {
+            // Storage disabled: the token cannot be kept, and stripping it below
+            // still keeps it out of the address bar.
+        }
+    }
+    params.delete("token");
+    const rest = params.toString();
+    try {
+        history.replaceState(history.state, "", `${location.pathname}${location.search}${rest === "" ? "" : `#${rest}`}`);
+    } catch {
+        // Not fatal: the token has been adopted either way.
+    }
+}
+
+/** The token adopted from a launch URL by [`adoptLaunchToken`], or null. */
+function launchToken(): string | null {
+    adoptLaunchToken();
+    if (typeof sessionStorage === "undefined") return null;
+    try {
+        const stored = sessionStorage.getItem(LAUNCH_TOKEN_STORAGE_KEY);
+        return stored === null || stored === "" ? null : stored;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * The engine's per-process access token, or null when there is none to send.
  *
- * Two sources, in order:
- *  1. `window.__LEDGELINE_TOKEN__`, injected into index.html by the binary that
- *     serves the SPA. Same-origin pages get it for free; a cross-origin page
- *     cannot read it, which is the point.
- *  2. `serverToken` in the persisted settings, for the cross-origin cases — vite
+ * Four sources, in order:
+ *  1. `window.__LEDGELINE_TOKEN__`, set by the packaged GUI through wry's
+ *     initialization script — out of band, never in a response body, and only
+ *     on the engine's own origin.
+ *  2. The launch token a headless `ledgeline --server` printed as
+ *     `http://127.0.0.1:PORT/#token=…`, adopted into this tab's
+ *     `sessionStorage` by [`adoptLaunchToken`]. Ahead of source 3 on purpose: it
+ *     is the token of the engine this tab was opened against, and a
+ *     `serverToken` left in `localStorage` by an earlier run is not.
+ *  3. `serverToken` in the persisted settings, for the cross-origin cases — vite
  *     dev and the Playwright suite — where the SPA is served by something other
  *     than the engine and the token comes from $LEDGELINE_TOKEN.
- *  3. `$LEDGELINE_TOKEN` itself, for the node integration suite, which drives
+ *  4. `$LEDGELINE_TOKEN` itself, for the node integration suite, which drives
  *     this client directly with neither a `window` nor a `localStorage` to read.
  *     Unreachable from a browser bundle (`process` is undefined there).
+ *
+ * The served page itself never carries the token: it is fetched without one,
+ * so anything that can reach loopback can read it.
  *
  * A plain hledger-web has no token; null simply means "send no Authorization",
  * which is what that server expects.
  *
- * # Why source 2 stays in `localStorage`
+ * # Why source 3 stays in `localStorage`
  *
  * It is worth asking, because a bearer token in `localStorage` is readable by
  * anything running on the page. The answer is that it is LOAD-BEARING and only
  * for the cross-origin cases: the SPA at `:4173`/`:5173` is a different origin
- * from the engine at `:5099`, so it cannot be handed the token in the page the
- * way the packaged app is, and every e2e spec seeds it there before its first
- * request. Dropping it would break `just dev` and the whole Playwright suite.
+ * from the engine at `:5099`, so it cannot be handed the token the way the
+ * packaged app is, and every e2e spec seeds it there before its first request.
+ * Dropping it would break `just dev` and the whole Playwright suite.
  *
  * In the packaged app it is not used at all: `window.__LEDGELINE_TOKEN__` is
  * checked first and always wins, and nothing writes `serverToken` because the
@@ -49,6 +112,8 @@ export function apiToken(): string | null {
     if (typeof window !== "undefined") {
         const injected = (window as {__LEDGELINE_TOKEN__?: string}).__LEDGELINE_TOKEN__;
         if (typeof injected === "string" && injected !== "") return injected;
+        const launched = launchToken();
+        if (launched !== null) return launched;
     }
     if (typeof localStorage !== "undefined") {
         try {
@@ -96,7 +161,8 @@ function configuredEngineOrigin(): string | null {
  * address. Two origins are legitimate targets and nothing else is:
  *
  *  1. **Our own.** The packaged app serves the SPA and the API same-origin, and
- *     `window.__LEDGELINE_TOKEN__` is injected into that page for exactly this.
+ *     `window.__LEDGELINE_TOKEN__` (or a headless engine's launch token) is
+ *     handed to that page for exactly this.
  *  2. **The engine the user configured**, i.e. the origin of the stored
  *     `serverUrl`. This is what keeps the documented CROSS-ORIGIN flows working:
  *     `just dev` and `web/playwright.config.ts` run the SPA at one origin

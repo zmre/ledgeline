@@ -797,23 +797,26 @@ impl Output {
 ///   a version banner, and anything unparseable stays `Unrecognised`;
 /// * nothing it produces is parsed as a journal or written anywhere.
 fn probe_version(program: &Path) -> Probe {
-    let ask = |read_config: bool| {
-        Invocation {
-            program: program.to_path_buf(),
-            args: vec![OsString::from("--version")],
-            timeout: VERSION_TIMEOUT,
-            stdin: None,
-            read_config,
-        }
-        .run()
-        .map_or(Probe::Absent, |output| {
-            Version::parse(&output.stdout_lossy()).map_or(Probe::Unrecognised, Probe::Reported)
-        })
-    };
-    match ask(false) {
-        Probe::Unrecognised => ask(true),
+    match ask_version(program, false) {
+        Probe::Unrecognised => ask_version(program, true),
         answered => answered,
     }
+}
+
+/// Run `program --version` exactly once and classify the answer. See
+/// [`probe_version`] for when `read_config` may be `true`.
+fn ask_version(program: &Path, read_config: bool) -> Probe {
+    Invocation {
+        program: program.to_path_buf(),
+        args: vec![OsString::from("--version")],
+        timeout: VERSION_TIMEOUT,
+        stdin: None,
+        read_config,
+    }
+    .run()
+    .map_or(Probe::Absent, |output| {
+        Version::parse(&output.stdout_lossy()).map_or(Probe::Unrecognised, Probe::Reported)
+    })
 }
 
 /// Does `program` actually answer `--version` like hledger?
@@ -828,14 +831,21 @@ fn probe_version(program: &Path) -> Probe {
 /// rather than a store-time refusal that cannot say what is wrong with the path
 /// they just typed. So this accepts any [`Probe::Reported`].
 ///
+/// It runs the candidate exactly ONCE, with [`NO_CONF`] — never
+/// [`probe_version`]'s config-reading retry. Whoever holds the access token can
+/// name any binary here, and the probe is itself an `exec`, so every extra run is
+/// an extra execution handed to that caller for free. The cost is that a pre-1.40
+/// hledger, which rejects `--no-conf`, is refused at save time with a generic
+/// message instead of reaching [`Hledger::resolve`]'s [`HledgerError::TooOld`].
+///
 /// # Errors
 /// A fixed phrase — never the path, which
 /// [`prefs::check_storable`](crate::prefs::check_storable) would otherwise leak
 /// into an `/api/prefs` body — saying which way the probe failed.
 pub(crate) fn probe_answers_like_hledger(program: &Path) -> Result<(), &'static str> {
-    match probe_version(program) {
+    match ask_version(program, false) {
         Probe::Reported(_) => Ok(()),
         Probe::Absent => Err("could not be run"),
-        Probe::Unrecognised => Err("is not hledger (it did not report an hledger version)"),
+        Probe::Unrecognised => Err("did not report an hledger version (1.40+ required)"),
     }
 }

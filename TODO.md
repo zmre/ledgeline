@@ -5,19 +5,6 @@
 - fix: display issue where pie chart is not round, but oval when the window narrows horizontally or vertically.  Update: seems to be specific to linux as I can't reproduce on mac. Static analysis says the geometry is fine — layerchart computes the radius as `min(width, height) / 2` and emits a true circle with no `viewBox`, and nothing in our CSS scales non-uniformly — so this needs a WebKitGTK repro (dump the `<svg>`'s rendered box, attributes and computed style from devtools on Linux) before anything is changed.
 
 ## Security
-- security: **a local process can read the token straight out of `GET /`, and that escalates to
-  code execution.** `PUT /api/prefs` persists an arbitrary `hledgerPath`, which `Hledger::candidates`
-  then spawns on every import.
-  - The real fix is to hand the token to the WebView **out of band** — wry's
-    `with_initialization_script` — so the token never appears in a response body at all. `GET /` is
-    deliberately outside `route_layer` so the browser can bootstrap, and HTTP cannot tell the user's
-    WebView from someone else's `curl`.
-  - Needs care: the vite dev flow and the Playwright e2e harness bootstrap cross-origin and would
-    have to keep using `$LEDGELINE_TOKEN`.
-  - The prefs validation only removes the *persistent* half. The `--version` probe is itself an
-    `exec`, so a caller can still run an arbitrary binary by repeating `PUT /api/prefs` — measured
-    running the candidate **twice** per request, which is worth fixing on its own since one would do.
-    (Permissions are checked before the probe, so a group/world-writable binary is never run.)
 - security: **an xlsx with two cells can ask for a ~550 GB allocation.** `convert/spreadsheet.rs`
   lets calamine materialize a dense grid from sparse bounds (`A1` + `XFD1048576` is enough).
   `MAX_INPUT_BYTES` bounds the *compressed* zip and `MAX_ROWS` truncates only *after*
