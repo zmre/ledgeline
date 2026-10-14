@@ -27,10 +27,10 @@
   `symlink_metadata` but the write follows symlinks, and the window spans up to three 120-second
   `hledger` runs. Worse on the edit path, where `carry_forward_metadata` copies the victim file's
   uid/gid/mode onto the new inode and erases the trace. Wants open-once-and-write-through-fd.
-- security: **the CSP inline-script hashes are never tested against a real SvelteKit shell.**
-  `flake.nix` injects a script-less placeholder for every CI test and Playwright runs cross-origin
-  with no CSP, so a SvelteKit upgrade can break the app to a blank window with nothing failing —
-  and the obvious pressure fix would be `unsafe-inline`. Wants a fixture built from a real shell.
+- security: `security::inline_script_hashes` decides "external" by `contains("src=")` on the open
+  tag, so an inline `<script data-src=…>` goes unhashed (and is refused). SvelteKit emits no such
+  tag today, and `tests/spa_shell_csp.rs` (whose scanner parses attribute names) fails if it ever
+  does; still worth matching the attribute name in the production scanner.
 - security: `wire.rs`'s `/accounts` attributes an `include`d file's line number to the main journal
   (`adisourcepos` is built with the main journal's name regardless of which file the directive came
   from). `AccountDeclaration` carries a `SourcePos` but no `source_file`, unlike `Transaction` and
