@@ -72,6 +72,7 @@
 //! or refuses; it never writes a mapping that does not match. See that function
 //! for the two deliberate widenings and the four refusals.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// The file name hledger looks for in a directory.
@@ -94,10 +95,11 @@ pub const MAX_CONF_BYTES: u64 = 256 * 1024;
 /// cannot make the walk unbounded.
 pub const MAX_ANCESTORS: usize = 64;
 
-/// How many `--alias` options this module will take from one config file.
+/// How many of one config file's `--alias` options are forwarded to an import.
 ///
 /// The same bound, and the same reasoning, as [`crate::aliases::MAX_FORWARDED`]:
-/// it limits an `argv`, not a user.
+/// it limits an `argv`, not a user — and, like that one, aliases past it are
+/// counted and reported ([`forwarded`]) rather than quietly dropped.
 pub const MAX_CONF_ALIASES: usize = 200;
 
 // ---------------------------------------------------------------------------
@@ -255,6 +257,11 @@ fn parse_tokens(text: &str) -> Vec<(Section, String)> {
 ///
 /// **None at all when [`hijacks_command`] answers**: a config that replaces the
 /// command breaks the invocation outright, so nothing in it applies to anything.
+///
+/// **Every one of them**, not the first [`MAX_CONF_ALIASES`]: this is also the
+/// answer to "is this alias already in the file?", and a list cut at the cap
+/// answered "no" for every alias past it, so a write appended them again. The
+/// cap belongs where an `argv` is built — see [`forwarded`].
 #[must_use]
 pub fn alias_arguments(text: &str, command: &str) -> Vec<String> {
     if hijacks_command(text).is_some() {
@@ -272,8 +279,21 @@ pub fn alias_arguments(text: &str, command: &str) -> Vec<String> {
     pick(&Section::General)
         .into_iter()
         .chain(pick(&Section::Command(command.to_string())))
-        .take(MAX_CONF_ALIASES)
         .collect()
+}
+
+/// Split [`alias_arguments`]' answer into the ones forwarded to an hledger
+/// invocation and how many past [`MAX_CONF_ALIASES`] are not.
+///
+/// The count is returned rather than dropped for the reason
+/// [`crate::aliases::AliasRefusal::Limit`] exists: a terminal `hledger` applies
+/// every one of them, so an alias past the cap is a mapping the two disagree
+/// about, and the person reading the import screen has to be told.
+#[must_use]
+pub fn forwarded(mut arguments: Vec<String>) -> (Vec<String>, usize) {
+    let unforwarded = arguments.len().saturating_sub(MAX_CONF_ALIASES);
+    arguments.truncate(MAX_CONF_ALIASES);
+    (arguments, unforwarded)
 }
 
 /// The nearest `hledger.conf` at or above `directory`, if there is one.
@@ -314,10 +334,25 @@ pub fn locate(directory: &Path) -> Option<PathBuf> {
 /// values, and refusing the whole file — and with it the account mapping an
 /// import depends on — over one stray byte in a comment would be the wrong trade.
 ///
+/// Bounded by [`MAX_CONF_BYTES`] here, at the read, and not only in [`locate`]:
+/// the write path finds its file by name rather than through `locate`, and a
+/// file that grows between a `stat` and the read would get past a size check
+/// made beforehand anyway.
+///
 /// # Errors
-/// Whatever [`std::fs::read`] reports.
+/// Whatever opening or reading the file reports, or [`std::io::ErrorKind::InvalidData`]
+/// when it is larger than [`MAX_CONF_BYTES`].
 pub fn read(path: &Path) -> std::io::Result<String> {
-    let bytes = std::fs::read(path)?;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(MAX_CONF_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CONF_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the config file is larger than Ledgeline reads",
+        ));
+    }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -646,6 +681,37 @@ mod tests {
             alias_arguments("[import]\nfoo\n--alias=a=b\n", IMPORT_COMMAND),
             vec!["a=b"]
         );
+    }
+
+    #[test]
+    fn aliases_past_the_cap_are_counted_not_lost() {
+        let text: String = (0..=MAX_CONF_ALIASES)
+            .map(|n| format!("--alias=a{n}=b{n}\n"))
+            .collect();
+        let all = alias_arguments(&text, IMPORT_COMMAND);
+        assert_eq!(all.len(), MAX_CONF_ALIASES + 1);
+        let last = format!("a{MAX_CONF_ALIASES}=b{MAX_CONF_ALIASES}");
+        // Already present, so a write adds nothing for it.
+        assert_eq!(with_aliases(&text, std::slice::from_ref(&last)), text);
+        let (forwarded, unforwarded) = forwarded(all);
+        assert_eq!(forwarded.len(), MAX_CONF_ALIASES);
+        assert_eq!(unforwarded, 1);
+    }
+
+    #[test]
+    fn read_refuses_a_file_past_the_cap() {
+        let dir = std::env::temp_dir().join(format!("ledgeline-conf-cap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(CONF_NAME);
+        let cap = usize::try_from(MAX_CONF_BYTES).unwrap();
+        std::fs::write(&path, "x".repeat(cap)).unwrap();
+        assert_eq!(read(&path).unwrap().len(), cap);
+        std::fs::write(&path, "x".repeat(cap + 1)).unwrap();
+        assert_eq!(
+            read(&path).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

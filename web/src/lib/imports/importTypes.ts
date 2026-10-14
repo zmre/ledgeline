@@ -421,6 +421,8 @@ export interface CliParity {
     readonly confOutside: boolean;
     /** A command word the config forces on every hledger run, which breaks all of them. Null normally. */
     readonly confHijackedBy: string | null;
+    /** How many of the config's aliases are past what one import is given — a terminal applies them, this import does not. 0 normally. */
+    readonly confUnforwarded: number;
     /** The `--alias` lines the fix would add, shown before it is pressed — the conversion widens what matches. */
     readonly additions: readonly string[];
     readonly refusals: readonly ConfRefusal[];

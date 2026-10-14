@@ -625,6 +625,10 @@ struct WireCliParity {
     /// A command word the config forces on every hledger invocation, which makes
     /// it break every command the user runs. `null` in the ordinary case.
     conf_hijacked_by: Option<String>,
+    /// How many of the config's `--alias` options were NOT forwarded to this
+    /// import, past `hledger_conf::MAX_CONF_ALIASES`. A terminal applies them,
+    /// so a non-zero count is a divergence of its own. `0` in every real case.
+    conf_unforwarded: usize,
     /// The `--alias` lines the one-click fix would add, shown before it is
     /// pressed because the conversion widens what the pattern matches.
     additions: Vec<String>,
@@ -1382,8 +1386,12 @@ struct ConfInForce {
     /// It is above the journal's own directory, so Ledgeline reads it and will
     /// not write it.
     outside: bool,
-    /// The `--alias` values it gives an import, general section then `[import]`.
+    /// The `--alias` values it gives an import, general section then `[import]`,
+    /// up to [`hledger_conf::MAX_CONF_ALIASES`].
     aliases: Vec<String>,
+    /// How many more it declares past that cap, which a terminal applies and
+    /// this import does not.
+    unforwarded: usize,
     /// A command word it forces on every hledger invocation, if it forces one.
     hijacked_by: Option<String>,
 }
@@ -1395,10 +1403,15 @@ fn conf_in_force(root: &Path) -> Option<ConfInForce> {
     let text = hledger_conf::read(&path).ok()?;
     let directory = path.parent()?;
     let outside = directory != root;
+    let (aliases, unforwarded) = hledger_conf::forwarded(hledger_conf::alias_arguments(
+        &text,
+        hledger_conf::IMPORT_COMMAND,
+    ));
     Some(ConfInForce {
         id: conf_id(root, directory),
         outside,
-        aliases: hledger_conf::alias_arguments(&text, hledger_conf::IMPORT_COMMAND),
+        aliases,
+        unforwarded,
         hijacked_by: hledger_conf::hijacks_command(&text),
     })
 }
@@ -1484,7 +1497,13 @@ fn resolve_conf(root: &Path) -> ConfTarget {
                 text,
                 path,
             },
-            Err(_) => absent(false),
+            // Unreadable, or past `hledger_conf::MAX_CONF_BYTES`: there is a
+            // file here, so a write must not treat it as absent and replace it.
+            Err(_) => ConfTarget {
+                writable: false,
+                exists: true,
+                ..absent(false)
+            },
         },
         // A symlink, a directory, a FIFO: present, and not something to write.
         Ok(_) => ConfTarget {
@@ -3636,6 +3655,7 @@ fn cli_parity(plan: &Plan, differences: Vec<WireRename>) -> WireCliParity {
         conf_path: plan.conf.as_ref().map(|conf| conf.id.clone()),
         conf_outside: outside,
         conf_hijacked_by: plan.conf.as_ref().and_then(|conf| conf.hijacked_by.clone()),
+        conf_unforwarded: plan.conf.as_ref().map_or(0, |conf| conf.unforwarded),
         additions,
         refusals,
         revision: target.revision,
@@ -5532,9 +5552,10 @@ fn run_write_conf(
     let target = resolve_conf(&root);
     if !target.writable {
         return Err(AppError::BadRequest(format!(
-            "{} cannot be written: a config file must be a regular file in your journal's own \
-             directory, not a symlink or a directory",
-            quoted(&target.id)
+            "{} cannot be written: a config file must be a readable regular file in your \
+             journal's own directory, not a symlink or a directory, and no larger than {} KiB",
+            quoted(&target.id),
+            hledger_conf::MAX_CONF_BYTES / 1024
         )));
     }
     if target.revision != request.revision {

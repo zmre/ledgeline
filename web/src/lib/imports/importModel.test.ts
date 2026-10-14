@@ -398,6 +398,7 @@ describe("UNIT import wire decoders", () => {
                     confPath: null,
                     confOutside: false,
                     confHijackedBy: null,
+                    confUnforwarded: 0,
                     additions: ["/^PW.Roth.IRA.-.3077($|:)/=assets:ms:roth\\1"],
                     refusals: [{pattern: "A B", replacement: "x y", reason: "replacementWhitespace", message: "the account it maps to contains a space"}],
                     revision: "rev-1",

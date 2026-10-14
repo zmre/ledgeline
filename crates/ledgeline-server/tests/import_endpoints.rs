@@ -3644,6 +3644,55 @@ async fn a_symlinked_config_is_refused_rather_than_followed() {
     );
 }
 
+/// An alias already in the config past the forwarding cap is still IN the file,
+/// so the write does not append it a second time. Hermetic: the write route
+/// runs no hledger.
+#[tokio::test]
+async fn an_alias_past_the_forwarding_cap_is_not_appended_again() {
+    let tree = conf_tree(&format!(
+        "alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\n\n{OPENING}"
+    ));
+    let filler: String = (0..ledgeline_core::hledger_conf::MAX_CONF_ALIASES)
+        .map(|n| format!("--alias=filler{n}=expenses:filler{n}\n"))
+        .collect();
+    let text = format!("{filler}--alias={CONF_ALIAS}\n");
+    std::fs::write(tree.path("hledger.conf"), &text).expect("write conf");
+    let revision = ledgeline_core::Fingerprint::of_bytes(text.as_bytes()).token();
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/hledger-conf",
+        json!({"revision": revision}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["added"], json!([]), "{body}");
+    assert_eq!(
+        std::fs::read_to_string(tree.path("hledger.conf")).expect("conf"),
+        text
+    );
+}
+
+/// A config past `MAX_CONF_BYTES` is never read whole — and, being a file that
+/// is there, never replaced as if it were absent.
+#[tokio::test]
+async fn an_oversized_config_is_neither_read_nor_written() {
+    let tree = conf_tree(&format!(
+        "alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\n\n{OPENING}"
+    ));
+    let cap = usize::try_from(ledgeline_core::hledger_conf::MAX_CONF_BYTES).expect("fits");
+    let text = format!("# {}\n", "x".repeat(cap));
+    std::fs::write(tree.path("hledger.conf"), &text).expect("write conf");
+
+    let (status, body) = post(&tree, "/api/import/hledger-conf", json!({"revision": ""})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(as_text(&body).contains("KiB"), "{body}");
+    assert_eq!(
+        std::fs::read_to_string(tree.path("hledger.conf")).expect("conf"),
+        text
+    );
+}
+
 /// The config write's blast radius is exactly one file.
 #[tokio::test]
 async fn installing_aliases_writes_one_file_and_nothing_else() {
