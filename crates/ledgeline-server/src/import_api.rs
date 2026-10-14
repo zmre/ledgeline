@@ -116,6 +116,7 @@ use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
 use ledgeline_core::journals::{self, JournalTarget};
 use ledgeline_core::model::Status;
+use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::reimport::{self, RowClassification};
 use ledgeline_core::rules::matching::{self, Candidate, Ranking, Score, Signals};
 use ledgeline_core::rules::{self, Discovery, RulesDoc};
@@ -1440,10 +1441,11 @@ fn conf_id(root: &Path, directory: &Path) -> String {
 /// 2. [`parse::confine`], the same containment `include` and the rules scan use,
 ///    applied to the parent. It canonicalizes first, so a journal directory that
 ///    is itself reached through a symlink is resolved before the comparison.
-/// 3. [`std::fs::symlink_metadata`], which does not follow links: the target must
-///    be absent or a **regular file**. A symlinked `hledger.conf` pointing at
-///    `~/.bashrc` is refused, and so is a FIFO, which would otherwise hang the
-///    request forever on `read`.
+/// 3. [`pinned::read_pinned`], which does not follow links: the target must be
+///    absent or a **regular file**. A symlinked `hledger.conf` pointing at
+///    `~/.bashrc` is refused, and so is a FIFO (opened non-blocking and refused
+///    on its `fstat`), which would otherwise hang the request forever on `read`.
+///    The [`Pin`] it returns is what the write later insists on finding.
 struct ConfTarget {
     path: PathBuf,
     /// The wire handle. Always `hledger.conf`.
@@ -1455,6 +1457,8 @@ struct ConfTarget {
     /// that echoes it is refused if a file has appeared since.
     revision: String,
     writable: bool,
+    /// The inode and raw bytes read, for the write. Empty when nothing was read.
+    pin: Pin,
 }
 
 fn resolve_conf(root: &Path) -> ConfTarget {
@@ -1465,6 +1469,7 @@ fn resolve_conf(root: &Path) -> ConfTarget {
         exists: false,
         revision: String::new(),
         writable,
+        pin: Pin::none(),
     };
     // Guard 2. The parent is the root itself, so this is cheap — and it is here
     // because "cheap and obviously true today" is how a containment check stops
@@ -1473,26 +1478,29 @@ fn resolve_conf(root: &Path) -> ConfTarget {
         return absent(false);
     };
     let path = directory.join(hledger_conf::CONF_NAME);
-    // Guard 3.
-    match std::fs::symlink_metadata(&path) {
-        Err(_) => absent(true),
-        Ok(meta) if meta.file_type().is_file() => match hledger_conf::read(&path) {
-            Ok(text) => ConfTarget {
+    // Guard 3. Lossy, as `hledger_conf::read` is: the revision stays a hash of
+    // the text, and the pin holds the raw bytes' fingerprint for the write.
+    match pinned::read_pinned(&path) {
+        Ok((bytes, pin)) => {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            ConfTarget {
                 revision: Fingerprint::of_bytes(text.as_bytes()).token(),
                 id: hledger_conf::CONF_NAME.to_string(),
                 exists: true,
                 writable: true,
                 text,
                 path,
-            },
-            Err(_) => absent(false),
-        },
+                pin,
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => absent(true),
         // A symlink, a directory, a FIFO: present, and not something to write.
-        Ok(_) => ConfTarget {
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => ConfTarget {
             writable: false,
             exists: true,
             ..absent(false)
         },
+        Err(_) => absent(false),
     }
 }
 
@@ -3871,7 +3879,12 @@ fn run_commit(
         ))
     })?;
 
-    let before = std::fs::read(&plan.target).map_err(journal_unreadable)?;
+    // The journal as this commit found it, PINNED: its inode and bytes. Every
+    // journal write below insists on finding the file exactly as this commit
+    // last left it, so a symlink swapped in during the hledger runs is refused
+    // rather than followed, and an edit the user saved in that window is
+    // reported as a conflict rather than overwritten with `before + appended`.
+    let (before, pin) = pinned::read_pinned(&plan.target).map_err(journal_unreadable)?;
     let output = run(
         import_invocation(
             &plan.hledger,
@@ -3912,16 +3925,23 @@ fn run_commit(
     };
 
     let appended = appended_text(entries);
-    if !appended.is_empty() {
+    let pin = if appended.is_empty() {
+        pin
+    } else {
         let combined = [before.as_slice(), appended.as_bytes()].concat();
-        ledgeline_core::edit::atomic_write(&plan.target, &combined).map_err(|error| {
-            AppError::Internal(format!(
+        pinned::replace(&plan.target, &combined, &pin).map_err(|error| match error {
+            WriteError::Changed => AppError::Conflict(format!(
+                "{} changed on disk while the import was being prepared, so nothing was added \
+                 to it. The CSV was saved; reload and import again.",
+                quoted(&request.plan.journal_id),
+            )),
+            WriteError::Io(error) => AppError::Internal(format!(
                 "{} could not be written: {}. The CSV was saved and the journal is unchanged.",
                 quoted(&request.plan.journal_id),
                 error.kind()
-            ))
-        })?;
-    }
+            )),
+        })?
+    };
 
     // hledger's own dedup state, recorded by hledger. Verified byte-identical to
     // what a writing import leaves behind, repeated same-date lines included.
@@ -3941,11 +3961,17 @@ fn run_commit(
         Err(error) => Some(error.to_string()),
     };
     if let Some(complaint) = complaint {
-        return Err(catchup_failed(&plan, &request.plan, &before, &complaint));
+        return Err(catchup_failed(
+            &plan,
+            &request.plan,
+            &before,
+            &pin,
+            &complaint,
+        ));
     }
 
     if request.write_assertion {
-        write_assertion(&plan, &request.plan)?;
+        write_assertion(&plan, &request.plan, &pin)?;
     }
 
     // The status sync, and it is deliberately the LAST write: the rows it
@@ -4137,8 +4163,10 @@ fn run_save_csv(state: &AppState, request: &WireSaveCsvRequest) -> Result<WireSa
 /// extra transactions dated last month.
 ///
 /// So the journal is restored to `before` — the bytes read moments earlier,
-/// under the write mutex that `commit` and `save-csv` share, so nothing else can
-/// have touched the file in between — and the commit reports as a whole. The CSV
+/// under the write mutex that `commit` and `save-csv` share — and the commit
+/// reports as a whole. The mutex binds only Ledgeline, so the restore is pinned
+/// to `current`, the file exactly as the append left it: a link swapped in or an
+/// edit saved since is refused rather than overwritten. The CSV
 /// stays where it was written, which is the same thing a failed import has
 /// always left behind.
 ///
@@ -4149,10 +4177,11 @@ fn catchup_failed(
     plan: &Plan,
     request: &WireDryRunRequest,
     before: &[u8],
+    current: &Pin,
     complaint: &str,
 ) -> AppError {
-    match ledgeline_core::edit::atomic_write(&plan.target, before) {
-        Ok(()) => AppError::Internal(format!(
+    match pinned::replace(&plan.target, before, current) {
+        Ok(_) => AppError::Internal(format!(
             "the import was undone because hledger could not record which rows it had already \
              taken. {} is exactly as it was; {} was saved. hledger said:\n{complaint}",
             quoted(&request.journal_id),
@@ -4164,7 +4193,10 @@ fn catchup_failed(
              updated, so importing {} again would add them a second time — check the end of the \
              journal before you do. hledger said:\n{complaint}",
             quoted(&request.journal_id),
-            error.kind(),
+            match error {
+                WriteError::Changed => "it changed on disk after the import".to_string(),
+                WriteError::Io(error) => error.kind().to_string(),
+            },
             quoted(&request.csv_path),
         )),
     }
@@ -4416,7 +4448,15 @@ fn preflight_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), A
 /// rather than gaining a line that makes every subsequent `hledger check` fail.
 /// [`preflight_assertion`] has normally refused already, before the import ran at
 /// all; this is what guarantees the property for the bytes that actually land.
-fn write_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), AppError> {
+///
+/// Pinned to `current`, the journal exactly as the import left it, so the
+/// assertion is never appended through a swapped-in link or onto an edit the
+/// check above did not see.
+fn write_assertion(
+    plan: &Plan,
+    request: &WireDryRunRequest,
+    current: &Pin,
+) -> Result<(), AppError> {
     let Some(assertion) = plan_assertion(plan, request, "")? else {
         return Ok(());
     };
@@ -4427,17 +4467,24 @@ fn write_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), AppEr
         )));
     }
 
-    let text = std::fs::read_to_string(&plan.target).map_err(journal_unreadable)?;
+    let (text, _) = pinned::read_pinned_string(&plan.target).map_err(journal_unreadable)?;
     let separator = if text.ends_with('\n') { "\n" } else { "\n\n" };
-    ledgeline_core::edit::atomic_write(
+    pinned::replace(
         &plan.target,
         format!("{text}{separator}{assertion}").as_bytes(),
+        current,
     )
-    .map_err(|error| {
-        AppError::Internal(format!(
+    .map(|_| ())
+    .map_err(|error| match error {
+        WriteError::Changed => AppError::Conflict(
+            "the journal changed on disk after the import landed, so the balance assertion was \
+             not written. The import itself was applied."
+                .to_string(),
+        ),
+        WriteError::Io(error) => AppError::Internal(format!(
             "the balance assertion could not be written: {}. The import itself was applied.",
             error.kind()
-        ))
+        )),
     })
 }
 
@@ -4490,7 +4537,7 @@ fn run_sort(
     let root = include_root(&main)?;
     let (journal, _) = resolve_journal(state, &root, &request.journal_id)?;
 
-    let text = std::fs::read_to_string(&journal).map_err(journal_unreadable)?;
+    let (text, pin) = pinned::read_pinned_string(&journal).map_err(journal_unreadable)?;
     let plan = sort::plan(&text).map_err(|error| AppError::BadRequest(error.to_string()))?;
     if plan.unchanged {
         return Ok(WireSorted {
@@ -4500,12 +4547,19 @@ fn run_sort(
     }
     let sorted =
         sort::apply(&text, &plan).map_err(|error| AppError::BadRequest(error.to_string()))?;
-    ledgeline_core::edit::atomic_write(&journal, sorted.as_bytes()).map_err(|error| {
-        AppError::Internal(format!(
+    // Pinned to the inode and bytes just planned from: never through a link
+    // swapped in since, never over an edit saved since.
+    pinned::replace(&journal, sorted.as_bytes(), &pin).map_err(|error| match error {
+        WriteError::Changed => AppError::Conflict(format!(
+            "{} changed on disk while it was being re-sorted, so nothing was changed. Reload and \
+             try again.",
+            quoted(&request.journal_id),
+        )),
+        WriteError::Io(error) => AppError::Internal(format!(
             "{} could not be re-sorted: {}. Nothing was changed.",
             quoted(&request.journal_id),
             error.kind()
-        ))
+        )),
     })?;
     if let Some(Err(error)) = state.reopen_editor() {
         eprintln!("ledgeline: the journal could not be re-read after a sort: {error}");
@@ -5569,25 +5623,33 @@ fn run_write_conf(
     };
     let new_text = hledger_conf::with_aliases(&base, &additions);
 
-    // Narrow the TOCTOU window from "the whole request" to "read → rename", the
-    // same last-moment re-check `alias_api` makes.
-    let before = resolve_conf(&root);
-    if before.revision != request.revision || !before.writable {
-        return Err(AppError::Conflict(format!(
+    // Pinned. An existing file is replaced only if it is still the inode and
+    // bytes read above, checked through the descriptor being replaced right up
+    // to the rename; a new one is created `O_EXCL | O_NOFOLLOW`, so a file or a
+    // link planted since the read is refused rather than written through.
+    let written = if target.exists {
+        pinned::replace(&target.path, new_text.as_bytes(), &target.pin).map(|_| ())
+    } else {
+        pinned::create_new(&target.path, new_text.as_bytes()).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                WriteError::Changed
+            } else {
+                WriteError::Io(error)
+            }
+        })
+    };
+    written.map_err(|error| match error {
+        WriteError::Changed => AppError::Conflict(format!(
             "{} changed on disk since this page read it, so nothing was written. Reload and try \
              again.",
             quoted(&target.id)
-        )));
-    }
-
-    ledgeline_core::edit::atomic_write(&target.path, new_text.as_bytes()).map_err(|error| {
-        // Only the `ErrorKind`: `atomic_write` builds a temp path from the
-        // target, so its io errors can carry one.
-        AppError::Internal(format!(
+        )),
+        // Only the `ErrorKind`: a write error can carry the temp path.
+        WriteError::Io(error) => AppError::Internal(format!(
             "{} could not be written: {}. Nothing else was changed.",
             quoted(&target.id),
             error.kind()
-        ))
+        )),
     })?;
 
     Ok(WireConfWritten {

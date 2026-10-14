@@ -53,6 +53,7 @@ pub mod journals;
 pub mod model;
 pub mod parse;
 pub mod periodic;
+pub mod pinned;
 pub mod projections;
 pub mod qb_import;
 pub mod qb_journal;

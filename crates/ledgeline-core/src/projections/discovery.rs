@@ -188,6 +188,14 @@ impl DiscoveredProjection {
     pub fn identity_unchanged(&self) -> bool {
         dirscan::still_the_same_file(&self.path.0, self.identity)
     }
+
+    /// The `(dev, ino)` the scan admitted, for a [`crate::pinned::Pin`]: the
+    /// write then checks it through the descriptor it replaces, right up to the
+    /// rename, rather than in a separate `stat` before it.
+    #[must_use]
+    pub fn identity(&self) -> Option<crate::pinned::FileIdentity> {
+        self.identity.map(crate::pinned::FileIdentity::from_raw)
+    }
 }
 
 /// Why a **new** projection file may not be created at an id.

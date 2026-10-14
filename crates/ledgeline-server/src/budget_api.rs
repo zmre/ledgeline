@@ -45,7 +45,7 @@
 //!    a text-shape check and deliberately does not parse amounts; this step does,
 //!    against the real parse. It is the check that would catch a decimal mark
 //!    rendered wrong for a `1.234,56 EUR` journal.
-//! 7. **One [`atomic_write`]**, and it is the last statement that can have an
+//! 7. **One pinned [`pinned::replace`]**, and it is the last statement that can have an
 //!    effect. Every `?` above it is a decision to write nothing.
 //!
 //! # Signs, and why they are flipped here and nowhere else
@@ -71,13 +71,14 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderName, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
-use ledgeline_core::edit::{Fingerprint, atomic_write};
+use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::model::{
     Amount, Commodity, Journal, PeriodExpr, PeriodicTransaction, PostingType,
 };
 use ledgeline_core::periodic::{
     BlockLock, GoalRequest, PeriodicBlock, PeriodicDoc, PeriodicError, period_word,
 };
+use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::reports::{
     AccountType, Interval, MixedAmount, ReferenceOpts, account_decls, account_reference,
     declared_types, is_account_type,
@@ -807,7 +808,7 @@ fn save_budget(
     }
     let path = journal_path(journal, id).ok_or_else(|| unresolved(id))?;
 
-    let text = read_journal(&path, id)?;
+    let (text, pin) = read_journal(&path, id)?;
     let fingerprint = Fingerprint::of_bytes(text.as_bytes());
     // Checked BEFORE any index is resolved, so a client editing an older parse is
     // told the file moved rather than "there is no budget line 3" — which
@@ -854,20 +855,18 @@ fn save_budget(
         return Ok(file_response(&target, &doc, fingerprint.token(), journal));
     }
 
-    // Narrow the TOCTOU window from "the whole request" to "hash → rename".
-    let before_write = Fingerprint::of_bytes(read_journal(&path, id)?.as_bytes());
-    if !before_write.content_matches(&fingerprint) {
-        return Err(stale(id));
-    }
-
-    atomic_write(&path, new_text.as_bytes()).map_err(|error| {
-        // Only the `ErrorKind`: `atomic_write` builds a temp path from the
-        // target, so its io errors can carry one.
-        AppError::Internal(format!(
+    // Pinned to the inode and the bytes read above: `pinned::replace` re-checks
+    // both through the descriptor it replaces, right up to the rename, and never
+    // follows a link — a symlink swapped in since the read is a `409`, not a
+    // write to wherever it points.
+    pinned::replace(&path, new_text.as_bytes(), &pin).map_err(|error| match error {
+        WriteError::Changed => stale(id),
+        // Only the `ErrorKind`: a write error can carry the temp path.
+        WriteError::Io(error) => AppError::Internal(format!(
             "{} could not be written: {}. Nothing else was changed.",
             quoted(id),
             error.kind()
-        ))
+        )),
     })?;
 
     // The journal changed underneath the editor, so re-open it — otherwise the
@@ -1177,12 +1176,18 @@ fn can_create(journal: &Journal) -> Result<(PathBuf, PathBuf), AppError> {
     }
     let budget = root.join(BUDGET_FILE);
     if budget.symlink_metadata().is_ok() {
-        return Err(AppError::Conflict(format!(
-            "a file called {BUDGET_FILE} already sits beside your journal, and Ledgeline will not \
-             write over it. Include it from your main journal yourself, or move it aside."
-        )));
+        return Err(already_exists());
     }
     Ok((main.clone(), budget))
+}
+
+/// The `409` for a name that is already taken — by the early check above, or by
+/// the kernel's `O_EXCL` at the create itself.
+fn already_exists() -> AppError {
+    AppError::Conflict(format!(
+        "a file called {BUDGET_FILE} already sits beside your journal, and Ledgeline will not \
+         write over it. Include it from your main journal yourself, or move it aside."
+    ))
 }
 
 /// Create `budget.journal` and `include` it from the main journal.
@@ -1203,7 +1208,10 @@ fn create_budget_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
     let journal = &snapshot.journal;
     let (main, budget) = can_create(journal)?;
 
-    let main_text = std::fs::read_to_string(&main).map_err(|error| {
+    // Pinned, so the `include` below lands only on the main journal as read
+    // here — never through a link swapped in since, never over an edit made in
+    // between.
+    let (main_text, main_pin) = pinned::read_pinned_string(&main).map_err(|error| {
         AppError::Internal(format!("your journal could not be read: {}", error.kind()))
     })?;
     let newline = if main_text.contains("\r\n") {
@@ -1236,17 +1244,27 @@ fn create_budget_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
         ));
     }
 
-    atomic_write(&budget, BUDGET_FILE_HEADER.as_bytes()).map_err(|error| {
+    // `O_CREAT | O_EXCL | O_NOFOLLOW`: the "never overwritten" promise
+    // `can_create` checked is the kernel's, decided at the open, so a file or a
+    // symlink planted since that check is refused rather than written through.
+    pinned::create_new(&budget, BUDGET_FILE_HEADER.as_bytes()).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            return already_exists();
+        }
         AppError::Internal(format!(
             "{BUDGET_FILE} could not be created: {}. Nothing else was changed.",
             error.kind()
         ))
     })?;
-    atomic_write(&main, new_main.as_bytes()).map_err(|error| {
+    pinned::replace(&main, new_main.as_bytes(), &main_pin).map_err(|error| {
+        let reason = match error {
+            WriteError::Changed => "it changed on disk while this was being done".to_string(),
+            WriteError::Io(error) => error.kind().to_string(),
+        };
         AppError::Internal(format!(
             "{BUDGET_FILE} was created, but your main journal could not be updated to include it: \
              {}. Add `{include_line}` to it yourself, or delete {BUDGET_FILE}.",
-            error.kind()
+            reason
         ))
     })?;
 
@@ -1377,9 +1395,17 @@ fn checked_date(raw: &str) -> Result<String, AppError> {
     }
 }
 
-/// Read one journal file, reporting only what the caller already knows.
-fn read_journal(path: &FsPath, id: &str) -> Result<String, AppError> {
-    std::fs::read_to_string(path).map_err(|error| {
+/// Read one journal file, reporting only what the caller already knows, with
+/// the [`Pin`] a later write of it must still match — identity and fingerprint
+/// from one open descriptor.
+///
+/// Never follows a symlink: the path is the real one the snapshot resolved, so
+/// a link there now was swapped in since, and that is a stale revision.
+fn read_journal(path: &FsPath, id: &str) -> Result<(String, Pin), AppError> {
+    pinned::read_pinned_string(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidInput {
+            return stale(id);
+        }
         AppError::Internal(format!(
             "{} could not be read: {}",
             quoted(id),

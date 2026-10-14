@@ -45,6 +45,7 @@ use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PeriodSpec, Posting,
 };
 use ledgeline_core::parse::parse_period_spec;
+use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::projections::serialize::{
     ProjectionDoc, SerializeError, new_file, scenario_from_text, write_scenario,
 };
@@ -1332,7 +1333,7 @@ fn create_scenario(
 
 /// The whole of an UPDATE, synchronously, on the blocking pool.
 ///
-/// Every `?` here is a decision not to write. The single `atomic_write` is the
+/// Every `?` here is a decision not to write. The single pinned replace is the
 /// last statement that can have an effect, and everything above it is either a
 /// read or a pure computation.
 fn update_scenario(
@@ -1397,28 +1398,22 @@ fn update_scenario(
         });
     }
 
-    // Narrow the TOCTOU window from "the whole request" to "hash → rename". It
-    // cannot be closed — there is no compare-and-swap for a file — but the read
-    // above happened before parsing, rendering and verifying, all of which take
-    // time.
-    let (_, before_write) = read_file(path, id)?;
-    if !before_write.content_matches(&fingerprint) {
-        return Err(stale(id));
-    }
-    // `(dev, ino)` plus a regular-file re-check, immediately before the write.
+    // Pinned to the scan's `(dev, ino)` and to the revision the client edited.
     // The scan proved this name was a regular file inside the root; that proof
     // expired the moment the scan ended, and a name can become a symlink, a
-    // FIFO or a different file entirely in between.
-    if !found.identity_unchanged() {
-        return Err(stale(id));
-    }
-
-    // `atomic_write` and not `create_exclusive`: this file exists, and every
-    // property it documents is wanted here — a same-directory temp file, mode
-    // carry-forward (a projection carries account names and figures, so `0600`
-    // staying `0600` is not hypothetical), and `fsync` before `rename`.
-    ledgeline_core::edit::atomic_write(path, new_text.as_bytes())
-        .map_err(|error| write_failed(id, &error))?;
+    // FIFO or a different file entirely in between. `pinned::replace` re-checks
+    // both through the descriptor it replaces, right up to the rename, and never
+    // follows a link. A replace and not `create_exclusive`: this file exists,
+    // and its mode is carried forward (a projection carries account names and
+    // figures, so `0600` staying `0600` is not hypothetical).
+    let pin = Pin {
+        identity: found.identity(),
+        fingerprint: Some(fingerprint),
+    };
+    pinned::replace(path, new_text.as_bytes(), &pin).map_err(|error| match error {
+        WriteError::Changed => stale(id),
+        WriteError::Io(error) => write_failed(id, &error),
+    })?;
 
     // Deliberately NO `state.reopen_editor()`: it re-opens the main journal,
     // which a file the main journal does not include cannot have changed.

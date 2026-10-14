@@ -18,14 +18,16 @@
     `exec`, so a caller can still run an arbitrary binary by repeating `PUT /api/prefs` — measured
     running the candidate **twice** per request, which is worth fixing on its own since one would do.
     (Permissions are checked before the probe, so a group/world-writable binary is never run.)
-- security: **TOCTOU between the symlink refusal and the write.** The refusal uses
-  `symlink_metadata` but the write follows symlinks, and the window spans up to three 120-second
-  `hledger` runs. Worse on the edit path, where `carry_forward_metadata` copies the victim file's
-  uid/gid/mode onto the new inode and erases the trace. Wants open-once-and-write-through-fd.
 - security: `security::inline_script_hashes` decides "external" by `contains("src=")` on the open
   tag, so an inline `<script data-src=…>` goes unhashed (and is refused). SvelteKit emits no such
   tag today, and `tests/spa_shell_csp.rs` (whose scanner parses attribute names) fails if it ever
   does; still worth matching the attribute name in the production scanner.
+- security: **some READS still follow a swapped-in symlink.** Writes are closed (`pinned`:
+  resolve once, `O_NOFOLLOW`, `(dev, ino)` + fingerprint checked through the fd up to `renameat`),
+  but `rules_api::read_document`, `projections_api::read_file` and every `hledger` invocation
+  (`-f <journal>`) still open by path. A link swapped in mid-request can make a preview or a
+  revision describe the link's target — a disclosure into the UI, never a write. Wants
+  `pinned::read_pinned` at those reads and, for hledger, a check of the pin after each run.
 - security: `wire.rs`'s `/accounts` attributes an `include`d file's line number to the main journal
   (`adisourcepos` is built with the main journal's name regardless of which file the directive came
   from). `AccountDeclaration` carries a `SourcePos` but no `source_file`, unlike `Transaction` and
