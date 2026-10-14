@@ -21,7 +21,7 @@
 //! * **A page on an ALLOWLISTED origin reading the token.** `--allow-origin`
 //!   opens the API to a named dev origin, and for a while it opened the SPA
 //!   shell too, because the CORS layer was installed over the whole router
-//!   including the fallback. The shell carries the token in its body, so one
+//!   including the fallback. The shell then carried the token in its body, so one
 //!   `fetch("http://127.0.0.1:<port>/")` from any page on that origin — another
 //!   Vite project, a malicious dev dependency — read it and had full read/write
 //!   on the journal with no interaction (SEC-12). The layer is now a
@@ -37,44 +37,50 @@
 //!
 //! * **A malicious process running as the SAME user.** It can read (and rewrite)
 //!   the journal file directly; no HTTP control is relevant.
-//! * **A process running as a DIFFERENT local user — the token does not stop
-//!   this on its own.** Such a process can open a TCP connection to loopback,
-//!   `GET /`, and read the token straight out of the SPA shell we serve it: the
-//!   shell has to carry the token for the browser to bootstrap, and HTTP gives
-//!   us no way to tell the user's own WebView from someone else's `curl`. The
-//!   only thing standing between such a process and the journal is the
-//!   loopback-only bind (see `main::plan_security`), which keeps the port off
-//!   the network but not off the machine. Closing it properly means handing the
-//!   token to the WebView out-of-band (wry's initialization script) so it never
-//!   appears in a response body.
-//!
-//!   **This used to add "and the journal file's own permissions", which was
-//!   wrong** — wrong enough to be a finding in its own right, because it
-//!   described the worst case as bounded by file permissions when it is not
-//!   bounded at all. Whoever holds the token holds `PUT /api/prefs`, and
-//!   `hledgerPath` there names the binary spawned on every import. So a token
-//!   scraped once bought arbitrary CODE EXECUTION as the user, surviving
-//!   restarts, from which the journal's permissions follow trivially (SEC-14).
-//!   `prefs::check_storable` now refuses a group- or world-writable binary and
-//!   runs the candidate before persisting it. Read that narrowly:
-//!
-//!   * it removes the PERSISTENT half for anything that is not plausibly
-//!     hledger — a script that prints nothing recognisable is refused and never
-//!     written down, so it does not run on every import forever after;
-//!   * it does **not** remove execution. The probe *is* an `exec`, so
-//!     `PUT /api/prefs` still runs whatever the caller names, once, before
-//!     refusing it. Bounding that would mean not probing at all, and then a bad
-//!     path is discovered at import time instead — which is the failure mode
-//!     `prefs.rs` exists to prevent;
-//!   * and an attacker who owns a binary that DOES print an hledger version
-//!     banner walks through all of it unchanged.
-//!
-//!   So it is defence in depth for an exposure that is still open. The paragraph
-//!   above — handing the token to the WebView out-of-band — is where the actual
-//!   fix goes.
+//! * **Anyone who can read the `--server` terminal.** Headless mode prints the
+//!   launch URL, token included, because something else has to drive it.
 //! * **Anything at all once `--host` is pointed off loopback.** That path is
 //!   gated on an explicitly configured `LEDGELINE_TOKEN` and turns the `Host`
 //!   guard off, because the legitimate `Host` values are then unknowable.
+//!
+//! ## Closed: another local process scraping the token from `GET /`
+//!
+//! The SPA shell is served without a token (the browser has nothing to present
+//! before it has loaded the page), and HTTP gives us no way to tell the user's
+//! own WebView from someone else's `curl`. The shell used to carry the token in
+//! its body for the browser to bootstrap, so any process that could reach
+//! loopback — another local user's included — could `GET /` and read it. The
+//! token now appears in no response body at all:
+//!
+//! * the GUI hands it to its WebView out of band, with wry's initialization
+//!   script, guarded to our exact origin (`gui.rs`);
+//! * `--server` prints a launch URL with the token in its `#token=` fragment,
+//!   which a browser never puts on the wire; the SPA moves it into
+//!   `sessionStorage` and strips it from the address bar.
+//!
+//! That exposure is what made the following worth writing down. This threat
+//! model used to bound the worst case by "the journal file's own permissions",
+//! which was **wrong** — wrong enough to be a finding in its own right, because
+//! it is not bounded at all. Whoever holds the token holds `PUT /api/prefs`, and
+//! `hledgerPath` there names the binary spawned on every import. So a token
+//! scraped once bought arbitrary CODE EXECUTION as the user, surviving restarts,
+//! from which the journal's permissions follow trivially (SEC-14).
+//! `prefs::check_storable` refuses a group- or world-writable binary and runs
+//! the candidate before persisting it. Read that narrowly:
+//!
+//! * it removes the PERSISTENT half for anything that is not plausibly hledger
+//!   — a script that prints nothing recognisable is refused and never written
+//!   down, so it does not run on every import forever after;
+//! * it does **not** remove execution. The probe *is* an `exec`, so
+//!   `PUT /api/prefs` still runs whatever the caller names, exactly once (it
+//!   used to be twice), before refusing it. Bounding that would mean not probing
+//!   at all, and then a bad path is discovered at import time instead — which is
+//!   the failure mode `prefs.rs` exists to prevent;
+//! * and an attacker who owns a binary that DOES print an hledger version banner
+//!   walks through all of it unchanged.
+//!
+//! So it is defence in depth for whoever already holds the token, and keeping
+//! the token out of `GET /` is what keeps everyone else from holding it.
 //!
 //! The token is per-process and never persisted: restarting the app invalidates
 //! it, and no other process is told what it is.
@@ -129,7 +135,7 @@ pub enum SecurityError {
     #[error("generating an access token: {0}")]
     Random(#[from] getrandom::Error),
     #[error(
-        "${TOKEN_ENV} must be {MIN_TOKEN_LEN}–{MAX_TOKEN_LEN} characters of [A-Za-z0-9._-] (it is embedded in a page script, so the character set is restricted)"
+        "${TOKEN_ENV} must be {MIN_TOKEN_LEN}–{MAX_TOKEN_LEN} characters of [A-Za-z0-9._-] (it is embedded in a script and a URL, so the character set is restricted)"
     )]
     MalformedToken,
     #[error("--allow-origin {origin}: not a usable origin (expected e.g. http://localhost:5173)")]
@@ -154,8 +160,9 @@ impl AccessToken {
 
     /// Adopt a caller-supplied token, rejecting anything outside
     /// `[A-Za-z0-9._-]{16,128}`. The character set matters: the token is
-    /// interpolated into a `<script>` string literal in the served shell, and a
-    /// quote or `</script>` there would be an injection.
+    /// placed in the GUI's initialization script and in the `--server` launch
+    /// URL's fragment, and a quote, `</script>` or `&` in either would be an
+    /// injection or a mangled credential.
     ///
     /// # Errors
     /// [`SecurityError::MalformedToken`] if `raw` is too short, too long, or
@@ -297,11 +304,6 @@ impl Security {
         })
     }
 
-    /// The token the SPA shell must advertise, if any.
-    pub(crate) fn token(&self) -> Option<AccessToken> {
-        self.token.clone()
-    }
-
     /// The CORS layer for the allowlisted origins, or `None` (the default) when
     /// there are none — in which case no CORS layer is installed at all and the
     /// server is same-origin only.
@@ -335,8 +337,8 @@ impl Security {
 /// This is the anti-DNS-rebinding control: an attacker page on
 /// `attacker.example.com` whose DNS has been re-pointed at `127.0.0.1` still
 /// sends `Host: attacker.example.com`, which never matches. Applied to the WHOLE
-/// router (the SPA shell included) so a rebound page cannot even fetch the page
-/// that carries the token.
+/// router (the SPA shell included) so a rebound page cannot even fetch the
+/// shell.
 pub(crate) async fn host_guard(
     State(security): State<Security>,
     request: Request,

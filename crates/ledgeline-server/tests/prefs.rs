@@ -509,10 +509,9 @@ fn a_binary_that_does_not_answer_like_hledger_is_refused() {
     )
     .expect_err("a binary that does not report an hledger version must be refused");
     match error {
-        PrefsError::InvalidHledgerPath { reason } => assert_eq!(
-            reason,
-            "is not hledger (it did not report an hledger version)"
-        ),
+        PrefsError::InvalidHledgerPath { reason } => {
+            assert_eq!(reason, "did not report an hledger version (1.40+ required)")
+        }
         other => panic!("expected InvalidHledgerPath, got {other:?}"),
     }
     assert!(
@@ -522,12 +521,53 @@ fn a_binary_that_does_not_answer_like_hledger_is_refused() {
 
     // …and the reason still names no path, like every other rejection here.
     let rendered = PrefsError::InvalidHledgerPath {
-        reason: "is not hledger (it did not report an hledger version)",
+        reason: "did not report an hledger version (1.40+ required)",
     }
     .to_string();
     assert!(
         !rendered.contains(&*impostor.to_string_lossy()),
         "{rendered}"
+    );
+}
+
+/// The store-time probe is itself an `exec` of whatever the caller named, so it
+/// must run the candidate exactly ONCE per save. It used to retry an
+/// unrecognised answer with config reading allowed (the import-time pre-1.40
+/// diagnosis), which ran an impostor twice per `PUT /api/prefs`.
+#[cfg(unix)]
+#[test]
+fn the_store_time_probe_runs_the_candidate_exactly_once() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = dir.path().join("prefs.json");
+    let counter = dir.path().join("runs");
+    let impostor = dir.path().join("counting-impostor");
+    std::fs::write(
+        &impostor,
+        format!(
+            "#!/bin/sh\nprintf 'x\\n' >> '{}'\nprintf 'not a version banner\\n'\n",
+            counter.display()
+        ),
+    )
+    .expect("write counting stub");
+    make_executable(&impostor);
+
+    let error = prefs::store_in(
+        &store,
+        &Prefs {
+            hledger_path: Some(impostor),
+            git_autocommit: None,
+        },
+    )
+    .expect_err("an impostor must be refused");
+    assert!(
+        matches!(error, PrefsError::InvalidHledgerPath { .. }),
+        "{error:?}"
+    );
+    let runs = std::fs::read_to_string(&counter).expect("the stub ran");
+    assert_eq!(
+        runs.lines().count(),
+        1,
+        "the candidate must run exactly once"
     );
 }
 

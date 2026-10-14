@@ -704,15 +704,20 @@ fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
             "ledgeline listening on http://{host}:{bound}/ (journal: {})",
             journal_path.display()
         );
-        // Headless mode exists to be driven by something else — a browser at a
-        // different origin, the e2e harness, a script — so the token has to be
-        // discoverable. The GUI never prints it: its WebView reads it from the
-        // page. Anyone who can see this terminal can read the journal anyway.
+        // Headless mode exists to be driven by something else — a browser, the
+        // e2e harness, a script — so the token has to be discoverable. It is
+        // NOT in the served page (any local process could read it there), so a
+        // browser gets it from the launch URL's `#token=` fragment, which it
+        // never sends over the wire; the SPA moves it into `sessionStorage` and
+        // strips it from the address bar. The GUI never prints it: its WebView
+        // gets it from wry's initialization script. Anyone who can see this
+        // terminal can read the journal anyway.
         println!(
-            "ledgeline: access token: {}\nledgeline: send it as `Authorization: Bearer <token>` on \
-             every /api and wire request{}",
-            process_token.token.as_str(),
-            if process_token.from_env {
+            "ledgeline: open http://{host}:{bound}/#token={token} in a browser\n\
+             ledgeline: access token: {token}\nledgeline: send it as `Authorization: Bearer <token>` \
+             on every /api and wire request{origin}",
+            token = process_token.token.as_str(),
+            origin = if process_token.from_env {
                 format!(" (from ${TOKEN_ENV})")
             } else {
                 format!(" (set ${TOKEN_ENV} to choose it yourself)")

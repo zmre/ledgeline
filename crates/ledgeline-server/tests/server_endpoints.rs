@@ -452,7 +452,7 @@ async fn write_routes_require_the_token() {
 
 /// SEC-1 item 1: the anti-DNS-rebinding control. A rebound name reaches the
 /// socket but never the handler — even with a valid token, and even for the SPA
-/// shell that carries the token.
+/// shell.
 #[tokio::test]
 async fn host_guard_rejects_anything_but_loopback_on_our_port() {
     for host in [
@@ -520,7 +520,7 @@ async fn host_guard_rejects_a_missing_host() {
 /// The SPA shell and its assets must stay reachable WITHOUT a token — the
 /// browser has nothing to present until it has loaded the page.
 #[tokio::test]
-async fn the_spa_shell_is_served_without_a_token_and_publishes_it() {
+async fn the_spa_shell_is_served_without_a_token() {
     let request = Request::builder()
         .method("GET")
         .uri("/")
@@ -538,21 +538,59 @@ async fn the_spa_shell_is_served_without_a_token_and_publishes_it() {
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
         .expect("the shell carries a CSP");
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body collects")
-        .to_bytes();
-    let html = String::from_utf8_lossy(&body);
-    assert!(
-        html.contains("window.__LEDGELINE_TOKEN__=\"integration-test-token\""),
-        "the shell must hand the same-origin SPA its token"
-    );
     // SEC-7: the shell's own policy must hash the inline scripts it just served,
     // or the browser silently refuses to boot the SPA.
     assert!(csp.contains("script-src 'self' 'sha256-"), "CSP: {csp}");
     assert!(csp.contains("connect-src 'self'"), "CSP: {csp}");
+}
+
+/// …and because it is served to anyone, it must never carry the token. HTTP
+/// cannot tell the user's WebView from another local process's `curl`, and a
+/// token read out of `GET /` used to be full read/write on the journal plus code
+/// execution through `PUT /api/prefs`. The GUI gets the token from wry's
+/// initialization script, and `--server` from its printed `#token=` URL.
+///
+/// Both postures — the loopback one (GUI and default `--server`) and the
+/// any-host one (`--server --host` off loopback) — and every shell path.
+#[tokio::test]
+async fn the_spa_shell_never_carries_the_token() {
+    for (posture, security) in [
+        ("local", local_security()),
+        ("any host", Security::any_host(test_token())),
+    ] {
+        for uri in ["/", "/index.html", "/holdings"] {
+            let request = Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(header::HOST, GOOD_HOST)
+                .body(Body::empty())
+                .expect("request builds");
+            let response = secured_router(security.clone())
+                .oneshot(request)
+                .await
+                .expect("router responds");
+            assert_eq!(response.status(), StatusCode::OK, "{posture} {uri}");
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body collects")
+                .to_bytes();
+            let html = String::from_utf8_lossy(&body);
+            assert!(
+                html.contains("window.__LEDGELINE_EMBEDDED__=true"),
+                "{posture} {uri}: the embedded marker must still be served"
+            );
+            assert!(
+                !html.contains(test_token().as_str()),
+                "{posture} {uri}: the shell must not carry the access token"
+            );
+            assert!(
+                !html.contains("__LEDGELINE_TOKEN__"),
+                "{posture} {uri}: the shell must not set the token global"
+            );
+        }
+    }
 }
 
 /// SEC-1 item 2: `--allow-origin` echoes the EXACT origin, never a wildcard, and
@@ -615,9 +653,9 @@ fn allowing_the_dev_origin() -> Security {
 
 /// SEC-12. `--allow-origin` opens the API to a dev origin and NOTHING else.
 ///
-/// The SPA shell carries the per-process access token in its body, so a CORS
-/// layer over the fallback hands that token to every page on an allowlisted
-/// origin: one `fetch("http://127.0.0.1:5099/")` from another Vite project on
+/// The SPA shell used to carry the per-process access token in its body, so a
+/// CORS layer over the fallback handed that token to every page on an
+/// allowlisted origin: one `fetch("http://127.0.0.1:5099/")` from another Vite project on
 /// `localhost:4173`, no interaction, and the caller then has full read/write on
 /// the user's journal. The layer must therefore be a `route_layer` over the
 /// explicit routes, never a `layer` over the router.
@@ -625,7 +663,7 @@ fn allowing_the_dev_origin() -> Security {
 /// All three shell paths are checked, because the fallback serves the shell for
 /// `/`, for `/index.html`, and for every client-side deep link.
 #[tokio::test]
-async fn the_token_bearing_shell_is_never_readable_cross_origin() {
+async fn the_shell_is_never_readable_cross_origin() {
     for uri in ["/", "/index.html", "/holdings"] {
         let (status, headers) = probe(
             allowing_the_dev_origin(),
@@ -641,8 +679,8 @@ async fn the_token_bearing_shell_is_never_readable_cross_origin() {
         assert_eq!(
             header_of(&headers, "access-control-allow-origin"),
             None,
-            "GET {uri} carries the access token in its body; no browser may ever \
-             be told it is readable cross-origin, allowlisted origin or not"
+            "GET {uri} is the app shell; no browser may ever be told it is \
+             readable cross-origin, allowlisted origin or not"
         );
     }
 }
@@ -705,8 +743,10 @@ async fn the_cross_origin_dev_flow_still_works() {
     );
 }
 
-/// SEC-13. The shell's body carries the access token, so nothing may store it.
-/// A disk cache entry outlives the process whose token it holds.
+/// SEC-13. The shell's body used to carry the access token, and nothing may
+/// store it: a disk cache entry outlives the process whose token it held. Kept
+/// so a regression that put a credential back in the body would not also write
+/// it to disk.
 #[tokio::test]
 async fn the_shell_forbids_caching() {
     for uri in ["/", "/index.html", "/holdings"] {
@@ -716,7 +756,7 @@ async fn the_shell_forbids_caching() {
         assert_eq!(
             header_of(&headers, "cache-control"),
             Some("no-store"),
-            "GET {uri} serves the token-bearing shell and must forbid storing it"
+            "GET {uri} serves the shell and must forbid storing it"
         );
     }
 }

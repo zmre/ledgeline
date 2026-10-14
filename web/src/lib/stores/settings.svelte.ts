@@ -26,8 +26,9 @@ interface PersistedSettings {
     /**
      * Access token for a CROSS-ORIGIN engine (vite dev, the e2e harness), which
      * the engine prints at startup and takes from $LEDGELINE_TOKEN. Embedded
-     * (same-origin) pages ignore this: the binary injects the token straight
-     * into the page, and `apiToken()` in api/client.ts prefers that. Null when
+     * (same-origin) pages ignore this: the GUI hands its WebView the token out
+     * of band and a headless engine prints a `#token=` launch URL, and
+     * `apiToken()` in api/client.ts prefers either of those. Null when
      * talking to a plain hledger-web, which has no token.
      */
     serverToken: string | null;

@@ -23,7 +23,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use ledgeline::{AppState, router_with_security};
+use ledgeline::{AccessToken, AppState, router_with_security};
 use muda::{
     Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
     accelerator::{Accelerator, Code, Modifiers},
@@ -41,7 +41,7 @@ use tao::{
     keyboard::{Key, ModifiersState},
 };
 use url::Url;
-use wry::WebViewBuilder;
+use wry::{NewWindowResponse, WebViewBuilder};
 
 use crate::{AppError, Cli};
 
@@ -60,8 +60,9 @@ enum UserEvent {
 pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
     // Same posture the headless server takes (token + Host guard, non-loopback
     // binds refused), decided before the journal is opened. The token is NOT
-    // printed here: the WebView picks it up from the served shell.
-    let (_process_token, security_plan) = crate::plan_security(cli)?;
+    // printed here, and it is not in the served shell either: the WebView gets
+    // it out of band, from `token_init_script`.
+    let (process_token, security_plan) = crate::plan_security(cli)?;
     let journal_path = crate::resolve_journal(cli);
     // Bind an editor to the file so the GUI's edit endpoints are live (this is the
     // primary mode). Canonicalize first — like `run_server_blocking` — so the
@@ -137,6 +138,7 @@ pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
 
     run_event_loop(GuiContext {
         url,
+        token: process_token.token,
         state,
         watcher,
         current: editor_path,
@@ -147,6 +149,8 @@ pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
 /// Everything the event loop owns after startup.
 struct GuiContext {
     url: String,
+    /// The access token, handed to the WebView by [`token_init_script`].
+    token: AccessToken,
     state: AppState,
     watcher: Option<RecommendedWatcher>,
     /// Canonical path of the journal currently open (excluded from the recents
@@ -556,10 +560,44 @@ fn first_journal_path(urls: &[Url]) -> Option<PathBuf> {
     urls.iter().find_map(|url| url.to_file_path().ok())
 }
 
-/// Build the wry webview for `window`, pointed at `url`.
-fn build_webview(window: &tao::window::Window, url: &str) -> Result<wry::WebView, AppError> {
+/// The initialization script that hands the WebView its access token.
+///
+/// This is how the token reaches the SPA WITHOUT appearing in any response body:
+/// the shell is served unauthenticated, so anything that can reach loopback can
+/// read it, and it used to carry the token for exactly that reason. wry runs this
+/// at document start, before the page's own scripts, outside the page's CSP —
+/// but on EVERY document the main frame loads, whatever its origin. The
+/// navigation handler already confines the WebView to our origin; the
+/// `location.origin` check means a document from anywhere else would still get
+/// nothing, should one ever load.
+///
+/// Both values are serialized as JSON string literals rather than interpolated
+/// raw. [`AccessToken::parse`] already restricts the token to a safe character
+/// set, and the origin is ours, so this is belt and braces — but it costs
+/// nothing and does not depend on either staying true.
+fn token_init_script(origin: &str, token: &AccessToken) -> String {
+    let literal = |value: &str| serde_json::Value::from(value).to_string();
+    format!(
+        "if (window.location.origin === {origin}) {{ window.__LEDGELINE_TOKEN__ = {token}; }}",
+        origin = literal(origin),
+        token = literal(token.as_str()),
+    )
+}
+
+/// Build the wry webview for `window`, pointed at `url`, with `token` handed to
+/// pages on `url`'s origin (see [`token_init_script`]).
+fn build_webview(
+    window: &tao::window::Window,
+    url: &str,
+    token: &AccessToken,
+) -> Result<wry::WebView, AppError> {
     let base = url.to_string();
+    let origin = Url::parse(url)
+        .map_err(|error| AppError::Gui(format!("parsing the webview url: {error}")))?
+        .origin()
+        .ascii_serialization();
     let builder = WebViewBuilder::new()
+        .with_initialization_script(token_init_script(&origin, token))
         .with_url(url)
         .with_navigation_handler(move |candidate| {
             let allowed = navigation_allowed(&base, &candidate);
@@ -567,6 +605,12 @@ fn build_webview(window: &tao::window::Window, url: &str) -> Result<wry::WebView
                 eprintln!("ledgeline: blocked navigation to {candidate}");
             }
             allowed
+        })
+        // No pop-ups at all. The SPA never opens one, and a new window would be
+        // a second WebView outside the navigation handler above.
+        .with_new_window_req_handler(|candidate, _features| {
+            eprintln!("ledgeline: blocked new window for {candidate}");
+            NewWindowResponse::Deny
         });
 
     #[cfg(not(target_os = "linux"))]
@@ -684,7 +728,7 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
             .init_for_gtk_window(window.gtk_window(), window.default_vbox());
     }
 
-    let webview = build_webview(&window, &ctx.url)?;
+    let webview = build_webview(&window, &ctx.url, &ctx.token)?;
 
     let open_id = menu.open.id().clone();
     let reload_id = menu.reload.id().clone();
@@ -1054,7 +1098,7 @@ mod linux_keyboard_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_journal_path, navigation_allowed};
+    use super::{AccessToken, first_journal_path, navigation_allowed, token_init_script};
     use std::path::PathBuf;
     use url::Url;
 
@@ -1090,6 +1134,20 @@ mod tests {
             BASE,
             "http://127.0.0.1:5000.evil.example/"
         ));
+    }
+
+    /// The token goes to the WebView by initialization script, and only to a
+    /// document on our exact origin — the script itself runs on every document
+    /// the main frame loads.
+    #[test]
+    fn the_token_script_is_guarded_by_our_exact_origin() {
+        let token = AccessToken::parse("token-for-unit-tests").expect("well-formed");
+        let script = token_init_script("http://127.0.0.1:5000", &token);
+        assert_eq!(
+            script,
+            "if (window.location.origin === \"http://127.0.0.1:5000\") \
+             { window.__LEDGELINE_TOKEN__ = \"token-for-unit-tests\"; }"
+        );
     }
 
     #[test]

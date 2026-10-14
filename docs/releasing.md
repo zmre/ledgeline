@@ -272,7 +272,8 @@ The `publish` job runs after the DMG job on every tag and pushes both crates, so
 non-Mac users can install with:
 
 ```sh
-# Headless — serves the UI over HTTP, open it in your own browser.
+# Headless — serves the UI over HTTP. Open the http://127.0.0.1:PORT/#token=…
+# URL it prints in your own browser; the page itself never carries the token.
 cargo install ledgeline --no-default-features
 
 # With the desktop window. Needs webkitgtk-4.1, gtk3, libsoup-3 and libxdo
