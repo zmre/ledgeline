@@ -147,10 +147,6 @@ user's first click on "All time".
   - feat: remember categorization functionality — write a chosen category back into the rules file as a new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
 - feat: File -> New
   - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and use an empty folder as a starting point and then create a skeleton so someone can start using us to track things. We should have a default chart of accounts for individuals and another for businesses and then we should allow them to start with an empty set of accounts to add their own.
-- feat: add xlsx download to the journals tab
-  - it should respect account filtering (including search) and date filtering.
-  - the idea here is this is what you would send as the journal/ledger info to an accountant who needed details while doing taxes or something
-  - the challenge here is when a single entry has more than two accounts, so we'd probably do this as multi-line. see if you can research how quickbooks exports journal/ledger reports, which i think we already know because we can import them. if not, i can get a sample.  but lets try to be compatible with that.
 - feat: saved report filters?
 
 ## Budgeting / planning / modeling
