@@ -20,6 +20,7 @@ use crate::reports::{
 use crate::title::{journal_title, main_file_name};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// The hledger version Ledgeline emulates on the wire (served at `/version`).
 pub const HLEDGER_VERSION: &str = "1.52";
@@ -131,16 +132,13 @@ pub fn journal_to_transactions(journal: &Journal) -> Vec<WireTransaction> {
         .map(|(commodity, tags)| (commodity.0.as_str(), tags.as_slice()))
         .collect();
 
+    let source_names = SourceNames::new(journal);
+
     journal
         .transactions
         .iter()
         .map(|transaction| {
-            transaction_to_wire(
-                transaction,
-                &account_tags,
-                &commodity_tags,
-                &journal.source_name,
-            )
+            transaction_to_wire(transaction, &account_tags, &commodity_tags, &source_names)
         })
         .collect()
 }
@@ -158,9 +156,12 @@ fn transaction_to_wire(
     transaction: &Transaction,
     account_tags: &HashMap<&str, &[(String, String)]>,
     commodity_tags: &HashMap<&str, &[(String, String)]>,
-    source_name: &str,
+    source_names: &SourceNames,
 ) -> WireTransaction {
     let tindex = transaction.index.0;
+    // A transaction's span and its postings' assertion positions are lines of
+    // the file it was parsed from, which for an `include` is not the main one.
+    let source_name = source_names.of(&transaction.source_file);
     WireTransaction {
         tindex,
         tdate: transaction.date.clone(),
@@ -175,12 +176,12 @@ fn transaction_to_wire(
             .postings
             .iter()
             .map(|posting| {
-                posting_to_wire(posting, tindex, account_tags, commodity_tags, source_name)
+                posting_to_wire(posting, tindex, account_tags, commodity_tags, &source_name)
             })
             .collect(),
         tsourcepos: [
-            pos_to_wire(transaction.source_span.0, source_name),
-            pos_to_wire(transaction.source_span.1, source_name),
+            pos_to_wire(transaction.source_span.0, &source_name),
+            pos_to_wire(transaction.source_span.1, &source_name),
         ],
     }
 }
@@ -319,6 +320,39 @@ fn posting_tags(
     result
 }
 
+/// The `sourceName` to report for a position in a given source file.
+///
+/// hledger names the file a transaction or directive was actually read from —
+/// an `include`d file reports its own path, not the main journal's. The main
+/// file keeps [`Journal::source_name`] (the spelling the journal was opened
+/// with) rather than its resolved path, so main-file output is unchanged.
+struct SourceNames<'a> {
+    /// The main journal's name as opened.
+    main_name: &'a str,
+    /// The main journal's resolved path, as [`Transaction::source_file`] and
+    /// [`AccountDeclaration::source_file`] record it.
+    main_file: PathBuf,
+}
+
+impl<'a> SourceNames<'a> {
+    fn new(journal: &'a Journal) -> Self {
+        Self {
+            main_name: &journal.source_name,
+            main_file: crate::parse::resolve_source_file(&journal.source_name),
+        }
+    }
+
+    /// The name for `file`. An empty path (a model built in memory rather than
+    /// parsed) counts as the main file.
+    fn of(&self, file: &Path) -> String {
+        if file.as_os_str().is_empty() || file == self.main_file {
+            self.main_name.to_string()
+        } else {
+            file.to_string_lossy().into_owned()
+        }
+    }
+}
+
 fn pos_to_wire(pos: SourcePos, source_name: &str) -> WirePos {
     WirePos {
         source_column: pos.column,
@@ -361,11 +395,10 @@ fn status_str(status: Status) -> &'static str {
 /// finding still serializes to exactly the four keys it always did and the
 /// golden fixtures are unmoved.
 ///
-/// A directive is deliberately anchored by NAME rather than by file and line,
-/// even though [`AccountDeclaration`] carries a `position`: it has no
-/// `source_file`, so once `include` is in play that line number belongs to an
-/// unknown file. The SPA already holds every declaration's position from
-/// `/accounts` and can do better with the name than we can with half a location.
+/// A directive is anchored by NAME rather than by file and line. The SPA already
+/// holds every declaration's full position — file (`adisourcepos.sourceName`,
+/// the `include`d file where that is where it was declared) and line — from
+/// `/accounts`, so the name is all it needs to find it.
 #[derive(Debug, Serialize)]
 pub struct WireDiagnostic {
     /// 0-based index into the SAME transactions array `/transactions` serves,
@@ -1011,8 +1044,8 @@ struct AccountContext<'a> {
     children: &'a BTreeMap<String, Vec<String>>,
     /// Account name → (1-based file-order declaration index, its declaration).
     declared: &'a HashMap<&'a str, (u32, &'a AccountDeclaration)>,
-    /// Absolute journal path recorded in `adisourcepos.sourceName`.
-    source_name: &'a str,
+    /// Resolves each declaration's file to its `adisourcepos.sourceName`.
+    source_names: SourceNames<'a>,
 }
 
 /// The `/accounts` tree: one node per posting-referenced account plus all of its
@@ -1049,7 +1082,7 @@ pub fn journal_to_accounts(journal: &Journal) -> Vec<WireAccount> {
     let context = AccountContext {
         children: &children,
         declared: &declared,
-        source_name: &journal.source_name,
+        source_names: SourceNames::new(journal),
     };
     walk_account(ACCOUNT_ROOT, &context)
 }
@@ -1088,7 +1121,10 @@ fn build_account_node(name: &str, context: &AccountContext) -> WireAccount {
             .map(|(order, declaration)| WireDeclarationInfo {
                 adicomment: declaration.comment.clone(),
                 adideclarationorder: *order,
-                adisourcepos: pos_to_wire(declaration.position, context.source_name),
+                adisourcepos: pos_to_wire(
+                    declaration.position,
+                    &context.source_names.of(&declaration.source_file),
+                ),
                 aditags: declaration.tags.clone(),
             })
     };

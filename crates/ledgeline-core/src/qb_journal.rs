@@ -177,11 +177,14 @@
 //! the ones that produce plausible-looking wrong numbers.
 
 use crate::convert::MAX_INPUT_BYTES;
-use crate::convert::spreadsheet::{date_text, float_text, is_populated, iso_date_text};
+use crate::convert::spreadsheet::{
+    SheetSource, date_text, float_text, is_populated, iso_date_text,
+};
 use crate::decimal::Dec;
 use crate::edit::render_dec;
 use crate::rules::generate::{DateFormatGuess, guess_date_format};
 use calamine::{Data, Ods, Range, Reader, Xls, Xlsx, open_workbook_from_rs};
+use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use thiserror::Error;
 
@@ -206,7 +209,7 @@ const REPORT_TOTAL: &str = "TOTAL";
 /// transaction. That is not a nicety: a single ten-line Journal Entry in the
 /// real export carries six different descriptions, and hanging one of them off
 /// the transaction loses the other five.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QbPosting {
     /// The raw QuickBooks account name, e.g. `1520 Computer & Office Equipment`.
     ///
@@ -224,7 +227,7 @@ pub struct QbPosting {
 }
 
 /// One QuickBooks transaction: a marker row, its postings and its closing row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QbTransaction {
     /// QuickBooks' own Trans #, e.g. `612`. Not unique across companies and not
     /// ordered — the real export runs `1, 2, 3, 4, 612, 33, 139, 34, …`.
@@ -251,7 +254,11 @@ pub struct QbTransaction {
 /// a month is the case — and a caller that writes transactions without resolving
 /// it is filing March in December. The real sample resolves cleanly only because
 /// it happens to contain the 17th through the 20th.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `Serialize`/`Deserialize` (here and on everything it holds) exist so the
+/// server can parse in a resource-limited child process and carry the result
+/// back over a pipe — see `convert::Tabular`, which has them for the same reason.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QbJournal {
     pub transactions: Vec<QbTransaction>,
     pub date_format: DateFormatGuess,
@@ -267,7 +274,7 @@ pub struct QbJournal {
 /// Row numbers are 1-based sheet rows — the numbers down the side of the user's
 /// own spreadsheet. Nothing here can carry a path: this module is handed bytes
 /// and never learns where they came from, matching `docs/imports.md` § Security.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
 pub enum QbJournalError {
     #[error("the file is empty")]
     Empty,
@@ -441,12 +448,16 @@ fn rows_of(bytes: &[u8]) -> Result<Vec<Vec<Data>>, QbJournalError> {
         .ok_or(QbJournalError::Unreadable)
 }
 
-fn read_with<'a, R: Reader<Cursor<&'a [u8]>>>(bytes: &'a [u8]) -> Option<Vec<Vec<Data>>> {
+/// Sheets are read through [`SheetSource`], so an xlsx sheet over the
+/// spreadsheet lane's size caps is skipped here exactly as it is there.
+fn read_with<'a, R: Reader<Cursor<&'a [u8]>> + SheetSource>(
+    bytes: &'a [u8],
+) -> Option<Vec<Vec<Data>>> {
     let mut book: R = open_workbook_from_rs(Cursor::new(bytes)).ok()?;
     let names = book.sheet_names();
     names
         .iter()
-        .filter_map(|name| book.worksheet_range(name).ok())
+        .filter_map(|name| book.sheet(name))
         .map(materialize)
         .find(|rows| !rows.is_empty())
 }

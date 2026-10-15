@@ -1,9 +1,31 @@
+import adapter from "@sveltejs/adapter-static";
+import {vitePreprocess} from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import {sveltekit} from "@sveltejs/kit/vite";
 import {defineConfig} from "vitest/config";
 
 export default defineConfig({
-    plugins: [tailwindcss(), sveltekit()],
+    plugins: [
+        tailwindcss(),
+        sveltekit({
+            // SvelteKit 3 has no svelte.config.js: kit options and vite-plugin-svelte
+            // options are both passed here, flat (kit 2's `kit:` and `vitePlugin:`
+            // wrappers are gone).
+            preprocess: vitePreprocess(),
+            // Force runes mode for our code while leaving node_modules libraries alone. Can be removed in svelte 6.
+            dynamicCompileOptions({filename}) {
+                return filename.split(/[/\\]/).includes("node_modules") ? undefined : {runes: true};
+            },
+            // Pure static SPA: every unknown path falls back to index.html and is routed client-side.
+            adapter: adapter({fallback: "index.html"}),
+            // Kit 3 changed this default from 0 (never) to one hour. The bundle is
+            // embedded in the binary that serves it, so a new version means a new
+            // process and the app never reads `updated`: keep kit 2's no-timer
+            // behaviour. (Kit 3 still checks /_app/version.json on window focus
+            // and visibility changes; only `bundleStrategy: "inline"` stops that.)
+            version: {pollInterval: 0},
+        }),
+    ],
     test: {
         // Everything in this block is inherited by BOTH projects below, because
         // each one says `extends: "./vite.config.ts"` — that pulls this file's

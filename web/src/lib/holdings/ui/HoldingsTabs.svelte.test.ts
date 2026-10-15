@@ -10,8 +10,8 @@ import {readFileSync} from "node:fs";
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
-import {TAB_LABELS, TAB_ORDER} from "$lib/holdings/params";
-import {keymap} from "$lib/keys/keymap.svelte";
+import {TAB_LABELS, TAB_ORDER} from "#lib/holdings/params.js";
+import {keymap} from "#lib/keys/keymap.svelte.js";
 import HoldingsTabs from "./HoldingsTabs.svelte";
 
 /** Press a key the way the app's window listener would. */

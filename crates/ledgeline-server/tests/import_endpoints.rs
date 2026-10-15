@@ -2944,6 +2944,133 @@ async fn catch_up_rollback_child() {
     assert!(tree.path("import/bank.csv").is_file());
 }
 
+/// A stub hledger that proposes one row, catches up happily — and, the first
+/// time it is asked to preview an import into `main.journal`, runs `action`
+/// against that journal (`$journal`) first. That is the window the commit used
+/// to leave open: after it read `before`, during the hledger runs, before it
+/// wrote `before + appended`.
+fn meddling_stub(dir: &Path, action: &str) -> PathBuf {
+    let stub = dir.join("hledger");
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\njournal=''; prev=''\n\
+             for arg in \"$@\"; do [ \"$prev\" = '-f' ] && journal=\"$arg\"; prev=\"$arg\"; done\n\
+             case \"$*\" in\n\
+             *--version*) echo 'hledger 1.52, stub' ;;\n\
+             *--catchup*) ;;\n\
+             *--dry-run*)\n\
+             case \"$journal\" in */main.journal)\n\
+             marker=\"$(dirname \"$journal\")/.stub-meddled\"\n\
+             if [ ! -e \"$marker\" ]; then : > \"$marker\"; {action}; fi ;;\n\
+             esac\n\
+             printf '2026-02-01 STUB\\n    assets:bank:checking  $-1.00\\n\
+             \x20   expenses:unknown       $1.00\\n\\n'\n\
+             echo 'would import 1 new transactions from bank.csv:' >&2 ;;\n\
+             esac\nexit 0\n"
+        ),
+    )
+    .expect("write stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    stub
+}
+
+/// **The lost update.** The user saves an edit to the journal while the commit's
+/// hledger runs are in flight. The commit used to write `before + appended`
+/// over it; now the journal write is pinned to the bytes `before` was, so it is
+/// a `409` and the user's edit survives.
+#[tokio::test]
+async fn an_edit_saved_during_the_import_is_not_overwritten() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = meddling_stub(
+        dir.path(),
+        "printf '; saved by the user mid-import\\n' >> \"$journal\"",
+    );
+    run_child(
+        "edit_during_import_child",
+        &[
+            ("LEDGELINE_HLEDGER", &stub),
+            ("LEDGELINE_CONFIG_DIR", dir.path()),
+            (CHILD_DIR_ENV, dir.path()),
+        ],
+    );
+}
+
+/// See [`an_edit_saved_during_the_import_is_not_overwritten`].
+#[tokio::test]
+#[ignore = "driven by an_edit_saved_during_the_import_is_not_overwritten"]
+async fn edit_during_import_child() {
+    let tree = Tree::with_rules();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert_eq!(
+        journal,
+        format!("{OPENING}; saved by the user mid-import\n"),
+        "the user's edit survives and nothing was appended over it"
+    );
+}
+
+/// **The TOCTOU itself.** A symlink to another file — with the journal's exact
+/// bytes, so no content check can tell — is swapped in at the journal's path
+/// during the hledger runs. The commit used to follow it and append the
+/// statement (payees and all) to the link's target. Now it is a `409` and the
+/// target is untouched.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlink_swapped_in_during_the_import_is_not_written_through() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = meddling_stub(
+        dir.path(),
+        "d=$(dirname \"$journal\"); cp \"$journal\" \"$d/victim.rc\"; \
+         mv \"$journal\" \"$d/moved-aside.journal\"; ln -s \"$d/victim.rc\" \"$journal\"",
+    );
+    run_child(
+        "symlink_swap_during_import_child",
+        &[
+            ("LEDGELINE_HLEDGER", &stub),
+            ("LEDGELINE_CONFIG_DIR", dir.path()),
+            (CHILD_DIR_ENV, dir.path()),
+        ],
+    );
+}
+
+/// See [`a_symlink_swapped_in_during_the_import_is_not_written_through`].
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "driven by a_symlink_swapped_in_during_the_import_is_not_written_through"]
+async fn symlink_swap_during_import_child() {
+    let tree = Tree::with_rules();
+    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    let id = staged["stageId"].as_str().expect("a stageId");
+    let mut body = dry_run_body(id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert!(
+        std::fs::symlink_metadata(tree.path("main.journal"))
+            .expect("lstat")
+            .file_type()
+            .is_symlink(),
+        "the stub really did swap the link in"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.path("victim.rc")).expect("victim"),
+        OPENING,
+        "the link's target is byte-identical: nothing was appended through it"
+    );
+}
+
 // ===========================================================================
 // save-csv — the no-rules-file path
 // ===========================================================================
@@ -3641,6 +3768,55 @@ async fn a_symlinked_config_is_refused_rather_than_followed() {
         std::fs::read_to_string(&elsewhere).expect("bystander"),
         "do not touch me\n",
         "the symlink's target must be untouched"
+    );
+}
+
+/// An alias already in the config past the forwarding cap is still IN the file,
+/// so the write does not append it a second time. Hermetic: the write route
+/// runs no hledger.
+#[tokio::test]
+async fn an_alias_past_the_forwarding_cap_is_not_appended_again() {
+    let tree = conf_tree(&format!(
+        "alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\n\n{OPENING}"
+    ));
+    let filler: String = (0..ledgeline_core::hledger_conf::MAX_CONF_ALIASES)
+        .map(|n| format!("--alias=filler{n}=expenses:filler{n}\n"))
+        .collect();
+    let text = format!("{filler}--alias={CONF_ALIAS}\n");
+    std::fs::write(tree.path("hledger.conf"), &text).expect("write conf");
+    let revision = ledgeline_core::Fingerprint::of_bytes(text.as_bytes()).token();
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/hledger-conf",
+        json!({"revision": revision}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["added"], json!([]), "{body}");
+    assert_eq!(
+        std::fs::read_to_string(tree.path("hledger.conf")).expect("conf"),
+        text
+    );
+}
+
+/// A config past `MAX_CONF_BYTES` is never read whole — and, being a file that
+/// is there, never replaced as if it were absent.
+#[tokio::test]
+async fn an_oversized_config_is_neither_read_nor_written() {
+    let tree = conf_tree(&format!(
+        "alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\n\n{OPENING}"
+    ));
+    let cap = usize::try_from(ledgeline_core::hledger_conf::MAX_CONF_BYTES).expect("fits");
+    let text = format!("# {}\n", "x".repeat(cap));
+    std::fs::write(tree.path("hledger.conf"), &text).expect("write conf");
+
+    let (status, body) = post(&tree, "/api/import/hledger-conf", json!({"revision": ""})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(as_text(&body).contains("KiB"), "{body}");
+    assert_eq!(
+        std::fs::read_to_string(tree.path("hledger.conf")).expect("conf"),
+        text
     );
 }
 

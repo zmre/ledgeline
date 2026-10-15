@@ -18,8 +18,8 @@
 //! `/api/prices/status` is a read of a computed report, same as everything in
 //! `reports_api`. The other two are writes into the user's journal, carrying
 //! the same safety apparatus that implies: `journals::targets`-resolved
-//! handles, a `Fingerprint` narrowing the write's TOCTOU window, one
-//! `atomic_write`, a reparse-and-verify before it. The model is `budget_api`,
+//! handles, a `Fingerprint` and inode pin closing the write's TOCTOU window,
+//! one `pinned::replace`, a reparse-and-verify before it. The model is `budget_api`,
 //! which solves the identical problem for `~` budget rules, and the pipeline
 //! below is deliberately the same pipeline.
 //!
@@ -58,12 +58,12 @@
 use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use futures::stream::{self, StreamExt};
-use ledgeline_core::edit::{Fingerprint, atomic_write, render_amount};
+use ledgeline_core::edit::render_amount;
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings};
 use ledgeline_core::model::{Amount, Commodity, Journal};
+use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::{Dec, journals, parse};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
@@ -74,6 +74,7 @@ use crate::AppState;
 use crate::edit_api::{infer_style, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{WireDec, compute, today_utc};
+use crate::security::no_store_json as no_store;
 use crate::yahoo::{FetchedPrice, YahooError};
 
 /// The file a first price update is offered a home in, and the `include` line
@@ -233,15 +234,6 @@ pub(crate) enum Outcome {
 // ===========================================================================
 // Handlers
 // ===========================================================================
-
-/// `Cache-Control: no-store`, no `ETag` — same posture as `budget_api`/
-/// `alias_api`/`import_api`/`rules_api`: none of this is derived from the
-/// journal snapshot's generation counter.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
-}
 
 /// `GET /api/prices/status`.
 pub(crate) async fn status(State(state): State<AppState>) -> Result<Response, AppError> {
@@ -504,12 +496,18 @@ fn can_create(journal: &Journal) -> Result<(PathBuf, PathBuf), AppError> {
     }
     let prices_file = root.join(PRICES_FILE);
     if prices_file.symlink_metadata().is_ok() {
-        return Err(AppError::Conflict(format!(
-            "a file called {PRICES_FILE} already sits beside your journal, and Ledgeline will not \
-             write over it. Include it from your main journal yourself, or move it aside."
-        )));
+        return Err(already_exists());
     }
     Ok((main.clone(), prices_file))
+}
+
+/// The `409` for a name that is already taken — by the early check above, or by
+/// the kernel's `O_EXCL` at the create itself.
+fn already_exists() -> AppError {
+    AppError::Conflict(format!(
+        "a file called {PRICES_FILE} already sits beside your journal, and Ledgeline will not \
+         write over it. Include it from your main journal yourself, or move it aside."
+    ))
 }
 
 /// Create `prices.journal` and `include` it from the main journal. Same
@@ -521,7 +519,10 @@ fn create_prices_file(state: &AppState) -> Result<WireCreatedPricesFile, AppErro
     let journal = &snapshot.journal;
     let (main, prices_file) = can_create(journal)?;
 
-    let main_text = std::fs::read_to_string(&main).map_err(|error| {
+    // Pinned, so the `include` below lands only on the main journal as read
+    // here — never through a link swapped in since, never over an edit made in
+    // between.
+    let (main_text, main_pin) = pinned::read_pinned_string(&main).map_err(|error| {
         AppError::Internal(format!("your journal could not be read: {}", error.kind()))
     })?;
     let newline = if main_text.contains("\r\n") {
@@ -548,17 +549,27 @@ fn create_prices_file(state: &AppState) -> Result<WireCreatedPricesFile, AppErro
         ));
     }
 
-    atomic_write(&prices_file, PRICES_FILE_HEADER.as_bytes()).map_err(|error| {
+    // `O_CREAT | O_EXCL | O_NOFOLLOW`: the "never overwritten" promise
+    // `can_create` checked is the kernel's, decided at the open, so a file or a
+    // symlink planted since that check is refused rather than written through.
+    pinned::create_new(&prices_file, PRICES_FILE_HEADER.as_bytes()).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            return already_exists();
+        }
         AppError::Internal(format!(
             "{PRICES_FILE} could not be created: {}. Nothing else was changed.",
             error.kind()
         ))
     })?;
-    atomic_write(&main, new_main.as_bytes()).map_err(|error| {
+    pinned::replace(&main, new_main.as_bytes(), &main_pin).map_err(|error| {
+        let reason = match error {
+            WriteError::Changed => "it changed on disk while this was being done".to_string(),
+            WriteError::Io(error) => error.kind().to_string(),
+        };
         AppError::Internal(format!(
             "{PRICES_FILE} was created, but your main journal could not be updated to include it: \
              {}. Add `{include_line}` to it yourself, or delete {PRICES_FILE}.",
-            error.kind()
+            reason
         ))
     })?;
 
@@ -593,7 +604,9 @@ struct UpdatePlan {
     id: String,
     path: PathBuf,
     text: String,
-    fingerprint: Fingerprint,
+    /// The inode and bytes `text` was read as. The write, after the network
+    /// round trip, lands only if the file is still exactly that.
+    pin: Pin,
     as_of: String,
     quote: Commodity,
     symbols: Vec<WirePriceSymbol>,
@@ -615,8 +628,7 @@ fn plan_update(state: &AppState, id: &str) -> Result<UpdatePlan, AppError> {
         )));
     }
     let path = journal_path(journal, id).ok_or_else(|| unresolved(id))?;
-    let text = read_journal(&path, id)?;
-    let fingerprint = Fingerprint::of_bytes(text.as_bytes());
+    let (text, pin) = read_journal(&path, id)?;
     let as_of = today_utc();
     let (symbols, quote) = symbols_to_price(journal, &as_of)?;
 
@@ -624,7 +636,7 @@ fn plan_update(state: &AppState, id: &str) -> Result<UpdatePlan, AppError> {
         id: id.to_string(),
         path,
         text,
-        fingerprint,
+        pin,
         as_of,
         quote,
         symbols,
@@ -731,19 +743,19 @@ fn apply_update(
             ))
         })?;
 
-        // Narrow the TOCTOU window from "the whole fetch" to "hash -> rename".
-        let before_write = Fingerprint::of_bytes(read_journal(&plan.path, &plan.id)?.as_bytes());
-        if !before_write.content_matches(&plan.fingerprint) {
-            return Err(stale(&plan.id));
-        }
-
-        atomic_write(&plan.path, new_text.as_bytes()).map_err(|error| {
-            AppError::Internal(format!(
-                "{} could not be written: {}. Nothing else was changed.",
-                quoted(&plan.id),
-                error.kind()
-            ))
-        })?;
+        // Pinned to the inode and bytes read before the fetch: `pinned::replace`
+        // re-checks both through the descriptor it replaces, right up to the
+        // rename, and never follows a link.
+        pinned::replace(&plan.path, new_text.as_bytes(), &plan.pin).map_err(
+            |error| match error {
+                WriteError::Changed => stale(&plan.id),
+                WriteError::Io(error) => AppError::Internal(format!(
+                    "{} could not be written: {}. Nothing else was changed.",
+                    quoted(&plan.id),
+                    error.kind()
+                )),
+            },
+        )?;
 
         if let Some(Err(error)) = state.reopen_editor() {
             eprintln!("ledgeline: the journal could not be re-read after a price update: {error}");
@@ -768,7 +780,13 @@ fn round_to_places(value: Dec, places: u32) -> Dec {
     if value.places <= places {
         return value;
     }
-    let divisor = 10i128.pow(value.places - places);
+    // Checked, not `pow`: from 39 dropped places up there is no `i128` divisor,
+    // and an unchecked one panics. Such a value is under 10^38 / 10^39 in
+    // magnitude, which is below half a unit of the target scale — zero.
+    // (`Dec::rounded` is not a substitute: it rounds half away from zero.)
+    let Some(divisor) = 10i128.checked_pow(value.places - places) else {
+        return Dec::new(0, places);
+    };
     let quotient = value.mantissa / divisor;
     let remainder = (value.mantissa % divisor).abs();
     let half = divisor / 2;
@@ -874,9 +892,17 @@ fn validate_journal_id(id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Read one journal file, reporting only what the caller already knows.
-fn read_journal(path: &FsPath, id: &str) -> Result<String, AppError> {
-    std::fs::read_to_string(path).map_err(|error| {
+/// Read one journal file, reporting only what the caller already knows, with
+/// the [`Pin`] a later write of it must still match — identity and fingerprint
+/// from one open descriptor.
+///
+/// Never follows a symlink: the path is the real one the snapshot resolved, so
+/// a link there now was swapped in since, and that is a stale revision.
+fn read_journal(path: &FsPath, id: &str) -> Result<(String, Pin), AppError> {
+    pinned::read_pinned_string(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidInput {
+            return stale(id);
+        }
         AppError::Internal(format!(
             "{} could not be read: {}",
             quoted(id),
@@ -1020,6 +1046,16 @@ mod tests {
     #[test]
     fn round_to_places_rounds_up_past_the_midpoint() {
         assert_eq!(round_to_places(Dec::new(2287, 3), 2), Dec::new(229, 2));
+    }
+
+    #[test]
+    fn round_to_places_is_total_past_the_i128_divisor() {
+        // 10^39 has no `i128`; the unchecked `pow` panicked here.
+        assert_eq!(round_to_places(Dec::new(i128::MAX, 41), 2), Dec::new(0, 2));
+        assert_eq!(
+            round_to_places(Dec::new(i128::MIN, u32::MAX), 0),
+            Dec::new(0, 0)
+        );
     }
 
     #[test]

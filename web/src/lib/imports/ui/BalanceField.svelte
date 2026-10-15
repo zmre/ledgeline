@@ -13,7 +13,7 @@
     // The account defaults to the chosen rules file's `account1`, which is the
     // account the imported postings actually land in — asserting a statement
     // balance against anything else is a check that is guaranteed to fail.
-    import AccountInput from "$lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
     import type {StatementMeta} from "../importTypes";
 
     let {

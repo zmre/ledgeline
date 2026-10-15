@@ -2,8 +2,8 @@
      start/end date inputs. Binds `start`/`end` (the whole span); the engine
      splits it at its midpoint. Editing a date makes the preset "Custom". -->
 <script lang="ts">
-    import type {ISODate} from "$lib/domain/types";
-    import {activeInsightsPreset, insightsPresetRange, INSIGHTS_PRESETS, type InsightsPreset} from "$lib/reports/ui/params";
+    import type {ISODate} from "#lib/domain/types.js";
+    import {activeInsightsPreset, insightsPresetRange, INSIGHTS_PRESETS, type InsightsPreset} from "#lib/reports/ui/params.js";
 
     let {start = $bindable(), end = $bindable()}: {start: ISODate; end: ISODate} = $props();
 

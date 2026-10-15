@@ -7,9 +7,9 @@
 /*
  * Chart colour tokens, one block per daisyUI theme.
  *
- * Charts never use these as `var(...)` directly: `$lib/format/chartColors.svelte.ts`
+ * Charts never use these as `var(...)` directly: `#lib/format/chartColors.svelte.ts`
  * resolves them to concrete colours at runtime and re-resolves when
- * `<html data-theme>` changes. `$lib/format/palette.ts` documents the rules and
+ * `<html data-theme>` changes. `#lib/format/palette.ts` documents the rules and
  * holds a copy of the dark values as the no-CSS fallback; a unit test fails if
  * the two drift.
  *

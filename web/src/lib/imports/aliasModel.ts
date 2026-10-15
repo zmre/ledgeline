@@ -10,8 +10,8 @@
 // The English here is the English the user reads. It is in this file rather than
 // in a template for the same reason the logic is.
 
-import type {AliasEffect, AliasEntry, AliasFile, AliasRename, CliParity} from "$lib/imports/importTypes";
-import type {SaveAliasEdit, SaveAliasesBody} from "$lib/api/native";
+import type {AliasEffect, AliasEntry, AliasFile, AliasRename, CliParity} from "#lib/imports/importTypes.js";
+import type {SaveAliasEdit, SaveAliasesBody} from "#lib/api/native.js";
 
 // ---------------------------------------------------------------------------
 // Which aliases are relevant to the staged data
@@ -326,9 +326,16 @@ export const ALIAS_EXPLAINER =
  * in this statement. The engine measures the middle one — it repeats the import
  * with exactly the aliases a config file gives and diffs — so this function never
  * has to reason about what a regex matches.
+ *
+ * The one thing that measurement cannot see is a config alias the engine never
+ * forwarded (past its per-import cap): both runs lack it, so they agree, and a
+ * terminal still applies it. That is said even when the runs match.
  */
 export function parityNotice(effect: AliasEffect | null): string | null {
-    if (effect === null || effect.cli.matches) return null;
+    if (effect === null) return null;
+    if (effect.cli.matches) {
+        return effect.cli.confUnforwarded > 0 ? "Run from the command line, this same import would apply aliases this one does not." : null;
+    }
     const count = effect.cli.differences.length;
     const names = count === 1 ? "one account" : `${count} accounts`;
     return `Run from the command line, this same import would file ${names} differently.`;
@@ -361,7 +368,7 @@ export function parityFixLabel(parity: CliParity): string {
 /**
  * A warning to show beside the fix, or null when there is none.
  *
- * Three distinct situations, each worth its own sentence rather than a generic
+ * Four distinct situations, each worth its own sentence rather than a generic
  * "something is unusual":
  *
  * - a config file is in force from ABOVE the journal's directory, so creating one
@@ -370,6 +377,8 @@ export function parityFixLabel(parity: CliParity): string {
  *   discover afterwards;
  * - the config in force replaces the command hledger runs, which breaks every
  *   hledger command the user types until they fix it;
+ * - the config declares more aliases than the engine forwards to one import, so
+ *   the ones past the cap reach a terminal import and not this one;
  * - the journal's directory holds something at `hledger.conf` that is not a
  *   regular file, so nothing will be written there.
  */
@@ -379,6 +388,14 @@ export function parityWarning(parity: CliParity): string | null {
             `Your config file starts with \`${parity.confHijackedBy}\`, which hledger reads as the command to run — ` +
             "it overrides whatever command you type, so every hledger command is currently affected. Ledgeline's own imports are unaffected " +
             "(it always passes --no-conf), but you will want to fix that line."
+        );
+    }
+    if (parity.confUnforwarded > 0) {
+        const more = parity.confUnforwarded === 1 ? "one more alias" : `${parity.confUnforwarded} more aliases`;
+        return (
+            `Your config file declares ${more} than Ledgeline passes to one import, so this import does not apply ` +
+            (parity.confUnforwarded === 1 ? "it" : "them") +
+            " and a command-line import does."
         );
     }
     if (parity.confPath !== null && parity.confOutside) {

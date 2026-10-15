@@ -1,10 +1,10 @@
 import {readFileSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {describe, expect, it} from "vitest";
-import {normalizeTransactions} from "$lib/api/normalize";
-import {dec, formatDec, toNumber, type Dec} from "$lib/domain/money";
-import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "$lib/domain/types";
-import type {AccountType} from "$lib/domain/accountTypes";
+import {normalizeTransactions} from "#lib/api/normalize.js";
+import {dec, formatDec, toNumber, type Dec} from "#lib/domain/money.js";
+import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "#lib/domain/types.js";
+import type {AccountType} from "#lib/domain/accountTypes.js";
 import {
     OTHER,
     bigNumbers,

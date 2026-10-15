@@ -25,8 +25,8 @@
      beside it and never from its own content — a longer label cannot widen the
      box that decided how long the label may be. -->
 <script lang="ts">
-    import AccountLabel from "$lib/components/AccountLabel.svelte";
-    import type {BalanceRow} from "$lib/reports/cashBalances";
+    import AccountLabel from "#lib/components/AccountLabel.svelte";
+    import type {BalanceRow} from "#lib/reports/cashBalances.js";
 
     let {
         entry,

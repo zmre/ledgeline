@@ -3,10 +3,10 @@
      selection), and the as-of date. All state lives in the holdings scope
      store; every change recomputes the derived report, no refetch. -->
 <script lang="ts">
-    import AccountTreeSelect from "$lib/filters/AccountTreeSelect.svelte";
-    import type {GainPeriod} from "$lib/holdings/types";
-    import {GAIN_PERIODS} from "$lib/holdings/ui/gainPeriod";
-    import {holdingsScope} from "$lib/stores/holdings.svelte";
+    import AccountTreeSelect from "#lib/filters/AccountTreeSelect.svelte";
+    import type {GainPeriod} from "#lib/holdings/types.js";
+    import {GAIN_PERIODS} from "#lib/holdings/ui/gainPeriod.js";
+    import {holdingsScope} from "#lib/stores/holdings.svelte.js";
 
     let {accountNames}: {accountNames: string[]} = $props();
 

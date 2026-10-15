@@ -24,11 +24,11 @@
 // reports path runs through decodeMixed, and "absent" silently rendering $0.00
 // was a live bug class (CLEANUP.md DRY-3).
 
-import type {AccountEntry, AccountFile, AccountListing, AccountTag, CreatedAccountsFile} from "$lib/accounts/types";
-import {isBudgetPeriod} from "$lib/budget/types";
-import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile, RulePeriod} from "$lib/budget/types";
-import type {Dec, MixedAmount} from "$lib/domain/money";
-import type {ISODate} from "$lib/domain/types";
+import type {AccountEntry, AccountFile, AccountListing, AccountTag, CreatedAccountsFile} from "#lib/accounts/types.js";
+import {isBudgetPeriod} from "#lib/budget/types.js";
+import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile, RulePeriod} from "#lib/budget/types.js";
+import type {Dec, MixedAmount} from "#lib/domain/money.js";
+import type {ISODate} from "#lib/domain/types.js";
 import type {
     Holding,
     HoldingsPoint,
@@ -39,11 +39,11 @@ import type {
     OtherHoldingsReport,
     OtherHoldingsTotals,
     OtherHoldingsWarning,
-} from "$lib/holdings/types";
-import type {CreatedPricesFile, PriceOutcome, PriceResult, PricesFile, PricesStatus, PricesUpdateResponse} from "$lib/holdings/pricesTypes";
-import {CATEGORY_DIMENSIONS} from "$lib/holdings/profileTypes";
-import type {BenchmarkLine, BenchmarksResponse} from "$lib/holdings/benchmarks";
-import type {Breakdown, CategoryWeight, HoldingsProfiles, SymbolProfile, YahooStatus} from "$lib/holdings/profileTypes";
+} from "#lib/holdings/types.js";
+import type {CreatedPricesFile, PriceOutcome, PriceResult, PricesFile, PricesStatus, PricesUpdateResponse} from "#lib/holdings/pricesTypes.js";
+import {CATEGORY_DIMENSIONS} from "#lib/holdings/profileTypes.js";
+import type {BenchmarkLine, BenchmarksResponse} from "#lib/holdings/benchmarks.js";
+import type {Breakdown, CategoryWeight, HoldingsProfiles, SymbolProfile, YahooStatus} from "#lib/holdings/profileTypes.js";
 import type {
     AliasEffect,
     AliasEntry,
@@ -86,7 +86,7 @@ import type {
     StagePreview,
     StatementMeta,
     StatusChange,
-} from "$lib/imports/importTypes";
+} from "#lib/imports/importTypes.js";
 import type {
     IfLayout,
     OpaqueReason,
@@ -104,8 +104,8 @@ import type {
     RulesSettings,
     RulesSourcePref,
     RulesWarning,
-} from "$lib/imports/types";
-import {GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "$lib/projections/types";
+} from "#lib/imports/types.js";
+import {GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "#lib/projections/types.js";
 import type {
     AssetRow,
     BalanceSeries,
@@ -121,7 +121,7 @@ import type {
     ScenarioFile,
     ScenarioLine,
     ScenarioPeriod,
-} from "$lib/projections/types";
+} from "#lib/projections/types.js";
 import type {
     Cadence,
     ChangeKind,
@@ -136,7 +136,7 @@ import type {
     Subscription,
     SubscriptionsReport,
     TopTxn,
-} from "$lib/reports/insightsTypes";
+} from "#lib/reports/insightsTypes.js";
 import type {
     Amounts,
     BalanceSheetReport,
@@ -172,7 +172,7 @@ import type {
     ReportRow,
     Section,
     SectionedReport,
-} from "$lib/reports/types";
+} from "#lib/reports/types.js";
 import {ApiShapeError} from "./client";
 
 // ---------------------------------------------------------------------------
@@ -921,6 +921,7 @@ interface RawCliParity {
     confPath?: string | null;
     confOutside?: boolean;
     confHijackedBy?: string | null;
+    confUnforwarded?: number;
     additions?: unknown[];
     refusals?: RawConfRefusal[];
     revision?: string;
@@ -2974,6 +2975,7 @@ function decodeCliParity(raw: RawCliParity | null | undefined, context: string):
             confPath: null,
             confOutside: false,
             confHijackedBy: null,
+            confUnforwarded: 0,
             additions: frozen([]),
             refusals: frozen([]),
             revision: "",
@@ -2986,6 +2988,8 @@ function decodeCliParity(raw: RawCliParity | null | undefined, context: string):
         confPath: raw.confPath ?? null,
         confOutside: raw.confOutside === true,
         confHijackedBy: raw.confHijackedBy ?? null,
+        // Absent (an older engine) reads as 0, the quiet reading, for the reason above.
+        confUnforwarded: raw.confUnforwarded === undefined ? 0 : num(raw.confUnforwarded, `${context} confUnforwarded`),
         additions: frozen(decodeStrings(raw.additions, `${context} additions`)),
         refusals: frozen(
             (raw.refusals ?? []).map((refusal, i) =>
@@ -3451,7 +3455,7 @@ export function decodePrefs(raw: unknown): Prefs {
 // Budget editor (`/api/budget/lines`, `/api/budget/file`, `/api/budget/reference`)
 //
 // The `~` periodic rules the budget report measures against, as the Budget tab
-// lists and rewrites them. See `$lib/budget/types.ts` for what `amount` and
+// lists and rewrites them. See `#lib/budget/types.ts` for what `amount` and
 // `entry` are and why both are carried.
 // ---------------------------------------------------------------------------
 
@@ -3670,7 +3674,7 @@ export function decodeAccountReference(raw: unknown): AccountReference {
 // ---------------------------------------------------------------------------
 // Stock price updates (`/api/prices/status`, `/api/prices/file`, `/api/prices/update`)
 //
-// The Holdings tab's "Update prices" button — see `$lib/holdings/pricesTypes.ts`.
+// The Holdings tab's "Update prices" button — see `#lib/holdings/pricesTypes.ts`.
 // ---------------------------------------------------------------------------
 
 interface RawPriceSymbol {
@@ -3857,7 +3861,7 @@ export function decodeHoldingsProfiles(raw: unknown): HoldingsProfiles {
 // Budget gaps (`/api/budget/gaps`)
 //
 // What the `~` rules do NOT measure, over the same window as the budget report
-// — see `$lib/reports/types.ts`. Its own payload rather than a field on that
+// — see `#lib/reports/types.ts`. Its own payload rather than a field on that
 // report, because the section showing it opens collapsed and must not slow down
 // a refetch nobody asked it for.
 // ---------------------------------------------------------------------------

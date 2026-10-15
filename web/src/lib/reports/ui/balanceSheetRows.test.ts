@@ -7,11 +7,11 @@
 // unpriced commodity is demoted rather than dropped.
 
 import {describe, expect, it} from "vitest";
-import {decodeBalanceSheetReport} from "$lib/api/nativeDecode";
-import {dec, type MixedAmount} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import type {BsSection} from "$lib/reports/types";
-import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, STRADDLING_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
+import {decodeBalanceSheetReport} from "#lib/api/nativeDecode.js";
+import {dec, type MixedAmount} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import type {BsSection} from "#lib/reports/types.js";
+import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, STRADDLING_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
 import {amountCell, bsCursorRows, bsGroupKey, bsSummary, sectionDisplayRows, type BsDisplayRow} from "./balanceSheetRows";
 
 const REPORT = decodeBalanceSheetReport(GROUPED_BALANCE_SHEET);

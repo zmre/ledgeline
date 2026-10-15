@@ -33,14 +33,21 @@ encoding_rs = { workspace = true }
 encoding_rs_io = { workspace = true }
 chardetng = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
+# Builds the allocation-bomb workbooks the spreadsheet tests feed the reader.
+# Already in the tree via calamine (same major, same feature), so this adds no
+# crate to Cargo.lock.
+zip = { version = "8", default-features = false, features = ["deflate"] }
 # Benchmarking. Declared here rather than in the
 # workspace table because `ledgeline-core` is the only crate that benches. The
 # skill's `async_tokio` feature is deliberately NOT enabled: the engine is
 # entirely synchronous and has no runtime to drive.
-criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 # Bench layout: criterion supplies its own harness,
 # and the libtest harness must not also claim `--bench` (it would shadow

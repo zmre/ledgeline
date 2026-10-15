@@ -1,7 +1,7 @@
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
-import {decodeRulesDoc} from "$lib/api/nativeDecode";
-import type {SaveRulesItem} from "$lib/api/native";
+import {decodeRulesDoc} from "#lib/api/nativeDecode.js";
+import type {SaveRulesItem} from "#lib/api/native.js";
 import {
     appendRule,
     blankRule,

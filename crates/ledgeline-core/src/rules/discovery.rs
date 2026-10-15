@@ -849,6 +849,14 @@ impl DiscoveredRules {
     pub fn identity_unchanged(&self) -> bool {
         dirscan::still_the_same_file(&self.path.0, self.identity)
     }
+
+    /// The `(dev, ino)` the scan admitted, for a [`crate::pinned::Pin`]: the
+    /// write then checks it through the descriptor it replaces, right up to the
+    /// rename, rather than in a separate `stat` before it.
+    #[must_use]
+    pub fn identity(&self) -> Option<crate::pinned::FileIdentity> {
+        self.identity.map(crate::pinned::FileIdentity::from_raw)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -919,6 +927,19 @@ enum ReadStop {
     /// Open or read failed, or the name stopped being a regular file between the
     /// scan's `stat` and the open.
     Unreadable,
+}
+
+/// A rules file's text, read under the same cap the scan applies, or `None`
+/// when it is past [`MAX_RULES_BYTES`], unreadable, or not UTF-8.
+///
+/// For a caller that re-reads a file the scan already listed: the scan's own
+/// cap is a statement about the file *then*, and a file can grow — or be
+/// swapped for an enormous one — between the scan and a second read.
+#[must_use]
+pub fn read_text(path: &Path) -> Option<String> {
+    read_capped(path)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
 }
 
 /// Read a file, refusing anything past [`MAX_RULES_BYTES`].
@@ -1331,6 +1352,21 @@ fn file_warning(message: String) -> Warning {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_re_read_gets_the_scans_size_cap() {
+        let dir = std::env::temp_dir().join(format!("ledgeline-read-text-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.csv.rules");
+        let cap = usize::try_from(MAX_RULES_BYTES).unwrap();
+        std::fs::write(&path, "x".repeat(cap)).unwrap();
+        assert_eq!(read_text(&path).map(|text| text.len()), Some(cap));
+        std::fs::write(&path, "x".repeat(cap + 1)).unwrap();
+        assert_eq!(read_text(&path), None);
+        std::fs::write(&path, [0xff]).unwrap();
+        assert_eq!(read_text(&path), None, "not UTF-8");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn rules_names_are_matched_case_insensitively_and_never_bare() {

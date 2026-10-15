@@ -17,9 +17,9 @@
 // design — a grant and a lawsuit settlement can share it — so it is the one box
 // allowed to print a negative total.
 
-import type {Dec, MixedAmount} from "$lib/domain/money";
-import {EM_DASH, ZERO} from "$lib/format/amounts";
-import type {Amounts, IncomeStatementReport, IsSection, IsSectionKind, IsSubtotalKind} from "$lib/reports/types";
+import type {Dec, MixedAmount} from "#lib/domain/money.js";
+import {EM_DASH, ZERO} from "#lib/format/amounts.js";
+import type {Amounts, IncomeStatementReport, IsSection, IsSectionKind, IsSubtotalKind} from "#lib/reports/types.js";
 import {compressIsRows} from "./displayRows";
 
 export {amountCell, type AmountCell} from "./amountCell";

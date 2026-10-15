@@ -10,8 +10,8 @@
 // imports no Svelte and reads no clock, so the whole module is unit-testable
 // under node.
 
-import {dec, maScale, toNumber, type MixedAmount} from "$lib/domain/money";
-import type {BudgetRule} from "$lib/budget/types";
+import {dec, maScale, toNumber, type MixedAmount} from "#lib/domain/money.js";
+import type {BudgetRule} from "#lib/budget/types.js";
 
 /** Which column the goals are ordered by. */
 export type BudgetSortKey = "account" | "amount";

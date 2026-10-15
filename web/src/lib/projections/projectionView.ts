@@ -14,10 +14,10 @@
 // in; [`otherCommodities`] names what that leaves out, so the surface can say so
 // rather than quietly plotting a fraction of the answer.
 
-import type {Dec} from "$lib/domain/money";
-import {rankCommodities, toNumber, type MixedAmount} from "$lib/domain/money";
-import type {PeriodReport} from "$lib/reports/types";
-import type {ReportInterval} from "$lib/reports/ui/params";
+import type {Dec} from "#lib/domain/money.js";
+import {rankCommodities, toNumber, type MixedAmount} from "#lib/domain/money.js";
+import type {PeriodReport} from "#lib/reports/types.js";
+import type {ReportInterval} from "#lib/reports/ui/params.js";
 import type {AssetRow, BalanceSeries, Projection} from "./types";
 
 /** One number per bucket, for the commodity being charted. Absent is 0 — the amount is known and holds none of it. */

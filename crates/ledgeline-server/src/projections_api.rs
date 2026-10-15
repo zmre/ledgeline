@@ -38,13 +38,14 @@ use std::path::{Path as FsPath, PathBuf};
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use ledgeline_core::Fingerprint;
+use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PeriodSpec, Posting,
 };
 use ledgeline_core::parse::parse_period_spec;
+use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::projections::serialize::{
     ProjectionDoc, SerializeError, new_file, scenario_from_text, write_scenario,
 };
@@ -66,17 +67,19 @@ use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
     Window, WireDec, WireMixed, WirePeriodReport, checked_date, compute, today_utc, wire_mixed,
 };
+use crate::security::no_store_json as no_store;
 
 // ===========================================================================
 // Limits
 // ===========================================================================
 
-/// The largest `POST /api/projections/run` body this server will read.
+/// The largest `POST /api/projections/run` or `PUT /api/projections/{*id}` body
+/// this server will read.
 ///
 /// 256 KiB is roughly a thousand lines with generous account names and notes —
 /// far past any scenario a human edits, and far short of what it costs to hold
 /// while a `compute` slot is claimed. Enforced by axum's `DefaultBodyLimit` on
-/// this route alone, the way `/api/import/stage` raises its own rather than
+/// those two routes alone, the way `/api/import/stage` sets its own rather than
 /// moving the global one; an over-limit body arrives as a `JsonRejection` and
 /// [`json_body`] renders it as a `400`.
 pub(crate) const MAX_BODY_BYTES: usize = 256 * 1024;
@@ -574,6 +577,14 @@ fn amount_from_wire(amount: &AmountIn) -> Result<Amount, AppError> {
     }
     let quantity = dec_from_wire(&amount.quantity)?;
     let precision = amount.precision.unwrap_or(quantity.places);
+    // The same bound `dec_from_wire` puts on `places` (SEC-5), for the same
+    // reason: the engine rounds to this at every step and the writer pads to it,
+    // so it is a scale the client chooses, and no journal amount re-reads wider.
+    if precision > MAX_PARSE_PLACES {
+        return Err(AppError::BadRequest(format!(
+            "amount precision {precision} is out of range (expected 0..={MAX_PARSE_PLACES})"
+        )));
+    }
     Ok(Amount {
         commodity: Commodity(commodity.to_string()),
         quantity,
@@ -1241,19 +1252,6 @@ fn open_file(
     })
 }
 
-/// `Cache-Control: no-store`, no `ETag`.
-///
-/// The same decision `rules_api` documents at length: the `ETag` is one
-/// per-journal generation counter shared by every read route, so bumping it for
-/// a projection-file change would invalidate the SPA's cached `/transactions`
-/// body for a change that affects no transaction — and not bumping it while
-/// serving from the snapshot would hand out a stale document under a fresh tag.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
-}
-
 /// The journal's main file — the scan root's parent, and the only thing that
 /// makes a discovery set exist at all.
 fn main_journal_file(state: &AppState) -> Option<PathBuf> {
@@ -1332,7 +1330,7 @@ fn create_scenario(
 
 /// The whole of an UPDATE, synchronously, on the blocking pool.
 ///
-/// Every `?` here is a decision not to write. The single `atomic_write` is the
+/// Every `?` here is a decision not to write. The single pinned replace is the
 /// last statement that can have an effect, and everything above it is either a
 /// read or a pure computation.
 fn update_scenario(
@@ -1397,28 +1395,22 @@ fn update_scenario(
         });
     }
 
-    // Narrow the TOCTOU window from "the whole request" to "hash → rename". It
-    // cannot be closed — there is no compare-and-swap for a file — but the read
-    // above happened before parsing, rendering and verifying, all of which take
-    // time.
-    let (_, before_write) = read_file(path, id)?;
-    if !before_write.content_matches(&fingerprint) {
-        return Err(stale(id));
-    }
-    // `(dev, ino)` plus a regular-file re-check, immediately before the write.
+    // Pinned to the scan's `(dev, ino)` and to the revision the client edited.
     // The scan proved this name was a regular file inside the root; that proof
     // expired the moment the scan ended, and a name can become a symlink, a
-    // FIFO or a different file entirely in between.
-    if !found.identity_unchanged() {
-        return Err(stale(id));
-    }
-
-    // `atomic_write` and not `create_exclusive`: this file exists, and every
-    // property it documents is wanted here — a same-directory temp file, mode
-    // carry-forward (a projection carries account names and figures, so `0600`
-    // staying `0600` is not hypothetical), and `fsync` before `rename`.
-    ledgeline_core::edit::atomic_write(path, new_text.as_bytes())
-        .map_err(|error| write_failed(id, &error))?;
+    // FIFO or a different file entirely in between. `pinned::replace` re-checks
+    // both through the descriptor it replaces, right up to the rename, and never
+    // follows a link. A replace and not `create_exclusive`: this file exists,
+    // and its mode is carried forward (a projection carries account names and
+    // figures, so `0600` staying `0600` is not hypothetical).
+    let pin = Pin {
+        identity: found.identity(),
+        fingerprint: Some(fingerprint),
+    };
+    pinned::replace(path, new_text.as_bytes(), &pin).map_err(|error| match error {
+        WriteError::Changed => stale(id),
+        WriteError::Io(error) => write_failed(id, &error),
+    })?;
 
     // Deliberately NO `state.reopen_editor()`: it re-opens the main journal,
     // which a file the main journal does not include cannot have changed.

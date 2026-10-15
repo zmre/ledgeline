@@ -1,8 +1,8 @@
 <script lang="ts">
     // First-run server setup (WP-02): verify the hledger-web URL via GET /version
     // and persist it. On network/CORS failure, show the exact launch command to copy.
-    import {ApiUnreachableError} from "$lib/api/client";
-    import {settings} from "$lib/stores/settings.svelte";
+    import {ApiUnreachableError} from "#lib/api/client.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
 
     let url = $state("http://127.0.0.1:5000");
     let token = $state("");

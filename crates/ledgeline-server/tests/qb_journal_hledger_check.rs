@@ -45,6 +45,7 @@ struct Tree {
 
 impl Tree {
     fn bare() -> Self {
+        common::use_built_workbook_worker();
         let dir = TempDir::new().expect("temp dir");
         std::fs::write(dir.path().join("main.journal"), OPENING).expect("write journal");
         let state = AppState::from_journal_path(dir.path().join("main.journal"))

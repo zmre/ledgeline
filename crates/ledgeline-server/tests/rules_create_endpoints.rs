@@ -572,6 +572,27 @@ async fn an_empty_create_is_refused_rather_than_writing_an_empty_file() {
     assert!(!tree.path("import/2026/new.csv.rules").exists());
 }
 
+/// The item cap bounds how many items a save names, not how many bytes they
+/// render to. Two thousand values at their own cap render past the 1 MiB the
+/// read route will open, and a save must not write a file the next `GET`
+/// refuses.
+#[tokio::test]
+async fn a_save_that_renders_past_the_read_cap_writes_nothing() {
+    let tree = Tree::standard();
+    let item = json!({"kind": "assignment", "field": "description", "value": "x".repeat(512)});
+    let items = vec![item; 2_000];
+    let (status, message) = text(
+        &tree.state,
+        "PUT",
+        "/api/rules/import/2026/new.csv.rules",
+        Some(json!({"revision": "", "items": items, "delete": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+    assert!(message.contains("this editor can open"), "{message}");
+    assert!(!tree.path("import/2026/new.csv.rules").exists());
+}
+
 // ---------------------------------------------------------------------------
 // Confinement: the one `root.join(id)` in the codebase
 // ---------------------------------------------------------------------------

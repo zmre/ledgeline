@@ -258,8 +258,9 @@ pub struct Transaction {
     /// The resolved (absolute, canonicalized when it exists on disk) path of the
     /// file this transaction was parsed from — the same file its `source_span`
     /// lines are relative to. For a transaction in an `include`d file this is the
-    /// included file, not the main journal. Purely an internal editing concern:
-    /// the wire/report layers key off [`Journal::source_name`] and are unaffected.
+    /// included file, not the main journal. The editor locates the transaction by
+    /// it, and the wire reports it as `tsourcepos`/`baposition`'s `sourceName`
+    /// whenever it is not the main file (as hledger does).
     pub source_file: PathBuf,
 }
 

@@ -46,7 +46,7 @@ async function freshStore(table: Record<string, unknown>): Promise<{
     vi.resetModules();
     const fetchMock = routes({"/version": "1.52", ...table});
     vi.stubGlobal("fetch", fetchMock);
-    const {settings} = await import("$lib/stores/settings.svelte");
+    const {settings} = await import("#lib/stores/settings.svelte.js");
     await settings.setServerUrl("http://engine.test");
     const {qbJournalStore} = await import("./qbJournalStore.svelte");
     return {store: qbJournalStore, fetchMock};
@@ -237,10 +237,10 @@ describe("UNIT qbJournalStore — commit", () => {
             });
         });
         vi.stubGlobal("fetch", fetchMock);
-        const {settings} = await import("$lib/stores/settings.svelte");
+        const {settings} = await import("#lib/stores/settings.svelte.js");
         await settings.setServerUrl("http://engine.test");
         const {qbJournalStore, QB_JOURNAL_COMMIT_TIMEOUT_MS} = await import("./qbJournalStore.svelte");
-        const {REQUEST_TIMEOUT_MS} = await import("$lib/api/client");
+        const {REQUEST_TIMEOUT_MS} = await import("#lib/api/client.js");
 
         const pending = qbJournalStore.commitStage("http://engine.test", "s1");
         // Past the shared 30s default: a hung connection would already have

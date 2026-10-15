@@ -5,46 +5,25 @@
 - fix: display issue where pie chart is not round, but oval when the window narrows horizontally or vertically.  Update: seems to be specific to linux as I can't reproduce on mac. Static analysis says the geometry is fine — layerchart computes the radius as `min(width, height) / 2` and emits a true circle with no `viewBox`, and nothing in our CSS scales non-uniformly — so this needs a WebKitGTK repro (dump the `<svg>`'s rendered box, attributes and computed style from devtools on Linux) before anything is changed.
 
 ## Security
-- security: **a local process can read the token straight out of `GET /`, and that escalates to
-  code execution.** `PUT /api/prefs` persists an arbitrary `hledgerPath`, which `Hledger::candidates`
-  then spawns on every import.
-  - The real fix is to hand the token to the WebView **out of band** — wry's
-    `with_initialization_script` — so the token never appears in a response body at all. `GET /` is
-    deliberately outside `route_layer` so the browser can bootstrap, and HTTP cannot tell the user's
-    WebView from someone else's `curl`.
-  - Needs care: the vite dev flow and the Playwright e2e harness bootstrap cross-origin and would
-    have to keep using `$LEDGELINE_TOKEN`.
-  - The prefs validation only removes the *persistent* half. The `--version` probe is itself an
-    `exec`, so a caller can still run an arbitrary binary by repeating `PUT /api/prefs` — measured
-    running the candidate **twice** per request, which is worth fixing on its own since one would do.
-    (Permissions are checked before the probe, so a group/world-writable binary is never run.)
-- security: **an xlsx with two cells can ask for a ~550 GB allocation.** `convert/spreadsheet.rs`
-  lets calamine materialize a dense grid from sparse bounds (`A1` + `XFD1048576` is enough).
-  `MAX_INPUT_BYTES` bounds the *compressed* zip and `MAX_ROWS` truncates only *after*
-  materialization, so neither helps. An allocator abort is not something `CatchPanicLayer` can
-  catch. Needs a streaming/bounds-checked read rather than a cap.
-- security: **TOCTOU between the symlink refusal and the write.** The refusal uses
-  `symlink_metadata` but the write follows symlinks, and the window spans up to three 120-second
-  `hledger` runs. Worse on the edit path, where `carry_forward_metadata` copies the victim file's
-  uid/gid/mode onto the new inode and erases the trace. Wants open-once-and-write-through-fd.
-- security: **the CSP inline-script hashes are never tested against a real SvelteKit shell.**
-  `flake.nix` injects a script-less placeholder for every CI test and Playwright runs cross-origin
-  with no CSP, so a SvelteKit upgrade can break the app to a blank window with nothing failing —
-  and the obvious pressure fix would be `unsafe-inline`. Wants a fixture built from a real shell.
-- security: `wire.rs`'s `/accounts` attributes an `include`d file's line number to the main journal
-  (`adisourcepos` is built with the main journal's name regardless of which file the directive came
-  from). `AccountDeclaration` carries a `SourcePos` but no `source_file`, unlike `Transaction` and
-  `AliasDirective`, which carry both. Blocks file+line anchoring for directive diagnostics.
-- chore: **sweep for caps that exist but are applied inconsistently.** Three were found one at a
-  time (a render clamp present in `edit.rs` but missing from `ofx.rs` and `import_api.rs`, a parse
-  scale cap that failed open, a row cap that ran after materialization). Worth looking for the rest
-  deliberately rather than waiting for the next review.
-- chore: **one `no_store` definition, not five.** The canonical `HeaderValue` is in
-  `security::no_store()`, but `import_api`, `rules_api`, `alias_api` and `budget_api` each still
-  have a module-private `fn no_store<T: Serialize>(body: T) -> Response`. Rebase them onto it.
-- chore: **one path redactor, not two.** `import_api::Redactor` is private to that module, so
-  `edit_api::PathRedaction` duplicates its longest-first and both-spellings-of-`/tmp` rules. Promote
-  `Redactor` to a shared module and delete the duplicate.
+- security: `security::inline_script_hashes` decides "external" by `contains("src=")` on the open
+  tag, so an inline `<script data-src=…>` goes unhashed (and is refused). SvelteKit emits no such
+  tag today, and `tests/spa_shell_csp.rs` (whose scanner parses attribute names) fails if it ever
+  does; still worth matching the attribute name in the production scanner.
+- security: **some READS still follow a swapped-in symlink.** Writes are closed (`pinned`:
+  resolve once, `O_NOFOLLOW`, `(dev, ino)` + fingerprint checked through the fd up to `renameat`),
+  but `rules_api::read_document`, `projections_api::read_file` and every `hledger` invocation
+  (`-f <journal>`) still open by path. A link swapped in mid-request can make a preview or a
+  revision describe the link's target — a disclosure into the UI, never a write. Wants
+  `pinned::read_pinned` at those reads and, for hledger, a check of the pin after each run.
+- chore: **cap-sweep residue.** The import preview's `additions` (`import_api::cli_parity`) are
+  still diffed against the config's *forwarded* aliases, capped at `MAX_CONF_ALIASES`, so past 200
+  it can list a line the write then (correctly) does not add; the write path uses the full list.
+  And "no ASCII control character" now has five private spellings (`accounts`, `periodic`,
+  `aliases` `has_control`; `rules::check_text`; `edit_api::check_text`) — one shared helper.
+- chore: `git.rs`'s `Repo::scrub` still swaps the repo toplevel without a path-boundary check
+  (hiding `/u/fin` rewrites `/u/finances2/x`). The shared `redact::Redactor` fixed this everywhere
+  else, but `tests/git_commit.rs` compiles `git.rs` standalone via `#[path]`, so it cannot use
+  `crate::redact` as-is; lift the boundary check into a dependency-free helper both can share.
 
 ## Misc
 - chore: Add screenshots and better descriptions to the readme

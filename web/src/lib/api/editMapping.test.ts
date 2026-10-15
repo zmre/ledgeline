@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import type {Amount, AmountStyle, BalanceAssertion, Posting, PostingType, Transaction, TxnStatus} from "$lib/domain/types";
+import type {Amount, AmountStyle, BalanceAssertion, Posting, PostingType, Transaction, TxnStatus} from "#lib/domain/types.js";
 import {
     accountPatch,
     blankForm,

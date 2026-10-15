@@ -15,7 +15,7 @@
 // would prove nothing. If the contract changes, these fail.
 
 import {describe, expect, it} from "vitest";
-import {ApiShapeError} from "$lib/api/client";
+import {ApiShapeError} from "#lib/api/client.js";
 import {
     decodeCommitResult,
     decodeConfWritten,
@@ -24,8 +24,8 @@ import {
     decodePrefs,
     decodeSortResult,
     decodeStagedFile,
-} from "$lib/api/nativeDecode";
-import {dataView} from "$lib/stores/loadState";
+} from "#lib/api/nativeDecode.js";
+import {dataView} from "#lib/stores/loadState.js";
 import {
     acceptAttribute,
     actionBlocker,
@@ -398,6 +398,7 @@ describe("UNIT import wire decoders", () => {
                     confPath: null,
                     confOutside: false,
                     confHijackedBy: null,
+                    confUnforwarded: 0,
                     additions: ["/^PW.Roth.IRA.-.3077($|:)/=assets:ms:roth\\1"],
                     refusals: [{pattern: "A B", replacement: "x y", reason: "replacementWhitespace", message: "the account it maps to contains a space"}],
                     revision: "rev-1",

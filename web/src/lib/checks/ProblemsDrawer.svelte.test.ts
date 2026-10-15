@@ -17,8 +17,8 @@
 
 import {render, screen} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
-import type {Problem} from "$lib/checks/engine";
-import type {Transaction} from "$lib/domain/types";
+import type {Problem} from "#lib/checks/engine.js";
+import type {Transaction} from "#lib/domain/types.js";
 
 const requestFocus = vi.fn();
 
@@ -37,17 +37,17 @@ const state = {problems: [] as Problem[], txns: [] as Transaction[], drawerOpen:
 vi.mock("$app/navigation", () => ({goto: vi.fn()}));
 vi.mock("$app/paths", () => ({resolve: (path: string) => path}));
 vi.mock("$app/state", () => ({page: {url: new URL("http://localhost/")}}));
-vi.mock("$lib/stores/filters.svelte", () => ({
+vi.mock("#lib/stores/filters.svelte.js", () => ({
     filters: {value: {from: null, to: null}, setRange: vi.fn()},
 }));
-vi.mock("$lib/stores/journal.svelte", () => ({
+vi.mock("#lib/stores/journal.svelte.js", () => ({
     journal: {
         get txns() {
             return state.txns;
         },
     },
 }));
-vi.mock("$lib/stores/problems.svelte", () => ({
+vi.mock("#lib/stores/problems.svelte.js", () => ({
     problems: {
         get all() {
             return state.problems;

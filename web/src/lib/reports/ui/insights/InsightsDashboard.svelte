@@ -4,12 +4,12 @@
      bound to the shared ReportParams (insStart/insEnd) so it round-trips in the
      URL like the other tabs. -->
 <script lang="ts">
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {maIsZero, sub, toNumber, type Dec} from "$lib/domain/money";
-    import type {AmountStyle} from "$lib/domain/types";
-    import type {InsightsReport, MetricDelta} from "$lib/reports/insightsTypes";
-    import type {ReportParams} from "$lib/reports/ui/params";
-    import {insights} from "$lib/stores/insights.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import {maIsZero, sub, toNumber, type Dec} from "#lib/domain/money.js";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import type {InsightsReport, MetricDelta} from "#lib/reports/insightsTypes.js";
+    import type {ReportParams} from "#lib/reports/ui/params.js";
+    import {insights} from "#lib/stores/insights.svelte.js";
     import ChangeList from "./ChangeList.svelte";
     import {deltaLine, extras, fmt, fmtBase, fmtSignedAmount, fmtSignedPct, monthlyAverage, signClass} from "./format";
     import MoversList from "./MoversList.svelte";

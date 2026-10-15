@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
-import {dec, type MixedAmount} from "$lib/domain/money";
-import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from "$lib/domain/types";
-import type {JournalFilter} from "$lib/stores/filters.svelte";
+import {dec, type MixedAmount} from "#lib/domain/money.js";
+import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
+import type {JournalFilter} from "#lib/stores/filters.svelte.js";
 import {
     accountFlow,
     centerOffset,

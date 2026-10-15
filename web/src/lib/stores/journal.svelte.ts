@@ -4,17 +4,17 @@
 // state is swapped only after a successful normalize, so old data stays
 // visible on error (the route shows an error toast from `status`/`error`).
 
-import {HledgerApi, isNotModified, resetConditionalCache} from "$lib/api/client";
-import {LedgelineApi} from "$lib/api/native";
-import {decodeJournalInfo} from "$lib/api/nativeDecode";
-import {normalizeAccounts, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "$lib/api/normalize";
-import type {Problem} from "$lib/checks/engine";
-import type {Dec} from "$lib/domain/money";
-import type {AccountDecl} from "$lib/domain/accountTypes";
-import type {PriceDirective, Transaction} from "$lib/domain/types";
-import {filterTxns, sortTxnsDesc} from "$lib/journal/rowModel";
-import {filters} from "$lib/stores/filters.svelte";
-import {settings} from "$lib/stores/settings.svelte";
+import {HledgerApi, isNotModified, resetConditionalCache} from "#lib/api/client.js";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeJournalInfo} from "#lib/api/nativeDecode.js";
+import {normalizeAccounts, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "#lib/api/normalize.js";
+import type {Problem} from "#lib/checks/engine.js";
+import type {Dec} from "#lib/domain/money.js";
+import type {AccountDecl} from "#lib/domain/accountTypes.js";
+import type {PriceDirective, Transaction} from "#lib/domain/types.js";
+import {filterTxns, sortTxnsDesc} from "#lib/journal/rowModel.js";
+import {filters} from "#lib/stores/filters.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 
 type JournalStatus = "idle" | "loading" | "ready" | "error";
 

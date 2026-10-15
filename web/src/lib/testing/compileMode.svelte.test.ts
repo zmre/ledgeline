@@ -1,11 +1,12 @@
 // The components project must compile components EXACTLY as production does, or
 // every test in it is evidence about a build nobody ships.
 //
-// This repo forces runes on via `dynamicCompileOptions` in `svelte.config.js`,
-// which is an option of `@sveltejs/vite-plugin-svelte` — not of the Svelte
+// This repo forces runes on via `dynamicCompileOptions`, passed to the
+// `sveltekit()` plugin in `vite.config.ts` (SvelteKit 3 has no
+// `svelte.config.js`), which is an option of `@sveltejs/vite-plugin-svelte` — not of the Svelte
 // compiler, and not of vitest. It therefore applies only where that plugin is in
 // the pipeline. The components project inherits it by extending
-// `./vite.config.ts` (same `sveltekit()` plugin, same `svelte.config.js`), which
+// `./vite.config.ts` (same `sveltekit()` plugin, same options), which
 // is true by construction right up until someone gives the project its own
 // plugin list to fix something unrelated. Then the compiler falls back to
 // AUTO-DETECT: components using runes still get runes, and anything that does

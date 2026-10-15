@@ -16,7 +16,7 @@
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it} from "vitest";
-import {settings} from "$lib/stores/settings.svelte";
+import {settings} from "#lib/stores/settings.svelte.js";
 import ColumnMenu from "./ColumnMenu.svelte";
 
 /**

@@ -15,7 +15,7 @@
 
 import {render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import {RENAMES_ONLY} from "$lib/testing/aliasFixtures";
+import {RENAMES_ONLY} from "#lib/testing/aliasFixtures.js";
 import RenameList from "./RenameList.svelte";
 
 describe("COMPONENT RenameList", () => {

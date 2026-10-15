@@ -105,8 +105,8 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, HeaderName};
+use axum::response::Response;
 use ledgeline_core::aliases;
 use ledgeline_core::convert::{
     self, ConvertError, ConvertNote, SourceFormat, StatementMeta, Tabular,
@@ -116,12 +116,14 @@ use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
 use ledgeline_core::journals::{self, JournalTarget};
 use ledgeline_core::model::Status;
+use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::reimport::{self, RowClassification};
 use ledgeline_core::rules::matching::{self, Candidate, Ranking, Score, Signals};
 use ledgeline_core::rules::{self, Discovery, RulesDoc};
 use ledgeline_core::sort;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -132,8 +134,11 @@ use crate::error::AppError;
 use crate::git::{GitStatus, Repo};
 use crate::hledger::{Hledger, HledgerError, Invocation, Output};
 use crate::prefs::{self, Prefs};
+use crate::redact::Redactor;
 use crate::reports_api::compute;
+use crate::security::no_store_json as no_store;
 use crate::stage::{self, RUN_BARE, RUN_WITH_LATEST, Stage, StageId};
+use crate::workbook_sandbox;
 
 // ===========================================================================
 // Budgets
@@ -625,6 +630,10 @@ struct WireCliParity {
     /// A command word the config forces on every hledger invocation, which makes
     /// it break every command the user runs. `null` in the ordinary case.
     conf_hijacked_by: Option<String>,
+    /// How many of the config's `--alias` options were NOT forwarded to this
+    /// import, past `hledger_conf::MAX_CONF_ALIASES`. A terminal applies them,
+    /// so a non-zero count is a divergence of its own. `0` in every real case.
+    conf_unforwarded: usize,
     /// The `--alias` lines the one-click fix would add, shown before it is
     /// pressed because the conversion widens what the pattern matches.
     additions: Vec<String>,
@@ -1342,10 +1351,10 @@ fn resolve_rules(discovery: &Discovery, id: &str) -> Result<PathBuf, AppError> {
 ///
 /// An unreadable file answers `0`, which means no padding, which is exactly
 /// today's behaviour — and the import is about to fail on its own terms anyway,
-/// with hledger's message rather than a guess of ours.
-fn rules_skip(rules: &Path) -> u32 {
-    std::fs::read_to_string(rules)
-        .ok()
+/// with hledger's message rather than a guess of ours. So does one past the
+/// discovery scan's size cap, which [`rules::read_text`] re-applies here.
+fn rules_skip(path: &Path) -> u32 {
+    rules::read_text(path)
         .and_then(|text| RulesDoc::parse(&text).settings().skip)
         .map_or(0, |setting| setting.value)
 }
@@ -1382,8 +1391,12 @@ struct ConfInForce {
     /// It is above the journal's own directory, so Ledgeline reads it and will
     /// not write it.
     outside: bool,
-    /// The `--alias` values it gives an import, general section then `[import]`.
+    /// The `--alias` values it gives an import, general section then `[import]`,
+    /// up to [`hledger_conf::MAX_CONF_ALIASES`].
     aliases: Vec<String>,
+    /// How many more it declares past that cap, which a terminal applies and
+    /// this import does not.
+    unforwarded: usize,
     /// A command word it forces on every hledger invocation, if it forces one.
     hijacked_by: Option<String>,
 }
@@ -1395,10 +1408,15 @@ fn conf_in_force(root: &Path) -> Option<ConfInForce> {
     let text = hledger_conf::read(&path).ok()?;
     let directory = path.parent()?;
     let outside = directory != root;
+    let (aliases, unforwarded) = hledger_conf::forwarded(hledger_conf::alias_arguments(
+        &text,
+        hledger_conf::IMPORT_COMMAND,
+    ));
     Some(ConfInForce {
         id: conf_id(root, directory),
         outside,
-        aliases: hledger_conf::alias_arguments(&text, hledger_conf::IMPORT_COMMAND),
+        aliases,
+        unforwarded,
         hijacked_by: hledger_conf::hijacks_command(&text),
     })
 }
@@ -1439,10 +1457,11 @@ fn conf_id(root: &Path, directory: &Path) -> String {
 /// 2. [`parse::confine`], the same containment `include` and the rules scan use,
 ///    applied to the parent. It canonicalizes first, so a journal directory that
 ///    is itself reached through a symlink is resolved before the comparison.
-/// 3. [`std::fs::symlink_metadata`], which does not follow links: the target must
-///    be absent or a **regular file**. A symlinked `hledger.conf` pointing at
-///    `~/.bashrc` is refused, and so is a FIFO, which would otherwise hang the
-///    request forever on `read`.
+/// 3. [`pinned::read_pinned`], which does not follow links: the target must be
+///    absent or a **regular file**. A symlinked `hledger.conf` pointing at
+///    `~/.bashrc` is refused, and so is a FIFO (opened non-blocking and refused
+///    on its `fstat`), which would otherwise hang the request forever on `read`.
+///    The [`Pin`] it returns is what the write later insists on finding.
 struct ConfTarget {
     path: PathBuf,
     /// The wire handle. Always `hledger.conf`.
@@ -1454,6 +1473,8 @@ struct ConfTarget {
     /// that echoes it is refused if a file has appeared since.
     revision: String,
     writable: bool,
+    /// The inode and raw bytes read, for the write. Empty when nothing was read.
+    pin: Pin,
 }
 
 fn resolve_conf(root: &Path) -> ConfTarget {
@@ -1464,6 +1485,7 @@ fn resolve_conf(root: &Path) -> ConfTarget {
         exists: false,
         revision: String::new(),
         writable,
+        pin: Pin::none(),
     };
     // Guard 2. The parent is the root itself, so this is cheap — and it is here
     // because "cheap and obviously true today" is how a containment check stops
@@ -1472,26 +1494,36 @@ fn resolve_conf(root: &Path) -> ConfTarget {
         return absent(false);
     };
     let path = directory.join(hledger_conf::CONF_NAME);
-    // Guard 3.
-    match std::fs::symlink_metadata(&path) {
-        Err(_) => absent(true),
-        Ok(meta) if meta.file_type().is_file() => match hledger_conf::read(&path) {
-            Ok(text) => ConfTarget {
+    // Guard 3. Lossy, as `hledger_conf::read` is: the revision stays a hash of
+    // the text, and the pin holds the raw bytes' fingerprint for the write.
+    match pinned::read_pinned_capped(&path, hledger_conf::MAX_CONF_BYTES) {
+        Ok((bytes, pin)) => {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            ConfTarget {
                 revision: Fingerprint::of_bytes(text.as_bytes()).token(),
                 id: hledger_conf::CONF_NAME.to_string(),
                 exists: true,
                 writable: true,
                 text,
                 path,
-            },
-            Err(_) => absent(false),
-        },
-        // A symlink, a directory, a FIFO: present, and not something to write.
-        Ok(_) => ConfTarget {
+                pin,
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => absent(true),
+        // Past `hledger_conf::MAX_CONF_BYTES`: there is a file here, so a write
+        // must not treat it as absent and replace it.
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => ConfTarget {
             writable: false,
             exists: true,
             ..absent(false)
         },
+        // A symlink, a directory, a FIFO: present, and not something to write.
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => ConfTarget {
+            writable: false,
+            exists: true,
+            ..absent(false)
+        },
+        Err(_) => absent(false),
     }
 }
 
@@ -1543,72 +1575,8 @@ impl AliasArguments {
 // Security layer 5: no absolute path is ever echoed
 // ===========================================================================
 
-/// Rewrites the absolute paths *we* handed a subprocess back into the relative
-/// handles the client already has.
-///
-/// hledger and git both name files in their diagnostics — `imported 3 new
-/// transactions from bank.csv to /Users/me/finances/main.journal` is verbatim
-/// real output — and those diagnostics are the single most useful thing on the
-/// screen when something goes wrong, so withholding them is not an option. The
-/// same trade `git.rs` makes with its `scrub`: pass the words through, redact the
-/// prefixes we know.
-///
-/// Longest-first, so `/root/import/bank.csv` becomes `import/bank.csv` rather
-/// than being half-rewritten by the root's own entry.
-///
-/// `pub(crate)`: `qb_journal_api` builds its own and redacts its git errors the
-/// same way, rather than growing a second redaction scheme for one more write
-/// path.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct Redactor {
-    swaps: Vec<(String, String)>,
-}
-
-impl Redactor {
-    /// Replace every occurrence of `path` with `handle`.
-    ///
-    /// Both the path as given and its canonical spelling are registered, because
-    /// they differ routinely — on macOS `/tmp` is a symlink to `/private/tmp`,
-    /// and a subprocess may report either.
-    pub(crate) fn hide(mut self, path: &Path, handle: &str) -> Self {
-        let mut spellings = vec![path.to_string_lossy().into_owned()];
-        if let Ok(canonical) = std::fs::canonicalize(path) {
-            spellings.push(canonical.to_string_lossy().into_owned());
-        }
-        for spelling in spellings {
-            if !spelling.is_empty() && !self.swaps.iter().any(|(from, _)| *from == spelling) {
-                self.swaps.push((spelling, handle.to_string()));
-            }
-        }
-        self
-    }
-
-    /// Replace a DIRECTORY prefix: `dir/x` becomes `x`, and a bare mention of the
-    /// directory becomes `.`. Same two substitutions `git.rs::scrub` makes.
-    pub(crate) fn hide_prefix(mut self, dir: &Path) -> Self {
-        let spelling = dir.to_string_lossy().into_owned();
-        let canonical = std::fs::canonicalize(dir)
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| spelling.clone());
-        for prefix in [spelling, canonical] {
-            if prefix.is_empty() {
-                continue;
-            }
-            self.swaps.push((format!("{prefix}/"), String::new()));
-            self.swaps.push((prefix, ".".to_string()));
-        }
-        self
-    }
-
-    /// `text` with every known path rewritten.
-    pub(crate) fn apply(&self, text: &str) -> String {
-        let mut swaps: Vec<&(String, String)> = self.swaps.iter().collect();
-        swaps.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
-        swaps.iter().fold(text.to_string(), |redacted, (from, to)| {
-            redacted.replace(from.as_str(), to.as_str())
-        })
-    }
-}
+// Done by `crate::redact::Redactor`, the one redactor shared with the edit,
+// QuickBooks-journal and git paths.
 
 // ===========================================================================
 // hledger invocations
@@ -2376,17 +2344,6 @@ pub(crate) fn commit_targets(
 // Handlers
 // ===========================================================================
 
-/// `Cache-Control: no-store`, no `ETag` — the same posture as the rules routes.
-/// None of this is derived from the journal snapshot, and the `ETag` is one
-/// per-journal generation counter shared by every read endpoint, so there is no
-/// third option: tagging these would either invalidate the SPA's cached
-/// `/transactions` body or hand out a stale one under a fresh tag.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
-}
-
 /// `GET /api/import/capabilities` — hledger, formats, target journals, git.
 pub(crate) async fn capabilities(State(state): State<AppState>) -> Result<Response, AppError> {
     let editable = state.editing_enabled();
@@ -2460,11 +2417,11 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
     // `qb_journal::detect` says yes on a damaged export as well as a good one
     // — see its own docs on why — so a truncated file is refused BY NAME here
     // rather than falling through to the CSV rules screen.
-    if ledgeline_core::qb_journal::detect(bytes) {
+    if workbook_sandbox::qb_detect(bytes) {
         return stage_qb_journal(state, name, bytes);
     }
     let format = convert::detect(name, bytes).map_err(convert_error)?;
-    let tabular = convert::convert(format, bytes).map_err(convert_error)?;
+    let tabular = workbook_sandbox::convert(format, bytes).map_err(convert_error)?;
     let csv = convert::to_csv(&tabular);
 
     let (id, staged) = state.stages().put(&csv, format, name).map_err(|error| {
@@ -2546,7 +2503,7 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
 /// aliases on every call, which a value cached here at upload time could not
 /// be.
 fn stage_qb_journal(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage, AppError> {
-    let parsed = ledgeline_core::qb_journal::parse(bytes)
+    let parsed = workbook_sandbox::qb_parse(bytes)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let (id, _staged) = state.qb_stages().put(parsed).ok_or_else(|| {
         AppError::Internal("the operating system's random source is unavailable".to_string())
@@ -2645,7 +2602,7 @@ fn rank_candidates(
         .enumerate()
         .filter(|(_, found)| found.parsed)
         .filter_map(|(at, found)| {
-            let text = std::fs::read_to_string(found.path().as_path()).ok()?;
+            let text = rules::read_text(found.path().as_path())?;
             let doc = RulesDoc::parse(&text);
             let skip = doc.settings().skip.map_or(0, |setting| setting.value);
             let pass = matching::prefilter(&doc, data)?;
@@ -3636,6 +3593,7 @@ fn cli_parity(plan: &Plan, differences: Vec<WireRename>) -> WireCliParity {
         conf_path: plan.conf.as_ref().map(|conf| conf.id.clone()),
         conf_outside: outside,
         conf_hijacked_by: plan.conf.as_ref().and_then(|conf| conf.hijacked_by.clone()),
+        conf_unforwarded: plan.conf.as_ref().map_or(0, |conf| conf.unforwarded),
         additions,
         refusals,
         revision: target.revision,
@@ -3870,7 +3828,12 @@ fn run_commit(
         ))
     })?;
 
-    let before = std::fs::read(&plan.target).map_err(journal_unreadable)?;
+    // The journal as this commit found it, PINNED: its inode and bytes. Every
+    // journal write below insists on finding the file exactly as this commit
+    // last left it, so a symlink swapped in during the hledger runs is refused
+    // rather than followed, and an edit the user saved in that window is
+    // reported as a conflict rather than overwritten with `before + appended`.
+    let (before, pin) = pinned::read_pinned(&plan.target).map_err(journal_unreadable)?;
     let output = run(
         import_invocation(
             &plan.hledger,
@@ -3911,16 +3874,23 @@ fn run_commit(
     };
 
     let appended = appended_text(entries);
-    if !appended.is_empty() {
+    let pin = if appended.is_empty() {
+        pin
+    } else {
         let combined = [before.as_slice(), appended.as_bytes()].concat();
-        ledgeline_core::edit::atomic_write(&plan.target, &combined).map_err(|error| {
-            AppError::Internal(format!(
+        pinned::replace(&plan.target, &combined, &pin).map_err(|error| match error {
+            WriteError::Changed => AppError::Conflict(format!(
+                "{} changed on disk while the import was being prepared, so nothing was added \
+                 to it. The CSV was saved; reload and import again.",
+                quoted(&request.plan.journal_id),
+            )),
+            WriteError::Io(error) => AppError::Internal(format!(
                 "{} could not be written: {}. The CSV was saved and the journal is unchanged.",
                 quoted(&request.plan.journal_id),
                 error.kind()
-            ))
-        })?;
-    }
+            )),
+        })?
+    };
 
     // hledger's own dedup state, recorded by hledger. Verified byte-identical to
     // what a writing import leaves behind, repeated same-date lines included.
@@ -3940,11 +3910,17 @@ fn run_commit(
         Err(error) => Some(error.to_string()),
     };
     if let Some(complaint) = complaint {
-        return Err(catchup_failed(&plan, &request.plan, &before, &complaint));
+        return Err(catchup_failed(
+            &plan,
+            &request.plan,
+            &before,
+            &pin,
+            &complaint,
+        ));
     }
 
     if request.write_assertion {
-        write_assertion(&plan, &request.plan)?;
+        write_assertion(&plan, &request.plan, &pin)?;
     }
 
     // The status sync, and it is deliberately the LAST write: the rows it
@@ -4136,8 +4112,10 @@ fn run_save_csv(state: &AppState, request: &WireSaveCsvRequest) -> Result<WireSa
 /// extra transactions dated last month.
 ///
 /// So the journal is restored to `before` — the bytes read moments earlier,
-/// under the write mutex that `commit` and `save-csv` share, so nothing else can
-/// have touched the file in between — and the commit reports as a whole. The CSV
+/// under the write mutex that `commit` and `save-csv` share — and the commit
+/// reports as a whole. The mutex binds only Ledgeline, so the restore is pinned
+/// to `current`, the file exactly as the append left it: a link swapped in or an
+/// edit saved since is refused rather than overwritten. The CSV
 /// stays where it was written, which is the same thing a failed import has
 /// always left behind.
 ///
@@ -4148,10 +4126,11 @@ fn catchup_failed(
     plan: &Plan,
     request: &WireDryRunRequest,
     before: &[u8],
+    current: &Pin,
     complaint: &str,
 ) -> AppError {
-    match ledgeline_core::edit::atomic_write(&plan.target, before) {
-        Ok(()) => AppError::Internal(format!(
+    match pinned::replace(&plan.target, before, current) {
+        Ok(_) => AppError::Internal(format!(
             "the import was undone because hledger could not record which rows it had already \
              taken. {} is exactly as it was; {} was saved. hledger said:\n{complaint}",
             quoted(&request.journal_id),
@@ -4163,7 +4142,10 @@ fn catchup_failed(
              updated, so importing {} again would add them a second time — check the end of the \
              journal before you do. hledger said:\n{complaint}",
             quoted(&request.journal_id),
-            error.kind(),
+            match error {
+                WriteError::Changed => "it changed on disk after the import".to_string(),
+                WriteError::Io(error) => error.kind().to_string(),
+            },
             quoted(&request.csv_path),
         )),
     }
@@ -4415,7 +4397,15 @@ fn preflight_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), A
 /// rather than gaining a line that makes every subsequent `hledger check` fail.
 /// [`preflight_assertion`] has normally refused already, before the import ran at
 /// all; this is what guarantees the property for the bytes that actually land.
-fn write_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), AppError> {
+///
+/// Pinned to `current`, the journal exactly as the import left it, so the
+/// assertion is never appended through a swapped-in link or onto an edit the
+/// check above did not see.
+fn write_assertion(
+    plan: &Plan,
+    request: &WireDryRunRequest,
+    current: &Pin,
+) -> Result<(), AppError> {
     let Some(assertion) = plan_assertion(plan, request, "")? else {
         return Ok(());
     };
@@ -4426,17 +4416,24 @@ fn write_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), AppEr
         )));
     }
 
-    let text = std::fs::read_to_string(&plan.target).map_err(journal_unreadable)?;
+    let (text, _) = pinned::read_pinned_string(&plan.target).map_err(journal_unreadable)?;
     let separator = if text.ends_with('\n') { "\n" } else { "\n\n" };
-    ledgeline_core::edit::atomic_write(
+    pinned::replace(
         &plan.target,
         format!("{text}{separator}{assertion}").as_bytes(),
+        current,
     )
-    .map_err(|error| {
-        AppError::Internal(format!(
+    .map(|_| ())
+    .map_err(|error| match error {
+        WriteError::Changed => AppError::Conflict(
+            "the journal changed on disk after the import landed, so the balance assertion was \
+             not written. The import itself was applied."
+                .to_string(),
+        ),
+        WriteError::Io(error) => AppError::Internal(format!(
             "the balance assertion could not be written: {}. The import itself was applied.",
             error.kind()
-        ))
+        )),
     })
 }
 
@@ -4489,7 +4486,7 @@ fn run_sort(
     let root = include_root(&main)?;
     let (journal, _) = resolve_journal(state, &root, &request.journal_id)?;
 
-    let text = std::fs::read_to_string(&journal).map_err(journal_unreadable)?;
+    let (text, pin) = pinned::read_pinned_string(&journal).map_err(journal_unreadable)?;
     let plan = sort::plan(&text).map_err(|error| AppError::BadRequest(error.to_string()))?;
     if plan.unchanged {
         return Ok(WireSorted {
@@ -4499,12 +4496,19 @@ fn run_sort(
     }
     let sorted =
         sort::apply(&text, &plan).map_err(|error| AppError::BadRequest(error.to_string()))?;
-    ledgeline_core::edit::atomic_write(&journal, sorted.as_bytes()).map_err(|error| {
-        AppError::Internal(format!(
+    // Pinned to the inode and bytes just planned from: never through a link
+    // swapped in since, never over an edit saved since.
+    pinned::replace(&journal, sorted.as_bytes(), &pin).map_err(|error| match error {
+        WriteError::Changed => AppError::Conflict(format!(
+            "{} changed on disk while it was being re-sorted, so nothing was changed. Reload and \
+             try again.",
+            quoted(&request.journal_id),
+        )),
+        WriteError::Io(error) => AppError::Internal(format!(
             "{} could not be re-sorted: {}. Nothing was changed.",
             quoted(&request.journal_id),
             error.kind()
-        ))
+        )),
     })?;
     if let Some(Err(error)) = state.reopen_editor() {
         eprintln!("ledgeline: the journal could not be re-read after a sort: {error}");
@@ -4964,13 +4968,23 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppErr
     // branch is chosen, because which one applies is a question about these
     // bytes (see this function's own docs on detection).
     let name = cli_upload_name(&args.input)?;
-    let bytes = std::fs::read(&args.input).map_err(|error| {
+    let unreadable = |error: std::io::Error| {
         AppError::BadRequest(format!(
             "{} could not be read: {}",
             quoted(&args.input.display().to_string()),
             error.kind()
         ))
-    })?;
+    };
+    // Bounded at the read, as the route's body limit bounds the upload: one byte
+    // past the cap is enough to refuse it, and a multi-gigabyte file is never
+    // pulled into memory just to be told it is too big.
+    let cap = u64::try_from(stage::MAX_UPLOAD_BYTES).unwrap_or(u64::MAX);
+    let mut bytes = Vec::new();
+    std::fs::File::open(&args.input)
+        .map_err(unreadable)?
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
     if bytes.len() > stage::MAX_UPLOAD_BYTES {
         return Err(AppError::BadRequest(format!(
             "this file is larger than the {} MiB import limit",
@@ -4978,7 +4992,7 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppErr
         )));
     }
 
-    if ledgeline_core::qb_journal::detect(&bytes) {
+    if workbook_sandbox::qb_detect(&bytes) {
         return cli_import_qb_journal(state, args, &bytes, &name, &journal_id, &root_id)
             .map(CliRunReport::QbJournal);
     }
@@ -5221,7 +5235,7 @@ fn cli_import_qb_journal(
         )));
     }
 
-    let parsed = ledgeline_core::qb_journal::parse(bytes)
+    let parsed = workbook_sandbox::qb_parse(bytes)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
 
     let git = if args.no_git {
@@ -5532,9 +5546,10 @@ fn run_write_conf(
     let target = resolve_conf(&root);
     if !target.writable {
         return Err(AppError::BadRequest(format!(
-            "{} cannot be written: a config file must be a regular file in your journal's own \
-             directory, not a symlink or a directory",
-            quoted(&target.id)
+            "{} cannot be written: a config file must be a readable regular file in your \
+             journal's own directory, not a symlink or a directory, and no larger than {} KiB",
+            quoted(&target.id),
+            hledger_conf::MAX_CONF_BYTES / 1024
         )));
     }
     if target.revision != request.revision {
@@ -5568,25 +5583,33 @@ fn run_write_conf(
     };
     let new_text = hledger_conf::with_aliases(&base, &additions);
 
-    // Narrow the TOCTOU window from "the whole request" to "read → rename", the
-    // same last-moment re-check `alias_api` makes.
-    let before = resolve_conf(&root);
-    if before.revision != request.revision || !before.writable {
-        return Err(AppError::Conflict(format!(
+    // Pinned. An existing file is replaced only if it is still the inode and
+    // bytes read above, checked through the descriptor being replaced right up
+    // to the rename; a new one is created `O_EXCL | O_NOFOLLOW`, so a file or a
+    // link planted since the read is refused rather than written through.
+    let written = if target.exists {
+        pinned::replace(&target.path, new_text.as_bytes(), &target.pin).map(|_| ())
+    } else {
+        pinned::create_new(&target.path, new_text.as_bytes()).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                WriteError::Changed
+            } else {
+                WriteError::Io(error)
+            }
+        })
+    };
+    written.map_err(|error| match error {
+        WriteError::Changed => AppError::Conflict(format!(
             "{} changed on disk since this page read it, so nothing was written. Reload and try \
              again.",
             quoted(&target.id)
-        )));
-    }
-
-    ledgeline_core::edit::atomic_write(&target.path, new_text.as_bytes()).map_err(|error| {
-        // Only the `ErrorKind`: `atomic_write` builds a temp path from the
-        // target, so its io errors can carry one.
-        AppError::Internal(format!(
+        )),
+        // Only the `ErrorKind`: a write error can carry the temp path.
+        WriteError::Io(error) => AppError::Internal(format!(
             "{} could not be written: {}. Nothing else was changed.",
             quoted(&target.id),
             error.kind()
-        ))
+        )),
     })?;
 
     Ok(WireConfWritten {
@@ -5686,7 +5709,7 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert(
                 HeaderName::from_static(FILENAME_HEADER),
-                HeaderValue::from_str(value).expect("test header"),
+                axum::http::HeaderValue::from_str(value).expect("test header"),
             );
             headers
         };
@@ -5716,24 +5739,6 @@ mod tests {
         }
         // No header at all is its own refusal, not a default.
         assert!(bare_filename(&HeaderMap::new()).is_err());
-    }
-
-    /// Redaction is longest-first, so a file inside the root is rewritten to its
-    /// own handle rather than being half-rewritten by the root's entry.
-    #[test]
-    fn redaction_prefers_the_most_specific_path() {
-        let redactor = Redactor::default()
-            .hide(Path::new("/books/2026/2026.journal"), "2026/2026.journal")
-            .hide_prefix(Path::new("/books"));
-        assert_eq!(
-            redactor.apply("imported 3 transactions to /books/2026/2026.journal"),
-            "imported 3 transactions to 2026/2026.journal"
-        );
-        assert_eq!(
-            redactor.apply("could not read /books/other.csv"),
-            "could not read other.csv"
-        );
-        assert_eq!(redactor.apply("in /books"), "in .");
     }
 
     /// The count comes from OUR parse of hledger's stdout, and only falls back

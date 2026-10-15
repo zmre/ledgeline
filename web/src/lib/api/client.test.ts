@@ -1,10 +1,13 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {
+    adoptLaunchToken,
+    apiToken,
     ApiShapeError,
     ApiTimeoutError,
     ApiUnreachableError,
     HledgerApi,
     isNotModified,
+    LAUNCH_TOKEN_STORAGE_KEY,
     REQUEST_TIMEOUT_MS,
     resetConditionalCache,
     SETTINGS_STORAGE_KEY,
@@ -251,5 +254,95 @@ describe("UNIT access-token targeting", () => {
         await new HledgerApi("http://127.0.0.1:5100", "a-token-the-user-typed").version();
         const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
         expect(headers.Authorization).toBe("Bearer a-token-the-user-typed");
+    });
+});
+
+/**
+ * A headless `ledgeline --server` no longer puts the token in the page it serves
+ * (anything that can reach loopback can read that page). It prints
+ * `http://127.0.0.1:PORT/#token=…` instead, and the SPA adopts the fragment into
+ * this tab's `sessionStorage` and strips it from the address bar.
+ */
+describe("UNIT launch-fragment token", () => {
+    const ORIGIN = "http://127.0.0.1:5099";
+    const FRESH = "fresh-launch-token-0123456789";
+    const STALE = "stale-token-from-a-previous-run";
+
+    /** A `Storage` shim over a Map, so writes can be read back. */
+    const memoryStorage = (initial: Record<string, string> = {}): Storage => {
+        const items = new Map(Object.entries(initial));
+        return {
+            getItem: (key: string) => items.get(key) ?? null,
+            setItem: (key: string, value: string) => void items.set(key, value),
+            removeItem: (key: string) => void items.delete(key),
+        } as unknown as Storage;
+    };
+
+    /** Put the page at `ORIGIN` + `path` + `hash`, with `extra` window globals. */
+    function browserAt(path: string, hash: string, extra: Record<string, unknown> = {}) {
+        const replaceState = vi.fn();
+        const state = {"sveltekit:history": 1};
+        const [pathname, search = ""] = path.split("?");
+        vi.stubGlobal("window", {
+            location: {origin: ORIGIN, href: `${ORIGIN}${path}${hash}`, hash, pathname, search: search === "" ? "" : `?${search}`},
+            history: {state, replaceState},
+            ...extra,
+        });
+        const session = memoryStorage();
+        vi.stubGlobal("sessionStorage", session);
+        vi.stubGlobal("localStorage", memoryStorage({[SETTINGS_STORAGE_KEY]: JSON.stringify({serverUrl: ORIGIN, serverToken: STALE})}));
+        return {replaceState, state, session};
+    }
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("adopts #token into sessionStorage and strips it from the address bar", () => {
+        const {replaceState, state, session} = browserAt("/holdings?tab=1", `#token=${FRESH}`);
+        adoptLaunchToken();
+        expect(session.getItem(LAUNCH_TOKEN_STORAGE_KEY)).toBe(FRESH);
+        // The router's history state survives; only the fragment goes.
+        expect(replaceState).toHaveBeenCalledWith(state, "", "/holdings?tab=1");
+    });
+
+    it("leaves any other fragment parameters in place", () => {
+        const {replaceState} = browserAt("/", `#token=${FRESH}&view=compact`);
+        adoptLaunchToken();
+        expect(replaceState).toHaveBeenCalledWith(expect.anything(), "", "/#view=compact");
+    });
+
+    it("does nothing without a token fragment", () => {
+        const {replaceState, session} = browserAt("/", "#section-2");
+        adoptLaunchToken();
+        expect(replaceState).not.toHaveBeenCalled();
+        expect(session.getItem(LAUNCH_TOKEN_STORAGE_KEY)).toBeNull();
+    });
+
+    it("sends the launch token ahead of a stale localStorage serverToken", async () => {
+        browserAt("/", `#token=${FRESH}`);
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse("1.52"));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await new HledgerApi(ORIGIN).version();
+        const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+        expect(headers.Authorization).toBe(`Bearer ${FRESH}`);
+        expect(apiToken()).toBe(FRESH);
+    });
+
+    it("keeps the adopted token after the fragment is gone (a reload of the stripped URL)", () => {
+        const {session} = browserAt("/", "");
+        session.setItem(LAUNCH_TOKEN_STORAGE_KEY, FRESH);
+        expect(apiToken()).toBe(FRESH);
+    });
+
+    it("still lets the GUI's injected token win", () => {
+        browserAt("/", `#token=${FRESH}`, {__LEDGELINE_TOKEN__: "gui-injected-token-0123"});
+        expect(apiToken()).toBe("gui-injected-token-0123");
+    });
+
+    it("falls back to localStorage when there is no launch token (the cross-origin dev/e2e flow)", () => {
+        browserAt("/", "");
+        expect(apiToken()).toBe(STALE);
     });
 });

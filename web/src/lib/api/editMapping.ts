@@ -13,9 +13,9 @@
 // so a value the user did not touch round-trips bit-for-bit. Commodity display
 // style is NOT sent — the engine infers it from the journal when rendering.
 
-import type {Dec} from "$lib/domain/money";
-import type {Amount, Posting, Transaction, TxnStatus} from "$lib/domain/types";
-import {isIsoDate} from "$lib/url/params";
+import type {Dec} from "#lib/domain/money.js";
+import type {Amount, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
+import {isIsoDate} from "#lib/url/params.js";
 import type {
     AddTransactionBody,
     InsertPosition,

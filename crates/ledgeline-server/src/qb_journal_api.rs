@@ -59,13 +59,12 @@
 //! client-supplied path at all (there is no `journalId`/`csvPath` to resolve);
 //! the only paths in play are the journal's own `source_files`, and every one
 //! that could reach a response goes through [`journal_handle`] (a relative,
-//! forward-slash handle) or [`import_api::Redactor`] first.
+//! forward-slash handle) or [`Redactor`] first.
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use ledgeline_core::edit::InsertPosition;
 use ledgeline_core::model::{
     AccountName, AliasDirective, Amount, Commodity, Journal, Posting, PostingType, SourcePos,
@@ -82,7 +81,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::AppState;
 use crate::edit_api::{self, infer_style, json_body};
 use crate::error::{AppError, editing_disabled};
-use crate::import_api::{self, GitPolicy, Redactor, WireGitResult, WireMove};
+use crate::import_api::{self, GitPolicy, WireGitResult, WireMove};
+use crate::redact::Redactor;
+use crate::security::no_store_json as no_store;
 use crate::stage::StageId;
 
 /// How many staged QuickBooks Journal uploads one session keeps, oldest first.
@@ -288,15 +289,6 @@ pub(crate) struct WireQbCommitRequest {
 // Handlers
 // ===========================================================================
 
-/// `Cache-Control: no-store` — the same posture as every other `/api/import/*`
-/// route; nothing here is derived from the journal snapshot's generation
-/// counter.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
-}
-
 /// `GET /api/import/qb-journal/{stageId}`.
 pub(crate) async fn preview(
     State(state): State<AppState>,
@@ -404,31 +396,21 @@ fn wire_sample(txn: &QbTransaction) -> WireQbSample {
         postings: txn
             .postings
             .iter()
-            .map(|posting| format!("{}  {}", posting.account, render_dec(posting.amount)))
+            // Rendered plainly — no commodity, no style: a display string for a
+            // person, not a value going into the journal (that path infers a
+            // proper `AmountStyle`; see [`build_posting`]). Exact string
+            // arithmetic, never a float, through the editor's own renderer: it
+            // clamps `places` to `MAX_RENDER_PLACES`, which this module's private
+            // copy of it did not.
+            .map(|posting| {
+                format!(
+                    "{}  {}",
+                    posting.account,
+                    ledgeline_core::edit::render_dec(posting.amount, '.')
+                )
+            })
             .collect(),
     }
-}
-
-/// `Dec` rendered plainly for a preview sample — no commodity, no style: this
-/// is a display string for a person, not a value going into the journal (that
-/// path infers a proper [`ledgeline_core::model::AmountStyle`]; see
-/// [`build_posting`]). Exact string arithmetic, never a float — the same
-/// reason `qb_journal`'s own module never prints a cell's stored value
-/// through one.
-fn render_dec(amount: ledgeline_core::Dec) -> String {
-    let sign = if amount.mantissa < 0 { "-" } else { "" };
-    let digits = amount.mantissa.unsigned_abs().to_string();
-    let places = amount.places as usize;
-    if places == 0 {
-        return format!("{sign}{digits}");
-    }
-    let padded = if digits.len() > places {
-        digits
-    } else {
-        format!("{}{digits}", "0".repeat(places - digits.len() + 1))
-    };
-    let split = padded.len() - places;
-    format!("{sign}{}.{}", &padded[..split], &padded[split..])
 }
 
 /// One classified transaction: its QuickBooks id, the [`Transaction`] built
@@ -1016,10 +998,38 @@ fn qb_ordering(journal: &Journal, touched: &[PathBuf]) -> WireQbOrdering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ledgeline_core::parse_journal;
+    use ledgeline_core::{Dec, parse_journal};
 
     fn journal(text: &str) -> Journal {
         parse_journal(text, "t.journal").expect("the fixture parses")
+    }
+
+    #[test]
+    fn a_sample_amount_renders_through_the_clamped_renderer() {
+        let posting = |amount| QbPosting {
+            account: "1000 Checking".to_string(),
+            amount,
+            memo: None,
+            class: None,
+            customer: None,
+            vendor: None,
+        };
+        let txn = QbTransaction {
+            id: "1".to_string(),
+            date: "2026-01-01".to_string(),
+            transaction_type: "Deposit".to_string(),
+            num: None,
+            name: None,
+            postings: vec![posting(Dec::new(-1250, 2)), posting(Dec::new(1, u32::MAX))],
+        };
+        let sample = wire_sample(&txn);
+        assert_eq!(sample.postings[0], "1000 Checking  -12.50");
+        // `"0".repeat(places)` unclamped asked for four gigabytes here.
+        assert!(
+            sample.postings[1].len() < 300,
+            "{}",
+            sample.postings[1].len()
+        );
     }
 
     /// The scratch journal `qb_journal_endpoints.rs` tests against, and the

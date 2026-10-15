@@ -1,7 +1,7 @@
 import {describe, expect, test} from "vitest";
-import type {Dec, MixedAmount} from "$lib/domain/money";
-import type {AmountStyle} from "$lib/domain/types";
-import type {MetricDelta} from "$lib/reports/insightsTypes";
+import type {Dec, MixedAmount} from "#lib/domain/money.js";
+import type {AmountStyle} from "#lib/domain/types.js";
+import type {MetricDelta} from "#lib/reports/insightsTypes.js";
 import {deltaLine, extras, fmt, fmtBase, fmtSignedAmount, fmtSignedPct, monthlyAverage, signClass} from "./format";
 
 const USD: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};

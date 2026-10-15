@@ -18,9 +18,9 @@
 // Pure module: no Svelte, no DOM, so every helper over these is unit-testable
 // under node.
 
-import type {Dec, MixedAmount} from "$lib/domain/money";
-import type {ISODate} from "$lib/domain/types";
-import type {PeriodReport} from "$lib/reports/types";
+import type {Dec, MixedAmount} from "#lib/domain/money.js";
+import type {ISODate} from "#lib/domain/types.js";
+import type {PeriodReport} from "#lib/reports/types.js";
 
 /** The unit a growth rate steps on. */
 export type GrowthUnit = "week" | "month" | "year";

@@ -20,7 +20,7 @@
 
 import {render} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import {chartColors} from "$lib/format/chartColors.svelte";
+import {chartColors} from "#lib/format/chartColors.svelte.js";
 import PeriodLineChart from "./PeriodLineChart.svelte";
 import type {PeriodSeries} from "./periodSeries";
 

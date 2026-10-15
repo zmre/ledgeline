@@ -10,15 +10,17 @@
 //! and `/api/*` routes always win):
 //! - `/` and `/index.html` → the SPA shell (`index.html`), with a small marker
 //!   script injected so the SPA knows it is running embedded and should use
-//!   same-origin relative URLs — and, when the server requires one, the access
-//!   token the SPA must present on every API call.
+//!   same-origin relative URLs.
 //!
 //! The shell is deliberately the one thing served WITHOUT a token: the browser
-//! has nothing to present until it has loaded the page. That is safe against a
-//! hostile *web page* — no CORS layer ever covers this fallback, not even when
-//! `--allow-origin` names a dev origin (SEC-12), so no page of any origin may
-//! read the shell — but not against another local process. See the threat model
-//! in [`crate::security`].
+//! has nothing to present until it has loaded the page. So it must never CARRY
+//! the token either. HTTP cannot tell the user's WebView from another local
+//! process's `curl`, and when the shell embedded the token it handed it to
+//! anything on the machine that could reach loopback. The token now reaches the
+//! SPA out of band: the GUI injects it with wry's initialization script
+//! (`gui.rs`), and `--server` prints a launch URL carrying it in the `#token=`
+//! fragment, which a browser never sends. See the threat model in
+//! [`crate::security`].
 //! - a real embedded asset path (e.g. `/_app/immutable/...`, `/robots.txt`) →
 //!   that file, with a guessed `Content-Type` (and a long immutable cache for
 //!   the content-hashed `_app/immutable/` assets).
@@ -34,7 +36,7 @@ use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
 use rust_embed::RustEmbed;
 
-use crate::security::{self, AccessToken};
+use crate::security;
 
 /// The built SPA, embedded from a directory INSIDE this crate.
 ///
@@ -53,23 +55,9 @@ struct SpaAssets;
 /// `window.__LEDGELINE_EMBEDDED__` at startup and, when set, targets same-origin
 /// relative URLs instead of a stored server URL — so the packaged app needs no
 /// setup modal and is immune to a stale/ephemeral port in `localStorage`.
-const EMBED_MARKER: &str = "<script>window.__LEDGELINE_EMBEDDED__=true</script>";
-
-/// The marker script, extended with the per-process access token when the server
-/// requires one. A token in the page body is unreadable cross-origin, so this is
-/// how the same-origin SPA gets its credential for free.
 ///
-/// [`AccessToken::parse`] restricts the token to `[A-Za-z0-9._-]`, so it cannot
-/// break out of the JavaScript string literal it lands in.
-fn embed_script(token: Option<&AccessToken>) -> Cow<'static, str> {
-    match token {
-        None => Cow::Borrowed(EMBED_MARKER),
-        Some(token) => Cow::Owned(format!(
-            "<script>window.__LEDGELINE_EMBEDDED__=true;window.__LEDGELINE_TOKEN__=\"{}\"</script>",
-            token.as_str()
-        )),
-    }
-}
+/// It carries NO credential, and must not: see the module docs.
+const EMBED_MARKER: &str = "<script>window.__LEDGELINE_EMBEDDED__=true</script>";
 
 /// Shown only when the SPA was never built AND `build.rs`'s placeholder is
 /// somehow missing too — a belt-and-suspenders fallback, never the normal path.
@@ -77,11 +65,10 @@ const MISSING_SPA_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8
 <title>Ledgeline</title></head><body><h1>Ledgeline SPA not built</h1>\
 <p>Run <code>bun run build</code> in <code>web/</code>, then rebuild.</p></body></html>";
 
-/// The SPA shell with the embedded-mode marker (and access token, when there is
-/// one) injected right after `<head>` — falling back to a prefix if the document
-/// has no `<head>`.
-fn injected_index(token: Option<&AccessToken>) -> String {
-    let marker = embed_script(token);
+/// The SPA shell with the embedded-mode marker injected right after `<head>` —
+/// falling back to a prefix if the document has no `<head>`.
+fn injected_index() -> String {
+    let marker = EMBED_MARKER;
     let raw = match SpaAssets::get("index.html") {
         Some(file) => String::from_utf8_lossy(&file.data).into_owned(),
         None => return MISSING_SPA_HTML.to_string(),
@@ -91,7 +78,7 @@ fn injected_index(token: Option<&AccessToken>) -> String {
             let at = head + "<head>".len();
             let mut out = String::with_capacity(raw.len() + marker.len());
             out.push_str(&raw[..at]);
-            out.push_str(&marker);
+            out.push_str(marker);
             out.push_str(&raw[at..]);
             out
         }
@@ -102,20 +89,20 @@ fn injected_index(token: Option<&AccessToken>) -> String {
 /// The shell response, carrying a Content-Security-Policy computed from the
 /// bytes we are about to send: `script-src` gets a `'sha256-…'` for each inline
 /// script actually present, so the policy tracks both SvelteKit's per-build
-/// bootstrap script and the token we just injected.
+/// bootstrap script and the marker we just injected.
 ///
 /// It also carries `Cache-Control: no-store` (SEC-13). The shell had no cache
-/// headers at all, which leaves the decision to the browser's heuristics for a
-/// document whose body contains the per-process access token: a disk cache
-/// entry outlives the process that minted the token, and a token is exactly the
-/// sort of thing that must never be written to disk on our say-so. The value
-/// comes from [`security::no_store`] rather than a fresh literal — see its docs.
+/// headers at all, which left the decision to the browser's heuristics for a
+/// document whose body then contained the per-process access token. The body no
+/// longer carries it, but keeping the header means a regression that put a
+/// credential back in the body would not also write it to disk. The value comes
+/// from [`security::no_store`] rather than a fresh literal — see its docs.
 ///
 /// This is the shell ONLY. [`asset_response`] keeps the year-long immutable
 /// cache on the content-hashed `_app/immutable/` assets, which carry no
 /// credential and are the whole reason that cache exists.
-fn shell_response(token: Option<&AccessToken>) -> Response {
-    let html = injected_index(token);
+fn shell_response() -> Response {
+    let html = injected_index();
     let csp = security::shell_csp(&html);
     let mut response = Html(html).into_response();
     let headers = response.headers_mut();
@@ -143,11 +130,11 @@ fn asset_response(path: &str, data: Cow<'static, [u8]>) -> Response {
 
 /// Router `fallback`: serve the SPA (shell + assets) for everything the explicit
 /// wire / `/api/*` routes did not match. See the module docs for the contract.
-pub(crate) async fn fallback(uri: Uri, token: Option<AccessToken>) -> Response {
+pub(crate) async fn fallback(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
 
     if path.is_empty() || path == "index.html" {
-        return shell_response(token.as_ref());
+        return shell_response();
     }
     // An `/api/...` miss must be a real 404 — serving the shell here would break
     // the native client's engine-presence detection.
@@ -157,7 +144,7 @@ pub(crate) async fn fallback(uri: Uri, token: Option<AccessToken>) -> Response {
     match SpaAssets::get(path) {
         Some(file) => asset_response(path, file.data),
         // Unknown non-asset path → hand SvelteKit's client-side router the shell.
-        None => shell_response(token.as_ref()),
+        None => shell_response(),
     }
 }
 
@@ -165,27 +152,20 @@ pub(crate) async fn fallback(uri: Uri, token: Option<AccessToken>) -> Response {
 mod tests {
     use super::*;
 
-    fn sample_token() -> AccessToken {
-        AccessToken::parse("token-for-unit-tests").expect("well-formed")
-    }
-
+    /// The shell is served unauthenticated, so it must never carry the token —
+    /// only the token-free embedded marker.
     #[test]
-    fn embed_script_omits_the_token_when_there_is_none() {
-        assert_eq!(embed_script(None), EMBED_MARKER);
+    fn the_shell_carries_the_marker_and_no_token() {
+        let html = injected_index();
+        assert!(html.contains(EMBED_MARKER));
+        assert!(!html.contains("__LEDGELINE_TOKEN__"));
     }
 
-    #[test]
-    fn embed_script_publishes_the_token_to_the_page() {
-        let script = embed_script(Some(&sample_token()));
-        assert!(script.contains("window.__LEDGELINE_EMBEDDED__=true"));
-        assert!(script.contains("window.__LEDGELINE_TOKEN__=\"token-for-unit-tests\""));
-    }
-
-    /// The shell's CSP must cover the exact script bytes it ships, token and
+    /// The shell's CSP must cover the exact script bytes it ships, marker and
     /// all — otherwise the browser silently refuses to boot the SPA.
     #[test]
-    fn shell_csp_hashes_the_injected_token_script() {
-        let html = injected_index(Some(&sample_token()));
+    fn shell_csp_hashes_the_injected_marker_script() {
+        let html = injected_index();
         let csp = security::shell_csp(&html);
         let csp = csp.to_str().expect("ascii policy");
         for script in inline_scripts(&html) {
@@ -198,22 +178,17 @@ mod tests {
         assert!(csp.contains("connect-src 'self'"));
     }
 
-    /// SEC-13. The shell's body carries the access token, so it may not be
-    /// written to any cache — and it had no `Cache-Control` at all, which left
-    /// that to the browser's heuristics.
+    /// SEC-13. The shell had no `Cache-Control` at all, which left caching to
+    /// the browser's heuristics.
     #[test]
-    fn the_token_bearing_shell_is_never_stored() {
-        for token in [None, Some(sample_token())] {
-            let response = shell_response(token.as_ref());
-            assert_eq!(
-                response
-                    .headers()
-                    .get(header::CACHE_CONTROL)
-                    .and_then(|value| value.to_str().ok()),
-                Some("no-store"),
-                "the shell must forbid caching whether or not it carries a token"
-            );
-        }
+    fn the_shell_is_never_stored() {
+        assert_eq!(
+            shell_response()
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
     }
 
     /// The other half of SEC-13: hardening the shell must not cost the assets

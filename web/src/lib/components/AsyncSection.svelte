@@ -18,8 +18,8 @@
      caller gets non-null narrowing without re-testing it. -->
 <script lang="ts" generics="T">
     import type {Snippet} from "svelte";
-    import {NativeApiUnavailableError} from "$lib/api/native";
-    import type {DataView} from "$lib/stores/loadState";
+    import {NativeApiUnavailableError} from "#lib/api/native.js";
+    import type {DataView} from "#lib/stores/loadState.js";
 
     let {
         view,

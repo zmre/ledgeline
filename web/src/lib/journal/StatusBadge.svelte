@@ -1,6 +1,6 @@
 <script lang="ts">
     // Compact txn status badge (WP-03): cleared `*`, pending `!`, unmarked dot.
-    import type {TxnStatus} from "$lib/domain/types";
+    import type {TxnStatus} from "#lib/domain/types.js";
 
     let {status}: {status: TxnStatus} = $props();
 </script>

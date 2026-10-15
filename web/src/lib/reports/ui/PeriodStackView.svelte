@@ -4,11 +4,11 @@
      the Net Worth and Cash Flow panels so neither restates the commodity pick
      or the formatting. -->
 <script lang="ts">
-    import PeriodStackChart from "$lib/components/PeriodStackChart.svelte";
-    import type {AmountStyle} from "$lib/domain/types";
-    import {styleOf} from "$lib/format/amounts";
-    import {chartColors} from "$lib/format/chartColors.svelte";
-    import {formatChartValue, formatCompactChartValue} from "$lib/insights/series";
+    import PeriodStackChart from "#lib/components/PeriodStackChart.svelte";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {styleOf} from "#lib/format/amounts.js";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
+    import {formatChartValue, formatCompactChartValue} from "#lib/insights/series.js";
     import type {PeriodReport} from "../types";
     import {periodStack} from "./periodStack";
 

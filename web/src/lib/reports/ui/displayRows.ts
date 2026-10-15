@@ -4,8 +4,8 @@
 // collapses into that child, so `assets > bank > checking` renders as one
 // `assets:bank:checking` row (hledger tree-mode presentation).
 
-import {maAdd, maIsZero, maNeg, type MixedAmount} from "$lib/domain/money";
-import type {IsRow, PeriodReport, ReportRow} from "$lib/reports/types";
+import {maAdd, maIsZero, maNeg, type MixedAmount} from "#lib/domain/money.js";
+import type {IsRow, PeriodReport, ReportRow} from "#lib/reports/types.js";
 
 export interface DisplayRow<T> {
     /** Account segments relative to the displayed parent, e.g. "bank:checking". */

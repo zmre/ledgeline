@@ -24,6 +24,7 @@ mod encoding;
 pub mod ofx;
 pub mod spreadsheet;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Upper bound on an accepted input, mirroring the server's upload cap. Applied
@@ -37,7 +38,11 @@ pub const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 /// treats the two differently when scoring a `skip` value. Structured formats
 /// (OFX, spreadsheets) always supply `Some`, because their field names come
 /// from the format itself rather than from a guess about the first row.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+///
+/// `Serialize`/`Deserialize` are for one consumer: the server reads workbooks in
+/// a resource-limited child process and this is what crosses the pipe back. It
+/// is not a wire type, and nothing about its JSON shape is a contract.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Tabular {
     pub header: Option<Vec<String>>,
     pub rows: Vec<Vec<String>>,
@@ -51,7 +56,7 @@ pub struct Tabular {
 }
 
 /// What a format told us about the statement as a whole, as opposed to its rows.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct StatementMeta {
     /// Masked to the last four characters before it leaves this crate.
     pub account_hint: Option<String>,
@@ -65,7 +70,7 @@ pub struct StatementMeta {
 
 /// Something the conversion decided that the user should know about, because it
 /// was a judgement call rather than a fact. Rendered verbatim under the preview.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConvertNote {
     /// A workbook had more than one candidate sheet and we picked this one.
     SheetChosen { name: String, of: usize },
@@ -109,7 +114,7 @@ pub enum ConvertNote {
 
 /// The formats the New Transactions tab accepts. `Pdf` is present precisely so
 /// it can be refused by name — see [`ConvertError::PdfNotSupported`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceFormat {
     Csv,
     Tsv,
@@ -202,7 +207,7 @@ impl std::fmt::Display for SourceFormat {
 /// Why a conversion could not produce a [`Tabular`].
 ///
 /// No variant carries a path, a raw cell value, or a byte offset into user data.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
 pub enum ConvertError {
     #[error("unsupported file type '{ext}'")]
     Unsupported { ext: String },

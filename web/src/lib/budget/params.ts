@@ -1,7 +1,7 @@
 // The Budget tab's params ⇄ URL-query codec, and the period presets the bars
 // span.
 //
-// These lived in `$lib/reports/ui/params.ts` while Budget was a report tab. It
+// These lived in `#lib/reports/ui/params.ts` while Budget was a report tab. It
 // is its own top-level tab now, with its own route and its own URL, so its
 // params travel with it — leaving the reports codec to describe only the tabs
 // that are still there.
@@ -9,9 +9,9 @@
 // Pure module (no Svelte/DOM imports) so the round trip is unit-testable under
 // node, exactly as the reports codec is.
 
-import type {ISODate} from "$lib/domain/types";
-import {bucketEnd, bucketStart, lastNBuckets, monthsBetween, today} from "$lib/reports/periods";
-import {clampedInt, isIsoDate, oneOf} from "$lib/url/params";
+import type {ISODate} from "#lib/domain/types.js";
+import {bucketEnd, bucketStart, lastNBuckets, monthsBetween, today} from "#lib/reports/periods.js";
+import {clampedInt, isIsoDate, oneOf} from "#lib/url/params.js";
 import {BUDGET_SORT_KEYS, SORT_DIRS, type BudgetSortKey, type SortDir} from "./sort";
 
 // --- Period presets ---------------------------------------------------------

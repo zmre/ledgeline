@@ -20,9 +20,9 @@
 import {render, screen} from "@testing-library/svelte";
 import {createRawSnippet} from "svelte";
 import {describe, expect, it, vi} from "vitest";
-import {ApiUnreachableError} from "$lib/api/client";
-import {NativeApiUnavailableError, NATIVE_UNAVAILABLE_MESSAGE} from "$lib/api/native";
-import type {DataView} from "$lib/stores/loadState";
+import {ApiUnreachableError} from "#lib/api/client.js";
+import {NativeApiUnavailableError, NATIVE_UNAVAILABLE_MESSAGE} from "#lib/api/native.js";
+import type {DataView} from "#lib/stores/loadState.js";
 import AsyncSection from "./AsyncSection.svelte";
 
 /** The exact sentence the engine sends for an unpriceable `valueIn` (reports_api.rs). */

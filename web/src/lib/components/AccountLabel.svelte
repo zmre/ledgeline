@@ -59,7 +59,7 @@
     // `aria-hidden` and the real name rides along `sr-only` (the same split
     // RenameList makes). `title` is the full name too unless the caller passes
     // its own — the journal chips prefix theirs with "Edit category ·".
-    import {abbreviateAccount, fitAccount} from "$lib/domain/accounts";
+    import {abbreviateAccount, fitAccount} from "#lib/domain/accounts.js";
     import {textMeasurer} from "./textWidth";
 
     /** The journal chip's size, and this component's original and default context. */

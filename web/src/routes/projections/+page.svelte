@@ -31,26 +31,26 @@
     // error: it is forgotten and the tab seeds instead, which is where a user
     // who deleted a file outside Ledgeline should end up.
     import {onMount} from "svelte";
-    import {dominantCommodity} from "$lib/api/editMapping";
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {declaredTypes} from "$lib/domain/accountTypes";
-    import DepthSlider from "$lib/insights/DepthSlider.svelte";
-    import {fileStore} from "$lib/projections/fileStore.svelte";
-    import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "$lib/projections/params";
-    import {assetRowsByGroup} from "$lib/projections/projectionView";
-    import {sameProjectionQuery, scenarioStore, type ProjectionWindow} from "$lib/projections/scenarioStore.svelte";
-    import ProjectionReports from "$lib/projections/ui/ProjectionReports.svelte";
-    import ProjectionsTable from "$lib/projections/ui/ProjectionsTable.svelte";
-    import SaveScenarioDialog from "$lib/projections/ui/SaveScenarioDialog.svelte";
-    import ScenarioFileBar from "$lib/projections/ui/ScenarioFileBar.svelte";
-    import {bucketStart, today} from "$lib/reports/periods";
-    import {reportStyles} from "$lib/reports/ui/styles";
-    import {MAX_COUNT} from "$lib/reports/ui/params";
-    import {dataView} from "$lib/stores/loadState";
-    import {journal} from "$lib/stores/journal.svelte";
-    import {loadJournalWhenReady, onServerReady} from "$lib/stores/serverWatch.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
-    import {searchMirror} from "$lib/url/searchSync";
+    import {dominantCommodity} from "#lib/api/editMapping.js";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import {declaredTypes} from "#lib/domain/accountTypes.js";
+    import DepthSlider from "#lib/insights/DepthSlider.svelte";
+    import {fileStore} from "#lib/projections/fileStore.svelte.js";
+    import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "#lib/projections/params.js";
+    import {assetRowsByGroup} from "#lib/projections/projectionView.js";
+    import {sameProjectionQuery, scenarioStore, type ProjectionWindow} from "#lib/projections/scenarioStore.svelte.js";
+    import ProjectionReports from "#lib/projections/ui/ProjectionReports.svelte";
+    import ProjectionsTable from "#lib/projections/ui/ProjectionsTable.svelte";
+    import SaveScenarioDialog from "#lib/projections/ui/SaveScenarioDialog.svelte";
+    import ScenarioFileBar from "#lib/projections/ui/ScenarioFileBar.svelte";
+    import {bucketStart, today} from "#lib/reports/periods.js";
+    import {reportStyles} from "#lib/reports/ui/styles.js";
+    import {MAX_COUNT} from "#lib/reports/ui/params.js";
+    import {dataView} from "#lib/stores/loadState.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {loadJournalWhenReady, onServerReady} from "#lib/stores/serverWatch.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
+    import {searchMirror} from "#lib/url/searchSync.js";
 
     let params = $state<ProjectionParams>(defaultProjectionParams());
     let restored = $state(false);

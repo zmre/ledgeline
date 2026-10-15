@@ -4,12 +4,12 @@
 
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
-import {decodePeriodReport} from "$lib/api/nativeDecode";
-import {dec, maAdd, maIsZero, maNeg, type MixedAmount} from "$lib/domain/money";
-import {DEFAULT_PALETTE} from "$lib/format/palette";
+import {decodePeriodReport} from "#lib/api/nativeDecode.js";
+import {dec, maAdd, maIsZero, maNeg, type MixedAmount} from "#lib/domain/money.js";
+import {DEFAULT_PALETTE} from "#lib/format/palette.js";
 
 const SLOTS = DEFAULT_PALETTE.categorical.length;
-import {amountIn} from "$lib/projections/projectionView";
+import {amountIn} from "#lib/projections/projectionView.js";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
 import {compressPeriodRows} from "./displayRows";
 import {periodStack, slotsBySize, splitBySign, stackCommodity, stackSegments, type StackSegment} from "./periodStack";

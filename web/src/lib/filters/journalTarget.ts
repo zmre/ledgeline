@@ -9,9 +9,9 @@
 //
 // Pure, with no `$app/*` imports, so it is a node test.
 
-import {defaultFilter, type DatePreset, type JournalFilter} from "$lib/stores/filters.svelte";
-import {filterToSearch} from "$lib/filters/urlCodec";
-import type {ISODate} from "$lib/domain/types";
+import {defaultFilter, type DatePreset, type JournalFilter} from "#lib/stores/filters.svelte.js";
+import {filterToSearch} from "#lib/filters/urlCodec.js";
+import type {ISODate} from "#lib/domain/types.js";
 
 export interface JournalTarget {
     /** Account subtree roots to filter to. */

@@ -27,13 +27,13 @@
      something on first load rather than nothing — and Enter either opens the
      disclosure (on a group) or drills into the journal (on an account). -->
 <script lang="ts">
-    import type {AmountStyle} from "$lib/domain/types";
-    import {openJournal} from "$lib/journal/openJournal";
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import {PRIORITY} from "$lib/keys/types";
-    import type {Amounts, IncomeStatementReport, IsSectionKind} from "$lib/reports/types";
-    import {settings} from "$lib/stores/settings.svelte";
-    import {listCursor} from "$lib/ui/listCursor.svelte";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {openJournal} from "#lib/journal/openJournal.js";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
+    import type {Amounts, IncomeStatementReport, IsSectionKind} from "#lib/reports/types.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
+    import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {amountCell, fmtPct, isCursorRows, isDisplayModel, type AmountCell, type IsDisplayRow} from "./incomeStatementRows";
     import SankeyPanel from "./SankeyPanel.svelte";
     import {type FlowsPanel} from "./sankeyModel";

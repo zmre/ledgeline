@@ -17,12 +17,12 @@
      Every decision here is a call into `model.ts`. This file is markup, the
      same split `AliasPanel.svelte` states for its own screen. -->
 <script lang="ts">
-    import AccountLabel from "$lib/components/AccountLabel.svelte";
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import {dataView} from "$lib/stores/loadState";
-    import {holdUnsavedEdits} from "$lib/stores/refreshAll";
-    import {onServerReady} from "$lib/stores/serverWatch.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
+    import AccountLabel from "#lib/components/AccountLabel.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import {dataView} from "#lib/stores/loadState.js";
+    import {holdUnsavedEdits} from "#lib/stores/refreshAll.js";
+    import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
     import {accountListing, accountsStore} from "../accountsStore.svelte";
     import {blankTag, defaultTargetFile, deleteSaveRequest, isDirty, mergedRows, SPECIAL_TAGS, toForm, toSaveRequest, validateForm} from "../model";
     import type {AccountForm} from "../model";

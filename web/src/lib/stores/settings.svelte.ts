@@ -1,9 +1,9 @@
 // Settings store (WP-02): Svelte 5 runes state persisted to localStorage
 // under a versioned key. `setServerUrl` verifies GET /version before persisting.
 
-import {HledgerApi, SETTINGS_STORAGE_KEY} from "$lib/api/client";
-import {PIE_DIMENSIONS, type PieDimension} from "$lib/holdings/profileTypes";
-import {BENCHMARKS, isBenchmarkSymbol} from "$lib/holdings/benchmarks";
+import {HledgerApi, SETTINGS_STORAGE_KEY} from "#lib/api/client.js";
+import {PIE_DIMENSIONS, type PieDimension} from "#lib/holdings/profileTypes.js";
+import {BENCHMARKS, isBenchmarkSymbol} from "#lib/holdings/benchmarks.js";
 
 /** Journal table column toggles (defaults per WP-03: Date, Status, Description, Accounts, Amount). */
 export interface ColumnConfig {
@@ -26,8 +26,9 @@ interface PersistedSettings {
     /**
      * Access token for a CROSS-ORIGIN engine (vite dev, the e2e harness), which
      * the engine prints at startup and takes from $LEDGELINE_TOKEN. Embedded
-     * (same-origin) pages ignore this: the binary injects the token straight
-     * into the page, and `apiToken()` in api/client.ts prefers that. Null when
+     * (same-origin) pages ignore this: the GUI hands its WebView the token out
+     * of band and a headless engine prints a `#token=` launch URL, and
+     * `apiToken()` in api/client.ts prefers either of those. Null when
      * talking to a plain hledger-web, which has no token.
      */
     serverToken: string | null;
@@ -61,7 +62,7 @@ interface PersistedSettings {
     /**
      * What the Holdings pie is divided by: one slice per holding (the
      * default), or one per asset class / sector / … (see
-     * `$lib/holdings/profileTypes`). Per-browser view state, like
+     * `#lib/holdings/profileTypes.js`). Per-browser view state, like
      * `insightsTab`.
      */
     holdingsPieDimension: PieDimension;

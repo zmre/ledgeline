@@ -21,8 +21,8 @@
 // is no injected-transport seam because there does not need to be one, and a
 // second implementation of these calls would be a second thing to keep true.
 
-import {classify, type EditFailure} from "$lib/api/editFailure";
-import {LedgelineApi, type ImportRunBody} from "$lib/api/native";
+import {classify, type EditFailure} from "#lib/api/editFailure.js";
+import {LedgelineApi, type ImportRunBody} from "#lib/api/native.js";
 import {
     decodeCommitResult,
     decodeConfWritten,
@@ -33,13 +33,13 @@ import {
     decodeRulesDraft,
     decodeSortResult,
     decodeStagedFile,
-} from "$lib/api/nativeDecode";
+} from "#lib/api/nativeDecode.js";
 import {createSaveRequest, defaultRulesId, draftForm} from "./createModel";
 import type {RulesDraft} from "./types";
 import type {FormItem, RulesForm} from "./model";
-import {dataView, type DataView} from "$lib/stores/loadState";
-import {createResource} from "$lib/stores/resource.svelte";
-import {settings} from "$lib/stores/settings.svelte";
+import {dataView, type DataView} from "#lib/stores/loadState.js";
+import {createResource} from "#lib/stores/resource.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 import {
     candidateById,
     defaultBalanceAccount,

@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
-import {dec, type MixedAmount} from "$lib/domain/money";
-import type {ReportRow} from "$lib/reports/types";
+import {dec, type MixedAmount} from "#lib/domain/money.js";
+import type {ReportRow} from "#lib/reports/types.js";
 import {compressPeriodRows, compressSectionRows} from "./displayRows";
 
 const usd = (cents: number): MixedAmount => new Map([["$", dec(cents, 2)]]);

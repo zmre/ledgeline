@@ -180,27 +180,29 @@ Two Linux-specific traps live in `spaBuild`, both already handled:
 
 ## The embedded SPA and the Nix sandbox
 
-`crates/ledgeline-server/src/spa.rs` embeds `web/build` at compile time:
+`crates/ledgeline-server/src/spa.rs` embeds `crates/ledgeline-server/spa/`:
 
 ```rust
 #[derive(RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/../../web/build"]
+#[folder = "$CARGO_MANIFEST_DIR/spa"]
 struct SpaAssets;
 ```
 
-`web/build` is a git-ignored SvelteKit build artifact and is **absent** in the
-Nix sandbox — and rust-embed refuses to *compile* if the folder is missing.
-**We do not build the SvelteKit SPA inside Nix** (out of scope). Instead, the
-flake's `preBuild` drops a placeholder `web/build/index.html` before every cargo
-phase, so `buildPackage` / `cargoClippy` / `cargoTest` compile cleanly. (This
-mirrors what `crates/ledgeline-server/build.rs` already does for a bare
-`cargo build`, but the flake does it too so the crane sandbox never depends on
-the build script's filesystem writes.)
+`crates/ledgeline-server/build.rs` fills `spa/` by mirroring `web/build`, or
+writes a placeholder when there is none (rust-embed refuses to *compile* against
+a missing folder). Neither directory is in the Nix source, so the flake's
+`preBuild` drops a placeholder `web/build/index.html` before every cargo phase of
+`.#ledgeline`, `.#clippy` and `.#tests`.
 
-Consequence: **Nix/CI binaries embed a placeholder SPA.** That is intentional —
-CI's job is to prove the Rust compiles/links and the tests pass. The real
-single binary, with the actual UI baked in, is produced with the SPA built
-first (next section).
+Consequence: **those three embed a script-less placeholder SPA.** Fine for
+proving the Rust compiles, links and passes; useless for anything about the real
+UI. The SvelteKit SPA IS built inside Nix (`spaNodeModules` → `spaBuild`), and
+the outputs that need it copy it into `web/build` instead: `ledgelineWithSpa`
+(what `macDist`, `linuxDist` and `nix run` ship, and what the CI `e2e` job runs
+for `web/e2e/csp.same-origin.e2e.ts`), and the `spaShellCsp` check, which runs
+`tests/spa_shell_csp.rs` against the real shell with
+`LEDGELINE_REQUIRE_REAL_SPA=1` so the CSP's inline-script hashes are tested
+against what actually ships. Locally, build the SPA first (next section).
 
 > The crane source filter also keeps the repo `fixtures/` tree in the build
 > source, because the integration tests read it at runtime

@@ -115,7 +115,8 @@ jobs:
         run: nix build -L .#tests
 
   # Build the single binary — proves the GUI deps resolve (webkitgtk on Linux,
-  # system WebKit on macOS). Embeds a placeholder SPA (see docs/development.md).
+  # system WebKit on macOS). `.#ledgeline` embeds a placeholder SPA (see
+  # docs/development.md); the distributable steps below embed the real one.
   # On macOS this ALSO builds the real distributable (`.#macDist`), because that
   # — not `.#ledgeline` — is what a Mac user's `nix build` resolves to.
   build:
@@ -184,6 +185,17 @@ jobs:
       - name: Build linuxDist (Linux distributable)
         if: runner.os == 'Linux'
         run: nix build -L --no-link .#linuxDist
+
+      # The shell's CSP against the REAL SvelteKit shell. `.#tests` embeds the
+      # script-less placeholder, so it cannot see a SvelteKit release that emits
+      # a script the policy does not hash (a blank window, nothing red). This
+      # runs tests/spa_shell_csp.rs with `spaBuild` embedded and
+      # LEDGELINE_REQUIRE_REAL_SPA=1, under which a placeholder FAILS. Here
+      # rather than in `tests` because the step above has just built `spaBuild`
+      # into this runner's store. The browser-level twin is the e2e job's
+      # csp.same-origin spec.
+      - name: CSP vs. the real SPA shell
+        run: nix build -L --no-link .#spaShellCsp
 
       # Push the freshly built store paths to our Cachix cache. Only on pushes
       # (not PRs); the in-script guard skips cleanly when the token is absent
@@ -338,8 +350,13 @@ jobs:
       # hits) as the `build` job instead of maintaining a second toolchain and
       # target dir. `--server` is headless — the GUI stack is linked in but never
       # initialised — so no display is needed.
-      - name: Build ledgeline
-        run: nix build -L .#ledgeline
+      #
+      # `ledgelineWithSpa`, NOT `ledgeline`: the latter embeds the placeholder
+      # SPA, and csp.same-origin.e2e.ts loads the app from the engine itself to
+      # prove the shipped shell boots under its own CSP. This is the same
+      # derivation `linuxDist` wraps, so the `build` job pushes and pins it.
+      - name: Build ledgeline (real SPA embedded)
+        run: nix build -L .#ledgelineWithSpa
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -386,10 +403,13 @@ jobs:
       # Playwright starts its own two servers (the engine on :5099 and `bun run
       # preview` on :4173). LEDGELINE_BIN points the first at the Nix binary,
       # since CI has no cargo target dir for the config's default path.
+      # REQUIRE_REAL_SPA=1 turns csp.same-origin's local "placeholder → skip"
+      # into a failure: here the engine MUST be serving the real shell.
       - name: E2E (Playwright)
         working-directory: web
         env:
           LEDGELINE_BIN: ${{ github.workspace }}/result/bin/ledgeline
+          REQUIRE_REAL_SPA: "1"
         run: bun run test:e2e
 
       # playwright.config.ts sets no `reporter`, so there is no playwright-report/

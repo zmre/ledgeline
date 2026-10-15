@@ -118,10 +118,10 @@
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use ledgeline_core::Fingerprint;
 use ledgeline_core::convert::{self, SourceFormat, Tabular};
+use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::rules::{
     self, ControlField, CreateRefusal, DirectiveValue, DiscoveredRules, Discovery, EditPlan,
     HledgerField, IfLayout, Item, ItemBody, ItemId, ItemKind, MatchScope, MatcherGroupSpec,
@@ -136,6 +136,7 @@ use crate::AppState;
 use crate::edit_api::json_body;
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::compute;
+use crate::security::no_store_json as no_store;
 use crate::stage::{Stage, StageId};
 
 // ===========================================================================
@@ -1241,11 +1242,11 @@ fn read_failed(id: &str, error: &std::io::Error) -> AppError {
 /// A `500` for an I/O failure while WRITING a rules file — and deliberately
 /// **not** [`read_failed`].
 ///
-/// The read path's argument does not transfer, because
-/// [`ledgeline_core::edit::atomic_write`] can fail with an error *we* built:
-/// `create_temp_file` gives up after several collisions with
-/// `could not create a temp file in {dir}` — the absolute journal directory,
-/// which is precisely the disclosure layer 5 exists to prevent. Reaching it
+/// The read path's argument does not transfer, because a write can fail with an
+/// error *we* built: the temp-file step gives up after several collisions with
+/// an error of our own wording, and a future wording could name the absolute
+/// journal directory, which is precisely the disclosure layer 5 exists to
+/// prevent. Reaching it
 /// needs several consecutive `AlreadyExists` on a pid-and-nanosecond-keyed temp
 /// name, so it is vanishingly unlikely; an invariant that holds by luck is not
 /// one worth asserting.
@@ -1331,14 +1332,6 @@ fn parse_document(text: &str, id: &str) -> Result<RulesDoc, AppError> {
 /// makes a discovery set exist at all.
 fn main_journal_file(state: &AppState) -> Option<PathBuf> {
     state.source_files().into_iter().next()
-}
-
-/// `Cache-Control: no-store`, no `ETag`. See the module docs for why these three
-/// reads sit outside the snapshot's cache validator entirely.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
 }
 
 // ===========================================================================
@@ -1614,6 +1607,24 @@ fn create_exclusive(path: &FsPath, bytes: &[u8]) -> std::io::Result<()> {
     file.sync_all()
 }
 
+/// Refuse to write a document [`read_document`] would refuse to open.
+///
+/// [`MAX_ITEMS`] bounds how many items a save names, not how many bytes they
+/// render to — two thousand values at their own cap is past a megabyte — so a
+/// save could otherwise write a file the very next `GET` answers with "too
+/// large to open for editing", leaving the user's own edit stranded.
+fn check_rendered_size(id: &str, new_text: &str) -> Result<(), AppError> {
+    if new_text.len() > MAX_DOCUMENT_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "{} would be {} bytes, larger than the {MAX_DOCUMENT_BYTES} this editor can open \
+             again, so nothing was written",
+            quoted(id),
+            new_text.len()
+        )));
+    }
+    Ok(())
+}
+
 /// The whole of a CREATE, synchronously, on the blocking pool.
 ///
 /// Reached from [`save`] when the request carries [`NEW_FILE_REVISION`]. It
@@ -1659,6 +1670,7 @@ fn create_document(
     // re-parses and requires every slot to reappear as the shape the plan said,
     // which is what catches a rendered line that reads back as something else.
     empty.verify(&plan, &new_text)?;
+    check_rendered_size(id, &new_text)?;
 
     create_exclusive(path.as_path(), new_text.as_bytes()).map_err(|error| {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
@@ -1728,6 +1740,7 @@ fn save_document(
     // swallows the construct below it. `verify` re-parses and requires every
     // item to reappear as the same shape at the offset the plan implies.
     doc.verify(&plan, &new_text)?;
+    check_rendered_size(id, &new_text)?;
 
     if new_text == text {
         // NO-OP: write NOTHING. Writing byte-identical content still bumps
@@ -1738,30 +1751,24 @@ fn save_document(
         return Ok(wire_doc(found, &doc, fingerprint.token(), true));
     }
 
-    // Narrow the TOCTOU window from "the whole request" to "hash → rename". It
-    // cannot be closed — there is no compare-and-swap for a file — but the read
-    // above happened before parsing, planning, rendering and verifying, all of
-    // which take time.
-    let (_, before_write) = read_document(found, id)?;
-    if !before_write.content_matches(&fingerprint) {
-        return Err(stale(id));
-    }
-    // `(dev, ino)` plus a regular-file re-check, immediately before the write.
+    // Pinned to the scan's `(dev, ino)` and to the revision the client edited.
     // The scan proved this name was a regular file inside the root; that proof
     // expired the moment the scan ended, and a name can become a symlink, a FIFO
-    // or a different file entirely in between. Identity is what says "the same
-    // file" rather than "a file with the same name".
-    if !found.identity_unchanged() {
-        return Err(stale(id));
-    }
-
-    // Reused verbatim, because every property it documents is wanted unchanged
-    // here: a same-directory temp file via `create_new`, mode carry-forward (a
-    // rules file's matchers carry account numbers and payee names, so `0600`
-    // staying `0600` is not hypothetical), symlink-following so a shared
-    // `common.rules` survives as a link, and `fsync` before `rename`.
-    ledgeline_core::edit::atomic_write(found.path().as_path(), new_text.as_bytes())
-        .map_err(|error| write_failed(id, &error))?;
+    // or a different file entirely in between. `pinned::replace` re-checks both
+    // through the descriptor it replaces, right up to the rename, never follows
+    // a link, and carries the mode forward (a rules file's matchers carry
+    // account numbers and payee names, so `0600` staying `0600` is not
+    // hypothetical). The scan already skips symlinks, so nothing here is one.
+    let pin = Pin {
+        identity: found.identity(),
+        fingerprint: Some(fingerprint),
+    };
+    pinned::replace(found.path().as_path(), new_text.as_bytes(), &pin).map_err(
+        |error| match error {
+            WriteError::Changed => stale(id),
+            WriteError::Io(error) => write_failed(id, &error),
+        },
+    )?;
 
     // The new revision comes from what we WROTE, never from a re-read: a re-read
     // could pick up somebody else's write and hand this client a token for bytes

@@ -1,9 +1,9 @@
 // Setup for the `components` vitest project (see `vite.config.ts`).
 //
-// Nothing in the app imports anything from `$lib/testing`, so none of it reaches
+// Nothing in the app imports anything from `#lib/testing`, so none of it reaches
 // a bundle — it lives under `src/lib` rather than beside the config so that
 // `tsc --noEmit` and `svelte-check` type-check it like every other module, and
-// so a test can say `$lib/testing/…` instead of counting `../`s.
+// so a test can say `#lib/testing/…` instead of counting `../`s.
 
 import {cleanup} from "@testing-library/svelte";
 import {afterEach} from "vitest";

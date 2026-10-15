@@ -7,9 +7,9 @@
 /* eslint-disable svelte/prefer-svelte-reactivity -- the account Sets are
    immutable snapshots: every change replaces `value` wholesale, so plain Set
    is correct (and the contract exposes ReadonlySet); Date is read-once. */
-import type {ISODate} from "$lib/domain/types";
-import {toggleSubtreeRoot} from "$lib/filters/treeSelect";
-import {addDays} from "$lib/reports/periods";
+import type {ISODate} from "#lib/domain/types.js";
+import {toggleSubtreeRoot} from "#lib/filters/treeSelect.js";
+import {addDays} from "#lib/reports/periods.js";
 
 export interface JournalFilter {
     from: ISODate | null; // inclusive

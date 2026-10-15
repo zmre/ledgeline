@@ -46,9 +46,16 @@ test-integration port="5055":
 
 # playwright.config.ts launches ../target/debug/ledgeline as the fixture API
 # server, so build it first ($LEDGELINE_BIN overrides that path, as CI does to
-# point at the Nix-built binary).
+# point at the Nix-built real-SPA binary).
+#
+# The SPA is built BEFORE the binary, deliberately: e2e/csp.same-origin.e2e.ts
+# loads the app from the engine itself, and a debug binary serves whatever
+# build.rs mirrored into crates/ledgeline-server/spa/ when it was compiled —
+# the placeholder on a fresh checkout, which makes that spec skip. The config's
+# own `bun run build` (for `bun run preview`) then runs again; it takes seconds.
 # Run e2e tests (playwright)
 e2e:
+    cd web && bun run build
     cargo build -p ledgeline
     cd web && bun run test:e2e
 
@@ -111,8 +118,8 @@ repin-spa-hashes:
 # suites). Only the second would let an accidental hard dependency on a live
 # engine through.
 #
-# No `build` step: playwright.config.ts's second webServer already runs
-# `bun run build && bun run preview`, so `e2e` builds the SPA for us.
+# No `build` step: the `e2e` recipe builds the SPA itself (before the binary,
+# so the same-origin CSP spec sees the real shell).
 # Everything a PR is gated on that a laptop can run
 pre-push: version-check spa-hash-check audit engine-check lint check test test-integration engine-test e2e
 

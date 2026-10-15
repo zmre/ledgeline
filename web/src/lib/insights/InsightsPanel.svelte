@@ -12,13 +12,13 @@
      settings.insightsTab; the header row stays visible with the active view's
      headline figure even when collapsed. -->
 <script lang="ts">
-    import type {AccountDecl} from "$lib/domain/accountTypes";
-    import {formatAmount, toNumber} from "$lib/domain/money";
-    import type {Transaction} from "$lib/domain/types";
-    import {signClass} from "$lib/format/sign";
-    import {accountBalances, balanceCommodities, summarize} from "$lib/reports/cashBalances";
-    import {today} from "$lib/reports/periods";
-    import {settings, type InsightsTab} from "$lib/stores/settings.svelte";
+    import type {AccountDecl} from "#lib/domain/accountTypes.js";
+    import {formatAmount, toNumber} from "#lib/domain/money.js";
+    import type {Transaction} from "#lib/domain/types.js";
+    import {signClass} from "#lib/format/sign.js";
+    import {accountBalances, balanceCommodities, summarize} from "#lib/reports/cashBalances.js";
+    import {today} from "#lib/reports/periods.js";
+    import {settings, type InsightsTab} from "#lib/stores/settings.svelte.js";
     import BalancesView from "./BalancesView.svelte";
     import BigNumbers from "./BigNumbers.svelte";
     import ChartWidget from "./ChartWidget.svelte";

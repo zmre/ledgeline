@@ -11,12 +11,12 @@
 // tested over these exact domain types).
 
 import {describe, expect, it} from "vitest";
-import {formatAmount} from "$lib/domain/money";
-import type {MixedAmount} from "$lib/domain/money";
-import {partitionShortPositions, shortPositionNote} from "$lib/holdings/ui/view";
-import {styleFor} from "$lib/insights/series";
-import {formatTotals} from "$lib/journal/rowModel";
-import {reportStyles} from "$lib/reports/ui/styles";
+import {formatAmount} from "#lib/domain/money.js";
+import type {MixedAmount} from "#lib/domain/money.js";
+import {partitionShortPositions, shortPositionNote} from "#lib/holdings/ui/view.js";
+import {styleFor} from "#lib/insights/series.js";
+import {formatTotals} from "#lib/journal/rowModel.js";
+import {reportStyles} from "#lib/reports/ui/styles.js";
 import {HledgerApi} from "./client";
 import {LedgelineApi} from "./native";
 import {
@@ -34,7 +34,7 @@ const apiUrl = process.env.LEDGELINE_API_URL;
 const AS_OF = "2026-07-08"; // pinned like the e2e clock; the journal ends 2026-07-04 so this == "today"
 
 /** The "$" line as the report table renders it (formatTotals → the exact cell string). */
-function dollarLine(ma: MixedAmount, styles: ReadonlyMap<string, import("$lib/domain/types").AmountStyle>): string | undefined {
+function dollarLine(ma: MixedAmount, styles: ReadonlyMap<string, import("#lib/domain/types.js").AmountStyle>): string | undefined {
     return formatTotals(ma, styles).find((line) => line.text.startsWith("$"))?.text;
 }
 
@@ -141,7 +141,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         const report = decodeHoldingsReport(await new LedgelineApi(url).holdings({asOf: AS_OF, accounts: "", mode: "include"}));
         expect(report.base).toBe("$");
         const style = styleFor(txns, report.base);
-        const fmt = (h: {marketValue: import("$lib/domain/money").Dec | null}) =>
+        const fmt = (h: {marketValue: import("#lib/domain/money.js").Dec | null}) =>
             h.marketValue === null ? "—" : formatAmount({commodity: "$", qty: h.marketValue, style});
 
         const bySymbol = new Map(report.holdings.map((h) => [h.symbol, h]));

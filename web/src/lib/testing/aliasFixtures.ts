@@ -12,7 +12,7 @@
 // prompted this panel's rewrite, and a fixture of `a → b` would render happily
 // in any layout, including the broken one.
 
-import type {AliasEffect, AliasEntry, DryRunResult} from "$lib/imports/importTypes";
+import type {AliasEffect, AliasEntry, DryRunResult} from "#lib/imports/importTypes.js";
 
 /** The plain alias in the user's journal that does the rewriting below. */
 export const ROTH_ALIAS: AliasEntry = {
@@ -43,6 +43,7 @@ export const RENAMES_ONLY: AliasEffect = {
         confPath: "hledger.conf",
         confOutside: false,
         confHijackedBy: null,
+        confUnforwarded: 0,
         additions: [],
         refusals: [],
         revision: "rev-conf-1",
@@ -70,6 +71,7 @@ export const RENAMES_AND_PARITY: AliasEffect = {
         confPath: null,
         confOutside: false,
         confHijackedBy: null,
+        confUnforwarded: 0,
         additions: ["PW.Roth.IRA.-.3077=assets:morganstanley:pw-roth-ira"],
         refusals: [],
         revision: "",
@@ -93,6 +95,7 @@ export const PARITY_BEYOND_RENAMES: AliasEffect = {
         confPath: "hledger.conf",
         confOutside: false,
         confHijackedBy: null,
+        confUnforwarded: 0,
         additions: ["PW.Roth.IRA.-.3077=assets:morganstanley:pw-roth-ira"],
         refusals: [],
         revision: "rev-conf-1",

@@ -13,10 +13,10 @@
      thing to cancel is always first. -->
 <script lang="ts">
     import {resolve} from "$app/paths";
-    import {journalSearch} from "$lib/filters/journalTarget";
-    import {add, type Dec} from "$lib/domain/money";
-    import type {AmountStyle} from "$lib/domain/types";
-    import type {Cadence, Subscription} from "$lib/reports/insightsTypes";
+    import {journalSearch} from "#lib/filters/journalTarget.js";
+    import {add, type Dec} from "#lib/domain/money.js";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import type {Cadence, Subscription} from "#lib/reports/insightsTypes.js";
     import {fmt, monthlyAverage} from "../insights/format";
 
     let {

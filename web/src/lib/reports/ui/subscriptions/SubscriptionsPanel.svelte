@@ -10,10 +10,10 @@
      branch first, a failed reload left yesterday's detected subscriptions on
      screen with nothing to say so (FE-5). -->
 <script lang="ts">
-    import AsyncSection from "$lib/components/AsyncSection.svelte";
-    import type {AmountStyle} from "$lib/domain/types";
-    import {today} from "$lib/reports/periods";
-    import {subscriptions} from "$lib/stores/subscriptions.svelte";
+    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {today} from "#lib/reports/periods.js";
+    import {subscriptions} from "#lib/stores/subscriptions.svelte.js";
     import SubscriptionsBox from "./SubscriptionsBox.svelte";
 
     let {serverUrl, styles, base = "$"}: {serverUrl: string | null; styles: ReadonlyMap<string, AmountStyle>; base?: string} = $props();

@@ -37,7 +37,7 @@
 //!    ([`parse_journal_with_overrides`]). Only a file that still reads as part
 //!    of its journal is written. That last check is here rather than in the
 //!    engine because only the server knows which journal a file belongs to.
-//! 5. **One [`atomic_write`]**, and it is the last statement that can have an
+//! 5. **One [`pinned::replace`]**, and it is the last statement that can have an
 //!    effect. Every `?` above it is a decision to write nothing.
 //!
 //! # No absolute path is ever echoed
@@ -50,14 +50,14 @@
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::http::{HeaderName, HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use ledgeline_core::aliases::{
     AliasDoc, AliasEdit, AliasError, AliasLine, AliasLock, AliasPlan, AliasRefusal, Forwarded,
 };
-use ledgeline_core::edit::{Fingerprint, atomic_write};
+use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::journals;
 use ledgeline_core::model::Journal;
+use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::{aliases, parse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -67,6 +67,7 @@ use crate::AppState;
 use crate::edit_api::json_body;
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::compute;
+use crate::security::no_store_json as no_store;
 
 /// How many changes one `PUT` may name.
 ///
@@ -208,15 +209,6 @@ pub(crate) enum WireAliasEdit {
 // ===========================================================================
 // Handlers
 // ===========================================================================
-
-/// `Cache-Control: no-store`, no `ETag` — the same posture, and the same
-/// reasoning, as the rules and import routes: none of this is derived from the
-/// journal snapshot's generation counter.
-fn no_store<T: Serialize>(body: T) -> Response {
-    const NO_STORE: (HeaderName, HeaderValue) =
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    ([NO_STORE], Json(body)).into_response()
-}
 
 /// `GET /api/aliases` — every alias the open journal declares.
 pub(crate) async fn index(State(state): State<AppState>) -> Result<Response, AppError> {
@@ -425,7 +417,7 @@ fn save_aliases(
     }
     let path = journal_path(journal, id).ok_or_else(|| unresolved(id))?;
 
-    let text = read_journal(&path, id)?;
+    let (text, pin) = read_journal(&path, id)?;
     let fingerprint = Fingerprint::of_bytes(text.as_bytes());
     // Checked BEFORE any index is resolved, so a client editing an older parse
     // is told the file moved rather than "there is no alias number 3" — which
@@ -473,20 +465,18 @@ fn save_aliases(
         ));
     }
 
-    // Narrow the TOCTOU window from "the whole request" to "hash → rename".
-    let before_write = Fingerprint::of_bytes(read_journal(&path, id)?.as_bytes());
-    if !before_write.content_matches(&fingerprint) {
-        return Err(stale(id));
-    }
-
-    atomic_write(&path, new_text.as_bytes()).map_err(|error| {
-        // Only the `ErrorKind`: `atomic_write` builds a temp path from the
-        // target, so its io errors can carry one.
-        AppError::Internal(format!(
+    // Pinned to the inode and the bytes read above: `pinned::replace` re-checks
+    // both through the descriptor it replaces, right up to the rename, and never
+    // follows a link — a symlink swapped in since the read is a `409`, not a
+    // write to wherever it points.
+    pinned::replace(&path, new_text.as_bytes(), &pin).map_err(|error| match error {
+        WriteError::Changed => stale(id),
+        // Only the `ErrorKind`: a write error can carry the temp path.
+        WriteError::Io(error) => AppError::Internal(format!(
             "{} could not be written: {}. Nothing else was changed.",
             quoted(id),
             error.kind()
-        ))
+        )),
     })?;
 
     // The journal changed underneath the editor, so re-open it — otherwise the
@@ -636,9 +626,17 @@ fn validate_journal_id(id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Read one journal file, reporting only what the caller already knows.
-fn read_journal(path: &FsPath, id: &str) -> Result<String, AppError> {
-    std::fs::read_to_string(path).map_err(|error| {
+/// Read one journal file, reporting only what the caller already knows, with
+/// the [`Pin`] a later write of it must still match — identity and fingerprint
+/// from one open descriptor.
+///
+/// Never follows a symlink: the path is the real one the snapshot resolved, so
+/// a link there now was swapped in since, and that is a stale revision.
+fn read_journal(path: &FsPath, id: &str) -> Result<(String, Pin), AppError> {
+    pinned::read_pinned_string(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidInput {
+            return stale(id);
+        }
         AppError::Internal(format!(
             "{} could not be read: {}",
             quoted(id),

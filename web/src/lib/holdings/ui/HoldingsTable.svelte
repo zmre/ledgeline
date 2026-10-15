@@ -19,13 +19,13 @@
      is an em-dash when any holding is tainted or unpriced, matching the stat
      tiles. Only Basis and Market value get totals. -->
 <script lang="ts">
-    import {toNumber, type Dec} from "$lib/domain/money";
-    import {signClass} from "$lib/format/sign";
-    import type {GainPeriod, Holding, HoldingsReport} from "$lib/holdings/types";
-    import {openJournal} from "$lib/journal/openJournal";
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import {PRIORITY} from "$lib/keys/types";
-    import {listCursor} from "$lib/ui/listCursor.svelte";
+    import {toNumber, type Dec} from "#lib/domain/money.js";
+    import {signClass} from "#lib/format/sign.js";
+    import type {GainPeriod, Holding, HoldingsReport} from "#lib/holdings/types.js";
+    import {openJournal} from "#lib/journal/openJournal.js";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
+    import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {gainWindowSuffix} from "./gainPeriod";
     import {EM_DASH, formatGainPct, formatShares, sortHoldings, type SortKey} from "./view";
 

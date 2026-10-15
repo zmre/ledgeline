@@ -6,12 +6,12 @@
 
 import {fireEvent, render, screen, waitFor} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {dec} from "$lib/domain/money";
-import {chartColors} from "$lib/format/chartColors.svelte";
-import type {HoldingsScope, HoldingsSeries} from "$lib/holdings/types";
-import {benchmarkLines} from "$lib/stores/benchmarks.svelte";
-import {settings} from "$lib/stores/settings.svelte";
-import {connectFakeEngine, FAKE_ENGINE} from "$lib/testing/fakeEngine";
+import {dec} from "#lib/domain/money.js";
+import {chartColors} from "#lib/format/chartColors.svelte.js";
+import type {HoldingsScope, HoldingsSeries} from "#lib/holdings/types.js";
+import {benchmarkLines} from "#lib/stores/benchmarks.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
+import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import StocksTrend from "./StocksTrend.svelte";
 
 const DATES = ["2026-07-31", "2026-08-31", "2026-09-28"];

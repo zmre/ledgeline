@@ -10,7 +10,7 @@
 // over a corrected journal — makes the second fail.
 
 import {describe, expect, it, vi} from "vitest";
-import type {Problem} from "$lib/checks/engine";
+import type {Problem} from "#lib/checks/engine.js";
 
 const runChecks = vi.fn((): Problem[] => [{txnIndex: 1, rule: "pending", severity: "warning", message: "m"}]);
 
@@ -18,12 +18,12 @@ const runChecks = vi.fn((): Problem[] => [{txnIndex: 1, rule: "pending", severit
 // (its payloads are `$state.raw`).
 let txns = $state.raw<unknown[]>([{index: 1}]);
 
-vi.mock("$lib/checks/engine", () => ({
+vi.mock("#lib/checks/engine.js", () => ({
     runChecks: (...args: unknown[]) => runChecks(...(args as [])),
     groupByTxn: () => new Map(),
     maxSeverity: () => "warning",
 }));
-vi.mock("$lib/stores/journal.svelte", () => ({
+vi.mock("#lib/stores/journal.svelte.js", () => ({
     journal: {
         get txns() {
             return txns;
@@ -43,7 +43,7 @@ vi.mock("$lib/stores/journal.svelte", () => ({
     },
 }));
 
-const {problems} = await import("$lib/stores/problems.svelte");
+const {problems} = await import("#lib/stores/problems.svelte.js");
 
 describe("UNIT problems.all is computed once per journal, not once per read", () => {
     it("does not re-run the checks when the badge is read again on another tab", () => {

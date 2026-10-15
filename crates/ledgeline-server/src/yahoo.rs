@@ -34,12 +34,30 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The one HTTP client every Yahoo feed shares, so they pool connections (a
 /// fresh client per feed, or per request, re-negotiates TLS each time).
+///
+/// Trusts the OS certificate store first (reqwest 0.13's platform verifier, so
+/// a corporate TLS-inspecting proxy's root works). Where there is no store to
+/// load — a minimal Linux install, the nix build sandbox — that build FAILS,
+/// and `Client::default()` would then panic the whole server at startup, so
+/// fall back to the bundled Mozilla roots that reqwest 0.12 always used.
 pub(crate) fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(REQUEST_TIMEOUT)
+    let builder = || {
+        reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .timeout(REQUEST_TIMEOUT)
+    };
+    builder()
         .build()
+        .or_else(|_| builder().tls_certs_only(bundled_roots()).build())
         .unwrap_or_default()
+}
+
+/// Mozilla's root set, as compiled into `webpki-root-certs`.
+fn bundled_roots() -> Vec<reqwest::Certificate> {
+    webpki_root_certs::TLS_SERVER_ROOT_CERTS
+        .iter()
+        .filter_map(|der| reqwest::Certificate::from_der(der).ok())
+        .collect()
 }
 
 /// One fetched close: a calendar date and a per-unit quantity, still unstyled —
@@ -314,6 +332,18 @@ pub(crate) fn date_from_timestamp(timestamp: i64, gmtoffset: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fallback has to build on its own: it is what runs where the OS
+    /// store cannot be loaded, and there the only alternative is a panic.
+    #[test]
+    fn the_bundled_roots_build_a_client_without_the_os_store() {
+        let roots = bundled_roots();
+        assert!(roots.len() > 100, "Mozilla's set, not a stub");
+        reqwest::Client::builder()
+            .tls_certs_only(roots)
+            .build()
+            .expect("a client from the bundled roots alone");
+    }
 
     fn body(timestamps: &str, closes: &str, gmtoffset: &str) -> String {
         format!(

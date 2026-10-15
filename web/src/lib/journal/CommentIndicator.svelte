@@ -2,7 +2,7 @@
     // Small corner icon when txn or posting comments exist (WP-03). Hover shows
     // the comment text in a daisyUI tooltip; the focusable button makes the
     // tooltip reachable by tap/keyboard on mobile.
-    import type {Transaction} from "$lib/domain/types";
+    import type {Transaction} from "#lib/domain/types.js";
     import {txnComments} from "./rowModel";
 
     let {txn}: {txn: Transaction} = $props();

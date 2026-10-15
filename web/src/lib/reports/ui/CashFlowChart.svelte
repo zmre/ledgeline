@@ -7,8 +7,8 @@
      figure in the table is a segment or a sum of segments here. The table is the
      chart's accessible twin. -->
 <script lang="ts">
-    import type {AmountStyle} from "$lib/domain/types";
-    import {settings} from "$lib/stores/settings.svelte";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
     import type {PeriodReport} from "../types";
     import ChartPanel from "./ChartPanel.svelte";
     import PeriodStackView from "./PeriodStackView.svelte";

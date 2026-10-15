@@ -11,8 +11,8 @@
 
 import {goto} from "$app/navigation";
 import {resolve} from "$app/paths";
-import {journalSearch, targetToFilter, type JournalTarget} from "$lib/filters/journalTarget";
-import {filters} from "$lib/stores/filters.svelte";
+import {journalSearch, targetToFilter, type JournalTarget} from "#lib/filters/journalTarget.js";
+import {filters} from "#lib/stores/filters.svelte.js";
 
 export async function openJournal(target: JournalTarget): Promise<void> {
     filters.replace(targetToFilter(target));

@@ -60,13 +60,18 @@ thiserror = { workspace = true }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 # Stock price updates: fetching quotes from Yahoo Finance's public chart
-# endpoint. `rustls-tls`, not `native-tls` (IronCore Rust standard); only the
-# two features this crate actually calls (`.json()` is unused — the response is
+# endpoint. `rustls`, not `native-tls` (IronCore Rust standard); only the
+# features this crate actually calls (`.json()` is unused — the response is
 # read as raw bytes so `yahoo::parse_chart_response` stays testable without a
 # live `reqwest::Response`).
-reqwest = { version = "0.12", default-features = false, features = [
-    "rustls-tls",
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls",
+    "query",
 ] }
+# Fallback trust roots for `yahoo::http_client` when the OS has no certificate
+# store reqwest's platform verifier can load. Already in the graph via
+# rustls-platform-verifier, so this adds no crate.
+webpki-root-certs = "1"
 # `PriceFeed` (`yahoo.rs`) needs to be a `dyn` trait object on `AppState` so the
 # integration tests can substitute a fake with no network — native
 # async-fn-in-trait is not `dyn`-safe on stable, hence this.
@@ -79,7 +84,7 @@ futures = "0.3"
 # (SEC-2); `set-header` carries the security headers (SEC-7); `cors` is only
 # reachable through the opt-in `--allow-origin` allowlist (SEC-1);
 # `compression-gzip` shrinks the /transactions body ~20:1 on the wire (PERF-2).
-tower-http = { version = "0.6", features = [
+tower-http = { version = "0.7", features = [
     "catch-panic",
     "compression-gzip",
     "cors",
@@ -87,9 +92,9 @@ tower-http = { version = "0.6", features = [
 ] }
 # Local-access control (SEC-1): `getrandom` is the OS CSPRNG behind the
 # per-process bearer token; `sha2` + `base64` compute the CSP script hashes.
-getrandom = { version = "0.3", features = ["std"] }
-sha2 = "0.10"
-base64 = "0.22"
+getrandom = { version = "0.4", features = ["std"] }
+sha2 = "0.11"
+base64 = "0.23"
 # CLI, embedded SPA, live-reload, and hot-swappable journal state — needed in
 # both the GUI and headless builds, so none of these are feature-gated.
 clap = { version = "4", features = ["derive"] }
@@ -99,12 +104,12 @@ notify = "8"
 arc-swap = "1"
 # Locate the per-user config directory for the "recently opened journals" store
 # (used in both the GUI and headless builds).
-dirs = "6"
+dirs = "7"
 # Desktop GUI stack (gated by the `gui` feature). On macOS wry links the system
 # WKWebView; Linux needs webkitgtk (see flake.nix).
-wry = { version = "0.55", optional = true }
-tao = { version = "0.35", optional = true }
-muda = { version = "0.19", optional = true }
+wry = { version = "0.57", optional = true }
+tao = { version = "0.37", optional = true }
+muda = { version = "0.21", optional = true }
 rfd = { version = "0.17", optional = true }
 # macOS hands a double-clicked document to the app as a `file://` URL, which tao
 # surfaces as `Event::Opened { urls: Vec<url::Url> }`. tao does NOT re-export
@@ -124,8 +129,18 @@ gtk = { version = "0.18", optional = true }
 # unifies it and this adds no crate to the graph.
 webkit2gtk = { version = "2.0", optional = true }
 
+# `setrlimit` for the workbook worker (`workbook_sandbox`): safe, where `libc`'s
+# is `unsafe`. Already in the tree (via tempfile, and wayland on Linux), so this
+# adds no crate to Cargo.lock — only the `process` feature.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Builds the allocation-bomb workbooks the spreadsheet tests feed the reader.
+# Already in the tree via calamine (same major, same feature), so this adds no
+# crate to Cargo.lock.
+zip = { version = "8", default-features = false, features = ["deflate"] }
 # Isolated temp dirs for the recents-store unit tests.
 tempfile = "3"

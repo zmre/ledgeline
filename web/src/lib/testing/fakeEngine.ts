@@ -12,7 +12,7 @@
 // the value the component was handed. Wiring the real store to fake bytes is
 // what makes that assertable.
 
-import {settings} from "$lib/stores/settings.svelte";
+import {settings} from "#lib/stores/settings.svelte.js";
 import {vi} from "vitest";
 
 /** The address the fake engine answers on. Nothing listens there; `fetch` is stubbed. */

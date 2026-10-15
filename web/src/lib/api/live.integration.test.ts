@@ -57,7 +57,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live hledger-
 
     it("settings.setServerUrl verifies /version and persists under ledgeline.settings.v1", async () => {
         const backing = stubLocalStorage();
-        const {settings} = await import("$lib/stores/settings.svelte");
+        const {settings} = await import("#lib/stores/settings.svelte.js");
         expect(settings.serverUrl).toBeNull();
         await settings.setServerUrl(`${url}/`);
         expect(settings.serverUrl).toBe(url);
@@ -67,7 +67,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live hledger-
 
     it("settings.setServerUrl rejects an unreachable URL without persisting", async () => {
         const backing = stubLocalStorage();
-        const {settings} = await import("$lib/stores/settings.svelte");
+        const {settings} = await import("#lib/stores/settings.svelte.js");
         await expect(settings.setServerUrl("http://127.0.0.1:59999")).rejects.toThrow();
         expect(backing.has("ledgeline.settings.v1")).toBe(false);
     });

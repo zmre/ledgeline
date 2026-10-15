@@ -4,13 +4,13 @@
 
 import {describe, expect, it} from "vitest";
 import {Workbook, type Worksheet} from "exceljs";
-import {decodeBalanceSheetReport, decodeIncomeStatementReport} from "$lib/api/nativeDecode";
-import {dec, type MixedAmount} from "$lib/domain/money";
-import type {AccountType} from "$lib/domain/accountTypes";
-import type {Holding, HoldingsReport} from "$lib/holdings/types";
-import type {BudgetCell, BudgetReport, PeriodReport, SectionedReport} from "$lib/reports/types";
-import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "$lib/testing/balanceSheetFixture";
-import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "$lib/testing/incomeStatementFixture";
+import {decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
+import {dec, type MixedAmount} from "#lib/domain/money.js";
+import type {AccountType} from "#lib/domain/accountTypes.js";
+import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
+import type {BudgetCell, BudgetReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
+import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
+import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
 import {buildBalanceSheetWorkbook, buildBudgetWorkbook, buildHoldingsWorkbook, buildIncomeStatementWorkbook, buildWorkbook, numberFormat} from "./xlsx";
 
 const usd = (cents: number): MixedAmount => new Map([["$", dec(cents, 2)]]);

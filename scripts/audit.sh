@@ -46,43 +46,18 @@ rust_audit() {
   # webkit2gtk starting to iterate a string-array GVariant (XDG portal replies,
   # GSettings string lists and GTK action targets are the plausible routes).
   # That risk arrives with a dependency bump, so re-run the grep above whenever
-  # wry/tao move — not on a calendar. The real fix is upstream: wry/tao
-  # migrating Linux off GTK3. gtk3-rs topped out at 0.18.2 and requires
-  # glib "^0.18", so no lockfile change can reach glib 0.20 — which is also why
-  # Dependabot cannot open a PR for it.
-  #
-  # RUSTSEC-2026-0194 / RUSTSEC-2026-0195 — quick-xml 0.39.4, two "7.5
-  # high" denial-of-service issues (quadratic duplicate-attribute scan;
-  # unbounded namespace-declaration allocation).
-  #
-  #   WHY IGNORED — unreachable at run time AND unfixable from this repo:
-  #     * The only path is
-  #         quick-xml -> wayland-scanner (PROC-MACRO) -> wayland-client
-  #         -> rfd -> ledgeline
-  #       wayland-scanner is a build-time proc macro, so quick-xml parses
-  #       the vendored wayland protocol .xml files during compilation. It
-  #       never sees a journal file, an HTTP request, or any other runtime
-  #       input, so neither DoS is reachable by an attacker.
-  #     * rfd gates its wayland deps on cfg(target_os = "linux" | the
-  #       BSDs), so the crate is absent from the macOS graph entirely —
-  #       `cargo tree -i quick-xml` there reports "nothing to print". It is
-  #       only in Cargo.lock because the lockfile is target-agnostic.
-  #     * The advisories' fix is quick-xml >= 0.41, but wayland-scanner
-  #       0.31.10 requires "^0.39". No `cargo update` can reach it.
-  #
-  #   WHAT WOULD MAKE THIS ACTIONABLE: a wayland-scanner release that
-  #   widens its quick-xml requirement past 0.39 (or an rfd bump that drops
-  #   wayland-scanner). Delete the two --ignore flags then and let the
-  #   lockfile take the fix. Re-check whenever this list is touched.
-  nix develop -L .#audit -c cargo-audit audit \
-    --ignore RUSTSEC-2026-0194 \
-    --ignore RUSTSEC-2026-0195
+  # wry/tao move — not on a calendar (last re-run 2026-10-14, wry 0.57 / tao
+  # 0.37: still nothing). The real fix is upstream: wry/tao migrating Linux off
+  # GTK3. gtk 0.19 exists as of 2026-09, but wry, tao, muda and webkit2gtk all
+  # still require gtk "^0.18" (and so glib "^0.18"), so no lockfile change can
+  # reach a fixed glib — which is also why Dependabot cannot open a PR for it.
+  # Bumping our own direct `gtk` to 0.19 would only add a second GTK binding.
+  nix develop -L .#audit -c cargo-audit audit
 }
 
 spa_audit() {
-  # All six are in build/test tooling, or in code paths Vite's browser
-  # build drops. None reaches a user. Ledgeline ships ONE artifact out of
-  # web/: the static bundle in web/build, embedded into the Rust binary by
+  # The one ignored advisory does not reach a user. Ledgeline ships ONE
+  # artifact out of web/: the static bundle in web/build, embedded into the Rust binary by
   # rust-embed and served by our own axum server. There is no Node runtime
   # and no SvelteKit server — adapter-static emits only _app/, index.html,
   # robots.txt and an icon.
@@ -90,30 +65,17 @@ spa_audit() {
   # Every claim below was CHECKED against the built bundle rather than
   # assumed, with `grep -r <marker> web/build/_app`.
   #
-  #   postcss  GHSA-r28c-9q8g-f849 (high), GHSA-fxqj-rqcc-2cmp (moderate)
-  #   nanoid   GHSA-28wg-ghj8-5hjv (high), GHSA-2v37-7h3g-55p8 (high)
-  #     Reached only via `vite > postcss [> nanoid]` and
-  #     `eslint-plugin-svelte > postcss` — build-time CSS tooling. Both
-  #     "postcss" and "nanoid" appear in ZERO bundle files. The postcss
-  #     issues are sourceMappingURL path traversal during a build, which
-  #     only ever reads our own sources.
-  #
   #   uuid  GHSA-w5hq-g745-h8pq (moderate)
   #     `exceljs > uuid`, and exceljs does ship. The advisory requires uuid
   #     v3/v5/v6 called WITH a `buf` argument; the v3/v5 namespace
   #     constants ("DNS:") and the v4 bit-twiddling are both absent from
   #     the bundle, so the vulnerable entry points are not in it.
   #
-  #   cookie  GHSA-pxg6-pf52-xh8x (low)
-  #     SERVER-side: kit's cookie handling. There is no server here —
-  #     adapter-static emits no server bundle, and "sameSite", "Max-Age"
-  #     and "httpOnly" appear in ZERO bundle files.
-  #
-  #   WHAT WOULD MAKE THESE ACTIONABLE: there is nothing to move to today.
-  #   `bun update --latest` was tried and clears only ONE of the thirteen
-  #   (13 -> 12); upstream vite/kit/eslint still pin the vulnerable
-  #   transitives. Re-check whenever this list is touched, and drop any
-  #   --ignore whose package has since been bumped past the advisory.
+  #   WHAT WOULD MAKE THIS ACTIONABLE: an exceljs release off uuid 8.
+  #   Re-check whenever this list is touched, and drop any --ignore whose
+  #   package has since been bumped past the advisory (the postcss and nanoid
+  #   ignores went that way on 2026-10-14, and cookie GHSA-pxg6-pf52-xh8x with
+  #   the SvelteKit 3 upgrade, which moved kit onto cookie 2).
   #
   #   NEW ADVISORY WITH A PATCH RELEASE: fix the lockfile, don't add an
   #   --ignore. `bun update` re-resolves the whole tree (and rewrites
@@ -122,12 +84,7 @@ spa_audit() {
   #   registry.npmjs.org/<pkg>/<ver> — then `bun install --frozen-lockfile`
   #   to prove bun accepts it, then `just audit`.
   nix develop -L .#spaAudit -c bash -c 'cd web && bun audit \
-    --ignore=GHSA-r28c-9q8g-f849 \
-    --ignore=GHSA-fxqj-rqcc-2cmp \
-    --ignore=GHSA-28wg-ghj8-5hjv \
-    --ignore=GHSA-2v37-7h3g-55p8 \
-    --ignore=GHSA-w5hq-g745-h8pq \
-    --ignore=GHSA-pxg6-pf52-xh8x'
+    --ignore=GHSA-w5hq-g745-h8pq'
 }
 
 case "${1:-all}" in

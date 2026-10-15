@@ -51,12 +51,14 @@ mod prices_api;
 mod profiles_api;
 mod projections_api;
 mod qb_journal_api;
+mod redact;
 mod reports_api;
 mod rules_api;
 mod security;
 mod sidecar;
 mod spa;
 mod stage;
+mod workbook_sandbox;
 mod yahoo;
 mod yahoo_history;
 mod yahoo_profile;
@@ -66,7 +68,7 @@ use axum::{
     Router,
     body::{Body, Bytes},
     extract::State,
-    http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -98,6 +100,11 @@ pub use import_api::{
     CliImport, CliImportReport, CliImportWritten, CliQbReport, CliQbWritten, CliRunReport,
     run_cli_import,
 };
+// Spreadsheet parsing runs in a resource-limited child process (see
+// `workbook_sandbox`). The binary needs the worker entry point and the
+// allocator that enforces its memory budget; the in-process integration suites
+// need `set_worker_executable` to point the import routes at the real binary.
+pub use workbook_sandbox::{WorkerAllocator, run_worker_if_requested, set_worker_executable};
 // `PriceFeed` (+ `FetchedPrice`/`YahooError`, reachable through its method
 // signature) is re-exported so the integration tests can build a fake and hand
 // it to `AppState::with_price_source` — the only way `/api/prices/update` is
@@ -444,7 +451,9 @@ impl AppState {
     pub fn reopen_editor(&self) -> Option<Result<(), EditError>> {
         let mut guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
         let editor = guard.as_mut()?;
-        match JournalEditor::open(editor.path().to_path_buf()) {
+        // `reopen`, not `open`: the real path stays pinned, so a symlink swapped
+        // in since load is refused rather than followed.
+        match editor.reopen() {
             Ok(reopened) => {
                 self.inner.store(Arc::new(Snapshot::from_journal(Arc::clone(
                     reopened.journal(),
@@ -633,7 +642,7 @@ pub fn router_with_state(state: AppState) -> Router {
 /// * `CatchPanicLayer` sits just inside them, so a panic anywhere below — the
 ///   guards included — becomes a `500` rather than a dropped connection (SEC-2).
 /// * The `Host` guard wraps routing and the SPA fallback both, so a rebound host
-///   cannot fetch the shell that carries the token.
+///   cannot even fetch the shell.
 /// * CORS (installed only when [`Security::allow_origins`] was given exact
 ///   origins) is a `route_layer`, so it covers exactly the wire and `/api`
 ///   routes and NEVER the SPA fallback. It still sits inside the `Host` guard,
@@ -649,13 +658,14 @@ pub fn router_with_state(state: AppState) -> Router {
 ///
 /// It used to be `.layer(...)`, applied after `.fallback(...)`, and so it
 /// covered the fallback as well. The fallback is the SPA shell, and the shell
-/// carries the access token in its body. That combination meant a single
+/// then carried the access token in its body. That combination meant a single
 /// `fetch("http://127.0.0.1:<port>/")` from any page on an allowlisted dev
 /// origin — another Vite project, a malicious dev dependency — was answered
 /// with `Access-Control-Allow-Origin`, so the browser handed that page the
 /// token, and with it full read/write on the user's journal. `--allow-origin`
 /// is meant to open the API to a dev SPA; it must not also publish the
-/// credential.
+/// credential. (The shell no longer carries the token at all — see
+/// `spa.rs` — but CORS stays off it regardless.)
 ///
 /// The documented cross-origin flows do not need the shell: `just dev` and
 /// `web/playwright.config.ts` both serve the SPA from vite/`preview` and pin the
@@ -667,7 +677,6 @@ pub fn router_with_state(state: AppState) -> Router {
 /// refused. It is opt-in per request — a client that sends no `Accept-Encoding`
 /// still gets the identity bytes straight out of the snapshot.
 pub fn router_with_security(state: AppState, security: Security) -> Router {
-    let spa_token = security.token();
     let router = Router::new()
         .route("/version", get(version))
         .route("/accountnames", get(accountnames))
@@ -738,10 +747,10 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // of the user's finances with no bearer token at all.
         // `projection_endpoints.rs` pins the 401 for both.
         //
-        // The body limit is raised on THIS route alone, exactly as
-        // `/api/import/stage` raises its own: every other endpoint here takes a
-        // small JSON body, and a global limit would lift the ceiling on all of
-        // them for the sake of one.
+        // The body limit is set on THIS route alone, exactly as
+        // `/api/import/stage` sets its own — here it is LOWERED from axum's
+        // 2 MiB default to what a scenario can plausibly need, because the body
+        // is held while a `compute` slot is claimed.
         .route(
             "/api/projections/run",
             post(projections_api::run).route_layer(axum::extract::DefaultBodyLimit::max(
@@ -762,10 +771,19 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // order is not what disambiguates them — but keeping them adjacent and
         // in this order is what makes that readable. An id always ends in
         // `.journal`, so neither literal is a reachable id anyway.
+        //
+        // A save's body is `{revision, scenario}`: the same scenario `run`
+        // takes plus one fingerprint string, so `run`'s limit fits it too and
+        // the two cannot disagree about how big a scenario may be. (The GET
+        // carries no body, so the limit costs it nothing.)
         .route("/api/projections", get(projections_api::index))
         .route(
             "/api/projections/{*id}",
-            get(projections_api::document).put(projections_api::save),
+            get(projections_api::document)
+                .put(projections_api::save)
+                .route_layer(axum::extract::DefaultBodyLimit::max(
+                    projections_api::MAX_BODY_BYTES,
+                )),
         )
         .route("/api/holdings", get(reports_api::holdings))
         .route("/api/holdings/profiles", get(profiles_api::profiles))
@@ -836,11 +854,12 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/import/capabilities", get(import_api::capabilities))
         .route(
             "/api/import/stage",
-            // The ONLY route with a raised body limit, and it is raised on this
-            // route alone rather than globally: every other endpoint takes a
-            // small JSON body, and a global limit would lift the ceiling on all
-            // of them for the sake of one. `route_layer` here applies to just
-            // this route's method handler.
+            // The ONLY route with a RAISED body limit (the projection routes
+            // above set a lower one), and it is raised on this route alone
+            // rather than globally: every other endpoint takes a small JSON
+            // body, and a global limit would lift the ceiling on all of them for
+            // the sake of one. `route_layer` here applies to just this route's
+            // method handler.
             post(import_api::stage).route_layer(axum::extract::DefaultBodyLimit::max(
                 stage::MAX_UPLOAD_BYTES,
             )),
@@ -939,8 +958,8 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/prices/file", post(prices_api::create_file))
         .route("/api/prices/update", post(prices_api::update))
         // Token-gate exactly the routes registered above. `route_layer` skips
-        // the fallback, which is what lets the browser fetch the shell (and the
-        // token inside it) before it has any credential to present.
+        // the fallback, which is what lets the browser fetch the shell before it
+        // has any credential to present.
         .route_layer(middleware::from_fn_with_state(
             security.clone(),
             security::token_guard,
@@ -962,10 +981,7 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
     // Everything else (the SPA shell, its embedded assets, and client-side deep
     // links) is served same-origin ONLY; the explicit routes above win, and
     // neither `route_layer` above reaches this.
-    let router = router.fallback(move |uri: Uri| {
-        let token = spa_token.clone();
-        async move { spa::fallback(uri, token).await }
-    });
+    let router = router.fallback(spa::fallback);
 
     // `Fastest` (gzip level 1), not the default level 6: the /transactions body
     // is hundreds of megabytes and this server's usual peer is the SPA on the

@@ -34,7 +34,10 @@ pub enum DecError {
 ///
 /// Equality and ordering are by numeric **value** (so `1.50` equals `1.5`),
 /// while `mantissa`/`places` are preserved verbatim for wire serialization.
-#[derive(Debug, Clone, Copy)]
+///
+/// The serde derives are the raw pair, for carrying a parsed QuickBooks export
+/// out of the server's sandboxed workbook reader — not the wire rendering.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Dec {
     /// Signed significand.
     pub mantissa: i128,

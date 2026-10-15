@@ -3,21 +3,21 @@
     // above the virtualized transaction table; the totals footer stays pinned.
     // On mount (and whenever a server URL is first configured) → journal.refresh().
     import {onMount, untrack} from "svelte";
-    import ErrorToast from "$lib/components/ErrorToast.svelte";
-    import FilterBar from "$lib/filters/FilterBar.svelte";
-    import {startUrlSync} from "$lib/filters/urlSync";
-    import InsightsPanel from "$lib/insights/InsightsPanel.svelte";
-    import {visibleNet} from "$lib/insights/series";
-    import {declaredTypes} from "$lib/domain/accountTypes";
-    import TotalsFooter from "$lib/journal/TotalsFooter.svelte";
-    import TransactionTable from "$lib/journal/TransactionTable.svelte";
-    import TransactionModal from "$lib/journal/edit/TransactionModal.svelte";
-    import {periodLabel} from "$lib/journal/rowModel";
-    import {editing} from "$lib/stores/editing.svelte";
-    import {filters} from "$lib/stores/filters.svelte";
-    import {getFilteredTxns, journal, startPolling} from "$lib/stores/journal.svelte";
-    import {onServerReady} from "$lib/stores/serverWatch.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
+    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import FilterBar from "#lib/filters/FilterBar.svelte";
+    import {startUrlSync} from "#lib/filters/urlSync.js";
+    import InsightsPanel from "#lib/insights/InsightsPanel.svelte";
+    import {visibleNet} from "#lib/insights/series.js";
+    import {declaredTypes} from "#lib/domain/accountTypes.js";
+    import TotalsFooter from "#lib/journal/TotalsFooter.svelte";
+    import TransactionTable from "#lib/journal/TransactionTable.svelte";
+    import TransactionModal from "#lib/journal/edit/TransactionModal.svelte";
+    import {periodLabel} from "#lib/journal/rowModel.js";
+    import {editing} from "#lib/stores/editing.svelte.js";
+    import {filters} from "#lib/stores/filters.svelte.js";
+    import {getFilteredTxns, journal, startPolling} from "#lib/stores/journal.svelte.js";
+    import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
 
     const txns = $derived(getFilteredTxns());
     const period = $derived(periodLabel(filters.value.from, filters.value.to));

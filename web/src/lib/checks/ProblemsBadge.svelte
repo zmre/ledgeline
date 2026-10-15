@@ -2,7 +2,7 @@
     // Navbar problems indicator (WP-08): count badge colored by the worst
     // severity present; clicking toggles the problems drawer (the layout's
     // daisyUI drawer checkbox is bound to problems.drawerOpen).
-    import {problems} from "$lib/stores/problems.svelte";
+    import {problems} from "#lib/stores/problems.svelte.js";
 
     const badgeClass = $derived(problems.maxSeverity === "error" ? "badge-error" : problems.maxSeverity === "warning" ? "badge-warning" : "badge-info");
     const label = $derived(problems.count === 1 ? "1 problem" : `${problems.count} problems`);

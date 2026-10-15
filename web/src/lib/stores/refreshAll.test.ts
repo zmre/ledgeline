@@ -14,12 +14,12 @@
 
 import {describe, expect, it, vi, beforeEach, afterEach} from "vitest";
 import {readFileSync} from "node:fs";
-import {accountListing, accountsStore} from "$lib/accounts/accountsStore.svelte";
-import {aliasListing, aliasStore} from "$lib/imports/aliasStore.svelte";
-import {importStore} from "$lib/imports/importStore.svelte";
-import {openRules, rulesIndex, rulesStore} from "$lib/imports/rulesStore.svelte";
-import {CAPABILITIES} from "$lib/testing/importFixtures";
-import {FAKE_ENGINE} from "$lib/testing/fakeEngine";
+import {accountListing, accountsStore} from "#lib/accounts/accountsStore.svelte.js";
+import {aliasListing, aliasStore} from "#lib/imports/aliasStore.svelte.js";
+import {importStore} from "#lib/imports/importStore.svelte.js";
+import {openRules, rulesIndex, rulesStore} from "#lib/imports/rulesStore.svelte.js";
+import {CAPABILITIES} from "#lib/testing/importFixtures.js";
+import {FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {holdingsData, holdingsScope} from "./holdings.svelte";
 import {pricesStore} from "./prices.svelte";
 import {settings} from "./settings.svelte";

@@ -9,9 +9,9 @@
 // not re-interpreted against a different month later; an explicitly empty
 // value (`from=`) means an open end (null). Account names are individually
 // percent-encoded before the comma join so names containing commas survive.
-import type {ISODate} from "$lib/domain/types";
-import {localToday, presetRange, type DatePreset, type JournalFilter} from "$lib/stores/filters.svelte";
-import {safeDecode} from "$lib/url/safeDecode";
+import type {ISODate} from "#lib/domain/types.js";
+import {localToday, presetRange, type DatePreset, type JournalFilter} from "#lib/stores/filters.svelte.js";
+import {safeDecode} from "#lib/url/safeDecode.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 

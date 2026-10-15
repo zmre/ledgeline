@@ -21,7 +21,7 @@
 // second builder that could disagree with the first about how an `ifBlock` is
 // spelled.
 
-import type {SaveRulesBody} from "$lib/api/native";
+import type {SaveRulesBody} from "#lib/api/native.js";
 import {fieldNames, toForm, toSaveRequest, validateForm, type FormItem, type RulesForm} from "./model";
 import type {RulesDocument} from "./types";
 

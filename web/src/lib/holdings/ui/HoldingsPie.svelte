@@ -5,14 +5,14 @@
      The category views (asset class, sector, industry, security type,
      category, risk) split each holding's value by its classification from
      GET /api/holdings/profiles (commodity tags over Yahoo Finance), fetched
-     the first time one is chosen — see $lib/holdings/categories.ts.
+     the first time one is chosen — see #lib/holdings/categories.ts.
      - colors: the theme's categorical chart tokens via `chartColors` — every
        slot the theme defines, in fixed order, plus muted gray for the folded tail, and that gray
        at partial opacity for "(unclassified)": value nothing classifies is
        shown (it is real money) but never dressed as a category, and never
        mistaken for the fold. Asset classes and security types keep a fixed
        slot, so Equity is one colour in every scope.
-       $lib/format/palette documents the validator run and why ORDER matters.
+       #lib/format/palette documents the validator run and why ORDER matters.
        Secondary encoding, which the skill requires at this CVD separation, is
        the always-visible legend (label + % share, identity never color-alone),
        the pad-angle gaps between slices, and the tooltips.
@@ -21,15 +21,15 @@
        named-slice cap is the palette's slot count. -->
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
-    import ChartLegend from "$lib/components/ChartLegend.svelte";
-    import type {Dec} from "$lib/domain/money";
-    import {chartColors} from "$lib/format/chartColors.svelte";
-    import {unknownColor} from "$lib/format/palette";
-    import {availableDimensions, categorySlices, type CategorySlice} from "$lib/holdings/categories";
-    import {CATEGORY_DIMENSIONS, type CategoryDimension, type PieDimension} from "$lib/holdings/profileTypes";
-    import type {Holding} from "$lib/holdings/types";
-    import {holdingsProfiles} from "$lib/stores/holdingsProfiles.svelte";
-    import {settings} from "$lib/stores/settings.svelte";
+    import ChartLegend from "#lib/components/ChartLegend.svelte";
+    import type {Dec} from "#lib/domain/money.js";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
+    import {unknownColor} from "#lib/format/palette.js";
+    import {availableDimensions, categorySlices, type CategorySlice} from "#lib/holdings/categories.js";
+    import {CATEGORY_DIMENSIONS, type CategoryDimension, type PieDimension} from "#lib/holdings/profileTypes.js";
+    import type {Holding} from "#lib/holdings/types.js";
+    import {holdingsProfiles} from "#lib/stores/holdingsProfiles.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
     import {pieSlices, PIE_OTHER, type PieSlice} from "./view";
 
     let {holdings, format}: {holdings: Holding[]; format: (v: Dec) => string} = $props();

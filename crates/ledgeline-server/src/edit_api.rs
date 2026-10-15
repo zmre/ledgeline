@@ -78,7 +78,7 @@
 //! Every one of those bodies goes out through [`redacted`] first, which rewrites
 //! the journal's own absolute paths down to bare file names (SEC-15). A parse
 //! failure renders as `{source_name}:{line}: …`, and `source_name` is the
-//! absolute path the editor was opened with — see [`PathRedaction`] for what is
+//! absolute path the editor was opened with — see [`redacted`] for what is
 //! redacted, what deliberately is not, and why.
 
 use std::sync::MutexGuard;
@@ -93,6 +93,7 @@ use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, BalanceAssertion, Commodity, CommoditySide, Cost, CostKind,
     Journal, Posting, PostingType, SourcePos, Status, Tindex, Transaction,
 };
+use ledgeline_core::periodic::MAX_ACCOUNT_BYTES;
 use ledgeline_core::{Dec, EditError, JournalEditor};
 use serde::{Deserialize, Serialize};
 
@@ -100,6 +101,7 @@ use crate::AppState;
 // `editing_disabled` lives in `error` rather than here because the rules-file
 // `PUT` answers with the identical sentence, and the SPA matches on the words.
 use crate::error::{AppError, editing_disabled};
+use crate::redact::Redactor;
 use crate::reports_api::WireDec;
 
 // ===========================================================================
@@ -490,7 +492,8 @@ pub(crate) fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEdit
 // Path redaction (SEC-15)
 // ===========================================================================
 
-/// Rewrite the journal's own absolute paths out of an error body.
+/// Run one edit and redact the journal's own absolute paths out of whatever it
+/// failed with.
 ///
 /// SEC-15. `EditError` renders through [`ParseError`]'s `Located` variant as
 /// `{source_name}:{line}: {message}` — and `source_name` is the ABSOLUTE path
@@ -513,102 +516,13 @@ pub(crate) fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEdit
 /// of it. The absolute path is different in kind. It is not journal data at all;
 /// it is a fact about the host that this API otherwise never states.
 ///
-/// # Why this is not `import_api`'s `Redactor`
-///
-/// It should be. That type does the same job, with the same longest-first and
-/// two-spellings rules, and having two is a duplication worth removing — but it
-/// is private to `import_api`, and that file belongs to another lane right now.
-/// Promoting it to a shared module is the follow-up.
-struct PathRedaction {
-    /// `(absolute spelling, replacement)`, applied longest-first.
-    swaps: Vec<(String, String)>,
-}
-
-impl PathRedaction {
-    /// The redaction for the journal `state` currently serves: every source file
-    /// (main plus every `include`) mapped to its bare file name, and the main
-    /// file's directory mapped away entirely.
-    ///
-    /// Both the path as recorded and its canonical spelling are registered,
-    /// because they differ routinely — on macOS `/tmp` is a symlink to
-    /// `/private/tmp`, and the editor and the parser can report either.
-    fn for_journal(state: &AppState) -> Self {
-        let sources = state.source_files();
-        let files = sources.iter().flat_map(|path| {
-            let handle = path.file_name().map_or_else(
-                || "the journal".to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            spellings(path).map(move |spelling| (spelling, handle.clone()))
-        });
-        // The directory too: a *newly* added `include` naming a file that does
-        // not exist is not in `source_files` (that parse never succeeded), and
-        // `ParseError::Include` renders its absolute path.
-        let dirs = sources
-            .iter()
-            .take(1)
-            .filter_map(|path| path.parent())
-            .flat_map(|dir| {
-                spellings(dir).flat_map(|spelling| {
-                    [
-                        (format!("{spelling}/"), String::new()),
-                        (spelling, ".".to_string()),
-                    ]
-                })
-            });
-        Self {
-            swaps: files
-                .chain(dirs)
-                .filter(|(from, _)| !from.is_empty())
-                .collect(),
-        }
-    }
-
-    /// `text` with every known path rewritten. Longest-first, so a file's own
-    /// entry wins over the directory prefix that also matches it.
-    fn apply(&self, text: &str) -> String {
-        let mut swaps: Vec<&(String, String)> = self.swaps.iter().collect();
-        swaps.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
-        swaps.iter().fold(text.to_string(), |redacted, (from, to)| {
-            redacted.replace(from.as_str(), to.as_str())
-        })
-    }
-
-    /// `error` with its message redacted, keeping the variant — and therefore
-    /// the status the SPA switches on — exactly as it was.
-    ///
-    /// The match is deliberately exhaustive rather than a catch-all: a new
-    /// [`AppError`] variant must fail to compile here so somebody decides
-    /// whether it can carry a path, instead of silently leaking one.
-    fn redact(&self, error: AppError) -> AppError {
-        match error {
-            AppError::BadRequest(message) => AppError::BadRequest(self.apply(&message)),
-            AppError::NotFound(message) => AppError::NotFound(self.apply(&message)),
-            AppError::Conflict(message) => AppError::Conflict(self.apply(&message)),
-            AppError::EditingDisabled(message) => AppError::EditingDisabled(self.apply(&message)),
-            AppError::Unavailable(message) => AppError::Unavailable(self.apply(&message)),
-            AppError::Internal(message) => AppError::Internal(self.apply(&message)),
-        }
-    }
-}
-
-/// A path as written and, when it differs, as canonicalized.
-fn spellings(path: &std::path::Path) -> impl Iterator<Item = String> {
-    let written = path.to_string_lossy().into_owned();
-    let canonical = std::fs::canonicalize(path)
-        .map(|resolved| resolved.to_string_lossy().into_owned())
-        .ok()
-        .filter(|resolved| *resolved != written);
-    std::iter::once(written).chain(canonical)
-}
-
-/// Run one edit and redact the journal's paths out of whatever it failed with.
-///
-/// Applied at the four handler boundaries rather than at each `?`, so no future
-/// failure inside the locked operations can bypass it (SEC-15). The redaction is
-/// built only on the error path, so a successful edit pays nothing for it.
+/// The mechanism is [`Redactor::for_journal`]: every source file down to its
+/// bare name, the main file's directory away entirely. It is applied at the four
+/// handler boundaries rather than at each `?`, so no future failure inside the
+/// locked operations can bypass it (SEC-15). The redaction is built only on the
+/// error path, so a successful edit pays nothing for it.
 fn redacted<T>(state: &AppState, outcome: Result<T, AppError>) -> Result<T, AppError> {
-    outcome.map_err(|error| PathRedaction::for_journal(state).redact(error))
+    outcome.map_err(|error| Redactor::for_journal(state).redact_error(error))
 }
 
 fn add_transaction_locked(state: &AppState, request: &AddRequest) -> Result<AddResponse, AppError> {
@@ -680,6 +594,12 @@ fn patch_transaction_locked(
 ) -> Result<AddResponse, AppError> {
     let mut guard = lock_editor(state)?;
     let editor = bound(&mut guard)?;
+    if let Some(description) = &request.description {
+        check_text("a description", description, MAX_DESCRIPTION_BYTES, TAB)?;
+    }
+    for posting in &request.postings {
+        check_text("an account name", &posting.account, MAX_ACCOUNT_BYTES, NONE)?;
+    }
 
     let changed =
         request.description.is_some() || request.status.is_some() || !request.postings.is_empty();
@@ -957,12 +877,14 @@ pub(crate) fn resync_from_disk(
     state: &AppState,
     slot: &mut Option<JournalEditor>,
 ) -> Result<(), AppError> {
-    let Some(path) = slot.as_ref().map(|editor| editor.path().to_path_buf()) else {
+    // `reopen`, not `open`: the real path stays pinned, so a symlink swapped in
+    // since load is refused rather than followed.
+    let Some(reopened) = slot.as_ref().map(JournalEditor::reopen) else {
         // Nothing bound, so there is no un-saved edit to discard and nothing new
         // to publish; the caller's own error stands.
         return Ok(());
     };
-    match JournalEditor::open(path) {
+    match reopened {
         Ok(reopened) => {
             state.replace_journal(reopened.journal());
             *slot = Some(reopened);
@@ -1014,9 +936,7 @@ pub(crate) fn lock_editor(
         Ok(guard) => return Ok(guard),
         Err(poisoned) => poisoned.into_inner(),
     };
-    let reopened = guard
-        .as_ref()
-        .map(|editor| JournalEditor::open(editor.path().to_path_buf()));
+    let reopened = guard.as_ref().map(JournalEditor::reopen);
     match reopened {
         // No editor was bound, so there is nothing half-mutated to discard; the
         // caller's own `editing_disabled` 501 remains the right answer.
@@ -1075,6 +995,57 @@ fn insertion_index(journal: &Journal, txn: &Transaction, position: InsertPositio
 }
 
 // ===========================================================================
+// Free-text caps
+// ===========================================================================
+
+// Byte caps on the transaction fields a client writes as text. Far above
+// anything a person types or a bank exports, so a transaction read from the
+// journal and echoed back by the edit popup always fits; small enough that a
+// hostile body cannot turn one header into megabytes of journal. The account
+// cap is the one the budget rules' posting lines already use.
+const MAX_DATE_BYTES: usize = 32;
+const MAX_CODE_BYTES: usize = 256;
+const MAX_DESCRIPTION_BYTES: usize = 1024;
+const MAX_COMMENT_BYTES: usize = 4096;
+const MAX_COMMODITY_BYTES: usize = 128;
+
+/// The ASCII control characters a field may carry, beyond none at all.
+const NONE: &[char] = &[];
+/// A tab is inert inside a description or code: it cannot end the line.
+const TAB: &[char] = &['\t'];
+/// A comment may also span lines: the model joins a multi-line comment's lines
+/// with `\n` (the read API hands that back, and the edit popup echoes it), and
+/// the writer renders each line as its own indented `; …` line.
+const COMMENT: &[char] = &['\t', '\n'];
+
+/// No ASCII control character outside `allowed`, and no more than `cap` bytes.
+///
+/// Every other write path (account directives, budget rules, aliases, rules
+/// files) refuses control characters in what it writes; the transaction routes
+/// did not. A `\n` in a field that renders onto one journal line is how a
+/// second, top-level line gets smuggled in — `alias /.*/=expenses:junk` or a
+/// `P` price directive — and the post-edit guards compare the transaction, not
+/// the lines around it. `\r` goes with it (a lone one is invisible damage), as
+/// does the rest of the control range, which has no meaning in a journal.
+fn check_text(what: &str, value: &str, cap: usize, allowed: &[char]) -> Result<(), AppError> {
+    if let Some(control) = value
+        .chars()
+        .find(|c| c.is_ascii_control() && !allowed.contains(c))
+    {
+        return Err(AppError::BadRequest(format!(
+            "{what} may not contain the control character {control:?}"
+        )));
+    }
+    if value.len() > cap {
+        return Err(AppError::BadRequest(format!(
+            "{what} is {} bytes; the limit is {cap}",
+            value.len()
+        )));
+    }
+    Ok(())
+}
+
+// ===========================================================================
 // Build a `core::Transaction` from the request (with inferred styles)
 // ===========================================================================
 
@@ -1083,6 +1054,19 @@ fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transact
         return Err(AppError::BadRequest(
             "a transaction needs a date".to_string(),
         ));
+    }
+    check_text("a date", &request.date, MAX_DATE_BYTES, NONE)?;
+    if let Some(date2) = &request.date2 {
+        check_text("a secondary date", date2, MAX_DATE_BYTES, NONE)?;
+    }
+    if let Some(code) = &request.code {
+        check_text("a code", code, MAX_CODE_BYTES, TAB)?;
+    }
+    if let Some(description) = &request.description {
+        check_text("a description", description, MAX_DESCRIPTION_BYTES, TAB)?;
+    }
+    if let Some(comment) = &request.comment {
+        check_text("a comment", comment, MAX_COMMENT_BYTES, COMMENT)?;
     }
     if request.postings.is_empty() {
         return Err(AppError::BadRequest(
@@ -1128,6 +1112,10 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppErr
         return Err(AppError::BadRequest(
             "a posting needs an account".to_string(),
         ));
+    }
+    check_text("an account name", &input.account, MAX_ACCOUNT_BYTES, NONE)?;
+    if let Some(comment) = &input.comment {
+        check_text("a comment", comment, MAX_COMMENT_BYTES, COMMENT)?;
     }
     let amounts = match &input.amount {
         Some(amount) => vec![build_amount(journal, amount)?],
@@ -1204,6 +1192,7 @@ fn comment_string(raw: Option<&str>) -> String {
 }
 
 fn build_amount(journal: &Journal, input: &AmountIn) -> Result<Amount, AppError> {
+    check_text("a commodity", &input.commodity, MAX_COMMODITY_BYTES, NONE)?;
     let commodity = Commodity(input.commodity.clone());
     let quantity = dec_from_wire(&input.quantity)?;
     let style = infer_style(journal, &commodity, quantity.places);
@@ -1230,6 +1219,7 @@ fn build_cost(journal: &Journal, input: &CostIn) -> Result<Cost, AppError> {
 /// journal. Shared by the cost annotation and the balance assertion, which are
 /// the two places an amount can appear without a nested cost of its own.
 fn build_priced_amount(journal: &Journal, input: &PricedAmountIn) -> Result<Amount, AppError> {
+    check_text("a commodity", &input.commodity, MAX_COMMODITY_BYTES, NONE)?;
     let commodity = Commodity(input.commodity.clone());
     let quantity = dec_from_wire(&input.quantity)?;
     let style = infer_style(journal, &commodity, quantity.places);

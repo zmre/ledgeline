@@ -4,9 +4,9 @@
      works here unchanged and the three subnavs stay the same thing to look at
      and to operate. -->
 <script lang="ts">
-    import {TAB_LABELS, TAB_ORDER, type HoldingsTab} from "$lib/holdings/params";
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import {PRIORITY} from "$lib/keys/types";
+    import {TAB_LABELS, TAB_ORDER, type HoldingsTab} from "#lib/holdings/params.js";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
 
     let {tab = $bindable()}: {tab: HoldingsTab} = $props();
 

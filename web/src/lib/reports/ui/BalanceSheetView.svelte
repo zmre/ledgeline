@@ -37,13 +37,13 @@
      the engine computes it from exact `Dec` values, so a non-zero check is a
      real journal-integrity failure and never a rounding artefact. -->
 <script lang="ts">
-    import type {MixedAmount} from "$lib/domain/money";
-    import type {AmountStyle} from "$lib/domain/types";
-    import {openJournal} from "$lib/journal/openJournal";
-    import {registerKeys} from "$lib/keys/keymap.svelte";
-    import {PRIORITY} from "$lib/keys/types";
-    import type {BalanceSheetReport, BsSectionKind} from "$lib/reports/types";
-    import {listCursor} from "$lib/ui/listCursor.svelte";
+    import type {MixedAmount} from "#lib/domain/money.js";
+    import type {AmountStyle} from "#lib/domain/types.js";
+    import {openJournal} from "#lib/journal/openJournal.js";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
+    import type {BalanceSheetReport, BsSectionKind} from "#lib/reports/types.js";
+    import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {amountCell, bsCursorRows, bsSummary, sectionDisplayRows, type AmountCell, type BsDisplayRow} from "./balanceSheetRows";
 
     let {report, styles}: {report: BalanceSheetReport; styles: ReadonlyMap<string, AmountStyle>} = $props();

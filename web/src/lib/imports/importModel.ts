@@ -21,8 +21,8 @@
 //
 // No Svelte, no DOM, no `fetch` — `importStore.svelte.ts` owns all three.
 
-import type {ImportCommitBody, ImportRunBody, ImportSaveCsvBody} from "$lib/api/native";
-import type {LoadStatus} from "$lib/stores/loadState";
+import type {ImportCommitBody, ImportRunBody, ImportSaveCsvBody} from "#lib/api/native.js";
+import type {LoadStatus} from "#lib/stores/loadState.js";
 import type {
     BalanceCheck,
     CandidateSignals,
