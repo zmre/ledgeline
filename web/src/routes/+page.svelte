@@ -4,6 +4,9 @@
     // On mount (and whenever a server URL is first configured) → journal.refresh().
     import {onMount, untrack} from "svelte";
     import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import {styleOf} from "#lib/format/amounts.js";
+    import ExportButton from "#lib/reports/ui/ExportButton.svelte";
+    import {reportStyles} from "#lib/reports/ui/styles.js";
     import FilterBar from "#lib/filters/FilterBar.svelte";
     import {startUrlSync} from "#lib/filters/urlSync.js";
     import InsightsPanel from "#lib/insights/InsightsPanel.svelte";
@@ -38,6 +41,21 @@
      * different and keeps the old rows plus that toast, which is the intended
      * stale-but-labelled behaviour.
      */
+    /**
+     * Download exactly what the table shows — the date, account and search
+     * filters already applied — as a QuickBooks-style journal an accountant can
+     * work from. The builder (and exceljs) load on first click only.
+     */
+    async function exportJournal(): Promise<void> {
+        const {exportJournalXlsx} = await import("#lib/export/journalXlsx.js");
+        const styles = reportStyles(journal.txns);
+        const {from, to} = filters.value;
+        const filename = from === null && to === null ? "journal-all-dates.xlsx" : `journal-${from ?? "start"}-to-${to ?? "end"}.xlsx`;
+        // Oldest first, as a journal is read; the table shows newest first.
+        const ordered = [...txns].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.index - b.index));
+        await exportJournalXlsx(ordered, (commodity) => styleOf(styles, commodity), {title: journal.title, period}, filename);
+    }
+
     const loadFailed = $derived(journal.status === "error" && journal.txns.length === 0);
 
     // Restore filters from ?from=&to=&acct=&q= once, then mirror changes to the
@@ -110,7 +128,13 @@
     {/if}
 
     {#if !loadFailed}
-        <TotalsFooter count={txns.length} {period} {total} />
+        <TotalsFooter count={txns.length} {period} {total}>
+            {#snippet actions()}
+                {#if txns.length > 0}
+                    <ExportButton run={exportJournal} label="Export journal as xlsx" />
+                {/if}
+            {/snippet}
+        </TotalsFooter>
     {/if}
 </div>
 
