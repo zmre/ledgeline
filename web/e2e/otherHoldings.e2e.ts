@@ -123,11 +123,12 @@ test("other holdings: rows carry name, value, cost and change from the engine", 
     await expect(car).toContainText("\u221226.8%");
 });
 
-test("other holdings: the Holding column shows the unit as written, and is blank for a dollar-booked asset", async ({page}) => {
+test("other holdings: the Holding column shows the unit in its declared style, and is blank for a dollar-booked asset", async ({page}) => {
     await openOther(page);
 
-    // The unit is the evidence that this row can revalue at all.
-    await expect(page.getByTestId("held-" + HOME)).toHaveText("1 HOME");
+    // The unit is the evidence that this row can revalue at all. The fixture
+    // declares `commodity 1.0 HOME`, so the `1 HOME` it books displays as `1.0 HOME`.
+    await expect(page.getByTestId("held-" + HOME)).toHaveText("1.0 HOME");
     // The car holds only the base commodity, so printing it would just repeat the
     // Value column immediately to its right.
     await expect(page.getByTestId("held-" + CAR)).toHaveText("");

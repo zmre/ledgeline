@@ -235,7 +235,10 @@ async fn journal_serves_the_leading_comment_as_the_title() {
         "; Acme Books\n\n2026-01-01 t\n    expenses:x   $1.00\n    assets:bank\n",
     )
     .await;
-    assert_eq!(body, json!({"title": "Acme Books", "file": "2026.journal"}));
+    assert_eq!(
+        body,
+        json!({"title": "Acme Books", "file": "2026.journal", "commodityStyles": {}})
+    );
 }
 
 /// A journal that says nothing about itself is named for the folder it lives in.
@@ -250,7 +253,41 @@ async fn journal_falls_back_to_the_containing_folders_name() {
     .await;
     assert_eq!(
         body,
-        json!({"title": "household-books", "file": "main.journal"})
+        json!({"title": "household-books", "file": "main.journal", "commodityStyles": {}})
+    );
+}
+
+/// Declared `commodity` styles ride the route, so the SPA can render every
+/// amount the way the journal asks (`$0.6` as `$0.60`) — `/transactions` keeps
+/// each amount's as-written precision, exactly as hledger's does.
+#[tokio::test]
+async fn journal_serves_the_declared_commodity_styles() {
+    let body = journal_info_for(
+        "acme",
+        "main.journal",
+        "commodity $1,000.00\ncommodity 1.000,0 EUR\n\n2026-01-01 t\n    expenses:x   $0.6\n    assets:bank\n",
+    )
+    .await;
+    assert_eq!(
+        body["commodityStyles"],
+        json!({
+            "$": {
+                "ascommodityside": "L",
+                "ascommodityspaced": false,
+                "asdecimalmark": ".",
+                "asdigitgroups": [",", [3]],
+                "asprecision": 2,
+                "asrounding": "NoRounding",
+            },
+            "EUR": {
+                "ascommodityside": "R",
+                "ascommodityspaced": true,
+                "asdecimalmark": ",",
+                "asdigitgroups": [".", [3]],
+                "asprecision": 1,
+                "asrounding": "NoRounding",
+            },
+        })
     );
 }
 
@@ -261,8 +298,8 @@ async fn journal_falls_back_to_the_containing_folders_name() {
 async fn journal_rejects_a_leading_comment_that_is_a_description() {
     let body = body_of("/api/journal").await;
     assert_eq!(
-        body,
-        json!({"title": "fixtures", "file": "sample.journal"}),
+        (&body["title"], &body["file"]),
+        (&json!("fixtures"), &json!("sample.journal")),
         "sample.journal's header is prose about the file and must not become a title"
     );
 }
@@ -280,7 +317,7 @@ async fn journal_rejects_an_editor_modeline_as_the_title() {
     .await;
     assert_eq!(
         body,
-        json!({"title": "household-books", "file": "main.journal"}),
+        json!({"title": "household-books", "file": "main.journal", "commodityStyles": {}}),
         "an Emacs file-variables line must not become the journal's title"
     );
 }

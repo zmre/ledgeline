@@ -51,6 +51,78 @@ fn dec(text: &str) -> Dec {
 // Per-fixture: what the real export's shapes parse to
 // ---------------------------------------------------------------------------
 
+/// `ledgeline-export.xlsx` is written by Ledgeline's own journal-tab export
+/// (`web/src/lib/export/journalXlsx.ts`), which promises QuickBooks Online's
+/// Journal layout. Reading it back here is that promise's test: a four-account
+/// paycheck stays one group, a priced share purchase is carried at cost, and
+/// the dimension tags come back as QuickBooks columns.
+/// `(id, date, type, [(account, amount)])` — one parsed group, flattened for comparison.
+type GroupSummary<'a> = (&'a str, &'a str, &'a str, Vec<(&'a str, Dec)>);
+
+#[test]
+fn ledgeline_own_journal_export_reads_back_as_a_quickbooks_journal() {
+    let journal = parse("ledgeline-export.xlsx");
+    let summary: Vec<GroupSummary> = journal
+        .transactions
+        .iter()
+        .map(|txn| {
+            (
+                txn.id.as_str(),
+                txn.date.as_str(),
+                txn.transaction_type.as_str(),
+                txn.postings
+                    .iter()
+                    .map(|posting| (posting.account.as_str(), posting.amount))
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (
+                "7",
+                "2026-03-15",
+                "Journal Entry",
+                vec![
+                    ("income:salary", dec("-5000")),
+                    ("expenses:taxes:federal", dec("900")),
+                    ("expenses:health", dec("250")),
+                    ("assets:checking", dec("3850")),
+                ],
+            ),
+            (
+                "9",
+                "2026-03-20",
+                "Journal Entry",
+                vec![
+                    ("assets:brokerage", dec("1500")),
+                    ("assets:checking", dec("-1500")),
+                ],
+            ),
+            (
+                "12",
+                "2026-03-28",
+                "Journal Entry",
+                vec![
+                    ("expenses:food", dec("87.2")),
+                    ("liabilities:card", dec("-87.2")),
+                ],
+            ),
+        ]
+    );
+    let paycheck = &journal.transactions[0];
+    assert_eq!(paycheck.num.as_deref(), Some("1042"));
+    assert_eq!(paycheck.name.as_deref(), Some("Acme payroll"));
+    assert_eq!(paycheck.postings[2].memo.as_deref(), Some("HSA"));
+    assert_eq!(paycheck.postings[0].vendor.as_deref(), Some("Acme Corp"));
+    assert_eq!(paycheck.postings[0].class.as_deref(), Some("Household"));
+    assert_eq!(
+        journal.transactions[2].postings[0].customer.as_deref(),
+        Some("Self")
+    );
+}
+
 #[test]
 fn a_two_posting_group_becomes_one_transaction_with_signed_amounts() {
     let journal = parse("simple.xlsx");

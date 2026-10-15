@@ -215,6 +215,13 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     // folder answers instead: both halves of the fallback in one assertion.
     it("journal info falls back to the fixture folder's name", async () => {
         const info = decodeJournalInfo(await new LedgelineApi(url).journalInfo());
-        expect(info).toEqual({title: "fixtures", file: "sample.journal"});
+        expect({title: info.title, file: info.file}).toEqual({title: "fixtures", file: "sample.journal"});
+    });
+
+    // sample.journal declares `commodity $1,000.00`; the engine must serve it and
+    // the decoder must read it, or every amount falls back to as-written precision.
+    it("journal info carries the declared commodity styles", async () => {
+        const info = decodeJournalInfo(await new LedgelineApi(url).journalInfo());
+        expect(info.commodityStyles.get("$")).toEqual({side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]});
     });
 });

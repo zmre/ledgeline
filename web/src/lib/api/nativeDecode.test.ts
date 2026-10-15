@@ -1588,16 +1588,30 @@ describe("UNIT nativeDecode — RulesPreview", () => {
 
 describe("UNIT nativeDecode — journal identity (which ledger is on screen)", () => {
     it("decodes the engine's title and the bare journal file name", () => {
-        expect(decodeJournalInfo({title: "Acme Books", file: "2026.journal"})).toEqual({title: "Acme Books", file: "2026.journal"});
+        expect(decodeJournalInfo({title: "Acme Books", file: "2026.journal"})).toEqual({title: "Acme Books", file: "2026.journal", commodityStyles: new Map()});
+    });
+
+    it("decodes declared commodity styles, skipping junk entries instead of failing the title", () => {
+        const info = decodeJournalInfo({
+            title: "Acme Books",
+            file: "2026.journal",
+            commodityStyles: {
+                $: {ascommodityside: "L", ascommodityspaced: false, asdecimalmark: ".", asdigitgroups: [",", [3]], asprecision: 2, asrounding: "NoRounding"},
+                JUNK: "not a style",
+            },
+        });
+        expect(info.title).toBe("Acme Books");
+        expect(info.commodityStyles).toEqual(new Map([["$", {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]}]]));
+        expect(decodeJournalInfo({title: null, file: null, commodityStyles: []}).commodityStyles.size).toBe(0);
     });
 
     it("reads null and absent alike as `the engine derived none`", () => {
         // The app bar's fallback (name the server URL instead) is driven off
         // null, so an older engine that omits a key entirely must land in the
         // same branch as one that sends it as null — not in a decode failure.
-        expect(decodeJournalInfo({title: null, file: null})).toEqual({title: null, file: null});
-        expect(decodeJournalInfo({})).toEqual({title: null, file: null});
-        expect(decodeJournalInfo({title: "Acme Books"})).toEqual({title: "Acme Books", file: null});
+        expect(decodeJournalInfo({title: null, file: null})).toEqual({title: null, file: null, commodityStyles: new Map()});
+        expect(decodeJournalInfo({})).toEqual({title: null, file: null, commodityStyles: new Map()});
+        expect(decodeJournalInfo({title: "Acme Books"})).toEqual({title: "Acme Books", file: null, commodityStyles: new Map()});
     });
 
     it("throws rather than labelling the screen with whatever a non-string stringifies to", () => {

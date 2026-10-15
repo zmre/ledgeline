@@ -611,6 +611,16 @@ fn build_webview(
         .with_new_window_req_handler(|candidate, _features| {
             eprintln!("ledgeline: blocked new window for {candidate}");
             NewWindowResponse::Deny
+        })
+        // Every xlsx export is a browser download. wry's default handler accepts
+        // it into ~/Downloads with no sign that anything happened, so a click
+        // looked like a no-op; ask where to save instead, the way a desktop app
+        // does.
+        .with_download_started_handler(|_url, destination| choose_download_destination(destination))
+        .with_download_completed_handler(|_url, path, success| {
+            if !success {
+                show_download_error(path.as_deref());
+            }
         });
 
     #[cfg(not(target_os = "linux"))]
@@ -659,6 +669,56 @@ fn spawn_file_picker(proxy: EventLoopProxy<UserEvent>) {
         {
             let _ = proxy.send_event(UserEvent::JournalPicked(path));
         }
+    });
+}
+
+/// Ask where to save a download, starting from wry's proposed destination (the
+/// Downloads folder plus the page's suggested filename). `false` cancels it.
+///
+/// Runs on the main thread and blocks: WebKit wants the destination as the
+/// return value, so this cannot hop to a background thread like
+/// [`spawn_file_picker`]. The save panel already confirmed any overwrite, and
+/// WebKit fails a download whose destination exists, so a file the user chose to
+/// replace is removed first.
+fn choose_download_destination(destination: &mut PathBuf) -> bool {
+    let suggested = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dialog = rfd::FileDialog::new()
+        .set_title("Save export")
+        .set_file_name(suggested);
+    let dialog = match destination.parent() {
+        Some(dir) => dialog.set_directory(dir),
+        None => dialog,
+    };
+    let Some(chosen) = dialog.save_file() else {
+        return false;
+    };
+    if chosen.exists()
+        && let Err(error) = std::fs::remove_file(&chosen)
+    {
+        eprintln!("ledgeline: could not replace {}: {error}", chosen.display());
+        return false;
+    }
+    *destination = chosen;
+    true
+}
+
+/// Report a download WebKit could not finish (a full disk, a folder that went
+/// away) — the save dialog closed, so silence would read as success.
+fn show_download_error(path: Option<&Path>) {
+    let description = match path {
+        Some(path) => format!("Could not save {}.", path.display()),
+        None => "The export could not be saved.".to_string(),
+    };
+    std::thread::spawn(move || {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Export failed")
+            .set_description(description)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
     });
 }
 

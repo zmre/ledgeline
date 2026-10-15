@@ -737,7 +737,7 @@ export async function buildBudgetWorkbook(
 }
 
 /** Serialize the workbook and trigger a browser download (Blob + anchor). */
-async function downloadWorkbook(workbook: Workbook, filename: string): Promise<void> {
+export async function downloadWorkbook(workbook: Workbook, filename: string): Promise<void> {
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer as ArrayBuffer], {type: XLSX_MIME});
     const url = URL.createObjectURL(blob);

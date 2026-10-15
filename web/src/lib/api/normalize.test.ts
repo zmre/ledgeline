@@ -1,7 +1,8 @@
 import {readFileSync} from "node:fs";
 import {describe, expect, it, vi} from "vitest";
 import {ApiShapeError} from "./client";
-import {lastSkippedAccountCount, normalizeAccounts, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "./normalize";
+import {formatAmount, MAX_QUANTITY_DECIMALS} from "#lib/domain/money.js";
+import {lastSkippedAccountCount, normalizeAccounts, normalizeCommodityStyles, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "./normalize";
 
 // Hand-rolled wire samples (fixtures/api snapshots are WP-09).
 // "Modern" shape verified against a live hledger 1.52: acost/asdecimalmark/UnitCost.
@@ -176,6 +177,37 @@ describe("UNIT normalizeTransactions", () => {
         expect(aapl.style.side).toBe("R");
         expect(aapl.style.spaced).toBe(true);
         expect(aapl.cost).toEqual({commodity: "$", qty: {m: 22850n, p: 2}, per: true});
+    });
+
+    it("renders amounts in the declared commodity style, with its precision as a floor", () => {
+        // `commodity $1,000.00` while the journal wrote `$0.6`: hledger shows $0.60.
+        const declared = normalizeCommodityStyles({
+            $: {ascommodityside: "L", ascommodityspaced: false, asdecimalmark: ".", asdigitgroups: [",", [3]], asprecision: 2},
+            AAPL: {ascommodityside: "R", ascommodityspaced: true, asdecimalmark: ".", asdigitgroups: null, asprecision: 0},
+        });
+        const asWritten = (commodity: string, mantissa: number, places: number) => ({
+            acommodity: commodity,
+            aquantity: {decimalMantissa: mantissa, decimalPlaces: places},
+            astyle: {ascommodityside: "L", ascommodityspaced: false, asdecimalmark: ".", asdigitgroups: null, asprecision: places},
+        });
+        const raw = {
+            ...modernTxn,
+            tpostings: [
+                {...modernTxn.tpostings[0], pamount: [asWritten("$", 6, 1)]},
+                {...modernTxn.tpostings[1], pamount: [asWritten("AAPL", 105, 1)]},
+            ],
+        };
+        const [txn] = normalizeTransactions([raw], declared);
+        const [dollars] = txn.postings[0].amounts;
+        expect(dollars.style).toEqual({side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]});
+        expect(formatAmount(dollars)).toBe("$0.60");
+        // Declared 0 places must not round a 10.5-share lot to 11.
+        const [shares] = txn.postings[1].amounts;
+        expect(shares.style.side).toBe("R");
+        expect(shares.style.precision).toBe(1);
+        expect(formatAmount(shares, MAX_QUANTITY_DECIMALS)).toBe("10.5 AAPL");
+        // No declaration: the as-written style stands.
+        expect(normalizeTransactions([raw])[0].postings[0].amounts[0].style.precision).toBe(1);
     });
 
     it("normalizes the legacy shape: aprice, asdecimalpoint, NaturalPrecision", () => {

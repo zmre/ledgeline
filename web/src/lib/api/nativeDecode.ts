@@ -174,6 +174,7 @@ import type {
     SectionedReport,
 } from "#lib/reports/types.js";
 import {ApiShapeError} from "./client";
+import {type CommodityStyles, normalizeCommodityStyles} from "./normalize";
 
 // ---------------------------------------------------------------------------
 // Permissive raw mirrors (INTERNAL — nothing outside lib/api imports these).
@@ -1172,6 +1173,8 @@ interface RawJournalInfo {
     // neither a title nor a main file, rather than inventing one.
     title?: string | null;
     file?: string | null;
+    // Symbol → hledger `astyle`; absent from engines that predate it.
+    commodityStyles?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -3413,6 +3416,8 @@ export interface JournalInfo {
     title: string | null;
     /** The BARE filename of the main journal file — never a path. */
     file: string | null;
+    /** Display styles the journal declares (`commodity`/`D` directives), by symbol; empty when none. */
+    commodityStyles: CommodityStyles;
 }
 
 /**
@@ -3435,6 +3440,7 @@ export function decodeJournalInfo(raw: unknown): JournalInfo {
     return Object.freeze({
         title: optStr(info.title, "journal info title"),
         file: optStr(info.file, "journal info file"),
+        commodityStyles: normalizeCommodityStyles(info.commodityStyles),
     });
 }
 

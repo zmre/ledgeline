@@ -72,10 +72,28 @@ function toStyle(style: RawAmountStyle | undefined, qty: Dec): AmountStyle {
     });
 }
 
-function toAmount(raw: RawAmount, context: string): Amount {
+/** Declared display style per commodity symbol — see `normalizeCommodityStyles`. */
+export type CommodityStyles = ReadonlyMap<string, AmountStyle>;
+
+const NO_DECLARED_STYLES: CommodityStyles = new Map();
+
+/**
+ * The style an amount displays in. A declared `commodity` style is canonical
+ * (hledger renders `$0.6` as `$0.60` under `commodity $1,000.00`), except that
+ * its precision is a FLOOR, never a cap: a 10.25-share lot under `commodity 1.0
+ * VTI` must not read as 10.3. Money's own two-place cap still applies at format
+ * time (`MAX_DISPLAY_DECIMALS`).
+ */
+function amountStyle(declared: AmountStyle | undefined, raw: RawAmountStyle | undefined, qty: Dec): AmountStyle {
+    if (declared === undefined) return toStyle(raw, qty);
+    return qty.p <= declared.precision ? declared : Object.freeze({...declared, precision: qty.p});
+}
+
+function toAmount(raw: RawAmount, context: string, declared: CommodityStyles = NO_DECLARED_STYLES): Amount {
     const qty = toDec(raw.aquantity, context);
     const rawCost = raw.acost ?? raw.aprice; // 1.5x/2.0 vs older releases
-    const amount: Amount = {commodity: raw.acommodity ?? "", qty, style: toStyle(raw.astyle, qty)};
+    const commodity = raw.acommodity ?? "";
+    const amount: Amount = {commodity, qty, style: amountStyle(declared.get(commodity), raw.astyle, qty)};
     if (rawCost !== null && rawCost !== undefined && rawCost.contents !== undefined) {
         // hledger 1.52's JSON emits `@@`/inferred total costs SIGNED (negative on
         // sells), unlike journal syntax. Cost magnitudes are inherently positive,
@@ -125,20 +143,20 @@ function toPostingType(raw: string | undefined): PostingType {
  * thrown on: a junk assertion must not cost the whole journal load, and the
  * edit form treats "no assertion" as its safe default anyway.
  */
-function toBalanceAssertion(raw: RawBalanceAssertion | null | undefined, context: string): BalanceAssertion | undefined {
+function toBalanceAssertion(raw: RawBalanceAssertion | null | undefined, context: string, declared: CommodityStyles): BalanceAssertion | undefined {
     if (raw === null || raw === undefined || raw.baamount === undefined) return undefined;
     return Object.freeze({
-        amount: toAmount(raw.baamount, `${context} balance assertion`),
+        amount: toAmount(raw.baamount, `${context} balance assertion`, declared),
         inclusive: raw.bainclusive === true,
         total: raw.batotal === true,
     });
 }
 
-function toPosting(raw: RawPosting, context: string): Posting {
+function toPosting(raw: RawPosting, context: string, declared: CommodityStyles): Posting {
     const account = raw.paccount ?? "";
     const posting: Posting = {
         account,
-        amounts: frozen((raw.pamount ?? []).map((amount) => toAmount(amount, `${context} posting "${account}"`))),
+        amounts: frozen((raw.pamount ?? []).map((amount) => toAmount(amount, `${context} posting "${account}"`, declared))),
         status: toStatus(raw.pstatus),
         comment: (raw.pcomment ?? "").trimEnd(),
         tags: toTags(raw.ptags),
@@ -148,7 +166,7 @@ function toPosting(raw: RawPosting, context: string): Posting {
     // "absent" is the ordinary posting and every consumer defaults the same way.
     const type = toPostingType(raw.ptype);
     if (type !== "regular") posting.type = type;
-    const assertion = toBalanceAssertion(raw.pbalanceassertion, `${context} posting "${account}"`);
+    const assertion = toBalanceAssertion(raw.pbalanceassertion, `${context} posting "${account}"`, declared);
     if (assertion !== undefined) posting.balanceAssertion = assertion;
     return Object.freeze(posting);
 }
@@ -168,7 +186,7 @@ function buildHaystack(txn: Omit<Transaction, "haystack">): string {
         .toLowerCase();
 }
 
-function toTransaction(raw: RawTransaction): Transaction {
+function toTransaction(raw: RawTransaction, declared: CommodityStyles): Transaction {
     if (typeof raw.tindex !== "number" || typeof raw.tdate !== "string") {
         throw new ApiShapeError(`transaction ${JSON.stringify(raw.tindex ?? null)}: missing tindex/tdate`);
     }
@@ -181,7 +199,7 @@ function toTransaction(raw: RawTransaction): Transaction {
         code: raw.tcode ?? "",
         comment: (raw.tcomment ?? "").trimEnd(),
         tags: toTags(raw.ttags),
-        postings: frozen((raw.tpostings ?? []).map((posting) => toPosting(posting, context))),
+        postings: frozen((raw.tpostings ?? []).map((posting) => toPosting(posting, context, declared))),
     };
     const txn: Transaction = {...base, haystack: buildHaystack(base)};
     if (typeof raw.tdate2 === "string") txn.date2 = raw.tdate2;
@@ -202,11 +220,36 @@ function journalTransactions(raw: unknown): RawTransaction[] | null {
     return null;
 }
 
-export function normalizeTransactions(raw: unknown): Transaction[] {
+/**
+ * `declared` is the journal's `commodity`/`D` directive styles: hledger keeps
+ * each amount's as-written precision on the wire and applies the declared style
+ * only when rendering, so this is where the SPA applies it.
+ */
+export function normalizeTransactions(raw: unknown, declared: CommodityStyles = NO_DECLARED_STYLES): Transaction[] {
     const list = journalTransactions(raw);
     if (list === null) throw new ApiShapeError("GET /transactions: expected a JSON array");
-    return list.map((txn) => toTransaction(txn));
+    return list.map((txn) => toTransaction(txn, declared));
 }
+
+/**
+ * `/api/journal`'s `commodityStyles` (symbol → hledger `astyle`) → a map.
+ * Lenient, never throws: absent (an older engine, a plain hledger-web) or
+ * malformed reads as "nothing declared", and a junk entry costs only itself —
+ * a style hint must never fail a journal load.
+ */
+export function normalizeCommodityStyles(raw: unknown): CommodityStyles {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return NO_DECLARED_STYLES;
+    const styles = new Map<string, AmountStyle>();
+    for (const [commodity, style] of Object.entries(raw)) {
+        if (typeof style !== "object" || style === null || Array.isArray(style)) continue;
+        if (typeof (style as RawAmountStyle).asprecision !== "number") continue;
+        styles.set(commodity, toStyle(style as RawAmountStyle, ZERO_QTY));
+    }
+    return styles;
+}
+
+/** `toStyle`'s precision fallback, never reached here: declared styles always carry a numeric `asprecision`. */
+const ZERO_QTY: Dec = Object.freeze({m: 0n, p: 0});
 
 /**
  * The only `rule` values the engine emits. Adding one = a single entry here.

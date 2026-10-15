@@ -4,6 +4,7 @@
     // per-commodity net (income − expenses) of the filtered view (see visibleNet
     // in insights/series.ts). Expenses read negative, revenue positive, and equal
     // refunds offset, so filtering by e.g. a store shows the net spent there.
+    import type {Snippet} from "svelte";
     import {formatAmount} from "#lib/domain/money.js";
     import type {Amount} from "#lib/domain/types.js";
 
@@ -11,10 +12,13 @@
         count,
         period,
         total,
+        actions,
     }: {
         count: number;
         period: string;
         total: Amount[];
+        /** Footer controls beside the count (the journal's xlsx export). */
+        actions?: Snippet;
     } = $props();
 </script>
 
@@ -22,6 +26,7 @@
     <div class="flex items-center gap-3 text-sm text-base-content/70">
         <span class="whitespace-nowrap"><span class="font-medium text-base-content">{count}</span> {count === 1 ? "transaction" : "transactions"}</span>
         <span class="whitespace-nowrap">{period}</span>
+        {@render actions?.()}
     </div>
     <div class="ml-auto flex items-baseline gap-2 text-sm">
         <span class="whitespace-nowrap text-base-content/60">Visible Journal Total</span>

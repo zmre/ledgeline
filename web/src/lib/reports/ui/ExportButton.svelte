@@ -3,7 +3,7 @@
      shows a spinner while the chunk loads + the file builds; failures land
      in a dismissible error toast. -->
 <script lang="ts">
-    let {run}: {run: () => Promise<void>} = $props();
+    let {run, label = "Export report as xlsx"}: {run: () => Promise<void>; label?: string} = $props();
 
     let busy = $state(false);
     let error = $state<string | null>(null);
@@ -21,7 +21,7 @@
     }
 </script>
 
-<button type="button" class="btn btn-primary btn-sm" onclick={() => void onExport()} disabled={busy} aria-label="Export report as xlsx">
+<button type="button" class="btn btn-primary btn-sm" onclick={() => void onExport()} disabled={busy} aria-label={label}>
     {#if busy}
         <span class="loading loading-xs loading-spinner"></span>
     {/if}
