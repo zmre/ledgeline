@@ -295,7 +295,10 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
             return;
         }
 
-        const nextTxns = normalizeTransactions(rawTxns);
+        // Declared `commodity` styles, when the engine served them: every amount
+        // then displays the way the journal asks (`$0.6` → `$0.60`). They also
+        // reach the fingerprint, through each transaction's formatted haystack.
+        const nextTxns = normalizeTransactions(rawTxns, nextInfo?.commodityStyles);
         const nextPrices = normalizePrices(rawPrices);
         const nextDecls = normalizeAccounts(rawAccounts);
         // Wire positions resolve against exactly the array the engine indexed, so

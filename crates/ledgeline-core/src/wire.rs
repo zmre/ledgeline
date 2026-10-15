@@ -10,8 +10,8 @@ use crate::holdings::{
     parse_holdings_tag, parse_valuation_tag,
 };
 use crate::model::{
-    AccountDeclaration, AccountName, Amount, CommoditySide, CostKind, Journal, Posting,
-    PostingType, PriceDirective, SourcePos, Status, Transaction,
+    AccountDeclaration, AccountName, Amount, AmountStyle, CommoditySide, CostKind, Journal,
+    Posting, PostingType, PriceDirective, SourcePos, Status, Transaction,
 };
 use crate::reports::{
     ACCOUNT_TYPE_TAG, BS_TERM_TAG, IS_SECTION_TAG, parse_account_type_tag, parse_bs_term_tag,
@@ -239,21 +239,25 @@ fn amount_to_wire(amount: &Amount) -> WireAmount {
             decimal_places: amount.quantity.places,
             floating_point: amount.quantity.floating_point(),
         },
-        astyle: WireStyle {
-            ascommodityside: match amount.style.side {
-                CommoditySide::Left => "L",
-                CommoditySide::Right => "R",
-            },
-            ascommodityspaced: amount.style.spaced,
-            asdecimalmark: amount.style.decimal_mark.map(|mark| mark.to_string()),
-            asdigitgroups: amount
-                .style
-                .digit_groups
-                .as_ref()
-                .map(|groups| (groups.mark.to_string(), groups.sizes.clone())),
-            asprecision: amount.style.precision,
-            asrounding: "NoRounding",
+        astyle: style_to_wire(&amount.style),
+    }
+}
+
+/// Serialize an amount style in hledger's `astyle` shape.
+fn style_to_wire(style: &AmountStyle) -> WireStyle {
+    WireStyle {
+        ascommodityside: match style.side {
+            CommoditySide::Left => "L",
+            CommoditySide::Right => "R",
         },
+        ascommodityspaced: style.spaced,
+        asdecimalmark: style.decimal_mark.map(|mark| mark.to_string()),
+        asdigitgroups: style
+            .digit_groups
+            .as_ref()
+            .map(|groups| (groups.mark.to_string(), groups.sizes.clone())),
+        asprecision: style.precision,
+        asrounding: "NoRounding",
     }
 }
 
@@ -829,17 +833,30 @@ pub struct WireJournalInfo {
     title: Option<String>,
     /// The BARE filename of the main journal file, never a path.
     file: Option<String>,
+    /// The canonical display style per commodity declared by a `commodity` or
+    /// `D` directive, keyed by symbol (a later declaration wins).
+    ///
+    /// Served here rather than folded into `/transactions`: hledger keeps each
+    /// amount's as-written precision on that wire and applies the declared
+    /// style only when it renders a report, so the SPA does the same.
+    commodity_styles: BTreeMap<String, WireStyle>,
 }
 
-/// The open journal's derived title and the bare name of its main file.
+/// The open journal's derived title, the bare name of its main file, and its
+/// declared commodity styles.
 ///
-/// Cheap: both halves read data the parse already captured. No filesystem
+/// Cheap: every field reads data the parse already captured. No filesystem
 /// access, no pass over the transactions.
 #[must_use]
 pub fn journal_to_info(journal: &Journal) -> WireJournalInfo {
     WireJournalInfo {
         title: journal_title(journal),
         file: main_file_name(journal),
+        commodity_styles: journal
+            .commodity_styles
+            .iter()
+            .map(|(commodity, style)| (commodity.0.clone(), style_to_wire(style)))
+            .collect(),
     }
 }
 
