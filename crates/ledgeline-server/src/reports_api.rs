@@ -36,17 +36,19 @@ use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
     Amounts, BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, BsTerm,
-    BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, Cadence, ChangeKind, ChangeRow,
-    CostOfLiving, DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode, FlowOpts,
-    FlowReport, FlowSide, GapRow, GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts,
-    InsightsPeriod, InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection,
-    IsSectionKind, IsSubtotal, IsSubtotalKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts,
-    PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, RowKind, Section,
-    SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
-    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped,
-    bs_terms, budget_gaps, budget_report, cash_flow, cash_predicate, declared_groups,
-    declared_types, detect_subscriptions, income_statement, income_statement_flows,
-    income_statement_grouped, insights, net_worth, prices_any_on_sheet, prices_any_on_statement,
+    BucketSpan, BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, Cadence, ChangeKind,
+    ChangeRow, Columns, CostOfLiving, DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink,
+    FlowNode, FlowOpts, FlowReport, FlowSide, GapRow, GroupSource, IS_GROUP_TAG,
+    IncomeStatementReport, InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf,
+    IsGroup, IsOpts, IsRow, IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, MetricDelta,
+    MixedAmount, MoverRow, NetWorthOpts, PerfPoint, PeriodReport, PeriodRow, ReportError,
+    ReportMeta, ReportRow, RowKind, Section, SectionedReport, Subscription, SubscriptionOpts,
+    SubscriptionsReport, TopTxn, Valuation, account_decls, account_groups, account_sections,
+    balance_sheet, balance_sheet_grouped, bs_terms, budget_gaps, budget_report, cash_flow,
+    cash_flow_range, cash_predicate, compared_windows, declared_groups, declared_types,
+    detect_subscriptions, income_statement, income_statement_columns, income_statement_flows,
+    income_statement_grouped, insights, interval_windows, net_worth, prices_any_on_sheet,
+    prices_any_on_statement,
 };
 use serde::{Deserialize, Serialize};
 
@@ -336,12 +338,20 @@ impl WireBalanceSheetReport {
 
 /// One figure per window. `prior` is ABSENT (not null) when `compare=none`, so
 /// a client cannot mistake "not compared" for "the prior period was empty".
+///
+/// Interval mode ([`Columns`]) rides the same object: `values` carries one
+/// figure per report bucket and `current` is their sum, the Total column — so
+/// `current` always means "this line over the report's whole `[from, to]`, as
+/// displayed". `values` is absent in Total mode, which keeps that mode's bytes
+/// exactly as they were.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireAmounts {
     current: WireMixed,
     #[serde(skip_serializing_if = "Option::is_none")]
     prior: Option<WireMixed>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    values: Option<Vec<WireMixed>>,
 }
 
 impl From<&Amounts> for WireAmounts {
@@ -349,6 +359,37 @@ impl From<&Amounts> for WireAmounts {
         Self {
             current: wire_mixed(&amounts.current),
             prior: amounts.prior.as_ref().map(wire_mixed),
+            values: None,
+        }
+    }
+}
+
+impl From<&Columns> for WireAmounts {
+    fn from(columns: &Columns) -> Self {
+        Self {
+            current: wire_mixed(&columns.total),
+            prior: None,
+            values: Some(columns.values.iter().map(wire_mixed).collect()),
+        }
+    }
+}
+
+/// One interval-mode column: its bucket key (for the header label) and the
+/// inclusive dates it covers, clamped to the report's range.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBucketSpan {
+    key: String,
+    from: String,
+    to: String,
+}
+
+impl From<&BucketSpan> for WireBucketSpan {
+    fn from(span: &BucketSpan) -> Self {
+        Self {
+            key: span.key.clone(),
+            from: span.from.clone(),
+            to: span.to.clone(),
         }
     }
 }
@@ -379,8 +420,11 @@ struct WireIsRow {
     amounts: WireAmounts,
 }
 
-impl From<&IsRow> for WireIsRow {
-    fn from(row: &IsRow) -> Self {
+impl<A> From<&IsRow<A>> for WireIsRow
+where
+    for<'a> WireAmounts: From<&'a A>,
+{
+    fn from(row: &IsRow<A>) -> Self {
         Self {
             account: row.account.clone(),
             depth: row.depth,
@@ -401,8 +445,11 @@ struct WireIsGroup {
     rows: Vec<WireIsRow>,
 }
 
-impl From<&IsGroup> for WireIsGroup {
-    fn from(group: &IsGroup) -> Self {
+impl<A> From<&IsGroup<A>> for WireIsGroup
+where
+    for<'a> WireAmounts: From<&'a A>,
+{
+    fn from(group: &IsGroup<A>) -> Self {
         Self {
             name: group.name.clone(),
             source: group_source(group.source),
@@ -431,8 +478,11 @@ struct WireIsSubtotal {
     total: WireAmounts,
 }
 
-impl From<&IsSubtotal> for WireIsSubtotal {
-    fn from(subtotal: &IsSubtotal) -> Self {
+impl<A> From<&IsSubtotal<A>> for WireIsSubtotal
+where
+    for<'a> WireAmounts: From<&'a A>,
+{
+    fn from(subtotal: &IsSubtotal<A>) -> Self {
         Self {
             kind: match subtotal.kind {
                 IsSubtotalKind::GrossProfit => "grossProfit",
@@ -459,8 +509,11 @@ struct WireIsSection {
     trailing: Vec<WireIsSubtotal>,
 }
 
-impl From<&IsSection> for WireIsSection {
-    fn from(section: &IsSection) -> Self {
+impl<A> From<&IsSection<A>> for WireIsSection
+where
+    for<'a> WireAmounts: From<&'a A>,
+{
+    fn from(section: &IsSection<A>) -> Self {
         Self {
             kind: match section.kind {
                 IsSectionKind::Revenue => "revenue",
@@ -496,6 +549,11 @@ pub(crate) struct WireIncomeStatementReport {
     /// are absent-or-present, so a missing one is caught instead of defaulting
     /// to an empty period.
     prior: Option<WireDateRange>,
+    /// Interval mode's columns, oldest → newest — the switch that says every
+    /// `Amounts` in the tree carries `values`, one per bucket. ABSENT in Total
+    /// mode (so that mode's bytes did not move), never empty when present.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    buckets: Vec<WireBucketSpan>,
     /// The commodity everything is valued into — `null` on the cost and
     /// unvalued bases. Kept (not omitted) so the decoder always sees the key.
     base: Option<String>,
@@ -514,11 +572,15 @@ pub(crate) struct WireIncomeStatementReport {
 impl WireIncomeStatementReport {
     /// `value` is the request's own spelling, so the response says which basis
     /// produced the numbers it carries.
-    fn new(report: &IncomeStatementReport, value: &'static str) -> Self {
+    fn new<A>(report: &IncomeStatementReport<A>, value: &'static str) -> Self
+    where
+        for<'a> WireAmounts: From<&'a A>,
+    {
         Self {
             from: report.from.clone(),
             to: report.to.clone(),
             prior: report.prior.as_ref().map(WireDateRange::from),
+            buckets: report.buckets.iter().map(WireBucketSpan::from).collect(),
             base: report.base.as_ref().map(|base| base.0.clone()),
             value,
             multi_step: report.multi_step,
@@ -654,6 +716,10 @@ struct WirePeriodRow {
     /// their bytes are unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<&'static str>,
+    /// Cash flow only: the sum of `values`, the row's Total column. Omitted for
+    /// net worth, whose columns are snapshots that mean nothing summed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total: Option<WireMixed>,
 }
 
 impl From<&PeriodRow> for WirePeriodRow {
@@ -663,6 +729,7 @@ impl From<&PeriodRow> for WirePeriodRow {
             depth: row.depth,
             values: row.values.iter().map(wire_mixed).collect(),
             kind: row.kind.map(RowKind::as_str),
+            total: row.total.as_ref().map(wire_mixed),
         }
     }
 }
@@ -689,6 +756,11 @@ pub(crate) struct WirePeriodReport {
     buckets: Vec<String>,
     rows: Vec<WirePeriodRow>,
     totals: Vec<WireMixed>,
+    /// Cash flow only: the sum of `totals`, the Net row's Total column. Its
+    /// presence is the switch a client reads to draw a Total column at all, and
+    /// it is present exactly when every row carries a `total`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grand_total: Option<WireMixed>,
     #[serde(skip_serializing_if = "Option::is_none")]
     meta: Option<WireReportMeta>,
 }
@@ -699,6 +771,7 @@ impl From<&PeriodReport> for WirePeriodReport {
             buckets: report.buckets.clone(),
             rows: report.rows.iter().map(WirePeriodRow::from).collect(),
             totals: report.totals.iter().map(wire_mixed).collect(),
+            grand_total: report.grand_total.as_ref().map(wire_mixed),
             meta: report.meta.as_ref().map(WireReportMeta::from),
         }
     }
@@ -1597,6 +1670,44 @@ fn parse_compare(raw: Option<&str>) -> Result<bool, AppError> {
     }
 }
 
+/// Parse a ranged report's column grain: `total` is `None` — ONE column over
+/// the whole `[from, to]` — and anything else is a bucketing [`Interval`],
+/// spelled as [`parse_interval`] spells it. Absent is `default`, which is what
+/// lets the P&L default to Total while cash flow keeps defaulting to monthly.
+fn parse_grain(raw: Option<&str>, default: Option<Interval>) -> Result<Option<Interval>, AppError> {
+    match raw {
+        None => Ok(default),
+        Some("total") => Ok(None),
+        Some(other) => parse_interval(Some(other)).map(Some).map_err(|_| {
+            AppError::BadRequest(format!(
+                "unknown interval '{other}' (expected total|daily|weekly|monthly|quarterly|yearly)"
+            ))
+        }),
+    }
+}
+
+/// Validate a ranged report's window: `from` may not be after `to`, and the
+/// `interval` may not split it into more than [`MAX_BUCKETS`] columns.
+///
+/// Both are rejected rather than repaired, for [`parse_count`]'s reason: a
+/// backwards range served as an empty report, or a daily century silently cut
+/// to 1200 columns, is a plausible-looking answer to a question nobody asked.
+/// The count is measured arithmetically ([`series_count`]) before anything is
+/// walked.
+fn check_range(from: &str, to: &str, interval: Option<Interval>) -> Result<(), AppError> {
+    if from > to {
+        return Err(AppError::BadRequest(format!(
+            "from {from} is after to {to}"
+        )));
+    }
+    match interval.map(|interval| series_count(from, to, interval)) {
+        Some(count) if count > MAX_BUCKETS => Err(AppError::BadRequest(format!(
+            "{from} to {to} is {count} columns at this interval (at most {MAX_BUCKETS})"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Validate one date and normalize it to ISO `YYYY-MM-DD`, or return the reason
 /// it is not a date. [`parse_date`] wraps the reason in a `400`.
 ///
@@ -2062,8 +2173,13 @@ pub(crate) struct IncomeStatementGroupedQuery {
     /// as [`BalanceSheetGroupedQuery`]'s, measured over THIS statement's own
     /// windows. See [`resolve_grouped_value_in`].
     value_in: Option<String>,
-    /// `previous` (default) | `none`.
+    /// `previous` (default) | `none`. Must be absent or `none` when `interval`
+    /// is not `total`: an interval statement has no prior comparison.
     compare: Option<String>,
+    /// `total` (default) | `monthly` | `quarterly` | `yearly` (also `daily`,
+    /// `weekly`). Anything but `total` reports one column per bucket across
+    /// `[from, to]` plus their Total.
+    interval: Option<String>,
 }
 
 /// `?from=&to=&valueIn=` for the income statement's flow graphs.
@@ -2082,10 +2198,13 @@ pub(crate) struct IncomeStatementFlowsQuery {
     value_in: Option<String>,
 }
 
-/// `?end=&interval=&count=&depth=` — cash flow.
+/// `?from=&to=&interval=&depth=` — cash flow — or the legacy
+/// `?end=&interval=&count=&depth=` window when `from` is absent.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CashFlowQuery {
+    from: Option<String>,
+    to: Option<String>,
     end: Option<String>,
     interval: Option<String>,
     count: Option<usize>,
@@ -2384,10 +2503,19 @@ pub(crate) async fn incomestatement(
 /// - `compare=previous|none` (default: `previous`) — the immediately preceding
 ///   window of EQUAL length, each period valued at its OWN end so the prior
 ///   column agrees with the `hledger is -V` that would have been run over it.
+/// - `interval=total|monthly|quarterly|yearly` (also `daily`/`weekly`; default
+///   `total`). `total` is the statement above. Anything else is INTERVAL mode:
+///   one column per bucket across `[from, to]` (the first clamped to `from`,
+///   the last to `to`), each valued at its own end, plus a Total that is the SUM
+///   of the columns. Interval mode has no comparison, so `compare` must be
+///   absent or `none` (`previous` is a `400`), and the range may not be
+///   backwards or span more than `MAX_BUCKETS` columns.
 ///
 /// An untagged journal gets two boxes and a Net income figure, with no ladder at
 /// all; `sections` carries only the boxes that have members, so there are never
 /// empty headings. `prior` keys are absent rather than null when `compare=none`.
+/// In interval mode the report carries `buckets` (`[{key, from, to}]`) and every
+/// figure carries `values` (one per bucket) with `current` as their Total.
 ///
 /// A `400` here can come from the JOURNAL as well as the query: an `account`
 /// directive declaring an `issection:` outside the closed vocabulary is refused
@@ -2406,16 +2534,36 @@ pub(crate) async fn incomestatement_grouped(
     })?;
     let to = parse_date("to", query.to, || today)?;
     let (value, label) = parse_valuation(query.value.as_deref())?;
-    let compare = parse_compare(query.compare.as_deref())?;
+    let grain = parse_grain(query.interval.as_deref(), None)?;
+    let compare = match (grain, query.compare.as_deref()) {
+        (None, raw) => parse_compare(raw)?,
+        (Some(_), None | Some("none")) => false,
+        (Some(_), Some(other)) => {
+            return Err(AppError::BadRequest(format!(
+                "compare={other} needs interval=total: an interval statement has no prior comparison"
+            )));
+        }
+    };
+    if grain.is_some() {
+        check_range(&from, &to, grain)?;
+    }
     let raw_value_in = query.value_in;
 
     compute(move || {
         let journal = &snapshot.journal;
         let declared = declared_types(&account_decls(journal));
         let sections = account_sections(journal);
-        let window = DateRange {
-            from: from.clone(),
-            to: to.clone(),
+        // The admission test asks about exactly the windows the statement will
+        // value, so a `valueIn` is refused or admitted for the report it is for.
+        let windows = match grain {
+            None => compared_windows(
+                &DateRange {
+                    from: from.clone(),
+                    to: to.clone(),
+                },
+                compare,
+            ),
+            Some(interval) => interval_windows(&from, &to, interval)?,
         };
         let value_in = resolve_grouped_value_in(
             journal,
@@ -2425,29 +2573,46 @@ pub(crate) async fn incomestatement_grouped(
                 prices_any_on_statement(
                     &journal.transactions,
                     &journal.prices,
-                    &window,
-                    compare,
+                    &windows,
                     &declared,
                     &sections,
                     target,
                 )
             },
         )?;
-        let report = income_statement_grouped(
-            &journal.transactions,
-            &journal.prices,
-            &IsOpts {
-                from: &from,
-                to: &to,
-                value,
-                value_in,
-                compare,
-            },
-            &declared,
-            &sections,
-            &declared_groups(journal, IS_GROUP_TAG),
-        )?;
-        Ok(WireIncomeStatementReport::new(&report, label))
+        let opts = IsOpts {
+            from: &from,
+            to: &to,
+            value,
+            value_in,
+            compare,
+        };
+        let groups = declared_groups(journal, IS_GROUP_TAG);
+        Ok(match grain {
+            None => WireIncomeStatementReport::new(
+                &income_statement_grouped(
+                    &journal.transactions,
+                    &journal.prices,
+                    &opts,
+                    &declared,
+                    &sections,
+                    &groups,
+                )?,
+                label,
+            ),
+            Some(interval) => WireIncomeStatementReport::new(
+                &income_statement_columns(
+                    &journal.transactions,
+                    &journal.prices,
+                    &opts,
+                    interval,
+                    &declared,
+                    &sections,
+                    &groups,
+                )?,
+                label,
+            ),
+        })
     })
     .await
 }
@@ -2505,8 +2670,7 @@ pub(crate) async fn incomestatement_flows(
                 prices_any_on_statement(
                     &journal.transactions,
                     &journal.prices,
-                    &window,
-                    true,
+                    &compared_windows(&window, true),
                     &declared,
                     &sections,
                     target,
@@ -2530,32 +2694,100 @@ pub(crate) async fn incomestatement_flows(
     .await
 }
 
+/// The two ways a cash-flow request names its columns.
+enum CashFlowWindow {
+    /// `from`/`to` plus a grain (`None` = one Total column).
+    Range {
+        from: String,
+        to: String,
+        interval: Option<Interval>,
+        depth: usize,
+    },
+    /// The legacy `end`/`count` window, still honoured when `from` is absent so
+    /// older URLs and API callers keep working.
+    Trailing(Window),
+}
+
+impl CashFlowWindow {
+    /// Resolve the query. `from` is the switch: with it the window is the range
+    /// (`to` defaulting to today, `interval` to monthly, `total` allowed);
+    /// without it, the legacy params as they always were. Mixing the two is a
+    /// `400` — `end`/`count` beside `from` would be two answers to one question,
+    /// and a `to` without a `from` would be silently ignored.
+    fn resolve(query: CashFlowQuery) -> Result<Self, AppError> {
+        let Some(from) = query.from else {
+            if query.to.is_some() {
+                return Err(AppError::BadRequest(
+                    "to needs a from (or use end and count)".to_string(),
+                ));
+            }
+            return Ok(Self::Trailing(Window::resolve(
+                query.end,
+                query.interval.as_deref(),
+                query.count,
+                query.depth,
+            )?));
+        };
+        if query.end.is_some() || query.count.is_some() {
+            return Err(AppError::BadRequest(
+                "from/to and end/count both set the window; send one".to_string(),
+            ));
+        }
+        let from = parse_date("from", Some(from), String::new)?;
+        let to = parse_date("to", query.to, today_utc)?;
+        let interval = parse_grain(query.interval.as_deref(), Some(Interval::Monthly))?;
+        check_range(&from, &to, interval)?;
+        Ok(Self::Range {
+            from,
+            to,
+            interval,
+            depth: query.depth.unwrap_or(DEFAULT_DEPTH),
+        })
+    }
+}
+
 /// `GET /api/reports/cashflow` — per-bucket cash-like-asset changes. The cash
 /// predicate honors the journal's declared account types (same as the SPA).
+///
+/// - `from=YYYY-MM-DD`, `to=YYYY-MM-DD` (default: today), both INCLUSIVE — one
+///   column per `interval` bucket across the range, the first clamped to `from`
+///   and the last to `to`.
+/// - `interval=total|monthly|quarterly|yearly` (also `daily`/`weekly`; default
+///   `monthly`). `total` is ONE column over the whole range.
+/// - `depth=N` (default 2) clamps the account rows.
+///
+/// Without `from`, the legacy `end=&count=&interval=` window: the last `count`
+/// buckets ending with the one containing `end`. Either way every row carries a
+/// `total` (the sum of its buckets) and the report a `grandTotal` (the sum of
+/// `totals`) — the Total column.
 pub(crate) async fn cashflow(
     State(state): State<AppState>,
     Query(query): Query<CashFlowQuery>,
 ) -> Result<Json<WirePeriodReport>, AppError> {
     let snapshot = state.snapshot();
-    let window = Window::resolve(
-        query.end,
-        query.interval.as_deref(),
-        query.count,
-        query.depth,
-    )?;
+    let window = CashFlowWindow::resolve(query)?;
 
     compute(move || {
         let decls = account_decls(&snapshot.journal);
         let predicate = cash_predicate(&decls);
         let is_cash: &dyn Fn(&str) -> bool = &predicate;
-        let report = cash_flow(
-            &snapshot.journal.transactions,
-            &window.end,
-            window.interval,
-            window.count,
-            window.depth,
-            Some(is_cash),
-        )?;
+        let txns = &snapshot.journal.transactions;
+        let report = match window {
+            CashFlowWindow::Range {
+                from,
+                to,
+                interval,
+                depth,
+            } => cash_flow_range(txns, &from, &to, interval, depth, Some(is_cash))?,
+            CashFlowWindow::Trailing(window) => cash_flow(
+                txns,
+                &window.end,
+                window.interval,
+                window.count,
+                window.depth,
+                Some(is_cash),
+            )?,
+        };
         Ok(WirePeriodReport::from(&report))
     })
     .await
@@ -3041,6 +3273,36 @@ mod tests {
             let error = Window::resolve(end, interval, count, None).expect_err("must be rejected");
             assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{error}");
         }
+    }
+
+    /// `total` is the one-column grain, every other spelling is
+    /// `parse_interval`'s, and absent is the caller's default.
+    #[test]
+    fn parse_grain_reads_total_as_no_interval() {
+        assert_eq!(parse_grain(Some("total"), Some(Interval::Monthly)), Ok(None));
+        assert_eq!(
+            parse_grain(Some("quarterly"), None),
+            Ok(Some(Interval::Quarterly))
+        );
+        assert_eq!(parse_grain(None, None), Ok(None));
+        assert_eq!(
+            parse_grain(None, Some(Interval::Monthly)),
+            Ok(Some(Interval::Monthly))
+        );
+        assert!(parse_grain(Some("Total"), None).is_err());
+        assert!(parse_grain(Some(""), None).is_err());
+    }
+
+    /// A backwards range and one with more than `MAX_BUCKETS` columns are
+    /// refused; the Total grain is never too many columns.
+    #[test]
+    fn check_range_rejects_backwards_and_oversized_windows() {
+        assert!(check_range("2026-01-01", "2026-01-01", Some(Interval::Daily)).is_ok());
+        assert!(check_range("2026-01-02", "2026-01-01", None).is_err());
+        assert!(check_range("1900-01-01", "2026-12-31", None).is_ok());
+        assert!(check_range("1900-01-01", "2026-12-31", Some(Interval::Monthly)).is_err());
+        // 100 years of months is exactly the cap.
+        assert!(check_range("1927-01-01", "2026-12-31", Some(Interval::Monthly)).is_ok());
     }
 
     /// An absent param keeps its default; an explicit malformed one is a `400`.

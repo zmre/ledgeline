@@ -16,7 +16,15 @@ balancesheet-grouped	/api/reports/balancesheet/grouped?asOf=2026-07-08
 incomestatement	/api/reports/incomestatement?from=2026-01-01&to=2026-07-08&depth=2
 incomestatement-grouped	/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08
 incomestatement-flows	/api/reports/incomestatement/flows?from=2026-01-01&to=2026-07-08
+# Interval mode (plans/24): one column per month plus their Total, no prior.
+# `compare=none` is what the SPA sends beside an interval.
+incomestatement-grouped-monthly	/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&interval=monthly&compare=none
+# The legacy end/count window, still served (plans/24 decision 5).
 cashflow	/api/reports/cashflow?end=2026-07-08&interval=monthly&count=3&depth=2
+# The from/to window the SPA now sends: first bucket clamped to `from`.
+cashflow-range	/api/reports/cashflow?from=2026-04-15&to=2026-07-08&interval=monthly&depth=2
+# Interval = Total: one column spanning the whole range.
+cashflow-total	/api/reports/cashflow?from=2025-08-01&to=2026-07-08&interval=total&depth=2
 networth	/api/reports/networth?end=2026-07-08&interval=monthly&count=3&depth=2
 budget	/api/budget?end=2026-07-08&interval=monthly&count=3&depth=2
 budget-gaps	/api/budget/gaps?end=2026-07-08&interval=monthly&count=3&depth=2
