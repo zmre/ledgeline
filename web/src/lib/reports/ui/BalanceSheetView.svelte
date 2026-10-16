@@ -29,9 +29,9 @@
 
      Under the boxes is the spreadsheet tie-out: the three section totals, then
      `Liabilities + equity` set against `Total assets`, which is where the ✓/✗
-     hangs. Net worth follows as its own prominent figure rather than as the
-     statement's bottom line — it is identically Total equity, so closing on it
-     printed the same number twice under two names and proved nothing.
+     hangs. Nothing follows it: net worth is identically Total equity, so a
+     net-worth line under the statement printed the same number twice under two
+     names, and the Net Worth tab is where that figure is the subject.
 
      The balance check is shown only when it is non-zero, and then as a warning:
      the engine computes it from exact `Dec` values, so a non-zero check is a
@@ -322,23 +322,6 @@
                 </tr>
             </tfoot>
         </table>
-    </div>
-
-    <!-- Net worth is what a personal-finance reader came for, so it stays big —
-         but it is a DISTINCT figure below the statement, not its bottom line.
-         `A − L` is identically Total equity, so closing the statement on it
-         printed one number twice under two names. -->
-    <div
-        class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-box border border-base-content/20 bg-base-200 px-4 py-3"
-        data-testid="bs-net-worth"
-    >
-        <span class="text-sm font-semibold tracking-wide uppercase">
-            Net worth
-            <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(assets − liabilities)</span>
-        </span>
-        <span class="text-right font-mono text-xl font-semibold tabular-nums">
-            {@render amount(amountCell(summary.netWorth, report.base, styles), "")}
-        </span>
     </div>
 
     {#if !summary.balanced}

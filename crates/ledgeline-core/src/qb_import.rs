@@ -4,7 +4,7 @@
 //!
 //! # The narrow alias exception
 //!
-//! `docs/imports.md` states, deliberately: "Ledgeline reads aliases; it does
+//! `docs/development/imports-internals.md` states, deliberately: "Ledgeline reads aliases; it does
 //! not apply them" — because reproducing hledger's regex alias dialect would be
 //! a near-miss silent-wrong-answer generator. That policy is about *regex*
 //! aliases. A **plain** (non-regex) alias applied to an **exact QuickBooks
@@ -19,7 +19,7 @@
 //! Equipment` also rewrites `1520 Computer & Office Equipment:1521 Computer &
 //! Equipment - Accum Depr`, preserving the `:1521 …` suffix on the new name.
 //! Confirmed with the user, and it is the same behaviour real hledger gives the
-//! same alias against the same account names — `docs/imports.md`'s "Column
+//! same alias against the same account names — `docs/development/imports-internals.md`'s "Column
 //! interpolation composes with it" paragraph already relies on exactly this for
 //! every other import. Ten of the real export's eighteen accounts carry a
 //! colon, so this is the common case, not an edge case.

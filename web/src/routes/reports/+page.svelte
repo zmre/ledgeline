@@ -23,9 +23,11 @@
     import ReportTable from "#lib/reports/ui/ReportTable.svelte";
     import ReportTabs from "#lib/reports/ui/ReportTabs.svelte";
     import SubscriptionsPanel from "#lib/reports/ui/subscriptions/SubscriptionsPanel.svelte";
+    import {createEndSync} from "#lib/reports/ui/endSync.js";
     import {
         budgetRedirect,
         defaultReportParams,
+        INTERVAL_LABELS,
         paramsToSearch,
         searchToParams,
         TAB_DEFAULTS,
@@ -35,6 +37,7 @@
     } from "#lib/reports/ui/params.js";
     import type {FlowsPanel} from "#lib/reports/ui/sankeyModel.js";
     import {reportStyles} from "#lib/reports/ui/styles.js";
+    import {reportsEnd} from "#lib/stores/reportsEnd.js";
     import {flows, loadFlowsWhenWatched} from "#lib/stores/flows.svelte.js";
     import {dataView} from "#lib/stores/loadState.js";
     import {buildReportQuery, reports, sameReportQuery, type AnyReport} from "#lib/stores/reports.svelte.js";
@@ -46,6 +49,8 @@
     let params = $state<ReportParams>(defaultReportParams());
     let restored = $state(false);
     let activeTab: ReportTab = defaultReportParams().tab;
+    // One end date across the tabs, for the session (see endSync.ts).
+    const endSync = createEndSync(reportsEnd);
 
     // Restore params from the URL exactly once, at startup.
     onMount(() => {
@@ -61,12 +66,14 @@
         }
         if (search !== "") Object.assign(params, searchToParams(search, defaultReportParams()));
         activeTab = params.tab; // the restored/initial tab keeps its (URL or default) interval/count
+        // A URL end wins (and is remembered); otherwise the session's end applies.
+        Object.assign(params, endSync.restore(params, search));
         restored = true;
         return () => mirror.stop();
     });
 
-    // Each tab seeds its own defaults on activation (cash flow wants monthly/12,
-    // net worth yearly/5; bs/is ignore interval/count).
+    // Each tab seeds its own defaults on activation (the P&L opens on Total,
+    // cash flow monthly, net worth yearly/5; bs ignores interval/count).
     $effect(() => {
         const tab = params.tab;
         if (!restored || tab === activeTab) return;
@@ -74,6 +81,15 @@
         const d = TAB_DEFAULTS[tab];
         params.interval = d.interval;
         params.count = d.count;
+    });
+
+    // The shared end date: remember the active tab's end when the user moves
+    // it, and move a newly opened tab to the remembered one. `observe` reads
+    // the params it needs, so this re-runs on a tab switch and on an end edit;
+    // the run its own write causes finds nothing left to do.
+    $effect(() => {
+        if (!restored) return;
+        Object.assign(params, endSync.observe(params));
     });
 
     // Mirror params → URL, debounced, replaceState (no history entries, no loops).
@@ -190,6 +206,10 @@
 
     const exportInfo = $derived.by(() => {
         const span = `last ${params.count} ${params.interval} periods ending ${params.end}`;
+        // The ranged reports name their range AND their grain, in the title and
+        // the filename alike, so two exports of one range at different
+        // intervals cannot overwrite each other or be mistaken for each other.
+        const grain = INTERVAL_LABELS[params.interval].toLowerCase();
         switch (params.tab) {
             case "insights":
             case "subs":
@@ -207,11 +227,15 @@
                 // see or reproduce.
                 return {
                     title: "Income Statement",
-                    params: `${params.from} to ${params.to}`,
-                    filename: `income-statement-${params.from}-to-${params.to}.xlsx`,
+                    params: `${params.from} to ${params.to}, ${grain}`,
+                    filename: `income-statement-${params.from}-to-${params.to}-${params.interval}.xlsx`,
                 };
             case "cf":
-                return {title: "Cash Flow", params: `${span}, depth ${params.depth}`, filename: `cash-flow-${params.end}.xlsx`};
+                return {
+                    title: "Cash Flow",
+                    params: `${params.cfFrom} to ${params.cfTo}, ${grain}, depth ${params.depth}`,
+                    filename: `cash-flow-${params.cfFrom}-to-${params.cfTo}-${params.interval}.xlsx`,
+                };
             case "nw":
                 return {title: "Net Worth", params: `${span}, depth ${params.depth}`, filename: `net-worth-${params.end}.xlsx`};
         }

@@ -561,6 +561,12 @@ export interface GroupedIncomeStatementQuery {
     value?: "market" | "cost" | "none";
     valueIn?: string;
     compare?: "previous" | "none";
+    /**
+     * `total` (the engine's default) is one column beside the prior window's;
+     * anything else is one column per bucket plus their Total, with no
+     * comparison — so it must travel with `compare: "none"`.
+     */
+    interval?: string;
 }
 /**
  * The flow graphs' query (the Sankey diagrams above the P&L's boxes). Note what
@@ -576,7 +582,14 @@ export interface IncomeStatementFlowsQuery {
     to?: string;
     valueIn?: string;
 }
+/**
+ * Cash flow's window is EITHER `from`/`to` (what the tab sends; `interval:
+ * "total"` is one column over the range) OR the legacy `end`/`count`, never
+ * both — the engine refuses the mix.
+ */
 export interface CashFlowQuery {
+    from?: string;
+    to?: string;
     end?: string;
     interval?: string;
     count?: number;
@@ -918,7 +931,14 @@ export class LedgelineApi {
     /** The grouped, market-valued income statement the P&L tab renders (decode with `decodeIncomeStatementReport`). */
     incomeStatementGrouped(query: GroupedIncomeStatementQuery = {}): Promise<unknown> {
         return this.getJson(
-            `/api/reports/incomestatement/grouped${queryString({from: query.from, to: query.to, value: query.value, valueIn: query.valueIn, compare: query.compare})}`
+            `/api/reports/incomestatement/grouped${queryString({
+                from: query.from,
+                to: query.to,
+                value: query.value,
+                valueIn: query.valueIn,
+                compare: query.compare,
+                interval: query.interval,
+            })}`
         );
     }
 
@@ -928,7 +948,9 @@ export class LedgelineApi {
     }
 
     cashFlow(query: CashFlowQuery = {}): Promise<unknown> {
-        return this.getJson(`/api/reports/cashflow${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth})}`);
+        return this.getJson(
+            `/api/reports/cashflow${queryString({from: query.from, to: query.to, end: query.end, interval: query.interval, count: query.count, depth: query.depth})}`
+        );
     }
 
     netWorth(query: NetWorthQuery = {}): Promise<unknown> {

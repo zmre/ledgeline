@@ -31,7 +31,7 @@
 
 import {LedgelineApi} from "#lib/api/native.js";
 import {decodeProjection, decodeScenario} from "#lib/api/nativeDecode.js";
-import type {ReportInterval} from "#lib/reports/ui/params.js";
+import type {PeriodInterval} from "#lib/reports/ui/params.js";
 import {createResource} from "#lib/stores/resource.svelte.js";
 import {cloneScenario, emptyScenario, runBody} from "./scenarioModel";
 import type {Projection, Scenario} from "./types";
@@ -46,7 +46,7 @@ const DEBOUNCE_MS = 250;
 
 /** The window the three report tabs share. */
 export interface ProjectionWindow {
-    interval: ReportInterval;
+    interval: PeriodInterval;
     count: number;
     depth: number;
 }

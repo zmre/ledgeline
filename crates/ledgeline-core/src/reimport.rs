@@ -320,7 +320,7 @@ pub fn reconcile(
 ///
 /// # Why this is a line-span deletion and not a re-render
 ///
-/// `docs/imports.md` § "hledger proposes; Ledgeline appends" rests on the
+/// `docs/development/imports-internals.md` § "hledger proposes; Ledgeline appends" rests on the
 /// preview being *the bytes*: what the dry-run showed is what the commit
 /// appends, character for character, with nothing re-rendering it in between.
 /// So this deletes whole lines out of hledger's own text and touches nothing

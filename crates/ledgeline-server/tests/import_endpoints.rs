@@ -2609,7 +2609,7 @@ async fn an_accepted_sort_commits_the_journal_on_its_own() {
 // tree's declared `commodity` style. Imported amounts keep hledger's own
 // spelling — `$165.2` in books that write `$165.20` — because a `commodity`
 // directive in scope changes how the entries *parse* and not merely how they
-// print. It was built, it worked, and it was removed; `docs/imports.md`
+// print. It was built, it worked, and it was removed; `docs/development/imports-internals.md`
 // § "Commodity style" has the transcript and the reasoning.
 
 /// A statement whose amounts are written the way a bank writes them — one with
@@ -2671,7 +2671,7 @@ fn split_year_commit_body(stage_id: &str) -> Value {
 /// produce `$165.20`, and was implemented and working — but a directive in
 /// scope changes how the entries **parse**, and `EUR165.2` under
 /// `commodity 1.000,00 EUR` re-reads as `1.652,00 EUR` with exit zero. Ten times
-/// the money for a cosmetic gain. `docs/imports.md` § "Commodity style" carries
+/// the money for a cosmetic gain. `docs/development/imports-internals.md` § "Commodity style" carries
 /// the whole transcript; if this assertion is ever flipped, that is the section
 /// to answer first.
 #[tokio::test]

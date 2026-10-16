@@ -12,7 +12,7 @@
 #
 # TWO DMGs per tag, arm64 and x86_64, both built on Apple Silicon runners — the
 # Intel one through Rosetta, because no Intel runner can install Nix any more.
-# See the `package` job for why, and docs/releasing.md for the dates that bound
+# See the `package` job for why, and docs/development/releasing.md for the dates that bound
 # how long the Intel half is worth keeping.
 name: Release
 
@@ -255,7 +255,7 @@ jobs:
           done
           if [ -n "$missing" ]; then
             echo "::error::Missing required repository secrets:$missing"
-            echo "See docs/releasing.md for how to produce each one." >&2
+            echo "See docs/development/releasing.md for how to produce each one." >&2
             exit 1
           fi
           echo "All five signing secrets are present."
@@ -678,7 +678,7 @@ jobs:
           if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
             echo "::notice::No CARGO_REGISTRY_TOKEN secret — skipping the crates.io publish."
             echo "The DMG release is unaffected. Add the secret to enable this step;" >&2
-            echo "see docs/releasing.md → 'Publishing to crates.io'." >&2
+            echo "see docs/development/releasing.md → 'Publishing to crates.io'." >&2
             exit 0
           fi
           nix develop path:. --command cargo publish -p ledgeline-core --allow-dirty

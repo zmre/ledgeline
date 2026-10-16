@@ -9,7 +9,7 @@
 //!
 //! # The gated half is the one that matters
 //!
-//! `docs/imports.md`'s fact 4: **parse success is not a matching signal.** A
+//! `docs/development/imports-internals.md`'s fact 4: **parse success is not a matching signal.** A
 //! mismatched rules file frequently parses, exits 0 and produces garbage —
 //! postings with no amount, amounts in a commodity of their own, everything in
 //! `expenses:unknown`. So "the draft is valid hledger syntax" is worth very
@@ -25,7 +25,7 @@
 //! hledger is run **only** over these committed fixtures and over rules files
 //! this crate just generated, never a user's file. The generator emits no
 //! `source` directive at all, so the `source … | CMD` shell-execution path
-//! `docs/imports.md` § Security describes cannot be reached from here.
+//! `docs/development/imports-internals.md` § Security describes cannot be reached from here.
 
 mod common;
 
@@ -374,7 +374,7 @@ fn every_draft_re_parses_as_itself_and_raises_no_warning() {
 fn every_draft_maps_a_date_and_some_amount() {
     // Not a formality: a rules file with no date column is one hledger refuses
     // outright, and one with no amount column produces postings with no amount
-    // at all — `docs/imports.md`'s fact 4, which exits 0.
+    // at all — `docs/development/imports-internals.md`'s fact 4, which exits 0.
     for name in every_fixture() {
         let drafted = generate::generate(&converted(&name), ACCOUNT1).expect("drafts");
         let names = field_names(&drafted.doc);
@@ -450,7 +450,7 @@ impl Drop for Scratch {
 
 /// `hledger -I -f <csv> print -O json`, or hledger's own complaint.
 ///
-/// `--no-conf` first, ahead of the subcommand, for the reason `docs/imports.md`
+/// `--no-conf` first, ahead of the subcommand, for the reason `docs/development/imports-internals.md`
 /// § *No hledger we run reads a config file* gives: a config's first bare word
 /// **replaces the command**, and this repository is a directory someone may well
 /// have one above.

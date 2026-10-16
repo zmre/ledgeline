@@ -13,7 +13,7 @@
 // into chat windows and server logs, and Phase 3's file save is the durable home
 // the ask actually asked for.
 
-import {MAX_COUNT, type ReportInterval} from "#lib/reports/ui/params.js";
+import {MAX_COUNT, type PeriodInterval} from "#lib/reports/ui/params.js";
 import {clampedInt, oneOf} from "#lib/url/params.js";
 
 /** Which of the three report tabs the bottom half is showing. */
@@ -30,7 +30,7 @@ export const PROJECTION_TAB_LABELS: Record<ProjectionTab, string> = {
 /** The Projections tab's URL state. */
 export interface ProjectionParams {
     tab: ProjectionTab;
-    interval: ReportInterval;
+    interval: PeriodInterval;
     /** How many buckets forward to project. */
     count: number;
     /** Account depth clamp for the net-income rows. Never clamps the totals. */
@@ -44,7 +44,7 @@ export interface ProjectionParams {
  * for a hiring ramp or a rent review to show up, short enough that a monthly
  * bucket is still legible — and it is well inside `MAX_COUNT`.
  */
-export const DEFAULT_PROJECTION_INTERVAL: ReportInterval = "monthly";
+export const DEFAULT_PROJECTION_INTERVAL: PeriodInterval = "monthly";
 export const DEFAULT_PROJECTION_COUNT = 24;
 
 /**
@@ -77,7 +77,7 @@ export function projectionParamsToSearch(params: ProjectionParams): string {
     return q.toString();
 }
 
-const INTERVALS: readonly ReportInterval[] = ["monthly", "quarterly", "yearly"];
+const INTERVALS: readonly PeriodInterval[] = ["monthly", "quarterly", "yearly"];
 
 /**
  * Parse a query string (with or without a leading "?"); absent or malformed

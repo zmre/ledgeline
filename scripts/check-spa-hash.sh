@@ -5,7 +5,7 @@
 # Why a diff heuristic rather than a build: a stale FOD pin is SILENT. The
 # store path comes from the hash, so while the old path is still in a local
 # store or on Cachix, Nix substitutes it and never runs `bun install` to notice
-# (docs/development.md, "A stale pin is invisible until the cache drops the
+# (docs/development/building.md, "A stale pin is invisible until the cache drops the
 # path"). And a Mac cannot build the x86_64-linux tree at all, so the `Build
 # (ubuntu-latest)` job is the first thing that can see it — twenty minutes
 # after the push. Comparing against the merge base is instant and catches the
@@ -28,7 +28,7 @@ if git diff --quiet "$base" -- web/bun.lock; then
 fi
 
 # x86_64-darwin is left out on purpose: only a release dry run under Rosetta
-# can produce it (docs/releasing.md), so it cannot be required per-push.
+# can produce it (docs/development/releasing.md), so it cannot be required per-push.
 # Reads flake.nix on stdin; only looks inside the spaNodeModulesHashes block,
 # since other per-system hash maps (hledgerAsset) use the same keys.
 pin() {

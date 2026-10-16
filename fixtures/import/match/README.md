@@ -63,7 +63,7 @@ Regenerate with `./scripts/gen-match-golden.sh` after an hledger upgrade, and **
 change here is a change in the contract stage 2 reads. The generator strips the repo-root prefix from
 the `sourceName` hledger absolutizes into `tsourcepos`, because a golden carrying somebody's home
 directory is committed path disclosure. Nothing under test can notice — `sourceName` is the one field
-of this JSON that `matching.rs` is forbidden to read (`docs/imports.md` § Security).
+of this JSON that `matching.rs` is forbidden to read (`docs/development/imports-internals.md` § Security).
 
 `LEDGELINE_HLEDGER_MATCH_CHECK=1 cargo test -p ledgeline-core --test matching` re-runs hledger and
 compares, mirroring the opt-in `LEDGELINE_HLEDGER_RENDER_CHECK` pattern.

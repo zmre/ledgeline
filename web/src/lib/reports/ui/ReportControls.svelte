@@ -3,14 +3,17 @@
      the input holds a full valid ISO date (type=date emits "" while clearing). -->
 <script lang="ts">
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
-    import {MAX_COUNT, TAB_CONTROLS, type ReportParams} from "./params";
+    import {INTERVAL_LABELS, MAX_COUNT, rangeKeys, TAB_CONTROLS, type ReportParams} from "./params";
 
     let {params = $bindable(), maxDepth}: {params: ReportParams; maxDepth: number} = $props();
 
     const config = $derived(TAB_CONTROLS[params.tab]);
+    // The P&L and cash flow each edit their own range (see `rangeKeys`).
+    const range = $derived(rangeKeys(params.tab));
 
+    type DateKey = "asOf" | "from" | "to" | "cfFrom" | "cfTo" | "end";
     const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-    function setDate(key: "asOf" | "from" | "to" | "end", value: string): void {
+    function setDate(key: DateKey, value: string): void {
         if (ISO_DATE.test(value)) params[key] = value;
     }
     function setCount(value: string): void {
@@ -19,7 +22,7 @@
     }
 </script>
 
-{#snippet dateField(label: string, key: "asOf" | "from" | "to" | "end")}
+{#snippet dateField(label: string, key: DateKey)}
     <label class="form-control">
         <span class="label-text mb-1 block text-xs text-base-content/70">{label}</span>
         <input type="date" class="input w-40 input-sm" value={params[key]} onchange={(e) => setDate(key, e.currentTarget.value)} aria-label={label} />
@@ -31,19 +34,21 @@
         {@render dateField("As of", "asOf")}
     {/if}
     {#if config.range}
-        {@render dateField("From", "from")}
-        {@render dateField("To", "to")}
+        {@render dateField("From", range.from)}
+        {@render dateField("To", range.to)}
     {/if}
     {#if config.end}
         {@render dateField("End", "end")}
     {/if}
-    {#if config.interval}
+    {#if config.intervals.length > 0}
+        <!-- Options per tab: Total only where a column can be summed (P&L, cash
+             flow) — net worth's snapshot columns cannot. -->
         <label class="form-control">
             <span class="label-text mb-1 block text-xs text-base-content/70">Interval</span>
             <select class="select w-32 select-sm" bind:value={params.interval} aria-label="Interval">
-                <option value="monthly">Monthly</option>
-                <option value="quarterly">Quarterly</option>
-                <option value="yearly">Yearly</option>
+                {#each config.intervals as interval (interval)}
+                    <option value={interval}>{INTERVAL_LABELS[interval]}</option>
+                {/each}
             </select>
         </label>
     {/if}

@@ -1,3 +1,10 @@
+---
+title: Budget
+description: "The Budget tab: goals stored as hledger ~ periodic rules, how Ledgeline edits them, and how to read the bars."
+order: 50
+tags: [budget]
+---
+
 # The Budget tab, and the `~` rules behind it
 
 The Budget tab shows two things about the same subject: how you are doing
@@ -6,8 +13,10 @@ second half is editable — Ledgeline writes your budget back into your journal 
 ordinary hledger `~` periodic rules, which `hledger balance --budget` reads
 exactly as it always has.
 
+![The Budget tab for the year to date: the controls, the budget bars and the start of the goals list](images/budget-overview.png)
+
 Design notes and the reasoning behind each decision live in
-[`plans/15-budget-editor.md`](../plans/15-budget-editor.md).
+[`plans/15-budget-editor.md`](https://github.com/zmre/ledgeline/blob/main/plans/15-budget-editor.md).
 
 ## What a budget is, in the file
 
@@ -32,6 +41,8 @@ Everything in the tab is a reading of these lines. There is no separate budget
 database, no sidecar file of Ledgeline's own, and nothing here that hledger
 cannot read.
 
+![The budget goals list: monthly goals, each with Edit and Remove buttons](images/budget-goals.png)
+
 ## Picking a category
 
 The category field is a combobox over your chart of accounts. Start typing and it
@@ -45,7 +56,7 @@ you when the dialog opens, and a list opened at that moment would be positioned
 against a dialog that is still animating into place.
 
 Any account is allowed. Most goals are expenses, but budgeting an income account
-is the same gesture — see § Income.
+is the same gesture. See [Income and the sign](#income-and-the-sign).
 
 ## Where your goals get written
 
@@ -89,7 +100,7 @@ Adding a goal puts it in the existing rule of that period — the first writable
 one, in file order, **whatever it is called** — and opens a new rule
 (`~ monthly  monthly budget`) only when that period has no rule at all. Your
 monthly rule can be called `household budget`; goals still go in it. A rule shown
-read-only (§ What Ledgeline will not rewrite) is never joined; a new one is
+read-only (see [What Ledgeline will not rewrite](#what-ledgeline-will-not-rewrite)) is never joined; a new one is
 opened instead. So a journal edited through Ledgeline tends toward one block per
 interval, which is legible.
 
@@ -183,7 +194,7 @@ Each commodity is averaged on its own, over the same period count. A month in
 which a commodity did not appear still counts toward its mean, because "nothing"
 is a real month of spending in it.
 
-## Income, and the sign
+## Income and the sign
 
 hledger records income as negative. Ledgeline does not make you think about that:
 you type `1200` for an annual interest goal and the journal gets `$-1200`. The
@@ -274,6 +285,8 @@ hledger accepts, and not something worth leaving behind.
 
 ## Reading the bars
 
+![Budget bars: the Expenses roll-up and the per-account bars, with one spent / budgeted figure boxed](images/budget-bars.png)
+
 The top half is `hledger balance --budget` in envelope form: one bullet bar per
 category, split into Income and Expenses, with the goal marker where your budget
 sits and the fill showing what has actually happened.
@@ -350,7 +363,7 @@ Three things decide what appears:
   `expenses:food:dining`; it does not quietly cover `expenses:insurance` just
   because both live under `expenses`.
 - **Only income and expenses**, decided by declared account type (see
-  [`docs/income-statement.md`](income-statement.md)). The cash and card legs of
+  [the income statement page](reports/income-statement.md)). The cash and card legs of
   an unbudgeted purchase are not spending, and including them would net the
   section against itself and answer nothing.
 - **The same span and depth as the bars.** The numbers on one screen have to tie
@@ -359,6 +372,6 @@ Three things decide what appears:
 
 The section is fetched only when you open it, so leaving it shut costs nothing.
 
-See [`docs/income-statement.md`](income-statement.md) for how account types are
+See [the income statement page](reports/income-statement.md) for how account types are
 resolved — the same `type:` rules decide which side of the budget an account
 lands on.

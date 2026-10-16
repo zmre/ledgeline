@@ -153,4 +153,8 @@ user's first click on "All time".
 
 - feat: personal planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
-  - TODO: investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
+  - [ ] investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
+  - [ ] Investigate [monarch](https://monarch.com) as a suggestion from others
+    - ![screencap video](https://stream.mux.com/017Yw7T7QleOQFbHCvL4FHJgZXxbgi003MOxEvUJcqj00I.m3u8)
+  - [ ] Investigate [betterment](https://www.betterment.com) which is just a brokerage with up to $8M FDIC, but particularly fo rtheir retirement forecaster, which is pretty simplistic, but also looks useful and something maybe worth modeling on
+    - ![screenshot](https://www.betterment.com/hubfs/Webpage%20desktop%20dashboard.png)

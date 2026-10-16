@@ -1,14 +1,16 @@
 //! Cash flow — port of `web/src/lib/reports/cashFlow.ts`.
 //!
 //! Per-bucket changes (natural signs: inflow positive) in cash-like asset
-//! accounts, for the last `count` buckets ending with the bucket containing
-//! `end`. The final bucket is truncated at `end`.
+//! accounts, either over an explicit `[from, to]` range ([`cash_flow_range`]) or
+//! for the last `count` buckets ending with the bucket containing `end`
+//! ([`cash_flow`], the legacy window). Either way each row also carries its
+//! Total — the sum of its buckets — and the Net row a grand total.
 
 use super::ReportError;
 use super::account_types::{AccountType, infer_account_type};
 use super::aggregate::{at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
-use super::periods::{Interval, bucket_span, last_n_buckets};
+use super::periods::{Interval, bucket_span, last_n_buckets, range_buckets};
 use super::types::{PeriodReport, PeriodRow};
 use crate::model::Transaction;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -36,10 +38,17 @@ fn bucket_of(ranges: &[(String, String)], date: &str) -> Option<usize> {
     (date >= start.as_str()).then_some(index)
 }
 
+/// Commodity-wise sum of `amounts`.
+fn sum(amounts: &[MixedAmount]) -> Result<MixedAmount, ReportError> {
+    Ok(amounts
+        .iter()
+        .try_fold(MixedAmount::new(), |acc, ma| acc.ma_add(ma))?)
+}
+
 /// Roll each bucket's direct per-account amounts up, clamp to `depth`, and
-/// pivot into rows (the union of accounts across buckets, sorted). Also returns
-/// each bucket's total, summed over the UNCLAMPED accounts so it does not move
-/// with `depth` (RPT-4).
+/// pivot into rows (the union of accounts across buckets, sorted), each with its
+/// Total across the buckets. Also returns each bucket's total, summed over the
+/// UNCLAMPED accounts so it does not move with `depth` (RPT-4).
 fn pivot(
     direct: &[BTreeMap<String, MixedAmount>],
     depth: usize,
@@ -63,18 +72,19 @@ fn pivot(
         .into_iter()
         .map(|account| {
             let depth = account.split(':').count();
-            let values = per_bucket
+            let values: Vec<MixedAmount> = per_bucket
                 .iter()
                 .map(|clamped| clamped.get(&account).cloned().unwrap_or_default())
                 .collect();
-            PeriodRow {
+            Ok(PeriodRow {
                 account,
                 depth,
+                total: Some(sum(&values)?),
                 values,
                 kind: None,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<_, ReportError>>()?;
     Ok((rows, totals))
 }
 
@@ -89,8 +99,11 @@ fn pruned(bucket: BTreeMap<&str, MixedAmount>) -> BTreeMap<String, MixedAmount> 
         .collect()
 }
 
-/// Per-bucket cash flow. `is_cash` overrides the name heuristic (pass the result
-/// of [`super::account_types::cash_predicate`] to honor declared `type:` tags).
+/// Per-bucket cash flow for the last `count` `interval` buckets ending with the
+/// one containing `end`, the last truncated at `end` — the legacy window the
+/// `end`/`count` API params still ask for. `is_cash` overrides the name
+/// heuristic (pass the result of [`super::account_types::cash_predicate`] to
+/// honor declared `type:` tags).
 ///
 /// `is_cash` must be a pure function of the account name: it is consulted once
 /// per DISTINCT account rather than once per account per bucket.
@@ -105,9 +118,44 @@ pub fn cash_flow(
     depth: usize,
     is_cash: Option<&dyn Fn(&str) -> bool>,
 ) -> Result<PeriodReport, ReportError> {
-    let is_cash = is_cash.unwrap_or(&is_cash_like);
     let buckets = last_n_buckets(end, interval, count)?;
     let ranges = bucket_ranges(&buckets, end)?;
+    cash_flow_over(txns, buckets, &ranges, depth, is_cash)
+}
+
+/// Per-bucket cash flow over `[from, to]` (both INCLUSIVE): one column per
+/// `interval` bucket, the first clamped to `from` and the last to `to`
+/// ([`range_buckets`]), or ONE column over the whole range when `interval` is
+/// `None` (the Total grain). `is_cash` as for [`cash_flow`].
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or bad bucket math.
+pub fn cash_flow_range(
+    txns: &[Transaction],
+    from: &str,
+    to: &str,
+    interval: Option<Interval>,
+    depth: usize,
+    is_cash: Option<&dyn Fn(&str) -> bool>,
+) -> Result<PeriodReport, ReportError> {
+    let (buckets, ranges): (Vec<String>, Vec<(String, String)>) =
+        range_buckets(from, to, interval)?
+            .into_iter()
+            .map(|span| (span.key, (span.from, span.to)))
+            .unzip();
+    cash_flow_over(txns, buckets, &ranges, depth, is_cash)
+}
+
+/// The one cash-flow pass both windows share: `ranges[i]` is the inclusive
+/// span of `buckets[i]`, contiguous and ascending.
+fn cash_flow_over(
+    txns: &[Transaction],
+    buckets: Vec<String>,
+    ranges: &[(String, String)],
+    depth: usize,
+    is_cash: Option<&dyn Fn(&str) -> bool>,
+) -> Result<PeriodReport, ReportError> {
+    let is_cash = is_cash.unwrap_or(&is_cash_like);
 
     // ONE pass over every posting, summing per FULL account name into its own
     // bucket — i.e. exactly what `account_totals(from, to)` would have produced
@@ -117,7 +165,7 @@ pub fn cash_flow(
     for txn in txns {
         for posting in &txn.postings {
             let date = posting.date.as_deref().unwrap_or(&txn.date);
-            let Some(index) = bucket_of(&ranges, date) else {
+            let Some(index) = bucket_of(ranges, date) else {
                 continue;
             };
             let account = posting.account.0.as_str();
@@ -136,6 +184,7 @@ pub fn cash_flow(
     Ok(PeriodReport {
         buckets,
         rows,
+        grand_total: Some(sum(&totals)?),
         totals,
         meta: None,
     })
@@ -296,6 +345,94 @@ mod tests {
         assert_eq!(report.rows[0].depth, 1);
         assert_eq!(report.rows[0].values, [usd_ma(-16_001), MixedAmount::new()]);
         assert_eq!(report.totals, [usd_ma(-16_001), MixedAmount::new()]);
+    }
+
+    /// Each row's Total is the sum of its buckets and the Net row's grand total
+    /// the sum of the bucket totals — over the clamped rows, so a depth change
+    /// moves neither.
+    #[test]
+    fn every_row_carries_its_total_and_the_net_row_a_grand_total() {
+        for depth in [1, 2, 4] {
+            let report =
+                cash_flow(&sample(), "2026-03-15", Interval::Monthly, 3, depth, None).unwrap();
+            for row in &report.rows {
+                assert_eq!(
+                    row.total,
+                    Some(sum(&row.values).unwrap()),
+                    "{}",
+                    row.account
+                );
+            }
+            assert_eq!(report.grand_total, Some(usd_ma(-26_000)), "depth {depth}");
+        }
+    }
+
+    /// A range clamps its first bucket to `from` and its last to `to`, so a
+    /// posting outside the range is in no column even when its month is.
+    #[test]
+    fn range_clamps_the_first_and_last_bucket() {
+        let report = cash_flow_range(
+            &sample(),
+            "2026-01-11",
+            "2026-03-15",
+            Some(Interval::Monthly),
+            1,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.buckets, ["2026-01", "2026-02", "2026-03"]);
+        // 01-10's salary falls before `from`; 03-20's after `to`.
+        assert_eq!(
+            report.totals,
+            [MixedAmount::new(), usd_ma(-43_000), usd_ma(7000)]
+        );
+        assert_eq!(report.grand_total, Some(usd_ma(-36_000)));
+    }
+
+    /// The Total grain is one column over the whole range, and it equals the sum
+    /// of the monthly columns over the same range: cash is never revalued, so
+    /// summing buckets and taking the range at once cannot disagree.
+    #[test]
+    fn total_grain_is_one_column_equal_to_the_sum_of_the_buckets() {
+        let total = cash_flow_range(&sample(), "2026-01-01", "2026-03-15", None, 4, None).unwrap();
+        assert_eq!(total.buckets, ["2026-01-01..2026-03-15"]);
+        let monthly = cash_flow_range(
+            &sample(),
+            "2026-01-01",
+            "2026-03-15",
+            Some(Interval::Monthly),
+            4,
+            None,
+        )
+        .unwrap();
+        assert_eq!(total.totals, [monthly.grand_total.clone().unwrap()]);
+        assert_eq!(total.grand_total, monthly.grand_total);
+        for row in &total.rows {
+            let twin = monthly
+                .rows
+                .iter()
+                .find(|r| r.account == row.account)
+                .unwrap();
+            assert_eq!(row.values, [twin.total.clone().unwrap()], "{}", row.account);
+            assert_eq!(row.total, twin.total, "{}", row.account);
+        }
+    }
+
+    /// The legacy window and the range that names the same dates are the same
+    /// report.
+    #[test]
+    fn legacy_window_equals_the_range_covering_the_same_dates() {
+        let legacy = cash_flow(&sample(), "2026-03-15", Interval::Monthly, 3, 4, None).unwrap();
+        let range = cash_flow_range(
+            &sample(),
+            "2026-01-01",
+            "2026-03-15",
+            Some(Interval::Monthly),
+            4,
+            None,
+        )
+        .unwrap();
+        assert_eq!(legacy, range);
     }
 
     #[test]

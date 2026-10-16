@@ -6,13 +6,40 @@
 // (`asof`/`from`+`to`/`end`, `interval`, `count`, `depth`) so a shared or
 // reloaded URL reproduces the exact report even when the defaults (today-based)
 // have moved on. Params for inactive tabs are never written.
+//
+// Two older URL shapes are still read (plans/24): a P&L link with no
+// `interval` predates that control and means Total, and a cash-flow link with
+// `end`/`count` but no `from` is translated to the from/to range it showed.
 
 import type {ISODate} from "#lib/domain/types.js";
 import {bucketEnd, bucketStart, lastNBuckets, today} from "#lib/reports/periods.js";
 import {clampedInt, isIsoDate} from "#lib/url/params.js";
 
 export type ReportTab = "insights" | "bs" | "is" | "cf" | "nw" | "subs";
-export type ReportInterval = "monthly" | "quarterly" | "yearly";
+/** A bucketing grain: one column per month, quarter or year. */
+export type PeriodInterval = "monthly" | "quarterly" | "yearly";
+
+/**
+ * A report's column grain. `total` is ONE column over the whole range — the
+ * P&L's comparative statement, or cash flow's single column — and is offered
+ * only by the ranged reports (see `TAB_CONTROLS.*.intervals`).
+ */
+export type ReportInterval = "total" | PeriodInterval;
+
+export const INTERVAL_LABELS: Record<ReportInterval, string> = {
+    total: "Total",
+    monthly: "Monthly",
+    quarterly: "Quarterly",
+    yearly: "Yearly",
+};
+
+/** Every grain, in the order the Interval select lists them. */
+const ALL_INTERVALS: readonly ReportInterval[] = ["total", "monthly", "quarterly", "yearly"];
+/**
+ * The grains a snapshot report can take. Net worth's columns are balances AT a
+ * date, and summing them into a Total means nothing, so it is never offered.
+ */
+const PERIODIC_INTERVALS: readonly ReportInterval[] = ["monthly", "quarterly", "yearly"];
 
 // Insights is the first (default) tab — the dashboard shown when Reports opens.
 export const TAB_ORDER: ReportTab[] = ["insights", "bs", "is", "cf", "nw", "subs"];
@@ -34,10 +61,18 @@ export interface ReportParams {
     /** Income statement range (both INCLUSIVE). */
     from: ISODate;
     to: ISODate;
-    /** Cash flow / net worth: date whose bucket is the last column (INCLUSIVE). */
+    /**
+     * Cash flow range (both INCLUSIVE). Its own pair rather than the P&L's, so
+     * each tab keeps its own default (a calendar year vs the trailing twelve
+     * months) and its own last-used range across a tab switch. Written to the
+     * URL as `from`/`to`, like the P&L's — only the active tab's are written.
+     */
+    cfFrom: ISODate;
+    cfTo: ISODate;
+    /** Net worth: date whose bucket is the last column (INCLUSIVE). */
     end: ISODate;
     interval: ReportInterval;
-    /** Lookback bucket count. */
+    /** Net worth lookback bucket count. */
     count: number;
     /** Account depth clamp. */
     depth: number;
@@ -52,7 +87,8 @@ export interface ControlsConfig {
     asOf: boolean;
     range: boolean;
     end: boolean;
-    interval: boolean;
+    /** The Interval select's options, in order; empty = no Interval control. */
+    intervals: readonly ReportInterval[];
     count: boolean;
     depth: boolean;
 }
@@ -60,31 +96,44 @@ export interface ControlsConfig {
 export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     // Insights owns its own period control (PeriodControl), so the shared
     // ReportControls bar shows nothing for it.
-    insights: {asOf: false, range: false, end: false, interval: false, count: false, depth: false},
+    insights: {asOf: false, range: false, end: false, intervals: [], count: false, depth: false},
     // No depth on the balance sheet: groups ARE the reading and the accounts
     // inside one are a drill-down, so a clamp had almost nothing left to move —
     // and what it did move it moved wrongly, hiding accounts with no control on
     // screen to ask for them back. Expanding a group now shows all of it (the
     // engine is asked for an unclamped report), single-child chains still
     // compressed by `compressSectionRows`.
-    bs: {asOf: true, range: false, end: false, interval: false, count: false, depth: false},
+    bs: {asOf: true, range: false, end: false, intervals: [], count: false, depth: false},
     // The income statement dropped its depth slider for the same reason (plans/13):
     // it is grouped now, and a clamp that hid accounts with no control on screen
     // to ask for them back was the worst of both. The range stays — a P&L is a
-    // report ABOUT a period, and that is the one thing it cannot infer.
-    is: {asOf: false, range: true, end: false, interval: false, count: false, depth: false},
-    cf: {asOf: false, range: false, end: true, interval: true, count: true, depth: true},
-    nw: {asOf: false, range: false, end: true, interval: true, count: true, depth: true},
+    // report ABOUT a period, and that is the one thing it cannot infer. The
+    // Interval is Total (one column, compared with the prior window) or one
+    // column per bucket plus a Total (plans/24).
+    is: {asOf: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: false},
+    // Cash flow is a report about a period too (plans/24): From/To replaced
+    // End + Periods, so the range is named rather than counted backwards.
+    cf: {asOf: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true},
+    nw: {asOf: false, range: false, end: true, intervals: PERIODIC_INTERVALS, count: true, depth: true},
     // Subscriptions scan a fixed trailing window, so they expose no controls.
-    subs: {asOf: false, range: false, end: false, interval: false, count: false, depth: false},
+    subs: {asOf: false, range: false, end: false, intervals: [], count: false, depth: false},
 };
 
-/** Per-tab default interval/count, applied on tab activation (cash flow and net
- *  worth want different lookbacks: monthly/12 vs yearly/5). Depth is shared. */
+/**
+ * The params a tab's From/To controls read and write: the P&L's `from`/`to`
+ * or cash flow's own `cfFrom`/`cfTo`. One answer, used by the URL codec, the
+ * controls, the query builder and the export title alike.
+ */
+export function rangeKeys(tab: ReportTab): {from: "from" | "cfFrom"; to: "to" | "cfTo"} {
+    return tab === "cf" ? {from: "cfFrom", to: "cfTo"} : {from: "from", to: "to"};
+}
+
+/** Per-tab default interval/count, applied on tab activation (the P&L opens on
+ *  its Total statement, cash flow monthly, net worth yearly/5). Depth is shared. */
 export const TAB_DEFAULTS: Record<ReportTab, {interval: ReportInterval; count: number}> = {
     insights: {interval: "monthly", count: 12}, // inert (insights ignores interval/count)
     bs: {interval: "monthly", count: 12},
-    is: {interval: "monthly", count: 12},
+    is: {interval: "total", count: 12}, // count inert: the P&L has a range, not a lookback
     cf: {interval: "monthly", count: 12},
     nw: {interval: "yearly", count: 5},
     subs: {interval: "monthly", count: 12}, // inert (subscriptions ignore interval/count)
@@ -128,6 +177,18 @@ export function activeInsightsPreset(start: ISODate, end: ISODate, now: ISODate 
     return "custom";
 }
 
+/** The P&L's default From for a range ending on `end`: January 1 of its year (year to date). */
+const yearStart = (end: ISODate): ISODate => `${end.slice(0, 4)}-01-01`;
+
+/** The first day of the month `months - 1` months before `end`'s: `months` monthly columns ending with `end`'s. */
+const monthsBack =
+    (months: number) =>
+    (end: ISODate): ISODate =>
+        bucketStart(lastNBuckets(end, "monthly", months)[0]);
+
+/** Cash flow's default From for a range ending on `end`: the trailing twelve monthly columns. */
+const trailingYear = monthsBack(12);
+
 /** Defaults: Insights (year-over-year) is the landing tab; bs as-of today, P&L this year, cf/nw last 12 months. */
 export function defaultReportParams(now: ISODate = today()): ReportParams {
     const year = now.slice(0, 4);
@@ -135,8 +196,12 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
     return {
         tab: "insights",
         asOf: now,
-        from: `${year}-01-01`,
+        from: yearStart(now),
         to: `${year}-12-31`,
+        // The first of the month eleven months back through today: the same
+        // twelve monthly columns the old End + 12 Periods default drew.
+        cfFrom: trailingYear(now),
+        cfTo: now,
         end: now,
         interval: "monthly",
         count: 12,
@@ -152,6 +217,100 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
     };
 }
 
+// --- The end date shared across tabs ----------------------------------------
+// The reports page remembers the end date the user last set on any tab and
+// moves the next tab it opens to it, so a balance sheet as of 2026-09-30 is
+// followed by a P&L and a cash flow through 2026-09-30 without re-picking the
+// date (see `stores/reportsEnd.ts` for the memory, the page for the wiring).
+// Only the END is shared; a tab's start follows the rule in `alignToEnd`.
+
+type EndKey = "asOf" | "to" | "cfTo" | "end" | "insEnd";
+type StartKey = "from" | "cfFrom" | "insStart";
+
+/** Each tab's end-date param, or `null` for a tab with no date control (Subscriptions). */
+const END_KEYS: Record<ReportTab, EndKey | null> = {
+    insights: "insEnd",
+    bs: "asOf",
+    is: "to",
+    cf: "cfTo",
+    nw: "end",
+    subs: null,
+};
+
+/** The URL params that carry each tab's end (cash flow also reads its legacy `end`). */
+const END_URL_PARAMS: Record<ReportTab, readonly string[]> = {
+    insights: ["iend"],
+    bs: ["asof"],
+    is: ["to"],
+    cf: ["to", "end"],
+    nw: ["end"],
+    subs: [],
+};
+
+/**
+ * Each ranged tab's start param and the start rules RELATIVE to the end that it
+ * knows, the first being its default: the P&L's year to date, cash flow's
+ * trailing twelve months, and one rule per Insights preset (each a whole-month
+ * span ending with the end's month; the default, year over year, first).
+ */
+const START_RULES: Partial<Record<ReportTab, {key: StartKey; rules: readonly ((end: ISODate) => ISODate)[]}>> = {
+    is: {key: "from", rules: [yearStart]},
+    cf: {key: "cfFrom", rules: [trailingYear]},
+    insights: {
+        key: "insStart",
+        // INSIGHTS_PRESETS lists the default (year over year) first.
+        rules: INSIGHTS_PRESETS.map((preset) => monthsBack(preset.spanMonths)),
+    },
+};
+
+/** The active end date of `tab` in `p`, or `null` when the tab has none. */
+export function tabEnd(p: ReportParams, tab: ReportTab): ISODate | null {
+    const key = END_KEYS[tab];
+    return key === null ? null : p[key];
+}
+
+/** Whether a reports URL names the end date of the tab it opens (a deep link's end beats a remembered one). */
+export function searchNamesEnd(search: string): boolean {
+    const q = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+    const rawTab = q.get("tab");
+    if (rawTab === null || !isTab(rawTab)) return false;
+    return END_URL_PARAMS[rawTab].some((name) => {
+        const value = q.get(name);
+        return value !== null && isIsoDate(value);
+    });
+}
+
+/**
+ * The params that move `tab` to end on `end`: `{}` when it has no end or
+ * already ends there.
+ *
+ * A ranged tab's start is not shared; it is decided like this:
+ * 1. If it stands in one of the tab's relative relationships to the OLD end
+ *    (P&L: January 1 of its year; cash flow: twelve monthly columns; Insights:
+ *    a preset's whole-month span), it keeps that relationship to the new end.
+ *    The defaults are all relative, so an untouched P&L moved to 2026-09-30
+ *    reads 2026-01-01..2026-09-30.
+ * 2. Otherwise the user chose it, and it is kept while it is still on or
+ *    before the new end.
+ * 3. Otherwise (it would invert the range) it falls back to the tab's default
+ *    relative to the new end.
+ *
+ * Pure: no clock, every date comes from `p` and `end`.
+ */
+export function alignToEnd(p: ReportParams, tab: ReportTab, end: ISODate): Partial<ReportParams> {
+    const endKey = END_KEYS[tab];
+    if (endKey === null || p[endKey] === end) return {};
+    const patch: Partial<ReportParams> = {[endKey]: end};
+    const start = START_RULES[tab];
+    if (start === undefined) return patch;
+    const oldEnd = p[endKey];
+    const oldStart = p[start.key];
+    const relative = start.rules.find((rule) => rule(oldEnd) === oldStart);
+    if (relative !== undefined) patch[start.key] = relative(end);
+    else if (oldStart > end) patch[start.key] = start.rules[0](end);
+    return patch;
+}
+
 /** Serialize the ACTIVE tab's params to a query string (no leading "?"). */
 export function paramsToSearch(p: ReportParams): string {
     const q = new URLSearchParams();
@@ -164,35 +323,74 @@ export function paramsToSearch(p: ReportParams): string {
     const c = TAB_CONTROLS[p.tab];
     if (c.asOf) q.set("asof", p.asOf);
     if (c.range) {
-        q.set("from", p.from);
-        q.set("to", p.to);
+        const keys = rangeKeys(p.tab);
+        q.set("from", p[keys.from]);
+        q.set("to", p[keys.to]);
     }
     if (c.end) q.set("end", p.end);
-    if (c.interval) q.set("interval", p.interval);
+    if (c.intervals.length > 0) q.set("interval", p.interval);
     if (c.count) q.set("count", String(p.count));
     if (c.depth) q.set("depth", String(p.depth));
     return q.toString();
 }
 
 const isTab = (v: string): v is ReportTab => (TAB_ORDER as string[]).includes(v);
-const isInterval = (v: string): v is ReportInterval => v === "monthly" || v === "quarterly" || v === "yearly";
+const isInterval = (v: string): v is ReportInterval => (ALL_INTERVALS as string[]).includes(v);
 
 function parseDate(v: string | null, fallback: ISODate): ISODate {
     return v !== null && isIsoDate(v) ? v : fallback;
 }
 
+/**
+ * The interval a URL asks of `tab`: its own value when the tab offers it (any
+ * grain at all on a tab with no Interval control, so decoding stays un-gated),
+ * otherwise a fallback.
+ *
+ * The P&L's fallback is Total, not `dflt`: a P&L link with no `interval`
+ * predates the control, and what it showed was the Total statement. Every
+ * other tab keeps `dflt.interval` as it always did, unless that grain is not
+ * on offer (net worth has no Total).
+ */
+function parseInterval(raw: string | null, tab: ReportTab, dflt: ReportParams): ReportInterval {
+    const offered = TAB_CONTROLS[tab].intervals;
+    if (raw !== null && isInterval(raw) && (offered.length === 0 || offered.includes(raw))) return raw;
+    if (tab === "is") return "total";
+    return offered.length === 0 || offered.includes(dflt.interval) ? dflt.interval : TAB_DEFAULTS[tab].interval;
+}
+
+/**
+ * Cash flow's range from a URL. `from`/`to` when present; otherwise a link
+ * from before the range existed (`end` + `count`, no `from`) is translated to
+ * the range it drew — the first day of its oldest bucket through `end` — so a
+ * bookmark keeps showing the same columns.
+ */
+function cashFlowRange(q: URLSearchParams, interval: ReportInterval, dflt: ReportParams): {cfFrom: ISODate; cfTo: ISODate} {
+    const legacy = q.get("from") === null && (q.get("end") !== null || q.get("count") !== null);
+    if (legacy && interval !== "total") {
+        const end = parseDate(q.get("end"), dflt.end);
+        const count = clampedInt(q.get("count"), 1, MAX_COUNT, TAB_DEFAULTS.cf.count);
+        return {cfFrom: bucketStart(lastNBuckets(end, interval, count)[0]), cfTo: end};
+    }
+    return {cfFrom: parseDate(q.get("from"), dflt.cfFrom), cfTo: parseDate(q.get("to"), dflt.cfTo)};
+}
+
 /** Parse a query string (with or without leading "?"); absent/malformed params fall back to `dflt`. */
 export function searchToParams(search: string, dflt: ReportParams): ReportParams {
     const q = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
-    const tab = q.get("tab");
-    const interval = q.get("interval");
+    const rawTab = q.get("tab");
+    const tab = rawTab !== null && isTab(rawTab) ? rawTab : dflt.tab;
+    const interval = parseInterval(q.get("interval"), tab, dflt);
+    // `from`/`to` name the ACTIVE tab's range: cash flow's own pair on the cf
+    // tab, the P&L's everywhere else (where, as before, they are not gated).
+    const cf = tab === "cf";
     return {
-        tab: tab !== null && isTab(tab) ? tab : dflt.tab,
+        tab,
         asOf: parseDate(q.get("asof"), dflt.asOf),
-        from: parseDate(q.get("from"), dflt.from),
-        to: parseDate(q.get("to"), dflt.to),
+        from: cf ? dflt.from : parseDate(q.get("from"), dflt.from),
+        to: cf ? dflt.to : parseDate(q.get("to"), dflt.to),
+        ...(cf ? cashFlowRange(q, interval, dflt) : {cfFrom: dflt.cfFrom, cfTo: dflt.cfTo}),
         end: parseDate(q.get("end"), dflt.end),
-        interval: interval !== null && isInterval(interval) ? interval : dflt.interval,
+        interval,
         count: clampedInt(q.get("count"), 1, MAX_COUNT, dflt.count),
         depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
         insStart: parseDate(q.get("istart"), dflt.insStart),

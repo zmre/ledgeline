@@ -40,7 +40,8 @@ import type {
 } from "#lib/reports/types.js";
 import {bsSectionBlocks, bsSummary} from "#lib/reports/ui/balanceSheetRows.js";
 import {compressIsRows, compressPeriodRows, compressSectionRows} from "#lib/reports/ui/displayRows.js";
-import {isSummary, pctOfRevenue, revenueTotal} from "#lib/reports/ui/incomeStatementRows.js";
+import {amountsPct, isSummary} from "#lib/reports/ui/incomeStatementRows.js";
+import {periodTable} from "#lib/reports/ui/periodTable.js";
 import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build time
 
 const HEADER_ARGB = "FF1E293B";
@@ -320,11 +321,6 @@ function addBalanceSheet(ws: Worksheet, report: BalanceSheetReport): void {
         setBsAmount(ws, rowIx, report.check, report.base, true);
         for (const col of [1, 2, 3]) ws.getCell(rowIx, col).font = {bold: true, color: {argb: "FFB45309"}};
     }
-    rowIx += 2;
-
-    ruleAbove(ws, rowIx, "medium");
-    labelCell(ws, rowIx, "Net worth (assets − liabilities)", 0, true);
-    setBsAmount(ws, rowIx, summary.netWorth, report.base, true);
 }
 
 // --- Grouped income statement (plans/13) ------------------------------------
@@ -346,43 +342,84 @@ const IS_SECTION_ARGB: Record<IsSectionKind, string> = {
     other: "FF1E3A8A",
 };
 
+/** Which of a line's figures a column prints. */
+type Pick = (amounts: Amounts) => MixedAmount | undefined;
+
+/** One figure column: where it goes, and which figure it prints. */
+interface IsColumn {
+    col: number;
+    pick: Pick;
+}
+
 /**
- * Column layout, which depends on whether the report compares.
+ * Column layout, which depends on the report's mode.
  *
  * Computed ONCE per workbook rather than open-coded per row: the prior column
- * exists only when there is a prior period, so every column after it shifts, and
- * a hand-numbered `getCell(row, 4)` somewhere would silently write the
- * percentage into the extras column on half the reports.
+ * exists only when there is a prior period and interval mode has a column per
+ * bucket, so every column after them shifts, and a hand-numbered
+ * `getCell(row, 4)` somewhere would silently write the percentage into the
+ * extras column on half the reports.
+ *
+ * - Total mode, comparing: Amount · Prior · % change · extras · prior extras.
+ * - Total mode, not comparing: Amount · extras (no prior, so no % change).
+ * - Interval mode: one column per bucket · Total · extras — no prior and no
+ *   percentage, exactly as on screen. The extras column is the TOTAL's
+ *   leftovers: a pair of columns per bucket would double the sheet's width for
+ *   commodities the Total already names.
  */
 interface IsColumns {
     label: number;
-    amount: number;
-    prior: number | null;
-    pct: number;
-    extras: number;
-    /** The PRIOR period's unconverted leftovers. Exists exactly when `prior` does. */
-    priorExtras: number | null;
+    money: IsColumn[];
+    /** The % change column, when the report compares. */
+    pct: number | null;
+    /** Unconverted leftovers, one column per money column that has its own. */
+    extras: IsColumn[];
     count: number;
 }
 
-function isColumns(comparing: boolean): IsColumns {
-    return comparing
-        ? {label: 1, amount: 2, prior: 3, pct: 4, extras: 5, priorExtras: 6, count: 6}
-        : {label: 1, amount: 2, prior: null, pct: 3, extras: 4, priorExtras: null, count: 4};
+const current: Pick = (amounts) => amounts.current;
+const prior: Pick = (amounts) => amounts.prior;
+
+function isColumns(report: IncomeStatementReport): IsColumns {
+    if (report.buckets !== null) {
+        const total = report.buckets.length + 2;
+        return {
+            label: 1,
+            money: [...report.buckets.map((_, i): IsColumn => ({col: i + 2, pick: (amounts) => amounts.values?.[i]})), {col: total, pick: current}],
+            pct: null,
+            extras: [{col: total + 1, pick: current}],
+            count: total + 1,
+        };
+    }
+    return report.prior !== null
+        ? {
+              label: 1,
+              money: [
+                  {col: 2, pick: current},
+                  {col: 3, pick: prior},
+              ],
+              pct: 4,
+              extras: [
+                  {col: 5, pick: current},
+                  {col: 6, pick: prior},
+              ],
+              count: 6,
+          }
+        : {label: 1, money: [{col: 2, pick: current}], pct: null, extras: [{col: 3, pick: current}], count: 3};
 }
 
 /**
- * One income-statement figure across the Amount / Prior / % / extras columns.
+ * One income-statement figure across its money / % change / extras columns.
  *
  * The report is valued into `base`, so the money columns are REAL NUMBERS with a
  * number format rather than the comma-joined text `setAmount` falls back to, and
  * the percentage is a real number with Excel's own percent format (which
- * multiplies by 100 — hence `/100`) rather than a pre-rendered "73.9%" string.
+ * multiplies by 100 — hence `/100`) rather than a pre-rendered "12.3%" string.
  * A reader can therefore sort, chart and re-total the sheet.
  *
- * `pctOfRevenue` is the same function the screen calls, so the workbook cannot
+ * `pctChange` is the same function the screen calls, so the workbook cannot
  * round a percentage the other way from the page it came from. `null` leaves the
- * cell EMPTY: there is no percentage when there is no revenue, and `0.0%` would
+ * cell EMPTY: there is no percentage change from a zero prior, and `0.0%` would
  * be a claim rather than a blank.
  */
 function setIsAmounts(ws: Worksheet, rowIx: number, cols: IsColumns, amounts: Amounts, pct: number | null, base: string | null, bold: boolean): void {
@@ -392,10 +429,12 @@ function setIsAmounts(ws: Worksheet, rowIx: number, cols: IsColumns, amounts: Am
         else setDec(cell, base, ma.get(base) ?? ZERO_MONEY);
         if (bold) cell.font = {bold: true};
     };
-    write(cols.amount, amounts.current);
-    if (cols.prior !== null && amounts.prior !== undefined) write(cols.prior, amounts.prior);
+    for (const {col, pick} of cols.money) {
+        const ma = pick(amounts);
+        if (ma !== undefined) write(col, ma);
+    }
 
-    if (pct !== null) {
+    if (cols.pct !== null && pct !== null) {
         const cell = ws.getCell(rowIx, cols.pct);
         // `round(pct × 10) / 1000`, not `pct / 100` — Excel's % format multiplies
         // by 100, and the naive division compounds the error already in `pct`:
@@ -426,19 +465,17 @@ function setIsAmounts(ws: Worksheet, rowIx: number, cols: IsColumns, amounts: Am
         extras.alignment = {...extras.alignment, horizontal: "right"};
         if (bold) extras.font = {bold: true};
     };
-    writeExtras(cols.extras, amounts.current);
-    if (cols.priorExtras !== null) writeExtras(cols.priorExtras, amounts.prior);
+    for (const {col, pick} of cols.extras) writeExtras(col, pick(amounts));
 }
 
 /**
  * The grouped income statement: a coloured header per box, a bold row per group
  * with its subtotal, the group's indented accounts beneath it, a ruled section
- * total, the ladder lines between boxes, then the condensed summary and net
- * income.
+ * total, the ladder lines between boxes, then net income.
  *
- * `isSummary` and `pctOfRevenue` are shared with the view precisely so a workbook
- * cannot claim different components — or a different percentage — from the page
- * it was exported from.
+ * `isSummary` and `amountsPct` are shared with the view precisely so a workbook
+ * cannot claim a different bottom line — or a different percentage — from the
+ * page it was exported from.
  *
  * Deliberately UNLIKE the screen in exactly one way: every group is written out
  * in full, whatever is collapsed in the UI. A disclosure triangle is a way to
@@ -447,8 +484,7 @@ function setIsAmounts(ws: Worksheet, rowIx: number, cols: IsColumns, amounts: Am
  */
 function addIncomeStatement(ws: Worksheet, report: IncomeStatementReport, cols: IsColumns): void {
     const base = report.base;
-    const revenue = revenueTotal(report);
-    const pct = (amounts: Amounts): number | null => pctOfRevenue(amounts.current, revenue, base);
+    const pct = (amounts: Amounts): number | null => amountsPct(amounts, base);
     const columns = Array.from({length: cols.count}, (_, i) => i + 1);
     const rule = (rowIx: number, style: "thin" | "medium"): void => {
         for (const col of columns) {
@@ -532,16 +568,20 @@ function addSectioned(ws: Worksheet, report: SectionedReport): void {
     ws.getCell(rowIx, 2).font = {bold: true};
 }
 
-/** Cash flow / net worth: one column per bucket plus a bold Net totals row. */
+/**
+ * Cash flow / net worth: one column per bucket (plus cash flow's Total) and a
+ * bold Net totals row — the columns `periodTable` gives the screen.
+ */
 function addPeriod(ws: Worksheet, report: PeriodReport): void {
+    const columns = periodTable(report);
     let rowIx = 5;
     for (const {label, indent, row} of compressPeriodRows(report.rows)) {
         labelCell(ws, rowIx, label, indent);
-        row.values.forEach((value, i) => setAmount(ws.getCell(rowIx, i + 2), value));
+        columns.cells(row).forEach((value, i) => setAmount(ws.getCell(rowIx, i + 2), value));
         rowIx += 1;
     }
     labelCell(ws, rowIx, "Net", 0, true);
-    report.totals.forEach((total, i) => {
+    columns.net.forEach((total, i) => {
         const cell = ws.getCell(rowIx, i + 2);
         setAmount(cell, total);
         cell.font = {bold: true};
@@ -611,7 +651,7 @@ export async function buildWorkbook(report: SectionedReport | PeriodReport, meta
     const {Workbook: ExcelWorkbook} = await import("exceljs");
     const workbook = new ExcelWorkbook();
     const ws = workbook.addWorksheet(meta.title);
-    const headers = "sections" in report ? ["Account", "Amount"] : ["Account", ...report.buckets.map(bucketLabel)];
+    const headers = "sections" in report ? ["Account", "Amount"] : ["Account", ...periodTable(report).headers];
     addTitleRows(ws, meta, headers);
     if ("sections" in report) addSectioned(ws, report);
     else addPeriod(ws, report);
@@ -641,12 +681,13 @@ export async function buildBalanceSheetWorkbook(report: BalanceSheetReport, meta
 
 /**
  * Grouped income-statement workbook: ladder-ordered coloured boxes, the ruled
- * subtotals between them, the condensed summary and net income.
+ * subtotals between them, and net income — in the screen's column layout.
  *
  * The Prior column exists only when the report compares — a blank column headed
  * "Prior" would read as "the prior period was zero" rather than as "there is no
- * prior period" — so every column after it shifts, which is why the layout is
- * computed once in `isColumns` and threaded through.
+ * prior period" — and interval mode has a column per bucket plus a Total, so
+ * every column after them shifts, which is why the layout is computed once in
+ * `isColumns` and threaded through.
  *
  * The header rows are frozen, because an income statement is read by scrolling
  * down through the sections and the column headings are what say which number is
@@ -656,8 +697,8 @@ export async function buildIncomeStatementWorkbook(report: IncomeStatementReport
     const {Workbook: ExcelWorkbook} = await import("exceljs");
     const workbook = new ExcelWorkbook();
     const ws = workbook.addWorksheet(meta.title);
-    const cols = isColumns(report.prior !== null);
-    const amountHeader = report.base === null ? "Amount" : `Amount (${report.base})`;
+    const cols = isColumns(report);
+    const inBase = report.base === null ? "" : ` (${report.base})`;
     // The prior column is headed with its own DATES, not "Prior": the window is
     // the previous equal-length one, which is not a period a reader can infer
     // from the range in the title — and a mislabelled comparison column is worse
@@ -668,9 +709,14 @@ export async function buildIncomeStatementWorkbook(report: IncomeStatementReport
     // both headed "Other commodities" would put the ambiguity the split removes
     // from the cells straight back into the headers.
     const priorExtrasHeader = report.prior === null ? [] : [`Other commodities (${report.prior.from} … ${report.prior.to})`];
-    addTitleRows(ws, meta, ["Account", amountHeader, ...priorHeader, "% of revenue", "Other commodities", ...priorExtrasHeader]);
-    ws.getColumn(cols.extras).width = 24; // "5 GLD, -2 TSLA" needs more room than a money column
-    if (cols.priorExtras !== null) ws.getColumn(cols.priorExtras).width = 24;
+    const headers =
+        report.buckets !== null
+            ? ["Account", ...report.buckets.map((bucket) => bucketLabel(bucket.key)), `Total${inBase}`, "Other commodities"]
+            : report.prior !== null
+              ? ["Account", `Amount${inBase}`, ...priorHeader, "% change", "Other commodities", ...priorExtrasHeader]
+              : ["Account", `Amount${inBase}`, "Other commodities"];
+    addTitleRows(ws, meta, headers);
+    for (const {col} of cols.extras) ws.getColumn(col).width = 24; // "5 GLD, -2 TSLA" needs more room than a money column
     ws.views = [{state: "frozen", ySplit: 4}];
     addIncomeStatement(ws, report, cols);
     return workbook;

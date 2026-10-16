@@ -57,7 +57,7 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development.md).
+          # Don't burn cache quota on source trees (see docs/development/building.md).
           pushFilter: '-(source|vendor)$'
 
       - name: cargo audit
@@ -102,7 +102,7 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development.md).
+          # Don't burn cache quota on source trees (see docs/development/building.md).
           pushFilter: '-(source|vendor)$'
 
       - name: bun audit

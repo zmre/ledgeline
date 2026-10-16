@@ -1,0 +1,17 @@
+# mbr site configuration for the Ledgeline manual.
+# Preview with `just docs`; build and link-check with `just docs-build`.
+index_file = "index.md"
+ignore_dirs = ["node_modules", ".git", "target", "build", "result"]
+sidebar_style = "single"
+title_prefix = "Ledgeline | "
+
+# Sort pages and sections by the `order` frontmatter field, then by title.
+[[sort]]
+field = "order"
+order = "asc"
+compare = "numeric"
+
+[[sort]]
+field = "title"
+order = "asc"
+compare = "string"

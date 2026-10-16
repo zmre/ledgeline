@@ -2,7 +2,7 @@
 
 Corpus for `crates/ledgeline-core/src/qb_journal.rs` — the second import pipeline, the one
 that reads a **grouped** report rather than one row per transaction. See
-`plans/17-quickbooks-journal-import.md` and `docs/imports.md`.
+`plans/17-quickbooks-journal-import.md` and `docs/development/imports-internals.md`.
 
 The house rule from `fixtures/import/README.md` carries over unchanged: **every fixture is a
 file some real exporter actually writes**, and each one exists to make exactly one wrong

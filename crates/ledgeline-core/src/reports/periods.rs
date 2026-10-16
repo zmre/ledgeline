@@ -397,6 +397,72 @@ pub fn next_n_buckets(
     Ok(out)
 }
 
+/// One column of a report over an explicit `[from, to]` range: the bucket's key
+/// and the inclusive dates it covers, CLAMPED to that range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BucketSpan {
+    /// The bucket key (`"2026-07"`, `"2026-Q3"`, …), or `"{from}..{to}"` for the
+    /// single column of an interval-less (Total) report.
+    pub key: String,
+    /// Inclusive start: the bucket's own start, or the range's `from` for the
+    /// first bucket.
+    pub from: String,
+    /// Inclusive end: the bucket's own end, or the range's `to` for the last.
+    pub to: String,
+}
+
+/// The columns a report over `[from, to]` (both INCLUSIVE) prints, oldest →
+/// newest: one per `interval` bucket that intersects the range, the first
+/// clamped to start at `from` and the last to end at `to`. `interval: None` is
+/// the Total grain — ONE column spanning the whole range.
+///
+/// The range-first companion to [`last_n_buckets`]: that one is asked for a
+/// count ending at a date, this one for the dates themselves, so a P&L or cash
+/// flow over "Jan 15 – Mar 10" cannot quietly include Jan 1–14. The spans tile
+/// the range without gaps or overlap, which is what lets the cash-flow pass
+/// place a posting by binary search.
+///
+/// Empty when `from` is after `to`. At most [`MAX_BUCKETS`] spans, for
+/// [`last_n_buckets`]' reason (SEC-2): callers taking a range from untrusted
+/// input reject a longer one with a 400 first.
+///
+/// # Errors
+/// Returns [`ReportError::InvalidBucketKey`] if bucket math ever yields an
+/// unrecognized key (unreachable for the intervals here).
+pub fn range_buckets(
+    from: &str,
+    to: &str,
+    interval: Option<Interval>,
+) -> Result<Vec<BucketSpan>, ReportError> {
+    if compare_iso(from, to) == Ordering::Greater {
+        return Ok(Vec::new());
+    }
+    let Some(interval) = interval else {
+        return Ok(vec![BucketSpan {
+            key: format!("{from}..{to}"),
+            from: from.to_string(),
+            to: to.to_string(),
+        }]);
+    };
+    let mut out = Vec::new();
+    let mut key = bucket_key(from, interval);
+    while out.len() < MAX_BUCKETS {
+        let start = bucket_start(&key)?;
+        if compare_iso(&start, to) == Ordering::Greater {
+            break;
+        }
+        let end = bucket_end(&key)?;
+        let next = next_bucket(&key, interval)?;
+        out.push(BucketSpan {
+            from: start.max(from.to_string()),
+            to: end.min(to.to_string()),
+            key,
+        });
+        key = next;
+    }
+    Ok(out)
+}
+
 /// The ISO date `delta` days after `date` (a negative `delta` moves earlier).
 /// Pure civil-day arithmetic — the companion to [`days_between`], used by the
 /// insights report to split a comparison span at its midpoint.
@@ -811,6 +877,83 @@ mod tests {
                 .unwrap_or_else(|e| panic!("n={n} must not fail: {e}"));
             assert_eq!(buckets.len(), MAX_BUCKETS, "n={n} must cap at MAX_BUCKETS");
             assert_eq!(buckets[0], "2026-07");
+        }
+    }
+
+    fn spans(from: &str, to: &str, interval: Option<Interval>) -> Vec<(String, String, String)> {
+        range_buckets(from, to, interval)
+            .unwrap()
+            .into_iter()
+            .map(|span| (span.key, span.from, span.to))
+            .collect()
+    }
+
+    fn span(key: &str, from: &str, to: &str) -> (String, String, String) {
+        (key.to_string(), from.to_string(), to.to_string())
+    }
+
+    /// The first bucket starts at `from`, the last ends at `to`, and every one
+    /// between keeps its own calendar bounds.
+    #[test]
+    fn range_buckets_clamp_the_first_and_last_bucket_to_the_range() {
+        assert_eq!(
+            spans("2026-01-15", "2026-03-10", Some(Interval::Monthly)),
+            [
+                span("2026-01", "2026-01-15", "2026-01-31"),
+                span("2026-02", "2026-02-01", "2026-02-28"),
+                span("2026-03", "2026-03-01", "2026-03-10"),
+            ]
+        );
+        assert_eq!(
+            spans("2025-11-01", "2026-04-30", Some(Interval::Quarterly)),
+            [
+                span("2025-Q4", "2025-11-01", "2025-12-31"),
+                span("2026-Q1", "2026-01-01", "2026-03-31"),
+                span("2026-Q2", "2026-04-01", "2026-04-30"),
+            ]
+        );
+        // A range inside one bucket is that bucket, clamped at both ends.
+        assert_eq!(
+            spans("2026-02-03", "2026-02-20", Some(Interval::Yearly)),
+            [span("2026", "2026-02-03", "2026-02-20")]
+        );
+    }
+
+    /// No interval is the Total grain: one span, exactly the range.
+    #[test]
+    fn range_buckets_without_an_interval_is_one_span_over_the_range() {
+        assert_eq!(
+            spans("2025-08-01", "2026-07-08", None),
+            [span("2025-08-01..2026-07-08", "2025-08-01", "2026-07-08")]
+        );
+    }
+
+    /// A backwards range has no columns, and an absurd one is capped rather than
+    /// walked forever (SEC-2).
+    #[test]
+    fn range_buckets_are_empty_backwards_and_capped_when_absurd() {
+        assert!(spans("2026-07-08", "2026-07-07", Some(Interval::Monthly)).is_empty());
+        assert!(spans("2026-07-08", "2026-07-07", None).is_empty());
+        let days = range_buckets("1900-01-01", "2026-12-31", Some(Interval::Daily)).unwrap();
+        assert_eq!(days.len(), MAX_BUCKETS);
+    }
+
+    /// The spans tile the range: contiguous, non-overlapping, and covering it.
+    #[test]
+    fn range_buckets_tile_the_range() {
+        for interval in [
+            Interval::Daily,
+            Interval::Weekly,
+            Interval::Monthly,
+            Interval::Quarterly,
+            Interval::Yearly,
+        ] {
+            let all = range_buckets("2025-12-17", "2026-07-08", Some(interval)).unwrap();
+            assert_eq!(all[0].from, "2025-12-17", "{interval:?}");
+            assert_eq!(all[all.len() - 1].to, "2026-07-08", "{interval:?}");
+            for pair in all.windows(2) {
+                assert_eq!(add_days(&pair[0].to, 1), pair[1].from, "{interval:?}");
+            }
         }
     }
 

@@ -23,6 +23,12 @@
      secondary line by the shared `amountCell`, rather than stacked as a second
      balance in the same cell.
 
+     Two column layouts (plans/24). Interval = Total: Amount, Prior and % change
+     ((current − prior) / |prior|, `—` when the prior is zero). Any other
+     interval: one column per bucket and a Total that sums them, with no prior
+     and no percentage. Each box is still its own table, so the bucket columns
+     are pinned to one width exactly as the Total-mode ones are.
+
      Keyboard: j/k walk every VISIBLE row — group headings included, so `j` does
      something on first load rather than nothing — and Enter either opens the
      disclosure (on a group) or drills into the journal (on an account). -->
@@ -31,6 +37,7 @@
     import {openJournal} from "#lib/journal/openJournal.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
+    import {bucketLabel} from "#lib/reports/periods.js";
     import type {Amounts, IncomeStatementReport, IsSectionKind} from "#lib/reports/types.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
@@ -126,6 +133,9 @@
     // the workbook cannot disagree with the page it came from.
     const summary = $derived(model.summary);
     const comparing = $derived(model.comparing);
+    const buckets = $derived(model.buckets);
+    /** How many figure cells a line has — for the empty-box row's colspan. */
+    const figureColumns = $derived(buckets !== null ? buckets.length + 1 : comparing ? 3 : 1);
 
     const valuationLabel = $derived(
         report.value === "market" ? `Market value${report.base === null ? "" : ` in ${report.base}`}` : report.value === "cost" ? "At cost" : "Unvalued"
@@ -148,16 +158,41 @@
     {/if}
 {/snippet}
 
-<!-- The three figure columns of one line. Widths are PINNED rather than left to
-     the table's auto layout: each box is its own `<table>`, so without fixed
-     numeric columns the amounts would land in a different place in every box and
-     the ruled subtotals between them would line up with nothing. -->
+<!-- The figure columns of one line. Widths are PINNED rather than left to the
+     table's auto layout: each box is its own `<table>`, so without fixed numeric
+     columns the amounts would land in a different place in every box and the
+     ruled subtotals between them would line up with nothing. -->
 {#snippet figures(amounts: Amounts, pct: number | null, emphasis: string)}
-    <td class="w-32 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(amounts.current), emphasis)}</td>
-    {#if comparing}
-        <td class="w-32 text-right align-top font-mono whitespace-nowrap text-base-content/60 tabular-nums">{@render amount(cell(amounts.prior), "")}</td>
+    {#if buckets !== null}
+        {#each amounts.values ?? [] as value, i (i)}
+            <td class="w-28 min-w-28 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(value), "")}</td>
+        {/each}
+        <td class="w-32 min-w-32 text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="total">
+            {@render amount(cell(amounts.current), emphasis)}
+        </td>
+    {:else}
+        <td class="w-32 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(amounts.current), emphasis)}</td>
+        {#if comparing}
+            <td class="w-32 text-right align-top font-mono whitespace-nowrap text-base-content/60 tabular-nums">{@render amount(cell(amounts.prior), "")}</td>
+            <td class="w-20 text-right align-top font-mono whitespace-nowrap text-base-content/60 tabular-nums" data-column="pct">{fmtPct(pct)}</td>
+        {/if}
     {/if}
-    <td class="w-20 text-right align-top font-mono whitespace-nowrap text-base-content/60 tabular-nums">{fmtPct(pct)}</td>
+{/snippet}
+
+<!-- The column headings for those figures, in the same order. -->
+{#snippet figureHeads()}
+    {#if buckets !== null}
+        {#each buckets as bucket (bucket.key)}
+            <th class="w-28 min-w-28 text-right font-normal" title="{bucket.from} to {bucket.to}">{bucketLabel(bucket.key)}</th>
+        {/each}
+        <th class="w-32 min-w-32 text-right font-normal">Total</th>
+    {:else}
+        <th class="w-32 text-right font-normal">Amount</th>
+        {#if comparing}
+            <th class="w-32 text-right font-normal">Prior</th>
+            <th class="w-20 text-right font-normal">% change</th>
+        {/if}
+    {/if}
 {/snippet}
 
 <!-- One Sankey, outside the statement's boxes the way the ladder subtotals are.
@@ -190,7 +225,9 @@
         {#if flows !== null && box.kind === firstCost}
             {@render flowPanel(flows, "Money out", "Which accounts paid, and what the period spent it on.", false)}
         {/if}
-        <section class="overflow-hidden rounded-box border border-base-content/10" data-testid="is-section-{box.kind}">
+        <!-- Scrolls sideways rather than clipping once a long interval run is
+             wider than the page. -->
+        <section class="overflow-x-auto rounded-box border border-base-content/10" data-testid="is-section-{box.kind}">
             <h3 class="bg-base-200 {ACCENT[box.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[box.kind].text}">
                 {box.title}
             </h3>
@@ -202,9 +239,7 @@
                 <thead>
                     <tr class="text-[0.65rem] text-base-content/40">
                         <th class="w-full font-normal"><span class="sr-only">{box.title} line</span></th>
-                        <th class="w-32 text-right font-normal">Amount</th>
-                        {#if comparing}<th class="w-32 text-right font-normal">Prior</th>{/if}
-                        <th class="w-20 text-right font-normal">% of revenue</th>
+                        {@render figureHeads()}
                     </tr>
                 </thead>
                 <tbody>
@@ -253,7 +288,7 @@
                     {#if box.rows.length === 0}
                         <tr>
                             <th class="w-full font-normal text-base-content/50">No {box.title.toLowerCase()}</th>
-                            <td colspan={comparing ? 3 : 2}></td>
+                            <td colspan={figureColumns}></td>
                         </tr>
                     {/if}
                 </tbody>
@@ -269,7 +304,7 @@
         <!-- The ladder. Between the boxes, ruled top and bottom, and outside every
              box's border precisely so it cannot be read as part of one. -->
         {#each box.trailing as subtotal (subtotal.kind)}
-            <div class="-my-1 border-y-2 border-base-content/30" data-testid="is-subtotal-{subtotal.kind}">
+            <div class="-my-1 overflow-x-auto border-y-2 border-base-content/30" data-testid="is-subtotal-{subtotal.kind}">
                 <table class="table table-sm">
                     <tbody>
                         <tr>
@@ -292,32 +327,58 @@
          every intermediate figure already a rung of the ladder. Seven duplicated
          totals is the exact complaint this redesign exists to fix.
 
-         What is left is the one figure that appears nowhere else on the page. -->
-    <div
-        class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-box border border-base-content/20 bg-base-200 px-4 py-3"
-        data-testid="is-net-income"
-    >
-        <span class="text-sm font-semibold tracking-wide uppercase">
-            Net income
-            <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(revenue − expenses)</span>
-        </span>
-        <!-- Current, THEN prior, then the percentage — the same left-to-right order
-             as the Amount / Prior / % of revenue columns in every box above, and
+         What is left is the one figure that appears nowhere else on the page.
+
+         In interval mode it is a ruled ROW instead, aligned under the bucket
+         columns like the ladder lines: net income per month is the one figure a
+         reader most wants there, and a single Total would hide it. -->
+    {#if buckets !== null}
+        <div class="overflow-x-auto rounded-box border border-base-content/20 bg-base-200" data-testid="is-net-income">
+            <table class="table table-sm">
+                <thead>
+                    <tr class="text-[0.65rem] text-base-content/40">
+                        <th class="w-full font-normal"><span class="sr-only">Net income</span></th>
+                        {@render figureHeads()}
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <th class="w-full text-sm font-semibold tracking-wide uppercase">
+                            Net income
+                            <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(revenue − expenses)</span>
+                        </th>
+                        {@render figures(summary.netIncome, null, "font-semibold")}
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    {:else}
+        <div
+            class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-box border border-base-content/20 bg-base-200 px-4 py-3"
+            data-testid="is-net-income"
+        >
+            <span class="text-sm font-semibold tracking-wide uppercase">
+                Net income
+                <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(revenue − expenses)</span>
+            </span>
+            <!-- Current, THEN prior, then the percentage — the same left-to-right order
+             as the Amount / Prior / % change columns in every box above, and
              the order `setIsAmounts` writes to the workbook. This panel is the one
              place on the page where the figures carry no column header, so it is
              the one place a reader has nothing but the established order to go on:
              rendered prior-first it read as though net income were $14,880.79 when
              the period actually earned $8,883.52. -->
-        <span class="flex flex-wrap items-baseline justify-end gap-x-4">
-            <span class="text-right font-mono text-xl font-semibold tabular-nums">
-                {@render amount(cell(summary.netIncome.current), "")}
-            </span>
-            {#if comparing}
-                <span class="text-right font-mono text-base-content/60 tabular-nums" data-testid="is-net-income-prior">
-                    {@render amount(cell(summary.netIncome.prior), "")}
+            <span class="flex flex-wrap items-baseline justify-end gap-x-4">
+                <span class="text-right font-mono text-xl font-semibold tabular-nums">
+                    {@render amount(cell(summary.netIncome.current), "")}
                 </span>
-            {/if}
-            <span class="w-20 text-right font-mono text-base-content/60 tabular-nums">{fmtPct(summary.netPct)}</span>
-        </span>
-    </div>
+                {#if comparing}
+                    <span class="text-right font-mono text-base-content/60 tabular-nums" data-testid="is-net-income-prior">
+                        {@render amount(cell(summary.netIncome.prior), "")}
+                    </span>
+                    <span class="w-20 text-right font-mono text-base-content/60 tabular-nums" data-testid="is-net-income-pct">{fmtPct(summary.netPct)}</span>
+                {/if}
+            </span>
+        </div>
+    {/if}
 </div>

@@ -780,6 +780,35 @@ async fn the_cross_origin_dev_flow_still_works() {
     );
 }
 
+/// A file drop sends its name in `X-Ledgeline-Filename`. Before this was on the
+/// allow-list, the cross-origin preflight refused it and every import in the
+/// two-server dev setup failed as "Cannot reach the Ledgeline engine".
+#[tokio::test]
+async fn the_cross_origin_upload_preflight_allows_the_filename_header() {
+    let (status, headers) = probe(
+        allowing_the_dev_origin(),
+        "OPTIONS",
+        "/api/import/stage",
+        &[
+            (header::HOST, GOOD_HOST),
+            (header::ORIGIN, "http://localhost:4173"),
+            (header::ACCESS_CONTROL_REQUEST_METHOD, "POST"),
+            (
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization,content-type,x-ledgeline-filename",
+            ),
+        ],
+    )
+    .await;
+    assert!(status.is_success(), "preflight refused: {status}");
+    assert!(
+        header_of(&headers, "access-control-allow-headers")
+            .unwrap_or_default()
+            .contains("x-ledgeline-filename"),
+        "the upload's filename header must be allowed: {headers:?}"
+    );
+}
+
 /// SEC-13. The shell's body used to carry the access token, and nothing may
 /// store it: a disk cache entry outlives the process whose token it held. Kept
 /// so a regression that put a credential back in the body would not also write

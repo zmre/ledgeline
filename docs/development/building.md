@@ -1,0 +1,445 @@
+---
+title: Building and CI
+description: "Dev shell, the pre-push hook, Nix and crane caching, the embedded SPA, the macOS app bundle, Cachix and CI."
+order: 10
+tags: [development]
+---
+
+# Ledgeline development
+
+Ledgeline is a single-binary app: `ledgeline` = an axum HTTP server + a
+wry/tao desktop webview (default-on `gui` cargo feature), with the built
+SvelteKit SPA embedded into the binary via `rust-embed`. Build
+`--no-default-features` for a headless, server-only binary (the shape Linux
+servers and CI build).
+
+You build the SPA into `web/build`; `crates/ledgeline-server/build.rs` mirrors
+that into `crates/ledgeline-server/spa/`, and *that* is what `rust-embed`
+embeds. The indirection exists so the crate is publishable — `cargo package`
+will not include files outside the package root — and it is why
+`cargo install ledgeline` gets a real UI. See that build.rs for the three
+cases it handles, and [releasing.md](releasing.md) for the rest.
+
+The whole toolchain is provided by Nix. Do not install anything globally.
+
+## Dev shell
+
+```sh
+direnv allow                 # auto-loads the flake dev shell (.envrc)
+# or, without direnv:
+nix develop path:.
+```
+
+The dev shell provides the pinned Rust toolchain, `pkg-config`, `nodejs_22`,
+`bun`, `hledger`, `hledger-web`, `just`, and the Playwright browsers, plus the
+Linux GUI libraries (`webkitgtk_4_1`, `gtk3`, `libsoup_3`). It also exports
+`LEDGELINE_FIXTURE` and the Playwright env vars. Common tasks live in the
+`justfile` (`just --list`).
+
+```sh
+nix develop path:. --command bash -c 'cargo --version && node --version && bun --version && hledger --version'
+```
+
+### The pre-push hook
+
+Entering the dev shell installs a `pre-push` hook (`git-hooks.nix`, configured
+in `flake.nix` under `gitHooks`). It runs the two formatters CI cares about
+against the whole tree, then `just pre-push`:
+
+| Hook | Runs | Fires when |
+| --- | --- | --- |
+| `rustfmt (workspace)` | `cargo fmt --all -- --check`, from the **pinned** toolchain | any `.rs` file changed |
+| `alejandra` | `alejandra` | any `.nix` file changed |
+| `just pre-push` | everything CI gates on that a laptop can run (see [Continuous integration](#continuous-integration)) | every push |
+
+`just pre-push` takes minutes, not seconds. It used to be a command you had to
+remember to type, and the failures it would have caught kept reaching CI. A push
+from outside the dev shell enters it first. The hook tests the working tree, not
+just the commits being pushed, because pre-push hooks get no stash.
+
+Push-time rather than commit-time on purpose: a pre-commit hook fires on every
+WIP and fixup commit, where half-formatted code is normal, and that friction is
+what teaches people to reach for `--no-verify` — which then disables the hook
+for the one case it existed to catch. Pushing is both the moment code stops
+being private and the last moment before CI spends twenty minutes reporting the
+same thing.
+
+`rustfmt` deliberately comes from `rust-toolchain.toml` rather than nixpkgs'
+`cargo`. Two rustfmt versions disagree about enough to reject a push over a file
+CI is perfectly happy with, and a hook that cries wolf gets bypassed.
+
+It is not a substitute for CI — a hook lives on one machine and `--no-verify`
+skips it — but it catches the mechanical cases before they cost a CI round trip.
+The kind of thing it is for: renaming `ledgeline-server` to `ledgeline` changed
+how rustfmt sorts `use` statements (`ledgeline` sorts *before* `ledgeline_core`
+where `ledgeline_server` sorted after), and `cargo check` and `cargo test` both
+pass happily on mis-sorted imports.
+
+The generated `.pre-commit-config.yaml` is a symlink into `/nix/store` and is
+git-ignored; edit `flake.nix` to change the hooks. To bypass once:
+
+```sh
+git push --no-verify
+```
+
+## The crane caching model (why rebuilds/retests are fast)
+
+`flake.nix` uses [crane](https://github.com/ipetkov/crane). The key idea:
+
+1. `cargoArtifacts = craneLib.buildDepsOnly …` compiles **only the third-party
+   dependencies** (including the entire wry/tao GUI stack) from a dummy source.
+   This is a single cached layer in the Nix store.
+2. Every real output — the binary and each check — is built with
+   `… // { inherit cargoArtifacts; }`, so they **reuse** that layer instead of
+   recompiling dependencies.
+
+Because the dependency layer's hash depends only on `Cargo.toml` / `Cargo.lock`
+(not on your source), editing a `.rs` file or a fixture recompiles only the
+workspace crates — the dependency layer is fetched from the store unchanged.
+The first build populates the layer (minutes); subsequent builds/tests are much
+faster. Push that layer to Cachix (below) and CI + teammates skip it entirely.
+
+### Outputs
+
+| Command | What it does |
+| --- | --- |
+| `nix build .#ledgeline` | The `ledgeline` binary (proves the GUI deps link: webkitgtk on Linux, system WebKit on macOS). It is `.#default` on Linux. |
+| `nix build .#clippy` | `cargo clippy --all-targets -- -D warnings` |
+| `nix build .#tests` | `cargo test` over the whole workspace |
+| `nix build .#fmt` | `cargo fmt --all --check` (crane's `cargoFmt`; `--all` is required — the workspace root has no targets of its own) |
+| `nix build .#macApp` | **macOS only** — just the `result/Applications/Ledgeline.app` bundle, **real** SPA embedded (see below). |
+| `nix build` (bare, macOS) | **macOS only** `.#default` — the combined `result/{bin/ledgeline, Applications/Ledgeline.app}` (CLI on PATH + the app). |
+| `nix flake check` | Runs all of the checks above |
+| `nix run .` | **Build and run the real app.** On macOS runs `ledgelineWithSpa` (the **real** SPA embedded); on Linux runs the placeholder-SPA `ledgeline` (see below). |
+
+The bare attribute (`.#clippy`, `.#tests`, …) resolves to the current system
+automatically (`x86_64-linux`, `aarch64-darwin`, …), which is how CI invokes
+them on each runner.
+
+### `nix run` runs the real app (both platforms)
+
+`apps.default` — what `nix run .` and `nix run github:zmre/ledgeline` execute —
+builds the SPA (the `bun install` FOD → `vite build`) and opens the real desktop
+window on the given journal:
+
+- **macOS** → `ledgelineWithSpa`, the binary with the actual SvelteKit UI baked in.
+- **Linux** → `linuxDist`, which wraps that **same** real-SPA binary with the
+  EGL/GBM search-path suffixes and ships the desktop entry + icons. The wrapper is
+  not optional: an unwrapped run aborts in the WebKit web process on any host
+  without `/run/opengl-driver`.
+
+`.#ledgeline` still embeds the CI placeholder SPA on every platform; `apps.default`
+deliberately does **not** use it. The `checks` keep using it, which is what holds
+Mesa and the whole bun/SPA build out of the CI closure.
+
+#### The `spaNodeModules` hash is per-system
+
+`spaNodeModules` is a fixed-output derivation, and its tree contains
+platform-specific native binaries (esbuild, rollup, `@tailwindcss/oxide`), so the
+recursive hash differs per system. `spaNodeModulesHashes` in `flake.nix` maps
+system → hash; a system with no entry throws a build-time error naming itself
+rather than failing as a confusing mismatch against someone else's platform.
+
+To add one: build on that system with a placeholder hash and copy the `got:` value
+Nix prints.
+
+```sh
+nix build .#spaNodeModules   # → error: ... specified: sha256-AAAA…  got: sha256-<real>
+```
+
+On an Apple Silicon machine with `extra-platforms = x86_64-darwin` in its Nix
+config, the Intel hash can be produced here too, under Rosetta:
+
+```sh
+nix build .#packages.x86_64-darwin.spaNodeModules
+```
+
+#### A stale pin is invisible until the cache drops the path
+
+**Re-pin every hash in the same commit that changes `web/bun.lock`.** This is
+easy to forget because forgetting it is silent: a fixed-output derivation's
+store path is derived from its `outputHash`, so while the OLD path is still in
+your store or on zmre.cachix.org, Nix substitutes it and never runs `bun
+install` to notice the pin no longer describes anything. Every machine keeps
+building happily.
+
+It surfaces when the path is evicted (which the cache does within days — see
+[the Nix binary cache playbook](nix-binary-cache-playbook.md)), and then it surfaces on whatever PR
+happened to be open at the time, which is never the PR that caused it. That is
+exactly what happened on 2026-08-30: `Dependency updates` changed `bun.lock`
+and `package.json` without touching `flake.nix`, all three hashes went stale,
+and CI stayed green for a fortnight before failing on an unrelated branch.
+
+To check a pin honestly, force the build rather than trusting a green run:
+
+```sh
+nix build .#spaNodeModules --rebuild
+```
+
+Two Linux-specific traps live in `spaBuild`, both already handled:
+
+- `patchShebangs node_modules` is required. The `.bin` shims carry
+  `#!/usr/bin/env node`, and the **Linux** build sandbox has no `/usr/bin/env`
+  (the darwin one does, which is the only reason this path worked there first).
+- It must patch the **whole tree**, not `node_modules/.bin`: those entries are
+  symlinks and `patchShebangs` only rewrites regular files, so aiming it at `.bin`
+  reports success and changes nothing.
+
+## The embedded SPA and the Nix sandbox
+
+`crates/ledgeline-server/src/spa.rs` embeds `crates/ledgeline-server/spa/`:
+
+```rust
+#[derive(RustEmbed)]
+#[folder = "$CARGO_MANIFEST_DIR/spa"]
+struct SpaAssets;
+```
+
+`crates/ledgeline-server/build.rs` fills `spa/` by mirroring `web/build`, or
+writes a placeholder when there is none (rust-embed refuses to *compile* against
+a missing folder). Neither directory is in the Nix source, so the flake's
+`preBuild` drops a placeholder `web/build/index.html` before every cargo phase of
+`.#ledgeline`, `.#clippy` and `.#tests`.
+
+Consequence: **those three embed a script-less placeholder SPA.** Fine for
+proving the Rust compiles, links and passes; useless for anything about the real
+UI. The SvelteKit SPA IS built inside Nix (`spaNodeModules` → `spaBuild`), and
+the outputs that need it copy it into `web/build` instead: `ledgelineWithSpa`
+(what `macDist`, `linuxDist` and `nix run` ship, and what the CI `e2e` job runs
+for `web/e2e/csp.same-origin.e2e.ts`), and the `spaShellCsp` check, which runs
+`tests/spa_shell_csp.rs` against the real shell with
+`LEDGELINE_REQUIRE_REAL_SPA=1` so the CSP's inline-script hashes are tested
+against what actually ships. Locally, build the SPA first (next section).
+
+> The crane source filter also keeps the repo `fixtures/` tree in the build
+> source, because the integration tests read it at runtime
+> (`CARGO_MANIFEST_DIR/../../fixtures`). `web/build` is deliberately excluded so
+> the Nix build stays reproducible (always the placeholder, never a stale local
+> SPA).
+
+## Building the real single binary (SPA embedded)
+
+Order matters — build the SPA first, then the Rust binary embeds it:
+
+```sh
+cd web && bun run build        # writes web/build/
+cd .. && cargo build --release # embeds web/build/ into target/release/ledgeline
+```
+
+(Or run both from the dev shell.) A plain `cargo build` without a prior
+`bun run build` still works — it just embeds the placeholder shell.
+
+## The macOS app bundle (`Ledgeline.app`)
+
+`nix build .#macApp` (macOS only) produces `result/Applications/Ledgeline.app`
+— the standard nix-darwin app layout, so it can be dragged to `/Applications`
+or picked up by home-manager / nix-darwin. The bundle holds
+`Contents/MacOS/ledgeline` (the binary), `Contents/MacOS/hledger` (see below),
+`Contents/Info.plist` (version taken from the workspace `Cargo.toml`), and
+`Contents/Resources/ledgeline.icns` (generated from `assets/ledgeline.png`).
+
+### The bundled `hledger`
+
+The bundle ships hledger's own macOS release binary (`bundledHledger` in
+`flake.nix`, pinned by version + hash) as a **sibling** of our binary, which is
+where `hledger::sibling_hledger` — resolution step 4 — looks for it.
+
+It has to be bundled because the two steps around it both miss in a downloaded
+app: the baked `LEDGELINE_HLEDGER_PATH` is a `/nix/store/…` path that does not
+exist on a user's Mac, and a Finder-launched app inherits *launchd's* `$PATH`
+rather than the one your shell exports — so a user with Homebrew hledger working
+in their terminal still gets "hledger was not found".
+
+The upstream release binary rather than `pkgs.hledger` because it links only
+`/usr/lib/*` and system frameworks; the Nix build pulls five dylibs out of the
+store that would each need vendoring. `flake.nix` asserts that rather than
+assuming it. See [releasing.md](releasing.md) for how to bump the pin.
+
+On macOS the **default** package — a bare `nix build` (or `nix profile install`)
+— is the combined `result/{bin/ledgeline, Applications/Ledgeline.app}`, so an
+install puts the CLI on `PATH` (via `bin/`) AND the app where nix-darwin /
+home-manager link it (via `Applications/`); both use the same real-SPA binary.
+On Linux the default is the headless `ledgeline` binary.
+
+`just package-mac` wraps `.#macApp` and copies a writable copy to `dist/Ledgeline.app`.
+`just package-dmg` goes one step further and builds an **unsigned**
+`dist/Ledgeline-<version>-arm64.dmg` for inspecting the packaging locally. The
+signed, notarized, distributable DMG is built only by the release workflow —
+see [releasing.md](releasing.md).
+
+### Opening journals from Finder
+
+`Info.plist.in` registers two exported UTIs so double-clicking a journal launches
+Ledgeline with that file open:
+
+| Extensions            | UTI                                  | Rank        |
+| --------------------- | ------------------------------------ | ----------- |
+| `.journal`, `.hledger` | `com.zmre.ledgeline.journal` | `Owner`     |
+| `.ledger`, `.j`        | `com.zmre.ledgeline.ledger`  | `Alternate` |
+
+`Owner` makes Ledgeline the system default for the hledger-specific extensions.
+`.ledger` and `.j` are shared with Ledger CLI tooling (and `.j` is generic enough
+that other toolchains claim it), so `Alternate` keeps Ledgeline reachable via
+**Open With** without stealing an existing default. Both types conform to
+`public.plain-text`, so Quick Look, Spotlight and text editors still work.
+
+macOS does **not** pass the document in `argv`: it calls
+`application:openURLs:`, which tao surfaces as `Event::Opened { urls }` and
+`gui.rs` handles. That event lands *after* startup has already parsed a journal
+from `$LEDGELINE_FIXTURE`/recents, so the app may briefly show the previous
+journal before switching; re-opening the already-open journal is skipped.
+
+Launch Services caches bundle registrations, so a freshly built bundle in a
+scratch location is often not picked up. Register it explicitly:
+
+```sh
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f dist/Ledgeline.app
+```
+
+For the association to *persist*, the app has to live somewhere stable — move it
+to `/Applications` (or let nix-darwin / home-manager link it there). Launch
+Services records the path it registered, so a default pointing at a `dist/` or
+`result/` copy breaks as soon as that build is replaced or garbage-collected.
+
+Unlike `.#ledgeline` (which embeds the CI placeholder SPA), **`.#macApp` embeds
+the real SvelteKit UI**: the flake builds the SPA inside Nix — a fixed-output
+`bun install` derivation (`spaNodeModules`, its hash pinned from `web/bun.lock`)
+feeds an offline `vite build` (`spaBuild`), whose output is baked into a
+dedicated crane build of the binary. No prior `bun run build` is required. If
+`web/bun.lock` changes, re-pin `spaNodeModules.outputHash` (build once with a
+fake hash; Nix prints the real one). The pinned hash captures the host
+platform's native deps (esbuild/rollup/@tailwindcss/oxide), so it is
+`aarch64-darwin`-specific.
+
+The icon is assembled with `imagemagick` + `png2icns` (libicns) — no macOS
+`iconutil`, so it builds in the pure Nix sandbox. The bundle is self-contained
+apart from macOS system libraries: it links nothing from `/nix/store`, so it runs
+on a Mac that has never had Nix installed. nixpkgs' darwin stdenv adds a phantom
+`-liconv` to every link (the binary imports no iconv symbols), so the build
+retargets that one load command to `/usr/lib/libiconv.2.dylib` and re-signs the
+binary ad-hoc — `install_name_tool` invalidates the linker's signature and arm64
+macOS won't exec a Mach-O with a broken one. Any *other* `/nix/store` dependency
+**fails the build** rather than shipping: it may be a real one, which needs
+vendoring into `Contents/Frameworks`, not a blind rewrite. Note that ad-hoc
+signing is **not** Developer ID signing or notarization — a publicly distributed
+`.dmg` still needs that separate work, and without it Gatekeeper will warn on a
+downloaded copy.
+
+## Cachix binary cache
+
+The flake declares three substituters in `nixConfig`: `cache.nixos.org`,
+`nix-community.cachix.org` (both public — immediate pull benefit), and
+`zmre.cachix.org` — the shared cache we reuse from
+[zmre/mbr-markdown-browser](https://github.com/zmre/mbr-markdown-browser). Its
+real public key is already committed in `flake.nix`, and `.envrc` passes
+`--accept-flake-config` so the dev shell trusts all three. **Pulls need no
+setup** — everyone (and every fork) benefits immediately.
+
+### One-time setup the maintainer must do by hand
+
+Only one thing is required, and only to enable CI *pushes*:
+
+- Add the `zmre` cache's push auth token to GitHub as a repository secret named
+  `CACHIX_AUTH_TOKEN` (repo **Settings → Secrets and variables → Actions → New
+  repository secret**). This is the same token used by mbr.
+
+Until that secret is set (and on forks), CI still runs fine: the cache **pushes
+are skipped** when the secret is absent; **pulls** from all three caches still
+work.
+
+Push a build manually:
+
+```sh
+nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
+```
+
+### What has to be pushed for a *consumer* to skip the build
+
+`.#ledgeline` alone is not enough, because it is not what everyone resolves to:
+
+| What the user runs | darwin resolves to | linux resolves to |
+| --- | --- | --- |
+| `nix build` / `nix profile install` | `macDist` (→ `macApp` → `ledgelineWithSpa`) | `ledgeline` |
+| `nix run` | `ledgelineWithSpa` | `ledgeline` |
+
+So the `build` job pushes `.#macDist` **and** `.#ledgelineWithSpa` on macOS. They are listed
+separately on purpose: `macApp` `cp`s the binary into `Contents/MacOS/` instead of symlinking
+it, so `ledgelineWithSpa`'s own store path is not a reference of `macDist` and would not ride
+along in its closure.
+
+`spaNodeModules` / `spaBuild` are build-time inputs only — a consumer who substitutes
+`macDist` never needs them (they get pushed anyway by the cachix-action daemon, which uploads
+everything a job built).
+
+### Pins and `pushFilter` (why the cache kept going empty)
+
+The `zmre` cache is on the free 5 GB plan, which garbage-collects
+**least-recently-used**. That is backwards for us: the crane dependency layer is
+touched by every CI run so it stays warm, while the release artifact nobody has
+downloaded since the last push is evicted first. Two mitigations, both in
+`ci.yml`:
+
+- **Pins.** The `build` job runs `cachix pin` on the consumer-facing outputs
+  (`.#ledgeline` on Linux; `.#macDist` + `.#ledgelineWithSpa` on macOS) with
+  `--keep-revisions 2`. Pinned paths are exempt from GC. The dependency layer is
+  deliberately *not* pinned — it is multi-GB, it churns with every `Cargo.lock`
+  bump, and it is exactly what LRU should be reclaiming.
+- **`pushFilter: '-(source|vendor)$'`** on every `cachix-action` block, so
+  `ledgeline-source` and friends never take up quota. Note the documented
+  caveat: a filtered path can still be uploaded if it is part of another path's
+  closure.
+
+Not a concern: paths already on `cache.nixos.org` (webkitgtk, gtk3, the whole
+GNOME stack) are **filtered out by Cachix automatically** and never counted
+against the 5 GB — that has been the default since 2020.
+
+For the cross-project version of all this, see
+[nix-binary-cache-playbook.md](nix-binary-cache-playbook.md).
+
+### Verifying a path is actually in the cache
+
+Store paths are content-addressed, so evaluating a revision anywhere reproduces exactly what
+CI built — which makes cache coverage checkable without building anything:
+
+```sh
+p=$(nix eval --raw github:zmre/ledgeline/<rev>#packages.x86_64-linux.ledgeline.outPath)
+curl -s -o /dev/null -w '%{http_code}\n' "https://zmre.cachix.org/$(basename "$p" | cut -d- -f1).narinfo"
+# 200 = cached, 404 = a consumer would have to build it
+```
+
+Note that Cachix garbage-collects: a `404` for a path CI demonstrably pushed means it has been
+evicted since, not that the push failed. Check the cache's retention/quota settings at
+[app.cachix.org/cache/zmre](https://app.cachix.org/cache/zmre) before assuming the workflow is
+broken.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and on every PR.
+Each job installs Nix with `DeterminateSystems/determinate-nix-action@v3` and
+wires `cachix/cachix-action@v17` (cache `zmre`, pulling `nix-community`
+too). Jobs:
+
+| Job | Runner(s) | Command |
+| --- | --- | --- |
+| `format-check` | ubuntu | `nix build -L .#fmt` (runs first) |
+| `clippy` | ubuntu + macos | `nix build -L .#clippy` |
+| `tests` | ubuntu + macos | `nix build -L .#tests` |
+| `build` | ubuntu + macos | `nix build -L .#ledgeline`; macOS also builds `.#macDist` (+ pushes to Cachix on `main`) |
+| `spa` | ubuntu | `bun install --frozen-lockfile && bun run build && bun run test:unit && bun run check` |
+
+`clippy`, `tests`, and `build` depend on `format-check` and share the crane
+dependency layer (populated once, then pulled from Cachix on later runs). The
+`e2e` job builds `.#ledgeline`, runs the vitest contract suites against it, then
+runs the Playwright specs; `versions`, plus `audit` and `spa-audit` (called from `audit.yml`), round out
+the nine jobs. All of them run on `pull_request`, none is conditional, so all of them gate.
+
+`bun run test:unit` runs BOTH of the SPA's vitest projects — `unit` (node, pure
+functions) and `components` (jsdom, mounted `*.svelte.test.ts`). Neither needs an
+engine or a browser. See [`web/README.md`](https://github.com/zmre/ledgeline/blob/main/web/README.md) for which to write and why.
+
+`just pre-push` is the local twin of that gate: `version-check`, `spa-hash-check`, `audit`, `engine-check`, `lint`, `check`, `test`, `test-integration`, `engine-test` and `e2e`, cheapest-first so it fails fast. A couple of minutes on a warm cargo cache and several on a cold one, which is the price of not learning the same thing from a red PR twenty minutes after pushing. The pre-push hook runs it (see above). It is also the only thing that runs `just lint` (prettier plus eslint over `web/`), which no CI job calls at all.
+
+Two kinds of failure used to reach CI because a laptop couldn't see them:
+
+- **New advisories.** The `audit` and `spa-audit` jobs go red when an advisory is published, with no commit from us. They live in `.github/workflows/audit.yml`. `ci.yml` calls it on every PR, and it also runs daily on `main`, so drift shows up there first. The ignore lists, and the reason for each entry, live in `scripts/audit.sh`, which `just audit` shares. When a new advisory has a patch release, bump the lockfile instead of adding an ignore. See the note at the end of the `spa_audit` comment in that script.
+- **A stale `spaNodeModules` pin.** A Mac can't build the Linux tree, so `just spa-hash-check` fails when `web/bun.lock` changed since `origin/main` but the aarch64-darwin or x86_64-linux pin didn't. `just repin-spa-hashes` fixes it. It builds aarch64-darwin locally and x86_64-linux on `$LEDGELINE_LINUX_STORE` (default `ssh-ng://avalon`).

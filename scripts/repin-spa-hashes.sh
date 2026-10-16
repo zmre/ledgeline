@@ -3,7 +3,7 @@
 #
 # For each system: swap in a placeholder hash, build the fixed-output
 # derivation, and paste in the `got:` hash Nix reports. This is the manual
-# routine from docs/development.md, scripted.
+# routine from docs/development/building.md, scripted.
 #
 #   aarch64-darwin / x86_64-linux  built locally when that is this machine.
 #   x86_64-linux from a Mac        built on a remote Linux store, by default
@@ -13,7 +13,7 @@
 #                                  daemon's /etc/nix/machines builders: the
 #                                  daemon runs as root and may not have the SSH
 #                                  key, but `--store` uses yours.
-#   x86_64-darwin                  never: release dry run only (docs/releasing.md).
+#   x86_64-darwin                  never: release dry run only (docs/development/releasing.md).
 #
 # A system that cannot be built keeps its current pin, and is reported.
 set -euo pipefail

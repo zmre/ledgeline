@@ -1,7 +1,7 @@
 // Display model for the grouped income statement (plans/13).
 //
 // Presentation, not engine: it lives under `reports/ui/` because collapsing a
-// disclosure and turning two exact decimals into "73.9%" are decisions about a
+// disclosure and turning two exact decimals into "12.3%" are decisions about a
 // screen, and the purity rule (`reports/purity.test.ts`) keeps that out of the
 // sources that port to Rust.
 //
@@ -19,7 +19,7 @@
 
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
 import {EM_DASH, ZERO} from "#lib/format/amounts.js";
-import type {Amounts, IncomeStatementReport, IsSection, IsSectionKind, IsSubtotalKind} from "#lib/reports/types.js";
+import type {Amounts, IncomeStatementReport, IsBucket, IsSection, IsSectionKind, IsSubtotalKind} from "#lib/reports/types.js";
 import {compressIsRows} from "./displayRows";
 
 export {amountCell, type AmountCell} from "./amountCell";
@@ -42,9 +42,9 @@ export interface IsDisplayRow {
     indent: number;
     /** The account this row stands for — `data-account` and the journal drill-down. Null for a group. */
     account: string | null;
-    /** The figure(s) on the right: current, plus the prior period's when comparing. */
+    /** The figure(s) on the right: current, plus the prior period's when comparing, or one per bucket in interval mode. */
     amounts: Amounts;
-    /** This line as a share of revenue, or null when there is no revenue to divide by. */
+    /** This line's % change against the prior period, or null when there is none (see `pctChange`). */
     pct: number | null;
     /** Group rows: whether the disclosure is currently open. Always false for an account row. */
     expanded: boolean;
@@ -90,7 +90,7 @@ export interface IsBox {
  */
 export interface IsSummary {
     netIncome: Amounts;
-    /** Net income as a share of revenue, or null when there is no revenue to divide by. */
+    /** Net income's % change against the prior period, or null when there is none. */
     netPct: number | null;
 }
 
@@ -98,7 +98,14 @@ export interface IsSummary {
 export interface IsDisplayModel {
     boxes: IsBox[];
     summary: IsSummary;
+    /** Total mode with a prior window: the Prior and % change columns exist. */
     comparing: boolean;
+    /**
+     * Interval mode's columns, or null in Total mode. When set, every figure is
+     * printed as its `values` followed by a Total (`current`), and there is no
+     * prior and no percentage.
+     */
+    buckets: IsBucket[] | null;
 }
 
 // There was a `sectionSign()` here, mapping each section kind to +1/−1. It went
@@ -129,8 +136,8 @@ function divRoundHalfAway(numerator: bigint, denominator: bigint): bigint {
 }
 
 /**
- * `amount ÷ revenue`, as a percentage to ONE decimal, or null when there is no
- * revenue to divide by.
+ * `(current − prior) ÷ |prior|`, as a percentage to ONE decimal — the % change
+ * column — or null when there is no change to state.
  *
  * Computed from the exact `Dec` values and never from a formatted string
  * ([[journal-refresh-fingerprint]]): the displayed figures are already rounded
@@ -139,25 +146,31 @@ function divRoundHalfAway(numerator: bigint, denominator: bigint): bigint {
  * The arithmetic is BigInt throughout, so nothing here goes through a float
  * until the final tenths-of-a-percent integer, which is exactly representable.
  *
- * `Option`-shaped on purpose. A journal with no revenue in the window has no
- * percentage — not 0.0%, not ∞ — and `—` is the honest cell. The denominator is
- * the REVENUE section's total, not net income: "% of revenue" is the only
- * reading of a common-size income statement, and net income is one of the lines
- * being measured.
+ * The denominator is the prior figure's MAGNITUDE, so the sign always says
+ * which way the line moved: an `other` box going from −$100 to −$50 improved,
+ * and reads +50.0%, not −50.0%.
  *
- * `base === null` (a journal with no base commodity) has no single figure to
- * form a ratio from, so it yields null rather than picking a commodity.
+ * `Option`-shaped on purpose. A line that was zero (or absent) last period has
+ * no percentage change — not 0.0%, not ∞ — and `—` is the honest cell. So does
+ * a report with no prior period at all (`prior` undefined: compare off, or
+ * interval mode), and `base === null` (a journal with no base commodity), which
+ * has no single figure to form a ratio from rather than one picked at random.
  */
-export function pctOfRevenue(amount: MixedAmount, revenue: MixedAmount, base: string | null): number | null {
-    if (base === null) return null;
-    const denominator = revenue.get(base);
-    if (denominator === undefined || denominator.m === 0n) return null;
-    const numerator: Dec = amount.get(base) ?? ZERO;
-    // value(n)/value(d) × 1000 = tenths of a percent, exactly:
-    //   (n.m / 10^n.p) / (d.m / 10^d.p) × 1000 = n.m × 10^d.p × 1000 / (d.m × 10^n.p)
-    const num = numerator.m * 10n ** BigInt(denominator.p) * 1000n;
-    const den = denominator.m * 10n ** BigInt(numerator.p);
-    return Number(divRoundHalfAway(num, den)) / 10;
+export function pctChange(current: MixedAmount, prior: MixedAmount | undefined, base: string | null): number | null {
+    if (base === null || prior === undefined) return null;
+    const was: Dec | undefined = prior.get(base);
+    if (was === undefined || was.m === 0n) return null;
+    const now: Dec = current.get(base) ?? ZERO;
+    // Both on one scale, then (now − was) / |was| × 1000 = tenths of a percent.
+    const scale = Math.max(now.p, was.p);
+    const nowM = now.m * 10n ** BigInt(scale - now.p);
+    const wasM = was.m * 10n ** BigInt(scale - was.p);
+    return Number(divRoundHalfAway((nowM - wasM) * 1000n, wasM < 0n ? -wasM : wasM)) / 10;
+}
+
+/** `pctChange` of one `Amounts` — the figure the % change column prints for it. */
+export function amountsPct(amounts: Amounts, base: string | null): number | null {
+    return pctChange(amounts.current, amounts.prior, base);
 }
 
 /**
@@ -171,19 +184,13 @@ export function pctOfRevenue(amount: MixedAmount, revenue: MixedAmount, base: st
  * here. (Unifying the two is a change to the domain formatter, and therefore to
  * every money surface in the app; see the note in `format/amounts.ts`.)
  *
- * No forced `+`: "73.9% of revenue" is a share, not a change, and "+73.9%"
- * would read as growth.
+ * No forced `+`, matching the QuickBooks "% Change" column this replaced the
+ * share-of-revenue one with: a decline carries its minus and growth needs no
+ * mark.
  */
 export function fmtPct(pct: number | null): string {
     if (pct === null) return EM_DASH;
     return `${pct < 0 ? "-" : ""}${Math.abs(pct).toFixed(1)}%`;
-}
-
-/** The percentage denominator: the Revenue section's current total, or empty when there is none. */
-export function revenueTotal(report: IncomeStatementReport): MixedAmount {
-    // By kind, not by index: sections are ladder-ordered and a journal with no
-    // revenue omits the box entirely, so position says nothing.
-    return report.sections.find((section) => section.kind === "revenue")?.total.current ?? new Map();
 }
 
 /**
@@ -194,7 +201,7 @@ export function revenueTotal(report: IncomeStatementReport): MixedAmount {
  * (`expenses:housing` → `expenses:housing:rent`) reads as one row here exactly
  * as it does in every other report table.
  */
-export function sectionDisplayRows(section: IsSection, isExpanded: (key: string) => boolean, revenue: MixedAmount, base: string | null): IsDisplayRow[] {
+export function sectionDisplayRows(section: IsSection, isExpanded: (key: string) => boolean, base: string | null): IsDisplayRow[] {
     const out: IsDisplayRow[] = [];
     for (const group of section.groups) {
         const key = isGroupKey(section.kind, group.name);
@@ -207,7 +214,7 @@ export function sectionDisplayRows(section: IsSection, isExpanded: (key: string)
             indent: 0,
             account: null,
             amounts: group.total,
-            pct: pctOfRevenue(group.total.current, revenue, base),
+            pct: amountsPct(group.total, base),
             expanded,
             expandable,
         });
@@ -220,7 +227,7 @@ export function sectionDisplayRows(section: IsSection, isExpanded: (key: string)
                 indent: display.indent + 1,
                 account: display.row.account,
                 amounts: display.row.amounts,
-                pct: pctOfRevenue(display.row.amounts.current, revenue, base),
+                pct: amountsPct(display.row.amounts, base),
                 expanded: false,
                 expandable: false,
             });
@@ -231,17 +238,13 @@ export function sectionDisplayRows(section: IsSection, isExpanded: (key: string)
 
 /**
  * The bottom line. Shared with the xlsx export so the workbook cannot disagree
- * with the screen about net income — or, just as easily, about which
- * denominator its margin was taken against.
- *
- * Small enough to look inlineable, and deliberately not: the choice of
- * denominator (the Revenue SECTION total, not net income) and the rounding are
- * the two things the two surfaces have to agree on, and they live here.
+ * with the screen about net income — or about its % change, which goes through
+ * the same `pctChange` and the same rounding on both surfaces.
  */
 export function isSummary(report: IncomeStatementReport): IsSummary {
     return {
         netIncome: report.netIncome,
-        netPct: pctOfRevenue(report.netIncome.current, revenueTotal(report), report.base),
+        netPct: amountsPct(report.netIncome, report.base),
     };
 }
 
@@ -254,24 +257,24 @@ export function isSummary(report: IncomeStatementReport): IsSummary {
  * reachable by `j` and absent from the screen (or the reverse).
  */
 export function isDisplayModel(report: IncomeStatementReport, isExpanded: (key: string) => boolean): IsDisplayModel {
-    const revenue = revenueTotal(report);
     const base = report.base;
     return {
         boxes: report.sections.map((section) => ({
             kind: section.kind,
             title: section.title,
-            rows: sectionDisplayRows(section, isExpanded, revenue, base),
+            rows: sectionDisplayRows(section, isExpanded, base),
             total: section.total,
-            totalPct: pctOfRevenue(section.total.current, revenue, base),
+            totalPct: amountsPct(section.total, base),
             trailing: section.trailing.map((subtotal) => ({
                 kind: subtotal.kind,
                 label: subtotal.label,
                 amounts: subtotal.total,
-                pct: pctOfRevenue(subtotal.total.current, revenue, base),
+                pct: amountsPct(subtotal.total, base),
             })),
         })),
         summary: isSummary(report),
         comparing: report.prior !== null,
+        buckets: report.buckets,
     };
 }
 

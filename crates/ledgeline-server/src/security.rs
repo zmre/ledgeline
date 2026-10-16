@@ -89,12 +89,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Request, State};
-use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 use tower_http::cors::{AllowOrigin, CorsLayer};
+
+use crate::import_api::FILENAME_HEADER;
 
 /// Environment variable holding a caller-chosen token. Set it when a
 /// cross-origin client (vite dev, the Playwright e2e harness) has to know the
@@ -326,7 +328,13 @@ impl Security {
                 // false keeps an allowlisted dev origin from riding along on any
                 // ambient authority.
                 .allow_credentials(false)
-                .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+                .allow_headers([
+                    header::AUTHORIZATION,
+                    header::CONTENT_TYPE,
+                    header::ACCEPT,
+                    // File uploads (`POST /api/import/stage`) carry the name here.
+                    HeaderName::from_static(FILENAME_HEADER),
+                ])
                 .max_age(PREFLIGHT_MAX_AGE),
         )
     }

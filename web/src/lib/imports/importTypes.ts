@@ -304,7 +304,7 @@ export interface Conflict {
 
 /**
  * What matching this statement's rows against the journal by id found, or null
- * when the rules file declares no id (`comment id:%fitid` — see `docs/imports.md`).
+ * when the rules file declares no id (`comment id:%fitid` — see `docs/development/imports-internals.md`).
  *
  * Never an empty object when present: "there is no id to match on" and "there
  * is, and nothing matched" are different facts, and this type lets the UI tell

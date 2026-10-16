@@ -30,6 +30,10 @@
         // holdings:/valuation: value is outside its closed vocabulary. The tag
         // is ignored and the report falls back, so this is a warning.
         "account-tag": "Unknown account tag value",
+        // Engine-computed from the holdings engine (wire.rs `stock_rule_of`).
+        "stock-missing-basis": "Stock with no cost basis",
+        "stock-negative": "Negative share count",
+        "stock-unpriced": "Stock with no price",
     };
 
     const SEVERITY_BADGE: Record<Severity, string> = {error: "badge-error", warning: "badge-warning", info: "badge-info"};

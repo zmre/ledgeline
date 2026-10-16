@@ -101,6 +101,10 @@ pub struct PeriodRow {
     /// Balance-sheet side, for net worth only; `None` for every other period
     /// report (and then absent from the wire, so their bytes do not move).
     pub kind: Option<RowKind>,
+    /// Cash flow only: the row's figure over the whole report, the sum of
+    /// `values`. `None` for net worth, whose columns are point-in-time
+    /// snapshots that mean nothing summed.
+    pub total: Option<MixedAmount>,
 }
 
 /// Cash flow / net worth: one column per bucket, oldest → newest.
@@ -112,6 +116,9 @@ pub struct PeriodReport {
     pub rows: Vec<PeriodRow>,
     /// One net total per bucket.
     pub totals: Vec<MixedAmount>,
+    /// Cash flow only: the sum of `totals` — the Net row's Total column. `None`
+    /// exactly when every row's `total` is.
+    pub grand_total: Option<MixedAmount>,
     /// Present only when noteworthy (e.g. unpriced commodities in net worth).
     pub meta: Option<ReportMeta>,
 }

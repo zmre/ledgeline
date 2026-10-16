@@ -11,7 +11,7 @@
 //! the `skip` the user's rules file already says. Nothing here touches the
 //! filesystem, spawns a process, or
 //! knows a path — matching the no-disclosure rule the rules API already holds
-//! to (`docs/imports.md` § Security). Callers hand us bytes and a bare file
+//! to (`docs/development/imports-internals.md` § Security). Callers hand us bytes and a bare file
 //! name; errors quote neither.
 //!
 //! Submodules land per lane:

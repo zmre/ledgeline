@@ -231,14 +231,16 @@ function stripPrior(value: unknown): unknown {
 }
 
 /**
- * The same body with every `prior` key removed — what `compare=none` returns.
+ * The same body with every figure's `prior` key removed and the report's own
+ * `prior` set to `null` — what `compare=none` returns (the engine always writes
+ * the report-level key; it is the switch the decoder reads).
  *
  * Derived rather than written out again, so the two variants cannot drift: the
  * comparing and non-comparing shapes must agree about every CURRENT figure, and
  * a second literal is how they would stop doing so. It stays `unknown`, so a
  * test still has to go through the decoder.
  */
-export const UNCOMPARED_INCOME_STATEMENT: unknown = stripPrior(GROUPED_INCOME_STATEMENT);
+export const UNCOMPARED_INCOME_STATEMENT: unknown = {...(stripPrior(GROUPED_INCOME_STATEMENT) as object), prior: null};
 
 /**
  * A tagged business journal: all seven sections, the full ladder, a mixed
