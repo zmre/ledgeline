@@ -10,7 +10,9 @@ tags: [reports, account-tags, prices]
 The balance sheet is three boxes — **Assets**, **Liabilities**, **Equity** — whose
 lines are *groups* rather than raw accounts, valued into a single currency so
 every line is one number. Under the boxes is a spreadsheet tie-out that proves the
-statement balances.
+statement balances. There is no separate net-worth line: net worth is assets
+minus liabilities, which is Total Equity, so it would print the same number twice.
+The [Net Worth tab](cash-flow-and-net-worth.md) shows it over time.
 
 ![The balance sheet as of 2026-07-08: the unvalued-holdings warning, then current and non-current assets](images/balance-sheet.png)
 
@@ -326,7 +328,7 @@ verdict, so the number is there to look at.
 ## Export
 
 The XLSX export mirrors the screen: filled section headers, bold group rows,
-indented accounts, ruled subtotals, the tie-out and its verdict, then net worth.
+indented accounts, ruled subtotals, then the tie-out and its verdict.
 Because every line is valued into one commodity, the amount column holds real
 numbers with a number format rather than text, so the workbook is arithmetic you
 can build on. Anything unpriced goes in its own column rather than being dropped.

@@ -349,22 +349,21 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("C25").value).toBe("-933.25 EUR");
         });
 
-        it("ends with the same tie-out the screen shows, then net worth, and freezes the header", async () => {
+        it("ends with the same tie-out the screen shows, and freezes the header", async () => {
             const ws = await readBack(await build(), "Balance Sheet");
 
-            expect(column(ws, 29, 8)).toEqual([
+            expect(column(ws, 29, 7)).toEqual([
                 "Total Assets",
                 "Total Liabilities",
                 "Total Equity",
                 "Liabilities + Equity",
                 "Total Assets",
                 "Balanced",
-                null, // a blank row, as on screen between the tie-out and net worth
-                "Net worth (assets − liabilities)",
+                null, // nothing after the verdict: no net-worth line, as on screen
             ]);
+            expect(ws.getCell("A36").value).toBeNull(); // where net worth used to sit, after a blank row
             expect(ws.getCell("A29").border?.top?.style).toBe("medium");
             expect(ws.getCell("A32").border?.top?.style).toBe("thin"); // the tie-out rule
-            expect(ws.getCell("A36").border?.top?.style).toBe("medium");
             expect(ws.views[0]).toMatchObject({state: "frozen", ySplit: 4});
         });
 
@@ -377,7 +376,6 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("B32").value).toBe(59612.62);
             expect(ws.getCell("C32").value).toBe("5 GLD, -2 TSLA");
             expect(ws.getCell("B33").value).toBe(59612.62);
-            expect(ws.getCell("B36").value).toBe(59081.47); // net worth, $59,081.465
         });
 
         it("writes the check line when it is non-zero, at a precision that shows the imbalance", async () => {

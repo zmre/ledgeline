@@ -321,11 +321,6 @@ function addBalanceSheet(ws: Worksheet, report: BalanceSheetReport): void {
         setBsAmount(ws, rowIx, report.check, report.base, true);
         for (const col of [1, 2, 3]) ws.getCell(rowIx, col).font = {bold: true, color: {argb: "FFB45309"}};
     }
-    rowIx += 2;
-
-    ruleAbove(ws, rowIx, "medium");
-    labelCell(ws, rowIx, "Net worth (assets − liabilities)", 0, true);
-    setBsAmount(ws, rowIx, summary.netWorth, report.base, true);
 }
 
 // --- Grouped income statement (plans/13) ------------------------------------

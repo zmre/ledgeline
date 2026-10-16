@@ -86,14 +86,16 @@ export interface BsDisplayRow {
 
 /**
  * The spreadsheet-style tie-out under the three boxes: the three section
- * totals, then `Liabilities + equity` set against `Total assets`, then net
- * worth as its own figure.
+ * totals, then `Liabilities + equity` set against `Total assets`.
  *
  * Why a tie-out rather than the bare net-worth panel this replaces: by
  * construction `Total equity ≡ Assets − Liabilities ≡ Net worth`, so a panel
  * showing only net worth restated a number already on screen and proved
  * nothing. Showing `L + E` against `A` is the check a reader of a balance sheet
- * actually performs, and it is the line that carries the verdict.
+ * actually performs, and it is the line that carries the verdict. For the same
+ * reason there is no separate net-worth figure under the tie-out any more:
+ * it is Total equity under another name, and the Net Worth tab is where that
+ * number is the subject.
  *
  * `liabilitiesPlusEquity` is summed from the exact `Dec` values and is for
  * DISPLAY ONLY. The verdict is `report.balanced`, passed through untouched:
@@ -108,8 +110,6 @@ export interface BsSummary {
     equity: MixedAmount;
     /** `liabilities + equity` — what must equal `assets`. Display only. */
     liabilitiesPlusEquity: MixedAmount;
-    /** `assets − liabilities`, straight from the engine. */
-    netWorth: MixedAmount;
     /** `report.balanced` — the engine's verdict, never a re-derived one. */
     balanced: boolean;
 }
@@ -127,7 +127,6 @@ export function bsSummary(report: BalanceSheetReport): BsSummary {
         liabilities,
         equity,
         liabilitiesPlusEquity: maAdd(liabilities, equity),
-        netWorth: report.netWorth,
         balanced: report.balanced,
     };
 }

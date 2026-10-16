@@ -520,13 +520,12 @@ describe("COMPONENT BalanceSheetView", () => {
             expect(screen.getByTestId("bs-tie-out").textContent).toContain("Out of balance");
         });
 
-        it("keeps net worth prominent, with its own unvalued footnote", () => {
+        it("ends on the tie-out, with no separate net-worth line", () => {
             mount();
-            const box = screen.getByTestId("bs-net-worth");
-
-            expect(box.textContent).toContain("Net worth");
-            expect(box.textContent).toContain("$59,081.47"); // $59,081.465
-            expect(box.textContent).toContain("5.0 GLD · -2.0 TSLA");
+            // Net worth is Total equity under another name, and has its own tab;
+            // repeating it under the statement printed one number twice.
+            expect(screen.queryByTestId("bs-net-worth")).toBeNull();
+            expect(screen.queryByText(/net worth/i)).toBeNull();
         });
 
         it("says nothing at all when the journal balances", () => {

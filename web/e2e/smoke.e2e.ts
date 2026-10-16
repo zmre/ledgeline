@@ -124,11 +124,13 @@ test("reports: balance sheet shows known fixture numbers", async ({page}) => {
     await expect(tieOut).toContainText("$548,112.62");
     await expect(tieOut).toContainText("Balanced");
 
-    // Net worth = assets − liabilities = $211,581.465 exactly. We show
+    // Total equity = assets − liabilities = $211,581.465 exactly. We show
     // $211,581.47: `formatDec` rounds half AWAY FROM ZERO everywhere in this app,
     // while hledger's CLI prints $211,581.46 because Haskell's `round` is
     // half-to-even. The cent is a display convention, not a disagreement.
-    await expect(page.getByTestId("bs-net-worth")).toContainText("$211,581.47");
+    // There is no separate net-worth line: it would repeat this figure.
+    await expect(page.getByTestId("bs-summary").getByRole("row", {name: /Total Equity/})).toContainText("$211,581.47");
+    await expect(page.getByTestId("bs-net-worth")).toHaveCount(0);
 
     // GLD and TSLA have no `P` directive, so the valuation could not convert
     // them. They must be visible, never silently dropped from the total.
