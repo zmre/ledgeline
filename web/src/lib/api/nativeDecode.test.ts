@@ -595,6 +595,53 @@ describe("UNIT nativeDecode — IncomeStatementReport (grouped)", () => {
             expect(() => decodeIncomeStatementReport({to: "2026-07-08", sections: []})).toThrow(/expected from, to and a sections array/);
             expect(() => decodeIncomeStatementReport({from: "2026-01-01", to: "2026-07-08"})).toThrow(/expected from, to and a sections array/);
         });
+
+        it("throws when a Total-mode figure carries bucket values the report has no buckets for", () => {
+            const stray = {...(UNCOMPARED_INCOME_STATEMENT as object), netIncome: {current: {}, values: [{}]}};
+            expect(() => decodeIncomeStatementReport(stray)).toThrow(/no buckets/);
+        });
+    });
+});
+
+// Interval mode (plans/24), over the engine's own bytes for
+// `?from=2026-01-01&to=2026-07-08&interval=monthly&compare=none`.
+describe("UNIT nativeDecode — IncomeStatementReport (interval mode)", () => {
+    const raw = golden("incomestatement-grouped-monthly") as Record<string, unknown>;
+    const report = decodeIncomeStatementReport(raw);
+
+    it("decodes the buckets, clamped to the range, and no prior window", () => {
+        expect(report.buckets).toHaveLength(7);
+        expect(report.buckets?.[0]).toEqual({key: "2026-01", from: "2026-01-01", to: "2026-01-31"});
+        expect(report.buckets?.at(-1)).toEqual({key: "2026-07", from: "2026-07-01", to: "2026-07-08"});
+        expect(report.prior).toBeNull();
+    });
+
+    it("gives every figure one value per bucket, with `current` as their Total", () => {
+        const net = report.netIncome;
+        expect(net.values).toHaveLength(7);
+        expect(net.prior).toBeUndefined();
+        // $5,383.52 — the same net income the Total statement reports, because
+        // nothing on sample.journal is revalued between the month ends.
+        expect(net.current.get("$")).toEqual({m: 53835200n, p: 4});
+        expect(report.sections[0].groups[0].rows[0].amounts.values).toHaveLength(7);
+    });
+
+    it("leaves a Total-mode report's buckets null", () => {
+        expect(decodeIncomeStatementReport(golden("incomestatement-grouped")).buckets).toBeNull();
+    });
+
+    it("throws when a figure has the wrong number of bucket values", () => {
+        // A short array would silently shift every column after the gap.
+        const short = {...raw, netIncome: {current: {}, values: [{}]}};
+        expect(() => decodeIncomeStatementReport(short)).toThrow(/netIncome values: expected 7 bucket figures/);
+        const missing = {...raw, netIncome: {current: {}}};
+        expect(() => decodeIncomeStatementReport(missing)).toThrow(/expected 7 bucket figures/);
+    });
+
+    it("throws on a prior window beside buckets, and on an empty bucket list", () => {
+        expect(() => decodeIncomeStatementReport({...raw, prior: {from: "2025-01-01", to: "2025-07-08"}})).toThrow(/cannot also carry a prior/);
+        expect(() => decodeIncomeStatementReport({...raw, buckets: []})).toThrow(/non-empty bucket array/);
+        expect(() => decodeIncomeStatementReport({...raw, buckets: [{from: "2026-01-01", to: "2026-01-31"}]})).toThrow(/missing key/);
     });
 });
 
@@ -651,6 +698,31 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
         ]);
         const flow = decodePeriodReport(golden("cashflow"));
         expect(flow.rows.every((r) => !("kind" in r))).toBe(true);
+    });
+
+    it("carries cash flow's Total column and no Total on net worth", () => {
+        const flow = decodePeriodReport(golden("cashflow"));
+        expect(flow.grandTotal?.get("$")).toEqual({m: 193890n, p: 2});
+        expect(flow.rows.every((r) => r.total !== undefined)).toBe(true);
+        const worth = decodePeriodReport(golden("networth"));
+        expect(worth.grandTotal).toBeUndefined();
+        expect(worth.rows.every((r) => !("total" in r))).toBe(true);
+    });
+
+    it("decodes the from/to window and its single-column Total grain", () => {
+        expect(decodePeriodReport(golden("cashflow-range")).buckets).toEqual(["2026-04", "2026-05", "2026-06", "2026-07"]);
+        const total = decodePeriodReport(golden("cashflow-total"));
+        expect(total.buckets).toEqual(["2025-08-01..2026-07-08"]);
+        expect(total.totals[0]).toEqual(total.grandTotal);
+    });
+
+    it("throws when the Total column is half there", () => {
+        // A grand total with a row missing its total would print a blank cell
+        // that reads as "no change"; a row total with no grand total has no
+        // column to sit in.
+        const row = {account: "assets", depth: 1, values: [{}]};
+        expect(() => decodePeriodReport({buckets: ["2026-07"], rows: [row], totals: [{}], grandTotal: {}})).toThrow(/total: missing amount/);
+        expect(() => decodePeriodReport({buckets: ["2026-07"], rows: [{...row, total: {}}], totals: [{}]})).toThrow(/no grand total/);
     });
 
     it("throws on a row side it does not know rather than stacking it nowhere", () => {
@@ -2034,7 +2106,10 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         ["incomestatement", decodeSectionedReport, golden("incomestatement")],
         ["incomestatement-grouped", decodeIncomeStatementReport, golden("incomestatement-grouped")],
         ["incomestatement-flows", decodeFlowReport, golden("incomestatement-flows")],
+        ["incomestatement-grouped-monthly", decodeIncomeStatementReport, golden("incomestatement-grouped-monthly")],
         ["cashflow", decodePeriodReport, golden("cashflow")],
+        ["cashflow-range", decodePeriodReport, golden("cashflow-range")],
+        ["cashflow-total", decodePeriodReport, golden("cashflow-total")],
         ["networth", decodePeriodReport, golden("networth")],
         ["budget", decodeBudgetReport, golden("budget")],
         ["budget-gaps", decodeBudgetGaps, golden("budget-gaps")],
