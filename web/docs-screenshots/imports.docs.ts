@@ -43,7 +43,16 @@ test.describe("quickbooks journal import", () => {
         // field circled: that is the field the page tells the reader to fill.
         const unmapped = page.getByTestId("qb-unmapped");
         const rows = unmapped.locator(":scope > div.rounded-box");
-        const yourAccount = rows.first().locator("label").filter({hasText: "Your account"}).locator("input");
+        const accountInput = (i: number) => rows.nth(i).locator("label").filter({hasText: "Your account"}).locator("input");
+        // Filled, not left empty: an empty field shows its placeholder, which
+        // reads as if every QuickBooks account maps to the same one.
+        const targets = ["assets:bank:checking", "equity:owner", "liabilities:credit card"];
+        for (const [i, target] of targets.entries()) {
+            await accountInput(i).fill(target);
+            await accountInput(i).press("Escape");
+        }
+        await page.locator("body").click({position: {x: 1, y: 1}});
+        const yourAccount = accountInput(0);
         const drawn = await annotate(page, [{kind: "circle", target: yourAccount, pad: 2}]);
         await shot(page, SECTION, "quickbooks-mapping", {clip: [unmapped.getByRole("heading"), rows.nth(2), drawn], padding: 10});
     });
