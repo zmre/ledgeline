@@ -1,3 +1,10 @@
+---
+title: Building and CI
+description: "Dev shell, the pre-push hook, Nix and crane caching, the embedded SPA, the macOS app bundle, Cachix and CI."
+order: 10
+tags: [development]
+---
+
 # Ledgeline development
 
 Ledgeline is a single-binary app: `ledgeline` = an axum HTTP server + a
@@ -157,7 +164,7 @@ install` to notice the pin no longer describes anything. Every machine keeps
 building happily.
 
 It surfaces when the path is evicted (which the cache does within days — see
-`docs/nix-binary-cache-playbook.md`), and then it surfaces on whatever PR
+[the Nix binary cache playbook](nix-binary-cache-playbook.md)), and then it surfaces on whatever PR
 happened to be open at the time, which is never the PR that caused it. That is
 exactly what happened on 2026-08-30: `Dependency updates` changed `bun.lock`
 and `package.json` without touching `flake.nix`, all three hashes went stale,
@@ -428,7 +435,7 @@ the nine jobs. All of them run on `pull_request`, none is conditional, so all of
 
 `bun run test:unit` runs BOTH of the SPA's vitest projects — `unit` (node, pure
 functions) and `components` (jsdom, mounted `*.svelte.test.ts`). Neither needs an
-engine or a browser. See `web/README.md` for which to write and why.
+engine or a browser. See [`web/README.md`](https://github.com/zmre/ledgeline/blob/main/web/README.md) for which to write and why.
 
 `just pre-push` is the local twin of that gate: `version-check`, `spa-hash-check`, `audit`, `engine-check`, `lint`, `check`, `test`, `test-integration`, `engine-test` and `e2e`, cheapest-first so it fails fast. A couple of minutes on a warm cargo cache and several on a cold one, which is the price of not learning the same thing from a red PR twenty minutes after pushing. The pre-push hook runs it (see above). It is also the only thing that runs `just lint` (prettier plus eslint over `web/`), which no CI job calls at all.
 

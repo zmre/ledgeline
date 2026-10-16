@@ -1,3 +1,10 @@
+---
+title: Income statement
+description: "The P&L: issection: and isgroup: tags, the GAAP subtotal ladder, comparison columns, valuation and the money-flow diagrams."
+order: 30
+tags: [reports, account-tags]
+---
+
 # The income statement, and the `issection:` / `isgroup:` tags
 
 The P&L is a stack of boxes — **Revenue**, **Expenses** — whose lines are *groups*
@@ -11,7 +18,7 @@ nothing and none of that appears. A personal journal never sees a line it has no
 use for.
 
 Design notes and the reasoning behind each decision live in
-[`plans/13-income-statement-redesign.md`](../plans/13-income-statement-redesign.md).
+[`plans/13-income-statement-redesign.md`](https://github.com/zmre/ledgeline/blob/main/plans/13-income-statement-redesign.md).
 
 ## Why groups instead of accounts
 

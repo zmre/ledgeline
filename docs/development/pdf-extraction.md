@@ -1,6 +1,13 @@
+---
+title: PDF statement extraction (research notes)
+description: "Why PDF statements are refused today, and the researched route to supporting them."
+order: 60
+tags: [development, imports]
+---
+
 # Extracting tables from PDF statements (deferred — research notes)
 
-PDF import was deliberately cut from WP-11 (`plans/11-enhanced-import.md`). This document
+PDF import was deliberately cut from WP-11 ([`plans/11-enhanced-import.md`](https://github.com/zmre/ledgeline/blob/main/plans/11-enhanced-import.md)). This document
 exists so whoever picks it up does not repeat the survey. Everything here was measured in
 August 2026 — versions, closure sizes and the capability claims were compiled and run, not
 read off a README. Re-check the version numbers before trusting them; the conclusions should
@@ -111,21 +118,8 @@ to write the column logic.
 - Budget realistically: ~2–3 weeks to something trustworthy, with most of it in wrapped
   descriptions and page continuations, not in extraction.
 
-## Related: QuickBooks (also deferred, also different)
+## Related: QuickBooks (shipped separately)
 
-Worth recording here because it is the other format on the roadmap and it does **not** belong
-in this pipeline. A QuickBooks export is not a bank statement — it already carries both sides
-of every transaction, in QuickBooks' own chart of accounts. So:
+When this survey was written, QuickBooks was also deferred, and the reasoning still explains its design. A QuickBooks export is not a bank statement. It already carries both sides of every transaction, in QuickBooks' own chart of accounts, so going through a rules file would mean flattening two-sided data into one-sided rows and then guessing the other side back.
 
-- There is **no intermediate CSV and no `hledger import`**. Going through a rules file would
-  mean flattening two-sided data into one-sided rows and then guessing the other side back —
-  losing information to recover it badly.
-- What it needs instead is a persistent **account mapping** (QuickBooks account → hledger
-  account), stored per-source and reused across imports, plus a UI for resolving unmapped
-  accounts on first sight.
-- That mapping store, not the parser, is the actual design work. `.qbo` files are just OFX
-  and are already handled by WP-11's OFX path; it is IIF/CSV/XML *exports* that carry the
-  chart of accounts and need this treatment.
-
-It should get its own WP, sharing WP-11's drop target, git safety net and journal-target
-selection, but none of its rules-file machinery.
+It has since shipped as its own pipeline (WP-17, [`plans/17-quickbooks-journal-import.md`](https://github.com/zmre/ledgeline/blob/main/plans/17-quickbooks-journal-import.md)) for the QuickBooks Online Journal report. It has no intermediate CSV and no `hledger import`. The account mapping is stored as plain hledger `alias` directives in the journal rather than in a separate store, and the file goes in through the same New Transactions drop target. See [Importing from QuickBooks](../imports/quickbooks.md) for the user side and [the internals](imports-internals.md#importing-a-quickbooks-online-journal-export) for the parser. `.qbo` files are OFX and go through the ordinary OFX path.

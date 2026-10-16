@@ -1,3 +1,10 @@
+---
+title: Cash flow and net worth
+description: "The Cash Flow and Net Worth period reports and how their stacked charts match the table."
+order: 40
+tags: [reports]
+---
+
 # Cash Flow and Net Worth, and their charts
 
 Both tabs are period reports: one column per bucket (monthly, quarterly or yearly), the last `count` buckets ending with the one that holds the end date, accounts rolled up and clamped to the chosen depth. Cash Flow defaults to twelve months, Net Worth to five years. Each tab draws a chart above its table. The table is the chart's accessible twin: every number the chart draws is in the table too.

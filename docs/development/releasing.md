@@ -1,3 +1,10 @@
+---
+title: Releasing
+description: "Cutting a release: signed and notarized macOS DMGs, crates.io publishing, and the bundled hledger."
+order: 20
+tags: [development]
+---
+
 # Releasing Ledgeline
 
 Tagging `vX.Y.Z` builds, signs, notarizes and publishes a macOS DMG.

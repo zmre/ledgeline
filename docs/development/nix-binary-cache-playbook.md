@@ -1,3 +1,10 @@
+---
+title: Nix binary cache playbook
+description: "How to make a Nix binary cache useful to other people: what to build, push, pin, and verify."
+order: 70
+tags: [development]
+---
+
 # Playbook: making a Nix binary cache actually useful to other people
 
 Project-agnostic. Copy this into any flake repo that wants

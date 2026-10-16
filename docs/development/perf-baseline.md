@@ -1,8 +1,20 @@
+---
+title: Performance baseline
+description: "Benchmark corpus, baseline numbers and how to compare performance after a change."
+order: 50
+tags: [development]
+---
+
 # Ledgeline performance baseline
 
 The numbers PERF-1 … PERF-5 must be measured against. **Recorded before any
 Phase 6 optimization landed** — this is the "before" every later run diffs
 against.
+
+> [!NOTE]
+> "The code review" below means the July 2026 code review that produced the
+> PERF-* findings and the Phase 6 plan. It was a maintainer's working list and is
+> not part of this repository.
 
 | | |
 |---|---|
@@ -94,7 +106,7 @@ same strictness to the engine, and the generator's balance assertions are
 computed from an exact `i64`-cents running balance rather than from rounded
 display text.
 
-| | Generated | CLEANUP.md's stated shape |
+| | Generated | The code review's stated shape |
 |---|---|---|
 | Declared accounts | 300 | 300 |
 | Accounts actually used | 248 | 243 |
@@ -113,7 +125,7 @@ tags on roots and cash accounts, all three statuses, elided amounts, digit-group
 `$1,234.56` and comma-decimal `1.234,56 EUR` styles.
 
 **Where the shape differs and why it matters.** The corpus is ~5% smaller per
-transaction than CLEANUP.md's and carries ~5% more postings per transaction. Both
+transaction than the code review's and carries ~5% more postings per transaction. Both
 are small, and the timings below track the document closely enough that the
 journal shape is not the explanation for any of the discrepancies in §4.
 
@@ -197,7 +209,7 @@ The `/transactions` payload serializes to 8.60 MB / 86.5 MB / **347.1 MB**.
 
 ---
 
-## 4. Reproducing CLEANUP.md's Phase 6 claims
+## 4. Reproducing the code review's Phase 6 claims
 
 Every claim in Phase 6 that has a number, checked against the measurement above.
 Some of the document's numbers are HTTP-endpoint latencies; the closest engine
@@ -205,7 +217,7 @@ bench is named in each case.
 
 ### Reproduced (within ~20%)
 
-| CLEANUP.md claim | Doc | Measured | Note |
+| Code review claim | Doc | Measured | Note |
 |---|---|---|---|
 | `parse_journal`, 5k | 6 ms | 6.43 ms | |
 | `parse_journal`, 50k | 65 ms | 63.0 ms | |
@@ -228,7 +240,7 @@ bench is named in each case.
 
 ### Reproduced in kind, but the magnitude is off
 
-| CLEANUP.md claim | Doc | Measured | Assessment |
+| Code review claim | Doc | Measured | Assessment |
 |---|---|---|---|
 | `Snapshot::from_journal`, 200k | 1,190 ms | **1,696 ms** | **+43%.** Same at every size (5k 31 → 40.6 ms, 50k 297 → 409 ms), so this is a consistent offset, not noise. The finding is *understated*: the snapshot build is worse than the document says, and it is still ~85% of startup. Nothing downstream is invalidated. |
 | `wire::journal_to_value` | 825 ms | 1,107 ms | +34%, consistent with the above. |
@@ -312,7 +324,7 @@ materializes before serialization — serializing streaming, or straight from th
 
 ## 6. Known gaps
 
-- **No `crates/ledgeline-server` benches.** CLEANUP.md asks for
+- **No `crates/ledgeline-server` benches.** The code review asks for
   `benches/snapshot.rs` with `snapshot/from_journal` and
   `snapshot/serve_transactions`. `Snapshot` is `pub(crate)`, and the server crate
   was out of this agent's scope, so `wire/snapshot_from_journal` in the core
@@ -323,7 +335,7 @@ materializes before serialization — serializing streaming, or straight from th
 - **No HTTP-level benches**, so PERF-2 (ETag/compression/windowing), PERF-3
   (`spawn_blocking` under concurrency) and PERF-4 (watcher debounce) have no
   numbers here at all. They need a server-side harness.
-- **No `parse/includes_200k`.** CLEANUP.md asks for it to show that `include`
+- **No `parse/includes_200k`.** The code review asks for it to show that `include`
   splitting costs nothing; the generator emits a single file. Adding it means
   teaching the generator to shard into `include`d files.
 - **No CI wiring.** `nix build .#clippy` runs `--all-targets`, so the benches and
@@ -334,7 +346,7 @@ materializes before serialization — serializing streaming, or straight from th
   `nix build .#clippy` fails with "can't find bench `engine`" until
   `crates/ledgeline-core/benches/` is committed.
 - **`cargo-llvm-cov` is still absent** from `flake.nix` (out of scope here), so
-  every coverage claim in CLEANUP.md remains read-derived.
+  every coverage claim in the code review remains read-derived.
 
 ---
 
@@ -448,7 +460,7 @@ same ratio reads ~1× either way, so v1 could not have told the two apart.
 
 ### 7.4 What v2 answers about the predictions
 
-The four paths TODO.md predicted would fall over, with what was actually
+The four paths [`TODO.md`](https://github.com/zmre/ledgeline/blob/main/TODO.md) predicted would fall over, with what was actually
 measured:
 
 1. **`latest_directive_price` — holds up.** 123 ms per `compute_holdings` at

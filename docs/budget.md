@@ -1,3 +1,10 @@
+---
+title: Budget
+description: "The Budget tab: goals stored as hledger ~ periodic rules, how Ledgeline edits them, and how to read the bars."
+order: 50
+tags: [budget]
+---
+
 # The Budget tab, and the `~` rules behind it
 
 The Budget tab shows two things about the same subject: how you are doing
@@ -7,7 +14,7 @@ ordinary hledger `~` periodic rules, which `hledger balance --budget` reads
 exactly as it always has.
 
 Design notes and the reasoning behind each decision live in
-[`plans/15-budget-editor.md`](../plans/15-budget-editor.md).
+[`plans/15-budget-editor.md`](https://github.com/zmre/ledgeline/blob/main/plans/15-budget-editor.md).
 
 ## What a budget is, in the file
 
@@ -45,7 +52,7 @@ you when the dialog opens, and a list opened at that moment would be positioned
 against a dialog that is still animating into place.
 
 Any account is allowed. Most goals are expenses, but budgeting an income account
-is the same gesture — see § Income.
+is the same gesture. See [Income, and the sign](#income--and-the-sign).
 
 ## Where your goals get written
 
@@ -89,7 +96,7 @@ Adding a goal puts it in the existing rule of that period — the first writable
 one, in file order, **whatever it is called** — and opens a new rule
 (`~ monthly  monthly budget`) only when that period has no rule at all. Your
 monthly rule can be called `household budget`; goals still go in it. A rule shown
-read-only (§ What Ledgeline will not rewrite) is never joined; a new one is
+read-only (see [What Ledgeline will not rewrite](#what-ledgeline-will-not-rewrite)) is never joined; a new one is
 opened instead. So a journal edited through Ledgeline tends toward one block per
 interval, which is legible.
 
@@ -274,6 +281,8 @@ hledger accepts, and not something worth leaving behind.
 
 ## Reading the bars
 
+<!-- screenshot: Budget bars excerpt, one category with the goal marker and the pace marker arrowed -->
+
 The top half is `hledger balance --budget` in envelope form: one bullet bar per
 category, split into Income and Expenses, with the goal marker where your budget
 sits and the fill showing what has actually happened.
@@ -350,7 +359,7 @@ Three things decide what appears:
   `expenses:food:dining`; it does not quietly cover `expenses:insurance` just
   because both live under `expenses`.
 - **Only income and expenses**, decided by declared account type (see
-  [`docs/income-statement.md`](income-statement.md)). The cash and card legs of
+  [the income statement page](reports/income-statement.md)). The cash and card legs of
   an unbudgeted purchase are not spending, and including them would net the
   section against itself and answer nothing.
 - **The same span and depth as the bars.** The numbers on one screen have to tie
@@ -359,6 +368,6 @@ Three things decide what appears:
 
 The section is fetched only when you open it, so leaving it shut costs nothing.
 
-See [`docs/income-statement.md`](income-statement.md) for how account types are
+See [the income statement page](reports/income-statement.md) for how account types are
 resolved — the same `type:` rules decide which side of the budget an account
 lands on.

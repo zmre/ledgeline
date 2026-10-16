@@ -1,3 +1,10 @@
+---
+title: Balance sheet
+description: "How the balance sheet groups accounts, the bsgroup: and bsterm: tags, valuation, equity, and the balance check."
+order: 20
+tags: [reports, account-tags, prices]
+---
+
 # The balance sheet, and the `bsgroup:` / `bsterm:` tags
 
 The balance sheet is three boxes — **Assets**, **Liabilities**, **Equity** — whose
@@ -10,7 +17,7 @@ This page covers how lines are chosen, how to control them with `bsgroup:`, how
 mean, and why the balance check has a tolerance.
 
 Design notes and the reasoning behind each decision live in
-[`plans/12-balance-sheet-redesign.md`](../plans/12-balance-sheet-redesign.md).
+[`plans/12-balance-sheet-redesign.md`](https://github.com/zmre/ledgeline/blob/main/plans/12-balance-sheet-redesign.md).
 
 ## Why groups instead of accounts
 
@@ -151,7 +158,7 @@ does **not**, so an untagged `liabilities:mortgage` is out of Balances and still
 under `Current` here. Tagging it settles both. The list is short on purpose,
 the guess never overrides a tag in either direction, and the view names every
 account it excluded that way rather than removing it silently — see
-[`plans/19-account-balances.md`](../plans/19-account-balances.md) for the word
+[`plans/19-account-balances.md`](https://github.com/zmre/ledgeline/blob/main/plans/19-account-balances.md) for the word
 list, the evidence behind it, and the words that were rejected. That plan also
 records the other case where the two screens can disagree: an account moved onto
 or off the Cash line by an explicit `bsgroup:` rather than by its `type:`.

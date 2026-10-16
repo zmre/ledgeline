@@ -1,25 +1,24 @@
-# Imports
+---
+title: Imports internals
+description: "How the import pipeline works under the hood: subprocess rules, the two journals, skip alignment, re-download matching, the rules-file model, aliases and security."
+order: 40
+tags: [development, imports]
+---
 
-Three surfaces behind one nav item, each with its own tab:
+# Imports internals
 
-- **New Transactions** — drop a statement file, convert it to CSV, match it against your rules
-  files, run `hledger import`, and check the result before anything is written.
-- **Edit Rules** — find, read, present and edit hledger CSV import rules files (`*.rules`).
-- **Account Aliases** — the `alias` directives in your journal, and the mapping table an import
-  hands to `hledger --alias`. See § Account aliases, and § The two homes an alias can live in for
-  why the same mapping in an `hledger.conf` is a different thing.
+This page is for maintainers. It explains how the import pipeline works and why it is built the way it is. For how to use it, see the user pages:
 
-Rules-file scope: **discover, present, edit, save, and draft a new one from a dropped CSV.** Still
-not in scope: writing a chosen category back as a new `if` rule. The model below is shaped so that
-slots in additively.
+- [New transactions](../imports/new-transactions.md): drop a statement file, convert it to CSV, match it against your rules files, run `hledger import`, and check the result before anything is written.
+- [Editing rules files](../imports/rules-editor.md): find, read and edit hledger CSV import rules files (`*.rules`).
+- [Account aliases](../settings/account-aliases.md): the `alias` directives in your journal, which an import hands to `hledger --alias`. The editor lives in Settings. See [Account aliases](#account-aliases) below, and [the two homes an alias can live in](#the-two-homes-an-alias-can-live-in--and-what-each-affects) for why the same mapping in an `hledger.conf` is a different thing.
+- [Importing from QuickBooks](../imports/quickbooks.md): a separate pipeline for the QuickBooks Online Journal report.
 
-Raw text editing is deliberately *not* offered — that is what a terminal is for. The GUI covers
-preferences, the row mapping, the two default accounts, and an ordered list of `if` rules.
+The rules-file scope is to discover, present, edit and save rules files, and to draft a new one from a dropped CSV. Writing a chosen category back as a new `if` rule is still out of scope. The model below is shaped so that it can be added later without changing what exists.
 
-Statement-conversion scope: CSV/TSV/SSV, OFX/QFX, and xls/xlsx/xlsm/xlsb/ods. **PDF is refused by
-name** — see `docs/pdf-extraction.md` for the survey and the route back in. QuickBooks IIF/CSV
-exports need an account-mapping store and do not belong in this pipeline at all; that doc explains
-why.
+Raw text editing is deliberately not offered, because a terminal does that better. The GUI covers preferences, the row mapping, the two default accounts, and an ordered list of `if` rules.
+
+Statement conversion handles CSV/TSV/SSV, OFX/QFX/QBO, and xls/xlsx/xlsm/xlsb/ods. PDF is refused by name. See [PDF statement extraction](pdf-extraction.md) for the survey and the route back in. A QuickBooks Online Journal `.xlsx` is detected and handed to its own pipeline, described in [Importing a QuickBooks Online Journal export](#importing-a-quickbooks-online-journal-export) below.
 
 ## Where the code is
 
@@ -46,12 +45,12 @@ why.
 `crates/ledgeline-server/src/hledger.rs` and `crates/ledgeline-server/src/git.rs` are the **only**
 places in production code where `Command::new` may appear. That is a deliberate, enforceable
 boundary, and it exists because this codebase already refuses to execute a rules file's
-`source ... | CMD` directive (see § Security). Having won that argument, we do not then scatter
+`source ... | CMD` directive (see [Security](#security)). Having won that argument, we do not then scatter
 process spawning across the server.
 
 The rules those two modules hold to:
 
-- **Every hledger invocation passes `--no-conf`.** See § No hledger we run reads a config file —
+- **Every hledger invocation passes `--no-conf`.** See [No hledger we run reads a config file](#no-hledger-we-run-reads-a-config-file) —
   this one is a security property, not a tidiness one.
 - **Arguments as a `Vec<OsString>`, never a shell string.** No `sh -c`. `--` terminates every
   pathspec list, so a statement named `-f` is a file. git additionally gets `--literal-pathspecs`,
@@ -382,7 +381,7 @@ than only the ones declaring no commodity style.
 exactly right for an append-only download and exactly wrong for the YTD-redownload workflow, where
 the same row arrives twice: once as an authorization hold, and again once it settles. The second
 copy sits *behind* the marker, is never proposed, and the journal keeps the pending version
-forever. `TODO.md` names it, and names the sharper half — the dry-run's "N rows skipped" count
+forever. [`TODO.md`](https://github.com/zmre/ledgeline/blob/main/TODO.md) names it, and names the sharper half — the dry-run's "N rows skipped" count
 **cannot distinguish "already imported identically" from "already imported differently"**.
 
 ### The id is the bank's, and it needs no new grammar
@@ -579,7 +578,7 @@ A statement's account column is frequently the bank's own words. A real Morgan S
 says `PW Roth IRA - 3077` where the journal says `assets:morganstanley:pw-roth-ira`, and a rules
 file that interpolates the column (`account1 %acct`) writes the bank's words straight into the
 ledger. The usual workaround is a `source ./x.csv | ./clean.py` line adding a mapped column —
-which this codebase **will never run** (see § Security). So the mapping is done natively instead.
+which this codebase **will never run** (see [Security](#security)). So the mapping is done natively instead.
 
 ### The finding this rests on
 
@@ -609,8 +608,8 @@ for — verified: a plain `hledger import` writes `PW Roth IRA - 3077:cash` wher
 `assets:morganstanley:pw-roth-ira:cash`.
 
 So Ledgeline **reads `hledger.conf` itself** and merges its `--alias` values into the ones it
-forwards. Note *reads*, not *delegates*: we never pass `--conf`. § No hledger we run reads a config
-file exists precisely so no external file steers our subprocess, and a config may hold `--depth` or
+forwards. Note *reads*, not *delegates*: we never pass `--conf`. [No hledger we run reads a config
+file](#no-hledger-we-run-reads-a-config-file) exists precisely so no external file steers our subprocess, and a config may hold `--depth` or
 `-b`/`-e`, which would change output we parse. Taking only the `--alias` values we understand is the
 narrow version of the same benefit.
 
@@ -732,11 +731,11 @@ so a user who has one could not open their books here at all — and an import c
 journal that will not parse. Applying the `/REGEX/` form would mean reproducing hledger's regex
 dialect (Haskell `regex-tdfa`, POSIX ERE, case-insensitive, `\1` in the replacement) over every
 account name in someone's books, and Rust's `regex` crate is a different dialect. A near-miss
-would be a silent wrong answer; declining is a visible one. The Account Aliases tab says so in as
+would be a silent wrong answer; declining is a visible one. The Account Aliases tab in Settings says so in as
 many words, and a test pins the sentence.
 
 **The one narrow, deliberate exception** is the QuickBooks Online Journal import (WP-17;
-`plans/17-quickbooks-journal-import.md`). That pipeline cannot go through `hledger import` at all
+[`plans/17-quickbooks-journal-import.md`](https://github.com/zmre/ledgeline/blob/main/plans/17-quickbooks-journal-import.md)). That pipeline cannot go through `hledger import` at all
 (there is no rules-file construct for "keep reading rows until a total line closes the group"), so
 it has to compute an account's hledger name itself before it can write a transaction. It does the
 narrowest possible version of what this section otherwise refuses: **plain** (non-regex) alias
@@ -797,36 +796,20 @@ every sentence and every decision (`parityNotice`, `parityWarning`, `parityFixLa
 
 ## Importing a QuickBooks Online Journal export
 
-A second, separate import pipeline (WP-17; `plans/17-quickbooks-journal-import.md` has the full
+A second, separate import pipeline (WP-17; [`plans/17-quickbooks-journal-import.md`](https://github.com/zmre/ledgeline/blob/main/plans/17-quickbooks-journal-import.md) has the full
 design). QuickBooks Online's "Journal" report is multi-row-per-transaction and already
 double-entry — hledger's CSV rules engine has no construct for "keep reading rows until a total
 line closes the group," so this format cannot go through `hledger import` at all. Ledgeline parses
 it itself (`ledgeline_core::qb_journal`) and writes transactions directly
 (`ledgeline_core::edit::JournalEditor::add_transaction`), matching each QuickBooks account against
-the journal's own plain aliases (see "The one narrow, deliberate exception" above) rather than
+the journal's own plain aliases (see [the one narrow, deliberate exception](#ledgeline-reads-aliases--it-does-not-apply-them) above) rather than
 guessing. Dropping a `.xlsx` export onto New Transactions is detected automatically and switches to
 a dedicated panel; the same file also works from the command line
 (`ledgeline import -i Journal.xlsx -j main.journal`, no `-o`/`-r` — see `ledgeline import --help`).
 
-**Getting the export**, in QuickBooks Online:
+How to export the report and map accounts is on the user page, [Importing from QuickBooks](../imports/quickbooks.md).
 
-1. **Reports → Journal.**
-2. Choose the time frame.
-3. Optionally **Customize → Rows/Columns** to add the `Vendor`, `Customer` and `Class` columns —
-   Ledgeline reads and preserves them as tags (`vendor:`/`customer:`/`class:`) when present, and
-   does nothing different when they are absent.
-4. **Export to Excel** (not CSV — the customized-column `.xlsx` is what Ledgeline reads; a plain CSV
-   export loses the columns that make detection and the class/customer/vendor tags possible).
-
-**Re-downloading is safe, including overlapping time frames, including re-running "All Dates" every
-time.** Every transaction is tagged with QuickBooks' own Trans # (`id:…`), so one already in the
-journal is recognized and left alone no matter how many times its row reappears in a wider export —
-the same id-based matching the CSV/OFX path's re-download handling uses (see "Matching a re-download
-by row id" above). This is worth relying on deliberately: re-running "All Dates" is the recommended
-habit, not something to work around by fiddling with date ranges to avoid overlap. A transaction
-already in the journal but changed on QuickBooks' side (a hand-edit, most likely, since it is more
-probable the user changed it locally than that history changed) is reported as a conflict and never
-silently overwritten.
+Re-imports are deduplicated by QuickBooks' own Trans #, which every imported transaction carries as an `id:` tag. The commit uses the same id index as the CSV/OFX path's [re-download matching](#matching-a-re-download-by-row-id): a transaction whose id is already in the journal is left alone, and one whose id is present but whose content differs is reported as a conflict and never overwritten. That is why re-running "All dates" every time is safe and is the recommended habit.
 
 ## Security
 
