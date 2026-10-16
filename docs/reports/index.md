@@ -20,18 +20,19 @@ Reports holds six tabs. Ledgeline computes every figure in its Rust engine with 
 
 Insights is the tab that opens first. The digit shortcuts work only while the Reports page is showing, and <kbd>?</kbd> lists them with the rest of the page's keys. See [Keyboard shortcuts](../journal/keyboard.md).
 
-<!-- screenshot: Reports page with the tab strip, the controls bar and the Export .xlsx button circled -->
+![The Reports tab strip on the P&L tab, with the controls bar below it and the Export .xlsx button circled on the right](images/tabs.png)
 
 ## The controls bar
 
 The grey bar under the tabs shows only the controls the current tab reads. Settings carry over when you switch tabs, so a date you set on one tab is still there when you come back.
 
 - **As of** sets the date for the Balance Sheet. The date is inclusive.
-- **From** and **To** set the date range for the P&L. Both ends are inclusive.
-- **End**, **Interval** and **Periods** set the columns for Cash Flow and Net Worth. End picks the date whose period is the last column, Interval picks monthly, quarterly or yearly periods, and Periods sets how many columns to show (up to 120).
-- **Depth** limits how many levels of the account tree Cash Flow and Net Worth show.
+- **From** and **To** set the date range for the P&L and for Cash Flow. Both ends are inclusive. Each tab keeps its own range.
+- **Interval** on the P&L and Cash Flow is **Total**, **Monthly**, **Quarterly** or **Yearly**. Total gives one column for the whole range. The others give one column per period plus a Total column. On the P&L, Total also adds a Prior column and a % change.
+- **End**, **Interval** and **Periods** set the columns for Net Worth. End picks the date whose period is the last column, Interval picks monthly, quarterly or yearly periods, and Periods sets how many columns to show (up to 120). Net Worth has no Total option, because its columns are balances on a date.
+- **Account depth** limits how many levels of the account tree Cash Flow and Net Worth show.
 
-The defaults come from today's date. The Balance Sheet starts at today, the P&L at the current calendar year, Cash Flow at the last 12 months, and Net Worth at the last 5 years.
+The defaults come from today's date. The Balance Sheet starts at today. The P&L covers the current calendar year at Interval Total. Cash Flow runs monthly from the 1st of the month 11 months back to today, which is 12 columns. Net Worth shows the last 5 years.
 
 Insights and Subscriptions don't use this bar. Insights has its own comparison picker, and Subscriptions always scans the last 24 months.
 
@@ -47,6 +48,8 @@ To fix it, add a `P` directive for the commodity, or fetch prices from the Holdi
 
 The URL records the tab and every control the tab uses. Copy the address and anyone with the same journal sees the same report, even after the today-based defaults have moved on.
 
+Links saved before Cash Flow switched to From and To, and before the P&L had an Interval, still work. A P&L link with no `interval` opens at Total. A Cash Flow link with `end` and `count` but no `from` opens on the same columns it used to show, and the address bar switches to the From/To form. See [Cash Flow and Net Worth](cash-flow-and-net-worth.md).
+
 An old bookmark that points at the Budget tab, which used to live here, forwards to the [Budget](../budget.md) page with its dates and depth carried over.
 
 ## Exporting to Excel
@@ -58,8 +61,8 @@ The workbook holds the report you are looking at, with a title and a line statin
 | Tab | Parameters line | File name |
 | --- | --- | --- |
 | Balance Sheet | `as of 2026-07-08` | `balance-sheet-2026-07-08.xlsx` |
-| P&L | `2026-01-01 to 2026-12-31` | `income-statement-2026-01-01-to-2026-12-31.xlsx` |
-| Cash Flow | the period span and depth | `cash-flow-<end>.xlsx` |
+| P&L | `2026-01-01 to 2026-12-31, total` | `income-statement-2026-01-01-to-2026-12-31-total.xlsx` |
+| Cash Flow | `2025-08-01 to 2026-07-08, monthly, depth 3` | `cash-flow-2025-08-01-to-2026-07-08-monthly.xlsx` |
 | Net Worth | the period span and depth | `net-worth-<end>.xlsx` |
 
 The button appears only once the report on screen matches the current controls. That stops a file named for one report from holding another report's figures while a refetch is in flight.

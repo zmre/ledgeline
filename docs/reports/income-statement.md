@@ -1,6 +1,6 @@
 ---
 title: Income statement
-description: "The P&L: issection: and isgroup: tags, the GAAP subtotal ladder, comparison columns, valuation and the money-flow diagrams."
+description: "The P&L: its From/To/Interval controls, Total mode with % change, monthly/quarterly/yearly columns, the issection: and isgroup: tags, the GAAP subtotal ladder, valuation and the money-flow diagrams."
 order: 30
 tags: [reports, account-tags]
 ---
@@ -9,8 +9,12 @@ tags: [reports, account-tags]
 
 The P&L is a stack of boxes — **Revenue**, **Expenses** — whose lines are *groups*
 rather than raw accounts, valued into a single currency so every line is one
-number. Below the boxes sits net income, next to the same period a year's-worth
-of days earlier.
+number. Below the boxes sits net income.
+
+By default the statement covers one date range and sets it beside the range of
+the same length just before it, with a % change for every line. Pick Monthly,
+Quarterly or Yearly instead and you get one column per period plus a Total, the
+way QuickBooks lays out a P&L.
 
 Tag your accounts and the statement grows into the full GAAP multi-step form:
 Cost of revenue, Gross profit, EBITDA, Operating income, Income before taxes. Tag
@@ -18,7 +22,23 @@ nothing and none of that appears. A personal journal never sees a line it has no
 use for.
 
 Design notes and the reasoning behind each decision live in
-[`plans/13-income-statement-redesign.md`](https://github.com/zmre/ledgeline/blob/main/plans/13-income-statement-redesign.md).
+[`plans/13-income-statement-redesign.md`](https://github.com/zmre/ledgeline/blob/main/plans/13-income-statement-redesign.md)
+and, for the intervals and Total column,
+[`plans/24-report-intervals-and-totals.md`](https://github.com/zmre/ledgeline/blob/main/plans/24-report-intervals-and-totals.md).
+
+## The controls
+
+| Control | What it sets | Default |
+| --- | --- | --- |
+| **From** | First day of the statement, inclusive | January 1 of the current year |
+| **To** | Last day of the statement, inclusive | December 31 of the current year |
+| **Interval** | **Total**, **Monthly**, **Quarterly** or **Yearly** | Total |
+
+Total gives one column for the whole range, compared with the range before it.
+The other three split the range into periods. The next two sections cover each
+mode.
+
+![The P&L in Total mode: From, To and the Interval control set to Total, with the Prior and % change columns beside Amount in the Revenue box](images/income-statement.png)
 
 ## Why groups instead of accounts
 
@@ -164,18 +184,54 @@ except **Other income & expense**, which is genuinely mixed. A grant and a lawsu
 settlement can share it, so it is presented as a net contribution to income and is
 allowed to print negative, in the parenthesised style a real statement uses.
 
-## The comparison columns
+## Total mode: Amount, Prior and % change
 
-**Prior period** is the immediately preceding window of the same length. For a
-full calendar year that is simply the year before; for any other range it is an
-honest apples-to-apples duration, with its dates in the column header. Each period
-is valued at its own period end, matching `hledger is -V` run over that range —
-so the prior column agrees with the report you actually ran last year, at the cost
-of a currency move showing up as part of the change.
+With Interval set to **Total**, every box has three figure columns:
 
-**% of revenue** is each line as a percentage of total revenue — the common-size
-column. The denominator is total revenue, not net income. With no revenue in the
-period there is no percentage, and the cell reads `—`.
+- **Amount** is the line's total over From to To.
+- **Prior** is the same line over the window of equal length that ends the day
+  before From. For a full calendar year that is the year before. For any other
+  range it is the same number of days, and the line above the boxes names both
+  sets of dates. Each window is valued at its own end, matching `hledger is -V`
+  run over that range, so the Prior column agrees with the report you ran last
+  year. A currency move between the two ends shows up as part of the change.
+- **% change** is `(Amount − Prior) / |Prior|`, to one decimal place. Ledgeline
+  computes it from the exact decimal amounts, not from the rounded figures on
+  screen. Dividing by the absolute value of Prior makes the sign give the
+  direction: a line that goes from −$100 to −$50 reads `50.0%`, because it
+  went up. When Prior is zero or the line has no prior figure, the cell shows
+  `—`.
+
+The net income panel under the boxes shows the same three figures, in the same
+order: this range, the prior range, and the % change.
+
+## Interval mode: one column per period
+
+Set Interval to **Monthly**, **Quarterly** or **Yearly** and the statement
+splits From to To into periods, one column each, followed by a **Total**
+column. The first and last periods are cut at From and To, so a range that
+starts mid-month gives a partial first month. Column headers read like
+`Jan 2026`. Hover over one to see its exact dates.
+
+![The P&L at a monthly interval for January to June 2026: one column per month and the Total column boxed on the right](images/income-statement-monthly.png)
+
+Interval mode has no Prior column and no % change. Net income becomes a row
+under the boxes with a figure for every period and for the Total.
+
+**The Total is the sum of the period columns**, which is what QuickBooks does.
+Under market valuation each period is valued at its own end date, so the Total
+can differ from what Total mode prints for the same range, where everything is
+valued once at To. That difference is expected. On `fixtures/sample.journal`,
+Yearly from 2025-01-01 to 2026-12-31 puts Travel at a Total of `$1,405.50`,
+while Total mode for the same two years shows `$1,446.36`. Cost is the same on
+every date, so `?value=cost` on the API makes the two agree.
+
+Ledgeline decides which lines and groups exist from all the periods together.
+A line that only had activity in March still appears in every column, with
+zeros in the months it was quiet.
+
+The Money in and Money out diagrams do not split by period. In both modes they
+cover the whole From to To range.
 
 ## Valuation
 
@@ -238,12 +294,26 @@ A **shut** panel prints its graph total beside the title, since that figure is t
 
 ## Export
 
-The XLSX export mirrors the screen: filled section headers, bold group rows,
-indented accounts, ruled subtotals, then net income — with the prior-period and
-percentage columns alongside. Because every line is valued into one commodity, the
-amount cells hold real numbers with a number format rather than text, so the
-workbook is arithmetic you can build on. Groups are written expanded regardless of
-what is collapsed on screen.
+The **Export .xlsx** button writes what the screen shows: filled section
+headers, bold group rows, indented accounts, ruled subtotals, then net income.
+Every line is valued into one commodity, so the amount cells hold real numbers
+with a number format rather than text, and the workbook is arithmetic you can
+build on. Groups are written expanded whatever is collapsed on screen.
+
+The columns depend on the Interval:
+
+| Interval | Columns |
+| --- | --- |
+| Total | Account, Amount, the prior window (headed with its dates), % change, Other commodities, and Other commodities for the prior window |
+| Monthly, Quarterly, Yearly | Account, one column per period, Total (in the base commodity), and Other commodities for the Total |
+
+In Total mode the % change cell is left empty where the screen shows `—`, so the
+column never claims a 0.0% that nobody measured.
+
+The title line names the range and the interval, for example
+`2026-01-01 to 2026-06-30, monthly`, and so does the file name:
+`income-statement-2026-01-01-to-2026-06-30-monthly.xlsx`. Two exports of the
+same range at different intervals cannot overwrite each other.
 
 The two diagrams are deliberately **not** in the workbook. A picture of the flows is not arithmetic anyone can build on, and the numbers behind it are already in the boxes it decomposes.
 
@@ -256,7 +326,27 @@ GET /api/reports/incomestatement/grouped
       &value=market|cost|none (default: market)
       &valueIn=$              (default: the journal's base commodity)
       &compare=previous|none  (default: previous)
+      &interval=total|monthly|quarterly|yearly
+                              (default: total; daily and weekly also work)
 ```
+
+`interval=total` returns the same bytes it always did. Any other interval
+returns interval mode:
+
+- `buckets` lists the columns as `[{key, from, to}]`.
+- `prior` is `null`.
+- Every figure is `{current, values}`, where `values` has one entry per bucket
+  and `current` is their sum, the Total.
+
+Interval mode refuses some requests with a `400`:
+
+- `compare=previous`. Leave `compare` out or send `compare=none`.
+- `from` after `to`.
+- A range that needs more than 1,200 columns (a daily interval over four
+  years, for example).
+
+`valueIn` is checked against each bucket's end date, so it has to price
+something in at least one of the windows the report values.
 
 The older `GET /api/reports/incomestatement` returns the flat, unvalued, `hledger is`-shaped report and is unchanged, backing the hledger parity golden.
 
