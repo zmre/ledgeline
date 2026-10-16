@@ -75,11 +75,11 @@ The tags are explained on [Accounts](../settings/accounts.md), [Balance sheet](.
 
 ### Stock checks
 
-Three checks come from the same engine as the [Holdings](../holdings/index.md) tab, so the two always agree. The drawer lists them under their internal names:
+Three checks come from the same engine as the [Holdings](../holdings/index.md) tab, so the two always agree:
 
-- `stock-missing-basis`: shares were acquired with no cost annotation, so their cost basis is unknown. Add a cost to the purchase, such as `10 AAPL @ $150.00`.
-- `stock-negative`: the share count went below zero. An opening position was probably never entered. Add the purchase or an opening balance that brought the shares in.
-- `stock-unpriced`: a position has no market price and no usable cost, so Holdings leaves it out of the totals. Add a `P` price directive, or fetch prices from the Holdings tab.
+- **Stock with no cost basis**: shares were acquired with no cost annotation, so their cost basis is unknown. Add a cost to the purchase, such as `10 AAPL @ $150.00`.
+- **Negative share count**: the share count went below zero. An opening position was probably never entered. Add the purchase or an opening balance that brought the shares in.
+- **Stock with no price**: a position has no market price and no usable cost, so Holdings leaves it out of the totals. Add a `P` price directive, or fetch prices from the Holdings tab.
 
 These checks cover the whole journal, including transactions dated in the future.
 
