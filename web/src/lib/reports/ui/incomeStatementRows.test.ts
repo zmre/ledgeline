@@ -1,5 +1,5 @@
 // The grouped income statement's display model: what is on screen at a given
-// collapse state, and how two exact decimals become "73.9%".
+// collapse state, and how two exact decimals become "-13.7%".
 //
 // These are the claims the view rests on and cannot make about itself: a
 // collapsed group contributes exactly one row (so `j` has somewhere to go on
@@ -14,12 +14,15 @@ import {dec, type MixedAmount} from "#lib/domain/money.js";
 import {fmt} from "#lib/format/amounts.js";
 import type {IncomeStatementReport, IsSection} from "#lib/reports/types.js";
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
-import {fmtPct, isCursorRows, isDisplayModel, isGroupKey, isSummary, pctOfRevenue, revenueTotal, sectionDisplayRows} from "./incomeStatementRows";
+import {amountsPct, fmtPct, isCursorRows, isDisplayModel, isGroupKey, isSummary, pctChange, sectionDisplayRows} from "./incomeStatementRows";
 
 const REPORT = decodeIncomeStatementReport(GROUPED_INCOME_STATEMENT);
 const MULTI = decodeIncomeStatementReport(MULTI_STEP_INCOME_STATEMENT);
 const [REVENUE, EXPENSES] = REPORT.sections;
-const RATIO_BASE = revenueTotal(REPORT);
+
+/** A committed engine golden, decoded. */
+const golden = (name: string): IncomeStatementReport =>
+    decodeIncomeStatementReport(JSON.parse(readFileSync(new URL(`../../../../../fixtures/native/v1/${name}.json`, import.meta.url), "utf8")));
 
 const NONE = (): boolean => false;
 const ALL = (): boolean => true;
@@ -28,9 +31,9 @@ const only =
     (key: string): boolean =>
         keys.includes(key);
 
-/** One section's rows at a given collapse state, with this report's revenue denominator. */
+/** One section's rows at a given collapse state, in this report's base commodity. */
 const rowsOf = (section: IsSection, expanded: (key: string) => boolean, report: IncomeStatementReport = REPORT) =>
-    sectionDisplayRows(section, expanded, revenueTotal(report), report.base);
+    sectionDisplayRows(section, expanded, report.base);
 
 describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
     it("shows one row per group when everything is collapsed", () => {
@@ -150,54 +153,62 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
     });
 });
 
-describe("UNIT reports/ui/incomeStatementRows — pctOfRevenue", () => {
+describe("UNIT reports/ui/incomeStatementRows — pctChange", () => {
     const usd = (m: number, p: number): MixedAmount => new Map([["$", dec(m, p)]]);
 
     it("divides the exact Decs, never the rounded figures beside them", () => {
-        // $28,626.48 / $34,010.00 = 84.1707%. Both operands are exact here, and
-        // that is the point: a percentage taken from the DISPLAYED strings agrees
-        // by luck on a two-decimal journal and disagrees the moment the engine
-        // sends a third place, which it does for anything valued at a price.
-        expect(pctOfRevenue(usd(2862648, 2), RATIO_BASE, "$")).toBe(84.2);
-        expect(pctOfRevenue(usd(538352, 2), RATIO_BASE, "$")).toBe(15.8);
+        // Expenses $28,626.48 against $28,516.71 = +0.3849%; net income $5,383.52
+        // against $10,880.79 = −50.5228%. Both operands are exact here, and that
+        // is the point: a percentage taken from the DISPLAYED strings agrees by
+        // luck on a two-decimal journal and disagrees the moment the engine sends
+        // a third place, which it does for anything valued at a price.
+        expect(pctChange(usd(2862648, 2), usd(2851671, 2), "$")).toBe(0.4);
+        expect(pctChange(usd(538352, 2), usd(1088079, 2), "$")).toBe(-50.5);
     });
 
     it("is unaffected by the operands' decimal places", () => {
-        // The same value written to three places, as a valued figure arrives.
-        expect(pctOfRevenue(usd(25126480, 3), RATIO_BASE, "$")).toBe(73.9);
-        expect(pctOfRevenue(usd(2512648, 2), new Map([["$", dec(340100000, 4)]]), "$")).toBe(73.9);
+        // The same values written to three and four places, as valued figures arrive.
+        expect(pctChange(usd(28626480, 3), usd(2851671, 2), "$")).toBe(0.4);
+        expect(pctChange(usd(2862648, 2), usd(285167100, 4), "$")).toBe(0.4);
     });
 
     it("rounds half away from zero, matching every money figure on the same row", () => {
-        // 5.25% of 1000 is exactly 52.5 tenths → 5.3%, not the 5.2% a
+        // ±5.25% is exactly ±52.5 tenths → ±5.3%, not the 5.2% a
         // round-half-to-even would give. The amounts beside it round the same way.
-        expect(pctOfRevenue(usd(5250, 2), new Map([["$", dec(100000, 2)]]), "$")).toBe(5.3);
-        expect(pctOfRevenue(usd(-5250, 2), new Map([["$", dec(100000, 2)]]), "$")).toBe(-5.3);
+        expect(pctChange(usd(105250, 2), usd(100000, 2), "$")).toBe(5.3);
+        expect(pctChange(usd(94750, 2), usd(100000, 2), "$")).toBe(-5.3);
     });
 
     it("keeps one decimal, including a trailing zero", () => {
-        // $669.16 / $34,010.00 = 1.9675% → 2.0%, not "2%".
-        expect(fmtPct(pctOfRevenue(usd(66916, 2), RATIO_BASE, "$"))).toBe("2.0%");
-        expect(fmtPct(pctOfRevenue(RATIO_BASE, RATIO_BASE, "$"))).toBe("100.0%");
+        // $1,020.00 against $1,000.00 is 2.0%, not "2%"; no movement is 0.0%.
+        expect(fmtPct(pctChange(usd(102000, 2), usd(100000, 2), "$"))).toBe("2.0%");
+        expect(fmtPct(pctChange(usd(100000, 2), usd(100000, 2), "$"))).toBe("0.0%");
+        // A line that went to zero fell by all of it.
+        expect(fmtPct(pctChange(new Map(), usd(100000, 2), "$"))).toBe("-100.0%");
     });
 
-    it("has NO percentage when there is no revenue, rather than a division artefact", () => {
-        // Not 0%, not ∞, not NaN — a journal with no revenue in the window has no
-        // such ratio, and `—` is the honest cell.
-        expect(pctOfRevenue(usd(10000, 2), new Map(), "$")).toBeNull();
-        expect(pctOfRevenue(usd(10000, 2), new Map([["$", dec(0, 2)]]), "$")).toBeNull();
+    it("has NO percentage when the prior was zero, rather than a division artefact", () => {
+        // Not 0%, not ∞, not NaN — growth from nothing has no ratio, and `—` is
+        // the honest cell. Absent and an explicit zero are the same case.
+        expect(pctChange(usd(10000, 2), new Map(), "$")).toBeNull();
+        expect(pctChange(usd(10000, 2), usd(0, 2), "$")).toBeNull();
         expect(fmtPct(null)).toBe("—");
     });
 
-    it("has none for a journal with no base commodity, rather than picking one", () => {
-        expect(pctOfRevenue(usd(10000, 2), RATIO_BASE, null)).toBeNull();
+    it("has none when there is no prior period at all", () => {
+        // Compare off, or interval mode: `prior` is absent from every figure.
+        expect(pctChange(usd(10000, 2), undefined, "$")).toBeNull();
+        expect(amountsPct({current: usd(10000, 2)}, "$")).toBeNull();
     });
 
-    it("is 0.0% for a line that is genuinely zero", () => {
-        // Distinct from the null case above: there IS a revenue to divide by, and
-        // this line's share of it is zero.
-        expect(pctOfRevenue(new Map(), RATIO_BASE, "$")).toBe(0);
-        expect(fmtPct(0)).toBe("0.0%");
+    it("has none for a journal with no base commodity, rather than picking one", () => {
+        expect(pctChange(usd(10000, 2), usd(5000, 2), null)).toBeNull();
+    });
+
+    it("divides by the prior's MAGNITUDE, so the sign says which way the line moved", () => {
+        // An `other` box going from a $100 net cost to a $50 one improved by half.
+        expect(pctChange(usd(-5000, 2), usd(-10000, 2), "$")).toBe(50);
+        expect(pctChange(usd(-15000, 2), usd(-10000, 2), "$")).toBe(-50);
     });
 
     it("signs a negative share with the SAME minus character money uses, and never a bare +", () => {
@@ -208,21 +219,16 @@ describe("UNIT reports/ui/incomeStatementRows — pctOfRevenue", () => {
         const moneyMinus = fmt("$", dec(-100, 2), new Map()).replace(/[$\d.,]/g, "");
         expect(fmtPct(-2.4)).toBe(`${moneyMinus}2.4%`);
         expect(fmtPct(-2.4)).toBe("-2.4%");
-        // "% of revenue" is a share, not a change: "+73.9%" would read as growth.
+        // No forced `+` on growth, as in the QuickBooks % Change column.
         expect(fmtPct(73.9)).toBe("73.9%");
     });
 
-    it("takes the denominator from the Revenue SECTION, not from net income", () => {
-        expect(revenueTotal(REPORT).get("$")).toEqual({m: 3401000n, p: 2});
-        // Net income is one of the lines being measured; using it would make
-        // every common-size figure a ratio to a number that moves with costs.
-        expect(revenueTotal(REPORT)).not.toEqual(REPORT.netIncome.current);
-    });
-
-    it("finds revenue by kind, so a report with no revenue box yields an empty denominator", () => {
-        const costsOnly = {...REPORT, sections: REPORT.sections.filter((s) => s.kind !== "revenue")};
-        expect(revenueTotal(costsOnly)).toEqual(new Map());
-        expect(rowsOf(EXPENSES, NONE, costsOnly).every((r) => r.pct === null)).toBe(true);
+    it("gives each line its own change against its own prior", () => {
+        const pct = (label: string) => fmtPct(rowsOf(EXPENSES, NONE).find((r) => r.label === label)?.pct ?? null);
+        expect(pct("Food")).toBe("7.0%"); // $1,654.38 against $1,546.35
+        expect(pct("Utilities")).toBe("-11.3%"); // $669.16 against $754.11
+        // `expenses:unknown` has no activity in the prior window: no change to state.
+        expect(pct("Unknown")).toBe("—");
     });
 });
 
@@ -260,11 +266,12 @@ describe("UNIT reports/ui/incomeStatementRows — the ladder", () => {
         expect(MULTI.netIncome.current.get("$")).toEqual({m: 8650000n, p: 2}); // − 23,000
     });
 
-    it("gives every rung its share of revenue", () => {
+    it("states no change on any rung of a statement with no prior window", () => {
+        // MULTI is uncompared, so there is nothing for any line to change FROM.
         const model = isDisplayModel(MULTI, NONE);
         const pcts = model.boxes.flatMap((b) => b.trailing).map((s) => fmtPct(s.pct));
 
-        expect(pcts).toEqual(["83.5%", "26.0%", "22.1%", "17.7%"]);
+        expect(pcts).toEqual(["—", "—", "—", "—"]);
     });
 
     it("lets the `other` box print a negative total, alone among the sections", () => {
@@ -275,7 +282,6 @@ describe("UNIT reports/ui/incomeStatementRows — the ladder", () => {
         // as a net contribution to income rather than as a magnitude. Nothing
         // here negates it: the engine sent it negative and it prints negative.
         expect(other?.total.current.get("$")).toEqual({m: -1500000n, p: 2});
-        expect(fmtPct(other?.totalPct ?? null)).toBe("-2.4%");
         // Every other box prints a positive magnitude, whichever way it moves
         // the bottom line.
         expect(model.boxes.filter((b) => (b.total.current.get("$")?.m ?? 0n) < 0n).map((b) => b.kind)).toEqual(["other"]);
@@ -324,7 +330,7 @@ describe("UNIT reports/ui/incomeStatementRows — isSummary", () => {
 
         expect(summary.netIncome.current.get("$")).toEqual({m: 538352n, p: 2});
         expect(summary.netIncome.prior?.get("$")).toEqual({m: 1088079n, p: 2});
-        expect(fmtPct(summary.netPct)).toBe("15.8%");
+        expect(fmtPct(summary.netPct)).toBe("-50.5%");
         // The per-section restatement is gone on purpose. Every section total is
         // already in a box footer and every intermediate figure is already a rung
         // of the ladder, so repeating them was the duplicate-totals complaint
@@ -332,18 +338,16 @@ describe("UNIT reports/ui/incomeStatementRows — isSummary", () => {
         expect(Object.keys(summary).sort()).toEqual(["netIncome", "netPct"]);
     });
 
-    it("takes the margin against revenue, not against a section it happens to sit near", () => {
+    it("takes net income's change against its OWN prior figure", () => {
         // The one arithmetic decision the screen and the workbook have to agree
         // on, and the reason this stayed a shared function rather than being
         // inlined at both call sites.
-        expect(isSummary(MULTI).netPct).toBe(14.0); // 86,500 / 620,000
-        expect(pctOfRevenue(MULTI.netIncome.current, revenueTotal(MULTI), MULTI.base)).toBe(isSummary(MULTI).netPct);
+        expect(isSummary(REPORT).netPct).toBe(pctChange(REPORT.netIncome.current, REPORT.netIncome.prior, "$"));
     });
 
-    it("leaves the margin absent when there is no revenue to divide by", () => {
-        const costsOnly = {...REPORT, sections: REPORT.sections.filter((s) => s.kind !== "revenue")};
-        expect(isSummary(costsOnly).netPct).toBeNull();
-        expect(fmtPct(isSummary(costsOnly).netPct)).toBe("—");
+    it("leaves the change absent when the report is not comparing", () => {
+        expect(isSummary(MULTI).netPct).toBeNull();
+        expect(fmtPct(isSummary(MULTI).netPct)).toBe("—");
     });
 
     it("has no prior figure at all when the report is not comparing", () => {
@@ -377,20 +381,16 @@ describe("UNIT reports/ui/incomeStatementRows — isSummary", () => {
 // percentage column is only ever exercised at equal precision here — which is
 // the one case where a places-blind implementation would also pass.
 describe("UNIT reports/ui/incomeStatementRows — over the committed engine golden", () => {
-    const GOLDEN = decodeIncomeStatementReport(
-        JSON.parse(readFileSync(new URL("../../../../../fixtures/native/v1/incomestatement-grouped.json", import.meta.url), "utf8"))
-    );
+    const GOLDEN = golden("incomestatement-grouped");
 
-    it("takes the ratio across operands of DIFFERENT precision", () => {
-        const revenue = revenueTotal(GOLDEN);
-        const expenses = GOLDEN.sections.find((s) => s.kind === "opex")?.total.current ?? new Map();
+    it("takes the change at the precision the engine actually sends", () => {
+        const expenses = GOLDEN.sections.find((s) => s.kind === "opex")?.total;
 
-        // $34,010.00 at places 2 against $28,626.4800 at places 4 — the shapes
-        // the engine actually sends, not the cents-on-both-sides the literals use.
-        expect(revenue.get("$")?.p).toBe(2);
-        expect(expenses.get("$")?.p).toBe(4);
-        expect(fmtPct(pctOfRevenue(expenses, revenue, "$"))).toBe("84.2%");
-        expect(fmtPct(isSummary(GOLDEN).netPct)).toBe("15.8%");
+        // $28,626.4800 against $28,516.7100, both at places 4 — the shapes the
+        // engine sends, not the cents-on-both-sides the literals use.
+        expect(expenses?.current.get("$")?.p).toBe(4);
+        expect(fmtPct(expenses === undefined ? null : amountsPct(expenses, "$"))).toBe("0.4%");
+        expect(fmtPct(isSummary(GOLDEN).netPct)).toBe("-50.5%");
     });
 
     it("renders the same figures the hand-written fixture claims", () => {
@@ -413,6 +413,37 @@ describe("UNIT reports/ui/incomeStatementRows — over the committed engine gold
 
         expect(box("revenue")?.total.current.get("$")).toMatchObject({m: 3401000n}); // $34,010.00
         expect(box("opex")?.rows.map((r) => r.label)).toEqual(["Depreciation", "Food", "Housing", "Taxes", "Transport", "Travel", "Unknown", "Utilities"]);
-        expect(fmtPct(box("opex")?.totalPct ?? null)).toBe("84.2%");
+        expect(fmtPct(box("revenue")?.totalPct ?? null)).toBe("-13.7%"); // against $39,397.50
+        expect(fmtPct(box("opex")?.totalPct ?? null)).toBe("0.4%");
+    });
+});
+
+// Interval mode (plans/24), over the engine's own monthly golden:
+// `?from=2026-01-01&to=2026-07-08&interval=monthly&compare=none`.
+describe("UNIT reports/ui/incomeStatementRows — interval mode", () => {
+    const MONTHLY = golden("incomestatement-grouped-monthly");
+
+    it("hands the view its buckets and no comparison", () => {
+        const model = isDisplayModel(MONTHLY, NONE);
+        expect(model.buckets?.map((b) => b.key)).toEqual(["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"]);
+        // The last column stops at the report's `to`, not at the month's end.
+        expect(model.buckets?.at(-1)).toMatchObject({from: "2026-07-01", to: "2026-07-08"});
+        expect(model.comparing).toBe(false);
+    });
+
+    it("has no % change anywhere, because there is no prior period", () => {
+        const model = isDisplayModel(MONTHLY, ALL);
+        expect(isCursorRows(model).every((r) => r.pct === null)).toBe(true);
+        expect(model.boxes.every((b) => b.totalPct === null)).toBe(true);
+        expect(model.summary.netPct).toBeNull();
+    });
+
+    it("gives every line one figure per bucket, its Total the same net income as the Total statement", () => {
+        const model = isDisplayModel(MONTHLY, ALL);
+        expect(isCursorRows(model).every((r) => r.amounts.values?.length === 7)).toBe(true);
+        // Market-valued, but nothing on this journal is revalued between the
+        // month ends and the range's end, so the sum of the months IS the
+        // whole-range figure: $5,383.52.
+        expect(fmt("$", model.summary.netIncome.current.get("$") ?? dec(0, 0), new Map())).toBe(fmt("$", dec(538352, 2), new Map()));
     });
 });

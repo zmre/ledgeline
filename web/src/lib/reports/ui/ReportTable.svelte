@@ -4,7 +4,8 @@
      (negatives in text-error), emphasized subtotal/total rows. Handles both
      SectionedReport (bs/is — engine rows arrive pre-sign-flipped, rendered
      as-is) and PeriodReport (cf/nw — one column per bucket, horizontal scroll
-     on mobile).
+     on mobile, plus a Total column when the report carries one: cash flow
+     does, net worth does not; see `periodTable`).
 
      Keyboard: j/k move a cursor over the ACCOUNT rows (section headings, "Total
      X" and "Net" are not in the flattened list, so they are skipped for free)
@@ -16,10 +17,10 @@
     import {openJournal} from "#lib/journal/openJournal.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
-    import {bucketLabel} from "#lib/reports/periods.js";
     import type {PeriodReport, SectionedReport} from "#lib/reports/types.js";
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {compressPeriodRows, compressSectionRows} from "./displayRows";
+    import {periodTable} from "./periodTable";
 
     let {report, styles}: {report: SectionedReport | PeriodReport; styles: ReadonlyMap<string, AmountStyle>} = $props();
 
@@ -31,6 +32,7 @@
     // iterates it too, so the two cannot drift apart.
     const sectionRows = $derived(sectioned === null ? [] : sectioned.sections.map((section) => compressSectionRows(section.rows)));
     const periodRows = $derived(period === null ? [] : compressPeriodRows(period.rows));
+    const columns = $derived(period === null ? null : periodTable(period));
     /**
      * Every cursorable row, in visual order. Totals and headings are deliberately
      * absent, so `j` skips them for free rather than by a filter that could drift.
@@ -135,12 +137,12 @@
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render amount(sectioned.grandTotal)}</td>
                 </tr>
             </tbody>
-        {:else if period !== null}
+        {:else if period !== null && columns !== null}
             <thead>
                 <tr>
                     <th>Account</th>
-                    {#each period.buckets as bucket (bucket)}
-                        <td class="min-w-24 text-right whitespace-nowrap">{bucketLabel(bucket)}</td>
+                    {#each columns.headers as header, i (i)}
+                        <td class="min-w-24 text-right whitespace-nowrap">{header}</td>
                     {/each}
                 </tr>
             </thead>
@@ -154,7 +156,7 @@
                         <th class="font-normal whitespace-nowrap">
                             <span style="padding-left: {display.indent}rem">{display.label}</span>
                         </th>
-                        {#each display.row.values as value, i (period.buckets[i])}
+                        {#each columns.cells(display.row) as value, i (i)}
                             <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render amount(value)}</td>
                         {/each}
                     </tr>
@@ -162,14 +164,12 @@
                 {#if period.rows.length === 0}
                     <tr>
                         <th class="font-normal text-base-content/50">No matching accounts</th>
-                        {#each period.buckets as bucket (bucket)}
-                            <td></td>
-                        {/each}
+                        <td colspan={columns.headers.length}></td>
                     </tr>
                 {/if}
                 <tr class="border-t-2 border-base-content/40 font-bold">
                     <th>Net</th>
-                    {#each period.totals as total, i (period.buckets[i])}
+                    {#each columns.net as total, i (i)}
                         <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render amount(total)}</td>
                     {/each}
                 </tr>

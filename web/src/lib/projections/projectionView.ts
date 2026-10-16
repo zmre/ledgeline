@@ -17,7 +17,7 @@
 import type {Dec} from "#lib/domain/money.js";
 import {rankCommodities, toNumber, type MixedAmount} from "#lib/domain/money.js";
 import type {PeriodReport} from "#lib/reports/types.js";
-import type {ReportInterval} from "#lib/reports/ui/params.js";
+import type {PeriodInterval} from "#lib/reports/ui/params.js";
 import type {AssetRow, BalanceSeries, Projection} from "./types";
 
 /** One number per bucket, for the commodity being charted. Absent is 0 — the amount is known and holds none of it. */
@@ -196,14 +196,14 @@ export function assetContributions(projection: Projection, commodity: string): A
 // ---------------------------------------------------------------------------
 
 /** Singular and plural nouns for one bucket of each interval. */
-const INTERVAL_NOUN: Record<ReportInterval, {one: string; many: string}> = {
+const INTERVAL_NOUN: Record<PeriodInterval, {one: string; many: string}> = {
     monthly: {one: "month", many: "months"},
     quarterly: {one: "quarter", many: "quarters"},
     yearly: {one: "year", many: "years"},
 };
 
 /** `18` + `monthly` → `"18 months"`. */
-export function periodsPhrase(count: number, interval: ReportInterval): string {
+export function periodsPhrase(count: number, interval: PeriodInterval): string {
     const noun = INTERVAL_NOUN[interval];
     return `${count} ${count === 1 ? noun.one : noun.many}`;
 }
@@ -225,7 +225,7 @@ export interface RunwayStatement {
  * `format` is the caller's money formatter for the charted commodity, so the
  * figure in the sentence is spelled the way every other figure on the page is.
  */
-export function runwayStatement(projection: Projection, interval: ReportInterval, commodity: string, format: (n: number) => string): RunwayStatement {
+export function runwayStatement(projection: Projection, interval: PeriodInterval, commodity: string, format: (n: number) => string): RunwayStatement {
     if (projection.buckets.length === 0) {
         return {tone: "none", headline: "Nothing is projected over this window.", detail: null};
     }

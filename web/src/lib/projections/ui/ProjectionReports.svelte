@@ -31,7 +31,7 @@
     import {formatChartValue, formatCompactChartValue} from "#lib/insights/series.js";
     import {bucketLabel} from "#lib/reports/periods.js";
     import ReportTable from "#lib/reports/ui/ReportTable.svelte";
-    import type {ReportInterval} from "#lib/reports/ui/params.js";
+    import type {PeriodInterval} from "#lib/reports/ui/params.js";
     import {PROJECTION_TABS, PROJECTION_TAB_LABELS, type ProjectionTab} from "../params";
     import {assetContributions, balanceNumbers, chartCommodity, flowSeries, otherCommodities, runwayStatement} from "../projectionView";
     import type {Projection} from "../types";
@@ -46,7 +46,7 @@
         tab: ProjectionTab;
         projection: Projection;
         /** The interval the buckets were built on — the noun the runway sentence counts in. */
-        interval: ReportInterval;
+        interval: PeriodInterval;
         styles: ReadonlyMap<string, AmountStyle>;
         /** Used only when the projection names no commodity at all (an empty scenario over an empty journal). */
         fallbackCommodity: string;
