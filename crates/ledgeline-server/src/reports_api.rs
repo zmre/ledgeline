@@ -3279,7 +3279,10 @@ mod tests {
     /// `parse_interval`'s, and absent is the caller's default.
     #[test]
     fn parse_grain_reads_total_as_no_interval() {
-        assert_eq!(parse_grain(Some("total"), Some(Interval::Monthly)), Ok(None));
+        assert_eq!(
+            parse_grain(Some("total"), Some(Interval::Monthly)),
+            Ok(None)
+        );
         assert_eq!(
             parse_grain(Some("quarterly"), None),
             Ok(Some(Interval::Quarterly))
