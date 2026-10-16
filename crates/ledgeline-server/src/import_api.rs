@@ -145,7 +145,7 @@ use crate::workbook_sandbox;
 // ===========================================================================
 
 /// The upload header carrying the dropped file's name.
-const FILENAME_HEADER: &str = "x-ledgeline-filename";
+pub(crate) const FILENAME_HEADER: &str = "x-ledgeline-filename";
 
 /// How many preview rows one stage response carries.
 ///
