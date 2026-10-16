@@ -13,7 +13,7 @@ You can use all of Ledgeline from the keyboard. The keys follow vim where vim ha
 
 <kbd>?</kbd> opens a sheet listing the shortcuts that work on the current page, grouped by area. Press <kbd>Esc</kbd> or <kbd>?</kbd> again to close it. The sheet only lists keys that do something right now, so the edit keys don't appear when the journal is read-only.
 
-<!-- screenshot: the ? keyboard help sheet open over the Journal tab -->
+![The keyboard shortcuts sheet on the Journal tab, with Global, Navigation, Journal and Filters groups](images/keyboard-help.png)
 
 Shortcuts are ignored while you type in a text field, date field or dropdown, so <kbd>j</kbd> in the search box types a "j". Click outside the field to get the shortcuts back. In the search box, <kbd>Esc</kbd> does the same.
 

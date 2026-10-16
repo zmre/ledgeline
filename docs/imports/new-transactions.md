@@ -13,11 +13,11 @@ The New Transactions tab takes one statement file and walks it through to your j
 
 Drag a file onto the dashed panel, or press **Choose file…** to pick one. Ledgeline takes one file at a time, because one import is one statement going into one journal. A file in a format it can't read, such as a PDF, is refused with a sentence saying why.
 
+![The New Transactions tab before a drop: the dashed drop panel with its Choose file button](images/new-transactions.png)
+
 Ledgeline converts the file to a CSV and shows a short preview of the rows it read. It also reports anything it had to guess, such as the delimiter, the text encoding, or which sheet of a workbook it read. If the statement's own totals don't match its rows, it says so, which usually means a column was misread.
 
 If the file is a QuickBooks Online Journal export, a different panel takes over. See [Importing from QuickBooks](quickbooks.md).
-
-<!-- screenshot: New Transactions after a drop, showing the preview table and the "Read it with" candidate cards with scores -->
 
 ## Choose a rules file
 
@@ -55,8 +55,6 @@ Press **Save and Import** to run a dry run. hledger works out what it would add 
 - a `ledgeline import …` command that repeats this import from a terminal.
 
 If hledger rejects the import, the panel shows hledger's error output unedited. It usually names the row it failed on.
-
-<!-- screenshot: dry-run panel with the proposed transactions, the balance verdict and the Write changes button circled -->
 
 ## Write the changes
 

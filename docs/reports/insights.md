@@ -9,7 +9,7 @@ tags: [reports]
 
 Insights is the first tab on the Reports page. It compares a current period with the previous one of the same length and shows the result in ten boxes: six headline figures and four short lists.
 
-<!-- screenshot: Insights dashboard, full page, with the Compare dropdown circled -->
+![The Insights dashboard with its default year-over-year comparison](images/insights.png)
 
 ## Picking the comparison
 
@@ -73,8 +73,6 @@ Your stocks ranked by their percent move over the current period, with the gain 
 ### Top Transactions
 
 The largest transactions in the current period by the amount of money they moved. Opening and closing balances, equity adjustments and other bookkeeping entries with no income or expense leg are skipped, because they would otherwise sit at the top permanently.
-
-<!-- screenshot: Biggest Movers list with the asterisk and its footnote arrowed -->
 
 ## How accounts are classified
 

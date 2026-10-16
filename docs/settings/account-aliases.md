@@ -17,7 +17,7 @@ alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira
 
 Settings → Account Aliases lists and edits the `alias` lines in your journal. Ledgeline passes them to hledger when it imports a statement.
 
-<!-- screenshot: Account Aliases tab with one editable alias, one row showing "not used for imports" and "read-only" badges -->
+![Settings → Account Aliases with two plain aliases and one regex alias](images/account-aliases.png)
 
 ## Why Ledgeline forwards your aliases
 

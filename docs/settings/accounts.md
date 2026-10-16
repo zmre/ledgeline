@@ -15,7 +15,7 @@ account assets:bank:checking  ; type: C, bsgroup: Cash and cash equivalents, ope
 
 Ledgeline's reports read several of those tags. This tab puts each one in a labelled field, so you don't have to remember the spelling or the allowed values.
 
-<!-- screenshot: Accounts tab with one account selected, the special-tag fields circled and an "undeclared" badge pointed at in the list -->
+![Settings → Accounts with assets:bank:checking open in the editor](images/accounts.png)
 
 ## The account list
 

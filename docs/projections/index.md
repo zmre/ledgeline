@@ -17,7 +17,7 @@ A scenario is **an ordinary hledger journal file that nothing includes**, so it
 can be edited in your own editor, diffed, committed, and read by `hledger`
 itself. Playing with a what-if can never damage a plan of record.
 
-<!-- screenshot: Projections tab with the editable what-if table on top and the cash runway chart below -->
+![The Projections tab seeded from the journal, with its income and expense lines](images/seeded.png)
 
 This section has four pages:
 

@@ -13,6 +13,8 @@ second half is editable — Ledgeline writes your budget back into your journal 
 ordinary hledger `~` periodic rules, which `hledger balance --budget` reads
 exactly as it always has.
 
+![The Budget tab for the year to date: the controls, the budget bars and the start of the goals list](images/budget-overview.png)
+
 Design notes and the reasoning behind each decision live in
 [`plans/15-budget-editor.md`](https://github.com/zmre/ledgeline/blob/main/plans/15-budget-editor.md).
 
@@ -38,6 +40,8 @@ form Ledgeline writes.
 Everything in the tab is a reading of these lines. There is no separate budget
 database, no sidecar file of Ledgeline's own, and nothing here that hledger
 cannot read.
+
+![The budget goals list: monthly goals, each with Edit and Remove buttons](images/budget-goals.png)
 
 ## Picking a category
 
@@ -281,7 +285,7 @@ hledger accepts, and not something worth leaving behind.
 
 ## Reading the bars
 
-<!-- screenshot: Budget bars excerpt, one category with the goal marker and the pace marker arrowed -->
+![Budget bars: the Expenses roll-up and the per-account bars, with one spent / budgeted figure boxed](images/budget-bars.png)
 
 The top half is `hledger balance --budget` in envelope form: one bullet bar per
 category, split into Income and Expenses, with the goal marker where your budget

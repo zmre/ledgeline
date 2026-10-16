@@ -9,7 +9,7 @@ tags: [journal]
 
 The filter bar at the top of the Journal tab decides which transactions the table, the insights panel and the totals footer show. It has three controls: a date range, an account picker and a search box.
 
-<!-- screenshot: filter bar with the date preset menu, account picker and search box circled, plus a row of active filter chips -->
+![The filter bar with an expenses filter applied: the date preset and range boxed, the Accounts picker circled, and the active filter chip below](images/filter-bar.png)
 
 A transaction has to pass all three filters to appear.
 
@@ -32,6 +32,8 @@ The journal opens on **Last 90 days**. A preset stays live: if you leave "Year t
 ## Accounts
 
 The account picker lists your accounts as a tree, with a search box at the top to find one by name. Press <kbd>a</kbd> to open it with the search box focused.
+
+![The Accounts picker open, with the search field above the account tree](images/account-picker.png)
 
 Checking an account selects it and everything under it. Checking `expenses:food` includes `expenses:food:groceries` and `expenses:food:restaurants`. A parent shows a partial check when only some of its children are selected.
 

@@ -9,7 +9,7 @@ tags: [journal]
 
 The Journal tab is where Ledgeline opens. It lists every transaction in your hledger journal, newest first, under a filter bar and an insights panel.
 
-<!-- screenshot: full Journal tab with filter bar, insights panel, transaction table and totals footer -->
+![The Journal tab: filter bar at the top, the transaction table, and the totals footer with the Export .xlsx button](images/overview.png)
 
 The page has four parts, top to bottom:
 
@@ -54,11 +54,11 @@ Three edits happen in place, without opening a dialog:
 
 The same edits have [keyboard shortcuts](keyboard.md): <kbd>e</kbd> for the description, <kbd>c</kbd> for the category, and <kbd>s</kbd> for status, all on the row under the cursor.
 
-<!-- screenshot: one journal row with the description, account chips and status badge circled as click targets -->
-
 ### The transaction dialog
 
 The **Add transaction** button above the table opens an empty dialog. The pencil button that appears when you hover a description opens the same dialog filled in with that transaction. <kbd>n</kbd> and <kbd>Enter</kbd> do the same from the keyboard.
+
+![The Edit transaction dialog for a paycheck with four postings: salary, federal tax, state tax and checking](images/transaction-editor.png)
 
 The dialog has these fields:
 

@@ -13,9 +13,11 @@ Ledgeline checks your whole journal in the background every time it loads. The c
 
 When there is at least one finding, a warning triangle with a count appears in the top bar. Its colour follows the worst finding: red for an error, amber for a warning, blue for information. A clean journal shows no triangle at all.
 
+![The right-hand end of the top bar, with the problems triangle and its count of 6 circled](images/problems-badge.png)
+
 Click the triangle to open the Problems drawer. Findings are grouped by check, with a count beside each group.
 
-<!-- screenshot: problems drawer open beside the journal, with the navbar triangle badge circled and one finding highlighted -->
+![The Problems drawer open over the journal, listing six findings grouped by check](images/problems-drawer.png)
 
 Most findings point at a transaction. Click one and Ledgeline closes the drawer, opens the Journal, scrolls to that transaction and pulses it. If the transaction falls outside the current date filter, the range widens just enough to include it. Account and search filters stay as they are, so clear them if the row doesn't appear.
 

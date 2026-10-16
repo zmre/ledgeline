@@ -11,7 +11,7 @@ Ledgeline is a desktop app for [hledger](https://hledger.org) plain-text account
 
 Ledgeline reads the journal itself and reproduces hledger's numbers exactly, with exact decimal arithmetic. It doesn't assume where your files live or how your accounts are named. When it writes, it writes ordinary hledger syntax that the `hledger` command reads the same way.
 
-<!-- screenshot: the Journal tab on the sample journal, full window, as the first thing a new user sees -->
+![The Journal tab on the sample journal: filter bar, transaction table and totals footer](journal/images/overview.png)
 
 ## Install
 

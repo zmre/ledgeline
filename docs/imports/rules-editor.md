@@ -13,7 +13,7 @@ It is not a text editor. If you want to edit the raw text, use your own editor i
 
 If no rules files exist yet, the tab says so. Create one by dropping a CSV on [New Transactions](new-transactions.md) and using [Create Rules](create-rules.md), or put `statement.csv.rules` next to `statement.csv` and it shows up here.
 
-<!-- screenshot: Edit Rules tab with the file list on the left, the Preferences / Row mapping / Accounts tabs, and the rules list with one rule open -->
+![The Edit Rules tab: the rules file list, the Preferences panel and the first rules](images/rules-editor.png)
 
 ## The three settings tabs
 

@@ -16,8 +16,6 @@ Imports has two tabs. Press <kbd>1</kbd> or <kbd>2</kbd> to switch between them.
 
 Account aliases used to be a third tab here. They now live under [Settings → Account Aliases](../settings/account-aliases.md), and an old bookmark to the Imports tab is forwarded there.
 
-<!-- screenshot: Imports screen with the New Transactions tab selected and the empty drop target -->
-
 ## What you need first
 
 Imports runs hledger, so Ledgeline needs hledger 1.40 or newer. If it can't find one, or finds one that is too old, the New Transactions tab shows a banner where you can type the path to the binary. The rest of the tab stays hidden until hledger works.

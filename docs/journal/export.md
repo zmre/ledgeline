@@ -9,6 +9,8 @@ tags: [journal, export, quickbooks]
 
 The **Export .xlsx** button in the journal's totals footer saves the transactions you are looking at as an Excel workbook. The layout copies QuickBooks Online's Journal report, so an accountant can read it without learning hledger.
 
+![The journal's totals footer with an arrow pointing at the Export .xlsx button](images/export-button.png)
+
 ## What gets exported
 
 The export contains exactly what the table shows. The date range, account and search [filters](filtering.md) all apply. To export everything, choose **All time** and clear the other filters first. The button is hidden when no transactions match.
@@ -32,8 +34,6 @@ Each transaction is a group of rows:
 3. A `Total for` row with the group's debit and credit totals.
 
 A `TOTAL` row with the grand totals closes the sheet, followed by a line saying when Ledgeline generated it.
-
-<!-- screenshot: an exported workbook open in a spreadsheet app, showing one transaction group with its Total for row -->
 
 ### Columns
 

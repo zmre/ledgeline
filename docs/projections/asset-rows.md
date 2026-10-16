@@ -11,6 +11,8 @@ Every other row in the table is a per-period *flow*. An asset row states a
 *stock*: what you hold, what rate it compounds at, and what you add to it —
 enough to model a brokerage account, a 401k or a house in one line.
 
+![The asset-growth-scenario file loaded in Projections: income and expense flows plus three asset rows, one with a balance override](images/asset-scenario.png)
+
 ```journal
 ~ monthly  investing
     (assets:brokerage)           $0  ; growth: 7%/yr
@@ -116,6 +118,8 @@ Expenses and before One-off events:
 | **Contribution** | what you add each period. `0` is normal — see below |
 | **Per** | how often the contribution happens |
 | **From** / **To** | optional bounds, `To` exclusive as hledger writes it |
+
+![The Assets and balances section, the first asset row boxed: growth 7%/yr and a $0 contribution](images/asset-rows.png)
 
 **A row is an asset row because it says so, not because of its account.** The
 section is decided by the row's kind and nothing else, so a row here cannot

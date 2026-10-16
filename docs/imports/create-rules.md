@@ -17,8 +17,6 @@ Drop the statement. If the **Read it with** list says no rules file fits, press 
 
 The button only appears when nothing fits. To build a second rules file for data that an existing one already matches, copy that file in a terminal and edit it in [Edit Rules](rules-editor.md).
 
-<!-- screenshot: Create rules panel with the column mapping table, guessed-column badges, and the "What the file will say" preview -->
-
 ## Fill in the draft
 
 ### File name

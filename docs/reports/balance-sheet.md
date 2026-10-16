@@ -12,6 +12,8 @@ lines are *groups* rather than raw accounts, valued into a single currency so
 every line is one number. Under the boxes is a spreadsheet tie-out that proves the
 statement balances.
 
+![The balance sheet as of 2026-07-08: the unvalued-holdings warning, then current and non-current assets](images/balance-sheet.png)
+
 This page covers how lines are chosen, how to control them with `bsgroup:`, how
 `bsterm:` splits each box into current and non-current, what the equity lines
 mean, and why the balance check has a tolerance.

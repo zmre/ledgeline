@@ -24,6 +24,8 @@ Open **Imports → New Transactions** and drop the `.xlsx` file, or press **Choo
 
 The panel shows how many transactions and postings it read, plus a sample of the transactions it will write. If every date in the export could be read as either day/month or month/day, it warns you and names the order it chose. Check a few sample dates. If they are wrong, export a wider date range so that some date has a day above 12.
 
+![The QuickBooks Journal import panel: the export instructions, the counts of transactions and postings read, and the first sample transactions](images/quickbooks-preview.png)
+
 ## Create the accounts you want first
 
 QuickBooks account names such as `1520 Computer & Office Equipment` won't match the accounts in your journal. Decide what each one should be called in hledger before you map them.
@@ -36,7 +38,7 @@ You can map to a name you haven't declared. The import still works, but that acc
 
 Any QuickBooks account your journal doesn't map yet appears in the **Map QuickBooks accounts** table. Each row shows the QuickBooks name and a field for your account, which suggests accounts already in your journal as you type. Fill in as many rows as you like and press **Map accounts**.
 
-<!-- screenshot: the "Map QuickBooks accounts" table with one row filled in and the Map accounts button circled -->
+![The Map QuickBooks accounts table, first three rows, with the Your account field circled](images/quickbooks-mapping.png)
 
 Each mapping is saved as a plain hledger alias in your main journal, the file you opened. If that file can't be written, it goes in the first included file that already declares aliases and can be.
 
@@ -51,6 +53,8 @@ A mapping on a parent account covers its QuickBooks sub-accounts too, following 
 Only plain aliases count. A `/regex/` alias in your journal is never applied to QuickBooks names, so an account it would have matched still shows as unmapped.
 
 The **Import** button stays disabled until every account in the export is mapped.
+
+![The disabled Import button with its note: Map every account above before importing.](images/quickbooks-import-button.png)
 
 ## What gets written
 

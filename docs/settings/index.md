@@ -11,8 +11,6 @@ Open Settings with the gear button at the right end of the top bar. It has no `g
 
 Settings has two tabs. Press <kbd>1</kbd> or <kbd>2</kbd> to switch between them, or click the tab. The open tab is kept in the address as `?tab=accounts` or `?tab=aliases`, so a reload brings you back to the same one.
 
-<!-- screenshot: Settings screen with the Accounts tab open, account list on the left and editor on the right -->
-
 | Tab | What it edits | Page |
 | --- | --- | --- |
 | Accounts | The `account` directives in your journal: each account's type, the report tags Ledgeline reads, other tags, and a note | [Accounts](accounts.md) |

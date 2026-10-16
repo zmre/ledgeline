@@ -23,7 +23,7 @@ with `hledger bs -V`.
 
 ## Updating prices from Yahoo Finance
 
-<!-- screenshot: Stocks tab with the Update prices button circled and the per-symbol result summary showing -->
+![An arrow pointing at the Update prices button beside the Holdings tab strip](images/update-prices.png)
 
 The **Update prices** button sits beside the tab strip while the Stocks tab is
 open. One press fetches the latest close for every symbol the tab currently

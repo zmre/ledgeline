@@ -9,7 +9,7 @@ tags: [reports]
 
 The Subscriptions tab lists the charges that recur every month or every year, with what each costs per year and when the next one is due. Nothing in a plain-text journal marks a charge as a subscription, so Ledgeline infers them from the pattern of your spending.
 
-<!-- screenshot: Subscriptions tab with both boxes, the per-month and per-year totals circled -->
+![The Subscriptions tab: the annual and monthly boxes and the tagging help](images/subscriptions.png)
 
 ## Reading the tab
 

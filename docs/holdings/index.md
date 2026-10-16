@@ -16,7 +16,7 @@ The Holdings tab has two sub-tabs:
   with its value, its cost, and how much it has changed. A holding may be one
   account or a small subtree of them.
 
-<!-- screenshot: Holdings Stocks tab, full page, with the Period control and the Update prices button circled -->
+![Holdings → Stocks: the filter bar, the Update prices button, the Insights summary and the value chart](images/stocks.png)
 
 This section has five pages:
 
@@ -37,6 +37,8 @@ security is a *commodity*: you hold 19.5 AAPL across three accounts, and the
 interesting row is AAPL. A house is an *account*: `assets:property:home` is the
 thing, and what it holds is an implementation detail. Averaging cost across lots
 makes sense for the first and is meaningless for the second.
+
+![Holdings → Other: the value-over-time chart above rows for a home and a car](images/other.png)
 
 ## Which tab an account lands on
 
@@ -84,6 +86,8 @@ means the same thing on both:
 Totals sum only the rows that carry the input they need. An asset whose commodity
 has no price route to the base currency contributes to no total and raises a
 warning naming it, rather than being silently counted as zero.
+
+![An excerpt of the Stocks holdings table: basis, price, market value and gain for each commodity](images/stocks-table.png)
 
 ## Scope, dates and the account chooser
 
