@@ -42,7 +42,7 @@ risk rating for funds and not for single stocks.
 
 1. **Tags on your `commodity` directives.** These always win.
 2. **Yahoo Finance**, for any view a commodity's tags leave open. Yahoo is
-   asked under the commodity's [`yahoo:` tag](prices.md#the-yahoo--tag) when it has one,
+   asked under the commodity's [`yahoo:` tag](prices.md#the-yahoo-tag) when it has one,
    the same way a price update is.
 
 Value nothing classifies goes into an **(unclassified)** slice, drawn in a faded

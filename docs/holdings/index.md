@@ -62,7 +62,7 @@ are also tickers. `BND` is both the Brunei dollar and Vanguard's bond fund.
 Bought and held in a brokerage account, never spent or banked, `BND` is the
 fund, so it lands on Stocks.
 
-To override this rule, use the [`holdings:` tag](tags.md#the-holdings--tag).
+To override this rule, use the [`holdings:` tag](tags.md#the-holdings-tag).
 
 ## What the columns mean
 

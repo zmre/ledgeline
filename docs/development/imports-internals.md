@@ -11,7 +11,7 @@ This page is for maintainers. It explains how the import pipeline works and why 
 
 - [New transactions](../imports/new-transactions.md): drop a statement file, convert it to CSV, match it against your rules files, run `hledger import`, and check the result before anything is written.
 - [Editing rules files](../imports/rules-editor.md): find, read and edit hledger CSV import rules files (`*.rules`).
-- [Account aliases](../settings/account-aliases.md): the `alias` directives in your journal, which an import hands to `hledger --alias`. The editor lives in Settings. See [Account aliases](#account-aliases) below, and [the two homes an alias can live in](#the-two-homes-an-alias-can-live-in--and-what-each-affects) for why the same mapping in an `hledger.conf` is a different thing.
+- [Account aliases](../settings/account-aliases.md): the `alias` directives in your journal, which an import hands to `hledger --alias`. The editor lives in Settings. See [Account aliases](#account-aliases) below, and [the two homes an alias can live in](#the-two-homes-an-alias-can-live-in-and-what-each-affects) for why the same mapping in an `hledger.conf` is a different thing.
 - [Importing from QuickBooks](../imports/quickbooks.md): a separate pipeline for the QuickBooks Online Journal report.
 
 The rules-file scope is to discover, present, edit and save rules files, and to draft a new one from a dropped CSV. Writing a chosen category back as a new `if` rule is still out of scope. The model below is shaped so that it can be added later without changing what exists.
@@ -113,7 +113,7 @@ A behavioural test would need a hostile `hledger.conf` planted above the test ru
 directory — which is this repository — and would break every other test in the run. The flag is also
 observed arriving at a real process in `tests/prefs.rs`.
 
-## Two journals: the one we write, and the one we reckon against
+## Two journals for writing and for reckoning
 
 > **The file an import is written TO is not the file its balances are computed FROM.**
 
@@ -592,7 +592,7 @@ Verified against hledger 1.52, in both directions:
 So Ledgeline reads the journal's own `alias` directives and hands them to hledger as `--alias`.
 The mapping is one the user already wrote down; the only thing added is delivery.
 
-### The two homes an alias can live in, and what each affects
+### The two homes an alias can live in and what each affects
 
 This is the distinction the whole command-line-parity feature turns on. The two look like the same
 thing and are not:
@@ -722,7 +722,7 @@ alias the user explicitly bounded is listed, is editable, and is never forwarded
 on screen. Which file an alias is in does not change whether it is forwarded; that is a
 simplification, and the mitigation is that the whole set is shown rather than applied invisibly.
 
-### Ledgeline reads aliases; it does not apply them
+### Ledgeline reads aliases but does not apply them
 
 `Journal.aliases` is populated and `Journal` account names are left exactly as written. This is a
 deliberate narrowing of `parse.rs`'s "reject rather than misparse" rule and it is argued at
@@ -802,7 +802,7 @@ double-entry — hledger's CSV rules engine has no construct for "keep reading r
 line closes the group," so this format cannot go through `hledger import` at all. Ledgeline parses
 it itself (`ledgeline_core::qb_journal`) and writes transactions directly
 (`ledgeline_core::edit::JournalEditor::add_transaction`), matching each QuickBooks account against
-the journal's own plain aliases (see [the one narrow, deliberate exception](#ledgeline-reads-aliases--it-does-not-apply-them) above) rather than
+the journal's own plain aliases (see [the one narrow, deliberate exception](#ledgeline-reads-aliases-but-does-not-apply-them) above) rather than
 guessing. Dropping a `.xlsx` export onto New Transactions is detected automatically and switches to
 a dedicated panel; the same file also works from the command line
 (`ledgeline import -i Journal.xlsx -j main.journal`, no `-o`/`-r` — see `ledgeline import --help`).

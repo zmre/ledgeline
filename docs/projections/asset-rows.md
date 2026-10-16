@@ -136,7 +136,7 @@ into — and it is what the file writes as a `$0` posting.
 not net income, not your runway date. The Net worth tab breaks the growth down
 per asset underneath its chart, so you can see which row produced it.
 
-## `opening:` restates the balance, and says so
+## The opening tag restates the balance and says so
 
 By default the row compounds the balance your journal actually shows for that
 account **and everything under it** — `assets:broker` means the whole subtree,

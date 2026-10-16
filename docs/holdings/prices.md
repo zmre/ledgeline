@@ -50,7 +50,7 @@ The new file is created beside your main journal, holding a comment and nothing
 else, and `include prices.journal` is appended to the **end** of your main
 journal. Both writes are proved to reparse before either one happens.
 
-### The `yahoo:` tag
+### The yahoo tag
 
 Prices are looked up under the commodity's own symbol. When Yahoo Finance knows
 a holding by a different ticker than your journal does — which is common, because

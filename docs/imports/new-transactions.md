@@ -34,7 +34,7 @@ The **Where it goes** box has two fields.
 - **CSV file** is where the converted CSV is saved, relative to the folder your journal is in. hledger keeps its import state, a `.latest` file, beside this CSV, so use the same name each time you import from the same account.
 - **Import into** is the journal file the transactions are appended to. Ledgeline lists the journal files it can see and can write to. In a journal split across `include`d files, pick the file for the year or account you are importing.
 
-Balances are always checked against the whole journal you opened, not only the file you are writing to. [Two journals](../development/imports-internals.md#two-journals--the-one-we-write--and-the-one-we-reckon-against) explains why that matters for split journals.
+Balances are always checked against the whole journal you opened, not only the file you are writing to. [Two journals](../development/imports-internals.md#two-journals-for-writing-and-for-reckoning) explains why that matters for split journals.
 
 ## Check the statement balance
 

@@ -74,7 +74,7 @@ human types into a journal by hand. Anything it cannot read makes the line
 **`opening:` is the only tag that is not optional decoration.** It belongs to an
 asset row and nothing else, it carries a bare number in the row's own commodity
 (hledger ends a tag's value at a comma, so `$200,000` would read back as `$200`),
-and [Asset rows](asset-rows.md#opening--restates-the-balance--and-says-so) says exactly
+and [Asset rows](asset-rows.md#the-opening-tag-restates-the-balance-and-says-so) says exactly
 what the engine does with it.
 
 **`line:` is what makes a step change one row.** A step is a permanent change to

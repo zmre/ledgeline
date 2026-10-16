@@ -56,7 +56,7 @@ you when the dialog opens, and a list opened at that moment would be positioned
 against a dialog that is still animating into place.
 
 Any account is allowed. Most goals are expenses, but budgeting an income account
-is the same gesture. See [Income, and the sign](#income--and-the-sign).
+is the same gesture. See [Income and the sign](#income-and-the-sign).
 
 ## Where your goals get written
 
@@ -194,7 +194,7 @@ Each commodity is averaged on its own, over the same period count. A month in
 which a commodity did not appear still counts toward its mean, because "nothing"
 is a real month of spending in it.
 
-## Income, and the sign
+## Income and the sign
 
 hledger records income as negative. Ledgeline does not make you think about that:
 you type `1200` for an annual interest goal and the journal gets `$-1200`. The

@@ -9,7 +9,7 @@ tags: [holdings, account-tags]
 
 These two account tags change how the [Holdings](index.md) tab reads your accounts. `holdings:` decides which tab an account is on. `valuation:` decides what an account means once it is there.
 
-## The `holdings:` tag
+## The holdings tag
 
 Tag an account declaration to override the mechanical rule:
 
@@ -35,7 +35,7 @@ than being ignored — see [below](#a-misspelt-value-is-an-error).
 > **Two spaces before the `;`.** A comment on an `account` directive needs at
 > least two spaces in front of it, or hledger reads the whole line as the account
 > NAME and none of these tags exist. Nothing warns you. See
-> [the balance sheet page](../reports/balance-sheet.md#three-gotchas--all-inherited-from-hledger-s-syntax).
+> [the balance sheet page](../reports/balance-sheet.md#three-gotchas-inherited-from-hledger-syntax).
 
 ### When you need `holdings: other`
 

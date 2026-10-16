@@ -21,7 +21,7 @@ just docs-build ./site       # the same, into another folder
 
 Run `just docs-build` before you push a docs change. It is the check CI runs, and it fails on a link to a page that doesn't exist.
 
-mbr doesn't check `#anchor` fragments, so a link to a renamed heading still builds. mbr's heading ids are its own: lowercase, spaces become `-`, and punctuation becomes an extra `-`. `## Income, and the sign` gets the id `income--and-the-sign`, which is not what GitHub produces. Links in this manual use mbr's ids, so a few anchors don't jump when the file is read on GitHub.
+mbr doesn't check `#anchor` fragments, so a link to a renamed heading still builds. mbr and GitHub also make heading ids differently: GitHub drops punctuation, while mbr turns each piece into an extra `-`. `## Income, and the sign` would be `income-and-the-sign` on GitHub but `income--and-the-sign` in mbr. To keep anchors working in both places, don't put punctuation (commas, colons, semicolons, apostrophes, backticks) in a heading that something links to.
 
 ## Screenshots
 

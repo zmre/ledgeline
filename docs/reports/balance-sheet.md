@@ -54,7 +54,7 @@ Group names are free text — use whatever line items your books call for
 (`Inventory`, `Deferred revenue`, `Paid-in capital`, `Intangible assets`,
 `Accumulated depreciation`, …). Accounts that share a name share a line.
 
-### Three gotchas, all inherited from hledger's syntax
+### Three gotchas inherited from hledger syntax
 
 **A comment on an `account` directive needs TWO spaces before the `;`.** An
 account name may contain single spaces, so a single space cannot end one — with
