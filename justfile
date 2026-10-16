@@ -328,3 +328,17 @@ perf-rss size="200000":
             | awk '/maximum resident set size/ {print $1}')
         awk -v s="$stage" -v p="$peak" 'BEGIN{printf "%-10s peak RSS %9.1f MB\n", s, p/1048576}'
     done
+
+# The user manual in docs/ is an mbr site (see docs/development/docs-site.md and
+# .github/workflows/docs.yml). Same pinned mbr as CI, run through nix so nothing
+# is installed. `--accept-flake-config` lets nix use mbr's binary cache instead
+# of compiling ffmpeg and pdfium.
+mbr := "nix run --accept-flake-config github:zmre/mbr-markdown-browser/v0.6.2#mbr --"
+
+# Preview the docs site locally (mbr prints the URL)
+docs:
+    {{mbr}} -s docs
+
+# Build the docs site exactly as CI does, failing on any broken internal link
+docs-build out="/tmp/ledgeline-docs-build":
+    {{mbr}} -b --fail-on-broken-links --output {{out}} docs

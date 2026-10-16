@@ -1,0 +1,99 @@
+# Build the user manual in docs/ with mbr and publish it to GitHub Pages.
+#
+# Publishes on every release tag (`v*`, the same trigger as release.yml) and on
+# demand via workflow_dispatch. Pull requests that touch docs/ build and
+# link-check only, so a broken link fails review rather than a release.
+#
+# One-time setup: Settings → Pages → Source must be "GitHub Actions".
+#
+# Modelled on mbr's own docs.yml (github.com/zmre/mbr-markdown-browser). Two
+# things there are load-bearing and copied deliberately:
+#   - mbr is built with Nix. The release binary links into /nix/store and does
+#     not run on a stock ubuntu runner.
+#   - The Pages artifact is tarred by hand with --dereference: mbr symlinks
+#     assets into the output, and upload-pages-artifact drops the `.mbr/`
+#     dot-dir that holds the theme and the search index.
+name: Docs
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned so a new mbr release can't change the site between two tags.
+  MBR_FLAKE: github:zmre/mbr-markdown-browser/v0.6.2#mbr
+
+jobs:
+  build:
+    name: Build docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@d0c908e6cbe9f89f36ed8205a3ab6f092636916a # v3.23.1
+
+      # Pull-only: mbr's closure lives in the zmre cache (mbr's own CI pushes
+      # it), and nothing this job builds is worth pushing back.
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: zmre
+          extraPullNames: nix-community
+          skipPush: true
+
+      - name: Build mbr
+        run: nix build --accept-flake-config -L --out-link mbr "$MBR_FLAKE"
+
+      - name: Build site
+        run: ./mbr/bin/mbr -b --fail-on-broken-links --output ./docs-build ./docs
+
+      - name: Create Pages artifact
+        if: github.event_name != 'pull_request'
+        run: |
+          tar \
+            --dereference --hard-dereference \
+            --directory ./docs-build \
+            -cf "$RUNNER_TEMP/artifact.tar" \
+            --exclude=.git \
+            --exclude=.github \
+            .
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: github-pages
+          path: ${{ runner.temp }}/artifact.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
