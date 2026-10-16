@@ -313,6 +313,7 @@ pub(crate) fn net_worth_priced(
             depth: account.split(':').count(),
             values,
             kind: kinds.get(account).copied(),
+            total: None,
         });
     }
 
@@ -345,6 +346,7 @@ pub(crate) fn net_worth_priced(
         buckets,
         rows,
         totals,
+        grand_total: None,
         meta: meta_out,
     })
 }
