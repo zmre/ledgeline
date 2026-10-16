@@ -52,7 +52,28 @@ rust_audit() {
   # still require gtk "^0.18" (and so glib "^0.18"), so no lockfile change can
   # reach a fixed glib — which is also why Dependabot cannot open a PR for it.
   # Bumping our own direct `gtk` to 0.19 would only add a second GTK binding.
-  nix develop -L .#audit -c cargo-audit audit
+  #
+  # The three ignored advisories are zip 8.6.0's, investigated 2026-10-16 and
+  # assessed as NOT AFFECTED:
+  #
+  #   RUSTSEC-2026-0367  SUID/SGID bits preserved on extraction
+  #   RUSTSEC-2026-0368  extract() creates symlinks pointing outside the dest
+  #   RUSTSEC-2026-0369  extract() applies permissions through symlinks
+  #
+  # All three live in `ZipArchive::extract` / `ZipStreamReader::extract`, the
+  # write-the-archive-to-disk path. Grepping our crates and calamine-0.36.1's
+  # src for `extract(` / `ZipStreamReader` returns nothing: calamine reads
+  # XLSX/ODS entries in memory via `by_name`, and our own direct `zip`
+  # dependency only builds test fixtures with `ZipWriter`.
+  #
+  # WHAT WOULD MAKE THIS ACTIONABLE: a calamine release off zip 8 (0.36.1
+  # requires `zip ^8.6`; the fix is zip >= 9). When it lands, bump calamine and
+  # our direct `zip` to 9 and drop these three --ignores. Re-check the grep if
+  # anything in the tree starts unpacking archives to disk.
+  nix develop -L .#audit -c cargo-audit audit \
+    --ignore RUSTSEC-2026-0367 \
+    --ignore RUSTSEC-2026-0368 \
+    --ignore RUSTSEC-2026-0369
 }
 
 spa_audit() {
