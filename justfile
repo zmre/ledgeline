@@ -59,6 +59,16 @@ e2e:
     cargo build -p ledgeline
     cd web && bun run test:e2e
 
+# The SPA is built before the binary for the same reason as `e2e`: every docs
+# shot loads the app the engine itself embeds (same-origin, as the packaged app
+# does), so a binary compiled before the SPA would serve the placeholder page.
+# Not part of `e2e`: these specs are `*.docs.ts` under web/docs-screenshots/.
+# Regenerate the docs screenshots (docs/**/images/*.png)
+docs-screenshots:
+    cd web && bun run build
+    cargo build -p ledgeline
+    cd web && bunx playwright test -c playwright.docs.config.ts
+
 # Typecheck + svelte-check
 check:
     cd web && bun run check
