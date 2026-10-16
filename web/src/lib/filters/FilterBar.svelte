@@ -2,7 +2,7 @@
     // Top filter bar (WP-04): date range + account tree + search in a wrapping
     // row (single row on desktop; controls wrap/stack at 375px, with the
     // account tree in a compact dropdown popover). Removable chips appear when
-    // filters differ from the default (current month, all accounts, no query).
+    // filters differ from the default.
     import {defaultFilter, filters} from "#lib/stores/filters.svelte.js";
     import {toggleSubtreeRoot} from "./treeSelect";
     import AccountTreeSelect from "./AccountTreeSelect.svelte";
