@@ -191,4 +191,17 @@ describe("COMPONENT CashFlowChart", () => {
 
         expect(document.querySelector('[data-testid="cashflow-chart-empty"]')?.textContent).toContain("No cash moved");
     });
+
+    it("asks for a wider range on Interval = Total, whose one column is no trend", () => {
+        // plans/24: the Total grain is ONE bucket spanning the whole range.
+        const total: PeriodReport = {
+            buckets: ["2025-08-01..2026-07-08"],
+            rows: [{...row("assets:bank", [40]), total: usd(40)}],
+            totals: [usd(40)],
+            grandTotal: usd(40),
+        };
+        render(CashFlowChart, {report: total, styles: STYLES});
+
+        expect(document.querySelector('[data-testid="cashflow-chart-empty"]')?.textContent).toContain("Only one period");
+    });
 });

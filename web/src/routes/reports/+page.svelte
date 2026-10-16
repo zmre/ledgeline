@@ -26,6 +26,7 @@
     import {
         budgetRedirect,
         defaultReportParams,
+        INTERVAL_LABELS,
         paramsToSearch,
         searchToParams,
         TAB_DEFAULTS,
@@ -65,8 +66,8 @@
         return () => mirror.stop();
     });
 
-    // Each tab seeds its own defaults on activation (cash flow wants monthly/12,
-    // net worth yearly/5; bs/is ignore interval/count).
+    // Each tab seeds its own defaults on activation (the P&L opens on Total,
+    // cash flow monthly, net worth yearly/5; bs ignores interval/count).
     $effect(() => {
         const tab = params.tab;
         if (!restored || tab === activeTab) return;
@@ -190,6 +191,10 @@
 
     const exportInfo = $derived.by(() => {
         const span = `last ${params.count} ${params.interval} periods ending ${params.end}`;
+        // The ranged reports name their range AND their grain, in the title and
+        // the filename alike, so two exports of one range at different
+        // intervals cannot overwrite each other or be mistaken for each other.
+        const grain = INTERVAL_LABELS[params.interval].toLowerCase();
         switch (params.tab) {
             case "insights":
             case "subs":
@@ -207,11 +212,15 @@
                 // see or reproduce.
                 return {
                     title: "Income Statement",
-                    params: `${params.from} to ${params.to}`,
-                    filename: `income-statement-${params.from}-to-${params.to}.xlsx`,
+                    params: `${params.from} to ${params.to}, ${grain}`,
+                    filename: `income-statement-${params.from}-to-${params.to}-${params.interval}.xlsx`,
                 };
             case "cf":
-                return {title: "Cash Flow", params: `${span}, depth ${params.depth}`, filename: `cash-flow-${params.end}.xlsx`};
+                return {
+                    title: "Cash Flow",
+                    params: `${params.cfFrom} to ${params.cfTo}, ${grain}, depth ${params.depth}`,
+                    filename: `cash-flow-${params.cfFrom}-to-${params.cfTo}-${params.interval}.xlsx`,
+                };
             case "nw":
                 return {title: "Net Worth", params: `${span}, depth ${params.depth}`, filename: `net-worth-${params.end}.xlsx`};
         }

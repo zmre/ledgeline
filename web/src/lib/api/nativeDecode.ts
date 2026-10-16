@@ -159,6 +159,7 @@ import type {
     GapRow,
     GroupSource,
     IncomeStatementReport,
+    IsBucket,
     IsGroup,
     IsRow,
     IsSection,
@@ -246,10 +247,11 @@ interface RawBalanceSheetReport {
     meta?: RawReportMeta | null;
 }
 
-/** `{current, prior?}` — `prior` is ABSENT, not null, when `compare=none`. */
+/** `{current, prior?, values?}` — `prior` is ABSENT, not null, when `compare=none`; `values` only in interval mode. */
 interface RawAmounts {
     current?: RawMixed;
     prior?: RawMixed | null;
+    values?: RawMixed[] | null;
 }
 
 interface RawIsRow {
@@ -284,10 +286,15 @@ interface RawDateRange {
     to?: string;
 }
 
+interface RawIsBucket extends RawDateRange {
+    key?: string;
+}
+
 interface RawIncomeStatementReport {
     from?: string;
     to?: string;
     prior?: RawDateRange | null;
+    buckets?: RawIsBucket[] | null;
     base?: string | null;
     value?: string;
     sections?: RawIsSection[];
@@ -331,6 +338,7 @@ interface RawPeriodRow {
     depth?: number;
     values?: RawMixed[];
     kind?: unknown;
+    total?: RawMixed | null;
 }
 
 interface RawReportMeta {
@@ -341,6 +349,7 @@ interface RawPeriodReport {
     buckets?: unknown[];
     rows?: RawPeriodRow[];
     totals?: RawMixed[];
+    grandTotal?: RawMixed | null;
     meta?: RawReportMeta | null;
 }
 
@@ -1483,7 +1492,18 @@ const IS_SECTION_KINDS: readonly IsSectionKind[] = ["revenue", "cogs", "opex", "
 const IS_SUBTOTAL_KINDS: readonly IsSubtotalKind[] = ["grossProfit", "ebitda", "operatingIncome", "pretaxIncome"];
 
 /**
- * `{current, prior?}`, checked against whether the REPORT is comparing.
+ * Which figures every `Amounts` in an income statement must carry, read once
+ * off the report's two switches: `prior` (a window → every figure has a prior)
+ * and `buckets` (columns → every figure has exactly that many `values`).
+ */
+interface AmountsMode {
+    comparing: boolean;
+    /** The bucket count in interval mode, or null in Total mode. */
+    columns: number | null;
+}
+
+/**
+ * `{current, prior?, values?}`, checked against the REPORT's mode.
  *
  * That cross-check is the whole point of taking `comparing` as an argument.
  * `prior` is an optional key, and an optional key is exactly where a renamed
@@ -1496,30 +1516,42 @@ const IS_SUBTOTAL_KINDS: readonly IsSubtotalKind[] = ["grossProfit", "ebitda", "
  *     `skip_serializing_if` and it means the identical thing; an actual amount
  *     throws, since there would be no window to label the column with.
  *
+ * `values` is the same discipline for interval mode: with `buckets` on the
+ * report it MUST be an array of exactly that many figures (a short one would
+ * silently shift every column after the gap); without, it must be absent.
+ *
  * `current` is unconditionally required via `decodeMixed`, so a missing figure
  * can never become `$0.00` (DRY-3).
  */
-function decodeAmounts(raw: RawAmounts | undefined, context: string, comparing: boolean): Amounts {
+function decodeAmounts(raw: RawAmounts | undefined, context: string, mode: AmountsMode): Amounts {
     if (raw === undefined || raw === null || typeof raw !== "object") {
-        throw new ApiShapeError(`${context}: missing amounts (expected {current, prior?})`);
+        throw new ApiShapeError(`${context}: missing amounts (expected {current, prior?, values?})`);
     }
     const out: Amounts = {current: decodeMixed(raw.current, `${context} current`)};
-    if (comparing) {
+    if (mode.comparing) {
         out.prior = decodeMixed(raw.prior ?? undefined, `${context} prior`);
     } else if (raw.prior !== undefined && raw.prior !== null) {
         throw new ApiShapeError(`${context} prior: sent a prior figure on a report with no prior period`);
     }
+    if (mode.columns !== null) {
+        if (!Array.isArray(raw.values) || raw.values.length !== mode.columns) {
+            throw new ApiShapeError(`${context} values: expected ${mode.columns} bucket figures`);
+        }
+        out.values = frozen(raw.values.map((value, i) => decodeMixed(value, `${context} values[${i}]`)));
+    } else if (raw.values !== undefined && raw.values !== null) {
+        throw new ApiShapeError(`${context} values: sent bucket figures on a report with no buckets`);
+    }
     return Object.freeze(out);
 }
 
-function decodeIsRow(raw: RawIsRow | undefined, context: string, comparing: boolean): IsRow {
+function decodeIsRow(raw: RawIsRow | undefined, context: string, mode: AmountsMode): IsRow {
     if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number") {
         throw new ApiShapeError(`${context}: missing account/depth`);
     }
-    return Object.freeze({account: raw.account, depth: raw.depth, amounts: decodeAmounts(raw.amounts, `${context} amounts`, comparing)});
+    return Object.freeze({account: raw.account, depth: raw.depth, amounts: decodeAmounts(raw.amounts, `${context} amounts`, mode)});
 }
 
-function decodeIsGroup(raw: RawIsGroup | undefined, context: string, comparing: boolean): IsGroup {
+function decodeIsGroup(raw: RawIsGroup | undefined, context: string, mode: AmountsMode): IsGroup {
     // `rows` demanded even when empty, for the reason `decodeBsGroup` gives:
     // absent and empty are different facts and only one is safe to render.
     if (raw === undefined || typeof raw.name !== "string" || !Array.isArray(raw.rows)) {
@@ -1528,21 +1560,21 @@ function decodeIsGroup(raw: RawIsGroup | undefined, context: string, comparing: 
     return Object.freeze({
         name: raw.name,
         source: decodeEnum(GROUP_SOURCES, raw.source, `${context} source`),
-        rows: frozen(raw.rows.map((row, i) => decodeIsRow(row, `${context} row #${i}`, comparing))),
-        total: decodeAmounts(raw.total, `${context} total`, comparing),
+        rows: frozen(raw.rows.map((row, i) => decodeIsRow(row, `${context} row #${i}`, mode))),
+        total: decodeAmounts(raw.total, `${context} total`, mode),
     });
 }
 
-function decodeIsSubtotal(raw: RawIsSubtotal | undefined, context: string, comparing: boolean): IsSubtotal {
+function decodeIsSubtotal(raw: RawIsSubtotal | undefined, context: string, mode: AmountsMode): IsSubtotal {
     if (raw === undefined || typeof raw.label !== "string") throw new ApiShapeError(`${context}: missing label`);
     return Object.freeze({
         kind: decodeEnum(IS_SUBTOTAL_KINDS, raw.kind, `${context} kind`),
         label: raw.label,
-        total: decodeAmounts(raw.total, `${context} total`, comparing),
+        total: decodeAmounts(raw.total, `${context} total`, mode),
     });
 }
 
-function decodeIsSection(raw: RawIsSection | undefined, context: string, comparing: boolean): IsSection {
+function decodeIsSection(raw: RawIsSection | undefined, context: string, mode: AmountsMode): IsSection {
     // `trailing` is required for the same reason `rows` is: "this box has no
     // ladder line under it" is a real answer the engine computes from its
     // guards, and it must not be reachable by the field going missing.
@@ -1552,9 +1584,9 @@ function decodeIsSection(raw: RawIsSection | undefined, context: string, compari
     return Object.freeze({
         kind: decodeEnum(IS_SECTION_KINDS, raw.kind, `${context} kind`),
         title: raw.title,
-        groups: frozen(raw.groups.map((group, i) => decodeIsGroup(group, `${context} group #${i}`, comparing))),
-        total: decodeAmounts(raw.total, `${context} total`, comparing),
-        trailing: frozen(raw.trailing.map((subtotal, i) => decodeIsSubtotal(subtotal, `${context} subtotal #${i}`, comparing))),
+        groups: frozen(raw.groups.map((group, i) => decodeIsGroup(group, `${context} group #${i}`, mode))),
+        total: decodeAmounts(raw.total, `${context} total`, mode),
+        trailing: frozen(raw.trailing.map((subtotal, i) => decodeIsSubtotal(subtotal, `${context} subtotal #${i}`, mode))),
     });
 }
 
@@ -1567,6 +1599,23 @@ function decodeDateRange(raw: RawDateRange, context: string): DateRange {
 }
 
 /**
+ * Interval mode's columns: absent or null in Total mode, otherwise a NON-empty
+ * array of `{key, from, to}`. Empty is refused rather than read as Total mode,
+ * because the engine omits the key for that — an empty array is a different
+ * fact it never sends.
+ */
+function decodeIsBuckets(raw: RawIsBucket[] | null | undefined, context: string): IsBucket[] | null {
+    if (raw === undefined || raw === null) return null;
+    if (!Array.isArray(raw) || raw.length === 0) throw new ApiShapeError(`${context}: expected a non-empty bucket array`);
+    return frozen(
+        raw.map((bucket, i) => {
+            if (typeof bucket?.key !== "string") throw new ApiShapeError(`${context} #${i}: missing key`);
+            return Object.freeze({key: bucket.key, ...decodeDateRange(bucket, `${context} #${i}`)});
+        })
+    );
+}
+
+/**
  * `GET /api/reports/incomestatement/grouped` → the grouped income statement.
  *
  * `kind: "incomeStatement"` is added HERE and is not on the wire. Three report
@@ -1575,27 +1624,36 @@ function decodeDateRange(raw: RawDateRange, context: string): DateRange {
  *
  * `prior` does double duty: it is the window the comparison column covers AND
  * the switch that says every `Amounts` in the tree must carry one. Reading it
- * first, and passing `comparing` down, is what turns an optional key into a
- * checked one — see `decodeAmounts`.
+ * first, and passing it down, is what turns an optional key into a checked one
+ * — see `decodeAmounts`. `buckets` is the second switch, for interval mode, and
+ * is checked the same way; the two never appear together.
  */
 export function decodeIncomeStatementReport(raw: unknown): IncomeStatementReport {
     const report = raw as RawIncomeStatementReport;
     if (typeof report !== "object" || report === null || typeof report.from !== "string" || typeof report.to !== "string" || !Array.isArray(report.sections)) {
         throw new ApiShapeError("income statement: expected from, to and a sections array");
     }
-    // Omitted (or null) for `compare=none`; a window for `compare=previous`.
-    const prior = report.prior === undefined || report.prior === null ? null : decodeDateRange(report.prior, "income statement prior");
-    const comparing = prior !== null;
+    // Null for `compare=none` and interval mode; a window for `compare=previous`.
+    // ABSENT throws: the engine always writes this key (it is the switch), so a
+    // missing one is a renamed field, not a report that does not compare.
+    if (report.prior === undefined) throw new ApiShapeError("income statement prior: expected a window or null, got nothing");
+    const prior = report.prior === null ? null : decodeDateRange(report.prior, "income statement prior");
+    const buckets = decodeIsBuckets(report.buckets, "income statement buckets");
+    if (prior !== null && buckets !== null) {
+        throw new ApiShapeError("income statement: an interval statement cannot also carry a prior window");
+    }
+    const mode: AmountsMode = {comparing: prior !== null, columns: buckets?.length ?? null};
     const out: IncomeStatementReport = {
         kind: "incomeStatement",
         from: report.from as ISODate,
         to: report.to as ISODate,
         prior,
+        buckets,
         // Null is the no-base answer; absent throws (see `decodeNullableStr`).
         base: decodeNullableStr(report.base, "income statement base"),
         value: decodeEnum(BS_VALUATIONS, report.value, "income statement value"),
-        sections: frozen(report.sections.map((section, i) => decodeIsSection(section, `income statement section #${i}`, comparing))),
-        netIncome: decodeAmounts(report.netIncome, "income statement netIncome", comparing),
+        sections: frozen(report.sections.map((section, i) => decodeIsSection(section, `income statement section #${i}`, mode))),
+        netIncome: decodeAmounts(report.netIncome, "income statement netIncome", mode),
         // Required, not defaulted: it decides whether `opex` reads "Expenses" or
         // "Operating expenses", so a missing one would silently relabel a box.
         multiStep: decodeBoolean(report.multiStep, "income statement multiStep"),
@@ -1692,7 +1750,7 @@ export function decodeFlowReport(raw: unknown): FlowReport {
 
 const PERIOD_ROW_KINDS: readonly PeriodRowKind[] = ["asset", "liability", "mixed"];
 
-function decodePeriodRow(raw: RawPeriodRow | undefined, context: string): PeriodRow {
+function decodePeriodRow(raw: RawPeriodRow | undefined, context: string, totalled: boolean): PeriodRow {
     if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number" || !Array.isArray(raw.values)) {
         throw new ApiShapeError(`${context}: missing account/depth/values`);
     }
@@ -1707,6 +1765,14 @@ function decodePeriodRow(raw: RawPeriodRow | undefined, context: string): Period
     if (raw.kind !== undefined) {
         row.kind = decodeEnum(PERIOD_ROW_KINDS, str(raw.kind, `${context} kind`), `${context} kind`);
     }
+    // Cash flow's Total column: required on every row when the report carries a
+    // grand total, refused on every row when it does not — a row missing its
+    // total would otherwise print a blank cell that reads as "no change".
+    if (totalled) {
+        row.total = decodeMixed(raw.total ?? undefined, `${context} total`);
+    } else if (raw.total !== undefined && raw.total !== null) {
+        throw new ApiShapeError(`${context} total: sent a row total on a report with no grand total`);
+    }
     return Object.freeze(row);
 }
 
@@ -1715,11 +1781,15 @@ export function decodePeriodReport(raw: unknown): PeriodReport {
     if (typeof report !== "object" || report === null || !Array.isArray(report.buckets) || !Array.isArray(report.rows) || !Array.isArray(report.totals)) {
         throw new ApiShapeError("period report: expected buckets/rows/totals arrays");
     }
+    // `grandTotal` is the switch for the Total column, exactly as `prior` is on
+    // the income statement: read first, then required of every row.
+    const totalled = report.grandTotal !== undefined && report.grandTotal !== null;
     const out: PeriodReport = {
         buckets: frozen(decodeStrings(report.buckets, "report buckets")),
-        rows: frozen(report.rows.map((row, i) => decodePeriodRow(row, `period row #${i}`))),
+        rows: frozen(report.rows.map((row, i) => decodePeriodRow(row, `period row #${i}`, totalled))),
         totals: frozen(report.totals.map((total, i) => decodeMixed(total, `report totals[${i}]`))),
     };
+    if (totalled) out.grandTotal = decodeMixed(report.grandTotal ?? undefined, "report grandTotal");
     if (report.meta !== undefined && report.meta !== null) {
         out.meta = decodeReportMeta(report.meta, "report meta");
     }

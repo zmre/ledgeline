@@ -1192,6 +1192,7 @@ pub fn project(
                 .collect(),
             account,
             kind: None,
+            total: None,
         })
         .collect();
 
@@ -1212,6 +1213,7 @@ pub fn project(
             buckets: buckets.clone(),
             rows,
             totals: income_totals,
+            grand_total: None,
             meta: None,
         },
         cash: BalanceSeries {

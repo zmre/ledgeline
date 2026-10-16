@@ -10,6 +10,7 @@
 // what is in the document, which element contains which, what `aria-expanded`
 // says, and what Enter dispatches.
 
+import {readFileSync} from "node:fs";
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
@@ -31,6 +32,12 @@ const STYLES: ReadonlyMap<string, AmountStyle> = new Map<string, AmountStyle>([
 const REPORT = decodeIncomeStatementReport(GROUPED_INCOME_STATEMENT);
 const MULTI = decodeIncomeStatementReport(MULTI_STEP_INCOME_STATEMENT);
 const UNCOMPARED = decodeIncomeStatementReport(UNCOMPARED_INCOME_STATEMENT);
+/**
+ * The engine's own interval-mode bytes: `?from=2026-01-01&to=2026-07-08&interval=monthly&compare=none`.
+ * Read relative to `web/` (vitest's cwd): under jsdom `import.meta.url` is not a
+ * `file:` URL, so the node-project trick of resolving against it cannot work here.
+ */
+const MONTHLY = decodeIncomeStatementReport(JSON.parse(readFileSync("../fixtures/native/v1/incomestatement-grouped-monthly.json", "utf8")));
 
 const mount = (report = REPORT) => render(IncomeStatementView, {report, styles: STYLES});
 
@@ -176,14 +183,17 @@ describe("COMPONENT IncomeStatementView", () => {
             expect(revenue.textContent).toContain("$39,397.50"); // prior
         });
 
-        it("prints each line's share of revenue to one decimal", () => {
+        it("prints each line's % change against the prior period to one decimal", () => {
             mount();
 
-            expect(screen.getByTestId("is-section-opex").textContent).toContain("84.2%"); // 28,626.48 / 34,010.00
-            expect(screen.getByTestId("is-section-revenue").textContent).toContain("100.0%");
-            // 1.9675% → "2.0%", not "2%": the trailing zero says the column has a
-            // decimal place, which is what makes 0.5% and 38.6% read as a column.
-            expect(screen.getByTestId("is-section-opex").textContent).toContain("2.0%");
+            expect(screen.getAllByRole("columnheader", {name: "% change"}).length).toBeGreaterThan(0);
+            expect(screen.queryByText("% of revenue")).toBeNull();
+            // (28,626.48 − 28,516.71) / 28,516.71 = +0.38% → "0.4%".
+            expect(screen.getByTestId("is-section-opex").textContent).toContain("0.4%");
+            expect(screen.getByTestId("is-section-revenue").textContent).toContain("-13.7%"); // against $39,397.50
+            // +6.986% → "7.0%", not "7%": the trailing zero says the column has a
+            // decimal place, which is what makes 0.4% and 13.7% read as a column.
+            expect(screen.getByTestId("is-section-opex").textContent).toContain("7.0%");
         });
 
         it("drops the prior column entirely when the report is not comparing", () => {
@@ -193,24 +203,20 @@ describe("COMPONENT IncomeStatementView", () => {
             // zero" rather than as "there is no prior period".
             expect(screen.queryByRole("columnheader", {name: "Prior"})).toBeNull();
             expect(screen.queryByTestId("is-net-income-prior")).toBeNull();
+            // …and so is the % change, which has nothing to change FROM.
+            expect(screen.queryByRole("columnheader", {name: "% change"})).toBeNull();
+            expect(screen.queryByTestId("is-net-income-pct")).toBeNull();
             expect(screen.getByTestId("income-statement").textContent).not.toContain("$39,397.50");
             // …and the current figures are untouched by its absence.
             expect(screen.getByTestId("is-section-revenue").textContent).toContain("$34,010.00");
         });
 
-        it("shows — where there is no revenue to divide by", () => {
-            const noRevenue = {...REPORT, sections: REPORT.sections.filter((s) => s.kind !== "revenue")};
-            mount(noRevenue);
-            // The last cell of each row is the percentage. The column HEADING
-            // still says "% of revenue" — the column exists, it just has no
-            // value on this report — so the cells are what has to be asked.
-            const pctCells = [...screen.getByTestId("is-section-opex").querySelectorAll("tr")].map((tr) =>
-                (tr.querySelector("td:last-child") ?? tr.querySelector("th:last-child"))?.textContent?.trim()
-            );
-
-            // Not 0%, not ∞, not NaN: with no revenue there is no such ratio.
-            expect(pctCells.filter((text) => text === "—").length).toBe(9); // 8 groups + the section total
-            expect(pctCells.filter((text) => text?.endsWith("%"))).toEqual([]);
+        it("shows — for a line with nothing in the prior period to change from", () => {
+            mount();
+            // `expenses:unknown` has no activity in the prior window. Not 0%,
+            // not ∞, not NaN: growth from nothing has no ratio.
+            const unknown = [...screen.getByTestId("is-section-opex").querySelectorAll("tr")].find((tr) => tr.textContent?.includes("Unknown"));
+            expect(unknown?.querySelector("[data-column='pct']")?.textContent?.trim()).toBe("—");
         });
     });
 
@@ -275,15 +281,18 @@ describe("COMPONENT IncomeStatementView", () => {
         });
 
         it("uses ONE minus character for the amount and the percentage on the same row", () => {
-            mount(MULTI);
-            const footer = screen.getByTestId("is-section-other").querySelector("tfoot")?.textContent ?? "";
+            // A swing from a $1,000.00 profit to a $500.00 loss: `$-500.00 … -150.0%`.
+            const usd = (m: bigint) => new Map([["$", {m, p: 2}]]);
+            mount({...REPORT, netIncome: {current: usd(-50000n), prior: usd(100000n)}});
+            // The figures alone: the panel's label legitimately reads "revenue − expenses".
+            const line = screen.getByTestId("is-net-income-pct").parentElement?.textContent ?? "";
 
-            // The whole row, as rendered: `$-15,000.00 … -2.4%`. `formatDec`
-            // writes money with an ASCII hyphen, so a typographic U+2212 on the
-            // percentage put two different minus signs an inch apart in one line.
-            expect(footer).toContain("$-15,000.00");
-            expect(footer).toContain("-2.4%");
-            expect(footer).not.toContain("−");
+            // `formatDec` writes money with an ASCII hyphen, so a typographic
+            // U+2212 on the percentage put two different minus signs an inch
+            // apart in one line.
+            expect(line).toContain("$-500.00");
+            expect(line).toContain("-150.0%");
+            expect(line).not.toContain("−");
         });
     });
 
@@ -356,7 +365,7 @@ describe("COMPONENT IncomeStatementView", () => {
             expect(box.textContent).toContain("Net income");
             expect(box.textContent).toContain("$5,383.52");
             expect(box.textContent).toContain("$10,880.79"); // the prior period's
-            expect(box.textContent).toContain("15.8%");
+            expect(box.textContent).toContain("-50.5%"); // its change
         });
 
         // REGRESSION: this panel rendered prior BEFORE current, so it read
@@ -371,7 +380,7 @@ describe("COMPONENT IncomeStatementView", () => {
             const text = screen.getByTestId("is-net-income").textContent ?? "";
 
             expect(text.indexOf("$5,383.52")).toBeLessThan(text.indexOf("$10,880.79"));
-            expect(text.indexOf("$10,880.79")).toBeLessThan(text.indexOf("15.8%"));
+            expect(text.indexOf("$10,880.79")).toBeLessThan(text.indexOf("-50.5%"));
         });
 
         it("restates nothing the boxes already showed", () => {
@@ -399,7 +408,8 @@ describe("COMPONENT IncomeStatementView", () => {
 
             expect(bodyText.match(/\$86,500\.00/g)).toHaveLength(1);
             expect(screen.getByTestId("is-net-income").textContent).toContain("$86,500.00");
-            expect(screen.getByTestId("is-net-income").textContent).toContain("14.0%");
+            // MULTI does not compare, so the panel has no change to state.
+            expect(screen.queryByTestId("is-net-income-pct")).toBeNull();
         });
 
         it("shows a loss as a negative, flagged for the caller to paint", () => {
@@ -408,6 +418,50 @@ describe("COMPONENT IncomeStatementView", () => {
 
             expect(screen.getByTestId("is-net-income").textContent).toContain("$-500.00");
             expect(screen.getByTestId("is-net-income").querySelector(".text-error")).not.toBeNull();
+        });
+    });
+
+    // plans/24: Interval ≠ Total is one column per bucket and a Total, with no
+    // prior and no percentage — over the engine's own monthly bytes.
+    describe("interval mode", () => {
+        const MONTHS = ["Jan 2026", "Feb 2026", "Mar 2026", "Apr 2026", "May 2026", "Jun 2026", "Jul 2026"];
+        const heads = (testid: string): string[] =>
+            [...screen.getByTestId(testid).querySelectorAll("thead th")].map((th) => th.textContent?.trim() ?? "").filter((text) => !text.endsWith("line"));
+
+        it("heads every box with one column per bucket and a Total, last", () => {
+            mount(MONTHLY);
+            expect(heads("is-section-revenue")).toEqual([...MONTHS, "Total"]);
+            expect(heads("is-section-opex")).toEqual([...MONTHS, "Total"]);
+        });
+
+        it("draws no Prior and no % change column", () => {
+            mount(MONTHLY);
+            expect(screen.queryByRole("columnheader", {name: "Prior"})).toBeNull();
+            expect(screen.queryByRole("columnheader", {name: "% change"})).toBeNull();
+            expect(screen.queryByRole("columnheader", {name: "Amount"})).toBeNull();
+            expect(screen.getByTestId("income-statement").querySelector("[data-column='pct']")).toBeNull();
+        });
+
+        it("gives every line a cell per bucket plus its Total", () => {
+            mount(MONTHLY);
+            const rows = [...screen.getByTestId("is-section-opex").querySelectorAll("tbody tr, tfoot tr")];
+            expect(rows.length).toBeGreaterThan(0);
+            expect(rows.every((tr) => tr.querySelectorAll("td").length === MONTHS.length + 1)).toBe(true);
+        });
+
+        it("labels each bucket with the dates it actually covers", () => {
+            mount(MONTHLY);
+            const july = [...screen.getByTestId("is-section-revenue").querySelectorAll("thead th")].find((th) => th.textContent?.trim() === "Jul 2026");
+            // The last month stops at the report's `to`.
+            expect(july?.getAttribute("title")).toBe("2026-07-01 to 2026-07-08");
+        });
+
+        it("prints net income per bucket under the same columns, its Total last", () => {
+            mount(MONTHLY);
+            const net = screen.getByTestId("is-net-income");
+            expect([...net.querySelectorAll("thead th")].map((th) => th.textContent?.trim()).slice(1)).toEqual([...MONTHS, "Total"]);
+            expect(net.querySelector("[data-column='total']")?.textContent).toContain("$5,383.52");
+            expect(net.querySelectorAll("tbody td")).toHaveLength(MONTHS.length + 1);
         });
     });
 });

@@ -1,7 +1,7 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {defaultReportParams} from "#lib/reports/ui/params.js";
 import {GROUPED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
-import {GROUPED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
+import {GROUPED_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
 import {buildReportQuery, reports, sameReportQuery, type ReportQuery} from "./reports.svelte";
 
 /** A minimal engine response for a period (cf/nw) report. */
@@ -27,7 +27,7 @@ const engine = (url: string): unknown =>
     url.includes("/balancesheet/grouped") ? GROUPED_BALANCE_SHEET : url.includes("/incomestatement/grouped") ? GROUPED_INCOME_STATEMENT : period();
 
 const BS: ReportQuery = {tab: "bs", asOf: "2025-12-31"};
-const IS: ReportQuery = {tab: "is", from: "2026-01-01", to: "2026-12-31"};
+const IS: ReportQuery = {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "total"};
 
 describe("UNIT reports store tags each report with the query it came from (FE-1)", () => {
     beforeEach(() => {
@@ -80,7 +80,7 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
     it("rejects a different depth", () => {
         // Neither statement HAS a depth any more (both ask for an unclamped
         // report), so this is pinned on cash flow, which still does.
-        const CF: ReportQuery = {tab: "cf", end: "2026-12-31", interval: "monthly", count: 12, depth: 2};
+        const CF = {tab: "cf", from: "2026-01-01", to: "2026-12-31", interval: "monthly", depth: 2} as const;
         expect(sameReportQuery(CF, {...CF, depth: 3})).toBe(false);
     });
 
@@ -88,7 +88,12 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
         // The export names the file and titles the sheet from the CURRENT
         // controls: `income-statement-2026-01-01-to-2026-12-31.xlsx` holding last
         // year's figures is exactly the failure this prevents.
-        expect(sameReportQuery(IS, {tab: "is", from: "2025-01-01", to: "2025-12-31"})).toBe(false);
+        expect(sameReportQuery(IS, {tab: "is", from: "2025-01-01", to: "2025-12-31", interval: "total"})).toBe(false);
+    });
+
+    it("rejects the same P&L range at a different interval", () => {
+        // A Total workbook and a monthly one are different documents.
+        expect(sameReportQuery(IS, {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "monthly"})).toBe(false);
     });
 
     it.each([
@@ -108,7 +113,15 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
     it("builds the bs and is queries from the params each tab actually shows", () => {
         const params = defaultReportParams();
         expect(buildReportQuery({...params, tab: "bs"})).toEqual({tab: "bs", asOf: params.asOf});
-        expect(buildReportQuery({...params, tab: "is"})).toEqual({tab: "is", from: params.from, to: params.to});
+        expect(buildReportQuery({...params, tab: "is", interval: "quarterly"})).toEqual({tab: "is", from: params.from, to: params.to, interval: "quarterly"});
+    });
+
+    it("builds the cash-flow query from ITS OWN range, with no end or count", () => {
+        // Cash flow moved to From/To (plans/24). Its range is its own pair, so the
+        // P&L's calendar year cannot leak into it, and End/Periods (net worth's)
+        // must not travel either.
+        const params = {...defaultReportParams("2026-07-08"), tab: "cf" as const, interval: "total" as const};
+        expect(buildReportQuery(params)).toEqual({tab: "cf", from: "2025-08-01", to: "2026-07-08", interval: "total", depth: params.depth});
     });
 
     it("fetches the P&L from the GROUPED endpoint, whose decoder refuses the flat body", async () => {
@@ -127,6 +140,43 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
         // equal-length window, which is what the comparison column shows.
         expect(seen.every((url) => !url.includes("depth="))).toBe(true);
         expect(reports.report).toMatchObject({kind: "incomeStatement"});
+        vi.unstubAllGlobals();
+    });
+
+    it("asks for an interval P&L with compare=none, and a Total one without", async () => {
+        // An interval statement has no prior comparison, and the engine refuses
+        // the default `previous` beside one — so the SPA must say `none`.
+        const seen: string[] = [];
+        serve((url) => {
+            seen.push(url);
+            return UNCOMPARED_INCOME_STATEMENT;
+        });
+        await reports.load("http://engine", {...IS, interval: "monthly"});
+        expect(seen.at(-1)).toContain("interval=monthly");
+        expect(seen.at(-1)).toContain("compare=none");
+
+        serve((url) => {
+            seen.push(url);
+            return engine(url);
+        });
+        await reports.load("http://engine", IS);
+        expect(seen.at(-1)).toContain("interval=total");
+        expect(seen.at(-1)).not.toContain("compare=");
+        vi.unstubAllGlobals();
+    });
+
+    it("asks for cash flow by from/to, never by end/count", async () => {
+        const seen: string[] = [];
+        serve((url) => {
+            seen.push(url);
+            return period();
+        });
+        await reports.load("http://engine", {tab: "cf", from: "2025-08-01", to: "2026-07-08", interval: "monthly", depth: 2});
+        const url = seen.at(-1) ?? "";
+        expect(url).toContain("from=2025-08-01");
+        expect(url).toContain("to=2026-07-08");
+        expect(url).not.toContain("end=");
+        expect(url).not.toContain("count=");
         vi.unstubAllGlobals();
     });
 });

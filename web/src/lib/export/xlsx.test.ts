@@ -2,6 +2,7 @@
 // serialize it, re-load it with exceljs, and assert title row, headers, cell
 // values, and number formats survive the round trip.
 
+import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
 import {Workbook, type Worksheet} from "exceljs";
 import {decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
@@ -500,7 +501,7 @@ describe("UNIT export/xlsx", () => {
                 "Account",
                 "Amount ($)",
                 "2025-06-26 … 2025-12-31",
-                "% of revenue",
+                "% change",
                 "Other commodities",
             ]);
 
@@ -539,19 +540,24 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("B36").font.bold).toBe(true);
         });
 
-        it("writes the percentage as a real percent, not as pre-rendered text", async () => {
+        it("writes the % change as a real percent, not as pre-rendered text", async () => {
             const ws = await readBack(await build(), "Income Statement");
 
-            // Excel's % format multiplies by 100, so 0.842 renders "84.2%" — and
-            // stays sortable, chartable and re-totalable, which "84.2%" as a
-            // string is not.
-            expect(ws.getCell("D36").value).toBe(0.842);
+            // Excel's % format multiplies by 100, so 0.004 renders "0.4%" — and
+            // stays sortable, chartable and re-totalable, which "0.4%" as a
+            // string is not. Expenses $28,626.48 against $28,516.71.
+            expect(ws.getCell("D36").value).toBe(0.004);
             expect(ws.getCell("D36").numFmt).toBe("0.0%");
-            expect(ws.getCell("D10").value).toBe(1); // revenue is 100.0% of revenue
+            expect(ws.getCell("D10").value).toBe(-0.137); // revenue, against $39,397.50
             // …and it is free of the float noise `pct / 100` would leave behind:
-            // Salary is 99.9% of revenue, which that division stores as
-            // 0.9990000000000001.
-            expect(String(ws.getCell("D8").value)).toBe("0.999");
+            // Utilities fell 11.3%, which that division stores as
+            // -0.11300000000000002.
+            const utilities = column(ws, 1, 40).indexOf("Utilities") + 1;
+            expect(String(ws.getCell(utilities, 4).value)).toBe("-0.113");
+            // A line with nothing in the prior period has no change: an EMPTY
+            // cell, not 0.0% and not a division artefact.
+            const unknown = column(ws, 1, 40).indexOf("Unknown") + 1;
+            expect(ws.getCell(unknown, 4).value).toBeNull();
         });
 
         it("compresses single-child chains exactly as the screen does", async () => {
@@ -595,7 +601,7 @@ describe("UNIT export/xlsx", () => {
             // page it was exported from.
             expect(ws.getCell("B38").value).toBe(5383.52);
             expect(ws.getCell("C38").value).toBe(10880.79);
-            expect(ws.getCell("D38").value).toBe(0.158);
+            expect(ws.getCell("D38").value).toBe(-0.505);
             expect(ws.getCell("A38").font.bold).toBe(true);
         });
 
@@ -628,7 +634,9 @@ describe("UNIT export/xlsx", () => {
                 expect(ws.getCell("A20").border?.top?.style).toBe("medium");
                 expect(ws.getCell("A18").border?.top?.style).toBe("thin");
                 expect(ws.getCell("B20").value).toBe(517400);
-                expect(ws.getCell("C20").value).toBe(0.835);
+                // Uncompared, so there is no % change column to write into.
+                expect(ws.getCell("C4").value).toBe("Other commodities");
+                expect(ws.getCell("C20").value).toBeNull();
             });
 
             it("orders EBITDA above D&A and Operating income below it", async () => {
@@ -654,7 +662,6 @@ describe("UNIT export/xlsx", () => {
 
                 expect(ws.getCell("A43").value).toBe("Total Other income & expense");
                 expect(ws.getCell("B43").value).toBe(-15000);
-                expect(ws.getCell("C43").value).toBe(-0.024);
             });
         });
 
@@ -663,16 +670,15 @@ describe("UNIT export/xlsx", () => {
 
             // A blank column headed "Prior" would read as "the prior period was
             // zero" rather than as "there is no prior period", so every column
-            // after it shifts.
+            // after it shifts — and with no prior there is no % change either.
             expect([ws.getCell("A4").value, ws.getCell("B4").value, ws.getCell("C4").value, ws.getCell("D4").value]).toEqual([
                 "Account",
                 "Amount ($)",
-                "% of revenue",
                 "Other commodities",
+                null,
             ]);
-            expect(ws.getCell("C10").value).toBe(1); // the percentage, now in C
-            expect(ws.getCell("C10").numFmt).toBe("0.0%");
-            expect(ws.getCell("D10").value).toBeNull();
+            expect(ws.getCell("B10").value).toBe(34010);
+            expect(ws.getCell("C10").value).toBeNull(); // nothing unconverted on this line
         });
 
         it("surfaces the commodities the valuation could not convert instead of dropping them", async () => {
@@ -687,8 +693,8 @@ describe("UNIT export/xlsx", () => {
 
             expect(ws.getCell("A38").value).toBe("Net income (revenue − expenses)");
             expect(ws.getCell("B38").value).toBe(5383.52);
-            expect(ws.getCell("C38").value).toBe(0.158); // no prior column here, so % is in C
-            expect(ws.getCell("D38").value).toBe("5 GLD");
+            expect(ws.getCell("C38").value).toBe("5 GLD"); // no prior and no % here, so the extras are in C
+            expect(ws.getCell("D38").value).toBeNull();
         });
 
         it("attributes each period's unconverted commodities to that period's own column", async () => {
@@ -746,12 +752,74 @@ describe("UNIT export/xlsx", () => {
             // headline-plus-footnotes for a no-base report.
             expect(ws.getCell("B38").value).toBe("5383.52 $, 5 GLD");
             expect(ws.getCell("C38").value).toBe("10880.79 $, 3 GLD");
-            // No base: no revenue figure to divide by (`pctOfRevenue` is null,
-            // as on screen) and NO extras column written — the leftovers are in
+            // No base: no single figure to take a change of (`pctChange` is
+            // null, as on screen) and NO extras column written — the leftovers are in
             // the Amount cells, and repeating them would print them twice.
             expect(ws.getCell("D38").value).toBeNull();
             expect(ws.getCell("E38").value).toBeNull();
             expect(ws.getCell("F38").value).toBeNull();
+        });
+    });
+
+    // plans/24: interval mode exports the screen's columns — one per bucket,
+    // then their Total — with no prior and no percentage.
+    describe("interval-mode income-statement workbook", () => {
+        const monthly = decodeIncomeStatementReport(JSON.parse(readFileSync("../fixtures/native/v1/incomestatement-grouped-monthly.json", "utf8")));
+        const build = () => buildIncomeStatementWorkbook(monthly, {title: "Income Statement", params: "2026-01-01 to 2026-07-08, monthly"});
+        const MONTHS = ["Jan 2026", "Feb 2026", "Mar 2026", "Apr 2026", "May 2026", "Jun 2026", "Jul 2026"];
+
+        it("heads a column per bucket, then the Total, then the leftovers — and no % change", async () => {
+            const ws = await readBack(await build(), "Income Statement");
+            const headers = Array.from({length: 11}, (_, i) => ws.getCell(4, i + 1).value);
+            expect(headers).toEqual(["Account", ...MONTHS, "Total ($)", "Other commodities", null]);
+        });
+
+        it("writes each bucket and the Total as real numbers, the Total the sum of the row", async () => {
+            const ws = await readBack(await build(), "Income Statement");
+            const rows = Array.from({length: 60}, (_, i) => i + 1);
+            const net = rows.find((row) => ws.getCell(row, 1).value === "Net income (revenue − expenses)");
+            expect(net).toBeDefined();
+            const at = net ?? 0;
+            const months = MONTHS.map((_, i) => ws.getCell(at, i + 2).value as number);
+            expect(months.every((value) => typeof value === "number")).toBe(true);
+            expect(ws.getCell(at, 9).value).toBe(5383.52);
+            expect(months.reduce((sum, value) => sum + value, 0)).toBeCloseTo(5383.52, 2);
+            // No percentage anywhere in the sheet.
+            for (const row of rows) for (let col = 2; col <= 10; col += 1) expect(ws.getCell(row, col).numFmt).not.toBe("0.0%");
+        });
+    });
+
+    describe("cash-flow workbook Total column", () => {
+        const report: PeriodReport = {
+            buckets: ["2026-06", "2026-07"],
+            rows: [
+                {account: "assets", depth: 1, values: [usd(-5000), usd(10050)], total: usd(5050)},
+                {account: "assets:bank", depth: 2, values: [usd(-5000), usd(10050)], total: usd(5050)},
+            ],
+            totals: [usd(-5000), usd(10050)],
+            grandTotal: usd(5050),
+        };
+
+        it("adds a Total column, as on screen, when the report carries totals", async () => {
+            const ws = await roundTrip(report, {title: "Cash Flow", params: "2026-06-01 to 2026-07-08, monthly, depth 2"});
+            expect([ws.getCell("B4").value, ws.getCell("C4").value, ws.getCell("D4").value]).toEqual(["Jun 2026", "Jul 2026", "Total"]);
+            expect(ws.getCell("D5").value).toBe(50.5); // assets:bank's total
+            expect(ws.getCell("A6").value).toBe("Net");
+            expect(ws.getCell("D6").value).toBe(50.5);
+            expect(ws.getCell("D6").font.bold).toBe(true);
+        });
+
+        it("writes ONE column headed Total for the single-bucket Interval = Total report", async () => {
+            const single: PeriodReport = {
+                buckets: ["2026-06-01..2026-07-08"],
+                rows: [{account: "assets", depth: 1, values: [usd(5050)], total: usd(5050)}],
+                totals: [usd(5050)],
+                grandTotal: usd(5050),
+            };
+            const ws = await roundTrip(single, {title: "Cash Flow", params: "2026-06-01 to 2026-07-08, total, depth 2"});
+            expect([ws.getCell("A4").value, ws.getCell("B4").value, ws.getCell("C4").value]).toEqual(["Account", "Total", null]);
+            expect(ws.getCell("B5").value).toBe(50.5);
+            expect(ws.getCell("C5").value).toBeNull();
         });
     });
 

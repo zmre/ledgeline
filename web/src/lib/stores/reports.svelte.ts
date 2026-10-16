@@ -32,8 +32,9 @@ export type ReportQuery =
     | {tab: "bs"; asOf: string}
     // No `depth`: the grouped income statement has no such control and its
     // endpoint takes no such param (plans/13), exactly as `bs` dropped it.
-    | {tab: "is"; from: string; to: string}
-    | {tab: "cf"; end: string; interval: ReportInterval; count: number; depth: number}
+    | {tab: "is"; from: string; to: string; interval: ReportInterval}
+    // From/To, not End + Periods (plans/24): only the range and its grain.
+    | {tab: "cf"; from: string; to: string; interval: ReportInterval; depth: number}
     | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number};
 
 /** Map ReportParams → the active tab's endpoint query (drives both the fetch and the refetch key). */
@@ -46,9 +47,9 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
         case "bs":
             return {tab: "bs", asOf: params.asOf};
         case "is":
-            return {tab: "is", from: params.from, to: params.to};
+            return {tab: "is", from: params.from, to: params.to, interval: params.interval};
         case "cf":
-            return {tab: "cf", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
+            return {tab: "cf", from: params.cfFrom, to: params.cfTo, interval: params.interval, depth: params.depth};
         case "nw":
             return {tab: "nw", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
     }
@@ -92,12 +93,20 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
             // `/api/reports/incomestatement` still exists and is still
             // golden-tested — it is just no longer what the tab renders.
             //
-            // No `depth` and no `compare`: this report has neither control, and
-            // the engine's default (the previous equal-length window) is what the
-            // comparison column shows.
-            return decodeIncomeStatementReport(await api.incomeStatementGrouped({from: query.from, to: query.to}));
+            // No `depth`, and no `compare` control: on Total the engine's
+            // default (the previous equal-length window) is what the comparison
+            // column shows. Any other interval is one column per bucket with NO
+            // comparison, which the engine requires be said out loud.
+            return decodeIncomeStatementReport(
+                await api.incomeStatementGrouped({
+                    from: query.from,
+                    to: query.to,
+                    interval: query.interval,
+                    compare: query.interval === "total" ? undefined : "none",
+                })
+            );
         case "cf":
-            return decodePeriodReport(await api.cashFlow({end: query.end, interval: query.interval, count: query.count, depth: query.depth}));
+            return decodePeriodReport(await api.cashFlow({from: query.from, to: query.to, interval: query.interval, depth: query.depth}));
         case "nw":
             return decodePeriodReport(await api.netWorth({end: query.end, interval: query.interval, count: query.count, depth: query.depth}));
     }

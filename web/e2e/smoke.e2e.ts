@@ -184,9 +184,13 @@ test("reports: P&L shows grouped boxes with known fixture numbers", async ({page
     await expect(revenue.locator("tfoot")).toContainText("$66,428.75");
     await expect(expenses.locator("tfoot")).toContainText("$48,450.54");
 
-    // % of revenue, from the exact Decs: 28,626.48 / 34,010.00 = 84.1707% → 84.2%.
-    await expect(expenses.locator("tfoot")).toContainText("84.2%");
-    await expect(revenue.locator("tfoot")).toContainText("100.0%");
+    // % change against that prior year, from the exact Decs (plans/24 replaced
+    // "% of revenue"): (34,010.00 − 66,428.75) / 66,428.75 = −48.80% → -48.8%,
+    // (28,626.48 − 48,450.54) / 48,450.54 = −40.92% → -40.9%.
+    await expect(revenue.locator("thead")).toContainText("% change");
+    await expect(page.getByTestId("income-statement")).not.toContainText("% of revenue");
+    await expect(revenue.locator("tfoot")).toContainText("-48.8%");
+    await expect(expenses.locator("tfoot")).toContainText("-40.9%");
 
     // The summary below the boxes is net income and NOTHING else. A condensed
     // "Total Revenue / Less: Expenses / …" table stood there and was removed:
@@ -195,10 +199,85 @@ test("reports: P&L shows grouped boxes with known fixture numbers", async ({page
     const net = page.getByTestId("is-net-income");
     await expect(net).toContainText("$5,383.52");
     await expect(net).toContainText("$17,978.21"); // the prior year's
-    await expect(net).toContainText("15.8%");
+    await expect(net).toContainText("-70.1%"); // (5,383.52 − 17,978.21) / 17,978.21
     await expect(page.getByTestId("is-summary")).toHaveCount(0);
     // So each section total is on the page exactly once, in its own footer.
     await expect(page.getByTestId("income-statement").getByText("$28,626.48", {exact: true})).toHaveCount(1);
+});
+
+test("reports: P&L interval mode is a column per month and a Total, with no comparison", async ({page}) => {
+    await page.goto("/");
+    await page.getByRole("link", {name: "Reports"}).click();
+    await page.getByRole("tab", {name: "P&L"}).click();
+
+    // Total is the default and lists first; Monthly turns the statement into
+    // one column per month of the calendar-year range, plus their Total.
+    const interval = page.getByLabel("Interval");
+    await expect(interval).toHaveValue("total");
+    await interval.selectOption("monthly");
+    await expect(page).toHaveURL(/tab=is&from=2026-01-01&to=2026-12-31&interval=monthly/);
+
+    const revenue = page.getByTestId("is-section-revenue");
+    const heads = revenue.locator("thead th");
+    await expect(heads.nth(1)).toHaveText("Jan 2026");
+    await expect(heads.nth(12)).toHaveText("Dec 2026");
+    await expect(heads.nth(13)).toHaveText("Total");
+    // No comparison at all: no Prior column and no % change.
+    await expect(page.getByRole("columnheader", {name: "Prior"})).toHaveCount(0);
+    await expect(page.getByRole("columnheader", {name: "% change"})).toHaveCount(0);
+    await expect(page.getByTestId("income-statement")).not.toContainText("$66,428.75");
+
+    // The Total sums the months. Nothing on this journal is revalued between
+    // month ends, so it is the Total statement's own figure.
+    await expect(revenue.locator("tfoot [data-column='total']")).toHaveText("$34,010.00");
+    await expect(page.getByTestId("is-section-opex").locator("tfoot [data-column='total']")).toHaveText("$28,626.48");
+    await expect(page.getByTestId("is-net-income").locator("[data-column='total']")).toHaveText("$5,383.52");
+
+    // Back to Total: the comparative statement again.
+    await interval.selectOption("total");
+    await expect(revenue.locator("tfoot")).toContainText("-48.8%");
+});
+
+test("reports: cash flow takes From/To, adds a Total column, and Interval = Total is one column", async ({page}) => {
+    await page.goto("/");
+    await page.getByRole("link", {name: "Reports"}).click();
+    await page.getByRole("tab", {name: "Cash Flow"}).click();
+
+    // From/To replaced End + Periods; the default is the trailing twelve months.
+    await expect(page.getByLabel("From", {exact: true})).toHaveValue("2025-08-01");
+    await expect(page.getByLabel("To", {exact: true})).toHaveValue("2026-07-08");
+    await expect(page.getByLabel("Number of periods")).toHaveCount(0);
+    await expect(page.getByLabel("End", {exact: true})).toHaveCount(0);
+    await expect(page).toHaveURL(/tab=cf&from=2025-08-01&to=2026-07-08&interval=monthly/);
+
+    // Twelve months, then a Total summing everything to its left.
+    const headers = page.locator("table thead td");
+    await expect(headers.first()).toHaveText("Aug 2025");
+    await expect(headers.nth(11)).toHaveText("Jul 2026");
+    await expect(headers.nth(12)).toHaveText("Total");
+    const net = page.locator("tbody tr").filter({has: page.locator("th", {hasText: /^Net$/})});
+    await expect(net.locator("td").last()).toContainText("$17,703.07");
+
+    // Interval = Total: ONE column, headed Total, and the chart asks for a
+    // wider range instead of drawing a single point.
+    await page.getByLabel("Interval").selectOption("total");
+    await expect(headers).toHaveText(["Total"]);
+    await expect(net.locator("td")).toHaveCount(1);
+    await expect(net.locator("td")).toContainText("$17,703.07");
+    await expect(page.getByTestId("cashflow-chart-empty")).toContainText("Only one period");
+
+    // Net Worth keeps End + Periods and never offers Total.
+    await page.getByRole("tab", {name: "Net Worth"}).click();
+    await expect(page.getByLabel("Number of periods")).toHaveCount(1);
+    await expect(page.getByLabel("Interval").locator("option")).toHaveText(["Monthly", "Quarterly", "Yearly"]);
+});
+
+test("reports: an old cash-flow link with end and count still opens the same columns", async ({page}) => {
+    await page.goto("/reports?tab=cf&end=2026-07-08&interval=monthly&count=3&depth=2");
+    await expect(page.getByLabel("From", {exact: true})).toHaveValue("2026-05-01");
+    await expect(page.getByLabel("To", {exact: true})).toHaveValue("2026-07-08");
+    await expect(page.locator("table thead td")).toHaveText(["May 2026", "Jun 2026", "Jul 2026", "Total"]);
+    await expect(page).toHaveURL(/tab=cf&from=2026-05-01&to=2026-07-08&interval=monthly&depth=2/);
 });
 
 test("reports: P&L flow panels print their total only while shut", async ({page}) => {

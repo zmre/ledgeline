@@ -171,6 +171,30 @@ fn add_wire_ma(a: &Value, b: &Value) -> Canon {
         .collect()
 }
 
+/// Commodity-wise sum of any number of wire `MixedAmount`s, exactly — the
+/// many-addend form of [`add_wire_ma`].
+fn sum_wire<'a>(values: impl IntoIterator<Item = &'a Value>) -> Canon {
+    let mut sum: BTreeMap<String, Dec> = BTreeMap::new();
+    for value in values {
+        for (commodity, dec) in value.as_object().expect("mixed amount is an object") {
+            let mantissa: i128 = dec["mantissa"]
+                .as_str()
+                .expect("mantissa string")
+                .parse()
+                .expect("mantissa");
+            let places = u32::try_from(dec["places"].as_u64().expect("places")).unwrap();
+            let addend = Dec::new(mantissa, places);
+            sum.entry(commodity.clone())
+                .and_modify(|prev| *prev = prev.add(addend).expect("no overflow"))
+                .or_insert(addend);
+        }
+    }
+    sum.into_iter()
+        .map(|(commodity, dec)| (commodity, canon(dec.mantissa, dec.places)))
+        .filter(|(_, (mantissa, _))| *mantissa != 0)
+        .collect()
+}
+
 /// Sum a golden hledger MixedAmount (array of `GAmount`) per commodity with exact
 /// `Dec` math, then canonicalize and drop zeros — the golden side of a compare.
 fn sum_golden(amounts: &Value) -> Canon {
@@ -1445,6 +1469,132 @@ async fn incomestatement_grouped_validates_value_and_compare() {
     );
 }
 
+/// Interval mode: one column per bucket across `[from, to]`, the first and
+/// last clamped, each figure carrying `values` with `current` as their SUM —
+/// and no prior comparison anywhere.
+#[tokio::test]
+async fn incomestatement_grouped_interval_mode_reports_columns_and_their_total() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-15&to=2026-07-08&interval=monthly&value=cost",
+    )
+    .await;
+
+    let buckets = body["buckets"].as_array().expect("buckets array");
+    assert_eq!(buckets.len(), 7);
+    assert_eq!(
+        buckets[0],
+        serde_json::json!({"key": "2026-01", "from": "2026-01-15", "to": "2026-01-31"})
+    );
+    assert_eq!(
+        buckets[6],
+        serde_json::json!({"key": "2026-07", "from": "2026-07-01", "to": "2026-07-08"})
+    );
+    assert!(body["prior"].is_null(), "interval mode never compares");
+
+    let mut figures: Vec<&Value> = vec![&body["netIncome"]];
+    for section in body["sections"].as_array().unwrap() {
+        figures.push(&section["total"]);
+        for group in section["groups"].as_array().unwrap() {
+            figures.push(&group["total"]);
+            figures.extend(
+                group["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| &row["amounts"]),
+            );
+        }
+        figures.extend(
+            section["trailing"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|sub| &sub["total"]),
+        );
+    }
+    for figure in figures {
+        let values = figure["values"].as_array().expect("values on every figure");
+        assert_eq!(values.len(), 7);
+        assert_eq!(
+            wire_ma(&figure["current"]),
+            sum_wire(values),
+            "Total = sum of the columns"
+        );
+        assert!(
+            figure.get("prior").is_none(),
+            "no prior key in interval mode"
+        );
+    }
+
+    // At cost nothing is revalued, so the Total is the whole-range statement's.
+    let whole = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-15&to=2026-07-08&value=cost&compare=none",
+    )
+    .await;
+    assert_eq!(
+        wire_ma(&body["netIncome"]["current"]),
+        wire_ma(&whole["netIncome"]["current"])
+    );
+}
+
+/// `interval=total` IS the statement as it always was — same bytes, no
+/// `buckets` key, no `values` anywhere.
+#[tokio::test]
+async fn incomestatement_grouped_interval_total_is_the_default_statement() {
+    let journal = sample_journal();
+    let default = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08",
+    )
+    .await;
+    let total = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&interval=total",
+    )
+    .await;
+    assert_eq!(default, total);
+    assert!(default.get("buckets").is_none());
+    assert!(default["netIncome"].get("values").is_none());
+}
+
+/// Interval mode rejects a comparison it cannot draw, an unknown grain, a
+/// backwards range and one with more than `MAX_BUCKETS` columns — while
+/// `compare=none` beside an interval is simply what the SPA sends.
+#[tokio::test]
+async fn incomestatement_grouped_validates_interval() {
+    let journal = sample_journal();
+    let base = "/api/reports/incomestatement/grouped";
+    let (status, message) = get_error(
+        &journal,
+        &format!("{base}?from=2026-01-01&to=2026-07-08&interval=monthly&compare=previous"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message.contains("interval=total"), "{message}");
+
+    let (status, message) = get_error(&journal, &format!("{base}?interval=fortnightly")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message.contains("total|"), "{message}");
+
+    for uri in [
+        format!("{base}?from=2026-07-08&to=2026-01-01&interval=monthly"),
+        format!("{base}?from=2020-01-01&to=2026-07-08&interval=daily"),
+    ] {
+        let (status, _) = get_error(&journal, &uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "GET {uri}");
+    }
+
+    let (status, _, _) = get_on(
+        &journal,
+        &format!("{base}?from=2026-01-01&to=2026-07-08&interval=quarterly&compare=none"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
 /// **The cautionary tale, over HTTP — told in the drawer instead of the status
 /// line.** A journal whose `issection:` is misspelt now SERVES the statement and
 /// reports the typo as an `account-tag` finding on `/api/diagnostics`.
@@ -1705,6 +1855,150 @@ async fn cashflow_rows_omit_kind() {
     let rows = body["rows"].as_array().unwrap();
     assert!(!rows.is_empty());
     assert!(rows.iter().all(|row| row.get("kind").is_none()));
+}
+
+/// From/to cash flow: buckets cover the range, the first clamped to `from`.
+/// Every whole bucket matches hledger's, each row carries its Total and the
+/// report a grand total.
+#[tokio::test]
+async fn cashflow_from_to_covers_the_range_with_totals() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/cashflow?from=2026-01-15&to=2026-06-30&interval=monthly&depth=99",
+    )
+    .await;
+    let buckets: Vec<&str> = body["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        buckets,
+        [
+            "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"
+        ]
+    );
+
+    // February..June are whole months, so hledger's cf-monthly golden holds.
+    let g = golden("golden", "cf-monthly.json");
+    let sub = &g["cbrSubreports"][0][1];
+    let totals = body["totals"].as_array().unwrap();
+    for i in 1..buckets.len() {
+        assert_eq!(
+            wire_ma(&totals[i]),
+            sum_golden(&sub["prTotals"]["prrAmounts"][i]),
+            "cash-flow total bucket {}",
+            buckets[i]
+        );
+    }
+
+    for row in body["rows"].as_array().unwrap() {
+        assert_eq!(
+            wire_ma(&row["total"]),
+            sum_wire(row["values"].as_array().unwrap()),
+            "{} total = sum of its buckets",
+            row["account"]
+        );
+    }
+    assert_eq!(wire_ma(&body["grandTotal"]), sum_wire(totals));
+}
+
+/// The legacy `end`/`count` window still works, and is the same report as the
+/// from/to range naming the same dates.
+#[tokio::test]
+async fn cashflow_legacy_end_count_equals_the_matching_range() {
+    let journal = sample_journal();
+    let legacy = body_ok(
+        &journal,
+        "/api/reports/cashflow?end=2026-06-30&interval=monthly&count=6&depth=2",
+    )
+    .await;
+    let range = body_ok(
+        &journal,
+        "/api/reports/cashflow?from=2026-01-01&to=2026-06-30&interval=monthly&depth=2",
+    )
+    .await;
+    assert_eq!(legacy, range);
+    assert!(legacy.get("grandTotal").is_some());
+}
+
+/// `interval=total` is ONE column over the whole range — equal to the grand
+/// total of the monthly report over the same dates, row by row.
+#[tokio::test]
+async fn cashflow_interval_total_is_one_column_over_the_range() {
+    let journal = sample_journal();
+    let total = body_ok(
+        &journal,
+        "/api/reports/cashflow?from=2026-01-01&to=2026-06-30&interval=total&depth=2",
+    )
+    .await;
+    let monthly = body_ok(
+        &journal,
+        "/api/reports/cashflow?from=2026-01-01&to=2026-06-30&interval=monthly&depth=2",
+    )
+    .await;
+    assert_eq!(
+        total["buckets"],
+        serde_json::json!(["2026-01-01..2026-06-30"])
+    );
+    assert_eq!(
+        wire_ma(&total["totals"][0]),
+        wire_ma(&monthly["grandTotal"])
+    );
+    assert_eq!(
+        wire_ma(&total["grandTotal"]),
+        wire_ma(&monthly["grandTotal"])
+    );
+    let monthly_rows = monthly["rows"].as_array().unwrap();
+    for row in total["rows"].as_array().unwrap() {
+        let twin = monthly_rows
+            .iter()
+            .find(|r| r["account"] == row["account"])
+            .expect("same rows");
+        assert_eq!(wire_ma(&row["values"][0]), wire_ma(&twin["total"]));
+        assert_eq!(wire_ma(&row["total"]), wire_ma(&twin["total"]));
+    }
+}
+
+/// Every mixed or malformed window is a 400: the two window styles together,
+/// a `to` with no `from`, a backwards range, `total` on the legacy window, a
+/// range needing more than `MAX_BUCKETS` columns, and a malformed `from`.
+#[tokio::test]
+async fn cashflow_validates_the_window() {
+    let journal = sample_journal();
+    for uri in [
+        "/api/reports/cashflow?from=2026-01-01&count=6",
+        "/api/reports/cashflow?from=2026-01-01&end=2026-06-30",
+        "/api/reports/cashflow?to=2026-06-30",
+        "/api/reports/cashflow?from=2026-06-30&to=2026-01-01",
+        "/api/reports/cashflow?interval=total",
+        "/api/reports/cashflow?from=2020-01-01&to=2026-06-30&interval=daily",
+        "/api/reports/cashflow?from=2026-1-1x",
+    ] {
+        let (status, _) = get_error(&journal, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "GET {uri}");
+    }
+}
+
+/// Net worth is a column of snapshots: it never carries a Total.
+#[tokio::test]
+async fn networth_carries_no_totals() {
+    let journal = sample_journal();
+    let body = body_ok(
+        &journal,
+        "/api/reports/networth?end=2026-06-30&interval=monthly&count=3&depth=2",
+    )
+    .await;
+    assert!(body.get("grandTotal").is_none());
+    assert!(
+        body["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row.get("total").is_none())
+    );
 }
 
 // ===========================================================================

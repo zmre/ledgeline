@@ -8,7 +8,7 @@ use super::account_types::{AccountType, AccountTypes};
 use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 use super::balance_sheet::{Valuation, signed, valued_keeping_unpriced};
 use super::mixed_amount::MixedAmount;
-use super::periods::{add_days, days_between};
+use super::periods::{BucketSpan, Interval, add_days, days_between, range_buckets};
 use super::prices::{PriceDb, ValuationMeta, priced_count};
 use super::sections::build_section;
 use super::types::{ReportMeta, SectionedReport};
@@ -126,7 +126,8 @@ pub struct IsOpts<'a> {
     pub value: Valuation,
     /// Override the valuation target; defaults to `prices.base_commodity()`.
     pub value_in: Option<Commodity>,
-    /// Also report the immediately preceding window of equal length.
+    /// Also report the immediately preceding window of equal length. Ignored by
+    /// [`income_statement_columns`], which has no prior comparison.
     pub compare: bool,
 }
 
@@ -140,12 +141,12 @@ pub struct DateRange {
 }
 
 /// One figure per window: the current period's, plus the prior window's when
-/// comparing.
+/// comparing — the shape of the Total-mode statement.
 ///
 /// `prior` is `None` for the WHOLE report or for none of it — it mirrors
-/// [`IsOpts::compare`] — which is why the merge below can be a plain zip: a line
-/// present in only one period is a `MixedAmount::new()` on the other side, never
-/// a missing `prior`.
+/// [`IsOpts::compare`] — because every figure is cut from the same window list
+/// (see [`Figures`]): a line present in only one period is a
+/// `MixedAmount::new()` on the other side, never a missing `prior`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Amounts {
     /// The reported window's figure.
@@ -155,27 +156,69 @@ pub struct Amounts {
 }
 
 impl Amounts {
-    /// The additive identity, shaped for the same windows as the report.
-    #[must_use]
-    fn zero(compare: bool) -> Self {
-        Self {
-            current: MixedAmount::new(),
-            prior: compare.then(MixedAmount::new),
-        }
+    /// The Total-mode shape of `[current]` or `[current, prior]`. Fallible only
+    /// to share one signature with [`Columns::shaped`].
+    fn shaped(figures: Figures) -> Result<Self, ReportError> {
+        let mut windows = figures.0.into_iter();
+        Ok(Self {
+            current: windows.next().unwrap_or_default(),
+            prior: windows.next(),
+        })
+    }
+}
+
+/// One figure per interval bucket plus their Total — the shape of the
+/// interval-mode statement ([`income_statement_columns`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Columns {
+    /// One figure per [`IncomeStatementReport::buckets`] entry, oldest → newest.
+    pub values: Vec<MixedAmount>,
+    /// The sum of `values` — the Total column. Under market valuation each
+    /// bucket is valued at ITS OWN end, so this is deliberately NOT one
+    /// whole-range valuation: it is what the columns to its left add up to.
+    pub total: MixedAmount,
+}
+
+impl Columns {
+    /// The interval-mode shape of one figure per bucket.
+    fn shaped(figures: Figures) -> Result<Self, ReportError> {
+        let total = figures
+            .0
+            .iter()
+            .try_fold(MixedAmount::new(), |acc, ma| acc.ma_add(ma))?;
+        Ok(Self {
+            values: figures.0,
+            total,
+        })
+    }
+}
+
+/// One figure per reported window, in window order — the currency EVERY total
+/// in this report is computed in, whichever shape it is finally handed out as.
+///
+/// Total mode's windows are `[current, prior?]` (shaped into [`Amounts`]),
+/// interval mode's are its buckets (shaped into [`Columns`]). One summing path
+/// for both is what keeps a group total, a section total and net income
+/// agreeing in either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Figures(Vec<MixedAmount>);
+
+impl Figures {
+    /// The additive identity over `windows` windows.
+    fn zero(windows: usize) -> Self {
+        Self(vec![MixedAmount::new(); windows])
     }
 
-    /// Commodity-wise addition, window by window. A window present on only one
-    /// side is carried through rather than dropped, so this is total even though
-    /// the shapes always agree by construction.
+    /// Commodity-wise addition, window by window. The shapes always agree by
+    /// construction: every figure is cut from the same window list.
     fn ma_add(&self, other: &Self) -> Result<Self, ReportError> {
-        Ok(Self {
-            current: self.current.ma_add(&other.current)?,
-            prior: match (&self.prior, &other.prior) {
-                (Some(mine), Some(theirs)) => Some(mine.ma_add(theirs)?),
-                (Some(only), None) | (None, Some(only)) => Some(only.clone()),
-                (None, None) => None,
-            },
-        })
+        Ok(Self(
+            self.0
+                .iter()
+                .zip(&other.0)
+                .map(|(mine, theirs)| mine.ma_add(theirs))
+                .collect::<Result<_, _>>()?,
+        ))
     }
 
     /// Negated in every window.
@@ -187,37 +230,38 @@ impl Amounts {
     /// [`super::balance_sheet::signed`], applied per window so the two
     /// statements cannot disagree about what a flip is.
     fn signed(&self, flip: bool) -> Result<Self, ReportError> {
-        Ok(Self {
-            current: signed(&self.current, flip)?,
-            prior: self
-                .prior
-                .as_ref()
-                .map(|prior| signed(prior, flip))
-                .transpose()?,
-        })
+        Ok(Self(
+            self.0
+                .iter()
+                .map(|ma| signed(ma, flip))
+                .collect::<Result<_, _>>()?,
+        ))
     }
 
     /// True when every window is empty.
     fn is_zero(&self) -> bool {
-        self.current.is_zero() && self.prior.as_ref().is_none_or(MixedAmount::is_zero)
+        self.0.iter().all(MixedAmount::is_zero)
     }
 }
 
 /// One account's line inside an expanded group.
+///
+/// `A` is the figure shape — [`Amounts`] in Total mode, [`Columns`] in interval
+/// mode — here and on every statement type below.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IsRow {
+pub struct IsRow<A = Amounts> {
     /// Full, colon-delimited account name.
     pub account: String,
     /// Number of `:`-separated segments in `account`.
     pub depth: usize,
     /// The account's own total, displayed with its section's sign.
-    pub amounts: Amounts,
+    pub amounts: A,
 }
 
 /// One line of a box: an `isgroup:` name or a humanized path segment, plus the
 /// accounts behind it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IsGroup {
+pub struct IsGroup<A = Amounts> {
     /// Display name — an `isgroup:` tag verbatim, or a humanized segment.
     pub name: String,
     /// Which resolution step named it ([`GroupSource::Tag`] or
@@ -225,57 +269,65 @@ pub struct IsGroup {
     pub source: GroupSource,
     /// The group's accounts, sorted by name. There is no depth clamp on this
     /// report, so these are simply its members.
-    pub rows: Vec<IsRow>,
+    pub rows: Vec<IsRow<A>>,
     /// Summed over the group's MEMBERS, not over `rows` (RPT-1/RPT-4) — the two
     /// coincide here, and the test that says so is what keeps them coinciding.
-    pub total: Amounts,
+    pub total: A,
 }
 
 /// A subtotal ruled beneath the box it follows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IsSubtotal {
+pub struct IsSubtotal<A = Amounts> {
     /// Which rung of the ladder.
     pub kind: IsSubtotalKind,
     /// Display label.
     pub label: String,
     /// A running total of every box printed ABOVE it — never of anything below.
-    pub total: Amounts,
+    pub total: A,
 }
 
 /// One box of the statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IsSection {
+pub struct IsSection<A = Amounts> {
     /// Which box.
     pub kind: IsSectionKind,
     /// Display title (which, for `opex` alone, depends on
     /// [`IncomeStatementReport::multi_step`]).
     pub title: String,
     /// Lines, sorted by name.
-    pub groups: Vec<IsGroup>,
+    pub groups: Vec<IsGroup<A>>,
     /// Summed over the section's MEMBERS, not over `groups`.
-    pub total: Amounts,
+    pub total: A,
     /// Subtotals printed after this box. They hang off a section rather than
     /// floating in the section list so a subtotal can never outlive the box it
     /// follows — when a box is omitted, its subtotals fall to the previous one.
-    pub trailing: Vec<IsSubtotal>,
+    pub trailing: Vec<IsSubtotal<A>>,
 }
 
 /// A grouped, valued income statement with an adaptive GAAP subtotal ladder.
+///
+/// `A = Amounts` is the Total-mode statement ([`income_statement_grouped`]),
+/// `A = Columns` the interval-mode one ([`income_statement_columns`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IncomeStatementReport {
+pub struct IncomeStatementReport<A = Amounts> {
     /// Inclusive range start.
     pub from: String,
     /// Inclusive range end.
     pub to: String,
-    /// The window the `prior` figures cover, when comparing.
+    /// The window the `prior` figures cover, when comparing. Always `None` in
+    /// interval mode.
     pub prior: Option<DateRange>,
+    /// Interval mode's columns, oldest → newest — one per [`Columns::values`]
+    /// entry, the first clamped to `from` and the last to `to`. Empty in Total
+    /// mode.
+    pub buckets: Vec<BucketSpan>,
     /// The commodity everything is valued into — `Some` only when
     /// [`Valuation::Market`] found a target.
     pub base: Option<Commodity>,
     /// Non-empty sections only, in ladder order.
-    pub sections: Vec<IsSection>,
+    pub sections: Vec<IsSection<A>>,
     /// `−sum(every classified account)`, in each window.
-    pub net_income: Amounts,
+    pub net_income: A,
     /// Whether the GAAP ladder materialised — see [`multi_step`].
     pub multi_step: bool,
     /// Commodities the market valuation could not reach (sorted, deduped).
@@ -351,6 +403,10 @@ pub fn account_sections_from(accounts: &[AccountDeclaration]) -> BTreeMap<String
 
 /// One window's per-account figures on the display basis.
 type Totals = BTreeMap<String, MixedAmount>;
+
+/// How a statement hands its per-window [`Figures`] out: [`Amounts::shaped`]
+/// (Total mode) or [`Columns::shaped`] (interval mode).
+type Shape<A> = fn(Figures) -> Result<A, ReportError>;
 
 /// When a subtotal is worth printing.
 enum Guard {
@@ -480,29 +536,22 @@ const LADDER: [Rung; 7] = [
     },
 ];
 
-/// Both windows' figures, keyed by account.
+/// Every reported window's figures, keyed by account, in window order.
 struct Windows {
-    current: Totals,
-    prior: Option<Totals>,
+    totals: Vec<Totals>,
 }
 
 impl Windows {
-    /// Whether a prior window is being reported.
-    fn comparing(&self) -> bool {
-        self.prior.is_some()
-    }
-
     /// One account's figure in each window. ABSENT reads as zero, which is
-    /// precisely what a line present in only one period must show on the other
-    /// side — the union merge, in one line.
-    fn amounts(&self, account: &str) -> Amounts {
-        Amounts {
-            current: self.current.get(account).cloned().unwrap_or_default(),
-            prior: self
-                .prior
-                .as_ref()
-                .map(|totals| totals.get(account).cloned().unwrap_or_default()),
-        }
+    /// precisely what a line present in only some windows must show in the
+    /// others — the union merge, in one line.
+    fn amounts(&self, account: &str) -> Figures {
+        Figures(
+            self.totals
+                .iter()
+                .map(|totals| totals.get(account).cloned().unwrap_or_default())
+                .collect(),
+        )
     }
 
     /// Commodity-wise sum over `accounts`, in each window.
@@ -510,10 +559,10 @@ impl Windows {
     /// EVERY total in this report comes through here, over a set of MEMBER
     /// account names — never over displayed rows — so a group total, a section
     /// total and net income cannot disagree (RPT-1/RPT-4).
-    fn sum(&self, accounts: &BTreeSet<String>) -> Result<Amounts, ReportError> {
+    fn sum(&self, accounts: &BTreeSet<String>) -> Result<Figures, ReportError> {
         accounts
             .iter()
-            .try_fold(Amounts::zero(self.comparing()), |acc, account| {
+            .try_fold(Figures::zero(self.totals.len()), |acc, account| {
                 acc.ma_add(&self.amounts(account))
             })
     }
@@ -532,6 +581,43 @@ pub(super) fn prior_window(current: &DateRange) -> DateRange {
     DateRange {
         from: add_days(&to, -span),
         to,
+    }
+}
+
+/// The windows a Total-mode statement over `window` reports: the window itself,
+/// then its [`prior_window`] when `compare` is on.
+///
+/// Public so the HTTP layer's admission test ([`prices_any_on_statement`]) asks
+/// its question about exactly the windows the statement will value.
+#[must_use]
+pub fn compared_windows(window: &DateRange, compare: bool) -> Vec<DateRange> {
+    std::iter::once(window.clone())
+        .chain(compare.then(|| prior_window(window)))
+        .collect()
+}
+
+/// The windows an interval-mode statement over `[from, to]` reports: one per
+/// `interval` bucket, clamped to the range ([`range_buckets`]).
+///
+/// # Errors
+/// Returns [`ReportError`] on bad bucket math.
+pub fn interval_windows(
+    from: &str,
+    to: &str,
+    interval: Interval,
+) -> Result<Vec<DateRange>, ReportError> {
+    Ok(range_buckets(from, to, Some(interval))?
+        .iter()
+        .map(DateRange::from)
+        .collect())
+}
+
+impl From<&BucketSpan> for DateRange {
+    fn from(span: &BucketSpan) -> Self {
+        Self {
+            from: span.from.clone(),
+            to: span.to.clone(),
+        }
     }
 }
 
@@ -689,12 +775,13 @@ pub(super) fn section_resolver<'a>(
 /// total is zero by definition, dropping it cannot move the section total. Zero
 /// ROWS inside a non-empty group are kept — that is exactly how a line present
 /// in only one period shows its zero.
-fn build_groups(
+fn build_groups<A>(
     members: &BTreeSet<String>,
     declared: &BTreeMap<String, String>,
     windows: &Windows,
     flip: bool,
-) -> Result<Vec<IsGroup>, ReportError> {
+    shape: Shape<A>,
+) -> Result<Vec<IsGroup<A>>, ReportError> {
     let mut buckets: BTreeMap<String, (GroupSource, BTreeSet<String>)> = BTreeMap::new();
     for (account, (name, source)) in section_groups(members, declared) {
         buckets
@@ -719,12 +806,12 @@ fn build_groups(
                     .map(|account| {
                         Ok(IsRow {
                             depth: account.split(':').count(),
-                            amounts: windows.amounts(account).signed(flip)?,
+                            amounts: shape(windows.amounts(account).signed(flip)?)?,
                             account: account.clone(),
                         })
                     })
                     .collect::<Result<_, ReportError>>()?,
-                total: windows.sum(&accounts)?.signed(flip)?,
+                total: shape(windows.sum(&accounts)?.signed(flip)?)?,
             })
         })
         .collect()
@@ -785,6 +872,82 @@ pub fn income_statement_grouped(
     sections: &BTreeMap<String, IsSectionKind>,
     groups: &BTreeMap<String, String>,
 ) -> Result<IncomeStatementReport, ReportError> {
+    let current = DateRange {
+        from: opts.from.to_string(),
+        to: opts.to.to_string(),
+    };
+    let windows = compared_windows(&current, opts.compare);
+    Ok(IncomeStatementReport {
+        prior: windows.get(1).cloned(),
+        ..statement(
+            txns,
+            explicit_prices,
+            opts,
+            &windows,
+            declared,
+            sections,
+            groups,
+            Amounts::shaped,
+        )?
+    })
+}
+
+/// [`income_statement_grouped`] in INTERVAL mode: one column per `interval`
+/// bucket across `[opts.from, opts.to]` (the first clamped to `from`, the last
+/// to `to`) plus a Total, and no prior comparison — `opts.compare` is ignored.
+///
+/// Everything else is the Total-mode statement's, because it is the same code:
+/// sections, groups and their names are resolved once over the UNION of every
+/// bucket's accounts, so a line with activity in only some months still has
+/// one row with zeros elsewhere, and every total is summed over members.
+///
+/// Each bucket is valued at ITS OWN end, exactly as the prior window is in Total
+/// mode, and [`Columns::total`] is the SUM of the buckets — what QuickBooks
+/// prints. Under market valuation that can differ from a single whole-range
+/// valuation of the same dates, and that is intended: a Total column that does
+/// not add up to the columns beside it would be the worse surprise.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or bad bucket math.
+pub fn income_statement_columns(
+    txns: &[Transaction],
+    explicit_prices: &[PriceDirective],
+    opts: &IsOpts,
+    interval: Interval,
+    declared: &BTreeMap<String, AccountType>,
+    sections: &BTreeMap<String, IsSectionKind>,
+    groups: &BTreeMap<String, String>,
+) -> Result<IncomeStatementReport<Columns>, ReportError> {
+    let buckets = range_buckets(opts.from, opts.to, Some(interval))?;
+    let windows: Vec<DateRange> = buckets.iter().map(DateRange::from).collect();
+    Ok(IncomeStatementReport {
+        buckets,
+        ..statement(
+            txns,
+            explicit_prices,
+            opts,
+            &windows,
+            declared,
+            sections,
+            groups,
+            Columns::shaped,
+        )?
+    })
+}
+
+/// The statement over `windows`, every figure handed out through `shape`. The
+/// caller fills in which windows those were (`prior` or `buckets`).
+#[allow(clippy::too_many_arguments)]
+fn statement<A>(
+    txns: &[Transaction],
+    explicit_prices: &[PriceDirective],
+    opts: &IsOpts,
+    windows: &[DateRange],
+    declared: &BTreeMap<String, AccountType>,
+    sections: &BTreeMap<String, IsSectionKind>,
+    groups: &BTreeMap<String, String>,
+    shape: Shape<A>,
+) -> Result<IncomeStatementReport<A>, ReportError> {
     let types = AccountTypes::from_declared(declared.clone());
     let resolve_section = section_resolver(sections, &types);
     let on_statement = |account: &str| resolve_section(account).is_some();
@@ -795,25 +958,10 @@ pub fn income_statement_grouped(
         .clone()
         .or_else(|| prices.base_commodity().cloned());
 
-    let current = DateRange {
-        from: opts.from.to_string(),
-        to: opts.to.to_string(),
-    };
-    let prior = opts.compare.then(|| prior_window(&current));
-
     let mut meta = ValuationMeta::default();
     let windows = Windows {
-        current: window_totals(
-            txns,
-            &current,
-            opts,
-            &prices,
-            target.as_ref(),
-            &on_statement,
-            &mut meta,
-        )?,
-        prior: prior
-            .as_ref()
+        totals: windows
+            .iter()
             .map(|window| {
                 window_totals(
                     txns,
@@ -825,15 +973,11 @@ pub fn income_statement_grouped(
                     &mut meta,
                 )
             })
-            .transpose()?,
+            .collect::<Result<_, ReportError>>()?,
     };
 
     let mut members: BTreeMap<IsSectionKind, BTreeSet<String>> = BTreeMap::new();
-    for account in windows
-        .current
-        .keys()
-        .chain(windows.prior.iter().flat_map(BTreeMap::keys))
-    {
+    for account in windows.totals.iter().flat_map(BTreeMap::keys) {
         if let Some(kind) = resolve_section(account) {
             members.entry(kind).or_default().insert(account.clone());
         }
@@ -842,15 +986,15 @@ pub fn income_statement_grouped(
     // Pass 1: which boxes exist and what they hold. `multi_step` — and with it
     // every title and the Operating income guard — depends on the answer, so it
     // cannot be decided while emitting.
-    let mut boxes: BTreeMap<IsSectionKind, (Vec<IsGroup>, Amounts)> = BTreeMap::new();
-    let mut contributions: BTreeMap<IsSectionKind, Amounts> = BTreeMap::new();
+    let mut boxes: BTreeMap<IsSectionKind, (Vec<IsGroup<A>>, A)> = BTreeMap::new();
+    let mut contributions: BTreeMap<IsSectionKind, Figures> = BTreeMap::new();
     for rung in &LADDER {
         let section_members = members.remove(&rung.kind).unwrap_or_default();
         let sum = windows.sum(&section_members)?;
         contributions.insert(rung.kind, sum.ma_neg()?);
-        let lines = build_groups(&section_members, groups, &windows, rung.flip)?;
+        let lines = build_groups(&section_members, groups, &windows, rung.flip, shape)?;
         if !lines.is_empty() {
-            boxes.insert(rung.kind, (lines, sum.signed(rung.flip)?));
+            boxes.insert(rung.kind, (lines, shape(sum.signed(rung.flip)?)?));
         }
     }
     // Taken from the boxes that RENDER, not from raw membership. The plan words
@@ -866,8 +1010,8 @@ pub fn income_statement_grouped(
 
     // Pass 2: emit in ladder order, accumulating the running total each subtotal
     // is a prefix of.
-    let mut rendered: Vec<IsSection> = Vec::with_capacity(present.len());
-    let mut running = Amounts::zero(opts.compare);
+    let mut rendered: Vec<IsSection<A>> = Vec::with_capacity(present.len());
+    let mut running = Figures::zero(windows.totals.len());
     for rung in &LADDER {
         running = running.ma_add(&contributions[&rung.kind])?;
         if let Some((lines, total)) = boxes.remove(&rung.kind) {
@@ -891,7 +1035,7 @@ pub fn income_statement_grouped(
             last.trailing.push(IsSubtotal {
                 kind: *kind,
                 label: (*label).to_string(),
-                total: running.clone(),
+                total: shape(running.clone())?,
             });
         }
     }
@@ -899,15 +1043,16 @@ pub fn income_statement_grouped(
     meta.unpriced.sort();
     meta.unpriced.dedup();
     Ok(IncomeStatementReport {
-        from: current.from,
-        to: current.to,
-        prior,
+        from: opts.from.to_string(),
+        to: opts.to.to_string(),
+        prior: None,
+        buckets: Vec::new(),
         base: match opts.value {
             Valuation::Market => target,
             Valuation::Cost | Valuation::None => None,
         },
         sections: rendered,
-        net_income: running,
+        net_income: shape(running)?,
         multi_step,
         meta: ReportMeta {
             unpriced: meta.unpriced,
@@ -917,7 +1062,7 @@ pub fn income_statement_grouped(
 
 /// True when valuing this income statement in `target` prices at least one of
 /// the commodities it would display (vacuously true for a statement with no
-/// rows in either window).
+/// rows in any window).
 ///
 /// The HTTP layer's admission test for an explicit `valueIn` on
 /// `/api/reports/incomestatement/grouped` —
@@ -925,17 +1070,17 @@ pub fn income_statement_grouped(
 /// statement's own windows: the as-written direct totals of every on-statement
 /// account (the same section resolution [`income_statement_grouped`] narrows
 /// by), each window measured at ITS OWN end, exactly as [`window_totals`]
-/// values it, through the same explicit-`P`-only [`PriceDb`]. When `compare`
-/// is on, the prior window counts too: a commodity pricing only prior-period
-/// rows still retargets the prior column, so it is not refused.
+/// values it, through the same explicit-`P`-only [`PriceDb`]. `windows` is what
+/// the statement will report — [`compared_windows`] in Total mode, where a
+/// commodity pricing only prior-period rows still retargets the prior column so
+/// is not refused, or [`interval_windows`] in interval mode.
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow.
 pub fn prices_any_on_statement(
     txns: &[Transaction],
     explicit_prices: &[PriceDirective],
-    window: &DateRange,
-    compare: bool,
+    windows: &[DateRange],
     declared: &BTreeMap<String, AccountType>,
     sections: &BTreeMap<String, IsSectionKind>,
     target: &Commodity,
@@ -961,9 +1106,9 @@ pub fn prices_any_on_statement(
             .flat_map(|(_, ma)| ma.iter().map(|(commodity, _)| commodity.clone()))
             .collect())
     };
-    let windows: Vec<(BTreeSet<Commodity>, String)> = std::iter::once(window.clone())
-        .chain(compare.then(|| prior_window(window)))
-        .map(|window| Ok((held_in(&window)?, window.to)))
+    let windows: Vec<(BTreeSet<Commodity>, &str)> = windows
+        .iter()
+        .map(|window| Ok((held_in(window)?, window.to.as_str())))
         .collect::<Result<_, ReportError>>()?;
     if windows.iter().all(|(held, _)| held.is_empty()) {
         return Ok(true);
@@ -1076,8 +1221,7 @@ mod tests {
             prices_any_on_statement(
                 &txns,
                 prices,
-                &window,
-                compare,
+                &compared_windows(&window, compare),
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &c(target),
@@ -1117,8 +1261,7 @@ mod tests {
             prices_any_on_statement(
                 &txns,
                 &[],
-                &empty_window,
-                true,
+                &compared_windows(&empty_window, true),
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &c("USDD"),

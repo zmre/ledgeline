@@ -69,14 +69,15 @@ pub use budget::{
     BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,
     budget_report,
 };
-pub use cash_flow::{cash_flow, is_cash_like};
+pub use cash_flow::{cash_flow, cash_flow_range, is_cash_like};
 pub use flows::{
     FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide, income_statement_flows,
 };
 pub use income_statement::{
-    Amounts, DateRange, IS_SECTION_TAG, IncomeStatementReport, IsGroup, IsOpts, IsRow, IsSection,
-    IsSectionKind, IsSubtotal, IsSubtotalKind, account_sections, account_sections_from,
-    income_statement, income_statement_grouped, parse_is_section_tag, prices_any_on_statement,
+    Amounts, Columns, DateRange, IS_SECTION_TAG, IncomeStatementReport, IsGroup, IsOpts, IsRow,
+    IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, account_sections, account_sections_from,
+    compared_windows, income_statement, income_statement_columns, income_statement_grouped,
+    interval_windows, parse_is_section_tag, prices_any_on_statement,
 };
 pub use insights::{
     ChangeKind, ChangeRow, CostOfLiving, InsightsOpts, InsightsPeriod, InsightsReport,
@@ -85,9 +86,9 @@ pub use insights::{
 pub use mixed_amount::MixedAmount;
 pub use net_worth::{NetWorthOpts, net_worth};
 pub use periods::{
-    Interval, add_days, add_months, bucket_as_of, bucket_end, bucket_key, bucket_label,
+    BucketSpan, Interval, add_days, add_months, bucket_as_of, bucket_end, bucket_key, bucket_label,
     bucket_span, bucket_start, compare_iso, days_between, iso_from_days, last_n_buckets,
-    next_bucket,
+    next_bucket, range_buckets,
 };
 pub use prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
 pub use reference::{AccountHistory, ReferenceOpts, ReferencePeriod, account_reference};

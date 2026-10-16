@@ -222,6 +222,16 @@ export interface DateRange {
 }
 
 /**
+ * One interval-mode column (plans/24): its bucket key, for the header label
+ * (`bucketLabel`), and the inclusive dates it covers — the first clamped to the
+ * report's `from` and the last to its `to`, so a mid-month range does not
+ * quietly include the rest of its first month.
+ */
+export interface IsBucket extends DateRange {
+    key: string;
+}
+
+/**
  * One figure, with the comparison period's beside it.
  *
  * `prior` is OPTIONAL, and absent — not null, and never a zero — when the report
@@ -235,9 +245,20 @@ export interface DateRange {
  * here would be exactly the sort of key-matching that silently loses rows.
  */
 export interface Amounts {
+    /**
+     * This line over the report's whole `[from, to]`, as displayed. In interval
+     * mode that is the Total column: the SUM of `values`, each bucket valued at
+     * its own end — deliberately not one whole-range valuation.
+     */
     current: MixedAmount;
     /** The prior window's figure. Absent unless `IncomeStatementReport.prior` is set. */
     prior?: MixedAmount;
+    /**
+     * Interval mode only: one figure per `IncomeStatementReport.buckets` entry,
+     * oldest → newest. Absent exactly when `buckets` is null, cross-checked by
+     * the decoder the way `prior` is.
+     */
+    values?: MixedAmount[];
 }
 
 /**
@@ -324,6 +345,11 @@ export interface IncomeStatementReport {
      * actually ran last year.
      */
     prior: DateRange | null;
+    /**
+     * Interval mode's columns, oldest → newest, or null in Total mode. Never
+     * non-null alongside `prior`: an interval statement has no comparison.
+     */
+    buckets: IsBucket[] | null;
     /** The commodity every line is valued in, or null when the journal has no base commodity. */
     base: string | null;
     value: BsValuation;
@@ -421,6 +447,8 @@ export interface PeriodRow {
     values: MixedAmount[];
     /** Net worth only; absent on every other period report. */
     kind?: PeriodRowKind;
+    /** Cash flow only: the sum of `values`, the row's Total column. Present exactly when `PeriodReport.grandTotal` is. */
+    total?: MixedAmount;
 }
 
 /** Cash flow / net worth: one column per bucket, oldest → newest. */
@@ -428,6 +456,12 @@ export interface PeriodReport {
     buckets: string[];
     rows: PeriodRow[];
     totals: MixedAmount[];
+    /**
+     * Cash flow only: the sum of `totals`, the Net row's Total column. Its
+     * presence is what says the report HAS a Total column — net worth's
+     * snapshot columns mean nothing summed, so it never carries one.
+     */
+    grandTotal?: MixedAmount;
     /** Present only when something noteworthy happened (e.g. unpriced commodities in netWorth). */
     meta?: ReportMeta;
 }
