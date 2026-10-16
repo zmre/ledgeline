@@ -24,7 +24,7 @@ Insights is the tab that opens first. The digit shortcuts work only while the Re
 
 ## The controls bar
 
-The grey bar under the tabs shows only the controls the current tab reads. Settings carry over when you switch tabs, so a date you set on one tab is still there when you come back.
+The grey bar under the tabs shows only the controls the current tab reads. Settings carry over when you switch tabs, so a setting you change on one tab is still there when you come back. The one exception is the end date, which every tab shares (see [One end date across tabs](#one-end-date-across-tabs)).
 
 - **As of** sets the date for the Balance Sheet. The date is inclusive.
 - **From** and **To** set the date range for the P&L and for Cash Flow. Both ends are inclusive. Each tab keeps its own range.
@@ -37,6 +37,20 @@ The defaults come from today's date. The Balance Sheet starts at today. The P&L 
 Insights and Subscriptions don't use this bar. Insights has its own comparison picker, and Subscriptions always scans the last 24 months.
 
 The Balance Sheet and P&L have no depth control. They group accounts into lines, and you expand a line to see the accounts inside it. Their pages explain how the grouping works.
+
+### One end date across tabs
+
+The last end date you set on any tab becomes the end date of the next tab you open, so you can line reports up without picking the date on each one. Set the Balance Sheet's As of to 2026-09-30, open the P&L, and it covers 2026-01-01 to 2026-09-30. Open Cash Flow and it ends on 2026-09-30 too.
+
+The end date is As of on the Balance Sheet, To on the P&L and Cash Flow, End on Net Worth, and End in the Insights comparison picker. Subscriptions has no date, so it neither sets nor takes one.
+
+Start dates aren't shared. When a tab's end moves, its start is set like this:
+
+1. If the start is still at its default distance from the old end, it keeps that distance from the new one. On the P&L that means January 1 of the end's year, so the range is year to date. On Cash Flow it's twelve monthly columns. On Insights it's the length of the comparison preset, which then shows as Custom.
+2. If you picked the start yourself, it stays as long as it's on or before the new end.
+3. If it would come after the new end, it goes back to the tab's default for the new end. A range is never left backwards.
+
+A link that names the tab's end date opens on that date, and that date becomes the shared one. The shared date lasts while the app is open, including when you leave Reports and come back. It isn't saved, so after a restart or a reload each tab starts from its defaults again, apart from the dates in the address bar of the tab you reload.
 
 ## Valuation and missing prices
 
