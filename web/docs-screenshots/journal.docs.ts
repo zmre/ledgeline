@@ -76,3 +76,13 @@ test("export button", async ({page}) => {
     const drawn = await annotate(page, [{kind: "arrow", target: button, from: {dx: 230, dy: 0}, label: "Download as .xlsx"}]);
     await shot(page, SECTION, "export-button", {clip: [footer, drawn], padding: 6});
 });
+
+test("keyboard help", async ({page}) => {
+    // At 800px tall the sheet's top edge sits over the navbar, whose labels
+    // show through its translucent border. Taller, it clears the navbar.
+    await page.setViewportSize({width: 1280, height: 1000});
+    await page.keyboard.press("?");
+    const sheet = page.getByTestId("key-help");
+    await expect(sheet).toBeVisible();
+    await shot(page, SECTION, "keyboard-help", {clip: sheet.locator(".modal-box"), padding: 0});
+});

@@ -1,10 +1,6 @@
-// docs/reports/ — Insights, Balance Sheet, Subscriptions.
-//
-// P&L and Cash Flow are deliberately NOT captured yet: their Interval / Total
-// controls are being reworked (plans/24-report-intervals-and-totals.md), and a
-// shot taken now would be stale on arrival. The stubs at the bottom say what
-// each one should show; un-skip and fill in once plan 24 lands.
-import {annotate, expect, shot, test} from "./harness";
+// docs/reports/ — Insights, Balance Sheet, Subscriptions, P&L, Cash Flow.
+import type {Page} from "@playwright/test";
+import {annotate, around, expect, shot, test} from "./harness";
 
 const SECTION = "reports";
 
@@ -13,6 +9,17 @@ test("insights", async ({page}) => {
     await expect(page.getByTestId("insights-dashboard")).toBeVisible();
     await expect(page.getByTestId("insights-box-networth")).toContainText("$");
     await shot(page, SECTION, "insights");
+});
+
+// The tab strip and the controls bar, Export circled. On the P&L because it
+// is the tab with the most controls that every report shares.
+test("tabs and export", async ({page}) => {
+    await page.goto("/reports?tab=is");
+    await expect(page.getByTestId("income-statement")).toBeVisible();
+    const exportButton = page.getByRole("button", {name: "Export report as xlsx"});
+    const controls = page.getByLabel("Interval").locator("xpath=ancestor::div[contains(@class,'rounded-box')][1]");
+    const drawn = await annotate(page, [{kind: "circle", target: exportButton}]);
+    await shot(page, SECTION, "tabs", {clip: [page.getByRole("tablist", {name: "Report"}), controls, drawn], padding: 8});
 });
 
 test("balance sheet", async ({page}) => {
@@ -33,33 +40,62 @@ test.describe("subscriptions", () => {
     });
 });
 
-// TODO(plan 24): P&L with the Interval dropdown circled and the % change column visible.
-//   name: "income-statement" — circle the Interval <select>, box the "% change" column header.
-test.skip("income statement", async ({page}) => {
-    await page.goto("/reports?tab=is");
-    await expect(page.getByTestId("income-statement")).toBeVisible();
-    await annotate(page, [{kind: "circle", target: page.getByLabel("Interval")}]);
-    await shot(page, SECTION, "income-statement");
+// The labelled control, not just the <select>: a circle around the select
+// alone cuts through its "Interval" label.
+const intervalControl = (page: Page) => around([page.getByText("Interval", {exact: true}), page.getByLabel("Interval")]);
+
+test.describe("income statement", () => {
+    // The Sankey panels are collapsed: open, "Money in" fills the frame between the
+    // controls and the figures the shots are about.
+    test.use({settings: {flowsInOpen: false, flowsOutOpen: false}});
+
+    // The P&L in its default Total mode (calendar 2026 against 2025): the
+    // Interval control circled, the Prior and % change columns boxed.
+    test("income statement", async ({page}) => {
+        await page.goto("/reports?tab=is");
+        const revenue = page.getByTestId("is-section-revenue");
+        await expect(revenue.getByRole("columnheader", {name: "% change"})).toBeVisible();
+        const drawn = await annotate(page, [
+            {kind: "circle", target: await intervalControl(page)},
+            {kind: "box", target: await around([revenue.getByRole("columnheader", {name: "Prior"}), revenue.locator("tfoot td[data-column='pct']")])},
+        ]);
+        await shot(page, SECTION, "income-statement", {clip: [page.getByRole("tablist", {name: "Report"}), revenue, drawn], padding: 8});
+    });
+
+    // Monthly buckets for the first half of 2026, the Total column boxed. A
+    // six-month range keeps every column on screen at 1280px.
+    test("income statement, monthly", async ({page}) => {
+        await page.goto("/reports?tab=is&from=2026-01-01&to=2026-06-30&interval=monthly");
+        const revenue = page.getByTestId("is-section-revenue");
+        const total = revenue.getByRole("columnheader", {name: "Total", exact: true});
+        await expect(total).toBeVisible();
+        const drawn = await annotate(page, [
+            {kind: "circle", target: await intervalControl(page)},
+            {kind: "box", target: await around([total, revenue.locator("tfoot td[data-column='total']")])},
+        ]);
+        await shot(page, SECTION, "income-statement-monthly", {clip: [page.getByRole("tablist", {name: "Report"}), revenue, drawn], padding: 8});
+    });
 });
 
-// TODO(plan 24): P&L at a monthly interval with the Total column boxed.
-//   name: "income-statement-monthly" — Interval = Monthly, box the Total column.
-test.skip("income statement, monthly", async ({page}) => {
-    await page.goto("/reports?tab=is");
-    await page.getByLabel("Interval").selectOption({label: "Monthly"});
-    await annotate(page, [{kind: "box", target: page.getByRole("columnheader", {name: "Total"})}]);
-    await shot(page, SECTION, "income-statement-monthly");
-});
+// Cash flow over the first half of 2026: the From/To range boxed, Interval
+// circled, the Total column boxed. A box for the range because an ellipse wide
+// enough for two date fields runs into the Interval circle.
+test.describe("cash flow", () => {
+    // The chart collapsed so the whole table fits under the controls.
+    test.use({settings: {cashFlowChartOpen: false}});
 
-// TODO(plan 24): Cash Flow with From/To and Interval circled and the Total column boxed.
-//   name: "cash-flow" — circle From, To and Interval; box the Total column.
-test.skip("cash flow", async ({page}) => {
-    await page.goto("/reports?tab=cf");
-    await annotate(page, [
-        {kind: "circle", target: page.getByLabel("From", {exact: true})},
-        {kind: "circle", target: page.getByLabel("To", {exact: true})},
-        {kind: "circle", target: page.getByLabel("Interval")},
-        {kind: "box", target: page.getByRole("columnheader", {name: "Total"})},
-    ]);
-    await shot(page, SECTION, "cash-flow");
+    test("cash flow", async ({page}) => {
+        await page.goto("/reports?tab=cf&from=2026-01-01&to=2026-06-30&interval=monthly");
+        // The period table's header cells are <td>, not column headers.
+        const table = page.locator("table").filter({has: page.locator("thead td", {hasText: "Total"})});
+        const totalHead = table.locator("thead td").last();
+        await expect(totalHead).toHaveText("Total");
+        const totalNet = table.locator("tbody tr").last().locator("td").last();
+        const drawn = await annotate(page, [
+            {kind: "box", target: await around([page.getByText("From", {exact: true}), page.getByLabel("To", {exact: true})])},
+            {kind: "circle", target: await intervalControl(page)},
+            {kind: "box", target: await around([totalHead, totalNet])},
+        ]);
+        await shot(page, SECTION, "cash-flow", {clip: [page.getByRole("tablist", {name: "Report"}), table, drawn], padding: 8});
+    });
 });
