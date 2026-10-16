@@ -50,7 +50,7 @@ jobs:
           # skipped, but pulls still work. Never fails the job when empty.
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development.md).
+          # Don't burn cache quota on source trees (see docs/development/building.md).
           pushFilter: '-(source|vendor)$'
 
       - name: cargo fmt --check
@@ -79,7 +79,7 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development.md).
+          # Don't burn cache quota on source trees (see docs/development/building.md).
           pushFilter: '-(source|vendor)$'
 
       - name: Clippy
@@ -108,7 +108,7 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development.md).
+          # Don't burn cache quota on source trees (see docs/development/building.md).
           pushFilter: '-(source|vendor)$'
 
       - name: Tests
@@ -116,7 +116,7 @@ jobs:
 
   # Build the single binary — proves the GUI deps resolve (webkitgtk on Linux,
   # system WebKit on macOS). `.#ledgeline` embeds a placeholder SPA (see
-  # docs/development.md); the distributable steps below embed the real one.
+  # docs/development/building.md); the distributable steps below embed the real one.
   # On macOS this ALSO builds the real distributable (`.#macDist`), because that
   # — not `.#ledgeline` — is what a Mac user's `nix build` resolves to.
   build:
@@ -141,7 +141,7 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development.md).
+          # Don't burn cache quota on source trees (see docs/development/building.md).
           pushFilter: '-(source|vendor)$'
 
       - name: Build ledgeline
@@ -343,7 +343,7 @@ jobs:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development.md).
+          # Don't burn cache quota on source trees (see docs/development/building.md).
           pushFilter: '-(source|vendor)$'
 
       # Nix, not `cargo build`, so this reuses the same store paths (and Cachix

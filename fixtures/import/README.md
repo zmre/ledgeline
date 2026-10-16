@@ -2,7 +2,7 @@
 
 Corpus for `crates/ledgeline-core/src/convert/` — the preprocessor that collapses every
 accepted statement format to one `Tabular` before rules matching, preview or CSV emission sees
-it. See `plans/11-enhanced-import.md` § *Preprocessor decisions* and `docs/imports.md`.
+it. See `plans/11-enhanced-import.md` § *Preprocessor decisions* and `docs/development/imports-internals.md`.
 
 The house rule from `fixtures/rules/README.md` carries over with one change. There, a fixture
 hledger rejects is a bug in the fixture. Here there is no external oracle to run — a bank does
@@ -172,7 +172,7 @@ These fixtures have two, and both are used:
 | the per-fixture assertions | the mapping, the date format and the decimal mark are the ones we meant |
 | **real hledger** (`LEDGELINE_HLEDGER_GENERATE_CHECK=1`) | the drafted file actually imports — every row arrives, every posting has an amount, and the numbers are right |
 
-The second is the one that matters, for `docs/imports.md`'s fact 4: **parse success is not a
+The second is the one that matters, for `docs/development/imports-internals.md`'s fact 4: **parse success is not a
 matching signal.** A drafted file that is valid hledger syntax and produces garbage exits 0.
 
 | File | What it proves |

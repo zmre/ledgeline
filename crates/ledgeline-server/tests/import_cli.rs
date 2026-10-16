@@ -729,7 +729,7 @@ fn sort_restores_date_order_after_a_backdated_import() {
 /// A statement balance that does not reconcile refuses the WHOLE run, before
 /// anything is written.
 ///
-/// The commit route's all-or-nothing property (`docs/imports.md` § "A failing
+/// The commit route's all-or-nothing property (`docs/development/imports-internals.md` § "A failing
 /// assertion refuses the commit *before* the import is applied"), held to on the
 /// command line — where it matters more, because there is no person watching a
 /// number turn red and deciding not to press the button.

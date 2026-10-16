@@ -4,7 +4,7 @@
   # Binary caches. `cache.nixos.org` and `nix-community` are public and give an
   # immediate pull benefit. `zmre.cachix.org` is the shared cache we reuse from
   # zmre/mbr-markdown-browser (its real public key is below). CI pushes to it
-  # when the `CACHIX_AUTH_TOKEN` repo secret is present (see docs/development.md →
+  # when the `CACHIX_AUTH_TOKEN` repo secret is present (see docs/development/building.md →
   # "Cachix binary cache"); pulls work for everyone with no setup.
   nixConfig = {
     extra-substituters = [
@@ -291,7 +291,7 @@
         x86_64-linux = "sha256-VinmVQrgTqQlm365hcDntt8kepVo6G3tKIoD2bVzlzU=";
         # Intel Macs, for the x86_64 half of the release matrix. Produced by a
         # release-workflow dry run under Rosetta, which is the only machine that
-        # can generate it — see docs/releasing.md.
+        # can generate it — see docs/development/releasing.md.
         x86_64-darwin = "sha256-xdaapCi0qH8gthiuidzTk8hjo6t5nm8nE2X4+hDJz68=";
       };
 

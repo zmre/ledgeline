@@ -12,7 +12,7 @@ result-*
 # Rust engine (crates/)
 # Covers the generated performance corpus (target/perf/*.journal, up to 26 MB
 # each) and criterion's reports (target/criterion/). Both are reproducible from
-# scratch — see docs/perf-baseline.md — so neither belongs in git.
+# scratch — see docs/development/perf-baseline.md — so neither belongs in git.
 /target/
 
 # The embedded SPA, mirrored out of `web/build` by

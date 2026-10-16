@@ -273,7 +273,7 @@ pub struct QbJournal {
 ///
 /// Row numbers are 1-based sheet rows — the numbers down the side of the user's
 /// own spreadsheet. Nothing here can carry a path: this module is handed bytes
-/// and never learns where they came from, matching `docs/imports.md` § Security.
+/// and never learns where they came from, matching `docs/development/imports-internals.md` § Security.
 #[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
 pub enum QbJournalError {
     #[error("the file is empty")]

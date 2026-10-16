@@ -49,7 +49,7 @@
 //! obtained. That keeps the interesting logic testable without a binary on
 //! `PATH` — the test suite is hermetic and drives committed goldens under
 //! `fixtures/import/match/golden/` — and it keeps process spawning confined to
-//! the one server module allowed to do it (`docs/imports.md`).
+//! the one server module allowed to do it (`docs/development/imports-internals.md`).
 //!
 //! `-O json` is used precisely so that **no human-readable hledger output is
 //! ever regex-scraped**. A rendered ledger is a display format; scraping one is
@@ -57,7 +57,7 @@
 //!
 //! # No path ever appears here
 //!
-//! Same rule the rules API already holds to (`docs/imports.md` § Security). No
+//! Same rule the rules API already holds to (`docs/development/imports-internals.md` § Security). No
 //! [`MatchError`] carries a path, and [`Candidate::id`]/[`Candidate::label`] are
 //! the discovery handle and display name, which are relative by construction.
 //! hledger's JSON *does* carry an absolute `sourceName` in `tsourcepos`; this

@@ -3046,7 +3046,7 @@ fn run_dry_run(
 
     // hledger's own proposal, verbatim — and therefore literally the bytes
     // `commit` will append. Nothing re-renders it in between; see `run_commit`,
-    // and `docs/imports.md` § "Commodity style" for why re-printing it under the
+    // and `docs/development/imports-internals.md` § "Commodity style" for why re-printing it under the
     // tree's `commodity` directives is deliberately NOT done.
     let proposal = output.stdout_lossy();
     let status = output.stderr_lossy();
@@ -3758,7 +3758,7 @@ pub(crate) async fn commit(
 /// What that buys: **the preview is the bytes**. There is no second rendering
 /// that could drift from the one the user approved — and, deliberately, no
 /// re-styling step either. Imported amounts keep hledger's own spelling, even
-/// when the tree declares a `commodity` style they do not match; `docs/imports.md`
+/// when the tree declares a `commodity` style they do not match; `docs/development/imports-internals.md`
 /// § "Commodity style" records why re-printing them is a hazard rather than a
 /// polish.
 ///
@@ -4891,7 +4891,7 @@ pub struct CliQbWritten {
 /// [`run_dry_run`]/[`run_commit`]/[`run_sort`] — the very functions the axum
 /// handlers call, with the very request types they deserialize. Nothing about
 /// the import sequence is re-implemented here, and there is no second code path
-/// that could import differently: `docs/imports.md` describes one pipeline, and
+/// that could import differently: `docs/development/imports-internals.md` describes one pipeline, and
 /// this is a second caller of it rather than a second copy of it. In particular
 /// every subprocess still goes through `hledger.rs`/`git.rs`, which stay the only
 /// two modules in this crate that may spawn one.
@@ -6304,7 +6304,7 @@ mod tests {
     /// limit of an argument-level lint, and why the flag is prepended by
     /// construction rather than by anyone remembering to.
     ///
-    /// The manual verification is in `docs/imports.md`: a `hledger.conf` whose
+    /// The manual verification is in `docs/development/imports-internals.md`: a `hledger.conf` whose
     /// entire content is the word `balance` rewrites an unprotected
     /// `hledger import` into `balance import …`.
     #[test]

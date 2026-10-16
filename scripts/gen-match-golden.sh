@@ -18,7 +18,7 @@
 # That is committed path disclosure, and it also makes the bytes machine-specific.
 # The repo-root prefix is therefore stripped, leaving a relative
 # `fixtures/import/match/checking.csv`. Safe to rewrite: `sourceName` is the one
-# field of this JSON that matching.rs is forbidden to read (docs/imports.md
+# field of this JSON that matching.rs is forbidden to read (docs/development/imports-internals.md
 # § Security — errors never disclose paths), so nothing under test can notice.
 set -euo pipefail
 

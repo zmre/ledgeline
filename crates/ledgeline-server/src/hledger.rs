@@ -7,7 +7,7 @@
 //! needs a subprocess goes through one of them. The rule is worth stating as a
 //! rule because the alternative — process spawning scattered across the import
 //! pipeline — is how the four invariants below get quietly broken one call site
-//! at a time. `docs/imports.md` says the same thing.
+//! at a time. `docs/development/imports-internals.md` says the same thing.
 //!
 //! The four invariants, enforced by [`Invocation`] and documented at its
 //! definition:

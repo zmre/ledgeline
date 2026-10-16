@@ -34,7 +34,7 @@
 //! | `reports/insights` | PERF-5c | 1,197 → ~250 ms at 200k |
 //! | `prices/lookup_{early,late}_date` | PERF-5d | **the pair must converge** |
 //! | `accounts/resolve_account_type_sweep` | PERF-5e | memoization should make it ~free |
-//! | `aggregate/roll_up` | PERF-5f | in-place accumulate instead of clone-per-add — but see `docs/perf-baseline.md`: this one is FLAT in journal size, so the win is ~0.15 ms per call, not the 3–10× the framing implies |
+//! | `aggregate/roll_up` | PERF-5f | in-place accumulate instead of clone-per-add — but see `docs/development/perf-baseline.md`: this one is FLAT in journal size, so the win is ~0.15 ms per call, not the 3–10× the framing implies |
 
 #[path = "corpus.rs"]
 mod corpus;

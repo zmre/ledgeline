@@ -163,7 +163,7 @@ impl BsTerm {
 /// diagnostic names — are `current` and `noncurrent`. Accepted on top of them,
 /// trimmed and case-insensitively: `short`, `shortterm` and `short-term` for
 /// current; `non-current`, `long`, `longterm` and `long-term` for non-current.
-/// The synonyms are documented in `docs/balance-sheet.md` and journals rely on
+/// The synonyms are documented in `docs/reports/balance-sheet.md` and journals rely on
 /// them, so "aligning" this match with the diagnostic's two-word vocabulary is
 /// not a cleanup — dropping a spelling turns every account tagged with it into
 /// an account whose `bsterm:` is silently ignored, plus a warning in the

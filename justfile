@@ -142,7 +142,7 @@ match-golden:
 
 # The hledger-backed checks, all opt-in so `cargo test` stays hermetic. These
 # are the only things that prove our output is syntax hledger actually accepts,
-# rather than syntax we did not damage. See docs/imports.md.
+# rather than syntax we did not damage. See docs/development/imports-internals.md.
 hledger-checks:
     LEDGELINE_HLEDGER_RENDER_CHECK=1 cargo test -p ledgeline-core --test rules_hledger_render
     LEDGELINE_HLEDGER_CONVERT_CHECK=1 cargo test -p ledgeline-core --test convert_tabular
@@ -213,7 +213,7 @@ build:
     cd web && bun run build
 
 # The SPA is built inside Nix, so no prior `just build` is needed. The bundle
-# also carries its own `hledger` in Contents/MacOS/ (see docs/releasing.md).
+# also carries its own `hledger` in Contents/MacOS/ (see docs/development/releasing.md).
 # Build the macOS app bundle (Ledgeline.app) with the real SPA embedded, via Nix
 package-mac:
     nix build .#macApp --accept-flake-config -o result-macapp
@@ -241,7 +241,7 @@ package-dmg: package-mac
         -srcfolder "$staging" -ov -format UDZO "dist/Ledgeline-$version-arm64.dmg"
     echo "Built dist/Ledgeline-$version-arm64.dmg (UNSIGNED — local inspection only)"
 
-# --- Releases (see docs/releasing.md) ---
+# --- Releases (see docs/development/releasing.md) ---
 
 # Print the workspace version
 version:
@@ -290,7 +290,7 @@ engine-check:
 serve-engine file="fixtures/sample.journal":
     cargo run -p ledgeline -- {{file}}
 
-# --- Performance (see docs/perf-baseline.md) ---
+# --- Performance (see docs/development/perf-baseline.md) ---
 
 # Generate the deterministic synthetic corpus into target/perf/ and validate it
 # with `hledger check -s`. Sizes default to 5000 50000; pass your own.

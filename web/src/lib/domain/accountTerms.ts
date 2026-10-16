@@ -1,6 +1,6 @@
 // Declared balance-sheet TERM (`bsterm:`). Pure TS: no Svelte/DOM imports.
 //
-// Three account tags, three questions (docs/balance-sheet.md): `type:` picks
+// Three account tags, three questions (docs/reports/balance-sheet.md): `type:` picks
 // which box a balance lands in, `bsgroup:` picks the line within it, and
 // `bsterm:` — this one — picks which HALF of the box that line sits in, current
 // or non-current. Like both of the others it INHERITS to sub-accounts, so a
@@ -21,7 +21,7 @@ export type BsTerm = "current" | "noncurrent";
 /**
  * Every accepted spelling, matched case-insensitively after trimming. The
  * canonical two are `current` and `noncurrent`; the rest are the synonyms the
- * Rust parser accepts, listed in docs/balance-sheet.md.
+ * Rust parser accepts, listed in docs/reports/balance-sheet.md.
  */
 const TERM_BY_SPELLING: Readonly<Record<string, BsTerm>> = {
     current: "current",
@@ -88,7 +88,7 @@ export function resolveBsTerm(account: string, declared: ReadonlyMap<string, BsT
 //
 // Everything below GUESSES a term from the account's name, and it exists under
 // protest. This codebase's standing rule is that membership is decided by a
-// declared tag and never by an English word (docs/balance-sheet.md, "Why
+// declared tag and never by an English word (docs/reports/balance-sheet.md, "Why
 // grouping never matches account names"), because a chart of accounts may be in
 // any language. That rule is not repealed here — the guess runs only where
 // hledger puts its own name heuristic, as the LAST resort after the account and

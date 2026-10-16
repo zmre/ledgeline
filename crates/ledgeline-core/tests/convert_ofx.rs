@@ -630,7 +630,7 @@ fn an_ofx_document_without_a_statement_says_so() {
 
 #[test]
 fn no_error_discloses_a_path_or_user_data() {
-    // The rule `docs/imports.md` § Security already holds the rules API to: an
+    // The rule `docs/development/imports-internals.md` § Security already holds the rules API to: an
     // error quotes neither a path nor the caller's content.
     let secret = "/Users/someone/private/statements/acct-4111111111111111.ofx";
     let inputs: Vec<Vec<u8>> = vec![

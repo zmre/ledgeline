@@ -95,7 +95,7 @@
 //! Growth applies to the balance at the START of each growth period, BEFORE that
 //! period's contributions — so a contribution dated on the step boundary does
 //! not earn that step. Some convention is needed and this is the conservative
-//! one; `docs/projections.md` states it, because it is exactly the kind of thing
+//! one; `docs/projections/asset-rows.md` states it, because it is exactly the kind of thing
 //! that makes a user's spreadsheet disagree with ours.
 
 /// Which `*.journal` files the Projections tab may load or save, and the one

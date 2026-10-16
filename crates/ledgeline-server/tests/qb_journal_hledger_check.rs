@@ -178,7 +178,7 @@ async fn map_every_unmapped_account(tree: &Tree, stage_id: &str) {
 
 /// `hledger --no-conf -f JOURNAL check`, over the file `commit` just wrote.
 ///
-/// `--no-conf` ahead of the subcommand, for the reason `docs/imports.md` §
+/// `--no-conf` ahead of the subcommand, for the reason `docs/development/imports-internals.md` §
 /// *No hledger we run reads a config file* gives: a config file can replace
 /// the command.
 fn hledger_check(journal: &PathBuf) -> Result<(), String> {

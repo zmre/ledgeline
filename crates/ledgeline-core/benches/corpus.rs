@@ -29,7 +29,7 @@
 //! (1996-01-01 .. 2025-12-31), ~2.2 postings per transaction, ~9% of
 //! transactions carrying an `@`/`@@` cost, plus periodic (`~`) budget rules,
 //! virtual and balanced-virtual postings, tags, comments and balance
-//! assertions. **`generate(n)` is frozen on it** — `docs/perf-baseline.md` §2
+//! assertions. **`generate(n)` is frozen on it** — `docs/development/perf-baseline.md` §2
 //! records the SHA-256 of its output, and every timing in §3 is measured
 //! against those exact bytes.
 //!
@@ -44,7 +44,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Bump on ANY change to a shape's emitted output — it keys the on-disk cache
-/// file through [`Shape::version`]. [`V1`] is FROZEN at 1: `docs/perf-baseline.md`
+/// file through [`Shape::version`]. [`V1`] is FROZEN at 1: `docs/development/perf-baseline.md`
 /// §3 is measured against its exact bytes, so anything that moves them
 /// invalidates every number in that table.
 pub const CORPUS_VERSION: u32 = 1;
@@ -68,7 +68,7 @@ const SPAN_END: (i64, u32, u32) = (2025, 12, 31);
 /// for the large-repo fixture (10k transactions a year for 15 years, ~200
 /// commodities, 75 accounts) without editing it. Every one of those consts is
 /// now a field, and [`V1`] holds their old values so `generate(n)` — the whole
-/// of `docs/perf-baseline.md` — is untouched.
+/// of `docs/development/perf-baseline.md` — is untouched.
 ///
 /// **Adding a field is safe. Changing [`V1`]'s values is not**: it silently
 /// re-shapes the corpus the recorded SHA-256s and the whole baseline table were
@@ -107,7 +107,7 @@ pub struct Shape {
     pub expense_categories: usize,
 }
 
-/// The original corpus. **FROZEN** — `docs/perf-baseline.md` §2 records the
+/// The original corpus. **FROZEN** — `docs/development/perf-baseline.md` §2 records the
 /// SHA-256 of its output at 5k, 50k and 200k.
 pub const V1: Shape = Shape {
     version: CORPUS_VERSION,
@@ -924,7 +924,7 @@ impl Gen {
 ///
 /// Deterministic: same `txns` in, byte-identical journal out — and identical to
 /// what this function produced before the generator was parameterized, which is
-/// what keeps `docs/perf-baseline.md` §3 meaningful. See the module docs for the
+/// what keeps `docs/development/perf-baseline.md` §3 meaningful. See the module docs for the
 /// guarantee's basis.
 #[must_use]
 pub fn generate(txns: usize) -> String {

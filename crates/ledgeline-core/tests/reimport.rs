@@ -23,7 +23,7 @@
 //!
 //! hledger is run **only** over these committed fixtures. The rules file here
 //! contains no `source` directive at all, so the `source … | CMD` shell path
-//! `docs/imports.md` § Security describes is unreachable from this suite.
+//! `docs/development/imports-internals.md` § Security describes is unreachable from this suite.
 
 mod common;
 
@@ -339,7 +339,7 @@ impl Drop for Scratch {
 /// `hledger --no-conf -I -f CSV print -O json`, over a fixture CSV whose sibling
 /// `.rules` file hledger finds by name.
 ///
-/// `--no-conf` first, ahead of the subcommand, for the reason `docs/imports.md`
+/// `--no-conf` first, ahead of the subcommand, for the reason `docs/development/imports-internals.md`
 /// § *No hledger we run reads a config file* gives at length: a config file can
 /// replace the command.
 fn hledger_print(csv: &Path) -> Result<serde_json::Value, String> {

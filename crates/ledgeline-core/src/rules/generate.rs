@@ -34,7 +34,7 @@
 //! | --- | --- |
 //! | `separator` | [`crate::convert::to_csv`] always writes commas. A `separator ;` copied off the original download would describe a file that no longer exists. |
 //! | `encoding` | The converted CSV is UTF-8 whatever the download was. `encoding windows-1252` would make hledger mis-decode a UTF-8 file — the note the conversion left is about bytes this rules file will never see. |
-//! | `skip N > 1` | `ConvertNote::PreambleSkipped` describes lines already gone. The converted file's only non-data record is its header, so the answer is always `skip 1`. See `docs/imports.md` § *The `skip` a rules file already says* for the other half of this: `align_to_skip` returns a `skip 1` file byte for byte, so nothing about the common path changes. |
+//! | `skip N > 1` | `ConvertNote::PreambleSkipped` describes lines already gone. The converted file's only non-data record is its header, so the answer is always `skip 1`. See `docs/development/imports-internals.md` § *The `skip` a rules file already says* for the other half of this: `align_to_skip` returns a `skip 1` file byte for byte, so nothing about the common path changes. |
 //!
 //! # hledger facts this module is built on
 //!

@@ -748,7 +748,7 @@ fn hledger_reads_a_scenario_we_wrote() {
 
 #[test]
 fn hledger_reads_the_growth_tag_as_a_tag_and_not_as_arithmetic() {
-    // The honest caveat `docs/projections.md` states, pinned: hledger has no
+    // The honest caveat `docs/projections/file-format.md` states, pinned: hledger has no
     // arithmetic in amounts, so `growth:` is a comment to it and the goal it
     // reports is the BASE amount in every year. A test rather than a sentence,
     // because the day hledger gains arithmetic this should fail and the doc

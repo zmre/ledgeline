@@ -1397,7 +1397,7 @@ P 2026-06-01 ACC $55.00
 /// The documented (term, name) straddle: a group is keyed by (term, line), so
 /// ONE `bsgroup:` whose accounts sit in both halves prints as TWO lines, the
 /// same name under each subheading — a receivable due this year and one due in
-/// five really are two lines on a real statement (docs/balance-sheet.md).
+/// five really are two lines on a real statement (docs/reports/balance-sheet.md).
 ///
 /// Ground truth (hledger 1.52):
 ///   hledger -f straddle.journal bal type:A -e 2027-01-01

@@ -59,7 +59,7 @@
 //!
 //! Every path this module puts in a [`GitStatus`] or a [`GitError`] is relative
 //! to the repository toplevel, consistent with the no-disclosure rule in
-//! `docs/imports.md`. git's own stderr is passed through **verbatim except for
+//! `docs/development/imports-internals.md`. git's own stderr is passed through **verbatim except for
 //! one substitution**: the toplevel prefix is stripped ([`Repo::scrub`]), so a
 //! hook's complaint about `/Users/someone/finances/.git/hooks/pre-commit`
 //! reaches the UI as `.git/hooks/pre-commit`. Surfacing that stderr is required
