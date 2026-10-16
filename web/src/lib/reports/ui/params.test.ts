@@ -1,14 +1,17 @@
 import {describe, expect, it} from "vitest";
 import {
+    alignToEnd,
     budgetRedirect,
     defaultReportParams,
     MAX_COUNT,
     paramsToSearch,
     rangeKeys,
+    searchNamesEnd,
     searchToParams,
     TAB_CONTROLS,
     TAB_DEFAULTS,
     TAB_ORDER,
+    tabEnd,
     type ReportParams,
 } from "./params";
 
@@ -214,5 +217,94 @@ describe("UNIT reports/ui/params — the Budget tab's old address", () => {
 
     it("tolerates a missing leading ?", () => {
         expect(budgetRedirect("tab=budget&depth=3")).toBe("?depth=3");
+    });
+});
+
+describe("UNIT reports/ui/params — the end date shared across tabs", () => {
+    const on = (tab: ReportParams["tab"], over: Partial<ReportParams> = {}): ReportParams => ({...DFLT, tab, ...over});
+
+    describe("tabEnd", () => {
+        it("reads each tab's own end, and nothing on Subscriptions", () => {
+            const p = on("bs", {asOf: "2026-01-01", to: "2026-02-01", cfTo: "2026-03-01", end: "2026-04-01", insEnd: "2026-05-31"});
+            expect(tabEnd(p, "bs")).toBe("2026-01-01");
+            expect(tabEnd(p, "is")).toBe("2026-02-01");
+            expect(tabEnd(p, "cf")).toBe("2026-03-01");
+            expect(tabEnd(p, "nw")).toBe("2026-04-01");
+            expect(tabEnd(p, "insights")).toBe("2026-05-31");
+            expect(tabEnd(p, "subs")).toBeNull();
+        });
+    });
+
+    describe("alignToEnd", () => {
+        it("turns the default P&L into year to date", () => {
+            expect(alignToEnd(on("is"), "is", "2026-09-30")).toEqual({from: "2026-01-01", to: "2026-09-30"});
+        });
+
+        it("follows the end into another year rather than inverting the range", () => {
+            expect(alignToEnd(on("is"), "is", "2025-03-31")).toEqual({from: "2025-01-01", to: "2025-03-31"});
+        });
+
+        it("keeps cash flow's trailing twelve months", () => {
+            expect(alignToEnd(on("cf"), "cf", "2026-03-31")).toEqual({cfFrom: "2025-04-01", cfTo: "2026-03-31"});
+        });
+
+        it("keeps a start the user chose while it is still on or before the new end", () => {
+            const fiscal = on("is", {from: "2025-07-01", to: "2026-06-30"});
+            expect(alignToEnd(fiscal, "is", "2026-09-30")).toEqual({to: "2026-09-30"});
+            expect(alignToEnd(fiscal, "is", "2025-07-01")).toEqual({to: "2025-07-01"});
+        });
+
+        it("drops a chosen start that would come after the new end, for the default", () => {
+            const chosen = on("cf", {cfFrom: "2026-05-15"});
+            expect(alignToEnd(chosen, "cf", "2026-03-31")).toEqual({cfFrom: "2025-04-01", cfTo: "2026-03-31"});
+        });
+
+        it("moves only the end on the single-date tabs", () => {
+            expect(alignToEnd(on("bs"), "bs", "2026-03-31")).toEqual({asOf: "2026-03-31"});
+            expect(alignToEnd(on("nw"), "nw", "2026-03-31")).toEqual({end: "2026-03-31"});
+        });
+
+        it("re-anchors an Insights preset span on the new end", () => {
+            // Default: year over year, 2024-07-01..2026-06-30.
+            expect(alignToEnd(on("insights"), "insights", "2026-03-31")).toEqual({insStart: "2024-04-01", insEnd: "2026-03-31"});
+            // Quarter over quarter: six months.
+            const qoq = on("insights", {insStart: "2026-01-01", insEnd: "2026-06-30"});
+            expect(alignToEnd(qoq, "insights", "2026-03-31")).toEqual({insStart: "2025-10-01", insEnd: "2026-03-31"});
+        });
+
+        it("changes nothing when the tab already ends there, or has no end", () => {
+            expect(alignToEnd(on("bs"), "bs", DFLT.asOf)).toEqual({});
+            expect(alignToEnd(on("subs"), "subs", "2026-03-31")).toEqual({});
+        });
+
+        it("never leaves a range inverted", () => {
+            for (const tab of ["is", "cf", "insights"] as const) {
+                for (const end of ["2020-02-29", "2026-01-01", "2026-07-08", "2031-12-31"]) {
+                    const next = {...on(tab), ...alignToEnd(on(tab), tab, end)};
+                    const start = tab === "is" ? next.from : tab === "cf" ? next.cfFrom : next.insStart;
+                    expect(start <= end, `${tab} ${end}`).toBe(true);
+                    expect(tabEnd(next, tab)).toBe(end);
+                }
+            }
+        });
+    });
+
+    describe("searchNamesEnd", () => {
+        it("is true when the URL carries the opening tab's end", () => {
+            expect(searchNamesEnd("?tab=bs&asof=2026-03-31")).toBe(true);
+            expect(searchNamesEnd("tab=is&from=2026-01-01&to=2026-03-31")).toBe(true);
+            expect(searchNamesEnd("?tab=cf&from=2025-04-01&to=2026-03-31")).toBe(true);
+            expect(searchNamesEnd("?tab=cf&end=2026-03-31&count=12")).toBe(true); // the legacy form
+            expect(searchNamesEnd("?tab=nw&end=2026-03-31")).toBe(true);
+            expect(searchNamesEnd("?tab=insights&istart=2024-04-01&iend=2026-03-31")).toBe(true);
+        });
+
+        it("is false for another tab's end, a malformed date, no tab, or Subscriptions", () => {
+            expect(searchNamesEnd("?tab=bs&to=2026-03-31")).toBe(false);
+            expect(searchNamesEnd("?tab=bs&asof=yesterday")).toBe(false);
+            expect(searchNamesEnd("?asof=2026-03-31")).toBe(false);
+            expect(searchNamesEnd("?tab=subs")).toBe(false);
+            expect(searchNamesEnd("")).toBe(false);
+        });
     });
 });

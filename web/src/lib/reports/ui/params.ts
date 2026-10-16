@@ -177,6 +177,18 @@ export function activeInsightsPreset(start: ISODate, end: ISODate, now: ISODate 
     return "custom";
 }
 
+/** The P&L's default From for a range ending on `end`: January 1 of its year (year to date). */
+const yearStart = (end: ISODate): ISODate => `${end.slice(0, 4)}-01-01`;
+
+/** The first day of the month `months - 1` months before `end`'s: `months` monthly columns ending with `end`'s. */
+const monthsBack =
+    (months: number) =>
+    (end: ISODate): ISODate =>
+        bucketStart(lastNBuckets(end, "monthly", months)[0]);
+
+/** Cash flow's default From for a range ending on `end`: the trailing twelve monthly columns. */
+const trailingYear = monthsBack(12);
+
 /** Defaults: Insights (year-over-year) is the landing tab; bs as-of today, P&L this year, cf/nw last 12 months. */
 export function defaultReportParams(now: ISODate = today()): ReportParams {
     const year = now.slice(0, 4);
@@ -184,11 +196,11 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
     return {
         tab: "insights",
         asOf: now,
-        from: `${year}-01-01`,
+        from: yearStart(now),
         to: `${year}-12-31`,
         // The first of the month eleven months back through today: the same
         // twelve monthly columns the old End + 12 Periods default drew.
-        cfFrom: bucketStart(lastNBuckets(now, "monthly", 12)[0]),
+        cfFrom: trailingYear(now),
         cfTo: now,
         end: now,
         interval: "monthly",
@@ -203,6 +215,100 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
         insStart: ins.start,
         insEnd: ins.end,
     };
+}
+
+// --- The end date shared across tabs ----------------------------------------
+// The reports page remembers the end date the user last set on any tab and
+// moves the next tab it opens to it, so a balance sheet as of 2026-09-30 is
+// followed by a P&L and a cash flow through 2026-09-30 without re-picking the
+// date (see `stores/reportsEnd.ts` for the memory, the page for the wiring).
+// Only the END is shared; a tab's start follows the rule in `alignToEnd`.
+
+type EndKey = "asOf" | "to" | "cfTo" | "end" | "insEnd";
+type StartKey = "from" | "cfFrom" | "insStart";
+
+/** Each tab's end-date param, or `null` for a tab with no date control (Subscriptions). */
+const END_KEYS: Record<ReportTab, EndKey | null> = {
+    insights: "insEnd",
+    bs: "asOf",
+    is: "to",
+    cf: "cfTo",
+    nw: "end",
+    subs: null,
+};
+
+/** The URL params that carry each tab's end (cash flow also reads its legacy `end`). */
+const END_URL_PARAMS: Record<ReportTab, readonly string[]> = {
+    insights: ["iend"],
+    bs: ["asof"],
+    is: ["to"],
+    cf: ["to", "end"],
+    nw: ["end"],
+    subs: [],
+};
+
+/**
+ * Each ranged tab's start param and the start rules RELATIVE to the end that it
+ * knows, the first being its default: the P&L's year to date, cash flow's
+ * trailing twelve months, and one rule per Insights preset (each a whole-month
+ * span ending with the end's month; the default, year over year, first).
+ */
+const START_RULES: Partial<Record<ReportTab, {key: StartKey; rules: readonly ((end: ISODate) => ISODate)[]}>> = {
+    is: {key: "from", rules: [yearStart]},
+    cf: {key: "cfFrom", rules: [trailingYear]},
+    insights: {
+        key: "insStart",
+        // INSIGHTS_PRESETS lists the default (year over year) first.
+        rules: INSIGHTS_PRESETS.map((preset) => monthsBack(preset.spanMonths)),
+    },
+};
+
+/** The active end date of `tab` in `p`, or `null` when the tab has none. */
+export function tabEnd(p: ReportParams, tab: ReportTab): ISODate | null {
+    const key = END_KEYS[tab];
+    return key === null ? null : p[key];
+}
+
+/** Whether a reports URL names the end date of the tab it opens (a deep link's end beats a remembered one). */
+export function searchNamesEnd(search: string): boolean {
+    const q = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+    const rawTab = q.get("tab");
+    if (rawTab === null || !isTab(rawTab)) return false;
+    return END_URL_PARAMS[rawTab].some((name) => {
+        const value = q.get(name);
+        return value !== null && isIsoDate(value);
+    });
+}
+
+/**
+ * The params that move `tab` to end on `end`: `{}` when it has no end or
+ * already ends there.
+ *
+ * A ranged tab's start is not shared; it is decided like this:
+ * 1. If it stands in one of the tab's relative relationships to the OLD end
+ *    (P&L: January 1 of its year; cash flow: twelve monthly columns; Insights:
+ *    a preset's whole-month span), it keeps that relationship to the new end.
+ *    The defaults are all relative, so an untouched P&L moved to 2026-09-30
+ *    reads 2026-01-01..2026-09-30.
+ * 2. Otherwise the user chose it, and it is kept while it is still on or
+ *    before the new end.
+ * 3. Otherwise (it would invert the range) it falls back to the tab's default
+ *    relative to the new end.
+ *
+ * Pure: no clock, every date comes from `p` and `end`.
+ */
+export function alignToEnd(p: ReportParams, tab: ReportTab, end: ISODate): Partial<ReportParams> {
+    const endKey = END_KEYS[tab];
+    if (endKey === null || p[endKey] === end) return {};
+    const patch: Partial<ReportParams> = {[endKey]: end};
+    const start = START_RULES[tab];
+    if (start === undefined) return patch;
+    const oldEnd = p[endKey];
+    const oldStart = p[start.key];
+    const relative = start.rules.find((rule) => rule(oldEnd) === oldStart);
+    if (relative !== undefined) patch[start.key] = relative(end);
+    else if (oldStart > end) patch[start.key] = start.rules[0](end);
+    return patch;
 }
 
 /** Serialize the ACTIVE tab's params to a query string (no leading "?"). */

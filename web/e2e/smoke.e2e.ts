@@ -274,6 +274,37 @@ test("reports: cash flow takes From/To, adds a Total column, and Interval = Tota
     await expect(page.getByLabel("Interval").locator("option")).toHaveText(["Monthly", "Quarterly", "Yearly"]);
 });
 
+test("reports: an end date set on one tab carries to the others, for the session only", async ({page}) => {
+    await page.goto("/");
+    await page.getByRole("link", {name: "Reports"}).click();
+    await page.getByRole("tab", {name: "Balance Sheet"}).click();
+    await page.getByLabel("As of").fill("2026-03-31");
+    await expect(page).toHaveURL(/tab=bs&asof=2026-03-31/);
+
+    // The P&L's default start is relative to its end, so it becomes year to date.
+    await page.getByRole("tab", {name: "P&L"}).click();
+    await expect(page.getByLabel("From", {exact: true})).toHaveValue("2026-01-01");
+    await expect(page.getByLabel("To", {exact: true})).toHaveValue("2026-03-31");
+
+    // Cash flow keeps its trailing twelve months, ending there.
+    await page.getByRole("tab", {name: "Cash Flow"}).click();
+    await expect(page.getByLabel("From", {exact: true})).toHaveValue("2025-04-01");
+    await expect(page.getByLabel("To", {exact: true})).toHaveValue("2026-03-31");
+
+    // Leaving Reports and coming back in the same session keeps it.
+    await page.getByRole("link", {name: "Journal"}).click();
+    await page.getByRole("link", {name: "Reports"}).click();
+    await page.getByRole("tab", {name: "Net Worth"}).click();
+    await expect(page.getByLabel("End", {exact: true})).toHaveValue("2026-03-31");
+
+    // Nothing is persisted: a fresh load starts from today's defaults.
+    await page.goto("/reports?tab=bs");
+    await expect(page.getByLabel("As of")).toHaveValue("2026-07-08");
+    await page.getByRole("tab", {name: "P&L"}).click();
+    await expect(page.getByLabel("From", {exact: true})).toHaveValue("2026-01-01");
+    await expect(page.getByLabel("To", {exact: true})).toHaveValue("2026-12-31");
+});
+
 test("reports: an old cash-flow link with end and count still opens the same columns", async ({page}) => {
     await page.goto("/reports?tab=cf&end=2026-07-08&interval=monthly&count=3&depth=2");
     await expect(page.getByLabel("From", {exact: true})).toHaveValue("2026-05-01");
