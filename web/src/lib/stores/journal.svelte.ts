@@ -45,7 +45,6 @@ let accountNames = $state.raw<string[]>([]);
 let accountDecls = $state.raw<AccountDecl[]>([]);
 let prices = $state.raw<PriceDirective[]>([]);
 let diagnostics = $state.raw<Problem[]>([]);
-let engineChecked = $state(false);
 /** The engine's name for the journal on screen, and its main file — the app bar's label. */
 let title = $state<string | null>(null);
 let file = $state<string | null>(null);
@@ -206,13 +205,10 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // One native client for both native calls: same base URL, same abort
         // signal, same round.
         const native = new LedgelineApi(baseUrl, {signal});
-        // Diagnostics are advisory and Ledgeline-native: a plain hledger-web has
-        // no such route. Failing it to `null` here (rather than letting it reject
-        // the whole `Promise.all`) is what keeps the journal loading against any
-        // engine — an unreachable or absent route means "no diagnostics", never a
-        // failed load. The journal's title rides this round for the same reason
-        // and on the same terms, plus one of its own:
-        //
+        // The SPA requires the Ledgeline engine (plan 26): diagnostics and the
+        // journal metadata are native routes, and a failure on either fails the
+        // round like any other — there is no plain-hledger-web fallback to keep
+        // alive. The journal metadata (title, styles) rides this round, and
         // WHY PER ROUND, and not once per connection. The desktop File→Open
         // action rebinds the engine to a DIFFERENT journal at the SAME URL, and
         // nothing about the connection changes when it does — no new address, no
@@ -222,21 +218,13 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // running several sets of books reading the wrong one confidently. The
         // journal round is the thing that already reruns whenever the journal
         // might have changed, so the name travels with the data it names.
-        //
-        // Decoding happens INSIDE the chain, unlike diagnostics' (which
-        // normalizes below, and never throws). `decodeJournalInfo` does throw —
-        // rejecting a shape is nativeDecode's whole contract — and a malformed
-        // title must not be able to fail a journal load that otherwise succeeded.
         const [rawTxns, nextNames, rawPrices, rawAccounts, rawDiagnostics, nextInfo] = await Promise.all([
             api.transactions(),
             api.accountNames(),
             api.prices(),
             api.accounts(),
-            native.diagnostics().catch(() => null),
-            native
-                .journalInfo()
-                .then(decodeJournalInfo)
-                .catch(() => null),
+            native.diagnostics(),
+            native.journalInfo().then(decodeJournalInfo),
         ]);
 
         // Superseded while the network was answering: these payloads describe a
@@ -256,15 +244,11 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // reassign, and folding it in would make a retitled journal look like
         // changed transactions.
         //
-        // `null` is the route being absent (a plain hledger-web) or unreachable,
-        // and it CLEARS both fields rather than keeping the last name we knew —
-        // the app bar then shows no label at all, which is honest about not
-        // knowing, and a stale name on a rebound engine would not be. A round
-        // that fails outright never reaches this line, so a red dot keeps the
-        // last good title beside it, exactly as it keeps the last good
-        // transactions.
-        title = nextInfo?.title ?? null;
-        file = nextInfo?.file ?? null;
+        // A round that fails outright never reaches this line, so a red dot
+        // keeps the last good title beside it, exactly as it keeps the last
+        // good transactions.
+        title = nextInfo.title;
+        file = nextInfo.file;
 
         // Every journal payload comes from one server-side snapshot carrying one
         // ETag, so an unchanged journal answers 304 on all three of the big
@@ -298,16 +282,12 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // Declared `commodity` styles, when the engine served them: every amount
         // then displays the way the journal asks (`$0.6` → `$0.60`). They also
         // reach the fingerprint, through each transaction's formatted haystack.
-        const nextTxns = normalizeTransactions(rawTxns, nextInfo?.commodityStyles);
+        const nextTxns = normalizeTransactions(rawTxns, nextInfo.commodityStyles);
         const nextPrices = normalizePrices(rawPrices);
         const nextDecls = normalizeAccounts(rawAccounts);
         // Wire positions resolve against exactly the array the engine indexed, so
         // this must be the transactions from THIS same fetch round. Never throws.
         const nextDiagnostics = normalizeDiagnostics(rawDiagnostics, nextTxns);
-        // `null` only when the route was absent/unreachable. An engine that
-        // answered with zero diagnostics HAS checked, and the local unbalanced
-        // rule must stand down for it.
-        const nextEngineChecked = rawDiagnostics !== null;
         const nextFingerprint = contentFingerprint(nextTxns, nextNames, nextPrices, nextDecls, nextDiagnostics);
         if (fetchedAt === null || nextFingerprint !== lastFingerprint) {
             txns = nextTxns;
@@ -315,7 +295,6 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
             prices = nextPrices;
             accountDecls = nextDecls;
             diagnostics = nextDiagnostics;
-            engineChecked = nextEngineChecked;
             if (import.meta.env.DEV) console.debug(`[journal] state swapped (${nextTxns.length} txns)`);
         } else if (import.meta.env.DEV) {
             console.debug("[journal] poll unchanged — state swap skipped");
@@ -376,15 +355,10 @@ export const journal = {
     get diagnostics(): Problem[] {
         return diagnostics;
     },
-    /** Whether the engine answered `/api/diagnostics` — so [] means "clean", not
-     * "unchecked". False against a plain hledger-web. */
-    get engineChecked(): boolean {
-        return engineChecked;
-    },
     /**
      * What the engine calls the journal on screen (its first-line comment, else
-     * its folder), for the app bar. Null against a server that cannot say — a
-     * plain hledger-web, or an engine older than the `/api/journal` route.
+     * its folder), for the app bar. Null when the journal has neither, and
+     * before the first successful round.
      */
     get title(): string | null {
         return title;

@@ -44,20 +44,6 @@ export interface CheckContext {
      * with no further plumbing.
      */
     diagnostics?: readonly Problem[];
-    /**
-     * True when the engine answered `/api/diagnostics` — i.e. it ran its own
-     * balance check, and an EMPTY `diagnostics` means "checked, all clean"
-     * rather than "nobody looked".
-     *
-     * The local `unbalanced` rule defers when this is set. It is a naive
-     * every-commodity-must-sum-to-zero reimplementation, and hledger accepts two
-     * shapes it would wrongly flag: a cost-derived residual within hledger's
-     * `amountLooksZero` tolerance, and a two-commodity transaction it balances by
-     * inferring a conversion cost. The engine reproduces both (verified against
-     * hledger 1.52), so where both can answer, the engine wins. The local rule
-     * still runs against a plain hledger-web, which has no such route.
-     */
-    engineChecked?: boolean;
 }
 
 export interface CheckRule {
@@ -75,9 +61,7 @@ export {ALL_RULES} from "./rules";
  * list, ahead of every rule finding. Two reasons: they are authoritative errors
  * from the component that parsed the journal, and the drawer groups by rule in
  * FIRST-APPEARANCE order, so leading with them puts the engine's hard errors at
- * the top while still letting the local `unbalanced` rule's findings fall into
- * the same "unbalanced" group. Order is otherwise unchanged, so it stays stable
- * across refreshes.
+ * the top. Order is otherwise unchanged, so it stays stable across refreshes.
  */
 export function runChecks(txns: Transaction[], ctx: CheckContext, rules: CheckRule[] = ALL_RULES): Problem[] {
     return [...(ctx.diagnostics ?? []), ...rules.flatMap((rule) => rule.run(txns, ctx))];

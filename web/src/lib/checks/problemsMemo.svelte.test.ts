@@ -37,9 +37,6 @@ vi.mock("#lib/stores/journal.svelte.js", () => ({
         get diagnostics() {
             return [];
         },
-        get engineChecked() {
-            return true;
-        },
     },
 }));
 

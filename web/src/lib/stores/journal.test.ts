@@ -180,8 +180,8 @@ describe("INTEGRATION journal title (which ledger is on screen)", () => {
     /**
      * What `/api/journal` answers, one entry per ROUND (the last repeats).
      *
-     * A string is a title; `null` is a 404 — the answer a plain hledger-web
-     * gives, since `/api/*` is native and it has none of those routes.
+     * A string is a title; `null` is a 404 — the answer of a server that is not
+     * the Ledgeline engine.
      */
     let titles: (string | null)[] = ["Acme Books"];
     let journalHits = 0;
@@ -251,28 +251,18 @@ describe("INTEGRATION journal title (which ledger is on screen)", () => {
         });
     });
 
-    it("still loads the journal when the engine has no /api/journal, and names no ledger", async () => {
-        // A plain hledger-web. The route 404s, the app bar shows no label at
-        // all, and — the point — the journal itself loads exactly as before.
+    it("fails the round when the server has no /api/journal — the SPA requires the engine", async () => {
+        // Not the Ledgeline engine (e.g. a plain hledger-web). There is no
+        // fallback any more: the round errors, and — like any failed round —
+        // keeps the last good journal and title on screen beside a red dot.
         titles = [null];
         journalHits = 0;
         await journal.refresh({force: true});
 
-        expect(journal.status).toBe("ready");
-        expect(journal.error).toBeNull();
+        expect(journal.status).toBe("error");
+        expect(journal.error).not.toBeNull();
         expect(journal.txns).toHaveLength(1);
-        expect(journal.title).toBeNull();
-        expect(journal.file).toBeNull();
-    });
-
-    it("clears a title it can no longer confirm rather than keeping a stale name", async () => {
         expect(journal.title).toBe("Acme Books");
-        // Reconnected to something that cannot say which ledger it holds. The
-        // honest label is the URL, not the last entity we happened to know about.
-        titles = [null];
-        journalHits = 0;
-        await journal.refresh({force: true});
-        expect(journal.title).toBeNull();
     });
 
     it("refreshes the label on a 304 round, where nothing else is swapped", async () => {

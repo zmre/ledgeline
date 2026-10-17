@@ -4,8 +4,8 @@
 // twice ("what port did I start it on?") and never the one that matters when
 // several sets of books are open in several windows: WHICH LEDGER IS THIS. So
 // the visible text is the engine's title for the journal, and NOTHING ELSE —
-// a server that cannot name its journal (a plain hledger-web, or an engine
-// older than `/api/journal`) gets no label at all, just the status dot. The URL
+// a journal the engine cannot name (no first-line comment, no folder name)
+// gets no label at all, just the status dot. The URL
 // is not a lesser answer to "which ledger is this", it is an answer to a
 // different question, and putting it in this spot is what made the spot
 // useless. Where-am-I-connected survives on the tooltip, beside the journal's

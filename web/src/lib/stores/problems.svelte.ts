@@ -23,7 +23,6 @@ const all = $derived.by(() =>
         prices: journal.prices,
         decls: journal.accountDecls,
         diagnostics: journal.diagnostics,
-        engineChecked: journal.engineChecked,
     })
 );
 const byTxn = $derived.by(() => groupByTxn(all));

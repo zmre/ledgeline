@@ -9,13 +9,6 @@ const usdStyle: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPo
 
 const usd = (cents: number): Amount => ({commodity: "$", qty: dec(cents, 2), style: usdStyle});
 const eur = (cents: number): Amount => ({commodity: "EUR", qty: dec(cents, 2), style: {...usdStyle, side: "R"}});
-/** `qty` AAPL (4 dp) with a cost annotation in USD cents (`per` ⇒ `@`, else `@@`). */
-const aapl = (tenThousandths: number, costCents: number, per: boolean): Amount => ({
-    commodity: "AAPL",
-    qty: dec(tenThousandths, 4),
-    style: {...usdStyle, digitGroups: null, precision: 4},
-    cost: {commodity: "$", qty: dec(costCents, 2), per},
-});
 
 interface PostingSpec {
     account: string;
@@ -53,192 +46,6 @@ function txn(index: number, postings: PostingSpec[], spec: TxnSpec = {}): Transa
 const byRule = (problems: Problem[], rule: string): Problem[] => problems.filter((p) => p.rule === rule);
 const NO_PRICES = {prices: []};
 const run1 = (t: Transaction, rule: string): Problem[] => byRule(runChecks([t], NO_PRICES), rule);
-
-describe("UNIT checks/rules unbalanced defers to the engine", () => {
-    // A transaction this rule WOULD flag, to prove the deferral is what silences
-    // it rather than the transaction happening to balance.
-    const offBy = () =>
-        txn(1, [
-            {account: "a", amounts: [usd(100)]},
-            {account: "b", amounts: [usd(-200)]},
-        ]);
-
-    it("stands down when the engine ran its own balance check", () => {
-        expect(byRule(runChecks([offBy()], {prices: [], engineChecked: true}), "unbalanced")).toEqual([]);
-    });
-
-    it("still runs against a plain hledger-web, which has no diagnostics route", () => {
-        expect(byRule(runChecks([offBy()], {prices: [], engineChecked: false}), "unbalanced")).toHaveLength(1);
-        expect(run1(offBy(), "unbalanced")).toHaveLength(1); // absent flag == not checked
-    });
-
-    it("stands down even when the engine reported zero diagnostics — [] means clean, not unchecked", () => {
-        expect(byRule(runChecks([offBy()], {prices: [], diagnostics: [], engineChecked: true}), "unbalanced")).toEqual([]);
-    });
-});
-
-describe("UNIT checks/rules unbalanced", () => {
-    it("accepts a fully amounted transaction that sums to zero per commodity", () => {
-        const t = txn(1, [
-            {account: "expenses:food", amounts: [usd(5624)]},
-            {account: "liabilities:cc:visa", amounts: [usd(-5624)]},
-        ]);
-        expect(run1(t, "unbalanced")).toEqual([]);
-    });
-
-    it("accepts one elided (amountless) posting absorbing any remainder", () => {
-        const t = txn(1, [
-            {account: "expenses:housing:rent", amounts: [usd(187500)]},
-            {account: "assets:bank:checking", amounts: []},
-        ]);
-        expect(run1(t, "unbalanced")).toEqual([]);
-    });
-
-    it("flags two or more amountless postings as an error", () => {
-        const t = txn(7, [
-            {account: "expenses:a", amounts: [usd(100)]},
-            {account: "assets:x", amounts: []},
-            {account: "assets:y", amounts: []},
-        ]);
-        const problems = run1(t, "unbalanced");
-        expect(problems).toHaveLength(1);
-        expect(problems[0]).toMatchObject({txnIndex: 7, severity: "error"});
-        expect(problems[0].message).toContain("2 postings have no amount");
-    });
-
-    it("flags a nonzero residue, naming the commodity and remainder", () => {
-        const t = txn(3, [
-            {account: "expenses:food", amounts: [usd(5000)]},
-            {account: "assets:bank:checking", amounts: [usd(-4750)]},
-        ]);
-        const problems = run1(t, "unbalanced");
-        expect(problems).toHaveLength(1);
-        expect(problems[0].severity).toBe("error");
-        expect(problems[0].message).toContain("$ 2.50 remaining");
-    });
-
-    it("treats commodities independently — two self-balancing commodities are fine", () => {
-        const t = txn(4, [
-            {account: "a", amounts: [usd(100), eur(200)]},
-            {account: "b", amounts: [usd(-100), eur(-200)]},
-        ]);
-        expect(run1(t, "unbalanced")).toEqual([]);
-    });
-
-    it("flags when one commodity balances but another does not", () => {
-        const t = txn(5, [
-            {account: "a", amounts: [usd(100), eur(200)]},
-            {account: "b", amounts: [usd(-100), eur(-150)]},
-        ]);
-        const problems = run1(t, "unbalanced");
-        expect(problems).toHaveLength(1);
-        expect(problems[0].message).toContain("EUR 0.50");
-    });
-
-    it("balances @ per-unit costs in the cost commodity (10 AAPL @ $220.00 vs $-2200.00)", () => {
-        const t = txn(6, [
-            {account: "assets:broker:aapl", amounts: [aapl(100000, 22000, true)]},
-            {account: "assets:broker:cash", amounts: [usd(-220000)]},
-        ]);
-        expect(run1(t, "unbalanced")).toEqual([]);
-    });
-
-    it("balances @@ total costs with the posting amount's sign", () => {
-        const buy = txn(8, [
-            {account: "assets:broker:aapl", amounts: [aapl(45000, 111735, false)]}, // 4.5 AAPL @@ $1117.35
-            {account: "assets:broker:cash", amounts: [usd(-111735)]},
-        ]);
-        const sell = txn(9, [
-            {account: "assets:broker:aapl", amounts: [aapl(-45000, 111735, false)]},
-            {account: "assets:broker:cash", amounts: [usd(111735)]},
-        ]);
-        expect(byRule(runChecks([buy, sell], NO_PRICES), "unbalanced")).toEqual([]);
-    });
-
-    it("does not false-positive a sell whose @@ total is unsigned (the domain cost.qty contract)", () => {
-        // The normalizer canonicalizes hledger 1.52's signed wire totals to their
-        // absolute magnitude, so a sell always arrives here with an unsigned total
-        // and balanceValue applies the posting amount's sign itself.
-        const t = txn(12, [
-            {account: "assets:broker:aapl", amounts: [aapl(-45000, 111735, false)]}, // -4.5 AAPL @@ $1,117.35
-            {account: "assets:broker:cash", amounts: [usd(111735)]},
-        ]);
-        expect(run1(t, "unbalanced")).toEqual([]);
-    });
-
-    it("flags a cost-converted residue", () => {
-        const t = txn(10, [
-            {account: "assets:broker:aapl", amounts: [aapl(100000, 22000, true)]},
-            {account: "assets:broker:cash", amounts: [usd(-219900)]}, // $1.00 short
-        ]);
-        expect(run1(t, "unbalanced")).toHaveLength(1);
-    });
-
-    it("ignores a postingless transaction (nothing to balance)", () => {
-        expect(run1(txn(11, []), "unbalanced")).toEqual([]);
-    });
-});
-
-// hledger balances a transaction in two INDEPENDENT groups (verified against
-// hledger 1.52 by running each of these shapes through `hledger -f … print`):
-// the real postings, and the balanced-virtual `[a]` ones. Unbalanced-virtual
-// `(a)` postings are excluded from balancing altogether, and each group carries
-// its own one-posting elision budget.
-describe("UNIT checks/rules unbalanced virtual postings", () => {
-    const virt = (account: string, amounts: Amount[]): PostingSpec => ({account, amounts, type: "virtual"});
-    const bvirt = (account: string, amounts: Amount[]): PostingSpec => ({account, amounts, type: "balancedVirtual"});
-
-    it("excludes an unbalanced-virtual `(a)` posting from the residue", () => {
-        // fixtures/corpus/virtual-postings.journal, as hledger 1.52 prints it.
-        const t = txn(1, [virt("virtual", [usd(10000)]), {account: "a", amounts: [usd(100)]}, {account: "b", amounts: [usd(-100)]}]);
-        expect(run1(t, "unbalanced")).toEqual([]);
-    });
-
-    it("does not let a virtual posting consume the real postings' elision budget", () => {
-        const t = txn(2, [virt("virtual", [usd(50000)]), {account: "a", amounts: [usd(100)]}, {account: "b", amounts: []}]);
-        expect(run1(t, "unbalanced")).toEqual([]);
-    });
-
-    it("balances `[a]` postings in their own group, not against the real ones", () => {
-        // fixtures/corpus/balanced-virtual-postings.journal.
-        const t = txn(3, [bvirt("bv", [usd(1000)]), bvirt("bv", [usd(-1000)]), {account: "a", amounts: [usd(100)]}, {account: "b", amounts: [usd(-100)]}]);
-        expect(run1(t, "unbalanced")).toEqual([]);
-    });
-
-    it("flags a balanced-virtual group that does not sum to zero, naming that group", () => {
-        const t = txn(4, [bvirt("bv", [usd(1000)]), bvirt("bv", [usd(-500)]), {account: "a", amounts: [usd(100)]}, {account: "b", amounts: [usd(-100)]}]);
-        const problems = run1(t, "unbalanced");
-        expect(problems).toHaveLength(1);
-        expect(problems[0]).toMatchObject({txnIndex: 4, severity: "error"});
-        expect(problems[0].message).toBe("balanced virtual postings do not sum to zero: $ 5.00 remaining");
-    });
-
-    it("gives each group its own elision budget — one elided real plus one elided `[a]` is legal", () => {
-        const t = txn(5, [bvirt("bv", [usd(1000)]), bvirt("bv", []), {account: "a", amounts: [usd(100)]}, {account: "b", amounts: []}]);
-        expect(run1(t, "unbalanced")).toEqual([]);
-    });
-
-    it("still flags two elided postings within the SAME group", () => {
-        const t = txn(6, [
-            bvirt("bv", [usd(1000)]),
-            bvirt("bv", []),
-            bvirt("bv", []),
-            {account: "a", amounts: [usd(100)]},
-            {account: "b", amounts: [usd(-100)]},
-        ]);
-        const problems = run1(t, "unbalanced");
-        expect(problems).toHaveLength(1);
-        expect(problems[0].message).toBe("2 balanced virtual postings have no amount — at most one may be elided");
-    });
-
-    it("reports both groups independently when both are broken", () => {
-        const t = txn(7, [bvirt("bv", [usd(1000)]), {account: "a", amounts: [usd(100)]}]);
-        expect(run1(t, "unbalanced").map((p) => p.message)).toEqual([
-            "postings do not sum to zero: $ 1.00 remaining",
-            "balanced virtual postings do not sum to zero: $ 10.00 remaining",
-        ]);
-    });
-});
 
 describe("UNIT checks/rules pending", () => {
     it("flags pending transactions as warnings; cleared/unmarked pass", () => {
@@ -383,10 +190,9 @@ describe("UNIT checks/rules future-date", () => {
 describe("UNIT checks/engine", () => {
     it("runChecks defaults to ALL_RULES and honors an explicit subset", () => {
         const t = txn(1, [{account: "expenses:unknown", amounts: [usd(100)]}], {status: "pending", description: ""});
-        // one elided-less residue-free txn: postings sum to +$1.00 → also unbalanced
         const all = runChecks([t], NO_PRICES);
-        expect(new Set(all.map((p) => p.rule))).toEqual(new Set(["unbalanced", "pending", "uncategorized", "missing-description"]));
-        const onlyPending = runChecks([t], NO_PRICES, [ALL_RULES[1]]);
+        expect(new Set(all.map((p) => p.rule))).toEqual(new Set(["pending", "uncategorized", "missing-description"]));
+        const onlyPending = runChecks([t], NO_PRICES, [ALL_RULES[0]]);
         expect(onlyPending.map((p) => p.rule)).toEqual(["pending"]);
     });
 

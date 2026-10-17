@@ -28,8 +28,8 @@ interface PersistedSettings {
      * the engine prints at startup and takes from $LEDGELINE_TOKEN. Embedded
      * (same-origin) pages ignore this: the GUI hands its WebView the token out
      * of band and a headless engine prints a `#token=` launch URL, and
-     * `apiToken()` in api/client.ts prefers either of those. Null when
-     * talking to a plain hledger-web, which has no token.
+     * `apiToken()` in api/client.ts prefers either of those. Null when no
+     * token was entered.
      */
     serverToken: string | null;
     columns: ColumnConfig;

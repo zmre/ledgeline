@@ -1,12 +1,13 @@
 // ledgeline-engine native (/api/*) HTTP client. Fetch + query-string building +
 // error taxonomy only; wire-shape knowledge lives in nativeDecode.ts. Mirrors
-// HledgerApi (the wire client) but distinguishes a server that simply lacks the
-// native routes (a plain hledger-web) from one that is unreachable.
+// HledgerApi (the wire client) but distinguishes a server that is not the
+// Ledgeline engine (no native routes) from one that is unreachable. The SPA
+// requires the native API; there is no plain-hledger-web fallback.
 
 import type {BudgetPeriod} from "#lib/budget/types.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
-/** The configured server answered, but has no /api/* routes (e.g. plain hledger-web). */
+/** The configured server answered, but has no /api/* routes (it is not the Ledgeline engine, or predates the route). */
 export class NativeApiUnavailableError extends Error {
     constructor(message: string, options?: ErrorOptions) {
         super(message, options);
@@ -844,7 +845,7 @@ export class LedgelineApi {
             } catch (cause) {
                 throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
             }
-            // A server without the native routes (plain hledger-web) 404s here.
+            // A server without the native routes (not the Ledgeline engine) 404s here.
             if (response.status === 404) {
                 throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE);
             }
@@ -876,8 +877,7 @@ export class LedgelineApi {
      *
      * Its own route rather than a field on `/transactions` because that endpoint
      * is a byte-for-byte hledger-web emulation whose parity comparator rejects
-     * any unexpected key. A plain hledger-web 404s here, which the caller reads
-     * as "no diagnostics".
+     * any unexpected key.
      */
     diagnostics(): Promise<unknown> {
         return this.getJson("/api/diagnostics");
@@ -895,9 +895,7 @@ export class LedgelineApi {
      *
      * Its own route rather than a field on `/transactions`, for the reason
      * `diagnostics` has one: that endpoint is a byte-for-byte hledger-web
-     * emulation whose parity comparator rejects any unexpected key. A plain
-     * hledger-web therefore 404s here, which the caller reads as "this server
-     * cannot tell me which ledger it is" and answers by showing no label.
+     * emulation whose parity comparator rejects any unexpected key.
      */
     journalInfo(): Promise<unknown> {
         return this.getJson("/api/journal");
@@ -1466,12 +1464,6 @@ export class LedgelineApi {
                     throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE, {cause});
                 }
             }
-            // The read path's guards (`usableErrorBody`), applied to the write
-            // path too: a POST through a misbehaving proxy answers with an HTML
-            // document or a whole error page, and either one used to land raw
-            // in the edit-failure toast. Guarded to "", every branch below
-            // falls back to its own sentence — the status line for the
-            // unmapped default.
             // The read path's guards (`usableErrorBody`), applied to the write
             // path too: a POST through a misbehaving proxy answers with an HTML
             // document or a whole error page, and either one used to land raw

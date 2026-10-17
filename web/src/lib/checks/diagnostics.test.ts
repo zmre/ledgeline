@@ -98,7 +98,7 @@ describe("UNIT engine diagnostics in the checks pipeline", () => {
         expect(runChecks(txns, {prices: []})).toEqual(runChecks(txns, {prices: [], diagnostics: normalizeDiagnostics({}, txns)}));
     });
 
-    it("both engine and local unbalanced findings land in the one `unbalanced` drawer group", () => {
+    it("engine unbalanced findings land in the one `unbalanced` drawer group", () => {
         const unbalancedTxn: Transaction = {
             ...balancedTxn(1),
             postings: [{account: "expenses:food", amounts: [usd(1000)], status: "unmarked", comment: "", tags: []}],

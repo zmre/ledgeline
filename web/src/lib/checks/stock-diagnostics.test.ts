@@ -52,7 +52,6 @@ function pipeline(dir: string, prefix = "api/v1.52"): {txns: Transaction[]; prob
         prices: normalizePrices(load(`fixtures/${prefix}/prices.json`)),
         decls: normalizeAccounts(load(`fixtures/${prefix}/accounts.json`)),
         diagnostics: normalizeDiagnostics(load(`fixtures/${dir}/diagnostics.json`), txns),
-        engineChecked: true,
     });
     return {txns, problems};
 }

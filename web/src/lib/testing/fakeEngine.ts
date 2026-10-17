@@ -18,6 +18,9 @@ import {vi} from "vitest";
 /** The address the fake engine answers on. Nothing listens there; `fetch` is stubbed. */
 export const FAKE_ENGINE = "http://engine.test";
 
+/** A minimal `/api/journal` body: an untitled journal with nothing declared. */
+export const FAKE_JOURNAL_INFO = {title: null, file: null};
+
 const json = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
 
 /**
@@ -42,10 +45,12 @@ export function routes(table: Record<string, unknown>): (url: string) => Promise
  *
  * `/version` is always answered because `settings.setServerUrl` verifies it
  * before it will persist an address, and it is overridable so a test can make
- * the probe fail.
+ * the probe fail. `/api/journal` and `/api/diagnostics` are answered too
+ * (overridably): the journal round requires both, since the SPA requires the
+ * native API.
  */
 export async function connectFakeEngine(table: Record<string, unknown> = {}): Promise<void> {
-    vi.stubGlobal("fetch", routes({"/version": "1.52", ...table}));
+    vi.stubGlobal("fetch", routes({"/version": "1.52", "/api/journal": FAKE_JOURNAL_INFO, "/api/diagnostics": {diagnostics: []}, ...table}));
     // `settings` is a module singleton shared by every test in the file. Calling
     // `setServerUrl` twice would bump the reconnect nonce, which is the exact
     // signal every `onServerReady` latch keys on — so a second call silently
